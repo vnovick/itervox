@@ -1266,7 +1266,11 @@ func TestHistoryFilePersistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
 
 	// Wait for the worker to complete and history to be recorded.
 	deadline := time.After(3 * time.Second)
@@ -1274,7 +1278,9 @@ func TestHistoryFilePersistence(t *testing.T) {
 		history := orch.RunHistory()
 		if len(history) > 0 {
 			assert.Equal(t, "ENG-1", history[0].Identifier)
+			// Wait for orch to exit before t.TempDir cleanup races with history.json writes.
 			cancel()
+			<-done
 			return
 		}
 		select {
@@ -1643,7 +1649,11 @@ func TestHistoryKeyScoping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done1 := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done1)
+	}()
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -1670,11 +1680,21 @@ func TestHistoryKeyScoping(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel2()
 
-	go orch2.Run(ctx2) //nolint:errcheck
+	done2 := make(chan struct{})
+	go func() {
+		_ = orch2.Run(ctx2)
+		close(done2)
+	}()
 	time.Sleep(200 * time.Millisecond)
 
 	history2 := orch2.RunHistory()
 	assert.Empty(t, history2, "history should be filtered by project key")
+
+	// Wait for both goroutines to exit so t.TempDir cleanup doesn't race history writes.
+	cancel()
+	cancel2()
+	<-done1
+	<-done2
 }
 
 // ---------------------------------------------------------------------------
@@ -1706,7 +1726,11 @@ func TestClearHistoryRemovesFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -1723,6 +1747,10 @@ func TestClearHistoryRemovesFile(t *testing.T) {
 
 	orch.ClearHistory()
 	assert.Empty(t, orch.RunHistory(), "history should be empty after clear")
+
+	// Wait for orch to exit so t.TempDir cleanup doesn't race history writes.
+	cancel()
+	<-done
 }
 
 // ---------------------------------------------------------------------------
@@ -1790,7 +1818,11 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
 	time.Sleep(200 * time.Millisecond)
 
 	snap := orch.Snapshot()
@@ -1801,6 +1833,10 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 		assert.Equal(t, "need API key", entry.Context)
 		assert.Equal(t, "feature/eng-1", entry.BranchName)
 	}
+
+	// Wait for orch to exit so t.TempDir cleanup doesn't race input_required.json writes.
+	cancel()
+	<-done
 }
 
 func writeTestFile(path, content string) error {
