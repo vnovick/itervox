@@ -232,10 +232,59 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 // question comments. Used to identify and skip own comments when detecting user replies.
 const itervoxCommentPrefix = "🤖 **Agent needs your input**"
 
+// findLatestItervoxComment returns the index and CreatedAt of the most recently
+// created comment whose body starts with itervoxCommentPrefix. Returns -1 and
+// the zero time when no such comment exists or none have a CreatedAt timestamp.
+// Iterating the full slice (rather than a reverse-index walk) makes the result
+// independent of tracker comment ordering — Linear's GraphQL connection returns
+// comments newest-first by default, GitHub returns oldest-first.
+func findLatestItervoxComment(comments []domain.Comment) (int, time.Time) {
+	latestIdx := -1
+	var latestT time.Time
+	for i := range comments {
+		c := &comments[i]
+		if !strings.HasPrefix(c.Body, itervoxCommentPrefix) {
+			continue
+		}
+		if c.CreatedAt == nil {
+			continue
+		}
+		if latestIdx < 0 || c.CreatedAt.After(latestT) {
+			latestIdx = i
+			latestT = *c.CreatedAt
+		}
+	}
+	return latestIdx, latestT
+}
+
+// firstReplyAfter returns the body of the first non-itervox comment whose
+// CreatedAt is strictly after t, or "" if none. Comments with nil CreatedAt
+// are conservatively skipped — without a timestamp we cannot prove they were
+// posted after the question, so we must not treat them as replies.
+func firstReplyAfter(comments []domain.Comment, t time.Time) string {
+	for i := range comments {
+		c := &comments[i]
+		if strings.HasPrefix(c.Body, itervoxCommentPrefix) {
+			continue
+		}
+		if c.CreatedAt == nil {
+			continue
+		}
+		if c.CreatedAt.After(t) {
+			return c.Body
+		}
+	}
+	return ""
+}
+
 // recoverInputRequired fetches the full issue detail (with comments) and checks
 // if the latest comment is an unresolved Itervox input-required question.
 // If so, returns an InputRequiredEntry reconstructed from the comment,
 // preventing a wasteful fresh dispatch. Returns nil if no recovery is needed.
+//
+// Identifies the unanswered question by CreatedAt timestamp, not array
+// position, so the recovery path is robust to tracker comment ordering
+// (e.g. Linear returns comments newest-first; GitHub returns oldest-first).
 func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
 	detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
 	if err != nil {
@@ -246,25 +295,15 @@ func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Is
 	if len(detailed.Comments) == 0 {
 		return nil
 	}
-	// Walk comments in reverse to find the last Itervox question.
-	lastItervoxIdx := -1
-	for i := len(detailed.Comments) - 1; i >= 0; i-- {
-		if strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-			lastItervoxIdx = i
-			break
-		}
-	}
-	if lastItervoxIdx < 0 {
+	latestIdx, latestT := findLatestItervoxComment(detailed.Comments)
+	if latestIdx < 0 {
 		return nil // no Itervox question comment found
 	}
-	// Check if there's a non-Itervox comment after it (= user replied).
-	for i := lastItervoxIdx + 1; i < len(detailed.Comments); i++ {
-		if !strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-			return nil // user already replied — safe to dispatch fresh
-		}
+	if firstReplyAfter(detailed.Comments, latestT) != "" {
+		return nil // user already replied — safe to dispatch fresh
 	}
 	// Extract the question context from the comment body.
-	body := detailed.Comments[lastItervoxIdx].Body
+	body := detailed.Comments[latestIdx].Body
 	questionCtx := strings.TrimPrefix(body, itervoxCommentPrefix)
 	questionCtx = strings.TrimSpace(questionCtx)
 	// Strip the trailing instruction line.
@@ -293,25 +332,14 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 				"identifier", identifier, "error", err)
 			continue
 		}
-		// Find the last Itervox question comment and check for a reply after it.
-		lastItervoxIdx := -1
-		for i := len(detailed.Comments) - 1; i >= 0; i-- {
-			if strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-				lastItervoxIdx = i
-				break
-			}
-		}
-		if lastItervoxIdx < 0 {
+		// Identify the unanswered question by CreatedAt timestamp, not array
+		// position — Linear returns comments newest-first, GitHub oldest-first;
+		// timestamp comparison is correct for both.
+		_, latestT := findLatestItervoxComment(detailed.Comments)
+		if latestT.IsZero() {
 			continue // no question comment found — wait
 		}
-		// Look for a non-Itervox reply after the question.
-		var userReply string
-		for i := lastItervoxIdx + 1; i < len(detailed.Comments); i++ {
-			if !strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-				userReply = detailed.Comments[i].Body
-				break
-			}
-		}
+		userReply := firstReplyAfter(detailed.Comments, latestT)
 		if userReply == "" {
 			continue // no reply yet
 		}
