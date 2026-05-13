@@ -416,6 +416,7 @@ func TestAutomationPolicy_AutoSwitchAlias(t *testing.T) {
 		name string
 		yaml string
 		want bool
+		err  bool
 	}{
 		{
 			name: "auto_switch true",
@@ -436,6 +437,7 @@ func TestAutomationPolicy_AutoSwitchAlias(t *testing.T) {
 			name: "neither key set",
 			yaml: "policy:\n      auto_resume: false",
 			want: false,
+			err:  true,
 		},
 	}
 	for _, tc := range cases {
@@ -448,13 +450,78 @@ func TestAutomationPolicy_AutoSwitchAlias(t *testing.T) {
       type: rate_limited
     ` + tc.yaml + `
       switch_to_profile: codex-coder
+agent:
+  profiles:
+    fallback:
+      command: claude
+    codex-coder:
+      command: codex
 `)
 			path := workflowWithContent(t, content)
 			cfg, err := config.Load(path)
 			require.NoError(t, err)
+			err = config.ValidateDispatch(cfg)
+			if tc.err {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "policy.auto_switch")
+				return
+			}
+			require.NoError(t, err)
 			require.Len(t, cfg.Automations, 1)
 			assert.Equal(t, tc.want, cfg.Automations[0].Policy.AutoResume)
 			assert.Equal(t, "codex-coder", cfg.Automations[0].Policy.SwitchToProfile)
+		})
+	}
+}
+
+func TestRateLimitedAutomationValidatesSwitchToProfileReference(t *testing.T) {
+	cases := []struct {
+		name     string
+		profile  string
+		profiles string
+		err      string
+	}{
+		{
+			name:    "unknown switch profile",
+			profile: "missing",
+			profiles: `
+    fallback:
+      command: claude
+`,
+			err: `unknown switch_to_profile "missing"`,
+		},
+		{
+			name:    "disabled switch profile",
+			profile: "codex-coder",
+			profiles: `
+    fallback:
+      command: claude
+    codex-coder:
+      command: codex
+      enabled: false
+`,
+			err: `disabled switch_to_profile "codex-coder"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := minimal(`automations:
+  - id: rl
+    enabled: true
+    profile: fallback
+    trigger:
+      type: rate_limited
+    policy:
+      auto_switch: true
+      switch_to_profile: ` + tc.profile + `
+agent:
+  profiles:` + tc.profiles)
+			path := workflowWithContent(t, content)
+			cfg, err := config.Load(path)
+			require.NoError(t, err)
+			err = config.ValidateDispatch(cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.err)
 		})
 	}
 }

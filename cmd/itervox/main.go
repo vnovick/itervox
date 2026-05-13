@@ -1189,9 +1189,13 @@ func automationConfigsFromDefs(automations []server.AutomationDef) []config.Auto
 				IdentifierRegex:   automation.Filter.IdentifierRegex,
 				Limit:             automation.Filter.Limit,
 				InputContextRegex: automation.Filter.InputContextRegex,
+				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
 			},
 			Policy: config.AutomationPolicyConfig{
-				AutoResume: automation.Policy.AutoResume,
+				AutoResume:      automation.Policy.AutoResume,
+				SwitchToProfile: automation.Policy.SwitchToProfile,
+				SwitchToBackend: automation.Policy.SwitchToBackend,
+				CooldownMinutes: automation.Policy.CooldownMinutes,
 			},
 		})
 	}
@@ -1222,7 +1226,10 @@ func automationDefsFromConfig(automations []config.AutomationConfig) []server.Au
 				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
 			},
 			Policy: server.AutomationPolicyDef{
-				AutoResume: automation.Policy.AutoResume,
+				AutoResume:      automation.Policy.AutoResume,
+				SwitchToProfile: automation.Policy.SwitchToProfile,
+				SwitchToBackend: automation.Policy.SwitchToBackend,
+				CooldownMinutes: automation.Policy.CooldownMinutes,
 			},
 		})
 	}

@@ -61,11 +61,10 @@ func TestAnalyze_DuplicateMCP_Positive(t *testing.T) {
 	if !contains(issueIDs(issues), "DUPLICATE_MCP") {
 		t.Errorf("expected DUPLICATE_MCP, got %v", issueIDs(issues))
 	}
-	// Fix is set + Destructive=true for confirm dialog.
 	for _, iss := range issues {
 		if iss.ID == "DUPLICATE_MCP" {
-			if iss.Fix == nil || !iss.Fix.Destructive {
-				t.Errorf("expected destructive Fix on DUPLICATE_MCP, got %+v", iss.Fix)
+			if iss.Fix != nil {
+				t.Errorf("DUPLICATE_MCP must stay advisory; got fix %+v", iss.Fix)
 			}
 		}
 	}
@@ -108,6 +107,21 @@ func TestAnalyze_UnusedProfile_Negative(t *testing.T) {
 	}
 	if contains(issueIDs(Analyze(inv, in)), "UNUSED_PROFILE") {
 		t.Errorf("did not expect UNUSED_PROFILE")
+	}
+}
+
+func TestAnalyze_UnusedProfile_SkipsDisabledProfiles(t *testing.T) {
+	t.Parallel()
+	disabled := false
+	inv := &Inventory{}
+	in := AnalyzeInputs{
+		Profiles: map[string]config.AgentProfile{
+			"disabled": {Enabled: &disabled},
+		},
+		RecentlyActiveProfiles: map[string]struct{}{},
+	}
+	if contains(issueIDs(Analyze(inv, in)), "UNUSED_PROFILE") {
+		t.Errorf("did not expect UNUSED_PROFILE for disabled profile")
 	}
 }
 
@@ -224,6 +238,37 @@ func TestAnalyze_OrphanMCP_Negative(t *testing.T) {
 	}
 	if contains(issueIDs(Analyze(inv, AnalyzeInputs{})), "ORPHAN_MCP") {
 		t.Errorf("did not expect ORPHAN_MCP when skill mentions server")
+	}
+}
+
+func TestAnalyze_OrphanMCP_NegativeWhenSkillBodyMentionsServer(t *testing.T) {
+	t.Parallel()
+	inv := &Inventory{
+		MCPServers: []MCPServer{{Name: "mystery-server", Command: "npx"}},
+		Skills: []Skill{{
+			Name:     "alpha",
+			bodyText: "Use mystery-server whenever you need repository context.",
+		}},
+	}
+	if contains(issueIDs(Analyze(inv, AnalyzeInputs{})), "ORPHAN_MCP") {
+		t.Errorf("did not expect ORPHAN_MCP when skill body mentions server")
+	}
+}
+
+func TestAnalyze_OrphanMCP_NegativeWhenPluginSkillBodyMentionsServer(t *testing.T) {
+	t.Parallel()
+	inv := &Inventory{
+		MCPServers: []MCPServer{{Name: "mystery-server", Command: "npx"}},
+		Plugins: []Plugin{{
+			Name: "plugin",
+			Skills: []Skill{{
+				Name:     "plugin-skill",
+				bodyText: "Use mystery-server for repository context.",
+			}},
+		}},
+	}
+	if contains(issueIDs(Analyze(inv, AnalyzeInputs{})), "ORPHAN_MCP") {
+		t.Errorf("did not expect ORPHAN_MCP when plugin skill body mentions server")
 	}
 }
 

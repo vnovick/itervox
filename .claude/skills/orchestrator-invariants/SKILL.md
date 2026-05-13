@@ -18,18 +18,27 @@ Itervox's orchestrator is a single-goroutine state machine. Violating these rule
 
 These `Orchestrator.cfg` fields can be mutated at runtime by HTTP handler goroutines and MUST be accessed under `cfgMu`:
 
-- `cfg.Agent.AgentMode`
 - `cfg.Agent.MaxConcurrentAgents`
+- `cfg.Agent.MaxRetries`
+- `cfg.Agent.MaxSwitchesPerIssuePerWindow`
+- `cfg.Agent.SwitchWindowHours`
+- `cfg.Agent.SwitchRevertHours`
+- `cfg.Agent.RateLimitErrorPatterns`
 - `cfg.Agent.Profiles`
 - `cfg.Agent.SSHHosts`
+- `cfg.Agent.SSHHostDescriptions`
 - `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.ReviewerProfile`
+- `cfg.Agent.AutoReview`
 - `cfg.Agent.InlineInput`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.TerminalStates`
 - `cfg.Tracker.CompletionState`
+- `cfg.Tracker.FailedState`
 - `cfg.Workspace.AutoClearWorkspace`
+- `cfg.Automations`
 
-All OTHER `cfg.*` fields are read-only after startup. Do NOT add locks defensively to read-only fields. If a static-analysis pass flags one, verify there is a runtime setter (HTTP handler) before believing the claim — no setter means no race.
+The canonical allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`. All OTHER `cfg.*` fields are read-only after startup. Do NOT add locks defensively to read-only fields. If a static-analysis pass flags one, verify there is a runtime setter (HTTP handler) before believing the claim — no setter means no race.
 
 ## 3. Adding a new runtime-mutable `cfg.*` field
 

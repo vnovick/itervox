@@ -54,6 +54,13 @@ describe('issue fixture factories', () => {
   it('blocked issue carries blockedBy and ineligibleReason', () => {
     const issue = makeBlockedIssue();
     expect(issue.blockedBy).toEqual(['DEMO-1']);
+    expect(issue.blockedByDetails).toEqual([
+      {
+        identifier: 'DEMO-1',
+        state: 'In Progress',
+        url: 'https://example.com/issues/DEMO-1',
+      },
+    ]);
     expect(issue.ineligibleReason).toMatch(/blocked by/);
   });
 

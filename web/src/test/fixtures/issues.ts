@@ -14,6 +14,7 @@ export function makeIssue(overrides?: DeepPartial<TrackerIssue>): TrackerIssue {
     orchestratorState: 'idle',
     labels: [],
     blockedBy: [],
+    blockedByDetails: [],
     comments: [],
   };
   return TrackerIssueSchema.parse(applyOverrides(base, overrides));
@@ -48,6 +49,13 @@ export function makeBlockedIssue(overrides?: DeepPartial<TrackerIssue>): Tracker
     state: 'Todo',
     orchestratorState: 'idle',
     blockedBy: ['DEMO-1'],
+    blockedByDetails: [
+      {
+        identifier: 'DEMO-1',
+        state: 'In Progress',
+        url: 'https://example.com/issues/DEMO-1',
+      },
+    ],
     ineligibleReason: 'blocked by DEMO-1',
     ...overrides,
   });

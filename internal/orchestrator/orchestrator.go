@@ -169,6 +169,12 @@ type Orchestrator struct {
 	rateLimitCooldownMu sync.Mutex
 	rateLimitCooldown   map[string]time.Time // key="<issueID>|<profile>" → until
 
+	// rateLimitCapCommentMu guards rateLimitCapCommentUntil, which deduplicates
+	// managed tracker comments when a per-issue rate_limited switch cap blocks
+	// repeated recovery attempts within the same rolling window.
+	rateLimitCapCommentMu    sync.Mutex
+	rateLimitCapCommentUntil map[string]time.Time // issueID → next time a cap comment may be posted
+
 	// agentLogDir, when non-empty, is passed to RunTurn as CLAUDE_CODE_LOG_DIR
 	// so Claude Code writes full session logs (including sub-agents) to disk.
 	// Set via SetAgentLogDir before calling Run.

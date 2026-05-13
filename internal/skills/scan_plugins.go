@@ -155,6 +155,7 @@ func parsePluginManifest(path, source string) (Plugin, bool) {
 	pluginSource := "plugin:" + m.Name
 
 	skills := make([]Skill, 0, len(m.Skills))
+	manifestDir := filepath.Dir(path)
 	for _, s := range m.Skills {
 		if s.Name == "" {
 			continue
@@ -163,14 +164,31 @@ func parsePluginManifest(path, source string) (Plugin, bool) {
 		if s.Trigger != "" {
 			triggers = []string{s.Trigger}
 		}
+		skillPath := s.Path
+		skillBody := ""
+		approxTokens := len(s.Description) / 4
+		if s.Path != "" {
+			resolvedPath := s.Path
+			if !filepath.IsAbs(resolvedPath) {
+				resolvedPath = filepath.Join(manifestDir, resolvedPath)
+			}
+			if body, err := os.ReadFile(resolvedPath); err == nil {
+				skillPath = resolvedPath
+				skillBody = string(body)
+				approxTokens = len(body) / 4
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				slog.Warn("skills: cannot read plugin skill body", "path", resolvedPath, "err", err)
+			}
+		}
 		skills = append(skills, Skill{
 			Name:            s.Name,
 			Description:     s.Description,
 			Provider:        "claude",
 			Source:          pluginSource,
-			FilePath:        s.Path,
-			ApproxTokens:    len(s.Description) / 4,
+			FilePath:        skillPath,
+			ApproxTokens:    approxTokens,
 			TriggerPatterns: triggers,
+			bodyText:        skillBody,
 		})
 	}
 

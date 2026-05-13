@@ -107,7 +107,7 @@ const RECOMMENDATION_HELP: Partial<Record<string, { what: string; howToFix: stri
     ],
   },
   DUPLICATE_MCP: {
-    what: 'The same MCP server is registered in multiple settings.json files (project + user + .mcp.json). Both run; both contribute tool schemas to context — usually harmless but doubles overhead.',
+    what: 'The same MCP server command or URL is registered in multiple settings files (project + user + .mcp.json). Both run; both contribute tool schemas to context — usually harmless but doubles overhead.',
     howToFix: [
       'Pick the right scope (project for repo-specific, user for global).',
       'Manually remove the duplicate from the other settings.json — the daemon does NOT touch user settings automatically (intentional safety).',
@@ -141,7 +141,7 @@ const RECOMMENDATION_HELP: Partial<Record<string, { what: string; howToFix: stri
     ],
   },
   STALE_SCHEDULE: {
-    what: 'A scheduled job references a profile name that no longer exists in your config. The schedule will fail at dispatch time.',
+    what: 'A schedule-inventory entry references a profile name that no longer exists in your config. v0.2.0 does not populate schedules from validated WORKFLOW.md automations, so this can only appear from future or custom inventory sources.',
     howToFix: [
       'Edit the schedule definition to reference an existing profile.',
       'Or delete the schedule if it is no longer needed.',
@@ -156,9 +156,9 @@ const RECOMMENDATION_HELP: Partial<Record<string, { what: string; howToFix: stri
     ],
   },
   ORPHAN_MCP: {
-    what: 'An MCP server is configured but its name is never mentioned in any skill description. The tool schema is loaded into every agent context unconditionally — pure overhead if no skill knows when to call it.',
+    what: 'An MCP server is configured but its name is never mentioned in any skill name, description, or body. The tool schema is loaded into every agent context unconditionally — pure overhead if no skill knows when to call it.',
     howToFix: [
-      'Either reference the server in a relevant skill description (so the AI invokes it deliberately) — or remove the MCP registration if no agent path needs it.',
+      'Either reference the server in a relevant skill body or description (so the AI invokes it deliberately) — or remove the MCP registration if no agent path needs it.',
       'For ambient servers (e.g. context7), this finding can be a false positive; future versions will let you whitelist them.',
     ],
   },

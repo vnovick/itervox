@@ -156,7 +156,12 @@ Supported triggers:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected (gap B)
-- `rate_limited` — fires when the per-issue rate-limit switch cap is reached; pairs with `agent.max_switches_per_issue_per_window` / `agent.switch_window_hours` (gap E)
+- `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. The per-issue switch cap limits or suppresses profile/backend switching; it is not the trigger condition.
+
+Tracker event triggers (`tracker_comment_added`, `issue_entered_state`, and
+`issue_moved_to_backlog`) are derived from the 15-second automation poll loop, not
+webhooks. `tracker_comment_added` compares only the latest observed comment; if
+multiple comments arrive between polls, the trigger sees the latest one.
 
 | Field | Type | Description |
 |---|---|---|
@@ -174,7 +179,12 @@ Supported triggers:
 | `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42` |
 | `filter.limit` | int | Maximum issues to queue from one cron tick or event poll batch |
 | `filter.input_context_regex` | string | Only for `input_required`; matched against the blocked-agent question text |
-| `policy.auto_resume` | bool | Only for `input_required`; allows the helper to resume the blocked run via `provide_input` |
+| `filter.max_age_minutes` | int | Only for `input_required`; skips blocked entries older than this many minutes. `0`/absent means no age limit |
+| `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted as a compatibility alias for `policy.auto_switch` |
+| `policy.auto_switch` | bool | Required for `rate_limited` automatic profile/backend switching; allows immediate switching without a human approval step |
+| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run |
+| `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs |
+| `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset |
 
 ```yaml
 automations:

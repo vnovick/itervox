@@ -331,9 +331,24 @@ func TestPatchAutomationsBlock_Create(t *testing.T) {
 			},
 			Filter: workflow.AutomationFilterEntry{
 				InputContextRegex: "continue|branch",
+				MaxAgeMinutes:     30,
 			},
 			Policy: workflow.AutomationPolicyEntry{
 				AutoResume: true,
+			},
+		},
+		{
+			ID:      "rate-limit-switch",
+			Enabled: true,
+			Profile: "fallback-codex",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type: "rate_limited",
+			},
+			Policy: workflow.AutomationPolicyEntry{
+				AutoResume:      true,
+				SwitchToProfile: "fallback-codex",
+				SwitchToBackend: "codex",
+				CooldownMinutes: 45,
 			},
 		},
 	}
@@ -357,7 +372,13 @@ func TestPatchAutomationsBlock_Create(t *testing.T) {
 	assert.Contains(t, got, `state: "Ready for QA"`)
 	assert.Contains(t, got, `type: input_required`)
 	assert.Contains(t, got, `input_context_regex: "continue|branch"`)
+	assert.Contains(t, got, `max_age_minutes: 30`)
 	assert.Contains(t, got, `auto_resume: true`)
+	assert.Contains(t, got, `type: rate_limited`)
+	assert.Contains(t, got, `auto_switch: true`)
+	assert.Contains(t, got, `switch_to_profile: "fallback-codex"`)
+	assert.Contains(t, got, `switch_to_backend: "codex"`)
+	assert.Contains(t, got, `cooldown_minutes: 45`)
 	assert.Contains(t, got, "Prompt body.")
 }
 

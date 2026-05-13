@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/skills"
 )
@@ -69,10 +70,65 @@ func (a *orchestratorAdapter) Issues() []skills.InventoryIssue {
 	if inv == nil {
 		return nil
 	}
-	in := skills.AnalyzeInputs{
-		Profiles: a.cfg.Agent.Profiles,
+	return skills.Analyze(inv, a.skillsAnalyzeInputs())
+}
+
+func (a *orchestratorAdapter) skillsAnalyzeInputs() skills.AnalyzeInputs {
+	profiles := a.cfg.Agent.Profiles
+	var recentlyActive map[string]struct{}
+	if a.orch != nil {
+		profiles = a.orch.ProfilesCfg()
+		recentlyActive = recentlyActiveProfilesFromState(a.orch.RunHistory(), a.orch.Snapshot())
 	}
-	return skills.Analyze(inv, in)
+	return skills.AnalyzeInputs{
+		Profiles:               profiles,
+		RecentlyActiveProfiles: recentlyActive,
+	}
+}
+
+func recentlyActiveProfilesFromState(history []orchestrator.CompletedRun, snap orchestrator.State) map[string]struct{} {
+	hasRuntimeEvidence := len(history) > 0 ||
+		len(snap.Running) > 0 ||
+		len(snap.InputRequiredIssues) > 0 ||
+		len(snap.PendingInputResumes) > 0 ||
+		len(snap.PausedSessions) > 0
+	if !hasRuntimeEvidence {
+		return nil
+	}
+	active := make(map[string]struct{})
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			active[name] = struct{}{}
+		}
+	}
+	for _, run := range history {
+		add(run.ProfileName)
+	}
+	for _, entry := range snap.Running {
+		if entry != nil {
+			add(entry.ProfileName)
+		}
+	}
+	for _, entry := range snap.InputRequiredIssues {
+		if entry != nil {
+			add(entry.ProfileName)
+		}
+	}
+	for _, entry := range snap.PendingInputResumes {
+		if entry != nil {
+			add(entry.ProfileName)
+		}
+	}
+	for _, entry := range snap.PausedSessions {
+		if entry != nil {
+			add(entry.ProfileName)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	return active
 }
 
 // Analytics builds an AnalyticsSnapshot from the cached inventory + best-effort
@@ -92,8 +148,12 @@ func (a *orchestratorAdapter) Analytics() *skills.AnalyticsSnapshot {
 	claudeRT, _ := skills.ParseClaudeRuntime(logsDir, 25)
 	codexRT, _ := skills.ParseCodexRuntime(homeDir, 25)
 	merged := skills.MergeRuntimeSnapshots(claudeRT, codexRT)
-	profiles := make([]string, 0, len(a.cfg.Agent.Profiles))
-	for name := range a.cfg.Agent.Profiles {
+	profilesCfg := a.cfg.Agent.Profiles
+	if a.orch != nil {
+		profilesCfg = a.orch.ProfilesCfg()
+	}
+	profiles := make([]string, 0, len(profilesCfg))
+	for name := range profilesCfg {
 		profiles = append(profiles, name)
 	}
 	return skills.BuildAnalytics(inv, merged, profiles)
@@ -117,10 +177,11 @@ func (a *orchestratorAdapter) AnalyticsRecommendations() []skills.Recommendation
 //     profile in WORKFLOW.md by calling UpsertProfile with Enabled=false.
 //     Used by UNUSED_PROFILE (T-96).
 //
-// "remove-mcp" (DUPLICATE_MCP, T-95) is intentionally rejected here: editing
-// the user's settings.json from the daemon is high-risk. The fix is exposed
-// in the UI so an operator sees the recommendation and can edit the config
-// manually. See `planning/deferred_290426.md` for the long form.
+// "remove-mcp" (DUPLICATE_MCP, T-95) is intentionally rejected here for stale
+// clients or manually-crafted requests: editing the user's settings.json from
+// the daemon is high-risk. The analyzer keeps DUPLICATE_MCP advisory-only so
+// the dashboard shows guidance without an automatic mutation path. See
+// `planning/deferred_290426.md` for the long form.
 func (a *orchestratorAdapter) ApplyFix(_ context.Context, issueID string, fix skills.Fix) error {
 	switch fix.Action {
 	case "edit-yaml":
@@ -130,7 +191,11 @@ func (a *orchestratorAdapter) ApplyFix(_ context.Context, issueID string, fix sk
 			return fmt.Errorf("skills.ApplyFix: unsupported edit-yaml target %q for issue %s", fix.Target, issueID)
 		}
 		profileName := strings.TrimSuffix(strings.TrimPrefix(fix.Target, prefix), suffix)
-		current, ok := a.cfg.Agent.Profiles[profileName]
+		profiles := a.cfg.Agent.Profiles
+		if a.orch != nil {
+			profiles = a.orch.ProfilesCfg()
+		}
+		current, ok := profiles[profileName]
 		if !ok {
 			return fmt.Errorf("skills.ApplyFix: profile %q does not exist", profileName)
 		}

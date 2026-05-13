@@ -76,6 +76,13 @@ export const automationFormSchema = z
         message: 'Rate-limited automations require a profile to switch to.',
       });
     }
+    if (values.triggerType === 'rate_limited' && !values.autoResume) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['autoResume'],
+        message: 'Rate-limited automations require auto-switch.',
+      });
+    }
     if (!isValidRegex(values.identifierRegex)) {
       ctx.addIssue({
         code: 'custom',

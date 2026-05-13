@@ -121,8 +121,7 @@ export function RateLimitedFieldsBlock({
           </span>
           <span className="text-theme-text-secondary block text-xs">
             When enabled, the orchestrator immediately overrides the issue&rsquo;s profile (and
-            backend, if set) and re-dispatches. When disabled, the helper agent fires but the
-            operator must approve the swap manually.
+            backend, if set) and re-dispatches. Required for rate-limited switching in v0.2.0.
           </span>
         </span>
       </label>

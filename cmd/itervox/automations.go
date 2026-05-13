@@ -81,12 +81,12 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			issues: make(map[string]inputRequiredReplayIssueState),
 		}
 		runOnce := func(now time.Time) {
-			// Build a per-tick cfg view with the current automations list so
-			// compileAutomations sees hot-reloaded rules. cfg.Agent.Profiles and
-			// the rest of cfg are read-only after startup; Automations is the
-			// only hot-reloadable field read by compileAutomations.
-			tickCfg := *cfg
-			tickCfg.Automations = orch.AutomationsCfg()
+			// Build a per-tick cfg view with runtime-mutable fields read
+			// through orchestrator getters. compileAutomations reads profiles
+			// for both the automation profile and rate_limited switch_to_profile,
+			// so reading cfg.Agent.Profiles directly here would race profile
+			// edits from HTTP handlers.
+			tickCfg := automationCompileConfigView(cfg, orch)
 			compiled := compileAutomations(&tickCfg)
 
 			// Re-register helper-agent rules every tick. Setters are cheap
@@ -150,6 +150,13 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			}
 		}
 	}()
+}
+
+func automationCompileConfigView(cfg *config.Config, orch *orchestrator.Orchestrator) config.Config {
+	tickCfg := *cfg
+	tickCfg.Automations = orch.AutomationsCfg()
+	tickCfg.Agent.Profiles = orch.ProfilesCfg()
+	return tickCfg
 }
 
 func compileAutomations(cfg *config.Config) compiledAutomationSet {
@@ -258,6 +265,17 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				IdentifierRegex: identifierRe,
 			})
 		case config.AutomationTriggerRateLimited:
+			switchProfile, ok := cfg.Agent.Profiles[entry.Policy.SwitchToProfile]
+			if !ok {
+				slog.Warn("automation: skipping rate_limited rule with unknown switch_to_profile",
+					"automation", entry.ID, "switch_to_profile", entry.Policy.SwitchToProfile)
+				continue
+			}
+			if !config.ProfileEnabled(switchProfile) {
+				slog.Warn("automation: skipping rate_limited rule with disabled switch_to_profile",
+					"automation", entry.ID, "switch_to_profile", entry.Policy.SwitchToProfile)
+				continue
+			}
 			cooldown := time.Duration(entry.Policy.CooldownMinutes) * time.Minute
 			if cooldown == 0 {
 				cooldown = 30 * time.Minute // sane default per plan
@@ -687,7 +705,7 @@ func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
 		slog.Info("automations: no automations configured in WORKFLOW.md")
 		return
 	}
-	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened)
+	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened) + len(compiled.rateLimited)
 	slog.Info("automations: compiled",
 		"total_configured", total,
 		"registered", registered,
@@ -697,5 +715,6 @@ func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
 		"polled_events", len(compiled.polledEvents),
 		"run_failed", len(compiled.runFailed),
 		"pr_opened", len(compiled.prOpened),
+		"rate_limited", len(compiled.rateLimited),
 	)
 }

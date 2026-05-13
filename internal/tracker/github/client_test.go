@@ -343,8 +343,12 @@ func TestGHNormalizeBlockersParsedFromBody(t *testing.T) {
 	// States must be populated — dispatch enforcement depends on this
 	require.NotNil(t, issues[0].BlockedBy[0].State, "blocker #10 state must be set")
 	assert.Equal(t, "in progress", *issues[0].BlockedBy[0].State)
+	require.NotNil(t, issues[0].BlockedBy[0].URL, "blocker #10 URL must be set")
+	assert.Equal(t, "https://github.com/owner/repo/issues/10", *issues[0].BlockedBy[0].URL)
 	require.NotNil(t, issues[0].BlockedBy[1].State, "blocker #20 state must be set")
 	assert.Equal(t, "closed", *issues[0].BlockedBy[1].State)
+	require.NotNil(t, issues[0].BlockedBy[1].URL, "blocker #20 URL must be set")
+	assert.Equal(t, "https://github.com/owner/repo/issues/20", *issues[0].BlockedBy[1].URL)
 }
 
 func TestGHBlockerStateMissingBlockerTreatedAsClosed(t *testing.T) {

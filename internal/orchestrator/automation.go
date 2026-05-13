@@ -95,6 +95,10 @@ type AutomationDispatch struct {
 	Instructions string
 	Trigger      AutomationTriggerContext
 	AutoResume   bool
+	// UseIssueLifecycle keeps automation prompt attribution but lets the worker
+	// run through the normal issue lifecycle: working transition, PR/comment
+	// handling, completion-state transition, and active-state reconciliation.
+	UseIssueLifecycle bool
 }
 
 // InputRequiredAutomation is the compiled, event-loop-ready form of an
@@ -656,6 +660,12 @@ func (o *Orchestrator) startAutomationRun(
 		backend = profile.Backend
 		runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
 	}
+	if automation.Trigger.Type == config.AutomationTriggerRateLimited &&
+		automation.AutoResume &&
+		automation.Trigger.SwitchedToBackend != "" {
+		backend = automation.Trigger.SwitchedToBackend
+		runnerCommand = agent.CommandWithBackendHint(agentCommand, backend)
+	}
 
 	if o.DryRun {
 		workerCancel()
@@ -671,11 +681,16 @@ func (o *Orchestrator) startAutomationRun(
 
 	state.Claimed[issue.ID] = struct{}{}
 	attempt := 0
+	kind := "automation"
+	if automation.UseIssueLifecycle {
+		kind = "worker"
+	}
 	state.Running[issue.ID] = &RunEntry{
 		Issue:        issue,
 		WorkerHost:   workerHost,
 		Backend:      backend,
-		Kind:         "automation",
+		ProfileName:  automation.ProfileName,
+		Kind:         kind,
 		AutomationID: automation.AutomationID,
 		TriggerType:  automation.Trigger.Type,
 		StartedAt:    now,

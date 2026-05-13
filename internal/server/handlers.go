@@ -19,6 +19,7 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -928,7 +929,12 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "body field required")
 		return
 	}
-	if err := s.client.CommentOnIssue(r.Context(), identifier, body.Body); err != nil {
+	// Mark agent comments as managed so they don't trigger tracker_comment_added
+	// automations — preventing unbounded comment-chain loops between agents.
+	// The comment is still visible in {{ issue.comments }} for other agents and
+	// humans to read. v1 will add a separate agent_comment action with structured
+	// metadata for intentional multi-agent communication.
+	if err := s.client.CommentOnIssue(r.Context(), identifier, tracker.MarkManagedComment(body.Body)); err != nil {
 		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
 		return
 	}
@@ -1257,7 +1263,10 @@ func automationConfigsFromDefs(defs []AutomationDef) []config.AutomationConfig {
 				MaxAgeMinutes:     def.Filter.MaxAgeMinutes,
 			},
 			Policy: config.AutomationPolicyConfig{
-				AutoResume: def.Policy.AutoResume,
+				AutoResume:      def.Policy.AutoResume,
+				SwitchToProfile: def.Policy.SwitchToProfile,
+				SwitchToBackend: def.Policy.SwitchToBackend,
+				CooldownMinutes: def.Policy.CooldownMinutes,
 			},
 		})
 	}
@@ -1287,6 +1296,14 @@ func writeAutomationValidationError(w http.ResponseWriter, err error) {
 		writeErrorWithField(w, http.StatusBadRequest, "invalid_match_mode", msg, "matchMode")
 	case strings.Contains(msg, "filter.limit"):
 		writeErrorWithField(w, http.StatusBadRequest, "invalid_limit", msg, "limit")
+	case strings.Contains(msg, "policy.auto_switch") || strings.Contains(msg, "policy.auto_resume"):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_policy", msg, "autoResume")
+	case strings.Contains(msg, "switch_to_profile"):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_policy", msg, "switchToProfile")
+	case strings.Contains(msg, "policy.switch_to_backend"):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_policy", msg, "switchToBackend")
+	case strings.Contains(msg, "policy.cooldown_minutes"):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_policy", msg, "cooldownMinutes")
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", msg)
 	}

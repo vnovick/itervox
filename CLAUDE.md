@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.8) that implements the
+**Itervox** is a long-running daemon (Go 1.25.9) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
@@ -18,17 +18,17 @@ Liquid prompt template). The binary is a single static Go executable.
 # Full build (web → Go binary)
 make build
 
-# All checks (mirrors CI): fmt + vet + lint + go tests + web tests
+# All checks (mirrors CI): fmt + vet + lint + Go race tests + web coverage/build
 make verify
 
 # Go tests only (always run with -race)
-go test -race ./...
+go test -race ./cmd/... ./internal/...
 
 # Single package
 go test -race ./internal/orchestrator/...
 
 # Frontend
-cd web && pnpm install --frozen-lockfile && pnpm test
+cd web && pnpm install --frozen-lockfile && pnpm test:coverage
 pnpm build   # production bundle
 
 # Dev workflow: Go binary (in a project directory with WORKFLOW.md) + Vite
@@ -73,20 +73,28 @@ No mutex is needed for `State` fields — only the event loop writes them.
 These `Orchestrator.cfg` fields can be mutated at runtime by HTTP handler goroutines
 and must always be accessed under `cfgMu`:
 
-- `cfg.Agent.AgentMode`
 - `cfg.Agent.MaxConcurrentAgents`
+- `cfg.Agent.MaxRetries`
+- `cfg.Agent.MaxSwitchesPerIssuePerWindow`
+- `cfg.Agent.SwitchWindowHours`
+- `cfg.Agent.SwitchRevertHours`
+- `cfg.Agent.RateLimitErrorPatterns`
 - `cfg.Agent.Profiles`
 - `cfg.Agent.SSHHosts`
 - `cfg.Agent.SSHHostDescriptions`
 - `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.ReviewerProfile`
+- `cfg.Agent.AutoReview`
 - `cfg.Agent.InlineInput`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.TerminalStates`
 - `cfg.Tracker.CompletionState`
+- `cfg.Tracker.FailedState`
 - `cfg.Workspace.AutoClearWorkspace`
 - `cfg.Automations`
 
-All **other** `cfg` fields are read-only after startup — no lock needed for them.
+The canonical allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`;
+keep this section in sync with that test. All **other** `cfg` fields are read-only after startup — no lock needed for them.
 
 ### Snapshot access
 
@@ -218,7 +226,7 @@ Before claiming a component is missing an accessibility attribute:
 
 ### Go
 
-- `go test -race ./...` must pass — use `-race` in all test commands
+- `go test -race ./cmd/... ./internal/...` must pass — use `-race` in all test commands. The explicit package list is intentional so Go tooling does not walk `web/node_modules` after `pnpm install`.
 - Package-level errors use `fmt.Errorf("package: ...")` with lowercase messages
 - `errors.New` for static strings; `fmt.Errorf` with `%w` for wrapping
 - `maps.Copy` (Go 1.21+) for map duplication — not manual `for k, v := range` loops

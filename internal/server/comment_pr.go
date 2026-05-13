@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // handleAgentCommentPR (gap D) is the structured-findings sibling of
@@ -41,7 +42,7 @@ func (s *Server) handleAgentCommentPR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	body := RenderCommentPRMarkdown(req)
+	body := tracker.MarkManagedComment(RenderCommentPRMarkdown(req))
 	if err := s.client.CommentOnIssue(r.Context(), identifier, body); err != nil {
 		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
 		return

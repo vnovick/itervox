@@ -109,6 +109,9 @@ func extractBlockers(raw map[string]any) []domain.BlockerRef {
 		if ident, ok := blockerIssue["identifier"].(string); ok && ident != "" {
 			ref.Identifier = &ident
 		}
+		if u, ok := blockerIssue["url"].(string); ok && u != "" {
+			ref.URL = &u
+		}
 		if s, ok := blockerIssue["state"].(map[string]any); ok {
 			if name, ok := s["name"].(string); ok && name != "" {
 				ref.State = &name

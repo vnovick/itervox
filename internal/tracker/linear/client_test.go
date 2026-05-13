@@ -1209,6 +1209,7 @@ func TestNormalizeBlockersFromInverseRelations(t *testing.T) {
 					"id":         "blocker-id",
 					"identifier": "ENG-0",
 					"state":      map[string]interface{}{"name": "In Progress"},
+					"url":        "https://linear.app/issue/ENG-0",
 				},
 			},
 			map[string]interface{}{
@@ -1237,6 +1238,10 @@ func TestNormalizeBlockersFromInverseRelations(t *testing.T) {
 	require.Len(t, issues[0].BlockedBy, 1)
 	assert.Equal(t, "blocker-id", *issues[0].BlockedBy[0].ID)
 	assert.Equal(t, "ENG-0", *issues[0].BlockedBy[0].Identifier)
+	require.NotNil(t, issues[0].BlockedBy[0].State)
+	assert.Equal(t, "In Progress", *issues[0].BlockedBy[0].State)
+	require.NotNil(t, issues[0].BlockedBy[0].URL)
+	assert.Equal(t, "https://linear.app/issue/ENG-0", *issues[0].BlockedBy[0].URL)
 }
 
 func TestNormalizeSkipsInvalidNodes(t *testing.T) {

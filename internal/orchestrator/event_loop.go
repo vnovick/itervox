@@ -83,17 +83,21 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
 	o.cfgMu.RUnlock()
 
-	// 1. Fire any retries whose DueAt has passed.
+	// 1. Revert expired auto-switch overrides before retries or fresh
+	// dispatch can reuse a stale fallback profile/backend.
+	o.revertExpiredAutoSwitchesForTick(&state, now)
+
+	// 2. Fire any retries whose DueAt has passed.
 	state = o.fireRetries(ctx, state, now)
 
-	// 2. Stall detection and tracker-state reconciliation. Pass the
+	// 3. Stall detection and tracker-state reconciliation. Pass the
 	// orchestrator's cancelAndCleanupWorker so reconcile-driven cancels
 	// release the workerCancels-map entry even if the EventWorkerExited
 	// send drops under load (T-09).
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
 	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
 
-	// 3. Fetch candidates and dispatch eligible issues.
+	// 4. Fetch candidates and dispatch eligible issues.
 	issues, err := o.tracker.FetchCandidateIssues(ctx)
 	if err != nil {
 		slog.Warn("orchestrator: fetch candidates failed", "error", err)
@@ -202,18 +206,6 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// switch-history + cooldown maps. Cheap: one pass per tick over
 	// typically <100 entries, and short-circuits when the cap is 0.
 	o.PruneRateLimitedMaps(now)
-	// Gap §6.2 — TTL-based revert of auto-switched overrides. No-op
-	// when cfg.Agent.SwitchRevertHours == 0 (default).
-	o.cfgMu.RLock()
-	revertHours := o.cfg.Agent.SwitchRevertHours
-	o.cfgMu.RUnlock()
-	if revertHours > 0 {
-		ttl := time.Duration(revertHours) * time.Hour
-		if reverted := RevertExpiredAutoSwitches(&state, ttl, now); reverted > 0 {
-			slog.Info("orchestrator: reverted expired auto-switch overrides",
-				"count", reverted, "ttl_hours", revertHours)
-		}
-	}
 	return state
 }
 
@@ -561,6 +553,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			AgentSessionID:     entry.SessionID,
 			WorkerHost:         entry.WorkerHost,
 			Backend:            entry.Backend,
+			ProfileName:        entry.ProfileName,
 			PendingInputResume: true,
 			BranchName:         branchNameValue(resumeIssue.BranchName),
 			StartedAt:          now,
@@ -607,9 +600,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	// Resolve the issue's profile (clearing it if not found / disabled), then
 	// compute the effective (cmd, runnerCmd, backend) via the shared helper.
 	// The same logic powers reviewer dispatch — see resolveBackendForIssue.
-	o.issueProfilesMu.Lock()
-	profileName := o.issueProfiles[issue.Identifier]
-	o.issueProfilesMu.Unlock()
+	profileName := o.issueProfileForDispatch(state, issue.Identifier)
 	var profilePtr *config.AgentProfile
 	if profileName != "" {
 		o.cfgMu.RLock()
@@ -628,9 +619,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 			profilePtr = &profile
 		}
 	}
-	o.issueBackendsMu.RLock()
-	issueBackend := o.issueBackends[issue.Identifier]
-	o.issueBackendsMu.RUnlock()
+	issueBackend := o.issueBackendForDispatch(state, issue.Identifier)
 
 	agentCommand, runnerCommand, backend := resolveBackendForIssue(
 		agentCommand, defaultBackend, profilePtr, issueBackend,
@@ -658,6 +647,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		Issue:        issue,
 		WorkerHost:   workerHost,
 		Backend:      backend,
+		ProfileName:  profileName,
 		StartedAt:    time.Now(),
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
@@ -690,6 +680,26 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	}
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil)
 	return state
+}
+
+func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
+	profileName := state.IssueProfiles[identifier]
+	o.issueProfilesMu.RLock()
+	if override, ok := o.issueProfiles[identifier]; ok {
+		profileName = override
+	}
+	o.issueProfilesMu.RUnlock()
+	return profileName
+}
+
+func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) string {
+	backend := state.IssueBackends[identifier]
+	o.issueBackendsMu.RLock()
+	if override, ok := o.issueBackends[identifier]; ok {
+		backend = override
+	}
+	o.issueBackendsMu.RUnlock()
+	return backend
 }
 
 // dispatchReviewerForIssue dispatches a reviewer worker for the given issue
@@ -745,6 +755,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		Kind:         "reviewer",
 		WorkerHost:   workerHost,
 		Backend:      backend,
+		ProfileName:  profileName,
 		StartedAt:    now,
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
@@ -1028,6 +1039,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				"reason", "input_required")
 			return state
 		}
+		if ev.Automation.Trigger.Type == config.AutomationTriggerRateLimited && ev.Automation.AutoResume {
+			if _, autoSwitched := state.AutoSwitchedIdentifiers[ev.Issue.Identifier]; autoSwitched {
+				delete(state.PausedIdentifiers, ev.Issue.Identifier)
+				delete(state.PausedSessions, ev.Issue.Identifier)
+				o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			}
+		}
 		// Automation dispatch intentionally skips the isActiveState gate —
 		// triggers like issue_moved_to_backlog and non-active issue_entered_state
 		// targets need to fire outside the reconcile-loop active set.
@@ -1096,14 +1114,17 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					WorkerHost: liveEntry.WorkerHost,
 					Backend:    liveEntry.Backend,
 				}
-				// Resolve command + profile for resume. The live RunEntry doesn't
-				// store these, so look them up from cfg + per-issue overrides the
-				// same way dispatch() does.
+				// Resolve command for resume. The live RunEntry carries the
+				// resolved profile name; command still comes from cfg so a resume
+				// uses the same profile-specific runner where possible.
 				o.cfgMu.RLock()
 				resumeCommand := o.cfg.Agent.Command
 				profiles := o.cfg.Agent.Profiles
 				o.cfgMu.RUnlock()
-				profileName := state.IssueProfiles[issue.Identifier]
+				profileName := liveEntry.ProfileName
+				if profileName == "" {
+					profileName = state.IssueProfiles[issue.Identifier]
+				}
 				if profileName != "" {
 					if profile, ok := profiles[profileName]; ok && profile.Command != "" {
 						resumeCommand = profile.Command
@@ -1208,7 +1229,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				autoSwitchedCopy := maps.Clone(state.AutoSwitchedIdentifiers)
 				profilesCopy := maps.Clone(state.IssueProfiles)
 				backendsCopy := maps.Clone(state.IssueBackends)
-				go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy)
+				switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
+				go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
 			// Auto-clear workspace if configured — removes the cloned directory
@@ -1346,41 +1368,58 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// is in use even if no -race test exercises the interleave today.
 				maxRetries := o.MaxRetriesCfg()
 				if maxRetries > 0 && nextAttempt > maxRetries {
-					// Max retries exhausted — move to failed state or pause.
+					// Max retries exhausted — recover via rate_limited auto-switch
+					// when possible, otherwise move to failed state or pause.
 					slog.Warn("worker: max retries exhausted",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 						"attempts", attempt, "max_retries", maxRetries)
 					if o.logBuf != nil {
 						o.logBuf.Add(issue.Identifier, makeBufLine("ERROR",
-							fmt.Sprintf("worker: max retries exhausted (%d/%d) — moving to failed state", attempt, maxRetries)))
+							fmt.Sprintf("worker: max retries exhausted (%d/%d)", attempt, maxRetries)))
 					}
 					o.commentMaxRetriesExhausted(issue, attempt, errMsg)
-					failedState := o.FailedStateCfg()
-					if failedState != "" {
-						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
-					} else {
-						state.PausedIdentifiers[issue.Identifier] = issue.ID
-						o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
-					}
 					delete(state.Claimed, ev.IssueID)
-					o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
-					// Gap E — additionally fire rate_limited rules when the
-					// failure was classified as vendor-throttle-driven. This
-					// runs in parallel with run_failed so an operator can have
-					// both a generic comment-only failure rule and a targeted
-					// switch rule without one blocking the other.
-					// Gap §5.1 — use the operator-configurable patterns
-					// list when present; otherwise fall back to defaults.
+
+					rateLimitedQueued := 0
+					// Gap §5.1 — use the operator-configurable patterns list
+					// when present; otherwise fall back to defaults.
 					o.cfgMu.RLock()
 					rlPatterns := append([]string(nil), o.cfg.Agent.RateLimitErrorPatterns...)
 					o.cfgMu.RUnlock()
 					if IsRateLimitFailureWithPatterns(errMsg, rlPatterns) {
-						failedProfile := state.IssueProfiles[issue.Identifier]
-						o.dispatchMatchingRateLimitedAutomations(
+						failedProfile := ""
+						failedBackend := ""
+						inputTokens := 0
+						outputTokens := 0
+						if liveEntry != nil {
+							failedProfile = liveEntry.ProfileName
+							failedBackend = liveEntry.Backend
+							inputTokens = liveEntry.InputTokens
+							outputTokens = liveEntry.OutputTokens
+						}
+						if failedProfile == "" {
+							failedProfile = o.issueProfileForDispatch(state, issue.Identifier)
+						}
+						rateLimitedQueued = o.dispatchMatchingRateLimitedAutomations(
 							ctx, &state, issue, now,
-							failedProfile, liveEntry.Backend, errMsg, nextAttempt,
-							liveEntry.InputTokens, liveEntry.OutputTokens,
+							failedProfile, failedBackend, errMsg, nextAttempt,
+							inputTokens, outputTokens,
 						)
+					}
+
+					failedState := o.FailedStateCfg()
+					if rateLimitedQueued > 0 {
+						slog.Info("orchestrator: rate_limited recovery queued",
+							"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+							"queued", rateLimitedQueued)
+					} else {
+						if failedState != "" {
+							state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
+						} else {
+							state.PausedIdentifiers[issue.Identifier] = issue.ID
+							o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+						}
+						o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
 					}
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {
@@ -1404,7 +1443,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 // even during graceful shutdown so the issue owner knows why retries stopped.
 func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts int, lastErr string) {
 	comment := fmt.Sprintf(
-		"Itervox: maximum retries exhausted (%d attempts). Last error:\n\n%s\n\nIssue has been moved to failed state. Re-open or move back to an active state to retry.",
+		"Itervox: maximum retries exhausted (%d attempts). Last error:\n\n%s\n\nRetries have stopped for this run. Itervox may move the issue to failed state, pause it, or let a matching automation recover it.",
 		attempts, lastErr)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -1525,6 +1564,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.OutputTokens = liveEntry.OutputTokens
 		run.WorkerHost = liveEntry.WorkerHost
 		run.Backend = liveEntry.Backend
+		run.ProfileName = liveEntry.ProfileName
 		run.Kind = liveEntry.Kind
 		run.SessionID = liveEntry.SessionID
 		run.AutomationID = liveEntry.AutomationID

@@ -169,8 +169,18 @@ export function ListView({
                     </span>
                   )}
                 </td>
-                <td className="text-theme-text-secondary max-w-xs truncate px-4 py-3">
-                  {issue.title}
+                <td className="text-theme-text-secondary max-w-xs px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate">{issue.title}</span>
+                    {blockerCount(issue) > 0 && (
+                      <span
+                        title={`Blocked by ${String(blockerCount(issue))} issue${blockerCount(issue) === 1 ? '' : 's'}`}
+                        className="bg-theme-danger-soft text-theme-danger flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                      >
+                        Blocked {blockerCount(issue)}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
                   <Badge size="sm" color={stateBadgeColor(issue.state)}>
@@ -283,4 +293,10 @@ export function ListView({
       </div>
     </div>
   );
+}
+
+function blockerCount(issue: TrackerIssue): number {
+  const detailCount = issue.blockedByDetails?.length ?? 0;
+  if (detailCount > 0) return detailCount;
+  return issue.blockedBy?.length ?? 0;
 }

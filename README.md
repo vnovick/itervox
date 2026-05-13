@@ -435,7 +435,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web tests, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline.
 
 Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 

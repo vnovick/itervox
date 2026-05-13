@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,9 @@ func TestScanClaudeSkills_ProjectOnly(t *testing.T) {
 	}
 	if s.ApproxTokens != len(wellFormed)/4 {
 		t.Errorf("unexpected ApproxTokens %d", s.ApproxTokens)
+	}
+	if !strings.Contains(s.bodyText, "Body of the skill") {
+		t.Errorf("expected skill body text to be retained for analysis")
 	}
 }
 

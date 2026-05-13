@@ -135,7 +135,7 @@ Useful top-level fields include:
 - `availableProfiles`, `profileDefs`
 - `automations`
 - `sshHosts`, `dispatchStrategy`
-- `agentMode`, `autoClearWorkspace`, `inlineInput`
+- `autoClearWorkspace`, `inlineInput`
 - `configInvalid`
 
 ---
@@ -226,6 +226,27 @@ All settings endpoints persist back to `WORKFLOW.md`.
 
 ---
 
+## Skills Inventory
+
+The skills endpoints expose the Settings -> Skills inventory and recommendation
+surface. They use the same dashboard bearer token as the rest of `/api/v1`.
+
+| Method | Path | Request body | Success response | Notes |
+|---|---|---|---|---|
+| `GET` | `/skills/inventory` | — | `Inventory` | `503 inventory_unavailable` before the first successful scan |
+| `POST` | `/skills/scan` | — | `Inventory` | Forces a fresh filesystem scan |
+| `GET` | `/skills/issues` | — | `InventoryIssue[]` | Static analyzer recommendations |
+| `POST` | `/skills/fix` | `{"issueID":"UNUSED_PROFILE","fix": Fix}` | `{"status":"ok"}` | v0.2.0 only applies the non-destructive `UNUSED_PROFILE` `edit-yaml` fix; unsafe actions such as `remove-mcp` are rejected |
+| `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | `503 analytics_unavailable` until runtime evidence exists |
+| `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; may be empty |
+
+`Inventory` is a direct inventory/recommendation snapshot, not a complete
+normalized capability graph in v0.2.0. `ORPHAN_MCP` scans skill names,
+frontmatter descriptions, and skill bodies. Duplicate MCP recommendations are
+advisory because the daemon does not rewrite user-owned MCP settings files.
+
+---
+
 ## Profiles, reviewer, models, and automations
 
 ### Profiles
@@ -282,7 +303,50 @@ Supported trigger types:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected
-- `rate_limited` — fires when the per-issue rate-limit switch cap is reached; pairs with `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours`
+- `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours` cap automated switching; reaching the cap suppresses switching rather than causing the trigger.
+
+Tracker event triggers are poll-derived, not webhook-derived. The automation
+loop runs every 15 seconds. `tracker_comment_added` compares only the latest
+observed comment, so multiple comments between polls collapse to the latest
+comment for trigger purposes.
+
+Automation definitions preserve these optional policy/filter fields:
+
+```json
+{
+  "id": "answer-stale-input",
+  "enabled": true,
+  "profile": "input-responder",
+  "trigger": { "type": "input_required" },
+  "filter": {
+    "maxAgeMinutes": 30,
+    "inputContextRegex": "tests|review"
+  },
+  "policy": {
+    "autoResume": true
+  }
+}
+```
+
+```json
+{
+  "id": "rate-limit-switch",
+  "enabled": true,
+  "profile": "default",
+  "trigger": { "type": "rate_limited" },
+  "policy": {
+    "autoResume": true,
+    "switchToProfile": "fallback",
+    "switchToBackend": "codex",
+    "cooldownMinutes": 45
+  }
+}
+```
+
+`maxAgeMinutes` is only valid for `input_required` triggers.
+`rate_limited` triggers require `policy.autoResume: true` for the automatic
+profile/backend switch. `switchToProfile`, `switchToBackend`, and
+`cooldownMinutes` are only valid for `rate_limited` triggers.
 
 Validation failures return `400` with typed error codes such as:
 
@@ -404,6 +468,9 @@ Important fields include:
   `input_required`, `pending_input_resume`
 - `agentProfile`, `agentBackend`
 - `comments`, `labels`, `branchName`, `blockedBy`
+- `blockedByDetails`: richer blocker metadata for UI/API clients. Each entry has
+  `identifier` and may include `state` and `url`. `blockedBy` remains the
+  compatibility string-array form.
 
 ### `IssueLogEntry`
 

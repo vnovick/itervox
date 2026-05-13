@@ -1,6 +1,6 @@
 ---
 title: What's New in v0.2.0
-description: Automations, agent profiles, daemon actions, skills inventory, retry controls, and capabilities dashboard — everything new in Itervox v0.2.0.
+description: Automations, agent profiles, daemon actions, skills inventory, retry controls, and recommendations dashboard — everything new in Itervox v0.2.0.
 sidebar:
   order: 1
 ---
@@ -64,7 +64,7 @@ The automation editor modal lets you configure every aspect of an automation rul
   - **Issue Moved To Backlog** — fires when an issue enters a backlog state.
   - **Run Failed** — fires when a worker run fails permanently after retries are exhausted.
   - **PR Opened** — fires when a pull request is detected on the issue.
-  - **Rate Limited** — fires when the rate-limit switch cap is reached.
+  - **Rate Limited** — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven.
 
 For `cron` triggers, the visual picker and the raw expression field stay in sync — edit either one and the other updates. The expression field accepts standard five-field cron syntax (`minute hour day month weekday`).
 
@@ -107,13 +107,13 @@ See the [Agent Profiles guide](/guides/agent-profiles/) for YAML examples and th
 
 ---
 
-## Skills Inventory and Capabilities
+## Skills Inventory and Recommendations
 
-Itervox v0.2.0 introduces a **capabilities dashboard** that scans your project's skills, plugins, MCP servers, hooks, and instructions — then surfaces actionable recommendations.
+Itervox v0.2.0 introduces a **skills inventory dashboard** that scans your project's skills, plugins, MCP servers, hooks, and instructions — then surfaces actionable recommendations.
 
 <Image src="/screenshots/v0.2.0/capabilities.png" alt="Capabilities panel showing counts: 36 skills (105k tokens), 0 plugins, 1 MCP server (800 tokens), 1 hook (28 tokens), 14 instructions (24k tokens). Below is a 'By provider' skill cost breakdown bar chart (Claude 4 / Codex 24 / Shared 8) and a Runtime analytics section with 42 recommendations." width={900} height={380} />
 
-The **Capabilities** section provides:
+The **Skills Inventory** section provides:
 
 - **Aggregate counts** — total skills, plugins, MCP servers, hooks, and instruction files with their estimated token costs.
 - **Per-provider cost split** — a bar chart showing how skill tokens are distributed between Claude, Codex, and shared scopes. Provider is inferred from the source path (`~/.claude/skills/` = Claude, `~/.codex/skills/` = Codex, `~/.agents/skills/` = shared).
@@ -129,7 +129,7 @@ Runtime analytics are **evidence-based**, not prescriptive. The analyzer reads J
 
 Because the data source is real session history, **the recommendations compound over time**:
 
-- **Day 1** (zero session logs) — you'll see static-analyzer output only: duplicate skills, bloated profiles, stale schedules. Runtime warnings like `HIGH_COST_LOW_USAGE` and `HOOK_STORM` need real runs to fire.
+- **Day 1** (zero session logs) — you'll see static-analyzer output only: duplicate skills, bloated profiles, and large-context warnings. Runtime warnings like `HIGH_COST_LOW_USAGE` and `HOOK_STORM` need real runs to fire.
 - **After a representative sample** (~25 sessions across your real profiles) — runtime evidence catches the high-leverage findings: skills that pay their token cost but never get loaded, hooks that fire 50+ times per run, capabilities the model used implicitly but aren't in the YAML.
 - **Long-running daemons** — the 25-session lookback window slides forward, so stale evidence ages out automatically. A skill you trimmed last week stops showing up as heavy once enough new sessions accumulate.
 
@@ -158,7 +158,7 @@ The Settings page now surfaces retry and rate-limit controls that were previousl
 
 - **Max retries per issue** — how many times the daemon retries a failing worker before giving up. Each retry uses exponential backoff. Set to 0 for unlimited retries.
 - **On exhausted retries** — what happens when the retry budget is burned. Options include pausing the issue (do not move) or transitioning it to a configured failure state.
-- **Rate-limit switch cap** — how many times a `rate_limited` automation can switch an issue to a different profile within a rolling window. Prevents automation ping-pong between profiles. Set to 0 for unlimited.
+- **Rate-limit switch cap** — how many times a `rate_limited` automation can switch an issue to a different profile within a rolling window. Prevents automation ping-pong between profiles. Set to 0 for unlimited. Reaching the cap suppresses switching; it does not cause the trigger.
 
 ---
 
@@ -166,5 +166,6 @@ The Settings page now surfaces retry and rate-limit controls that were previousl
 
 - [Automations guide](/guides/automations/) — triggers, filters, instructions, and YAML examples.
 - [Agent Profiles guide](/guides/agent-profiles/) — modes, daemon actions, SSH, and reviewer config.
+- [Claude vs Codex Debate guide](/guides/claude-vs-codex-debate/) — experimental comment-only planning debate pattern.
 - [Configuration reference](/configuration/) — full WORKFLOW.md field reference.
 - [Changelog](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md) — complete v0.2.0 changelog.

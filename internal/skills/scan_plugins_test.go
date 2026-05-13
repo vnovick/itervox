@@ -41,6 +41,13 @@ const noNameManifest = `{ "description": "missing name" }`
 func TestScanClaudePlugins_ProjectOnly_FullManifest(t *testing.T) {
 	t.Parallel()
 	proj := t.TempDir()
+	skillPath := filepath.Join(proj, ".claude", "plugins", "demo-plugin", "skills", "a.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("Plugin skill body mentions mystery-server."), 0o644); err != nil {
+		t.Fatalf("write plugin skill body: %v", err)
+	}
 	writePlugin(t, proj, "demo-plugin", fullPluginManifest)
 
 	plugins, err := scanClaudePlugins(proj, "")
@@ -73,6 +80,12 @@ func TestScanClaudePlugins_ProjectOnly_FullManifest(t *testing.T) {
 		if s.Source != "plugin:demo-plugin" {
 			t.Errorf("expected plugin-attributed source, got %q for %s", s.Source, s.Name)
 		}
+	}
+	if p.Skills[0].FilePath != skillPath {
+		t.Errorf("expected resolved plugin skill path %q, got %q", skillPath, p.Skills[0].FilePath)
+	}
+	if p.Skills[0].bodyText == "" {
+		t.Errorf("expected plugin skill body to be retained for analysis")
 	}
 	if p.ApproxTokens <= 0 {
 		t.Errorf("expected positive ApproxTokens, got %d", p.ApproxTokens)

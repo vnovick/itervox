@@ -89,6 +89,7 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				SessionID:      entry.SessionID,
 				WorkerHost:     entry.WorkerHost,
 				Backend:        entry.Backend,
+				ProfileName:    entry.ProfileName,
 				TerminalReason: TerminalStalled,
 			}
 			select {
@@ -152,6 +153,20 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			continue
 		}
 
+		// Automation-dispatched workers (Kind=="automation") run by design on
+		// non-active and terminal-state issues — see CRIT-3 invariant in
+		// automation.go and event_loop.go:1031. The isActiveState gate that
+		// reconciles regular workers must NOT apply to them: triggers like
+		// issue_moved_to_backlog or input_required scheduled on Backlog/Done
+		// issues need the worker to keep running until it finishes naturally.
+		// Without this guard, ReconcileTrackerStates races automation
+		// dispatch and clears state.Running before the worker exits,
+		// stranding the AutomationID/TriggerType from history (F-1).
+		if entry.Kind == "automation" {
+			entry.Issue.State = refreshedState
+			entry.LastEventAt = &now
+			continue
+		}
 		if isTerminalState(refreshedState, state) {
 			slog.Info("reconciliation: terminal state, stopping worker",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier, "state", refreshedState)

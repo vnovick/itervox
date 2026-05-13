@@ -422,7 +422,7 @@ mutation ItervoxCreateIssue($input: IssueCreateInput!) {
       inverseRelations(first: 50) {
         nodes {
           type
-          issue { id identifier state { name } }
+          issue { id identifier url state { name } }
         }
       }
       createdAt

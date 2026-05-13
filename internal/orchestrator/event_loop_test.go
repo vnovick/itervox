@@ -749,7 +749,8 @@ func TestResumeIssueClearsFromPaused(t *testing.T) {
 	fake := &agenttest.FakeRunner{Stall: true}
 	orch := orchestrator.New(cfg, mt, fake, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// ctx must outlast three 2s deadlines (worker appears, pauses, resumes).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Wait for the worker to be visible, then cancel it.
@@ -763,7 +764,15 @@ func TestResumeIssueClearsFromPaused(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	select {
 	case <-workerVisible:
@@ -1104,11 +1113,22 @@ func TestStallLogContainsIdentifier(t *testing.T) {
 func TestTerminateIssueRunning(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
+	// Without BacklogStates, asyncDiscardAndTransition transitions the
+	// terminated issue to ActiveStates[0] ("Todo"), which the next poll
+	// re-dispatches — Running never returns to 0 within the test window.
+	// Setting an explicit non-active backlog target keeps the discard
+	// landing-state out of the active set so the orchestrator leaves the
+	// terminated issue alone.
+	cfg.Tracker.BacklogStates = []string{"Backlog"}
 	mt := singleIssueTracker(t, "In Progress")
 	fake := &agenttest.FakeRunner{Stall: true}
 	orch := orchestrator.New(cfg, mt, fake, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ctx must outlast both internal deadlines (worker-appears + terminate-exits,
+	// up to 4s combined). With ctx tight against that sum, ctx expires under
+	// load, the orchestrator exits, and the worker's exit event is dropped —
+	// surfacing as "worker did not exit within 2s after terminate".
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	workerVisible := make(chan struct{}, 1)
@@ -1121,7 +1141,19 @@ func TestTerminateIssueRunning(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	// Tear down deterministically so the orchestrator goroutine is fully
+	// drained before t-Cleanup runs the next test — otherwise its log output
+	// can bleed into subsequent tests' captured stderr (TestWorkerCompletedLogHasCorrectTokenValues
+	// regression).
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	select {
 	case <-workerVisible:
@@ -1132,8 +1164,10 @@ func TestTerminateIssueRunning(t *testing.T) {
 	ok := orch.TerminateIssue("ENG-1")
 	require.True(t, ok, "terminate should succeed for running worker")
 
-	// Wait for the worker to exit and claim to be released.
-	deadline := time.After(2 * time.Second)
+	// Wait for the worker to exit and claim to be released. 2s was tight
+	// under full-suite load — the cancel signal → worker exit → event-loop
+	// processing → storeSnap chain occasionally took > 2s on a busy CPU.
+	deadline := time.After(5 * time.Second)
 	for {
 		snap := orch.Snapshot()
 		if len(snap.Running) == 0 {
@@ -1144,7 +1178,7 @@ func TestTerminateIssueRunning(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatal("worker did not exit within 2s after terminate")
+			t.Fatal("worker did not exit within 5s after terminate")
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
@@ -1157,11 +1191,16 @@ func TestTerminateIssueRunning(t *testing.T) {
 func TestTerminateIssuePaused(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
+	// Same rationale as TestTerminateIssueRunning: pin the discard target
+	// to a non-active state so the post-terminate poll doesn't immediately
+	// re-dispatch and re-populate state.PausedIdentifiers.
+	cfg.Tracker.BacklogStates = []string{"Backlog"}
 	mt := singleIssueTracker(t, "In Progress")
 	fake := &agenttest.FakeRunner{Stall: true}
 	orch := orchestrator.New(cfg, mt, fake, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ctx must outlast three 2s deadlines (worker appears, pauses, terminates).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	workerVisible := make(chan struct{}, 1)
@@ -1174,7 +1213,15 @@ func TestTerminateIssuePaused(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	select {
 	case <-workerVisible:
@@ -1307,7 +1354,9 @@ func TestPausedFilePersistence(t *testing.T) {
 	orch := orchestrator.New(cfg, mt, fake, nil)
 	orch.SetPausedFile(pausedFile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ctx must outlast worker-appears (2s) + pause-detected (2s) + file write
+	// + roundtrip; bumped from 3s after observed under-load flakes.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	workerVisible := make(chan struct{}, 1)

@@ -56,9 +56,11 @@ const baseIssue = {
   priority: null as number | null,
   branchName: null as string | null,
   blockedBy: [] as string[],
+  blockedByDetails: [] as { identifier: string; state?: string; url?: string }[],
   url: null as string | null,
   agentProfile: null as string | null,
   error: undefined as string | undefined,
+  ineligibleReason: undefined as string | undefined,
 };
 
 function makeWrapper() {
@@ -244,6 +246,34 @@ describe('IssueDetailSlide', () => {
     expect(screen.getByText('Blocked by')).toBeInTheDocument();
     expect(screen.getByText('ENG-5')).toBeInTheDocument();
     expect(screen.getByText('ENG-6')).toBeInTheDocument();
+  });
+
+  it('shows blocker details with state and links when available', () => {
+    setupDefaultMocks('ENG-10', {
+      blockedBy: ['ENG-5'],
+      blockedByDetails: [
+        {
+          identifier: 'ENG-5',
+          state: 'In Progress',
+          url: 'https://linear.app/issue/ENG-5',
+        },
+      ],
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    const blockerLink = screen.getByRole('link', { name: 'ENG-5' });
+    expect(blockerLink).toHaveAttribute('href', 'https://linear.app/issue/ENG-5');
+    expect(screen.getAllByText('In Progress')).toHaveLength(2);
+  });
+
+  it('shows ineligible reason when present', () => {
+    setupDefaultMocks('ENG-10', {
+      ineligibleReason: 'blocked_by:ENG-5',
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    expect(screen.getByText('Not dispatchable')).toBeInTheDocument();
+    expect(screen.getByText('blocked_by:ENG-5')).toBeInTheDocument();
   });
 
   it('shows "No description" when description is empty', () => {

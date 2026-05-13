@@ -16,6 +16,8 @@ const baseIssue: TrackerIssue = {
   elapsedMs: 90000,
   lastMessage: '',
   error: '',
+  blockedBy: [],
+  blockedByDetails: [],
 };
 
 describe('IssueCard', () => {
@@ -46,6 +48,43 @@ describe('IssueCard', () => {
     render(<IssueCard issue={baseIssue} onSelect={vi.fn()} />);
     const link = screen.getByRole('link');
     expect(link).toHaveAttribute('href', 'https://example.com/ABC-1');
+  });
+
+  it('shows a blocked badge when blockers exist', () => {
+    render(
+      <IssueCard
+        issue={{
+          ...baseIssue,
+          blockedBy: ['ABC-0', 'ABC-2'],
+          blockedByDetails: [
+            { identifier: 'ABC-0', state: 'In Progress' },
+            { identifier: 'ABC-2', state: 'Done' },
+          ],
+        }}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    const badge = screen.getByTestId('issue-card-blocked-badge');
+    expect(badge).toHaveTextContent('Blocked 2');
+    expect(badge).toHaveAttribute('title', 'Blocked by 2 issues');
+  });
+
+  it('falls back to blockedBy when blocker details are absent', () => {
+    render(
+      <IssueCard
+        issue={{
+          ...baseIssue,
+          blockedBy: ['ABC-0'],
+          blockedByDetails: [],
+        }}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    const badge = screen.getByTestId('issue-card-blocked-badge');
+    expect(badge).toHaveTextContent('Blocked 1');
+    expect(badge).toHaveAttribute('title', 'Blocked by 1 issue');
   });
 
   it('renders identifier as plain text when no url', () => {

@@ -1,6 +1,6 @@
 # Skills Inventory & Capability Analytics
 
-The Skills Inventory surfaces every Claude Code / Codex capability your project carries — skills, plugins, MCP servers, hooks, and instruction docs — alongside an analyzer that flags duplicates, bloat, runtime drift, and unused config. Phase 2 adds runtime evidence (session logs) so you can tell which capabilities are *actually loaded* at runtime vs. just configured.
+The Skills Inventory surfaces every Claude Code / Codex capability your project carries — skills, plugins, MCP servers, hooks, and instruction docs — alongside an analyzer that flags duplicates, bloat, runtime drift, and unused config. In v0.2.0 this is a direct inventory and recommendations surface; normalized capability graph fields are reserved for a later phase. Runtime evidence (session logs) tells you which capabilities are *actually loaded* at runtime vs. just configured.
 
 The feature lives at **Settings → Skills Inventory**. No external dependencies; everything is read from the local filesystem and `~/.itervox/logs/`.
 
@@ -27,18 +27,21 @@ The feature lives at **Settings → Skills Inventory**. No external dependencies
 
 ## Static analyzer (Phase 1)
 
-Eight rules ship in `internal/skills/analyze.go`:
+Seven production rules ship in `internal/skills/analyze.go`:
 
 | Issue ID | Severity | What it catches |
 |---|---|---|
 | `DUPLICATE_SKILL` | info | Same skill name in multiple scopes (project + user, etc.) |
-| `DUPLICATE_MCP` | warn | Same MCP server `command`/`url` registered twice (with destructive Fix) |
+| `DUPLICATE_MCP` | warn | Same MCP server `command`/`url` registered twice (advisory only) |
 | `UNUSED_PROFILE` | info | Profile defined but absent from recently-active set (with Fix → set `enabled: false`) |
 | `BLOATED_PROFILE` | warn | Inventory carries > 20 MCP servers OR > 15 skills |
 | `LARGE_CONTEXT` | warn | Estimated profile cost > 50K tokens |
-| `STALE_SCHEDULE` | warn | Scheduled job references unknown profile |
 | `INSTRUCTION_SHADOWING` | info | Same filename in multiple scopes (project / user / system) |
-| `ORPHAN_MCP` | info | Configured MCP server name never appears in any skill body |
+| `ORPHAN_MCP` | info | Configured MCP server name never appears in any skill name, description, or body |
+
+`STALE_SCHEDULE` remains in code as a reserved analyzer for future schedule
+inventory sources, but v0.2.0 does not populate `Inventory.Schedules` from the
+validated `WORKFLOW.md` automations config.
 
 The remaining 7 design-draft rules (cross-runtime Jaccard, Levenshtein hook similarity, model mismatch, teams-mode capability overlap, missing-action, instruction-shadowing-via-similarity, missing-skill-ref) are tracked in `planning/deferred_290426.md` and land in a follow-up.
 
@@ -63,7 +66,7 @@ Codex evidence is parsed from `~/.codex/history.jsonl` + `~/.codex/sessions/**` 
 
 Runtime analytics are **evidence-based, not prescriptive** — every recommendation is derived from JSONL session logs the daemon writes during real dispatches, not from your config. This has three consequences operators should plan around:
 
-1. **A fresh install gives mostly static-analyzer output.** With zero sessions in `~/.itervox/logs/`, the runtime analyzer returns an empty snapshot. You will see Phase-1 recommendations (`DUPLICATE_SKILL`, `BLOATED_PROFILE`, `STALE_SCHEDULE`, etc.) but the more interesting Phase-2 signals (`HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`) need real runs to fire. **This is not a bug.** Re-check the dashboard after the daemon has handled a meaningful sample of issues.
+1. **A fresh install gives mostly static-analyzer output.** With zero sessions in `~/.itervox/logs/`, the runtime analyzer returns an empty snapshot. You will see Phase-1 recommendations (`DUPLICATE_SKILL`, `BLOATED_PROFILE`, `LARGE_CONTEXT`, etc.) but the more interesting Phase-2 signals (`HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`) need real runs to fire. **This is not a bug.** Re-check the dashboard after the daemon has handled a meaningful sample of issues.
 2. **The lookback window is 25 sessions by default** (defined in `parseClaudeRuntime`). Sessions older than that age out of the analysis. As your daemon runs more issues, the window shifts forward and stale evidence is discarded — so a skill that was heavy six months ago but trimmed last week will correctly fall off the warn list once enough new sessions accumulate.
 3. **The signal sharpens as variety grows.** A daemon that has run the same profile 25 times against the same kind of issue will correctly report which skills *that profile* loads. Multi-profile, multi-issue-type evidence catches `LOADED_NOT_CONFIGURED` (a skill the model used implicitly but isn't in the YAML) and `CONFIGURED_NOT_LOADED` (a skill that pays its token cost but never gets used). Run a representative cross-section of profiles before treating the recommendation list as final.
 
@@ -92,9 +95,9 @@ The dashboard's Recommendations panel renders a "Fix" button per issue when the 
 
 | Rule | Fix label | Status |
 |---|---|---|
-| `UNUSED_PROFILE` | **Disable profile** | ✅ Working. Non-destructive `edit-yaml` action; calls `UpsertProfile` with `Enabled: false`; queues a re-scan. End-to-end e2e tested. |
-| `DUPLICATE_MCP` | **Remove duplicates** | ⚠️ Renders, errors on click. The `remove-mcp` action is intentionally rejected by the backend (`skills_adapter.go::ApplyFix` returns an explanatory error) until four safety guards land — flock + backup + structured-edit + per-call confirm. See `planning/deferred_290426.md::T-95`. |
-| `DUPLICATE_SKILL`, `BLOATED_PROFILE`, `LARGE_CONTEXT`, `STALE_SCHEDULE`, `INSTRUCTION_SHADOWING`, `ORPHAN_MCP` | (none) | Advisory only — no Fix descriptor populated. The recommendation tells you what to do; the edit is yours. |
+| `UNUSED_PROFILE` | **Disable profile** | ✅ Working. Non-destructive `edit-yaml` action; calls `UpsertProfile` with `Enabled: false`; queues a re-scan. Covered by backend and UI mutation tests. |
+| `DUPLICATE_MCP` | (none) | Advisory only. The analyzer does not emit a Fix descriptor because `remove-mcp` is intentionally rejected until four safety guards land — flock + backup + structured-edit + per-call confirm. See `planning/deferred_290426.md::T-95`. |
+| `DUPLICATE_SKILL`, `BLOATED_PROFILE`, `LARGE_CONTEXT`, `INSTRUCTION_SHADOWING`, `ORPHAN_MCP` | (none) | Advisory only — no Fix descriptor populated. The recommendation tells you what to do; the edit is yours. |
 | All Phase-2 (runtime) recommendations | (none) | Advisory only — `HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`, `LOADED_NOT_CONFIGURED` ship without Fix descriptors, and the analytics-recommendations section in `SkillsCard` passes a no-op `onApplyFix` stub regardless. |
 
 Destructive fixes always trigger a `window.confirm` before the request goes out — relevant once a second working fix lands.
@@ -119,7 +122,7 @@ internal/skills/
 ├── runtime_claude.go    # Session-log JSONL parser
 ├── runtime_codex.go     # ~/.codex/history.jsonl + sessions/** parser
 ├── context_budget.go    # Per-profile cost estimator
-├── analyze.go           # Static analyzer (8 rules)
+├── analyze.go           # Static analyzer (7 production rules + reserved schedule rule)
 ├── analytics.go         # BuildAnalytics(inv, runtime, profiles)
 ├── recommend.go         # Runtime-side recommendation engine
 └── cache.go             # Cache + mtime-based Stale() check
@@ -142,5 +145,5 @@ The orchestrator adapter (`cmd/itervox/skills_adapter.go`) implements the `serve
 
 - **Token counts are approximate** (labelled "estimated" in the UI). They're useful for ratio comparisons, not absolute claims.
 - **Runtime evidence depends on log capture** — if `CLAUDE_CODE_LOG_DIR` is unset and `~/.itervox/logs/` is empty, the Analytics tab falls back to the static heuristic and surfaces the "no runtime evidence" hint.
-- **The MCP duplicate fix is intentionally manual.** Editing user-controlled config (`~/.claude/settings.json`) from a daemon is reversible only with explicit guards (lockfile, backup copy, structured-edit). Until those guards land, the recommendation surfaces and the operator edits manually.
+- **The MCP duplicate fix is intentionally manual.** Editing user-controlled config (`~/.claude/settings.json`) from a daemon is reversible only with explicit guards (lockfile, backup copy, structured-edit). Until those guards land, the recommendation surfaces without a Fix button and the operator edits manually.
 - **The analyzer is not a substitute for runtime testing.** It catches structural issues (duplicates, dead config, oversized context) but not semantic problems (skill-vs-skill conflicts, prompt regressions). Pair with the Lane-2 route-mocked Playwright suite for those.

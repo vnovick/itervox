@@ -21,6 +21,22 @@ func (o *Orchestrator) Snapshot() State {
 	o.snapMu.RLock()
 	snap := o.lastSnap
 	o.snapMu.RUnlock()
+	snap.Running = copyRunningMap(snap.Running)
+	snap.Claimed = maps.Clone(snap.Claimed)
+	snap.RetryAttempts = copyRetryMap(snap.RetryAttempts)
+	snap.PausedIdentifiers = maps.Clone(snap.PausedIdentifiers)
+	snap.PausedSessions = maps.Clone(snap.PausedSessions)
+	snap.IssueProfiles = maps.Clone(snap.IssueProfiles)
+	snap.IssueBackends = maps.Clone(snap.IssueBackends)
+	snap.PausedOpenPRs = maps.Clone(snap.PausedOpenPRs)
+	snap.ForceReanalyze = maps.Clone(snap.ForceReanalyze)
+	snap.PrevActiveIdentifiers = maps.Clone(snap.PrevActiveIdentifiers)
+	snap.DiscardingIdentifiers = maps.Clone(snap.DiscardingIdentifiers)
+	snap.AutoSwitchedIdentifiers = maps.Clone(snap.AutoSwitchedIdentifiers)
+	snap.AutoSwitchedAt = maps.Clone(snap.AutoSwitchedAt)
+	snap.InputRequiredIssues = maps.Clone(snap.InputRequiredIssues)
+	snap.PendingInputResumes = maps.Clone(snap.PendingInputResumes)
+	snap.InlineInputIssues = copyInlineInputMap(snap.InlineInputIssues)
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -482,8 +498,9 @@ func (o *Orchestrator) SetAutoSwitchedFile(path string) {
 // Profile is required (always set when AutoResume fires); Backend is
 // optional (only set when the rule's SwitchToBackend was non-empty).
 type autoSwitchedRecord struct {
-	Profile string `json:"profile"`
-	Backend string `json:"backend,omitempty"`
+	Profile    string     `json:"profile"`
+	Backend    string     `json:"backend,omitempty"`
+	SwitchedAt *time.Time `json:"switched_at,omitempty"`
 }
 
 // loadAutoSwitchedFromDisk reads the auto-switched file and pre-populates
@@ -518,12 +535,18 @@ func (o *Orchestrator) loadAutoSwitchedFromDisk(state State) State {
 	if state.AutoSwitchedIdentifiers == nil {
 		state.AutoSwitchedIdentifiers = make(map[string]struct{})
 	}
+	if state.AutoSwitchedAt == nil {
+		state.AutoSwitchedAt = make(map[string]time.Time)
+	}
 	for id, rec := range records {
 		state.IssueProfiles[id] = rec.Profile
 		if rec.Backend != "" {
 			state.IssueBackends[id] = rec.Backend
 		}
 		state.AutoSwitchedIdentifiers[id] = struct{}{}
+		if rec.SwitchedAt != nil && !rec.SwitchedAt.IsZero() {
+			state.AutoSwitchedAt[id] = *rec.SwitchedAt
+		}
 	}
 	slog.Info("orchestrator: loaded auto-switched overrides", "path", path, "count", len(records))
 	return state
@@ -538,6 +561,7 @@ func (o *Orchestrator) saveAutoSwitchedToDisk(
 	autoSwitched map[string]struct{},
 	profiles map[string]string,
 	backends map[string]string,
+	switchedAt map[string]time.Time,
 ) {
 	o.autoSwitchedMu.RLock()
 	path := o.autoSwitchedFile
@@ -550,6 +574,10 @@ func (o *Orchestrator) saveAutoSwitchedToDisk(
 		rec := autoSwitchedRecord{Profile: profiles[id]}
 		if b, ok := backends[id]; ok {
 			rec.Backend = b
+		}
+		if t, ok := switchedAt[id]; ok && !t.IsZero() {
+			t = t.UTC()
+			rec.SwitchedAt = &t
 		}
 		records[id] = rec
 	}
@@ -608,6 +636,8 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.ForceReanalyze = maps.Clone(s.ForceReanalyze)
 	snap.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	snap.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
+	snap.AutoSwitchedIdentifiers = maps.Clone(s.AutoSwitchedIdentifiers)
+	snap.AutoSwitchedAt = maps.Clone(s.AutoSwitchedAt)
 	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
 	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
 	snap.InlineInputIssues = copyInlineInputMap(s.InlineInputIssues)

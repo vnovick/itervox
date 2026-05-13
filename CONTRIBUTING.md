@@ -23,7 +23,7 @@ git clone https://github.com/vnovick/itervox
 cd itervox
 lefthook install        # wires pre-commit and pre-push hooks
 make build              # builds web/dist then compiles the Go binary
-go test -race ./...
+go test -race ./cmd/... ./internal/...
 ```
 
 > **Always use `make build`** rather than `go build ./cmd/itervox` directly. The binary embeds `internal/server/web/dist` via `//go:embed`; if it is missing, the binary compiles but panics at runtime.
@@ -81,19 +81,20 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-test` + `web-spelling` + `size-budget` + `no-os-exit` — mirrors CI |
+| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` — mirrors CI |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
-| `make test` | `go test -race ./... -count=1` |
-| `make coverage` | Run tests with coverage; output `coverage.html` |
-| `make benchmark` | `go test -bench=. -benchmem ./...` |
+| `make test` | `go test -race ./cmd/... ./internal/... -count=1` |
+| `make coverage` | Run tests with coverage over `./cmd/... ./internal/...`; output `coverage.html` |
+| `make benchmark` | `go test -bench=. -benchmem ./cmd/... ./internal/...` |
 | `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
 | `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
 | `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
-| `make fmt` | `gofmt -l -w .` |
-| `make vet` | `go vet ./...` |
+| `make fmt` | `gofmt -l -w cmd internal` |
+| `make vet` | `go vet ./cmd/... ./internal/...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
-| `make web-build` | `pnpm install --frozen-lockfile && pnpm build` in `web/` |
-| `make web-test` | `pnpm install --frozen-lockfile && pnpm test` in `web/` |
+| `make web-build` | `pnpm build` in `web/` |
+| `make web-test` | `pnpm test` in `web/` |
+| `make web-coverage` | `pnpm test:coverage` in `web/` |
 | `make web-spelling` | Guard against the legacy `Symphony` brand name leaking into user-visible TS/TSX strings |
 | `make e2e` | Build the binary, then run the real-daemon Playwright smoke suite |
 | `make qa-current-ui` | Run the route-mocked Playwright regression lane for the current UI |
@@ -103,7 +104,9 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 
 > **Note:** `make web-spelling` (also part of `make verify`) rejects any TypeScript/TSX string literal containing `Symphony` (the legacy project name). If your editor autocompletes the old name, the rule will fail your `pre-push` hook — search and replace before pushing.
 
-> **QA baseline:** `make verify` remains the zero-extra-dependency contributor gate. The browser QA lanes (`make qa-current-ui`, `make qa-daemon`, `make qa-current`) require a one-time Playwright browser install: `cd web && pnpm exec playwright install chromium`.
+> **QA baseline:** `make verify` remains the zero-extra-dependency contributor gate and includes the frontend coverage threshold used by Web CI. The browser QA lanes (`make qa-current-ui`, `make qa-daemon`, `make qa-current`) require a one-time Playwright browser install: `cd web && pnpm exec playwright install chromium`.
+
+> **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 
 ---
 
@@ -202,7 +205,7 @@ Worker goroutines (one per running issue) send results back via a buffered `chan
                   └────────────────────────────────┘
 ```
 
-A small `cfgMu` mutex guards exactly the runtime-mutable subset of `Orchestrator.cfg` (agent mode, max concurrency, profiles, SSH hosts, dispatch strategy, inline-input flag, tracker active/terminal/completion states, and `auto_clear_workspace`). Every other `cfg` field is read-only after startup. The authoritative list lives in `CLAUDE.md`.
+A small `cfgMu` mutex guards exactly the runtime-mutable subset of `Orchestrator.cfg`: agent concurrency/retry/rate-limit knobs, profiles, SSH hosts, dispatch strategy, reviewer settings, inline-input flag, tracker active/terminal/completion/failed states, automations, and `auto_clear_workspace`. Every other `cfg` field is read-only after startup. The authoritative allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields` and is mirrored in `CLAUDE.md`.
 
 ### State is a value type
 
@@ -234,9 +237,9 @@ If you change the sentinel value, you **must** update both the constant and the 
 ### Running tests
 
 ```bash
-go test ./...                                    # all unit tests
+go test ./cmd/... ./internal/...                 # all repo-owned unit tests
 go test ./internal/orchestrator/...              # a single package
-go test -race ./...                              # with race detector (required pre-PR)
+go test -race ./cmd/... ./internal/...           # with race detector (required pre-PR)
 go test -v ./internal/orchestrator/...           # verbose
 ```
 
@@ -428,7 +431,6 @@ chore: rename binary to itervox
 ### Pull request checklist
 
 - [ ] `make verify` passes locally
-- [ ] `go test -race ./...` passes
 - [ ] New behaviour is covered by tests
 - [ ] No API tokens or secrets in the diff
 - [ ] Exported symbols have doc comments

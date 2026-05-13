@@ -721,7 +721,10 @@ type AutomationFilterDef struct {
 }
 
 type AutomationPolicyDef struct {
-	AutoResume bool `json:"autoResume,omitempty"`
+	AutoResume      bool   `json:"autoResume,omitempty"`
+	SwitchToProfile string `json:"switchToProfile,omitempty"`
+	SwitchToBackend string `json:"switchToBackend,omitempty"`
+	CooldownMinutes int    `json:"cooldownMinutes,omitempty"`
 }
 
 type AutomationDef struct {
@@ -747,6 +750,13 @@ type CommentRow struct {
 	CreatedAt string `json:"createdAt,omitempty"` // RFC3339; "" when nil
 }
 
+// BlockerDetail is one issue blocking a TrackerIssue.
+type BlockerDetail struct {
+	Identifier string `json:"identifier"`
+	State      string `json:"state,omitempty"`
+	URL        string `json:"url,omitempty"`
+}
+
 // TrackerIssue is a single issue row returned by /api/v1/issues.
 type TrackerIssue struct {
 	Identifier        string `json:"identifier"`
@@ -761,12 +771,13 @@ type TrackerIssue struct {
 	LastMessage       string `json:"lastMessage,omitempty"`
 	Error             string `json:"error,omitempty"`
 	// Enriched fields
-	Labels           []string     `json:"labels,omitempty"`
-	Priority         *int         `json:"priority,omitempty"`
-	BranchName       *string      `json:"branchName,omitempty"`
-	BlockedBy        []string     `json:"blockedBy,omitempty"`
-	Comments         []CommentRow `json:"comments,omitempty"`
-	IneligibleReason string       `json:"ineligibleReason,omitempty"`
+	Labels           []string        `json:"labels,omitempty"`
+	Priority         *int            `json:"priority,omitempty"`
+	BranchName       *string         `json:"branchName,omitempty"`
+	BlockedBy        []string        `json:"blockedBy,omitempty"`
+	BlockedByDetails []BlockerDetail `json:"blockedByDetails,omitempty"`
+	Comments         []CommentRow    `json:"comments,omitempty"`
+	IneligibleReason string          `json:"ineligibleReason,omitempty"`
 	// AgentProfile is the name of the per-issue agent profile override, if any.
 	AgentProfile string `json:"agentProfile,omitempty"`
 	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").

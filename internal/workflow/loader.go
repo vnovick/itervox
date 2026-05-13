@@ -501,10 +501,14 @@ type AutomationFilterEntry struct {
 	IdentifierRegex   string
 	Limit             int
 	InputContextRegex string
+	MaxAgeMinutes     int
 }
 
 type AutomationPolicyEntry struct {
-	AutoResume bool
+	AutoResume      bool
+	SwitchToProfile string
+	SwitchToBackend string
+	CooldownMinutes int
 }
 
 type AutomationEntry struct {
@@ -709,7 +713,7 @@ func MutateAutomationsBlock(automations []AutomationEntry) Mutator {
 					replacement = append(replacement, "    filter:")
 					replacement = append(replacement, filterLines...)
 				}
-				policyLines := buildAutomationPolicyLines(automation.Policy)
+				policyLines := buildAutomationPolicyLines(automation.Trigger.Type, automation.Policy)
 				if len(policyLines) > 0 {
 					replacement = append(replacement, "    policy:")
 					replacement = append(replacement, policyLines...)
@@ -756,14 +760,31 @@ func buildAutomationFilterLines(filter AutomationFilterEntry) []string {
 	if filter.InputContextRegex != "" {
 		lines = append(lines, "      input_context_regex: "+strconv.Quote(filter.InputContextRegex))
 	}
+	if filter.MaxAgeMinutes > 0 {
+		lines = append(lines, "      max_age_minutes: "+strconv.Itoa(filter.MaxAgeMinutes))
+	}
 	return lines
 }
 
-func buildAutomationPolicyLines(policy AutomationPolicyEntry) []string {
-	if !policy.AutoResume {
-		return nil
+func buildAutomationPolicyLines(triggerType string, policy AutomationPolicyEntry) []string {
+	var lines []string
+	if policy.AutoResume {
+		if triggerType == "rate_limited" {
+			lines = append(lines, "      auto_switch: true")
+		} else {
+			lines = append(lines, "      auto_resume: true")
+		}
 	}
-	return []string{"      auto_resume: true"}
+	if policy.SwitchToProfile != "" {
+		lines = append(lines, "      switch_to_profile: "+strconv.Quote(policy.SwitchToProfile))
+	}
+	if policy.SwitchToBackend != "" {
+		lines = append(lines, "      switch_to_backend: "+strconv.Quote(policy.SwitchToBackend))
+	}
+	if policy.CooldownMinutes > 0 {
+		lines = append(lines, "      cooldown_minutes: "+strconv.Itoa(policy.CooldownMinutes))
+	}
+	return lines
 }
 
 func marshalStringSliceInline(values []string) string {

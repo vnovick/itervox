@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import MarkdownPanel from './MarkdownPanel';
 import IssueDetailHeader from './IssueDetailHeader';
+import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
@@ -188,22 +189,7 @@ export default function IssueDetailSlide() {
           </div>
         )}
 
-        {/* Blocked by */}
-        {issue.blockedBy && issue.blockedBy.length > 0 && (
-          <div>
-            <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Blocked by</h4>
-            <div className="flex flex-wrap gap-1.5">
-              {issue.blockedBy.map((id) => (
-                <span
-                  key={id}
-                  className="bg-theme-danger-soft text-theme-danger inline-flex items-center rounded px-2 py-0.5 font-mono text-xs"
-                >
-                  {id}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        <IssueBlockerDetails issue={issue} />
 
         {/* Description */}
         <div>

@@ -135,6 +135,9 @@ func walkClaudePluginsAt(root, source, provider string) ([]Plugin, error) {
 			continue
 		}
 		p.Provider = provider
+		for i := range p.Skills {
+			p.Skills[i].Provider = provider
+		}
 		out = append(out, p)
 	}
 	return out, nil

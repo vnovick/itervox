@@ -69,8 +69,8 @@ func IsRateLimitFailureWithPatterns(errorMessage string, patterns []string) bool
 // dispatchMatchingRunFailedAutomations. Called from event_loop.go when a
 // terminal failure is classified as rate-limit-driven AND the operator has
 // configured at least one rate_limited rule. The two helpers are separate
-// so an operator can have both — generic run_failed handling AND a
-// targeted switch — without one blocking the other.
+// so rate_limited recovery can take precedence when a switch is queued, while
+// generic run_failed handling remains the fallback when no switch fires.
 //
 // Per-issue switch-cap and per-(issue, profile) cooldown are evaluated
 // here so the rule never fires beyond what the operator authorised. Each
@@ -89,11 +89,12 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 	errorMessage string,
 	attempt int,
 	promptTokensTotal, completionTokensTotal int,
-) {
+) int {
 	rules := o.snapRateLimitedAutomations()
 	if len(rules) == 0 {
-		return
+		return 0
 	}
+	queued := 0
 	for _, rule := range rules {
 		if !matchesAutomationFilter(
 			issue,
@@ -114,7 +115,9 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 			// for this issue" to the operator via a tracker comment so
 			// they don't have to grep daemon logs to know why a stuck
 			// issue stopped auto-switching. Fire-and-forget.
-			go o.commentRateLimitCapExhausted(issue, failedProfile)
+			if o.claimRateLimitCapComment(issue.ID, now) {
+				go o.commentRateLimitCapExhausted(issue, failedProfile)
+			}
 			continue
 		}
 		cooldownKey := issue.ID + "|" + failedProfile
@@ -124,6 +127,55 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 				"until", untilT.Format(time.RFC3339))
 			continue
 		}
+		// Gap §2.1 evaluated and kept as-is: rate_limited queues an
+		// EventDispatchAutomation while run_failed (sibling helper)
+		// calls startAutomationRun directly. Switching rate_limited to startAutomationRun
+		// breaks the unit test that asserts the queued event shape
+		// (TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext)
+		// — the test is the contract because the queue carries the
+		// trigger-context fields we want to verify in isolation.
+		// run_failed has no equivalent test, which is why it could call
+		// startAutomationRun. Marking §2.1 closed-with-rationale.
+		dispatchProfile := rule.ProfileName
+		if rule.AutoResume && rule.SwitchToProfile != "" {
+			dispatchProfile = rule.SwitchToProfile
+		}
+		dispatch := AutomationDispatch{
+			AutomationID:      rule.ID,
+			ProfileName:       dispatchProfile,
+			Instructions:      rule.Instructions,
+			AutoResume:        rule.AutoResume,
+			UseIssueLifecycle: rule.AutoResume && rule.SwitchToProfile != "",
+			Trigger: AutomationTriggerContext{
+				Type:                  config.AutomationTriggerRateLimited,
+				FiredAt:               now,
+				AutomationID:          rule.ID,
+				CurrentState:          issue.State,
+				ErrorMessage:          errorMessage,
+				RetryAttempt:          attempt,
+				FailedProfile:         failedProfile,
+				FailedBackend:         failedBackend,
+				PromptTokensTotal:     promptTokensTotal,
+				CompletionTokensTotal: completionTokensTotal,
+				SwitchedToProfile:     rule.SwitchToProfile,
+				SwitchedToBackend:     rule.SwitchToBackend,
+			},
+		}
+		_ = ctx // dispatch is via channel; ctx unused in queue path
+		issueCopy := issue
+		select {
+		case o.events <- OrchestratorEvent{
+			Type:       EventDispatchAutomation,
+			Issue:      &issueCopy,
+			Automation: &dispatch,
+		}:
+			queued++
+		default:
+			slog.Warn("orchestrator: rate_limited dispatch channel full",
+				"identifier", issue.Identifier, "automation", rule.ID)
+			continue
+		}
+
 		o.recordRateLimitSwitch(issue.ID, now)
 		if rule.Cooldown > 0 {
 			o.setRateLimitCooldown(cooldownKey, now.Add(rule.Cooldown))
@@ -166,7 +218,8 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 			autoSwitchedCopy := maps.Clone(state.AutoSwitchedIdentifiers)
 			profilesCopy := maps.Clone(state.IssueProfiles)
 			backendsCopy := maps.Clone(state.IssueBackends)
-			go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy)
+			switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
+			go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
 			// Gap §6.1 audit-trail: post a managed comment on the issue
 			// summarising the swap so operators see "Itervox swapped
 			// claude-coder → codex-coder due to rate-limit" without
@@ -174,50 +227,8 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 			// to post must NOT block the dispatch.
 			go o.commentRateLimitedSwitch(issue, failedProfile, failedBackend, rule, promptTokensTotal, completionTokensTotal)
 		}
-
-		// Gap §2.1 evaluated and kept as-is: rate_limited queues an
-		// EventDispatchAutomation while run_failed (sibling helper)
-		// calls startAutomationRun directly. Both work; the difference
-		// is doc-grade. Switching rate_limited to startAutomationRun
-		// breaks the unit test that asserts the queued event shape
-		// (TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext)
-		// — the test is the contract because the queue carries the
-		// trigger-context fields we want to verify in isolation.
-		// run_failed has no equivalent test, which is why it could call
-		// startAutomationRun. Marking §2.1 closed-with-rationale.
-		dispatch := AutomationDispatch{
-			AutomationID: rule.ID,
-			ProfileName:  rule.ProfileName,
-			Instructions: rule.Instructions,
-			AutoResume:   rule.AutoResume,
-			Trigger: AutomationTriggerContext{
-				Type:                  config.AutomationTriggerRateLimited,
-				FiredAt:               now,
-				AutomationID:          rule.ID,
-				CurrentState:          issue.State,
-				ErrorMessage:          errorMessage,
-				RetryAttempt:          attempt,
-				FailedProfile:         failedProfile,
-				FailedBackend:         failedBackend,
-				PromptTokensTotal:     promptTokensTotal,
-				CompletionTokensTotal: completionTokensTotal,
-				SwitchedToProfile:     rule.SwitchToProfile,
-				SwitchedToBackend:     rule.SwitchToBackend,
-			},
-		}
-		_ = ctx // dispatch is via channel; ctx unused in queue path
-		issueCopy := issue
-		select {
-		case o.events <- OrchestratorEvent{
-			Type:       EventDispatchAutomation,
-			Issue:      &issueCopy,
-			Automation: &dispatch,
-		}:
-		default:
-			slog.Warn("orchestrator: rate_limited dispatch channel full",
-				"identifier", issue.Identifier, "automation", rule.ID)
-		}
 	}
+	return queued
 }
 
 // allowRateLimitSwitch returns true when the issue is still under its
@@ -264,6 +275,56 @@ func (o *Orchestrator) recordRateLimitSwitch(issueID string, now time.Time) {
 		o.switchHistory = make(map[string][]time.Time)
 	}
 	o.switchHistory[issueID] = append(o.switchHistory[issueID], now)
+}
+
+func (o *Orchestrator) rateLimitSwitchWindowDuration() time.Duration {
+	windowH := o.SwitchWindowHoursCfg()
+	if windowH <= 0 {
+		windowH = 6
+	}
+	return time.Duration(windowH) * time.Hour
+}
+
+func (o *Orchestrator) nextRateLimitCapCommentUntil(issueID string, now time.Time) time.Time {
+	window := o.rateLimitSwitchWindowDuration()
+	windowStart := now.Add(-window)
+
+	o.switchHistoryMu.Lock()
+	defer o.switchHistoryMu.Unlock()
+	var oldest time.Time
+	for _, t := range o.switchHistory[issueID] {
+		if t.Before(windowStart) {
+			continue
+		}
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	if oldest.IsZero() {
+		return now.Add(window)
+	}
+	until := oldest.Add(window)
+	if !until.After(now) {
+		return now.Add(window)
+	}
+	return until
+}
+
+func (o *Orchestrator) claimRateLimitCapComment(issueID string, now time.Time) bool {
+	if issueID == "" {
+		return false
+	}
+	until := o.nextRateLimitCapCommentUntil(issueID, now)
+	o.rateLimitCapCommentMu.Lock()
+	defer o.rateLimitCapCommentMu.Unlock()
+	if o.rateLimitCapCommentUntil == nil {
+		o.rateLimitCapCommentUntil = make(map[string]time.Time)
+	}
+	if existing, ok := o.rateLimitCapCommentUntil[issueID]; ok && now.Before(existing) {
+		return false
+	}
+	o.rateLimitCapCommentUntil[issueID] = until
+	return true
 }
 
 func (o *Orchestrator) rateLimitCooldownUntil(key string) (time.Time, bool) {
@@ -386,6 +447,28 @@ func RevertExpiredAutoSwitches(state *State, ttl time.Duration, now time.Time) i
 	return reverted
 }
 
+func (o *Orchestrator) revertExpiredAutoSwitchesForTick(state *State, now time.Time) int {
+	o.cfgMu.RLock()
+	revertHours := o.cfg.Agent.SwitchRevertHours
+	o.cfgMu.RUnlock()
+	if revertHours <= 0 {
+		return 0
+	}
+	ttl := time.Duration(revertHours) * time.Hour
+	reverted := RevertExpiredAutoSwitches(state, ttl, now)
+	if reverted == 0 {
+		return 0
+	}
+	slog.Info("orchestrator: reverted expired auto-switch overrides",
+		"count", reverted, "ttl_hours", revertHours)
+	autoSwitchedCopy := maps.Clone(state.AutoSwitchedIdentifiers)
+	profilesCopy := maps.Clone(state.IssueProfiles)
+	backendsCopy := maps.Clone(state.IssueBackends)
+	switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
+	o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
+	return reverted
+}
+
 // PruneRateLimitedMaps removes entries that can no longer affect any
 // future cap or cooldown decision: switchHistory entries whose newest
 // stamp is older than 2 * SwitchWindowHours, and rateLimitCooldown
@@ -422,4 +505,12 @@ func (o *Orchestrator) PruneRateLimitedMaps(now time.Time) {
 		}
 	}
 	o.rateLimitCooldownMu.Unlock()
+
+	o.rateLimitCapCommentMu.Lock()
+	for issueID, until := range o.rateLimitCapCommentUntil {
+		if !until.After(now) {
+			delete(o.rateLimitCapCommentUntil, issueID)
+		}
+	}
+	o.rateLimitCapCommentMu.Unlock()
 }

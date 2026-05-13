@@ -32,9 +32,9 @@ type AnalyzeInputs struct {
 //   - UNUSED_PROFILE           — profile defined but not in recently-active set
 //   - BLOATED_PROFILE          — > 20 MCP tools OR > 15 skills attributed
 //   - LARGE_CONTEXT            — estimated profile cost > LargeContextThreshold
-//   - STALE_SCHEDULE           — schedule references unknown profile
+//   - STALE_SCHEDULE           — reserved for future schedule inventory inputs
 //   - INSTRUCTION_SHADOWING    — same instruction filename across scopes
-//   - ORPHAN_MCP               — MCP server name never appears in any skill body
+//   - ORPHAN_MCP               — MCP server name never appears in skill names/descriptions/bodies
 //
 // The remaining design-draft rules (DUPLICATE_CROSS_RUNTIME_SKILL,
 // MISSING_SKILL_REF, HOOK_CONFLICT, REDUNDANT_HOOK, MODEL_MISMATCH,
@@ -111,12 +111,6 @@ func detectDuplicateMCP(inv *Inventory) []InventoryIssue {
 			Title:       "Duplicate MCP server registration",
 			Description: desc,
 			Affected:    names,
-			Fix: &Fix{
-				Label:       "Remove duplicates",
-				Action:      "remove-mcp",
-				Target:      strings.Join(names[1:], ","),
-				Destructive: true,
-			},
 		})
 	}
 	return out
@@ -127,7 +121,10 @@ func detectUnusedProfile(_ *Inventory, in AnalyzeInputs) []InventoryIssue {
 		return nil
 	}
 	var out []InventoryIssue
-	for name := range in.Profiles {
+	for name, profile := range in.Profiles {
+		if !config.ProfileEnabled(profile) {
+			continue
+		}
 		if _, seen := in.RecentlyActiveProfiles[name]; seen {
 			continue
 		}
@@ -257,17 +254,19 @@ func detectInstructionShadowing(inv *Inventory) []InventoryIssue {
 }
 
 func detectOrphanMCP(inv *Inventory) []InventoryIssue {
-	if len(inv.MCPServers) == 0 || len(inv.Skills) == 0 {
+	if len(inv.MCPServers) == 0 {
 		return nil
 	}
-	// Build a corpus of skill descriptions + names; an MCP server name not
-	// found is "orphan" (heuristic — MCP tools are usually mentioned by name
-	// in skills that consume them).
+	// Build a corpus of skill names, descriptions, and bodies; an MCP server
+	// name not found is "orphan" (heuristic — MCP tools are usually mentioned
+	// by name in skills that consume them).
 	var corpus strings.Builder
 	for _, s := range inv.Skills {
 		corpus.WriteString(s.Name)
 		corpus.WriteString(" ")
 		corpus.WriteString(s.Description)
+		corpus.WriteString(" ")
+		corpus.WriteString(s.bodyText)
 		corpus.WriteString(" ")
 	}
 	for _, p := range inv.Plugins {
@@ -276,9 +275,14 @@ func detectOrphanMCP(inv *Inventory) []InventoryIssue {
 			corpus.WriteString(" ")
 			corpus.WriteString(s.Description)
 			corpus.WriteString(" ")
+			corpus.WriteString(s.bodyText)
+			corpus.WriteString(" ")
 		}
 	}
 	body := strings.ToLower(corpus.String())
+	if body == "" {
+		return nil
+	}
 	var out []InventoryIssue
 	for _, srv := range inv.MCPServers {
 		needle := strings.ToLower(srv.Name)
@@ -289,7 +293,7 @@ func detectOrphanMCP(inv *Inventory) []InventoryIssue {
 			ID:          "ORPHAN_MCP",
 			Severity:    "info",
 			Title:       "MCP server not referenced by any skill",
-			Description: "MCP server " + srv.Name + " is configured but never mentioned in any skill description.",
+			Description: "MCP server " + srv.Name + " is configured but never mentioned in any skill name, description, or body.",
 			Affected:    []string{srv.Name},
 		})
 	}

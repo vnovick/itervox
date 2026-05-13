@@ -1676,7 +1676,10 @@ func TestHandleAgentComment_Success(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "ENG-1", gotIdentifier)
-	assert.Equal(t, "hello from agent", gotBody)
+	// Agent comments are wrapped with the managed marker so they don't trigger
+	// tracker_comment_added automations (prevents infinite comment-chain loops).
+	assert.Contains(t, gotBody, "hello from agent")
+	assert.Contains(t, gotBody, "<!-- itervox:managed -->", "agent comments must be marked managed to prevent automation loops")
 }
 
 // Gap D — happy path: a profile granted AgentActionCommentPR can post
@@ -1715,6 +1718,7 @@ func TestHandleAgentCommentPR_Success(t *testing.T) {
 	assert.Contains(t, gotBody, "🤖 Itervox review")
 	assert.Contains(t, gotBody, "internal/foo.go:42")
 	assert.Contains(t, gotBody, "potential nil deref")
+	assert.Contains(t, gotBody, "<!-- itervox:managed -->", "comment_pr must be marked managed to prevent automation loops")
 }
 
 // Gap D — comment_pr with no summary AND no findings must reject as 400

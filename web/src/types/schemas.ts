@@ -257,6 +257,12 @@ export const IssueLogEntrySchema = z.object({
   sessionId: z.string().optional(),
 });
 
+export const BlockerDetailSchema = z.object({
+  identifier: z.string(),
+  state: z.string().optional(),
+  url: z.string().optional(),
+});
+
 export const TrackerIssueSchema = z.object({
   identifier: z.string(),
   title: z.string(),
@@ -280,6 +286,7 @@ export const TrackerIssueSchema = z.object({
   priority: z.number().nullable().optional(),
   branchName: z.string().nullable().optional(),
   blockedBy: z.array(z.string()).optional(),
+  blockedByDetails: z.array(BlockerDetailSchema).optional(),
   comments: z.array(CommentRowSchema).optional(),
   ineligibleReason: z.string().optional(),
   agentProfile: z.string().optional(),
@@ -299,6 +306,7 @@ export type AutomationDef = z.infer<typeof AutomationDefSchema>;
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 export type LogEventType = z.infer<typeof LogEventTypeSchema>;
 export type IssueLogEntry = z.infer<typeof IssueLogEntrySchema>;
+export type BlockerDetail = z.infer<typeof BlockerDetailSchema>;
 export type TrackerIssue = z.infer<typeof TrackerIssueSchema>;
 export type InputRequiredEntry = z.infer<typeof InputRequiredEntrySchema>;
 export type ConfigInvalidStatus = z.infer<typeof ConfigInvalidStatusSchema>;

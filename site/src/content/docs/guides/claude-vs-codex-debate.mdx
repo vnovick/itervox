@@ -1,0 +1,167 @@
+---
+title: Claude vs Codex Debate
+description: Use comment-only Claude and Codex planner profiles to compare approaches, then synthesize a decision safely.
+sidebar:
+  order: 6
+---
+
+Claude vs Codex debate is a planning workflow for issues where two strong models may reasonably choose different approaches.
+
+Use it for architecture decisions, risky refactors, migration strategy, performance tradeoffs, and release-blocker analysis. Do not use it for routine implementation work where a single focused profile is enough.
+
+:::caution
+Native debate run groups are not production-ready in v0.2.0. The workflow below is an experimental pattern built from existing automations, labels, comment sentinels, and comment-only planner profiles.
+:::
+
+## Mental Model
+
+A debate has three roles:
+
+1. Claude planner writes one plan.
+2. Codex planner writes a second plan.
+3. Moderator compares both plans and posts a decision.
+
+All three profiles should be comment-only by default. Debate profiles should not move issue state, create issues, push code, or provide input unless you intentionally grant those actions after reviewing the security boundary.
+
+## Current Workaround
+
+Current automations dispatch one profile per trigger. There is no native barrier that says "wait until Claude and Codex are both done, then run the moderator." The workaround is:
+
+- add a label such as `needs-debate`
+- run two comment-only planner automations for that label
+- have each planner post a managed comment with a stable sentinel
+- run a moderator automation only when both sentinel comments are visible
+
+The moderator step is prompt-governed today. It must inspect issue comments and decide whether both planner outputs exist.
+
+## Example Profiles
+
+```yaml
+agent:
+  profiles:
+    planner-claude:
+      command: claude --model claude-opus-4-6
+      backend: claude
+      allowed_actions: [comment]
+      prompt: |
+        You are the Claude planning profile.
+        Do not modify code.
+        Post exactly one tracker comment starting with:
+        <!-- itervox:debate:claude-plan -->
+        Include the recommended approach, risks, tests, and rollout plan.
+
+    planner-codex:
+      command: codex
+      backend: codex
+      allowed_actions: [comment]
+      prompt: |
+        You are the Codex planning profile.
+        Do not modify code.
+        Post exactly one tracker comment starting with:
+        <!-- itervox:debate:codex-plan -->
+        Include the recommended approach, risks, tests, and rollout plan.
+
+    debate-moderator:
+      command: claude --model claude-opus-4-6
+      backend: claude
+      allowed_actions: [comment]
+      prompt: |
+        You are the debate moderator.
+        Read the Claude and Codex debate comments.
+        If either sentinel is missing, post a short "debate incomplete" comment and stop.
+        If both are present, compare the plans and post one decision comment starting with:
+        <!-- itervox:debate:decision -->
+```
+
+## Example Automations
+
+```yaml
+automations:
+  - id: debate-claude-plan
+    enabled: true
+    trigger:
+      type: issue_entered_state
+      state: "Planning"
+    profile: planner-claude
+    filter:
+      labels_any: ["needs-debate"]
+    instructions: |
+      Write the Claude side of the debate. Do not change code or move state.
+
+  - id: debate-codex-plan
+    enabled: true
+    trigger:
+      type: issue_entered_state
+      state: "Planning"
+    profile: planner-codex
+    filter:
+      labels_any: ["needs-debate"]
+    instructions: |
+      Write the Codex side of the debate. Do not change code or move state.
+
+  - id: debate-moderator
+    enabled: true
+    trigger:
+      type: tracker_comment_added
+    profile: debate-moderator
+    filter:
+      labels_any: ["needs-debate"]
+    instructions: |
+      Run only if both debate sentinels are present in the issue comments.
+      If both are present, synthesize the decision.
+```
+
+:::note
+`tracker_comment_added` is poll-derived and currently observes the latest comment between polls. Automation filters do not regex-match tracker comment bodies today, so the moderator must inspect `{{ trigger.comment_body }}` and `{{ issue.comments }}` in its prompt. For production debate workflows, prefer native run groups once available.
+:::
+
+## Safety Rules
+
+- Keep planner and moderator profiles comment-only.
+- Do not run debate profiles on untrusted issue comments with broad daemon actions enabled.
+- Avoid debate on secrets, credentials, customer data, or irreversible operations.
+- Require a human to approve the final decision before implementation starts.
+- Use short, stable sentinel comments so the moderator can detect participants reliably.
+
+## Failure Modes
+
+| Failure | What happens today | Production fix |
+|---|---|---|
+| One planner fails | Moderator must notice missing sentinel | Run-group participant status |
+| Both planners post at once | Latest-comment polling can miss one trigger | Native run-group join barrier |
+| Moderator loops | Prompt must dedupe by decision sentinel | Run-group idempotency key |
+| Planner writes code | Prevent with comment-only action grants and prompt | Enforced planner profile mode |
+| Debate burns tokens | Manual monitoring today | Cost caps and debate deadlines |
+
+## Production Target
+
+Native debate should be modeled as an automation run group:
+
+```yaml
+automations:
+  - id: debate-on-planning
+    trigger:
+      type: issue_entered_state
+      state: "Planning"
+    filter:
+      labels_any: ["needs-debate"]
+    parallel_profiles:
+      - planner-claude
+      - planner-codex
+    join_strategy: all
+    moderator_profile: debate-moderator
+```
+
+Production run groups should store participant artifacts, status, deadlines, failure policy, and moderator output separately from tracker comments. Tracker comments can mirror the final decision, but they should not be the only source of truth.
+
+## When Not To Debate
+
+Skip debate when:
+
+- the issue is small or mechanical
+- acceptance criteria already prescribe the solution
+- a reviewer profile can evaluate the work after implementation
+- the risk is operational rather than technical
+- the team needs speed more than a tradeoff matrix
+
+Use a single planner profile instead.

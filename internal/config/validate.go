@@ -220,8 +220,19 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 			// Gap E — switch_to_profile is required; switch_to_backend is
 			// optional but if set must name a known backend. cooldown_minutes
 			// must be non-negative.
-			if strings.TrimSpace(entry.Policy.SwitchToProfile) == "" {
+			switchToProfile := strings.TrimSpace(entry.Policy.SwitchToProfile)
+			if switchToProfile == "" {
 				return fmt.Errorf("automation %q: rate_limited automations require policy.switch_to_profile", id)
+			}
+			switchProfile, ok := profiles[switchToProfile]
+			if !ok {
+				return fmt.Errorf("automation %q references unknown switch_to_profile %q", id, switchToProfile)
+			}
+			if entry.Enabled && !ProfileEnabled(switchProfile) {
+				return fmt.Errorf("automation %q references disabled switch_to_profile %q", id, switchToProfile)
+			}
+			if !entry.Policy.AutoResume {
+				return fmt.Errorf("automation %q: rate_limited automations require policy.auto_switch: true or policy.auto_resume: true", id)
 			}
 			switch entry.Policy.SwitchToBackend {
 			case "", "claude", "codex":

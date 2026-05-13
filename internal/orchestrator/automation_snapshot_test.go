@@ -23,6 +23,7 @@ func TestRecordHistoryPropagatesAutomationFields(t *testing.T) {
 		live := &RunEntry{
 			Issue:        issue,
 			Kind:         "automation",
+			ProfileName:  "qa-bot",
 			AutomationID: "pr-on-input",
 			TriggerType:  "input_required",
 			CommentCount: 2,
@@ -35,6 +36,7 @@ func TestRecordHistoryPropagatesAutomationFields(t *testing.T) {
 		assert.Equal(t, "input_required", hist[0].TriggerType)
 		assert.Equal(t, 2, hist[0].CommentCount)
 		assert.Equal(t, "automation", hist[0].Kind)
+		assert.Equal(t, "qa-bot", hist[0].ProfileName)
 	})
 
 	t.Run("manual run leaves automation fields empty", func(t *testing.T) {

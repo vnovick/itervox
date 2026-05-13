@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
+	"os"
 	"regexp"
 	"sync"
 	"testing"
@@ -9,8 +11,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/agent/agenttest"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // IsRateLimitFailure must classify common vendor 429 / quota error messages
@@ -162,6 +166,8 @@ func TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext(t *testi
 	ev := <-o.events
 	require.Equal(t, EventDispatchAutomation, ev.Type)
 	require.NotNil(t, ev.Automation)
+	assert.Equal(t, "codex-coder", ev.Automation.ProfileName)
+	assert.True(t, ev.Automation.UseIssueLifecycle)
 	assert.Equal(t, config.AutomationTriggerRateLimited, ev.Automation.Trigger.Type)
 	assert.Equal(t, "claude-coder", ev.Automation.Trigger.FailedProfile)
 	assert.Equal(t, "claude", ev.Automation.Trigger.FailedBackend)
@@ -170,6 +176,52 @@ func TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext(t *testi
 	assert.Equal(t, "codex-coder", ev.Automation.Trigger.SwitchedToProfile)
 	assert.Equal(t, "codex", ev.Automation.Trigger.SwitchedToBackend)
 	assert.True(t, ev.Automation.AutoResume)
+}
+
+func TestDispatchMatchingRateLimitedAutomations_ChannelFullDoesNotConsumeCapCooldownOrOverride(t *testing.T) {
+	mt := tracker.NewMemoryTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1"}}, []string{"In Progress"}, []string{"Done"})
+	o := &Orchestrator{
+		cfg:     &config.Config{},
+		tracker: mt,
+		events:  make(chan OrchestratorEvent),
+	}
+	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 1
+	o.cfg.Agent.SwitchWindowHours = 6
+	o.SetRateLimitedAutomations([]RateLimitedAutomation{
+		{
+			ID:              "auto",
+			ProfileName:     "fallback",
+			SwitchToProfile: "codex-coder",
+			SwitchToBackend: "codex",
+			AutoResume:      true,
+			Cooldown:        time.Hour,
+		},
+	})
+
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	state := State{
+		IssueProfiles:           map[string]string{},
+		IssueBackends:           map[string]string{},
+		AutoSwitchedIdentifiers: map[string]struct{}{},
+		AutoSwitchedAt:          map[string]time.Time{},
+	}
+	queued := o.dispatchMatchingRateLimitedAutomations(
+		context.Background(), &state,
+		domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}, now,
+		"claude-coder", "claude", "rate_limit_exceeded", 5, 0, 0,
+	)
+
+	assert.Zero(t, queued, "full event channel must not report a queued recovery")
+	assert.Empty(t, state.IssueProfiles, "failed enqueue must not switch profile")
+	assert.Empty(t, state.IssueBackends, "failed enqueue must not switch backend")
+	assert.Empty(t, state.AutoSwitchedIdentifiers, "failed enqueue must not mark auto-switch")
+	assert.Empty(t, state.AutoSwitchedAt, "failed enqueue must not record switch timestamp")
+	assert.True(t, o.allowRateLimitSwitch("id1", now), "failed enqueue must not burn switch cap")
+	_, muted := o.rateLimitCooldownUntil("id1|claude-coder")
+	assert.False(t, muted, "failed enqueue must not set cooldown")
+	assert.Never(t, func() bool {
+		return countMemoryTrackerComments(t, mt, "id1") > 0
+	}, 100*time.Millisecond, 10*time.Millisecond, "failed enqueue must not post tracker comments")
 }
 
 // AutoResume + SwitchToProfile must override state.IssueProfiles so the
@@ -232,6 +284,197 @@ func TestDispatchMatchingRateLimitedAutomations_MarksAutoSwitched(t *testing.T) 
 	assert.True(t, marked, "auto-switch must mark the identifier so the override can be reverted later")
 }
 
+func TestIssueProfileForDispatch_UsesPersistedAutoSwitchState(t *testing.T) {
+	cfg := automationBaseCfg()
+	state := NewState(cfg)
+	state.IssueProfiles["ENG-1"] = "codex-coder"
+	state.IssueBackends["ENG-1"] = "codex"
+
+	o := &Orchestrator{
+		cfg:           cfg,
+		issueProfiles: map[string]string{},
+		issueBackends: map[string]string{},
+	}
+
+	assert.Equal(t, "codex-coder", o.issueProfileForDispatch(state, "ENG-1"))
+	assert.Equal(t, "codex", o.issueBackendForDispatch(state, "ENG-1"))
+
+	o.issueProfiles["ENG-1"] = "operator-pinned"
+	o.issueBackends["ENG-1"] = "claude"
+	assert.Equal(t, "operator-pinned", o.issueProfileForDispatch(state, "ENG-1"),
+		"operator overrides must take precedence over persisted auto-switch state")
+	assert.Equal(t, "claude", o.issueBackendForDispatch(state, "ENG-1"))
+}
+
+func TestEventDispatchAutomation_RateLimitedAutoResumeClearsAutoSwitchPause(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"fallback": {Command: "codex"},
+	}
+	state := NewState(cfg)
+	state.PausedIdentifiers["ENG-1"] = "id1"
+	state.AutoSwitchedIdentifiers["ENG-1"] = struct{}{}
+
+	o := &Orchestrator{cfg: cfg, DryRun: true}
+	issue := automationIssue("In Progress")
+	ev := OrchestratorEvent{
+		Type:  EventDispatchAutomation,
+		Issue: &issue,
+		Automation: &AutomationDispatch{
+			AutomationID: "rate-limit-switch",
+			ProfileName:  "fallback",
+			AutoResume:   true,
+			Trigger: AutomationTriggerContext{
+				Type:              config.AutomationTriggerRateLimited,
+				SwitchedToProfile: "fallback",
+			},
+		},
+	}
+
+	out := o.handleEvent(t.Context(), state, ev)
+	assert.NotContains(t, out.PausedIdentifiers, "ENG-1",
+		"rate-limited auto_resume dispatch must clear the pause created by retry exhaustion")
+	assert.Contains(t, out.Claimed, "id1", "dry-run dispatch should claim the issue after the pause is cleared")
+}
+
+func TestEventDispatchAutomation_NonAutoSwitchPauseStillBlocks(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"fallback": {Command: "codex"},
+	}
+	state := NewState(cfg)
+	state.PausedIdentifiers["ENG-1"] = "id1"
+
+	o := &Orchestrator{cfg: cfg, DryRun: true}
+	issue := automationIssue("In Progress")
+	ev := OrchestratorEvent{
+		Type:  EventDispatchAutomation,
+		Issue: &issue,
+		Automation: &AutomationDispatch{
+			AutomationID: "manual-review",
+			ProfileName:  "fallback",
+			Trigger: AutomationTriggerContext{
+				Type: config.AutomationTriggerRunFailed,
+			},
+		},
+	}
+
+	out := o.handleEvent(t.Context(), state, ev)
+	assert.Contains(t, out.PausedIdentifiers, "ENG-1",
+		"manual pauses must remain an automation dispatch guard")
+	assert.NotContains(t, out.Claimed, "id1", "paused issue should not dispatch")
+}
+
+func TestWorkerExitedRateLimitedAutoSwitchSkipsFailedStateAndQueuesSwitchProfile(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.MaxRetries = 1
+	cfg.Agent.MaxSwitchesPerIssuePerWindow = 5
+	cfg.Agent.SwitchWindowHours = 6
+	cfg.Tracker.FailedState = "Failed"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"default":  {Command: "claude"},
+		"fallback": {Command: "codex"},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	o := &Orchestrator{
+		cfg:           cfg,
+		tracker:       mt,
+		events:        make(chan OrchestratorEvent, 2),
+		workerCancels: map[string]context.CancelFunc{},
+	}
+	o.SetRateLimitedAutomations([]RateLimitedAutomation{{
+		ID:              "rate-limit-switch",
+		ProfileName:     "default",
+		SwitchToProfile: "fallback",
+		SwitchToBackend: "codex",
+		AutoResume:      true,
+	}})
+
+	issue := automationIssue("In Progress")
+	attempt := 1
+	run := &RunEntry{
+		Issue:        issue,
+		Backend:      "claude",
+		ProfileName:  "default",
+		RetryAttempt: &attempt,
+		InputTokens:  100,
+		OutputTokens: 25,
+	}
+	state := NewState(cfg)
+	state.Running[issue.ID] = run
+	state.Claimed[issue.ID] = struct{}{}
+
+	out := o.handleEvent(t.Context(), state, OrchestratorEvent{
+		Type:     EventWorkerExited,
+		IssueID:  issue.ID,
+		RunEntry: run,
+		Error:    errors.New("rate_limit_exceeded"),
+	})
+
+	assert.NotContains(t, out.PausedIdentifiers, issue.Identifier)
+	assert.NotContains(t, out.DiscardingIdentifiers, issue.Identifier,
+		"rate_limited recovery must run before failed_state discard marks the issue ineligible")
+	assert.NotContains(t, out.Claimed, issue.ID)
+	assert.Equal(t, "fallback", out.IssueProfiles[issue.Identifier])
+	assert.Equal(t, "codex", out.IssueBackends[issue.Identifier])
+
+	require.Len(t, o.events, 1)
+	ev := <-o.events
+	require.NotNil(t, ev.Automation)
+	assert.Equal(t, config.AutomationTriggerRateLimited, ev.Automation.Trigger.Type)
+	assert.Equal(t, "fallback", ev.Automation.ProfileName)
+	assert.True(t, ev.Automation.UseIssueLifecycle)
+	assert.Equal(t, "fallback", ev.Automation.Trigger.SwitchedToProfile)
+	assert.Equal(t, "codex", ev.Automation.Trigger.SwitchedToBackend)
+}
+
+func TestRateLimitedAutoSwitchRunUsesNormalIssueLifecycle(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Tracker.CompletionState = "Done"
+	cfg.Agent.Command = "claude"
+	cfg.Agent.MaxTurns = 1
+	cfg.Agent.ReadTimeoutMs = 1_000
+	cfg.Agent.TurnTimeoutMs = 1_000
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"fallback": {Command: "codex"},
+	}
+	issue := automationIssue("In Progress")
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	o := &Orchestrator{
+		cfg:           cfg,
+		tracker:       mt,
+		runner:        agenttest.SuccessRunner("session-rate-limit"),
+		events:        make(chan OrchestratorEvent, 8),
+		workerCancels: map[string]context.CancelFunc{},
+	}
+	state := NewState(cfg)
+
+	o.startAutomationRun(t.Context(), &state, issue, time.Now(), AutomationDispatch{
+		AutomationID:      "rate-limit-switch",
+		ProfileName:       "fallback",
+		Instructions:      "Continue the implementation under the fallback profile.",
+		AutoResume:        true,
+		UseIssueLifecycle: true,
+		Trigger: AutomationTriggerContext{
+			Type:              config.AutomationTriggerRateLimited,
+			SwitchedToProfile: "fallback",
+			SwitchedToBackend: "codex",
+		},
+	})
+
+	entry := state.Running[issue.ID]
+	require.NotNil(t, entry)
+	assert.Equal(t, "worker", entry.Kind)
+	assert.Equal(t, "rate-limit-switch", entry.AutomationID)
+	assert.Equal(t, config.AutomationTriggerRateLimited, entry.TriggerType)
+
+	require.Eventually(t, func() bool {
+		got, err := mt.FetchIssueDetail(t.Context(), issue.ID)
+		return err == nil && got.State == "Done"
+	}, 2*time.Second, 20*time.Millisecond,
+		"rate_limited auto-switch recovery must transition the issue like a normal worker")
+}
+
 func TestDispatchMatchingRateLimitedAutomations_NoOverrideWhenAutoResumeFalse(t *testing.T) {
 	o := &Orchestrator{
 		cfg:    &config.Config{},
@@ -281,7 +524,11 @@ func TestAutoSwitchedOverrides_PersistRoundtrip(t *testing.T) {
 		// ENG-2: no backend override
 		"ENG-3": "claude",
 	}
-	writer.saveAutoSwitchedToDisk(autoSwitched, profiles, backends)
+	switchedAt := map[string]time.Time{
+		"ENG-1": time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC),
+		"ENG-3": time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC),
+	}
+	writer.saveAutoSwitchedToDisk(autoSwitched, profiles, backends, switchedAt)
 
 	// Step 2: a fresh "reader" orchestrator loads from the same file.
 	reader := &Orchestrator{cfg: &config.Config{}}
@@ -290,6 +537,7 @@ func TestAutoSwitchedOverrides_PersistRoundtrip(t *testing.T) {
 		IssueProfiles:           map[string]string{},
 		IssueBackends:           map[string]string{},
 		AutoSwitchedIdentifiers: map[string]struct{}{},
+		AutoSwitchedAt:          map[string]time.Time{},
 	}
 	state = reader.loadAutoSwitchedFromDisk(state)
 
@@ -303,6 +551,33 @@ func TestAutoSwitchedOverrides_PersistRoundtrip(t *testing.T) {
 		_, marked := state.AutoSwitchedIdentifiers[id]
 		assert.True(t, marked, "AutoSwitchedIdentifiers must round-trip for %s", id)
 	}
+	assert.Equal(t, switchedAt["ENG-1"], state.AutoSwitchedAt["ENG-1"])
+	_, eng2Stamped := state.AutoSwitchedAt["ENG-2"]
+	assert.False(t, eng2Stamped, "missing switched_at should remain absent")
+	assert.Equal(t, switchedAt["ENG-3"], state.AutoSwitchedAt["ENG-3"])
+}
+
+func TestAutoSwitchedOverrides_BackCompatMissingTimestampLoadsWithoutExpiryTimestamp(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/auto_switched.json"
+	require.NoError(t, os.WriteFile(path, []byte(`{"ENG-1":{"profile":"codex-coder","backend":"codex"}}`), 0o644))
+
+	reader := &Orchestrator{cfg: &config.Config{}}
+	reader.SetAutoSwitchedFile(path)
+	state := State{
+		IssueProfiles:           map[string]string{},
+		IssueBackends:           map[string]string{},
+		AutoSwitchedIdentifiers: map[string]struct{}{},
+		AutoSwitchedAt:          map[string]time.Time{},
+	}
+	state = reader.loadAutoSwitchedFromDisk(state)
+
+	assert.Equal(t, "codex-coder", state.IssueProfiles["ENG-1"])
+	assert.Equal(t, "codex", state.IssueBackends["ENG-1"])
+	_, marked := state.AutoSwitchedIdentifiers["ENG-1"]
+	assert.True(t, marked)
+	_, stamped := state.AutoSwitchedAt["ENG-1"]
+	assert.False(t, stamped, "legacy records without switched_at must not get an artificial timestamp")
 }
 
 // Saving an empty map followed by loading must clear the on-disk state
@@ -312,8 +587,13 @@ func TestAutoSwitchedOverrides_EmptyMapClearsFile(t *testing.T) {
 	path := tmp + "/auto_switched.json"
 	o := &Orchestrator{cfg: &config.Config{}}
 	o.SetAutoSwitchedFile(path)
-	o.saveAutoSwitchedToDisk(map[string]struct{}{"ENG-1": {}}, map[string]string{"ENG-1": "x"}, nil)
-	o.saveAutoSwitchedToDisk(map[string]struct{}{}, map[string]string{}, nil)
+	o.saveAutoSwitchedToDisk(
+		map[string]struct{}{"ENG-1": {}},
+		map[string]string{"ENG-1": "x"},
+		nil,
+		map[string]time.Time{"ENG-1": time.Now()},
+	)
+	o.saveAutoSwitchedToDisk(map[string]struct{}{}, map[string]string{}, nil, nil)
 
 	state := State{
 		IssueProfiles:           map[string]string{},
@@ -369,6 +649,50 @@ func TestRevertExpiredAutoSwitches_NoOpWhenTTLZero(t *testing.T) {
 	assert.Zero(t, RevertExpiredAutoSwitches(state, 0, time.Now()))
 }
 
+func TestRevertExpiredAutoSwitchesForTick_PersistsBeforeDispatch(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/auto_switched.json"
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{}
+	cfg.Agent.SwitchRevertHours = 1
+	o := &Orchestrator{cfg: cfg}
+	o.SetAutoSwitchedFile(path)
+
+	state := State{
+		IssueProfiles: map[string]string{
+			"ENG-1": "codex-coder",
+		},
+		IssueBackends: map[string]string{
+			"ENG-1": "codex",
+		},
+		AutoSwitchedIdentifiers: map[string]struct{}{
+			"ENG-1": {},
+		},
+		AutoSwitchedAt: map[string]time.Time{
+			"ENG-1": now.Add(-2 * time.Hour),
+		},
+	}
+
+	reverted := o.revertExpiredAutoSwitchesForTick(&state, now)
+	require.Equal(t, 1, reverted)
+	assert.Empty(t, state.IssueProfiles)
+	assert.Empty(t, state.IssueBackends)
+	assert.Empty(t, state.AutoSwitchedIdentifiers)
+	assert.Empty(t, state.AutoSwitchedAt)
+
+	reader := &Orchestrator{cfg: &config.Config{}}
+	reader.SetAutoSwitchedFile(path)
+	loaded := State{
+		IssueProfiles:           map[string]string{},
+		IssueBackends:           map[string]string{},
+		AutoSwitchedIdentifiers: map[string]struct{}{},
+		AutoSwitchedAt:          map[string]time.Time{},
+	}
+	loaded = reader.loadAutoSwitchedFromDisk(loaded)
+	assert.Empty(t, loaded.IssueProfiles, "expired override must be removed from disk before later dispatch can reload it")
+	assert.Empty(t, loaded.AutoSwitchedIdentifiers)
+}
+
 // PruneRateLimitedMaps must drop switchHistory entries older than 2*window
 // and cooldown entries whose deadline has passed (gap §1.1, §1.2).
 func TestPruneRateLimitedMaps_EvictsStale(t *testing.T) {
@@ -400,6 +724,104 @@ func TestPruneRateLimitedMaps_EvictsStale(t *testing.T) {
 	o.rateLimitCooldownMu.Unlock()
 	assert.False(t, expiredKept, "expired cooldown entry should be evicted")
 	assert.True(t, activeKept, "active cooldown entry should survive")
+}
+
+func TestRateLimitCapExhaustedCommentDedupeUsesResetWindow(t *testing.T) {
+	o := &Orchestrator{cfg: &config.Config{}}
+	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 1
+	o.cfg.Agent.SwitchWindowHours = 6
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	o.recordRateLimitSwitch("id1", now.Add(-2*time.Hour))
+	require.False(t, o.allowRateLimitSwitch("id1", now), "test setup must put issue at cap")
+
+	assert.True(t, o.claimRateLimitCapComment("id1", now), "first cap comment should be claimed")
+	o.rateLimitCapCommentMu.Lock()
+	until := o.rateLimitCapCommentUntil["id1"]
+	o.rateLimitCapCommentMu.Unlock()
+	assert.Equal(t, now.Add(4*time.Hour), until, "dedupe should open when the oldest switch leaves the window")
+
+	assert.False(t, o.claimRateLimitCapComment("id1", now.Add(time.Minute)),
+		"repeat cap comments inside the same closed window should be suppressed")
+	assert.True(t, o.claimRateLimitCapComment("id1", now.Add(4*time.Hour+time.Second)),
+		"cap comments should be allowed again after the window opens")
+}
+
+func TestDispatchMatchingRateLimitedAutomations_DedupesCapExhaustedComment(t *testing.T) {
+	mt := tracker.NewMemoryTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1"}}, []string{"In Progress"}, []string{"Done"})
+	o := &Orchestrator{
+		cfg:     &config.Config{},
+		tracker: mt,
+		events:  make(chan OrchestratorEvent, 8),
+	}
+	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 1
+	o.cfg.Agent.SwitchWindowHours = 6
+	o.SetRateLimitedAutomations([]RateLimitedAutomation{
+		{
+			ID:              "auto",
+			ProfileName:     "fallback",
+			SwitchToProfile: "codex-coder",
+			AutoResume:      true,
+		},
+	})
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	o.recordRateLimitSwitch("id1", now.Add(-time.Hour))
+	state := State{IssueProfiles: map[string]string{}}
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}
+
+	queued := o.dispatchMatchingRateLimitedAutomations(
+		context.Background(), &state, issue, now,
+		"claude-coder", "claude", "rate_limit", 5, 0, 0,
+	)
+	assert.Zero(t, queued)
+	require.Eventually(t, func() bool {
+		return countMemoryTrackerComments(t, mt, "id1") == 1
+	}, time.Second, 10*time.Millisecond)
+
+	queued = o.dispatchMatchingRateLimitedAutomations(
+		context.Background(), &state, issue, now.Add(time.Minute),
+		"claude-coder", "claude", "rate_limit", 6, 0, 0,
+	)
+	assert.Zero(t, queued)
+	assert.Never(t, func() bool {
+		return countMemoryTrackerComments(t, mt, "id1") > 1
+	}, 100*time.Millisecond, 10*time.Millisecond, "repeat cap hits inside the same window should not post duplicate comments")
+}
+
+func countMemoryTrackerComments(t *testing.T, mt *tracker.MemoryTracker, issueID string) int {
+	t.Helper()
+	issue, err := mt.FetchIssueDetail(t.Context(), issueID)
+	require.NoError(t, err)
+	return len(issue.Comments)
+}
+
+func TestSnapshotClonesAutoSwitchedMaps(t *testing.T) {
+	o := &Orchestrator{}
+	switchedAt := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	state := State{
+		AutoSwitchedIdentifiers: map[string]struct{}{
+			"ENG-1": {},
+		},
+		AutoSwitchedAt: map[string]time.Time{
+			"ENG-1": switchedAt,
+		},
+	}
+
+	o.storeSnap(state)
+	delete(state.AutoSwitchedIdentifiers, "ENG-1")
+	delete(state.AutoSwitchedAt, "ENG-1")
+	snap := o.Snapshot()
+
+	_, marked := snap.AutoSwitchedIdentifiers["ENG-1"]
+	assert.True(t, marked, "snapshot must not alias State.AutoSwitchedIdentifiers")
+	assert.Equal(t, switchedAt, snap.AutoSwitchedAt["ENG-1"], "snapshot must not alias State.AutoSwitchedAt")
+
+	snap.AutoSwitchedIdentifiers["ENG-2"] = struct{}{}
+	snap.AutoSwitchedAt["ENG-2"] = switchedAt.Add(time.Hour)
+	snap2 := o.Snapshot()
+	_, leakedIdentifier := snap2.AutoSwitchedIdentifiers["ENG-2"]
+	_, leakedTime := snap2.AutoSwitchedAt["ENG-2"]
+	assert.False(t, leakedIdentifier, "mutating returned snapshot must not alter stored AutoSwitchedIdentifiers")
+	assert.False(t, leakedTime, "mutating returned snapshot must not alter stored AutoSwitchedAt")
 }
 
 // Rules whose IdentifierRegex doesn't match the issue must not fire.

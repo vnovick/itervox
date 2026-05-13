@@ -160,6 +160,7 @@ type RunEntry struct {
 	AgentSessionID string
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
+	ProfileName    string // resolved agent profile name, empty = default
 	Kind           string // "worker" (default) | "reviewer" | "automation"
 	// AutomationID is the rule ID that dispatched this run; empty for
 	// manually dispatched runs. Set once at dispatch and never mutated.
@@ -203,6 +204,7 @@ type CompletedRun struct {
 	Status       string // "succeeded" | "failed" | "cancelled" | "stalled" | "input_required"
 	WorkerHost   string
 	Backend      string
+	ProfileName  string `json:"profileName,omitempty"`
 	SessionID    string
 	// ProjectKey scopes this run to a specific project so that a shared
 	// history file does not leak runs across projects. Format: "<kind>:<slug>".

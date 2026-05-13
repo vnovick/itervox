@@ -103,7 +103,7 @@ func parseSkillFile(path, source string) (Skill, bool) {
 		slog.Warn("skills: cannot read SKILL.md", "path", path, "err", err)
 		return Skill{}, false
 	}
-	front, _, ok := splitFrontmatter(body)
+	front, skillBody, ok := splitFrontmatter(body)
 	if !ok {
 		slog.Warn("skills: missing frontmatter", "path", path)
 		return Skill{}, false
@@ -129,6 +129,7 @@ func parseSkillFile(path, source string) (Skill, bool) {
 		FilePath:        path,
 		ApproxTokens:    len(body) / 4,
 		TriggerPatterns: triggers,
+		bodyText:        string(skillBody),
 	}, true
 }
 

@@ -8,6 +8,10 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // The jsdom suite is UI-heavy and can hit 5s interaction timeouts when
+    // Vitest fans out across every local CPU under load. Keep the default
+    // contributor path deterministic; VITEST_MAX_WORKERS can still override.
+    maxWorkers: 1,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

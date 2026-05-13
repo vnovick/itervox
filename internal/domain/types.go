@@ -73,6 +73,7 @@ type BlockerRef struct {
 	ID         *string
 	Identifier *string
 	State      *string
+	URL        *string
 }
 
 // Project is a generic project/team/repository grouping returned by trackers

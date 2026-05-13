@@ -1,9 +1,10 @@
-.PHONY: all build verify dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-spelling coverage clean benchmark tui-golden size-budget no-os-exit e2e
+.PHONY: all build verify dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.25.9, even on machines where /usr/local/go is an older version.
 # Must stay in sync with the `go` directive in go.mod.
 export GOTOOLCHAIN := go1.25.9
+GO_PACKAGES := ./cmd/... ./internal/...
 
 all: build verify
 
@@ -13,18 +14,18 @@ all: build verify
 # `make build` runs web-build first to ensure the frontend assets exist.
 # `go build -o itervox ./cmd/itervox` produces the repo-root binary that
 # Lane-3 e2e specs (`web/e2e/helpers/daemon.ts`) spawn — without -o the
-# binary is discarded. The `go build ./...` afterwards compiles every
-# package as a fail-fast sanity check on the rest of the codebase.
+# binary is discarded. The package build afterwards compiles every repo-owned
+# Go package as a fail-fast sanity check without traversing web/node_modules.
 build: web-deps web-build
 	go build -o itervox ./cmd/itervox
-	go build ./...
+	go build $(GO_PACKAGES)
 
 # verify mirrors the gates CI runs (Web CI + Go CI). web-deps installs once,
 # then each web target consumes the installed node_modules. The leaf web
-# targets (web-typecheck, web-lint, web-format, web-test, web-build) do NOT
+# targets (web-typecheck, web-lint, web-format, web-test, web-coverage, web-build) do NOT
 # install on their own so lefthook can run them in parallel without racing
 # pnpm installs.
-verify: web-deps fmt vet lint-go test web-typecheck web-lint web-format web-test web-build web-spelling size-budget no-os-exit
+verify: web-deps fmt vet lint-go test web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit
 
 # Guard against new os.Exit() outside cmd/itervox/exit.go — see CLAUDE.md.
 no-os-exit:
@@ -59,10 +60,10 @@ size-budget:
 	@echo "size-budget: all files within cap"
 
 fmt:
-	gofmt -l -w .
+	gofmt -l -w cmd internal
 
 vet:
-	go vet ./...
+	go vet $(GO_PACKAGES)
 
 lint-go:
 	golangci-lint run ./cmd/... ./internal/...
@@ -70,11 +71,11 @@ lint-go:
 lint: lint-go
 
 test:
-	go test -race ./... -count=1
+	go test -race $(GO_PACKAGES) -count=1
 
 # Run tests with coverage and generate an HTML report (coverage.html).
 coverage:
-	go test -coverprofile=coverage.out ./...
+	go test -coverprofile=coverage.out $(GO_PACKAGES)
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 	@go tool cover -func=coverage.out | tail -1
@@ -82,7 +83,7 @@ coverage:
 # Remove build artifacts and generated coverage files.
 clean:
 	rm -f itervox coverage.out coverage.html
-	go clean ./...
+	go clean $(GO_PACKAGES)
 
 # Regenerate catwalk golden files after intentional TUI render changes.
 tui-golden:
@@ -90,7 +91,7 @@ tui-golden:
 
 # Run benchmarks with memory allocation stats.
 benchmark:
-	go test -bench=. -benchmem ./...
+	go test -bench=. -benchmem $(GO_PACKAGES)
 
 # Web dependency install — idempotent and fast when the lockfile matches.
 # Standalone leaf web targets (web-lint, web-typecheck, web-format) skip
@@ -114,6 +115,9 @@ web-build:
 
 web-test:
 	cd web && pnpm test
+
+web-coverage:
+	cd web && pnpm test:coverage
 
 # Guard against old "Symphony" name in user-visible strings (skip internal identifiers).
 web-spelling:

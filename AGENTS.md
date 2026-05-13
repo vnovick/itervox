@@ -16,8 +16,8 @@ Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
 2. **Read the matching rule bundle under `.claude/skills/<name>/SKILL.md`** for the area you
    are editing (see the table below). These bundles are plain markdown and tool-agnostic —
    the directory name is historical. They are not optional reading.
-3. **Run tests** to establish a baseline: `go test -race ./...` and `cd web && pnpm test`.
-4. **Check the gap doc** (`planning/gaps_300326.md`) for known open items before adding new
+3. **Run tests** to establish a baseline: `go test -race ./cmd/... ./internal/...` and `cd web && pnpm test:coverage`.
+4. **Check the gap doc** (`planning/gaps_todo_030526.md`) for known open items before adding new
    ones — it may already be tracked.
 
 ## Rule bundles (read the matching one before editing)
@@ -48,20 +48,20 @@ Reading the bundle before editing prevents the entire class of bugs it was writt
 
 ```bash
 # Go
-go build ./...
-go test -race ./...
-go vet ./...
+go build ./cmd/... ./internal/...
+go test -race ./cmd/... ./internal/...
+go vet ./cmd/... ./internal/...
 golangci-lint run ./cmd/... ./internal/...
 
 # Frontend
 cd web
 pnpm install --frozen-lockfile
-pnpm test          # vitest
+pnpm test:coverage # vitest + coverage gate
 pnpm build         # production bundle
 pnpm exec tsc --noEmit -p tsconfig.app.json   # type-check only
 
 # Combined
-make verify        # fmt + vet + lint + go tests + web tests
+make verify        # fmt + vet + lint + go tests + web coverage/build/spelling + size/no-os.Exit guards
 make build         # web build → go binary
 ```
 
@@ -112,11 +112,17 @@ worker goroutine — send an event instead.
 ### cfgMu scope
 
 `cfgMu` protects only these `cfg` fields (mutable at runtime via HTTP):
-- `cfg.Agent.AgentMode`, `cfg.Agent.MaxConcurrentAgents`, `cfg.Agent.Profiles`
+- `cfg.Agent.MaxConcurrentAgents`, `cfg.Agent.MaxRetries`
+- `cfg.Agent.MaxSwitchesPerIssuePerWindow`, `cfg.Agent.SwitchWindowHours`, `cfg.Agent.SwitchRevertHours`
+- `cfg.Agent.RateLimitErrorPatterns`, `cfg.Agent.Profiles`
 - `cfg.Agent.SSHHosts`, `cfg.Agent.SSHHostDescriptions`, `cfg.Agent.DispatchStrategy`, `cfg.Agent.InlineInput`
-- `cfg.Tracker.ActiveStates`, `cfg.Tracker.TerminalStates`, `cfg.Tracker.CompletionState`
+- `cfg.Agent.ReviewerProfile`, `cfg.Agent.AutoReview`
+- `cfg.Tracker.ActiveStates`, `cfg.Tracker.TerminalStates`, `cfg.Tracker.CompletionState`, `cfg.Tracker.FailedState`
 - `cfg.Automations`
 - `cfg.Workspace.AutoClearWorkspace`
+
+The canonical allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`;
+keep docs and any new runtime setter in sync with that test.
 
 All other `cfg` fields are **read-only after startup** — no lock needed.
 
@@ -145,7 +151,7 @@ cmd/itervox (wires everything)
 
 ## Testing conventions
 
-- Always run `go test -race` — the race detector catches real bugs here
+- Always run `go test -race ./cmd/... ./internal/...` — the race detector catches real bugs here, and the explicit package list avoids traversing `web/node_modules`
 - TUI tests use `charmbracelet/x/exp/teatest` (`model_teatest_test.go`) + catwalk
   golden files. Regenerate golden files with `make tui-golden` after intentional
   render changes.
@@ -162,7 +168,10 @@ cmd/itervox (wires everything)
 - **Map copy**: use `maps.Copy(dst, src)` not manual for-range loops.
 - **Clamp pattern**: `max(1, min(n, 50))` not if-chains (Go 1.21+).
 
-## Open architectural items (from planning/gaps_300326.md)
+## Open architectural items (from active gap planning)
+
+The current gap backlog lives in `planning/gaps_todo_030526.md`. Historical
+gap notes, including `gaps_300326.md`, are archived under `planning/archive/`.
 
 Key unresolved items:
 - T-6: Codex session log identity — single file instead of per-subagent files
@@ -171,7 +180,7 @@ Key unresolved items:
 - T-10: Replace 5s sublog polling with SSE push
 - T-11: DRY `ParseSessionLogs`/`ParseSessionLogsMulti` duplication
 
-See `planning/gaps_300326.md` for the full task list with priorities and phases.
+See `planning/gaps_todo_030526.md` for the current task list with priorities and phases.
 
 Before adding new items, spawn a verification agent to confirm the
 issue is real (read full call chain, check for upstream validation, verify file

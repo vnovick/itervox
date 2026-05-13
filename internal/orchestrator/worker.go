@@ -86,7 +86,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// --- Workspace ---
-	automationRun := automation != nil
+	automationRun := automation != nil && !automation.UseIssueLifecycle
 	hasResumeSession := resume != nil && resume.SessionID != ""
 	hasResumeMessage := resume != nil && resume.UserMessage != ""
 	inputRequiredResume := hasResumeSession && hasResumeMessage
@@ -382,37 +382,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				automation.Instructions,
 				issue,
 				attemptPtr,
-				map[string]any{
-					"trigger": map[string]any{
-						"type":                automation.Trigger.Type,
-						"fired_at":            automation.Trigger.FiredAt.Format(time.RFC3339),
-						"automation_id":       automation.Trigger.AutomationID,
-						"cron":                automation.Trigger.Cron,
-						"timezone":            automation.Trigger.Timezone,
-						"trigger_state":       automation.Trigger.TriggerState,
-						"input_context":       automation.Trigger.InputContext,
-						"blocked_profile":     automation.Trigger.BlockedProfile,
-						"blocked_backend":     automation.Trigger.BlockedBackend,
-						"previous_state":      automation.Trigger.PreviousState,
-						"current_state":       automation.Trigger.CurrentState,
-						"error_message":       automation.Trigger.ErrorMessage,
-						"will_retry":          automation.Trigger.WillRetry,
-						"retry_attempt":       automation.Trigger.RetryAttempt,
-						"retry_backoff_ms":    automation.Trigger.RetryBackoffMs,
-						"comment_id":          automation.Trigger.CommentID,
-						"comment_body":        automation.Trigger.CommentBody,
-						"comment_author_id":   automation.Trigger.CommentAuthorID,
-						"comment_author_name": automation.Trigger.CommentAuthorName,
-						"comment_created_at":  automation.Trigger.CommentCreatedAt,
-						"comment": map[string]any{
-							"id":          automation.Trigger.CommentID,
-							"body":        automation.Trigger.CommentBody,
-							"author_id":   automation.Trigger.CommentAuthorID,
-							"author_name": automation.Trigger.CommentAuthorName,
-							"created_at":  automation.Trigger.CommentCreatedAt,
-						},
-					},
-				},
+				automationTriggerBindings(automation),
 			)
 		}
 		if actionContext != "" {

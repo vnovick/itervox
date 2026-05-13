@@ -58,9 +58,13 @@ func automationsToEntries(automations []server.AutomationDef) []workflow.Automat
 				IdentifierRegex:   automation.Filter.IdentifierRegex,
 				Limit:             automation.Filter.Limit,
 				InputContextRegex: automation.Filter.InputContextRegex,
+				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
 			},
 			Policy: workflow.AutomationPolicyEntry{
-				AutoResume: automation.Policy.AutoResume,
+				AutoResume:      automation.Policy.AutoResume,
+				SwitchToProfile: automation.Policy.SwitchToProfile,
+				SwitchToBackend: automation.Policy.SwitchToBackend,
+				CooldownMinutes: automation.Policy.CooldownMinutes,
 			},
 		})
 	}
@@ -79,7 +83,9 @@ func disableAutomationsForProfile(
 	changed := false
 	for _, automation := range automations {
 		cp := automation
-		if strings.TrimSpace(automation.Profile) == profileName && automation.Enabled {
+		if (strings.TrimSpace(automation.Profile) == profileName ||
+			strings.TrimSpace(automation.Policy.SwitchToProfile) == profileName) &&
+			automation.Enabled {
 			cp.Enabled = false
 			changed = true
 		}
@@ -110,6 +116,10 @@ func renameAutomationsProfile(
 			cp.Profile = newName
 			changed = true
 		}
+		if strings.TrimSpace(automation.Policy.SwitchToProfile) == oldName {
+			cp.Policy.SwitchToProfile = newName
+			changed = true
+		}
 		if len(automation.Filter.States) > 0 {
 			cp.Filter.States = append([]string{}, automation.Filter.States...)
 		}
@@ -132,7 +142,8 @@ func removeAutomationsForProfile(
 	updated := make([]config.AutomationConfig, 0, len(automations))
 	changed := false
 	for _, automation := range automations {
-		if strings.TrimSpace(automation.Profile) == profileName {
+		if strings.TrimSpace(automation.Profile) == profileName ||
+			strings.TrimSpace(automation.Policy.SwitchToProfile) == profileName {
 			changed = true
 			continue
 		}

@@ -35,6 +35,14 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 	for _, b := range issue.BlockedBy {
 		if b.Identifier != nil && *b.Identifier != "" {
 			ti.BlockedBy = append(ti.BlockedBy, *b.Identifier)
+			detail := server.BlockerDetail{Identifier: *b.Identifier}
+			if b.State != nil {
+				detail.State = *b.State
+			}
+			if b.URL != nil {
+				detail.URL = *b.URL
+			}
+			ti.BlockedByDetails = append(ti.BlockedByDetails, detail)
 		}
 	}
 	// Comments: map domain.Comment to server.CommentRow

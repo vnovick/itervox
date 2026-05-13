@@ -195,7 +195,7 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and prompt. Enables the AI Review button in the dashboard. |
 | `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. Cannot be combined with `workspace.auto_clear`. |
-| `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. |
+| `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. This cap limits switching; it is not the trigger condition. |
 | `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. |
 | `switch_revert_hours` | int | `0` | TTL (in hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` (default) disables the revert. Operator-set overrides survive — only auto-switches with a recorded `AutoSwitchedAt` timestamp are eligible. |
 | `rate_limit_error_patterns` | string[] | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). |
@@ -332,6 +332,13 @@ Supported triggers:
 - `issue_entered_state`
 - `issue_moved_to_backlog`
 - `run_failed`
+- `pr_opened` — fires when a worker's PR is detected
+- `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. The switch cap limits automated switching; it is not the trigger condition.
+
+Tracker event triggers are poll-derived, not webhook-derived. The automation
+loop runs every 15 seconds. `tracker_comment_added` compares only the latest
+observed comment, so multiple comments between polls collapse to the latest
+comment for trigger purposes.
 
 | Field | Type | Description |
 |---|---|---|
@@ -349,7 +356,12 @@ Supported triggers:
 | `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42`. |
 | `filter.limit` | int | Maximum number of issues to queue from one cron tick or event poll batch. |
 | `filter.input_context_regex` | string | Only meaningful for `input_required`; matched against the blocked-agent question text. |
-| `policy.auto_resume` | bool | Only meaningful for `input_required`; allows the helper to resume the blocked run via `provide_input`. |
+| `filter.max_age_minutes` | int | Only meaningful for `input_required`; skips blocked entries older than this many minutes. |
+| `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted but prefer `policy.auto_switch`. |
+| `policy.auto_switch` | bool | Alias for `policy.auto_resume` on `rate_limited`; allows immediate profile/backend switching without a human approval step. |
+| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. |
+| `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs. |
+| `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset. |
 
 ```yaml
 automations:

@@ -1,10 +1,11 @@
-// Package skills implements the read-mostly capability inventory + runtime
+// Package skills implements the read-mostly skills inventory + runtime
 // analytics surface described in
 // `planning/plans/2026-04-16-skills-inventory-design.md`. It scans Claude /
 // Codex skill, plugin, hook, MCP, and instruction-doc layouts under both the
-// project working directory and the user home, normalizes them into a
-// `Capability` graph, and surfaces static issues + (Phase 2) runtime
-// analytics.
+// project working directory and the user home, and surfaces static issues plus
+// runtime analytics. Capability graph fields are reserved for the next phase;
+// v0.2.0 callers should treat Inventory as direct inventory/recommendation
+// data.
 //
 // All scanning is read-only — no subprocess execution, no API calls, no
 // destructive operations. One-click fixes from the analysis layer are opt-in
@@ -17,8 +18,8 @@ import "time"
 // to be cached on disk between runs and recomputed on file mtime change.
 type Inventory struct {
 	ScanTime     time.Time
-	Profiles     map[string]ProfileCapabilities // daemon-managed
-	Capabilities []Capability                   // normalized skill/instruction/MCP/tool/hook/plugin graph
+	Profiles     map[string]ProfileCapabilities // reserved daemon-managed profile graph
+	Capabilities []Capability                   // reserved normalized graph nodes
 	Skills       []Skill                        // Claude + Codex + shared
 	Plugins      []Plugin
 	MCPServers   []MCPServer
@@ -41,11 +42,11 @@ type Skill struct {
 	FilePath        string
 	ApproxTokens    int
 	TriggerPatterns []string
+	bodyText        string
 }
 
-// Capability is the normalized graph node — every skill/hook/plugin/instruction/
-// MCP server/tool surface gets exactly one Capability entry, regardless of the
-// underlying file shape.
+// Capability is the reserved normalized graph node for a later phase. v0.2.0
+// exposes direct inventory slices instead of populating a full graph.
 type Capability struct {
 	ID             string
 	Kind           string // "skill" | "hook" | "plugin" | "instruction" | "mcp-server" | "tool-surface"

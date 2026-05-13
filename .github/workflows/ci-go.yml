@@ -34,10 +34,10 @@ jobs:
         run: pnpm --dir web install --frozen-lockfile && pnpm --dir web run build
 
       - name: Build
-        run: go build ./...
+        run: go build ./cmd/... ./internal/...
 
       - name: Test (with race detector and coverage)
-        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./cmd/... ./internal/...
 
       - name: Show coverage summary
         run: go tool cover -func=coverage.out | tail -1
@@ -49,7 +49,7 @@ jobs:
           awk -v pct="$pct" 'BEGIN { if (pct+0 < 50) { print "Coverage " pct "% is below the 50% gate"; exit 1 } }'
 
       - name: Vet
-        run: go vet ./...
+        run: go vet ./cmd/... ./internal/...
 
 
   lint:
@@ -86,4 +86,4 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Run govulncheck
-        run: govulncheck -tags dev ./...
+        run: govulncheck -tags dev ./cmd/... ./internal/...

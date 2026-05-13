@@ -1126,10 +1126,22 @@ func TestOrchestratorAutomationDispatchPipeline(t *testing.T) {
 	runner := &succeedOnceRunner{}
 	orch := orchestrator.New(cfg, mt, runner, nil)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// ctx must outlast both internal poll deadlines (3s + 2s) plus the 20ms
+	// startup sleep; a 5s ctx was tight enough that under load the orchestrator
+	// exited mid-poll and the worker's exit event was dropped before the
+	// AutomationID-tagged history row could land.
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 	time.Sleep(20 * time.Millisecond)
 
 	// Fire an automation dispatch for a BACKLOG issue — the reconcile loop

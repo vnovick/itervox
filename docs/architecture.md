@@ -48,16 +48,25 @@ the channel when done. HTTP handler goroutines send events such as
 A small subset of `config.Config` fields can be mutated at runtime by the web
 dashboard. `Orchestrator.cfgMu` (`sync.RWMutex`) guards exactly these:
 
-- `cfg.Agent.AgentMode`
 - `cfg.Agent.MaxConcurrentAgents`
+- `cfg.Agent.MaxRetries`
+- `cfg.Agent.MaxSwitchesPerIssuePerWindow`
+- `cfg.Agent.SwitchWindowHours`
+- `cfg.Agent.SwitchRevertHours`
+- `cfg.Agent.RateLimitErrorPatterns`
 - `cfg.Agent.Profiles`
 - `cfg.Agent.SSHHosts`
+- `cfg.Agent.SSHHostDescriptions`
 - `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.ReviewerProfile`
+- `cfg.Agent.AutoReview`
 - `cfg.Agent.InlineInput`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.TerminalStates`
 - `cfg.Tracker.CompletionState`
+- `cfg.Tracker.FailedState`
 - `cfg.Workspace.AutoClearWorkspace`
+- `cfg.Automations`
 
 All other `cfg` fields are read-only after startup. The single source of truth
 is the cfgMu list in the project root `CLAUDE.md`.

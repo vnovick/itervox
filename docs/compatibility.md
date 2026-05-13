@@ -9,7 +9,7 @@ Use it to understand what upgrades are safe and where silent breakage can occur.
 
 | Component | Tested version | Notes |
 |---|---|---|
-| Go toolchain | **1.25.8** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
+| Go toolchain | **1.25.9** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
 
 ---
 
@@ -62,7 +62,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 
 | Scenario | Risk | Action |
 |---|---|---|
-| New minor Go release | Low | Update `go.mod`, run `go test ./...` and `go test -race ./...`. |
+| New minor Go release | Low | Update `go.mod`, run `go test ./cmd/... ./internal/...` and `go test -race ./cmd/... ./internal/...`. |
 | New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `itervox --dry-run` and verify dispatch logs show agent starting. |
 | New Codex release | Medium | Same as above. |
 | Linear GraphQL schema change | Low | Monitor [Linear changelog](https://linear.app/changelog). If `FetchCandidateIssues` starts returning unexpected shapes, Zod-style errors will surface in logs. |

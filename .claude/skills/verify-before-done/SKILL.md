@@ -15,22 +15,22 @@ Run from the repo root:
 make verify
 ```
 
-This runs, in order: `fmt` -> `vet` -> `lint-go` (golangci-lint) -> `test` (`go test -race ./... -count=1`) -> `web-test` (`pnpm install --frozen-lockfile && pnpm test` in `web/`) -> `web-spelling` (guards against the old "Symphony" name in user-visible strings).
+This runs, in order: `fmt` -> `vet` -> `lint-go` (golangci-lint) -> `test` (`go test -race ./cmd/... ./internal/... -count=1`) -> `web-coverage` (`pnpm test:coverage` in `web/`) -> `web-build` -> `web-spelling` (guards against the old "Symphony" name in user-visible strings) -> `size-budget` -> `no-os-exit`.
 
 `go test ./...` alone is NOT sufficient. It misses:
 - golangci-lint failures (CI lint job will fail)
 - race conditions hidden by the test cache (no `-count=1`)
-- frontend regressions (`pnpm test`)
+- frontend regressions and coverage drops (`pnpm test:coverage`)
 - the spelling guard
 
 `make verify` must exit 0. Show the tail of the output as evidence.
 
-## 2. Frontend coverage gate (when touching `web/`)
+## 2. Frontend coverage gate
 
-`pnpm test` does NOT enforce coverage. Only `pnpm test:coverage` does, with a 70% threshold on **statements, branches, functions, and lines** (all four).
+`make verify` now runs `pnpm test:coverage`, with a 70% threshold on **statements, branches, functions, and lines** (all four). For faster frontend-only iteration, run the target directly:
 
 ```bash
-cd web && pnpm test:coverage
+make web-coverage
 ```
 
 Read the summary. Confirm every one of the four axes is at or above 70%. A green `pnpm test` says nothing about whether the coverage gate will pass in CI. New files showing 0% mean you forgot the test - write it before claiming done.
@@ -50,7 +50,7 @@ If a race appears intermittently, that is a real race, not flakiness. Rerun with
 If you touched `go.mod`, `go.sum`, or any Go dependency, run:
 
 ```bash
-govulncheck -tags dev ./...
+govulncheck -tags dev ./cmd/... ./internal/...
 ```
 
 The `-tags dev` flag matches what the CI `govulncheck` job in `.github/workflows/ci-go.yml` uses. CI will fail the PR on new vulnerabilities.
@@ -59,11 +59,10 @@ The `-tags dev` flag matches what the CI `govulncheck` job in `.github/workflows
 
 Run sequentially. Do not skip steps.
 
-a. `make verify` - exits 0, output captured
-b. `cd web && pnpm test:coverage` - if you touched frontend code; all four axes >= 70%
-c. `govulncheck -tags dev ./...` - if you touched `go.mod` or Go deps
-d. `git status` - review staged files; watch for `.env`, credentials, accidental binaries
-e. Only THEN `git commit`
+a. `make verify` - exits 0, output captured, including frontend coverage
+b. `govulncheck -tags dev ./cmd/... ./internal/...` - if you touched `go.mod` or Go deps
+c. `git status` - review staged files; watch for `.env`, credentials, accidental binaries
+d. Only THEN `git commit`
 
 ## 6. Never claim "tests pass" without evidence
 
@@ -80,6 +79,6 @@ Show the exact command and a trimmed tail of its output. Claiming green based on
 
 You may claim "done" only when:
 - `make verify` exited 0 in the current session, output shown
-- (if frontend touched) `pnpm test:coverage` shows all four axes >= 70%, output shown
-- (if Go deps touched) `govulncheck -tags dev ./...` exited 0, output shown
+- frontend coverage in `make verify` shows all four axes >= 70%, output shown
+- (if Go deps touched) `govulncheck -tags dev ./cmd/... ./internal/...` exited 0, output shown
 - `git status` reviewed, no secrets staged

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -87,6 +89,92 @@ func TestCompileAutomations_SplitsCronAndInputRequired(t *testing.T) {
 	assert.Equal(t, "qa-ready", compiled.cron[0].cfg.ID)
 	assert.Equal(t, "input-responder", compiled.inputRequired[0].ID)
 	assert.Equal(t, "input-responder", compiled.inputRequired[0].ProfileName)
+}
+
+func TestLogAutomationCompileSummaryIncludesRateLimitedRules(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	logAutomationCompileSummary(1, compiledAutomationSet{
+		rateLimited: []orchestrator.RateLimitedAutomation{
+			{ID: "rate-limit-fallback", ProfileName: "fallback-codex"},
+		},
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, `"registered":1`)
+	assert.Contains(t, out, `"dropped":0`)
+	assert.Contains(t, out, `"rate_limited":1`)
+}
+
+func TestCompileAutomationsRateLimitedRequiresUsableSwitchProfile(t *testing.T) {
+	disabled := false
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			Profiles: map[string]config.AgentProfile{
+				"default":  {Command: "claude"},
+				"fallback": {Command: "codex", Enabled: &disabled},
+			},
+		},
+		Automations: []config.AutomationConfig{{
+			ID:      "disabled-switch-profile",
+			Enabled: true,
+			Profile: "default",
+			Trigger: config.AutomationTriggerConfig{Type: config.AutomationTriggerRateLimited},
+			Policy: config.AutomationPolicyConfig{
+				AutoResume:      true,
+				SwitchToProfile: "fallback",
+			},
+		}, {
+			ID:      "missing-switch-profile",
+			Enabled: true,
+			Profile: "default",
+			Trigger: config.AutomationTriggerConfig{Type: config.AutomationTriggerRateLimited},
+			Policy: config.AutomationPolicyConfig{
+				AutoResume:      true,
+				SwitchToProfile: "missing",
+			},
+		}},
+	}
+
+	compiled := compileAutomations(cfg)
+	assert.Empty(t, compiled.rateLimited)
+}
+
+func TestAutomationCompileConfigViewUsesRuntimeProfiles(t *testing.T) {
+	baseCfg := &config.Config{
+		Agent: config.AgentConfig{
+			Profiles: map[string]config.AgentProfile{
+				"default": {Command: "claude"},
+			},
+		},
+		Automations: []config.AutomationConfig{{
+			ID:      "rate-limit-switch",
+			Enabled: true,
+			Profile: "default",
+			Trigger: config.AutomationTriggerConfig{Type: config.AutomationTriggerRateLimited},
+			Policy: config.AutomationPolicyConfig{
+				AutoResume:      true,
+				SwitchToProfile: "fallback",
+			},
+		}},
+	}
+	runtimeCfg := *baseCfg
+	runtimeCfg.Agent.Profiles = map[string]config.AgentProfile{
+		"default":  {Command: "claude"},
+		"fallback": {Command: "codex"},
+	}
+	orch := orchestrator.New(&runtimeCfg, tracker.NewMemoryTracker(nil, nil, nil), &agenttest.FakeRunner{}, nil)
+
+	tickCfg := automationCompileConfigView(baseCfg, orch)
+	compiled := compileAutomations(&tickCfg)
+
+	require.Len(t, compiled.rateLimited, 1)
+	assert.Equal(t, "fallback", compiled.rateLimited[0].SwitchToProfile)
 }
 
 func TestMatchesAutomationFilter_ChecksLabelsAndInputContext(t *testing.T) {
@@ -361,9 +449,20 @@ func TestPollAutomationEvents_TrackerCommentRequiresNewEligibleComment(t *testin
 	}
 	orch := orchestrator.New(cfg, tr, runner, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	runDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("orchestrator did not stop before test cleanup")
+		}
+	})
 
-	go orch.Run(ctx) //nolint:errcheck
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
 	time.Sleep(20 * time.Millisecond)
 
 	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
@@ -509,9 +608,20 @@ func TestReplayInputRequiredAutomations_DispatchesPersistedBlockedIssueOncePerAu
 	orch.SetInputRequiredFile(irFile)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	runDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("orchestrator did not stop before test cleanup")
+		}
+	})
 
-	go orch.Run(ctx) //nolint:errcheck
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
 	require.Eventually(t, func() bool {
 		_, ok := orch.Snapshot().InputRequiredIssues["ENG-1"]
 		return ok
@@ -616,10 +726,21 @@ func TestStartAutomations_ReplaysPersistedInputRequiredIssueOnStartup(t *testing
 	orch.SetInputRequiredFile(irFile)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	runDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("orchestrator did not stop before test cleanup")
+		}
+	})
 
 	startAutomations(ctx, cfg, tr, orch)
-	go orch.Run(ctx) //nolint:errcheck
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
 
 	require.Eventually(t, func() bool {
 		return len(orch.RunHistory()) == 1
@@ -649,4 +770,129 @@ func (r *countingDoneRunner) CallCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.callCount
+}
+
+// TestPollAutomationEvents_PlanDrivenLabelGate locks in the label-gated
+// plan-driven implementation pattern documented for v0.2.0 (issue #32).
+// The contract under test:
+//   - An issue carrying the `has-plan` label that transitions into
+//     "In Progress" dispatches under the dedicated `plan-driven` profile,
+//     attributed to automation `plan-driven-impl`.
+//   - An issue WITHOUT the label undergoing the same transition is not
+//     pre-empted — the rule must reject it via labels_any.
+//
+// This test runs under `make verify`, which is part of `make qa-current`,
+// so the launch-blog-post use case stays green release-to-release.
+func TestPollAutomationEvents_PlanDrivenLabelGate(t *testing.T) {
+	cfg := &config.Config{
+		Polling: config.PollingConfig{IntervalMs: 50},
+		Tracker: config.TrackerConfig{
+			BacklogStates:   []string{"Backlog"},
+			ActiveStates:    []string{"In Progress"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+		},
+		Agent: config.AgentConfig{
+			Command:             "claude",
+			MaxConcurrentAgents: 2,
+			Profiles: map[string]config.AgentProfile{
+				"default":     {Command: "claude"},
+				"plan-driven": {Command: "claude", Prompt: "Invoke the exec-plan skill. The plan in the description is authoritative."},
+			},
+			TurnTimeoutMs: 60000,
+			ReadTimeoutMs: 30000,
+		},
+	}
+	entries := []compiledAutomation{
+		{
+			cfg: config.AutomationConfig{
+				ID:           "plan-driven-impl",
+				Enabled:      true,
+				Profile:      "plan-driven",
+				Instructions: "Invoke the exec-plan skill now. Plan starts after `## Implementation Plan`.",
+				Trigger: config.AutomationTriggerConfig{
+					Type:  config.AutomationTriggerIssueEnteredState,
+					State: "In Progress",
+				},
+				Filter: config.AutomationFilterConfig{
+					MatchMode: config.AutomationFilterMatchAll,
+					LabelsAny: []string{"has-plan"},
+				},
+			},
+		},
+	}
+
+	labeledBacklog := domain.Issue{
+		ID:         "id-plan",
+		Identifier: "ENG-99",
+		Title:      "Implement search filters",
+		State:      "Backlog",
+		Labels:     []string{"has-plan"},
+	}
+	labeledInProgress := domain.Issue{
+		ID:         "id-plan",
+		Identifier: "ENG-99",
+		Title:      "Implement search filters",
+		State:      "In Progress",
+		Labels:     []string{"has-plan"},
+	}
+	unlabeledBacklog := domain.Issue{
+		ID:         "id-other",
+		Identifier: "ENG-100",
+		Title:      "Other issue without plan",
+		State:      "Backlog",
+	}
+	unlabeledInProgress := domain.Issue{
+		ID:         "id-other",
+		Identifier: "ENG-100",
+		Title:      "Other issue without plan",
+		State:      "In Progress",
+	}
+
+	tr := &pollTracker{
+		issuesByRun: [][]domain.Issue{
+			{labeledBacklog, unlabeledBacklog},
+			{labeledInProgress, unlabeledInProgress},
+		},
+		detailByRun: []map[string]domain.Issue{
+			{"id-plan": labeledBacklog, "id-other": unlabeledBacklog},
+			{"id-plan": labeledInProgress, "id-other": unlabeledInProgress},
+		},
+	}
+
+	runner := &doneRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}, 4),
+	}
+	orch := orchestrator.New(cfg, tr, runner, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now())
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(time.Minute))
+
+	require.Eventually(t, func() bool {
+		return len(orch.RunHistory()) == 1
+	}, 3*time.Second, 25*time.Millisecond,
+		"label-gated plan-driven automation must dispatch exactly one run for the labeled issue")
+
+	history := orch.RunHistory()
+	require.Len(t, history, 1)
+	run := history[0]
+	assert.Equal(t, "ENG-99", run.Identifier, "only the has-plan-labeled issue should dispatch — unlabeled issue must be filtered out")
+	assert.Equal(t, "plan-driven-impl", run.AutomationID, "run must be attributed to the plan-driven automation")
+	assert.Equal(t, config.AutomationTriggerIssueEnteredState, run.TriggerType, "run must record issue_entered_state as the trigger")
+
+	// One more poll with no further state changes — must not produce a second
+	// dispatch for the same transition.
+	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(2*time.Minute))
+	time.Sleep(150 * time.Millisecond)
+	assert.Len(t, orch.RunHistory(), 1, "a steady-state poll must not re-dispatch the same transition")
 }

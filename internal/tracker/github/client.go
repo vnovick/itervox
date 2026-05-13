@@ -656,6 +656,7 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 	type result struct {
 		id    string
 		state string
+		url   string
 	}
 	ch := make(chan result, len(ids))
 	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
@@ -664,21 +665,29 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 			ch <- result{id: id, state: "closed"}
 			return
 		}
-		ch <- result{id: id, state: issue.State}
+		url := ""
+		if issue.URL != nil {
+			url = *issue.URL
+		}
+		ch <- result{id: id, state: issue.State, url: url}
 	})
 	close(ch)
 
-	stateMap := make(map[string]string, len(ids))
+	resultMap := make(map[string]result, len(ids))
 	for r := range ch {
-		stateMap[r.id] = r.state
+		resultMap[r.id] = r
 	}
 
 	for i := range issues {
 		for j := range issues[i].BlockedBy {
 			if issues[i].BlockedBy[j].ID != nil {
-				if s, ok := stateMap[*issues[i].BlockedBy[j].ID]; ok {
-					state := s
+				if r, ok := resultMap[*issues[i].BlockedBy[j].ID]; ok {
+					state := r.state
 					issues[i].BlockedBy[j].State = &state
+					if r.url != "" {
+						url := r.url
+						issues[i].BlockedBy[j].URL = &url
+					}
 				}
 			}
 		}

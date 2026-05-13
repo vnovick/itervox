@@ -98,6 +98,7 @@ export default memo(function IssueCard({
     isEditable && availableProfiles && availableProfiles.length > 0 && onProfileChange;
   const backend = resolveBackend(issue.agentProfile, profileDefs, runningBackend, defaultBackend);
   const hasActivity = isActive;
+  const blockerCount = getBlockerCount(issue);
 
   return (
     <div
@@ -225,6 +226,16 @@ export default memo(function IssueCard({
             </button>
           )}
 
+          {blockerCount > 0 && (
+            <span
+              data-testid="issue-card-blocked-badge"
+              title={`Blocked by ${String(blockerCount)} issue${blockerCount === 1 ? '' : 's'}`}
+              className="bg-theme-danger-soft text-theme-danger flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+            >
+              Blocked {blockerCount}
+            </span>
+          )}
+
           {/* Dispatch button */}
           {onDispatch && (
             <button
@@ -306,4 +317,10 @@ function formatAge(minutes: number): string {
   const days = Math.floor(hours / 24);
   const remH = hours % 24;
   return remH ? `${String(days)}d ${String(remH)}h` : `${String(days)}d`;
+}
+
+function getBlockerCount(issue: TrackerIssue): number {
+  const detailCount = issue.blockedByDetails?.length ?? 0;
+  if (detailCount > 0) return detailCount;
+  return issue.blockedBy?.length ?? 0;
 }
