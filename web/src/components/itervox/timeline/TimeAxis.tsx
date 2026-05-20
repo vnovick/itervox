@@ -1,12 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AXIS_MARGIN_LEFT, AXIS_MARGIN_RIGHT } from './styles';
-
-export function formatAxisTime(ms: number): string {
-  const d = new Date(ms);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
+import { buildTimeAxisTicks, formatTimeAxisLabel } from './timeAxisModel';
 
 function NowMarker({ viewStart, viewEnd }: { viewStart: number; viewEnd: number }) {
   const [now, setNow] = useState(Date.now);
@@ -31,13 +25,7 @@ function NowMarker({ viewStart, viewEnd }: { viewStart: number; viewEnd: number 
 export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: number }) {
   const span = viewEnd - viewStart;
   if (span <= 0) return null;
-  const rawStep = span / 6;
-  const steps = [30_000, 60_000, 5 * 60_000, 10 * 60_000, 30 * 60_000, 60 * 60_000];
-  const step = steps.find((s) => s >= rawStep) ?? steps[steps.length - 1];
-
-  const ticks: number[] = [];
-  const first = Math.ceil(viewStart / step) * step;
-  for (let t = first; t <= viewEnd; t += step) ticks.push(t);
+  const ticks = buildTimeAxisTicks(viewStart, viewEnd);
 
   return (
     <div
@@ -47,11 +35,11 @@ export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: n
       {ticks.map((t) => {
         const pct = ((t - viewStart) / span) * 100;
         if (pct < 0 || pct > 100) return null;
-        const label = formatAxisTime(t);
+        const label = formatTimeAxisLabel(t, span);
         return (
           <span
             key={t}
-            className="text-theme-muted absolute -translate-x-1/2 font-mono text-[10px]"
+            className="text-theme-muted absolute -translate-x-1/2 font-mono text-[10px] whitespace-nowrap"
             style={{ left: `${String(pct)}%` }}
           >
             {label}

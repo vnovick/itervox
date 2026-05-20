@@ -3,6 +3,7 @@ import { fmtMs } from '../../../utils/format';
 import type { NormalisedSession, SubagentSegment } from './types';
 import { clamp01 } from './types';
 import { SubagentBar } from './SubagentBar';
+import { formatAxisTime } from './timeFormatting';
 import {
   BAR_HEIGHT,
   SUB_BAR_HEIGHT,
@@ -61,11 +62,7 @@ export const RunRow = memo(function RunRow({
   const bg = barGradient(session.status);
   const badge = statusBadgeStyle(session.status);
 
-  const timeLabel = new Date(session.startedAt).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  const timeLabel = formatAxisTime(new Date(session.startedAt).getTime());
 
   return (
     <>
