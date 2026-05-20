@@ -74,7 +74,7 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 - **Git remote** — reads `origin` remote URL to derive the GitHub owner/repo slug and SSH clone URL
 - **Default branch** — detects `main` or `master` from the local git configuration
 - **Tech stacks** — detects Go, Node.js, Rust, Python, Elixir, and Ruby by the presence of language-specific manifest files (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml` / `requirements.txt`, `mix.exs`, `Gemfile`)
-- **Package managers** — inferred from lock files alongside stack detection (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, etc.)
+- **Package manager** — Node.js commands are generated with `pnpm`
 - **CLAUDE.md** — if a `CLAUDE.md` file is present in the scanned directory, the generated prompt template references it automatically
 - **Available models** — queries the selected runner CLI (e.g. `claude --list-models`) to discover available models and writes them to `agent.available_models` in the generated file. Falls back to a built-in default list if the CLI does not support model listing.
 

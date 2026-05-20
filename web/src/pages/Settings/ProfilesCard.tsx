@@ -26,6 +26,7 @@ interface ProfilesCardProps {
   ) => Promise<boolean>;
   onDelete: (name: string) => Promise<boolean>;
   availableModels?: Record<string, { id: string; label: string }[]>;
+  supportedAgentActions?: readonly string[];
   trackerStates?: readonly string[];
 }
 
@@ -47,6 +48,7 @@ export function ProfilesCard({
   onUpsert,
   onDelete,
   availableModels,
+  supportedAgentActions,
   trackerStates,
 }: ProfilesCardProps) {
   const [modalState, setModalState] = useState<ProfileModalState | null>(null);
@@ -156,6 +158,7 @@ export function ProfilesCard({
                   }}
                   onToggleEnabled={handleToggleEnabled}
                   onDelete={handleDelete}
+                  supportedAgentActions={supportedAgentActions}
                 />
               ))}
             </div>
@@ -180,6 +183,7 @@ export function ProfilesCard({
                   key={suggestion.id}
                   suggestion={suggestion}
                   onUse={openTemplateModal}
+                  supportedAgentActions={supportedAgentActions}
                 />
               ))}
             </div>
@@ -199,6 +203,7 @@ export function ProfilesCard({
           submitLabel={modalState.submitLabel}
           initialValues={modalState.initialValues}
           availableModels={availableModels}
+          supportedAgentActions={supportedAgentActions}
           trackerStates={trackerStates}
           onClose={() => {
             setModalState(null);

@@ -1,9 +1,9 @@
-.PHONY: all build verify dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit e2e
+.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
-# always use go1.25.9, even on machines where /usr/local/go is an older version.
+# always use go1.25.10, even on machines where /usr/local/go is an older version.
 # Must stay in sync with the `go` directive in go.mod.
-export GOTOOLCHAIN := go1.25.9
+export GOTOOLCHAIN := go1.25.10
 GO_PACKAGES := ./cmd/... ./internal/...
 
 all: build verify
@@ -26,6 +26,23 @@ build: web-deps web-build
 # install on their own so lefthook can run them in parallel without racing
 # pnpm installs.
 verify: web-deps fmt vet lint-go test web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit
+
+# Release preflight mirrors tag-time checks. Keep `verify` as the normal PR/local
+# edit gate; this target additionally requires release tooling and a clean tree.
+release-check: verify govulncheck-check goreleaser-check release-hooks-clean
+
+govulncheck-check:
+	govulncheck -tags dev $(GO_PACKAGES)
+
+goreleaser-check:
+	goreleaser check
+
+release-hooks-clean:
+	go mod tidy
+	cd web && pnpm install --frozen-lockfile
+	cd web && pnpm build
+	git diff --exit-code
+	git diff --cached --exit-code
 
 # Guard against new os.Exit() outside cmd/itervox/exit.go — see CLAUDE.md.
 no-os-exit:

@@ -107,6 +107,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// checks out the existing branch instead of creating a new one.
 	var prCtx *prdetector.PRContext
 	var detectedPRURL string // PR URL discovered during this run (pre-existing or newly created)
+	var openedPRURL string   // PR URL first discovered during this run.
+	var openedPRBranch string
 	if !skipPRCheck {
 		prCtx, _ = prdetector.Detect(ctx, issue)
 		if prCtx != nil && prCtx.Branch == "" {
@@ -729,17 +731,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					// message text, not by the log level or a separate event-type field.
 					o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: pr_opened url=%s", prURL), runLogID))
 				}
-				// Gap B — dispatch any pr_opened automation rules right here,
-				// at the point we've confirmed the PR is brand-new for this
-				// issue (alreadyPosted==false). Doing it inside the
-				// "first-time PR detection" branch keeps the firing
-				// semantics tight: re-runs on the same issue whose PR has
-				// already been commented don't re-fire reviewer/QA agents.
-				prBranch := ""
-				if prCtx != nil {
-					prBranch = prCtx.Branch
-				}
-				o.DispatchPROpenedAutomations(issue, prURL, prBranch, o.cfg.Agent.BaseBranch)
+				// Queue pr_opened after the worker exit event below. The
+				// event loop must clear state.Running first or it will
+				// reject the automation as already_running.
+				openedPRURL = prURL
+				openedPRBranch = activeBranchName
 			}
 		}
 	}
@@ -878,7 +874,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	// Pass branchName so the auto-clear handler uses the actual worktree branch
 	// (which may be prCtx.Branch on a PR-continuation run, not issue.BranchName).
-	o.sendExitWithBranch(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL)
+	o.sendExitWithBranchThenPROpenedAutomations(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL, openedPRURL, openedPRBranch)
 }
 
 // hookLogFn returns a function suitable for workspace.RunHook's logFn parameter.
@@ -1245,6 +1241,18 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 		slog.Warn("worker: exit event not delivered (orchestrator shutting down)",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 	}
+}
+
+func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string) {
+	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL)
+	if reason != TerminalSucceeded || err != nil || openedPRURL == "" {
+		return
+	}
+	baseBranch := ""
+	if o.cfg != nil {
+		baseBranch = o.cfg.Agent.BaseBranch
+	}
+	o.DispatchPROpenedAutomations(issue, openedPRURL, openedPRBranch, baseBranch)
 }
 
 func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *RunEntry, entry *InputRequiredEntry) {

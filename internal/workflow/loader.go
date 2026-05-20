@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/automationdef"
 	"gopkg.in/yaml.v3"
 )
 
@@ -487,39 +488,10 @@ type ProfileEntry struct {
 	CreateIssueState string
 }
 
-type AutomationTriggerEntry struct {
-	Type     string
-	Cron     string
-	Timezone string
-	State    string
-}
-
-type AutomationFilterEntry struct {
-	MatchMode         string
-	States            []string
-	LabelsAny         []string
-	IdentifierRegex   string
-	Limit             int
-	InputContextRegex string
-	MaxAgeMinutes     int
-}
-
-type AutomationPolicyEntry struct {
-	AutoResume      bool
-	SwitchToProfile string
-	SwitchToBackend string
-	CooldownMinutes int
-}
-
-type AutomationEntry struct {
-	ID           string
-	Enabled      bool
-	Profile      string
-	Instructions string
-	Trigger      AutomationTriggerEntry
-	Filter       AutomationFilterEntry
-	Policy       AutomationPolicyEntry
-}
+type AutomationTriggerEntry = automationdef.Trigger
+type AutomationFilterEntry = automationdef.Filter
+type AutomationPolicyEntry = automationdef.Policy
+type AutomationEntry = automationdef.Definition
 
 // PatchProfilesBlock replaces (or inserts) the agent.profiles block in the YAML
 // front matter of the file at path. profiles maps profile name → ProfileEntry.

@@ -7,7 +7,7 @@ import { proseClass } from '../../utils/format';
 import { ProfileEditorFields } from '../../pages/Settings/profiles/ProfileEditorFields';
 import { backendLabel, backendBadgeClass } from '../../pages/Settings/profiles/profileBadges';
 import {
-  AGENT_ACTION_OPTIONS,
+  agentActionOptionsFor,
   normalizeAllowedActions,
   applyBackendSelection,
   applyModelSelection,
@@ -28,6 +28,7 @@ interface AgentInfoModalProps {
   onClose: () => void;
   onSave?: (name: string, def: ProfileDef) => Promise<void>;
   availableModels?: Record<string, { id: string; label: string }[]>;
+  supportedAgentActions?: readonly string[];
 }
 
 export const AgentInfoModal = memo(function AgentInfoModal({
@@ -36,6 +37,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
   onClose,
   onSave,
   availableModels,
+  supportedAgentActions,
 }: AgentInfoModalProps) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -114,9 +116,9 @@ export const AgentInfoModal = memo(function AgentInfoModal({
     : 'claude';
   const profileModel = profileDef ? commandToModel(profileDef.command) : '';
   const modelDisplay = profileModel ? modelLabel(inferredBackend, profileModel) : '';
-  const actionLabels = AGENT_ACTION_OPTIONS.filter((option) =>
-    (profileDef?.allowedActions ?? []).includes(option.id),
-  ).map((option) => option.label);
+  const actionLabels = agentActionOptionsFor(supportedAgentActions)
+    .filter((option) => (profileDef?.allowedActions ?? []).includes(option.id))
+    .map((option) => option.label);
 
   return (
     <Modal
@@ -206,6 +208,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                   command={command}
                   prompt={prompt}
                   allowedActions={allowedActions}
+                  supportedAgentActions={supportedAgentActions}
                   createIssueState={createIssueState}
                   onBackendChange={(value) => {
                     const next = applyBackendSelection(command, backend, value);
@@ -225,7 +228,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                   }}
                   onPromptChange={setPrompt}
                   onAllowedActionsChange={(value) => {
-                    const normalized = normalizeAllowedActions(value);
+                    const normalized = normalizeAllowedActions(value, supportedAgentActions);
                     setAllowedActions(normalized);
                     if (!normalized.includes('create_issue')) {
                       setCreateIssueState('');

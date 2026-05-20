@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -283,24 +284,6 @@ func TestQuickstartTemplate_HasRequiredFields(t *testing.T) {
 	assert.Equal(t, "Done", loaded.Tracker.CompletionState)
 	assert.Equal(t, 3, loaded.Agent.MaxConcurrentAgents)
 	assert.NotEmpty(t, loaded.PromptTemplate)
-}
-
-// ─── convertAgentModels ───────────────────────────────────────────────────────
-
-func TestConvertAgentModels(t *testing.T) {
-	input := []agent.ModelOption{
-		{ID: "claude-opus-4-6", Label: "Opus 4.6"},
-		{ID: "claude-sonnet-4-6", Label: "Sonnet 4.6"},
-	}
-	out := convertAgentModels(input)
-	assert.Len(t, out, 2)
-	assert.Equal(t, "claude-opus-4-6", out[0].ID)
-	assert.Equal(t, "Opus 4.6", out[0].Label)
-}
-
-func TestConvertAgentModels_Empty(t *testing.T) {
-	out := convertAgentModels(nil)
-	assert.Len(t, out, 0)
 }
 
 // ─── convertModelsForSnapshot ─────────────────────────────────────────────────
@@ -1249,7 +1232,9 @@ func TestHealthEndpoint_NoDemoNeeded(t *testing.T) {
 	srv := server.New(cfg)
 
 	req, _ := http.NewRequest("GET", "/api/v1/health", nil)
-	// Just verify it doesn't panic
-	assert.NotNil(t, srv)
-	_ = req
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+	assert.JSONEq(t, `{"status":"ok"}`, w.Body.String())
 }

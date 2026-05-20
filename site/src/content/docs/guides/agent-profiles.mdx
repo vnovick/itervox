@@ -1,6 +1,6 @@
 ---
 title: Agent Profiles
-description: Configure multiple AI agent profiles, team collaboration, and SSH remote execution.
+description: Configure multiple AI agent profiles, prompt roles, daemon actions, and SSH remote execution.
 sidebar:
   order: 5
 ---
@@ -153,6 +153,11 @@ follow-up issue, or auto-resume a blocked run with `provide_input`.
 
 If `allowed_actions` includes `create_issue`, `create_issue_state` is required.
 
+In v0.2.0, daemon-backed action env vars and shims are injected only for local
+workers. SSH remote workers with `allowed_actions` receive a prompt warning that
+daemon-backed actions are unavailable remotely; they do not receive
+`ITERVOX_ACTION_TOKEN`, `ITERVOX_DAEMON_URL`, or the local shim PATH.
+
 ---
 
 ## SSH remote execution
@@ -183,6 +188,7 @@ agent:
 - The target host must have the agent runner binary (`claude`, `codex`, etc.) installed and on `$PATH`.
 - The repository must be accessible on the remote host (either pre-cloned or mounted via NFS/SSHFS).
 - If `workspace.worktree` is enabled, the bare git clone must already exist at `workspace.root` on each remote host.
+- Daemon-backed profile actions are local-worker only in v0.2.0; remote workers can run the model but cannot use the `itervox action ...` bridge.
 
 ### Example with worktree mode
 

@@ -238,6 +238,7 @@ export function SkillsCard() {
   };
   const totalTokens = Object.values(tokens).reduce((s, n) => s + n, 0);
   const maxTokens = Math.max(1, ...Object.values(tokens));
+  const inventoryStale = inventory.Stale === true;
 
   return (
     <div className="space-y-6">
@@ -245,9 +246,26 @@ export function SkillsCard() {
       <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-theme-text text-sm font-medium">Inventory</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-theme-text text-sm font-medium">Inventory</p>
+              <span
+                role="status"
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
+                  inventoryStale
+                    ? 'border-yellow-400/40 bg-yellow-500/15 text-yellow-400'
+                    : 'border-emerald-400/40 bg-emerald-500/15 text-emerald-400'
+                }`}
+              >
+                {inventoryStale ? 'Stale' : 'Tracked files current'}
+              </span>
+            </div>
             <p className="text-theme-muted mt-0.5 text-xs">
               Last scanned: {new Date(inventory.ScanTime).toLocaleString()}
+            </p>
+            <p className="text-theme-muted mt-1 max-w-xl text-[11px]">
+              {inventoryStale
+                ? 'Tracked config or inventory files changed since the last scan. Click Re-scan to refresh recommendations.'
+                : 'Tracked config and inventory files are unchanged since the last scan. Click Re-scan after adding new roots or changing untracked paths.'}
             </p>
           </div>
           <button
@@ -261,6 +279,18 @@ export function SkillsCard() {
           </button>
         </div>
       </div>
+
+      {inventory.Partial && (
+        <div
+          role="status"
+          className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-lg border p-4 text-sm"
+        >
+          <p className="font-medium">Partial inventory</p>
+          <p className="mt-1 text-xs">
+            {inventory.ScanError || 'One or more scanners failed; showing best-effort results.'}
+          </p>
+        </div>
+      )}
 
       {/* Recommendations — accordion with optimization help */}
       <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
@@ -534,7 +564,7 @@ function AnalyticsSection() {
   const { data: recs = [] } = useSkillsAnalyticsRecommendations();
 
   if (isLoading) return null;
-  if (!analytics) {
+  if (!analytics || analytics.HasRuntimeEvidence === false) {
     return (
       <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
         <p className="text-theme-text mb-1 text-sm font-medium">Runtime analytics</p>
@@ -567,8 +597,8 @@ function AnalyticsSection() {
           {totalSkills} skills runtime-verified
         </div>
         <div>
-          <span className="text-theme-text font-bold tabular-nums">{hookRuntimeCount}</span> hook
-          events seen
+          <span className="text-theme-text font-bold tabular-nums">{hookRuntimeCount}</span> hooks
+          with activity
         </div>
         <div>
           <span className="text-theme-text font-bold tabular-nums">{recs.length}</span>{' '}

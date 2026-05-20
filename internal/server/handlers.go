@@ -17,10 +17,29 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/tracker"
 )
+
+const sseWriteDeadline = 5 * time.Second
+
+func setSSEWriteDeadline(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
+}
+
+func writeSSEFrame(w http.ResponseWriter, format string, args ...any) error {
+	setSSEWriteDeadline(w)
+	_, err := fmt.Fprintf(w, format, args...)
+	return err
+}
+
+func flushSSE(w http.ResponseWriter, flusher http.Flusher) {
+	setSSEWriteDeadline(w)
+	flusher.Flush()
+}
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	snap := s.snapshot()
@@ -40,7 +59,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 // handleEvents streams state snapshots as Server-Sent Events.
 // Each event is a "data: <JSON>\n\n" frame carrying the full StateSnapshot.
-// A keep-alive comment (": ping\n\n") is sent every 25 s to prevent proxy timeouts.
+// A named keepalive event is sent after 25 s of stream inactivity to prevent proxy timeouts.
 // GET /api/v1/events
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -82,14 +101,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			ticker.Reset(keepaliveInterval) // §7.2 — defer keepalive after activity
 		case <-ticker.C:
-			// G-04 (gaps_280426_2): set a per-tick write deadline so a
-			// half-closed TCP connection (proxy gone, client crashed) is
-			// detected within the deadline rather than waiting for OS-level
-			// keepalive. ResponseController returns ErrNotSupported on net
-			// implementations that don't support deadlines (rare in practice);
-			// we ignore the error and fall through to the legacy behavior.
-			rc := http.NewResponseController(w)
-			_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			// Send SSE keepalive as a NAMED event (not a comment) so the
 			// client's @microsoft/fetch-event-source delivers it to onMessage.
 			// Comments (`: ping`) are stripped by the SSE parser per spec —
@@ -98,10 +109,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// "Reconnecting…" banner kept appearing on quiet systems. The
 			// payload is intentionally tiny; the client checks event type
 			// and short-circuits without re-parsing the snapshot.
-			if _, err := fmt.Fprintf(w, "event: keepalive\ndata: {}\n\n"); err != nil {
+			if err := writeSSEFrame(w, "event: keepalive\ndata: {}\n\n"); err != nil {
 				return
 			}
-			flusher.Flush()
+			flushSSE(w, flusher)
 		}
 	}
 }
@@ -112,10 +123,10 @@ func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) erro
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+	if err := writeSSEFrame(w, "data: %s\n\n", b); err != nil {
 		return err
 	}
-	flusher.Flush()
+	flushSSE(w, flusher)
 	return nil
 }
 
@@ -225,8 +236,8 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	f, err := os.Open(s.logFile)
 	if err != nil {
-		_, _ = fmt.Fprintf(w, "event: log\ndata: [log file not yet available: %s]\n\n", err)
-		flusher.Flush()
+		_ = writeSSEFrame(w, "event: log\ndata: [log file not yet available: %s]\n\n", err)
+		flushSSE(w, flusher)
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -284,7 +295,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return strings.Contains(line, filterID)
 	}
 
-	flushPending := func() {
+	flushPending := func() bool {
 		for {
 			idx := bytes.IndexByte(pending.Bytes(), '\n')
 			if idx < 0 {
@@ -298,38 +309,50 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 			if !lineMatchesFilter(line) {
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "event: log\ndata: %s\n\n", line)
+			if err := writeSSEFrame(w, "event: log\ndata: %s\n\n", line); err != nil {
+				return false
+			}
 		}
+		return true
 	}
 
-	flush := func() {
+	flush := func() bool {
 		for {
 			n, err := f.Read(readBuf)
 			if n > 0 {
 				if pending.Len()+n > maxPending {
 					// Flush what we have before accepting more so data is not dropped.
-					flushPending()
+					if !flushPending() {
+						return false
+					}
 				}
 				pending.Write(readBuf[:n])
 			}
 			// Send complete lines.
-			flushPending()
+			if !flushPending() {
+				return false
+			}
 			if err != nil || n == 0 {
 				// n == 0 with err == nil means no new data (EOF on regular file);
 				// break to avoid a busy-spin until the next ticker tick (GO-R10-5).
 				break
 			}
 		}
-		flusher.Flush()
+		flushSSE(w, flusher)
+		return true
 	}
 
-	flush() // send initial tail immediately
+	if !flush() { // send initial tail immediately
+		return
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			flush()
+			if !flush() {
+				return
+			}
 		}
 	}
 }
@@ -395,11 +418,11 @@ func (s *Server) handleIssueLogStream(w http.ResponseWriter, r *http.Request) {
 			}
 			// id: <cursor> lets the client resume from this point on
 			// reconnect via the Last-Event-ID header.
-			if _, err := fmt.Fprintf(w, "id: %d\nevent: log\ndata: %s\n\n", sent, b); err != nil {
+			if err := writeSSEFrame(w, "id: %d\nevent: log\ndata: %s\n\n", sent, b); err != nil {
 				return false
 			}
 		}
-		flusher.Flush()
+		flushSSE(w, flusher)
 		return true
 	}
 
@@ -449,7 +472,7 @@ func (s *Server) handleSubLogStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	initialEntries, err := s.client.FetchSubLogs(identifier)
+	initialEntries, err := s.client.FetchSubLogs(r.Context(), identifier)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
 		return
@@ -472,11 +495,11 @@ func (s *Server) handleSubLogStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "id: %d\nevent: sublog\ndata: %s\n\n", sent, b); err != nil {
+			if err := writeSSEFrame(w, "id: %d\nevent: sublog\ndata: %s\n\n", sent, b); err != nil {
 				return false
 			}
 		}
-		flusher.Flush()
+		flushSSE(w, flusher)
 		return true
 	}
 
@@ -499,7 +522,7 @@ func (s *Server) handleSubLogStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			entries, err := s.client.FetchSubLogs(identifier)
+			entries, err := s.client.FetchSubLogs(r.Context(), identifier)
 			if err != nil {
 				// T-45 (03.G-06): emit a structured SSE `error` frame before
 				// returning so the dashboard can distinguish a tracker fetch
@@ -531,9 +554,9 @@ func writeSubLogErrorEvent(w http.ResponseWriter, err error) {
 	// because both code and the cleaned message are plain ASCII strings —
 	// %q escapes embedded quotes for us.
 	payload := fmt.Sprintf(`{"code":%q,"message":%q}`, code, msg)
-	if _, werr := fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload); werr == nil {
+	if werr := writeSSEFrame(w, "event: error\ndata: %s\n\n", payload); werr == nil {
 		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
+			flushSSE(w, flusher)
 		}
 	}
 }
@@ -735,7 +758,7 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 // GET /api/v1/issues/{identifier}/sublogs
 func (s *Server) handleSubLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	entries, err := s.client.FetchSubLogs(identifier)
+	entries, err := s.client.FetchSubLogs(r.Context(), identifier)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
 		return
@@ -1194,7 +1217,7 @@ func (s *Server) handleSetAutomations(w http.ResponseWriter, r *http.Request) {
 			CreateIssueState: strings.TrimSpace(def.CreateIssueState),
 		}
 	}
-	if err := config.ValidateAutomations(automationConfigsFromDefs(body.Automations), profiles); err != nil {
+	if err := config.ValidateAutomations(automationconfig.ConfigsFromDefinitions(body.Automations), profiles); err != nil {
 		writeAutomationValidationError(w, err)
 		return
 	}
@@ -1234,43 +1257,6 @@ func (s *Server) handleTestAutomation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func automationConfigsFromDefs(defs []AutomationDef) []config.AutomationConfig {
-	if len(defs) == 0 {
-		return nil
-	}
-	automations := make([]config.AutomationConfig, 0, len(defs))
-	for _, def := range defs {
-		automations = append(automations, config.AutomationConfig{
-			ID:           def.ID,
-			Enabled:      def.Enabled,
-			Profile:      def.Profile,
-			Instructions: def.Instructions,
-			Trigger: config.AutomationTriggerConfig{
-				Type:     def.Trigger.Type,
-				Cron:     def.Trigger.Cron,
-				Timezone: def.Trigger.Timezone,
-				State:    def.Trigger.State,
-			},
-			Filter: config.AutomationFilterConfig{
-				MatchMode:         def.Filter.MatchMode,
-				States:            def.Filter.States,
-				LabelsAny:         def.Filter.LabelsAny,
-				IdentifierRegex:   def.Filter.IdentifierRegex,
-				Limit:             def.Filter.Limit,
-				InputContextRegex: def.Filter.InputContextRegex,
-				MaxAgeMinutes:     def.Filter.MaxAgeMinutes,
-			},
-			Policy: config.AutomationPolicyConfig{
-				AutoResume:      def.Policy.AutoResume,
-				SwitchToProfile: def.Policy.SwitchToProfile,
-				SwitchToBackend: def.Policy.SwitchToBackend,
-				CooldownMinutes: def.Policy.CooldownMinutes,
-			},
-		})
-	}
-	return automations
 }
 
 func writeAutomationValidationError(w http.ResponseWriter, err error) {

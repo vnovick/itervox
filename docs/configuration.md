@@ -73,7 +73,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `turn_timeout_ms` | int | `3600000` | Hard wall-clock limit for the entire agent session (ms). `0` disables |
 | `read_timeout_ms` | int | `30000` | Per-read timeout on subprocess stdout. Aborts if no bytes for this long |
 | `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout. `≤ 0` disables stall detection |
-| `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). Set to `0` to disable retries |
+| `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). `0`/negative values fall back to the default; use `max_retries` to control retry count |
 | `max_retries` | int | `5` | Maximum retry attempts before moving to `failed_state`. `0` means unlimited |
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |
 | `inline_input` | bool | `false` | When `true`, agent input-required signals post as tracker comments instead of waiting in the dashboard UI |
@@ -186,6 +186,24 @@ multiple comments arrive between polls, the trigger sees the latest one.
 | `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs |
 | `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset |
 
+When `switch_to_backend` is set, the target profile command must be compatible
+with that backend. Prefer a dedicated Codex profile such as `command: codex` /
+`backend: codex`, or a backend-aware wrapper command.
+
+### Dependency readiness and blockers
+
+Itervox exposes tracker blockers to the prompt and dashboard, and normal issue
+dispatch skips `Todo` issues whose blockers are still non-terminal. That is the
+deterministic blocker behavior shipped in v0.2.0.
+
+Automation rules do not yet have a deterministic `blockers_resolved` trigger or
+a `filter.blockers` predicate. A `readiness-manager` or `unblock-manager`
+profile can still run today as prompt-governed backlog grooming: dispatch it
+from a cron or tracker-comment automation, let it inspect the issue blockers,
+and restrict it to `comment` unless you are comfortable with the profile making
+state-change decisions. Treat that pattern as advisory automation, not a
+guaranteed dependency resolver.
+
 ```yaml
 automations:
   - id: qa-ready
@@ -212,6 +230,24 @@ automations:
     filter:
       states: ["Backlog"]
       limit: 20
+
+  # Experimental: prompt-governed, not a deterministic blocker predicate.
+  - id: unblock-manager
+    enabled: false
+    trigger:
+      type: cron
+      cron: "*/30 * * * *"
+    profile: unblock-manager
+    instructions: |
+      Inspect this issue's blocker list and comments.
+      If any blocker is missing a terminal state, leave a concise comment and stop.
+      If every blocker is terminal and the acceptance criteria are clear, comment that
+      the issue appears ready for Todo.
+      Move state only when your profile is explicitly allowed to use move_state.
+    filter:
+      states: ["Backlog"]
+      labels_any: ["blocked"]
+      limit: 10
 ```
 
 For a more detailed guide, including trigger semantics, filter behavior, prompt
@@ -249,6 +285,11 @@ at migration time.
 Lifecycle scripts run via `bash -lc` inside each workspace. `after_create` and
 `before_run` are fatal on non-zero exit; `after_run` and `before_remove`
 failures are logged and ignored.
+
+v0.2.0 does not ship a fatal post-change hook such as `hooks.verify` or
+`hooks.after_run_required`. Treat post-change gates as CI-governed or
+prompt-governed unless you run them before the agent turn through `before_run`
+or outside Itervox.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

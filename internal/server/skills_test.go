@@ -17,6 +17,7 @@ type fakeSkillsClient struct {
 	inv          *skills.Inventory
 	issues       []skills.InventoryIssue
 	refreshErr   error
+	refreshInv   *skills.Inventory
 	refreshCalls int
 	fixErr       error
 	fixCalls     int
@@ -31,6 +32,9 @@ func (c *fakeSkillsClient) Issues() []skills.InventoryIssue {
 }
 func (c *fakeSkillsClient) RefreshInventory(ctx context.Context) error {
 	c.refreshCalls++
+	if c.refreshInv != nil {
+		c.inv = c.refreshInv
+	}
 	return c.refreshErr
 }
 func (c *fakeSkillsClient) ApplyFix(_ context.Context, _ string, fix skills.Fix) error {
@@ -66,6 +70,7 @@ func TestSkills_InventoryReturnsCachedJSON(t *testing.T) {
 	fake := &fakeSkillsClient{
 		inv: &skills.Inventory{
 			Skills: []skills.Skill{{Name: "alpha", Provider: "claude"}},
+			Stale:  true,
 		},
 	}
 	s := newSkillsTestServer(t, fake)
@@ -76,6 +81,9 @@ func TestSkills_InventoryReturnsCachedJSON(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "\"alpha\"") {
 		t.Errorf("expected body to contain alpha skill name, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "\"Stale\":true") {
+		t.Errorf("expected body to expose stale status, got %s", rec.Body.String())
 	}
 }
 
@@ -103,6 +111,31 @@ func TestSkills_ScanReturns500OnRefreshError(t *testing.T) {
 	s.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/skills/scan", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestSkills_ScanReturnsPartialInventoryOnRefreshError(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSkillsClient{
+		refreshErr: errors.New("codex scanner failed"),
+		refreshInv: &skills.Inventory{
+			Skills:    []skills.Skill{{Name: "alpha", Provider: "claude"}},
+			Partial:   true,
+			ScanError: "codex scanner failed",
+		},
+	}
+	s := newSkillsTestServer(t, fake)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/skills/scan", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for partial inventory, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	var out skills.Inventory
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Partial || out.ScanError != "codex scanner failed" || len(out.Skills) != 1 {
+		t.Fatalf("unexpected partial inventory body: %+v", out)
 	}
 }
 

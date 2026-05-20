@@ -27,7 +27,7 @@ test.afterAll(async () => {
 test('create + delete an automation round-trip', async ({ page }) => {
   // Authenticate via URL token (proven by flow 2).
   await page.goto(`${daemon.url}/?token=${daemon.token}`);
-  await expect(page.getByText(/live|connecting/i)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/^Live$/)).toBeVisible({ timeout: 10_000 });
 
   // Navigate to the settings/automations page. The Automations link is in the
   // app sidebar; if the layout changes, this selector will need updating.
@@ -50,9 +50,14 @@ test('create + delete an automation round-trip', async ({ page }) => {
 
   // After the round-trip the modal closes and the new automation appears in
   // the list. Use polling because the SSE snapshot may take a tick.
-  await expect.poll(async () => {
-    return page.getByText('e2e-smoke').isVisible();
-  }, { timeout: 5_000 }).toBe(true);
+  await expect
+    .poll(
+      async () => {
+        return page.getByText('e2e-smoke').isVisible();
+      },
+      { timeout: 5_000 },
+    )
+    .toBe(true);
 
   // Delete the automation — find a delete button on the new row.
   // Use the stable data-automation-row attribute as the anchor; ancestor div
@@ -62,7 +67,12 @@ test('create + delete an automation round-trip', async ({ page }) => {
   await row.getByRole('button', { name: /delete|remove/i }).click();
 
   // After delete, the row should be gone from the snapshot.
-  await expect.poll(async () => {
-    return page.getByText('e2e-smoke').count();
-  }, { timeout: 5_000 }).toBe(0);
+  await expect
+    .poll(
+      async () => {
+        return page.getByText('e2e-smoke').count();
+      },
+      { timeout: 5_000 },
+    )
+    .toBe(0);
 });

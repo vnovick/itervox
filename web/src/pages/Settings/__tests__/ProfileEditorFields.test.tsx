@@ -87,4 +87,28 @@ describe('ProfileEditorFields', () => {
     );
     expect(screen.getByText('Post structured review')).toBeInTheDocument();
   });
+
+  it('filters daemon action checkboxes to backend-supported actions', () => {
+    render(
+      <ProfileEditorFields
+        backend="claude"
+        model=""
+        command="claude"
+        prompt=""
+        allowedActions={[]}
+        supportedAgentActions={['comment']}
+        createIssueState=""
+        trackerStates={['Todo']}
+        onBackendChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onCommandChange={vi.fn()}
+        onPromptChange={vi.fn()}
+        onAllowedActionsChange={vi.fn()}
+        onCreateIssueStateChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Comment on current issue')).toBeInTheDocument();
+    expect(screen.queryByText('Post structured review')).not.toBeInTheDocument();
+  });
 });

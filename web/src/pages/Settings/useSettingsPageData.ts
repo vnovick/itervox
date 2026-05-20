@@ -39,6 +39,7 @@ export function useSettingsPageData() {
   );
   const profileDefs = useItervoxStore((s) => s.snapshot?.profileDefs ?? EMPTY_PROFILE_DEFS);
   const availableModels = useItervoxStore((s) => s.snapshot?.availableModels);
+  const supportedAgentActions = useItervoxStore((s) => s.snapshot?.supportedAgentActions);
   const availableProfiles = useItervoxStore((s) => s.snapshot?.availableProfiles ?? EMPTY_PROFILES);
   const automations = useItervoxStore((s) => s.snapshot?.automations ?? EMPTY_AUTOMATIONS);
   const reviewerProfile = useItervoxStore((s) => s.snapshot?.reviewerProfile ?? '');
@@ -105,6 +106,7 @@ export function useSettingsPageData() {
     switchWindowHours,
     profileDefs,
     availableModels,
+    supportedAgentActions,
     availableProfiles,
     automations,
     reviewerProfile,

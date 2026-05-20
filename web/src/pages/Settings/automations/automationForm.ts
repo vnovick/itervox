@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AutomationDef } from '../../../types/schemas';
+import { AUTOMATION_TRIGGER_TYPES } from '../../../types/automationTriggers';
 import type { SuggestedAutomation } from './suggestedAutomations';
 
 function isValidRegex(value: string): boolean {
@@ -21,16 +22,7 @@ export const automationFormSchema = z
     enabled: z.boolean(),
     profile: z.string().min(1, 'Profile is required.'),
     instructions: z.string(),
-    triggerType: z.enum([
-      'cron',
-      'input_required',
-      'tracker_comment_added',
-      'issue_entered_state',
-      'issue_moved_to_backlog',
-      'run_failed',
-      'pr_opened',
-      'rate_limited',
-    ]),
+    triggerType: z.enum(AUTOMATION_TRIGGER_TYPES),
     triggerState: z.string(),
     cron: z.string(),
     timezone: z.string(),

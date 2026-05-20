@@ -60,6 +60,7 @@ func parseClaudeRuntime(logDir string, lookbackSessions int) (*RuntimeEvidenceSn
 			continue
 		}
 	}
+	snap.HasRuntimeEvidence = len(snap.SourceLogPaths) > 0
 	return snap, nil
 }
 

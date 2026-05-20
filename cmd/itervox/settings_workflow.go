@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
-	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/workflow"
 )
 
@@ -32,43 +31,6 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 		}
 	}
 	return out
-}
-
-func automationsToEntries(automations []server.AutomationDef) []workflow.AutomationEntry {
-	if len(automations) == 0 {
-		return nil
-	}
-	entries := make([]workflow.AutomationEntry, 0, len(automations))
-	for _, automation := range automations {
-		entries = append(entries, workflow.AutomationEntry{
-			ID:           automation.ID,
-			Enabled:      automation.Enabled,
-			Profile:      automation.Profile,
-			Instructions: automation.Instructions,
-			Trigger: workflow.AutomationTriggerEntry{
-				Type:     automation.Trigger.Type,
-				Cron:     automation.Trigger.Cron,
-				Timezone: automation.Trigger.Timezone,
-				State:    automation.Trigger.State,
-			},
-			Filter: workflow.AutomationFilterEntry{
-				MatchMode:         automation.Filter.MatchMode,
-				States:            append([]string{}, automation.Filter.States...),
-				LabelsAny:         append([]string{}, automation.Filter.LabelsAny...),
-				IdentifierRegex:   automation.Filter.IdentifierRegex,
-				Limit:             automation.Filter.Limit,
-				InputContextRegex: automation.Filter.InputContextRegex,
-				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
-			},
-			Policy: workflow.AutomationPolicyEntry{
-				AutoResume:      automation.Policy.AutoResume,
-				SwitchToProfile: automation.Policy.SwitchToProfile,
-				SwitchToBackend: automation.Policy.SwitchToBackend,
-				CooldownMinutes: automation.Policy.CooldownMinutes,
-			},
-		})
-	}
-	return entries
 }
 
 func disableAutomationsForProfile(

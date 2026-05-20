@@ -126,6 +126,32 @@ Linear, GitHub, and an in-memory backend all implement `tracker.Tracker`. The
 orchestrator works exclusively with `domain.Issue` values, so the dispatch
 logic is backend-agnostic.
 
+## Planned v0.2.0 Automation Queue And Dependency Surfaces
+
+This section describes planned v0.2.0 architecture work tracked in
+`planning/v0.2.0/todolist2.md`. Do not treat these fields or UI surfaces as
+shipped until the implementation tasks and release checks land.
+
+The planned automation queue keeps retryable automation dispatch attempts in
+event-loop-owned state instead of letting no-slot or blocked-by cases disappear
+between polls. Queue entries are drained when worker capacity and eligibility
+allow. Queue length is capped, and saturation pauses new automation trigger
+intake while existing queued work continues to drain.
+
+The planned dependency audit normalizes `issue.BlockedBy` into observable
+blocked, unknown, and unblocked states. Core audit is read-only: it can emit a
+`blockers_resolved` automation event when all blockers become terminal, but it
+does not mutate Linear or GitHub state directly. Tracker state changes remain
+explicit dashboard actions or opt-in automations with profile permissions.
+
+The planned dashboard Deps tab is a display-only React Flow graph of issue
+dependency relationships. Edge direction is blocker -> blocked issue. Nodes show
+issue status badges such as running, queued, terminal, blocked, unblocked, and
+unknown. Clicking a node should reuse the existing issue-detail panel path.
+
+The full editable automation/workflow canvas remains a later release concern;
+the v0.2.0 Deps graph is only an issue dependency visualization.
+
 ## Request flow (web dashboard → agent dispatch)
 
 ```

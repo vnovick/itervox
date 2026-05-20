@@ -1,6 +1,6 @@
 ---
 title: Skills Inventory & Capability Analytics
-description: How Itervox scans your project's skills, plugins, MCP servers, hooks, and instructions, and how runtime analytics compound over time as the daemon accumulates session logs.
+description: How Itervox scans your project's skills, plugins, MCP servers, hooks, and instructions, and how runtime analytics use recent session logs.
 sidebar:
   order: 8
 ---
@@ -12,7 +12,7 @@ The system has two complementary halves:
 - **Phase 1 — Static analyzer.** Scans the file system on demand. Catches duplicates, unused profiles, bloated profiles, large contexts, instruction shadowing, and orphaned MCP registrations.
 - **Phase 2 — Runtime analytics.** Reads JSONL session logs the daemon already writes for every dispatch. Catches what's *actually* used at runtime versus what's merely configured.
 
-The two halves combine into a single dashboard surface. Understanding the difference matters because Phase 2 recommendations compound over time as you accumulate session evidence.
+The two halves combine into a single dashboard surface. Understanding the difference matters because Phase 2 recommendations require real recent-session evidence.
 
 ---
 
@@ -41,8 +41,8 @@ Seven production rules ship today in `internal/skills/analyze.go`. They run sync
 | `DUPLICATE_SKILL` | info | Same skill name in multiple scopes (e.g. project AND user) |
 | `DUPLICATE_MCP` | warn | Same MCP server `command` or `url` registered in multiple settings files |
 | `UNUSED_PROFILE` | info | Profile defined in `WORKFLOW.md` but absent from recent dispatch history |
-| `BLOATED_PROFILE` | warn | Profile inherits more than the recommended skill+MCP token budget |
-| `LARGE_CONTEXT` | warn | Total system-prompt token estimate exceeds the model's recommended budget |
+| `BLOATED_PROFILE` | warn | Inventory carries more than 20 MCP servers or more than 15 skills, and every profile inherits that surface |
+| `LARGE_CONTEXT` | warn | Estimated profile context cost exceeds the default 50K-token threshold |
 | `INSTRUCTION_SHADOWING` | info | Same instruction filename in multiple scopes |
 | `ORPHAN_MCP` | info | Configured MCP server name never referenced in any skill name, description, or body |
 
@@ -58,7 +58,6 @@ Every Claude Code dispatch writes a JSONL session log under `~/.itervox/logs/<is
 
 - **Skill stats** — `RuntimeLoads` count + `LastSeenAt` per configured skill.
 - **Hook stats** — execution count per `(event, command)` tuple.
-- **Tool stats** — call count per tool used.
 - **Profile costs** — per-profile token breakdown (instructions / skills / hooks / MCP / workflow).
 
 These feed five evidence-based recommendations:
@@ -67,19 +66,19 @@ These feed five evidence-based recommendations:
 |---|---|---|
 | `HIGH_COST_LOW_USAGE` | warn | Skill > 2K tokens but loaded fewer than 2 times in the lookback window |
 | `HOOK_STORM` | warn | Hook fired ≥ 50 times in the lookback window (high overhead, possible duplicate execution) |
-| `CONFIGURED_NOT_LOADED` | info | Skill present in YAML but never observed at runtime |
+| `CONFIGURED_NOT_LOADED` | info | Static inventory skill never observed in runtime evidence |
 | `LOADED_NOT_CONFIGURED` | info | Skill the model used implicitly but isn't in the static inventory |
 | (analytics surface) | — | Per-profile cost projections used by the dashboard's per-provider bar chart |
 
-### Recommendations compound over time
+### Recommendations need representative runtime evidence
 
 Runtime analytics are **evidence-based**, not prescriptive. Every Phase-2 recommendation is derived from real session history, not from your config. This has three consequences operators should plan around:
 
-1. **A fresh install gives mostly static-analyzer output.** With zero sessions in `~/.itervox/logs/`, the runtime analyzer returns an empty snapshot. You'll see Phase-1 recommendations (duplicate skills, bloated profiles, large contexts) but not Phase-2 signals like `HIGH_COST_LOW_USAGE`. **This is not a bug.** Re-check the dashboard after the daemon has handled a meaningful sample of issues.
+1. **A fresh install gives static-analyzer output only.** With zero sessions in `~/.itervox/logs/` or Codex history, the analytics response has `HasRuntimeEvidence: false` and runtime recommendations are empty. Phase-2 signals like `HIGH_COST_LOW_USAGE` need real runs to fire.
 2. **The lookback window is 25 sessions by default.** Sessions older than that age out of the analysis. As your daemon runs more issues, the window slides forward and stale evidence is discarded — so a skill that was heavy six months ago but trimmed last week will correctly fall off the warn list once enough new sessions accumulate.
-3. **The signal sharpens as variety grows.** A daemon that has run the same profile 25 times against the same kind of issue will correctly report which skills *that profile* loads. Multi-profile, multi-issue-type evidence catches `LOADED_NOT_CONFIGURED` (a skill the model used implicitly) and `CONFIGURED_NOT_LOADED` (a skill that pays its token cost but never gets used). Run a representative cross-section of profiles before treating the recommendation list as final.
+3. **The signal sharpens as variety grows.** Multi-profile, multi-issue-type evidence catches `LOADED_NOT_CONFIGURED` (a capability observed in runtime logs but absent from static inventory) and `CONFIGURED_NOT_LOADED` (a static inventory skill not observed in runtime evidence). Run a representative cross-section of profiles before treating the recommendation list as final.
 
-**Operationally:** leave the daemon running, accumulate evidence, then come back and act on the warnings. The longer the daemon has been running real work, the more confident the recommendations.
+**Operationally:** leave the daemon running, accumulate evidence, then come back and act on the warnings once the recent-session lookback represents real work. v0.2.0 does not include a long-term learning store beyond the recent log lookback.
 
 ---
 
@@ -98,6 +97,14 @@ The card also exposes:
 - **Per-issue Fix button** — appears when a recommendation attaches a `Fix` descriptor. Calls `POST /api/v1/skills/fix`.
 
 All routes use the standard bearer-token auth (`Authorization: Bearer <ITERVOX_API_TOKEN>`).
+
+Scanner failures are best-effort. If one source fails but another succeeds, Itervox returns the partial inventory with warning fields and the Settings UI keeps showing the successfully collected data.
+
+### Scan freshness
+
+The Settings card shows the last scan timestamp plus a status badge next to **Re-scan**. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since the last scan; click **Re-scan** to refresh the inventory and recommendations.
+
+Automatic stale detection covers only the files the scanner tracks from known roots. Newly-created files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred to avoid a noisy watcher in the launch release.
 
 ---
 

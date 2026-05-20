@@ -96,7 +96,8 @@ Full `StateSnapshot` SSE stream.
 
 - Event shape: `data: <JSON StateSnapshot>\n\n`
 - Initial snapshot is sent immediately.
-- Keep-alive comment `: ping` every 25 seconds.
+- Named keepalive event `event: keepalive` with `data: {}` after 25 seconds
+  of stream inactivity.
 
 ### `GET /issues/{identifier}/log-stream`
 
@@ -249,13 +250,16 @@ surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 | `POST` | `/skills/scan` | — | `Inventory` | Forces a fresh filesystem scan |
 | `GET` | `/skills/issues` | — | `InventoryIssue[]` | Static analyzer recommendations |
 | `POST` | `/skills/fix` | `{"issueID":"UNUSED_PROFILE","fix": Fix}` | `{"status":"ok"}` | v0.2.0 only applies the non-destructive `UNUSED_PROFILE` `edit-yaml` fix; unsafe actions such as `remove-mcp` are rejected |
-| `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | `503 analytics_unavailable` until runtime evidence exists |
-| `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; may be empty |
+| `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | Includes `HasRuntimeEvidence`; `503 analytics_unavailable` only before analytics can be computed |
+| `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; empty until `HasRuntimeEvidence` is true |
 
 `Inventory` is a direct inventory/recommendation snapshot, not a complete
-normalized capability graph in v0.2.0. `ORPHAN_MCP` scans skill names,
-frontmatter descriptions, and skill bodies. Duplicate MCP recommendations are
-advisory because the daemon does not rewrite user-owned MCP settings files.
+normalized capability graph in v0.2.0. The response includes `ScanTime`,
+`Partial`/`ScanError` for best-effort scanner failures, and `Stale` when a
+tracked core config or discovered inventory file changed or disappeared since the scan. `ORPHAN_MCP`
+scans skill names, frontmatter descriptions, and skill bodies. Duplicate MCP
+recommendations are advisory because the daemon does not rewrite user-owned MCP
+settings files.
 
 ---
 
@@ -405,10 +409,9 @@ daemon-backed permissions through profile `allowed_actions`.
 These routes require an `Authorization: Bearer <grant-token>` header carrying a
 short-lived action grant for the specific issue and action.
 
-When the daemon spawns an agent subprocess for a profile that has any
-`allowed_actions` configured, the following environment variables are
-injected so the agent can call back into the daemon without operator-supplied
-secrets:
+When the daemon spawns a **local** agent subprocess for a profile that has any
+`allowed_actions` configured, the following environment variables are injected
+so the agent can call back into the daemon without operator-supplied secrets:
 
 | Variable | Description |
 |---|---|
@@ -418,8 +421,10 @@ secrets:
 | `ITERVOX_CREATE_ISSUE_STATE` | Set when `allowed_actions` includes `create_issue`; the tracker state for follow-up issues. Usually used as the `state` field in the create-issue body. |
 | `ITERVOX_RUN_ID` | The orchestrator's run ID for this dispatch — useful for correlating logs. |
 
-Profiles WITHOUT `allowed_actions` do not receive these env vars and the
-shim PATH is unchanged.
+Profiles WITHOUT `allowed_actions` do not receive these env vars and the shim
+PATH is unchanged. SSH remote workers also do not receive these env vars or the
+local action shims in v0.2.0; the worker prompt warns that daemon-backed actions
+are unavailable remotely.
 
 Denials on these routes use codes such as:
 

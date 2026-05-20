@@ -1,25 +1,5 @@
 import type { AutomationDef } from '../../../types/schemas';
-
-function triggerSummary(automation: AutomationDef): string {
-  switch (automation.trigger.type) {
-    case 'input_required':
-      return 'Input Required';
-    case 'tracker_comment_added':
-      return 'Tracker Comment Added';
-    case 'issue_entered_state':
-      return automation.trigger.state
-        ? `Issue Entered State · ${automation.trigger.state}`
-        : 'Issue Entered State';
-    case 'issue_moved_to_backlog':
-      return 'Issue Moved To Backlog';
-    case 'run_failed':
-      return 'Run Failed';
-    default:
-      return automation.trigger.timezone
-        ? `${automation.trigger.cron ?? 'Missing cron'} · ${automation.trigger.timezone}`
-        : (automation.trigger.cron ?? 'Missing cron');
-  }
-}
+import { automationTriggerSummary } from '../../../types/automationTriggers';
 
 function filterSummary(automation: AutomationDef): string {
   const parts: string[] = [];
@@ -67,7 +47,9 @@ export function AutomationRow({
             {automation.profile}
           </span>
         </div>
-        <p className="text-theme-text-secondary text-xs">{triggerSummary(automation)}</p>
+        <p className="text-theme-text-secondary text-xs">
+          {automationTriggerSummary(automation.trigger)}
+        </p>
         <p className="text-theme-muted text-xs">{filterSummary(automation)}</p>
         {automation.instructions && (
           <p className="text-theme-text-secondary line-clamp-2 text-xs leading-relaxed">

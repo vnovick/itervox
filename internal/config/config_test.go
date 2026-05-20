@@ -474,6 +474,159 @@ agent:
 	}
 }
 
+func TestV020AutomationBoundaryExamplesValidate(t *testing.T) {
+	content := minimal(`agent:
+  max_concurrent_agents: 3
+  profiles:
+    implementer-codex:
+      command: codex
+      backend: codex
+    input-responder:
+      command: claude
+      allowed_actions: [comment, provide_input]
+    unblock-manager:
+      command: claude
+      allowed_actions: [comment]
+    readiness-manager:
+      command: claude
+      allowed_actions: [comment]
+    planner-claude:
+      command: claude
+      allowed_actions: [comment]
+    planner-codex:
+      command: codex
+      backend: codex
+      allowed_actions: [comment]
+    debate-moderator:
+      command: claude
+      allowed_actions: [comment]
+    release-captain:
+      command: claude
+      allowed_actions: [comment]
+    failure-analyst:
+      command: claude
+      allowed_actions: [comment]
+    capability-curator:
+      command: codex
+      backend: codex
+      allowed_actions: [comment]
+    qa-browser:
+      command: claude
+      allowed_actions: [comment]
+automations:
+  - id: rate-limit-fallback
+    enabled: true
+    profile: implementer-codex
+    trigger:
+      type: rate_limited
+    policy:
+      auto_switch: true
+      switch_to_profile: implementer-codex
+      switch_to_backend: codex
+      cooldown_minutes: 30
+  - id: input-responder
+    enabled: true
+    profile: input-responder
+    trigger:
+      type: input_required
+    filter:
+      input_context_regex: "continue|branch|which file|test command"
+      max_age_minutes: 5
+      match_mode: all
+    policy:
+      auto_resume: true
+  - id: unblock-manager
+    enabled: false
+    profile: unblock-manager
+    trigger:
+      type: cron
+      cron: "*/30 * * * *"
+      timezone: "UTC"
+    filter:
+      states: ["Backlog"]
+      labels_any: ["blocked"]
+      limit: 10
+  - id: failure-summary
+    enabled: true
+    profile: failure-analyst
+    trigger:
+      type: run_failed
+  - id: plan-required-gate
+    enabled: true
+    profile: readiness-manager
+    trigger:
+      type: issue_entered_state
+      state: "Todo"
+    filter:
+      labels_any: ["needs-plan"]
+  - id: planner-pair-claude
+    enabled: true
+    profile: planner-claude
+    trigger:
+      type: tracker_comment_added
+    filter:
+      labels_any: ["planning"]
+  - id: planner-pair-codex
+    enabled: true
+    profile: planner-codex
+    trigger:
+      type: tracker_comment_added
+    filter:
+      labels_any: ["planning"]
+  - id: debate-moderator
+    enabled: true
+    profile: debate-moderator
+    trigger:
+      type: tracker_comment_added
+    filter:
+      labels_any: ["planning"]
+  - id: evaluator-optimizer
+    enabled: true
+    profile: qa-browser
+    trigger:
+      type: issue_entered_state
+      state: "Ready for QA"
+    filter:
+      labels_any: ["ui"]
+  - id: release-captain
+    enabled: true
+    profile: release-captain
+    trigger:
+      type: cron
+      cron: "0 10 * * 1-5"
+      timezone: "UTC"
+    filter:
+      states: ["Ready for Release"]
+      labels_any: ["release"]
+      limit: 10
+  - id: skills-hygiene
+    enabled: true
+    profile: capability-curator
+    trigger:
+      type: cron
+      cron: "0 11 * * 1"
+      timezone: "UTC"
+    filter:
+      states: ["Backlog"]
+      labels_any: ["skills-hygiene"]
+      limit: 5
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(cfg))
+	require.Len(t, cfg.Automations, 11)
+	assert.Equal(t, "implementer-codex", cfg.Automations[0].Policy.SwitchToProfile)
+	assert.Equal(t, "codex", cfg.Automations[0].Policy.SwitchToBackend)
+	assert.Equal(t, 5, cfg.Automations[1].Filter.MaxAgeMinutes)
+	assert.Equal(t, "cron", cfg.Automations[2].Trigger.Type)
+	assert.Equal(t, "run_failed", cfg.Automations[3].Trigger.Type)
+	assert.Equal(t, "issue_entered_state", cfg.Automations[4].Trigger.Type)
+	assert.Equal(t, "tracker_comment_added", cfg.Automations[7].Trigger.Type)
+	assert.Equal(t, "cron", cfg.Automations[9].Trigger.Type)
+	assert.Equal(t, []string{"skills-hygiene"}, cfg.Automations[10].Filter.LabelsAny)
+}
+
 func TestRateLimitedAutomationValidatesSwitchToProfileReference(t *testing.T) {
 	cases := []struct {
 		name     string

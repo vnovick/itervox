@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { startDaemon, type Daemon } from './helpers/daemon';
 
 /**
@@ -21,6 +21,14 @@ test.afterAll(async () => {
   await daemon.stop();
 });
 
+async function expectStateApiOK(page: Page) {
+  const status = await page.evaluate(async () => {
+    const res = await fetch('/api/v1/state');
+    return res.status;
+  });
+  expect(status).toBe(200);
+}
+
 test('shows token entry screen when no token is stored, accepts the right token', async ({
   page,
 }) => {
@@ -39,7 +47,9 @@ test('shows token entry screen when no token is stored, accepts the right token'
   // After submission the dashboard's project name or live label should appear.
   // We match `Live` (sse status text) which the AppHeader always renders once
   // the snapshot loads.
-  await expect(page.getByText(/live|connecting/i)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/^Live$/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('heading', { name: /token|sign in|enter/i })).toHaveCount(0);
+  await expectStateApiOK(page);
 });
 
 test('rejects an obviously wrong token', async ({ page }) => {

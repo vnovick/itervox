@@ -132,7 +132,7 @@ func TestParseLogLine_CodexActionStarted(t *testing.T) {
 }
 
 func TestParseLogLine_ClaudeActionStarted(t *testing.T) {
-	line := makeLogLine(bufLogEntry{Level: "INFO", Msg: "claude: action_started", Tool: "Bash", Description: "npm install", Time: "12:00:00"})
+	line := makeLogLine(bufLogEntry{Level: "INFO", Msg: "claude: action_started", Tool: "Bash", Description: "pnpm install", Time: "12:00:00"})
 	entry, skip := parseLogLine(line)
 	require.False(t, skip)
 	assert.Equal(t, "action", entry.Event)

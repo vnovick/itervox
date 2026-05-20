@@ -136,6 +136,48 @@ describe('SkillsCard', () => {
     });
   });
 
+  it('shows a partial scan warning when inventory includes scanner errors', () => {
+    skillMocks.useSkillsInventory.mockReturnValue({
+      data: {
+        ...inventory,
+        Partial: true,
+        ScanError: 'codex scanner failed',
+      },
+      isLoading: false,
+      error: null,
+    });
+
+    render(<SkillsCard />);
+
+    expect(screen.getByText(/partial inventory/i)).toBeInTheDocument();
+    expect(screen.getByText(/codex scanner failed/i)).toBeInTheDocument();
+  });
+
+  it('shows a current scan status next to the scan timestamp', () => {
+    render(<SkillsCard />);
+
+    expect(screen.getByText(/tracked files current/i)).toBeInTheDocument();
+    expect(screen.getByText(/last scanned/i)).toBeInTheDocument();
+  });
+
+  it('shows a stale scan status when tracked files changed', () => {
+    skillMocks.useSkillsInventory.mockReturnValue({
+      data: {
+        ...inventory,
+        Stale: true,
+      },
+      isLoading: false,
+      error: null,
+    });
+
+    render(<SkillsCard />);
+
+    expect(screen.getByText(/^stale$/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/tracked config or inventory files changed since the last scan/i),
+    ).toBeInTheDocument();
+  });
+
   it('expands every inventory section and renders duplicate MCP as advisory only', () => {
     skillMocks.useSkillsIssues.mockReturnValue({
       data: [
@@ -233,6 +275,10 @@ describe('SkillsCard', () => {
     render(<SkillsCard />);
 
     expect(screen.getByText(/skills runtime-verified/i)).toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) => element?.textContent === '1 hooks with activity'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/hook events seen/i)).not.toBeInTheDocument();
     expect(screen.getByText('Large profile')).toBeInTheDocument();
   });
 });

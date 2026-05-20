@@ -5,7 +5,7 @@
 
 ## Project overview
 
-Itervox is a Go 1.25.9 daemon that polls Linear/GitHub Issues, spawns Claude Code or
+Itervox is a Go 1.25.10 daemon that polls Linear/GitHub Issues, spawns Claude Code or
 Codex subagents per issue, and serves a React web dashboard + Bubbletea TUI.
 Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
 
@@ -17,8 +17,9 @@ Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
    are editing (see the table below). These bundles are plain markdown and tool-agnostic —
    the directory name is historical. They are not optional reading.
 3. **Run tests** to establish a baseline: `go test -race ./cmd/... ./internal/...` and `cd web && pnpm test:coverage`.
-4. **Check the gap doc** (`planning/gaps_todo_030526.md`) for known open items before adding new
-   ones — it may already be tracked.
+4. **Check the planning index** (`planning/README.md`) and the active v0.2.0 plan
+   (`planning/v0.2.0_pass/todolist.md`) for known open items before adding new ones —
+   it may already be tracked.
 
 ## Rule bundles (read the matching one before editing)
 
@@ -128,9 +129,15 @@ All other `cfg` fields are **read-only after startup** — no lock needed.
 
 ### Config value validation
 
-`positiveIntField` in `config.go` rejects zero and negative values, replacing them
-with defaults. Timeout fields (`TurnTimeoutMs`, `ReadTimeoutMs`, etc.) can never be
-0 at runtime — do not flag `context.WithTimeout(ctx, 0)` as reachable.
+Timeout fields do not all share the same validation semantics. Check the parser
+before making reachability claims:
+
+| Field | Parser | Zero / negative runtime meaning |
+|---|---|---|
+| `agent.turn_timeout_ms` | `intField` | Reaches runtime intentionally. Claude/Codex only wrap the turn with `context.WithTimeout` when the value is `> 0`; `<= 0` disables the hard turn timeout. |
+| `agent.read_timeout_ms` | `positiveIntField` | Replaced with the 30s default; `0` cannot reach the read-deadline path from config. |
+| `agent.stall_timeout_ms` | `intField` | Reaches runtime intentionally. `ReconcileStalls` treats `<= 0` as "stall detection disabled." |
+| `hooks.timeout_ms` | `intField` plus explicit fallback | `<= 0` is replaced with the 60s hook default during config load. |
 
 ### Package import order (no circular deps)
 
@@ -170,8 +177,10 @@ cmd/itervox (wires everything)
 
 ## Open architectural items (from active gap planning)
 
-The current gap backlog lives in `planning/gaps_todo_030526.md`. Historical
-gap notes, including `gaps_300326.md`, are archived under `planning/archive/`.
+The current v0.2.0 release-readiness plan lives in `planning/v0.2.0_pass/todolist.md`,
+with `planning/gaps_130526.md` as its source gap analysis. `planning/README.md`
+is the entry point for active, deferred, future-version, and archived planning docs.
+Historical gap notes, including `gaps_300326.md`, are archived under `planning/archive/`.
 
 Key unresolved items:
 - T-6: Codex session log identity — single file instead of per-subagent files
@@ -180,7 +189,8 @@ Key unresolved items:
 - T-10: Replace 5s sublog polling with SSE push
 - T-11: DRY `ParseSessionLogs`/`ParseSessionLogsMulti` duplication
 
-See `planning/gaps_todo_030526.md` for the current task list with priorities and phases.
+See `planning/README.md` and `planning/v0.2.0_pass/todolist.md` for the current
+task list with priorities and phases.
 
 Before adding new items, spawn a verification agent to confirm the
 issue is real (read full call chain, check for upstream validation, verify file

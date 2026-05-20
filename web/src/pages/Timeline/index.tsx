@@ -171,22 +171,11 @@ export default function Timeline() {
     );
   }, [wantStart, wantEnd]);
 
-  // ── Viewport zoom ─────────────────────────────────────────────────────────
-  const zoomedViewport = useMemo(() => {
-    if (!expandedRunAt || !selectedGroup) return null;
-    const run = selectedGroup.runs.find((r) => r.startedAt === expandedRunAt);
-    if (!run) return null;
-    const runStart = new Date(run.startedAt).getTime();
-    const runEnd = run.finishedAt
-      ? new Date(run.finishedAt).getTime()
-      : runStart + Math.max(run.elapsedMs, 1000);
-    const span = runEnd - runStart;
-    const pad = Math.max(span * 0.12, 15_000);
-    return { start: runStart - pad, end: runEnd + pad };
-  }, [expandedRunAt, selectedGroup]);
-
-  const viewStart = (zoomedViewport ?? viewport ?? { start: wantStart, end: wantEnd }).start;
-  const viewEnd = (zoomedViewport ?? viewport ?? { start: wantStart, end: wantEnd }).end;
+  // Keep the axis on the selected issue's full session span. Expanding a run
+  // changes the log drilldown only; it must not move other run rows under a
+  // different time scale.
+  const viewStart = (viewport ?? { start: wantStart, end: wantEnd }).start;
+  const viewEnd = (viewport ?? { start: wantStart, end: wantEnd }).end;
 
   // ── Log panel data ────────────────────────────────────────────────────────
   const expandedRun = selectedGroup?.runs.find((r) => r.startedAt === expandedRunAt) ?? null;

@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Timeline from '../index';
 import { useUIStore } from '../../../store/uiStore';
+
+const detailPanelSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../components/common/PageMeta', () => ({
   default: () => null,
@@ -36,16 +38,22 @@ vi.mock('../components/TimelineSidebar', () => ({
 }));
 
 vi.mock('../components/TimelineDetailPanel', () => ({
-  TimelineDetailPanel: () => <div data-testid="timeline-detail" />,
+  TimelineDetailPanel: (props: Record<string, unknown>) => {
+    detailPanelSpy(props);
+    return <div data-testid="timeline-detail" />;
+  },
 }));
 
 import { useItervoxStore } from '../../../store/itervoxStore';
 const mockStore = vi.mocked(useItervoxStore);
 
-function setupStore(snapshot: {
-  running?: Array<Record<string, unknown>>;
-  history?: Array<Record<string, unknown>>;
-}) {
+function setupStore(
+  snapshot: {
+    running?: Array<Record<string, unknown>>;
+    history?: Array<Record<string, unknown>>;
+  },
+  activeIssueId: string | null = null,
+) {
   const fullSnapshot = {
     running: snapshot.running ?? [],
     history: snapshot.history ?? [],
@@ -54,7 +62,7 @@ function setupStore(snapshot: {
   mockStore.mockImplementation((sel: (s: unknown) => unknown) =>
     sel({
       snapshot: fullSnapshot,
-      activeIssueId: null,
+      activeIssueId,
       setActiveIssueId: vi.fn(),
     }),
   );
@@ -67,6 +75,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 beforeEach(() => {
   useUIStore.setState({ timelineAutomationOnly: false });
+  detailPanelSpy.mockClear();
 });
 
 describe('Timeline automation chip (T-5)', () => {
@@ -182,5 +191,57 @@ describe('Timeline automation chip (T-5)', () => {
     render(<Timeline />, { wrapper });
     const chip = screen.getByTestId('timeline-chip-automation');
     expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps the chart viewport on the full selected issue span while a run is expanded', async () => {
+    const firstStart = new Date(2026, 0, 1, 18, 50).getTime();
+    const firstEnd = firstStart + 22_000;
+    const secondStart = new Date(2026, 0, 1, 21, 2).getTime();
+    const secondEnd = secondStart + 124_000;
+
+    setupStore(
+      {
+        history: [
+          {
+            identifier: 'TIENG-392',
+            startedAt: new Date(firstStart).toISOString(),
+            finishedAt: new Date(firstEnd).toISOString(),
+            elapsedMs: 22_000,
+            turnCount: 1,
+            tokens: 8,
+            inputTokens: 0,
+            outputTokens: 0,
+            status: 'succeeded',
+            backend: 'claude',
+            sessionId: 'sess-1',
+          },
+          {
+            identifier: 'TIENG-392',
+            startedAt: new Date(secondStart).toISOString(),
+            finishedAt: new Date(secondEnd).toISOString(),
+            elapsedMs: 124_000,
+            turnCount: 1,
+            tokens: 63,
+            inputTokens: 0,
+            outputTokens: 0,
+            status: 'succeeded',
+            backend: 'claude',
+            sessionId: 'sess-2',
+          },
+        ],
+      },
+      'TIENG-392',
+    );
+
+    render(<Timeline />, { wrapper });
+
+    await waitFor(() => {
+      const latestProps = detailPanelSpy.mock.calls.at(-1)?.[0] as
+        | { expandedRunAt?: string | null; viewStart?: number; viewEnd?: number }
+        | undefined;
+      expect(latestProps?.expandedRunAt).toBe(new Date(secondStart).toISOString());
+      expect(latestProps?.viewStart).toBeLessThanOrEqual(firstStart - 120_000);
+      expect(latestProps?.viewEnd).toBeGreaterThanOrEqual(secondEnd + 120_000);
+    });
   });
 });

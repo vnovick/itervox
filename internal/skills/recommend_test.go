@@ -33,7 +33,7 @@ func TestRecommendAnalytics_HighCostLowUsage(t *testing.T) {
 		RuntimeVerified: true,
 		LastSeenAt:      &now,
 	}
-	snap := &AnalyticsSnapshot{SkillStats: []CapabilityStat{stat}}
+	snap := &AnalyticsSnapshot{HasRuntimeEvidence: true, SkillStats: []CapabilityStat{stat}}
 	inv := &Inventory{Skills: []Skill{{Name: "expensive-skill"}}}
 	recs := RecommendAnalytics(snap, inv)
 	if !recContains(recs, "HIGH_COST_LOW_USAGE") {
@@ -49,7 +49,7 @@ func TestRecommendAnalytics_HookStorm(t *testing.T) {
 		Configured:      true,
 		RuntimeVerified: true,
 	}
-	snap := &AnalyticsSnapshot{HookStats: []CapabilityStat{stat}}
+	snap := &AnalyticsSnapshot{HasRuntimeEvidence: true, HookStats: []CapabilityStat{stat}}
 	recs := RecommendAnalytics(snap, &Inventory{})
 	if !recContains(recs, "HOOK_STORM") {
 		t.Errorf("expected HOOK_STORM, got %v", recIDs(recs))
@@ -64,7 +64,7 @@ func TestRecommendAnalytics_ConfiguredNotLoaded(t *testing.T) {
 		Configured:      true,
 		RuntimeVerified: false,
 	}
-	snap := &AnalyticsSnapshot{SkillStats: []CapabilityStat{stat}}
+	snap := &AnalyticsSnapshot{HasRuntimeEvidence: true, SkillStats: []CapabilityStat{stat}}
 	inv := &Inventory{Skills: []Skill{{Name: "dead-skill"}}}
 	recs := RecommendAnalytics(snap, inv)
 	if !recContains(recs, "CONFIGURED_NOT_LOADED") {
@@ -76,6 +76,7 @@ func TestRecommendAnalytics_LoadedNotConfigured(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	snap := &AnalyticsSnapshot{
+		HasRuntimeEvidence: true,
 		SkillStats: []CapabilityStat{
 			{
 				CapabilityID:    "ambient-skill",
@@ -106,6 +107,7 @@ func TestRecommendAnalytics_NilSafety(t *testing.T) {
 func TestRecommendAnalytics_SortedBySeverityThenID(t *testing.T) {
 	t.Parallel()
 	snap := &AnalyticsSnapshot{
+		HasRuntimeEvidence: true,
 		SkillStats: []CapabilityStat{
 			{CapabilityID: "z", ApproxTokens: 5_000, RuntimeLoads: 0, Configured: true, RuntimeVerified: false},
 			{CapabilityID: "a", ApproxTokens: 0, RuntimeLoads: 0, Configured: true, RuntimeVerified: false},
@@ -116,5 +118,20 @@ func TestRecommendAnalytics_SortedBySeverityThenID(t *testing.T) {
 	// Expect warn (HIGH_COST_LOW_USAGE) before any info entries.
 	if len(recs) < 2 || recs[0].Severity != "warn" {
 		t.Errorf("expected first entry to be warn, got %+v", recs)
+	}
+}
+
+func TestRecommendAnalytics_SuppressedWithoutRuntimeEvidence(t *testing.T) {
+	t.Parallel()
+	snap := &AnalyticsSnapshot{
+		SkillStats: []CapabilityStat{{
+			CapabilityID: "fresh-install-skill",
+			ApproxTokens: 5000,
+			Configured:   true,
+		}},
+	}
+	inv := &Inventory{Skills: []Skill{{Name: "fresh-install-skill"}}}
+	if recs := RecommendAnalytics(snap, inv); len(recs) != 0 {
+		t.Fatalf("expected no runtime recommendations without evidence, got %+v", recs)
 	}
 }

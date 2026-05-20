@@ -20,6 +20,7 @@ interface UIState {
 
   // Logs page chip — restrict to AUTOMATION FIRED entries.
   logsAutomationOnly: boolean;
+  logsIssueSearch: string;
 
   // Timeline page chip — restrict to runs with an automationId.
   timelineAutomationOnly: boolean;
@@ -34,6 +35,7 @@ interface UIActions {
   setExpandedPausedId: (id: string | null) => void;
   setAutomationsTab: (tab: AutomationsTab) => void;
   setLogsAutomationOnly: (value: boolean) => void;
+  setLogsIssueSearch: (search: string) => void;
   setTimelineAutomationOnly: (value: boolean) => void;
 }
 
@@ -46,6 +48,7 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   expandedPausedId: null,
   automationsTab: 'configure',
   logsAutomationOnly: false,
+  logsIssueSearch: '',
   timelineAutomationOnly: false,
 
   setDashboardViewMode: (dashboardViewMode) => {
@@ -71,6 +74,9 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setLogsAutomationOnly: (logsAutomationOnly) => {
     set({ logsAutomationOnly });
+  },
+  setLogsIssueSearch: (logsIssueSearch) => {
+    set({ logsIssueSearch });
   },
   setTimelineAutomationOnly: (timelineAutomationOnly) => {
     set({ timelineAutomationOnly });

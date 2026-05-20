@@ -39,13 +39,15 @@ Automations let Itervox dispatch an agent profile automatically when a trigger f
 
 <Image src="/screenshots/v0.2.0/automations.png" alt="Automations card showing the three suggested templates — Input Responder, QA Validation, and PM Backlog Review — with trigger type badges and profile references" width={900} height={540} />
 
-The Automations card lives in the Settings page. When no automations are configured yet, Itervox offers three **starter templates** you can adopt with one click:
+The Automations page's **Configure** tab lets you manage automation rules without editing YAML. When no automations are configured yet, Itervox offers three everyday **starter templates** you can adopt with one click:
 
 - **Input Responder** — fires on `input_required`, dispatches a helper agent that can draft or auto-resume blocked runs.
 - **QA Validation** — fires on a cron schedule, runs a QA profile against issues ready for verification.
 - **PM Backlog Review** — fires on cron weekday mornings, reviews backlog issues for missing clarity and acceptance criteria.
 
 Each template pre-fills the automation ID, trigger type, profile reference, filter, and instructions. You can customize everything before saving.
+
+The launch template library also includes advanced helper designs for dependency readiness, planning gates, Claude/Codex planner pairs, debate moderation, evaluator loops, release checks, and skills hygiene. They are shipped as helper patterns, not as deterministic production workflow chains.
 
 ### Trigger types and the automation editor
 
@@ -69,6 +71,10 @@ The automation editor modal lets you configure every aspect of an automation rul
 For `cron` triggers, the visual picker and the raw expression field stay in sync — edit either one and the other updates. The expression field accepts standard five-field cron syntax (`minute hour day month weekday`).
 
 All automations are persisted to the `automations:` block in `WORKFLOW.md` and take effect on the next tick without a daemon restart.
+
+### Automation release boundary
+
+v0.2.0 automations are single-profile helper runs. They are not advertised as deterministic downstream workflow orchestration. In particular, v0.2.0 does not ship fatal post-change gates, automation skip-decision logs, schedule run-now/next-fire operations, label-to-profile routing, reserved automation slots, deterministic blocker predicates, structured gate artifacts, PR-check triggers, cost caps, or native planner/debate run groups. Use the documented examples as starter automation patterns, not as production MindWar/Stories-style autonomy templates.
 
 See the [Automations guide](/guides/automations/) for the full configuration reference, filter syntax, and prompt variables.
 
@@ -117,7 +123,8 @@ The **Skills Inventory** section provides:
 
 - **Aggregate counts** — total skills, plugins, MCP servers, hooks, and instruction files with their estimated token costs.
 - **Per-provider cost split** — a bar chart showing how skill tokens are distributed between Claude, Codex, and shared scopes. Provider is inferred from the source path (`~/.claude/skills/` = Claude, `~/.codex/skills/` = Codex, `~/.agents/skills/` = shared).
-- **Runtime analytics** — how many skills were actually loaded at runtime (vs. just configured), hook events observed, and the total recommendation count.
+- **Runtime analytics** — how many skills were actually loaded at runtime (vs. just configured), hooks with activity, and the total recommendation count.
+- **Scan freshness** — a current/stale status based on tracked capability-file mtimes, plus the last scan timestamp and Re-scan action.
 
 ### How runtime analytics work — and why they get sharper over time
 
@@ -125,15 +132,15 @@ Runtime analytics are **evidence-based**, not prescriptive. The analyzer reads J
 
 - which skills the model actually loaded (vs. which were merely configured)
 - how often each hook fired
-- which tools each profile used and at what frequency
+- which tools appeared in aggregate runtime evidence
 
-Because the data source is real session history, **the recommendations compound over time**:
+Because the data source is real session history, **runtime recommendations need representative recent evidence**:
 
-- **Day 1** (zero session logs) — you'll see static-analyzer output only: duplicate skills, bloated profiles, and large-context warnings. Runtime warnings like `HIGH_COST_LOW_USAGE` and `HOOK_STORM` need real runs to fire.
+- **Day 1** (zero session logs) — you'll see static-analyzer output only: duplicate skills, bloated profiles, and large-context warnings. Runtime recommendations stay empty while `HasRuntimeEvidence` is false.
 - **After a representative sample** (~25 sessions across your real profiles) — runtime evidence catches the high-leverage findings: skills that pay their token cost but never get loaded, hooks that fire 50+ times per run, capabilities the model used implicitly but aren't in the YAML.
 - **Long-running daemons** — the 25-session lookback window slides forward, so stale evidence ages out automatically. A skill you trimmed last week stops showing up as heavy once enough new sessions accumulate.
 
-Practical consequence: don't expect actionable runtime recommendations on a fresh install. Leave the daemon running, accumulate evidence, then come back and act on the warnings — the longer the daemon has been running real work, the more confident the recommendations are.
+Practical consequence: don't expect actionable runtime recommendations on a fresh install. Leave the daemon running, accumulate recent evidence, then come back and act on the warnings. v0.2.0 does not include a long-term learning store beyond the recent log lookback.
 
 For the full reference (rule list, HTTP endpoints, one-click fixes, architecture), see the [Skills Inventory guide](/guides/skills-inventory/).
 
@@ -165,7 +172,7 @@ The Settings page now surfaces retry and rate-limit controls that were previousl
 ## Next steps
 
 - [Automations guide](/guides/automations/) — triggers, filters, instructions, and YAML examples.
-- [Agent Profiles guide](/guides/agent-profiles/) — modes, daemon actions, SSH, and reviewer config.
+- [Agent Profiles guide](/guides/agent-profiles/) — prompt roles, daemon actions, SSH, and reviewer config.
 - [Claude vs Codex Debate guide](/guides/claude-vs-codex-debate/) — experimental comment-only planning debate pattern.
 - [Configuration reference](/configuration/) — full WORKFLOW.md field reference.
 - [Changelog](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md) — complete v0.2.0 changelog.

@@ -49,7 +49,7 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/vnovick/itervox"
-    description: "Autonomous AI agent daemon that drives Linear issues through Claude-powered agentic loops."
+    description: "Autonomous AI agent daemon that drives Linear issues through Claude/Codex-powered agentic loops."
     license: "Apache-2.0"
     install: |
       bin.install "itervox"

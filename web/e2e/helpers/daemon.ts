@@ -59,18 +59,23 @@ async function pickPort(): Promise<number> {
 }
 
 /**
- * Polls /health until it returns 200 or the deadline passes.
+ * Polls /api/v1/health until it returns the expected JSON body or the deadline passes.
  */
 async function waitForReady(url: string, token: string, deadlineMs: number): Promise<void> {
   const end = Date.now() + deadlineMs;
   let lastErr: unknown = null;
   while (Date.now() < end) {
     try {
-      const res = await fetch(`${url}/health`, {
+      const res = await fetch(`${url}/api/v1/health`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) return;
-      lastErr = new Error(`health returned ${String(res.status)}`);
+      if (res.status === 200) {
+        const body = (await res.json()) as { status?: unknown };
+        if (body.status === 'ok') return;
+        lastErr = new Error(`health body was ${JSON.stringify(body)}`);
+      } else {
+        lastErr = new Error(`health returned ${String(res.status)}`);
+      }
     } catch (err) {
       lastErr = err;
     }

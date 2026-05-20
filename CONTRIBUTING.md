@@ -8,7 +8,7 @@ Thank you for your interest in contributing. This document covers how to get the
 
 ### Prerequisites
 
-- Go 1.25.9 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.9`)
+- Go 1.25.10 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.10`)
 - Node.js 20+ and `pnpm` (for the web dashboard)
 - `git`
 - [Lefthook](https://github.com/evilmartians/lefthook) (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`)
@@ -82,6 +82,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
 | `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` — mirrors CI |
+| `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
 | `make test` | `go test -race ./cmd/... ./internal/... -count=1` |
 | `make coverage` | Run tests with coverage over `./cmd/... ./internal/...`; output `coverage.html` |
@@ -105,6 +106,8 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 > **Note:** `make web-spelling` (also part of `make verify`) rejects any TypeScript/TSX string literal containing `Symphony` (the legacy project name). If your editor autocompletes the old name, the rule will fail your `pre-push` hook — search and replace before pushing.
 
 > **QA baseline:** `make verify` remains the zero-extra-dependency contributor gate and includes the frontend coverage threshold used by Web CI. The browser QA lanes (`make qa-current-ui`, `make qa-daemon`, `make qa-current`) require a one-time Playwright browser install: `cd web && pnpm exec playwright install chromium`.
+
+> **Release preflight:** `make release-check` is intentionally stricter than `make verify`. It requires `govulncheck` and GoReleaser to be installed, reruns the release hooks (`go mod tidy` and web build), then fails if tracked files or the index are dirty. Use it after the release-prep diff is committed, not as the everyday edit loop.
 
 > **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 
@@ -407,6 +410,41 @@ Add a doc comment to every exported type and function. A wrong comment is worse 
 
 - Open an issue to discuss significant changes before writing code.
 - For bug fixes, a short description in the PR is sufficient.
+- Check `planning/README.md` before adding backlog items or release tasks; it lists
+  the active v0.2.0 plan, deferred items, future-version pass folders, and archived
+  historical notes.
+
+### Maintainer map
+
+Use this map to route questions and reviews. Maintainers can overlap; pick the primary area when opening an issue or asking for review.
+
+| Area | Primary reviewer |
+|---|---|
+| Orchestrator, worker lifecycle, retry/input-required flows | Core maintainer |
+| Tracker integrations, prompt rendering, workflow parsing | Core maintainer |
+| Web dashboard, Settings UI, frontend tests | Web maintainer |
+| Release engineering, CI, Go toolchain, GoReleaser | Release maintainer |
+| Documentation, examples, planning index | Docs maintainer |
+
+When an issue crosses areas, name the highest-risk owner first and list the secondary area in the issue body.
+
+### Label taxonomy
+
+Use labels to make work pick-up and automation filters predictable:
+
+| Label | Use for |
+|---|---|
+| `bug` | Reproducible incorrect behavior |
+| `enhancement` | New user-facing capability |
+| `docs` | README, site docs, examples, or planning text |
+| `frontend` | React/Vite dashboard work |
+| `backend` | Go daemon, server, orchestrator, tracker, or workspace work |
+| `automation` | Automation triggers, filters, profiles, or dispatch behavior |
+| `release` | Release-check, changelog, CI, versioning, GoReleaser |
+| `security` | Auth, tokens, SSH, secret handling, permission boundaries |
+| `good first issue` | Small, low-risk, well-scoped contribution |
+| `needs-plan` | Requires an implementation plan before coding |
+| `blocked` | Waiting on another issue, decision, upstream fix, or credential |
 
 ### Branching
 

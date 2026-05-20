@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/workflow"
@@ -182,7 +183,7 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 	}
 	if automationsChanged {
 		mutators = append(mutators, workflow.MutateAutomationsBlock(
-			automationsToEntries(automationDefsFromConfig(automations)),
+			automationconfig.DefinitionsFromConfigs(automations),
 		))
 	}
 	if reviewerChanged {
@@ -222,7 +223,7 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	}
 	if automationsChanged {
 		mutators = append(mutators, workflow.MutateAutomationsBlock(
-			automationsToEntries(automationDefsFromConfig(automations)),
+			automationconfig.DefinitionsFromConfigs(automations),
 		))
 	}
 	if reviewerChanged {
@@ -245,11 +246,11 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 }
 
 func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef) error {
-	if err := workflow.PatchAutomationsBlock(a.workflowPath, automationsToEntries(automations)); err != nil {
+	if err := workflow.PatchAutomationsBlock(a.workflowPath, automations); err != nil {
 		return err
 	}
 	// no rollback needed: SetAutomationsCfg is infallible (slice assignment under cfgMu).
-	a.orch.SetAutomationsCfg(automationConfigsFromDefs(automations))
+	a.orch.SetAutomationsCfg(automationconfig.ConfigsFromDefinitions(automations))
 	a.notify()
 	return nil
 }

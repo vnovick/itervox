@@ -2,8 +2,12 @@ package workspace_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,6 +45,54 @@ func TestRunHookTimeoutKillsProcess(t *testing.T) {
 	assert.Less(t, elapsed, 5*time.Second, "hook should be killed well before 5s")
 }
 
+func TestRunHookCancellationKillsBackgroundChild(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- workspace.RunHook(ctx, "sleep 60 & echo $! > child.pid; wait", dir, 60000)
+	}()
+
+	var data []byte
+	require.Eventually(t, func() bool {
+		var readErr error
+		data, readErr = os.ReadFile(filepath.Join(dir, "child.pid"))
+		return readErr == nil && strings.TrimSpace(string(data)) != ""
+	}, 3*time.Second, 20*time.Millisecond, "background hook child pid should be written before cancellation")
+
+	cancel()
+
+	var err error
+	select {
+	case err = <-errCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("hook did not return after context cancellation")
+	}
+	require.Error(t, err)
+
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	require.NoError(t, parseErr)
+
+	require.Eventually(t, func() bool {
+		return !processExists(pid)
+	}, 3*time.Second, 50*time.Millisecond, "background hook child should be killed with the hook process group")
+}
+
+func TestRunHookCapsCapturedOutput(t *testing.T) {
+	dir := t.TempDir()
+	var logged []string
+	err := workspace.RunHook(context.Background(), "yes 0123456789 | head -c 300000; exit 1", dir, 5000, func(line string) {
+		logged = append(logged, line)
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hook output truncated")
+	assert.Less(t, len(err.Error()), 270000, "hook error output should be capped")
+	assert.NotEmpty(t, logged, "truncated output should still be forwarded to the hook log")
+}
+
 func TestRunHookNonPositiveTimeoutFallsBackTo60s(t *testing.T) {
 	dir := t.TempDir()
 	// A quick command with timeout=0 should succeed (falls back to 60000ms).
@@ -56,4 +108,9 @@ func TestRunHookWritesFileInWorkspaceDir(t *testing.T) {
 	require.NoError(t, err)
 	_, statErr := os.Stat(sentinel)
 	assert.NoError(t, statErr, "hook should have created file in workspace dir")
+}
+
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

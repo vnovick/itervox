@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/vnovick/itervox/internal/automationconfig"
 )
 
-func TestAutomationConfigsFromDefsPreservesPolicyFields(t *testing.T) {
+func TestAutomationConfigsFromDefinitionsPreservesPolicyFields(t *testing.T) {
 	t.Parallel()
 
-	cfgs := automationConfigsFromDefs([]AutomationDef{{
+	cfgs := automationconfig.ConfigsFromDefinitions([]AutomationDef{{
 		ID:      "rate-limit-switch",
 		Enabled: true,
 		Profile: "codex",

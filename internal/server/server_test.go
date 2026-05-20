@@ -51,6 +51,23 @@ func TestStateEndpointReturnsJSON(t *testing.T) {
 	assert.Contains(t, body, "generatedAt")
 }
 
+func TestStateEndpointIncludesSupportedAgentActions(t *testing.T) {
+	snap := baseSnap()
+	snap.SupportedAgentActions = config.SupportedAgentActions()
+	srv := server.New(makeTestConfig(snap))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		SupportedAgentActions []string `json:"supportedAgentActions"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, config.SupportedAgentActions(), body.SupportedAgentActions)
+}
+
 func TestUnknownRouteReturns404(t *testing.T) {
 	srv := testServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/nonexistent-route", nil)
@@ -1356,7 +1373,7 @@ func TestHandleRemoveSSHHost_ServerError(t *testing.T) {
 func TestHandleSubLogs_ReturnsEntries(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(id string) ([]domain.IssueLogEntry, error) {
+		FetchSubLogsFn: func(_ context.Context, id string) ([]domain.IssueLogEntry, error) {
 			return []domain.IssueLogEntry{{Event: "text", Message: "hello"}}, nil
 		},
 	}
@@ -1371,7 +1388,7 @@ func TestHandleSubLogs_ReturnsEntries(t *testing.T) {
 func TestHandleSubLogs_EmptyReturnsEmptyArray(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) { return nil, nil },
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) { return nil, nil },
 	}
 	srv := server.New(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
@@ -1384,10 +1401,32 @@ func TestHandleSubLogs_EmptyReturnsEmptyArray(t *testing.T) {
 func TestHandleSubLogs_Error_Returns500(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) { return nil, errors.New("io error") },
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) { return nil, errors.New("io error") },
 	}
 	srv := server.New(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleSubLogs_UsesRequestContext(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(ctx context.Context, _ string) ([]domain.IssueLogEntry, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+				t.Fatal("FetchSubLogs did not receive the request context")
+				return nil, nil
+			}
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil).WithContext(reqCtx)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -1408,7 +1447,7 @@ func TestHandleSubLogStream_ResumesFromLastEventID(t *testing.T) {
 		{Event: "text", Message: "five"},
 	}
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) {
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
 			defer cancel()
 			return entries, nil
 		},
@@ -1438,7 +1477,7 @@ func TestHandleSubLogStream_StaleLastEventIDReplaysFromStart(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) {
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
 			defer cancel()
 			return []domain.IssueLogEntry{{Event: "text", Message: "first"}}, nil
 		},
@@ -1457,7 +1496,7 @@ func TestHandleSubLogStream_StreamsInitialEntries(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) {
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
 			defer cancel()
 			return []domain.IssueLogEntry{{Event: "text", Message: "hello"}}, nil
 		},

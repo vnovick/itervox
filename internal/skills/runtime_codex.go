@@ -53,6 +53,7 @@ func parseCodexRuntime(homeDir string, lookbackSessions int) (*RuntimeEvidenceSn
 			continue
 		}
 	}
+	snap.HasRuntimeEvidence = len(snap.SourceLogPaths) > 0
 	return snap, nil
 }
 
@@ -151,6 +152,7 @@ func MergeRuntimeSnapshots(snaps ...*RuntimeEvidenceSnapshot) *RuntimeEvidenceSn
 		if s == nil {
 			continue
 		}
+		out.HasRuntimeEvidence = out.HasRuntimeEvidence || s.HasRuntimeEvidence || len(s.SourceLogPaths) > 0
 		for k, v := range s.CapabilityLoads {
 			out.CapabilityLoads[k] += v
 		}

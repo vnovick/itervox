@@ -94,6 +94,24 @@ describe('skills schemas', () => {
     expect(inv.Skills).toBeNull();
   });
 
+  it('Inventory schema parses partial scan warning state', () => {
+    const inv = InventorySchema.parse({
+      ...minimalInventory,
+      Partial: true,
+      ScanError: 'codex scanner failed',
+    });
+    expect(inv.Partial).toBe(true);
+    expect(inv.ScanError).toBe('codex scanner failed');
+  });
+
+  it('Inventory schema preserves stale scan status', () => {
+    const inv = InventorySchema.parse({
+      ...minimalInventory,
+      Stale: true,
+    });
+    expect(inv.Stale).toBe(true);
+  });
+
   it('Skill schema rejects missing required fields', () => {
     expect(() => SkillSchema.parse({ Description: 'no name' })).toThrow();
   });

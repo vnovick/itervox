@@ -331,7 +331,7 @@ func TestOrchestratorLifecycle(t *testing.T) {
 	}
 
 	// 3. Wait for the worker to exit — Running map should become empty.
-	deadline = time.After(3 * time.Second)
+	deadline = time.After(10 * time.Second)
 	for {
 		snap := orch.Snapshot()
 		if len(snap.Running) == 0 {

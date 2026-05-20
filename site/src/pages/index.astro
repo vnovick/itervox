@@ -1539,7 +1539,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code><span class="t-muted">  CLAUDE.md  :</span> <span class="t-success">found</span> <span class="t-muted">&mdash; prompt will reference it</span></code>
             <code><span class="t-muted">  AGENTS.md  :</span> <span class="t-success">found</span> <span class="t-muted">&mdash; prompt will reference it</span></code>
             <code><span class="t-muted">  stack      :</span> <span class="t-teal">Go</span> <span class="t-muted">(go test -race ./..., golangci-lint run)</span></code>
-            <code><span class="t-muted">  stack      :</span> <span class="t-teal">React 19 + TypeScript</span> <span class="t-muted">(pnpm test, pnpm run lint)</span></code>
+            <code><span class="t-muted">  stack      :</span> <span class="t-teal">React 19 + TypeScript</span> <span class="t-muted">(pnpm test, pnpm lint)</span></code>
             <code><span class="t-secondary">itervox init: wrote WORKFLOW.md</span></code>
             <code><span class="t-secondary">itervox init: wrote .itervox/.env</span></code>
           </div>
@@ -2572,7 +2572,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code><span class="t-muted"># WORKFLOW.md (hooks section)</span></code>
             <code><span class="t-accent-s">hooks:</span></code>
             <code>  <span class="t-accent-s">after_create:</span> <span class="t-muted">|</span></code>
-            <code>    <span class="t-text">cd {'{{workspace}}'} && npm install</span></code>
+            <code>    <span class="t-text">cd {'{{workspace}}'} && pnpm install --frozen-lockfile</span></code>
             <code>  <span class="t-accent-s">before_run:</span> <span class="t-muted">|</span></code>
             <code>    <span class="t-text">golangci-lint run ./cmd/... ./internal/...</span></code>
             <code>  <span class="t-accent-s">after_run:</span> <span class="t-muted">|</span></code>

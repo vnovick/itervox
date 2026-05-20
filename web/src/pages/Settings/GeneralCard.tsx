@@ -66,8 +66,8 @@ export function GeneralCard({ inlineInput, onSetInlineInput }: GeneralCardProps)
               When an agent needs human input mid-run:
               <br />
               <span className="font-semibold">Off (default):</span> the question surfaces in the
-              dashboard&rsquo;s &ldquo;Pending Resume&rdquo; panel — you reply from the dashboard,
-              the agent resumes.
+              dashboard&rsquo;s &ldquo;Resuming&rdquo; panel — you reply from the dashboard, the
+              agent resumes.
               <br />
               <span className="font-semibold">On:</span> the daemon posts the question as a comment
               on the tracker issue and moves the issue to the completion state. You reply in the

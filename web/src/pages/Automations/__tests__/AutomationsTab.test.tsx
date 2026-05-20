@@ -41,7 +41,8 @@ describe('Automations tabs (T-1)', () => {
       </MemoryRouter>,
     );
     expect(screen.getByTestId('configure-tab-body')).toBeInTheDocument();
-    expect(screen.queryByTestId('activity-tab-body')).not.toBeInTheDocument();
+    expect(screen.getByTestId('configure-tab-body')).toBeVisible();
+    expect(screen.getByTestId('activity-tab-body')).not.toBeVisible();
     const configureBtn = screen.getByRole('tab', { name: /configure/i });
     expect(configureBtn).toHaveAttribute('aria-selected', 'true');
   });
@@ -53,8 +54,8 @@ describe('Automations tabs (T-1)', () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole('tab', { name: /activity/i }));
-    expect(screen.getByTestId('activity-tab-body')).toBeInTheDocument();
-    expect(screen.queryByTestId('configure-tab-body')).not.toBeInTheDocument();
+    expect(screen.getByTestId('activity-tab-body')).toBeVisible();
+    expect(screen.getByTestId('configure-tab-body')).not.toBeVisible();
     expect(useUIStore.getState().automationsTab).toBe('activity');
   });
 
@@ -65,7 +66,8 @@ describe('Automations tabs (T-1)', () => {
         <Automations />
       </MemoryRouter>,
     );
-    expect(screen.getByTestId('activity-tab-body')).toBeInTheDocument();
+    expect(screen.getByTestId('activity-tab-body')).toBeVisible();
+    expect(screen.getByTestId('configure-tab-body')).not.toBeVisible();
     const activityBtn = screen.getByRole('tab', { name: /activity/i });
     expect(activityBtn).toHaveAttribute('aria-selected', 'true');
   });
@@ -82,5 +84,40 @@ describe('Automations tabs (T-1)', () => {
     expect(tabs).toHaveLength(2);
     const activeIds = tabs.map((t) => t.getAttribute('aria-selected'));
     expect(activeIds).toContain('true');
+    for (const tab of tabs) {
+      const panelId = tab.getAttribute('aria-controls');
+      expect(panelId).toBeTruthy();
+      const panel = document.getElementById(panelId ?? '');
+      expect(panel).toHaveAttribute('role', 'tabpanel');
+      expect(panel).toHaveAttribute('aria-labelledby', tab.id);
+    }
+  });
+
+  it('supports arrow, Home, and End keyboard navigation between tabs', () => {
+    render(
+      <MemoryRouter>
+        <Automations />
+      </MemoryRouter>,
+    );
+
+    const configure = screen.getByRole('tab', { name: /configure/i });
+    const activity = screen.getByRole('tab', { name: /activity/i });
+
+    configure.focus();
+    fireEvent.keyDown(configure, { key: 'ArrowRight' });
+    expect(activity).toHaveFocus();
+    expect(useUIStore.getState().automationsTab).toBe('activity');
+
+    fireEvent.keyDown(activity, { key: 'ArrowLeft' });
+    expect(configure).toHaveFocus();
+    expect(useUIStore.getState().automationsTab).toBe('configure');
+
+    fireEvent.keyDown(configure, { key: 'End' });
+    expect(activity).toHaveFocus();
+    expect(useUIStore.getState().automationsTab).toBe('activity');
+
+    fireEvent.keyDown(activity, { key: 'Home' });
+    expect(configure).toHaveFocus();
+    expect(useUIStore.getState().automationsTab).toBe('configure');
   });
 });

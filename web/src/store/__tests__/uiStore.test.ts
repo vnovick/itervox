@@ -11,6 +11,7 @@ describe('uiStore', () => {
       dashboardSearchVisible: false,
       expandedRunningId: null,
       expandedPausedId: null,
+      logsIssueSearch: '',
     });
   });
 
@@ -22,6 +23,7 @@ describe('uiStore', () => {
     expect(state.dashboardSearchVisible).toBe(false);
     expect(state.expandedRunningId).toBeNull();
     expect(state.expandedPausedId).toBeNull();
+    expect(state.logsIssueSearch).toBe('');
   });
 
   it('sets dashboard view mode', () => {
@@ -42,6 +44,11 @@ describe('uiStore', () => {
   it('toggles search visibility', () => {
     useUIStore.getState().setDashboardSearchVisible(true);
     expect(useUIStore.getState().dashboardSearchVisible).toBe(true);
+  });
+
+  it('sets logs issue search', () => {
+    useUIStore.getState().setLogsIssueSearch('TIENG-');
+    expect(useUIStore.getState().logsIssueSearch).toBe('TIENG-');
   });
 
   it('sets expanded running ID', () => {

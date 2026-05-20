@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
@@ -441,6 +443,57 @@ func TestDispatchUsesDefaultBackendOverride(t *testing.T) {
 		assert.Equal(t, "codex", entry.Backend)
 	}
 	assert.Equal(t, agent.CommandWithBackendHint("run-codex-wrapper", "codex"), wrapped.LastCommand())
+}
+
+func TestRemoteWorkerAllowedActionsDoNotInjectDaemonActionEnv(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "claude"
+	cfg.Agent.SSHHosts = []string{"ssh-runner"}
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"remote-profile": {
+			Command:        "claude",
+			AllowedActions: []string{config.AgentActionComment, config.AgentActionMoveState},
+		},
+	}
+	mt := singleIssueTracker(t, "In Progress")
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetIssueProfile("ENG-1", "remote-profile")
+	orch.SetAgentActionBaseURL("http://127.0.0.1:9999")
+	orch.SetAgentActionTokens(agentactions.NewStore())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = orch.Run(ctx)
+	}()
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("runner was not invoked within 2s")
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not stop after cancel")
+	}
+
+	command := wrapped.LastCommand()
+	assert.False(t, strings.Contains(command, "ITERVOX_ACTION_TOKEN="), "remote workers must not receive local daemon action tokens")
+	assert.False(t, strings.Contains(command, "ITERVOX_DAEMON_URL="), "remote workers must not receive local daemon action base URL")
+	assert.Contains(t, wrapped.LastPrompt(), "not available on remote SSH workers")
 }
 
 // TestTeamsModeUsesResolvedProfileBackendForSubagentContext was authored

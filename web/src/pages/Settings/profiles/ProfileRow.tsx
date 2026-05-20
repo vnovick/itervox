@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ProfileDef } from '../../../types/schemas';
 import { useSkillsInventory } from '../../../queries/skills';
 import {
-  AGENT_ACTION_OPTIONS,
+  agentActionOptionsFor,
   commandToBackend,
   commandToModel,
   modelLabel,
@@ -22,17 +22,27 @@ interface ProfileRowProps {
   onEdit: () => void;
   onToggleEnabled: (name: string, def: ProfileDef, enabled: boolean) => Promise<void>;
   onDelete: (name: string) => Promise<void>;
+  supportedAgentActions?: readonly string[];
 }
 
-export function ProfileRow({ name, def, onEdit, onToggleEnabled, onDelete }: ProfileRowProps) {
+export function ProfileRow({
+  name,
+  def,
+  onEdit,
+  onToggleEnabled,
+  onDelete,
+  supportedAgentActions,
+}: ProfileRowProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingAction, setPendingAction] = useState<'toggle' | 'delete' | null>(null);
 
   const inferredBackend = commandToBackend(def.command, def.backend);
   const inferredModel = commandToModel(def.command);
-  const actionLabels = AGENT_ACTION_OPTIONS.filter((option) =>
-    normalizeAllowedActions(def.allowedActions).includes(option.id),
-  ).map((option) => option.label);
+  const actionLabels = agentActionOptionsFor(supportedAgentActions)
+    .filter((option) =>
+      normalizeAllowedActions(def.allowedActions, supportedAgentActions).includes(option.id),
+    )
+    .map((option) => option.label);
   const isEnabled = def.enabled ?? true;
 
   // Approx token cost this profile inherits from the global skills inventory.

@@ -20,7 +20,8 @@ func BuildAnalytics(inv *Inventory, runtime *RuntimeEvidenceSnapshot, profileNam
 		return nil
 	}
 	out := &AnalyticsSnapshot{
-		GeneratedAt: time.Now(),
+		GeneratedAt:        time.Now(),
+		HasRuntimeEvidence: runtimeHasEvidence(runtime),
 	}
 
 	out.SkillStats = computeSkillStats(inv, runtime)
@@ -30,6 +31,10 @@ func BuildAnalytics(inv *Inventory, runtime *RuntimeEvidenceSnapshot, profileNam
 	// in by the caller — kept separate so Build vs. Recommend are unit-testable
 	// in isolation.
 	return out
+}
+
+func runtimeHasEvidence(runtime *RuntimeEvidenceSnapshot) bool {
+	return runtime != nil && (runtime.HasRuntimeEvidence || len(runtime.SourceLogPaths) > 0)
 }
 
 // computeSkillStats blends static skill descriptors with runtime load counts.

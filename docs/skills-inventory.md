@@ -62,15 +62,15 @@ Set `CLAUDE_CODE_LOG_DIR` (or rely on the default `~/.itervox/logs/`) so every C
 
 Codex evidence is parsed from `~/.codex/history.jsonl` + `~/.codex/sessions/**` and merged into the same surface.
 
-### Recommendations compound over time
+### Recommendations need representative runtime evidence
 
 Runtime analytics are **evidence-based, not prescriptive** — every recommendation is derived from JSONL session logs the daemon writes during real dispatches, not from your config. This has three consequences operators should plan around:
 
-1. **A fresh install gives mostly static-analyzer output.** With zero sessions in `~/.itervox/logs/`, the runtime analyzer returns an empty snapshot. You will see Phase-1 recommendations (`DUPLICATE_SKILL`, `BLOATED_PROFILE`, `LARGE_CONTEXT`, etc.) but the more interesting Phase-2 signals (`HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`) need real runs to fire. **This is not a bug.** Re-check the dashboard after the daemon has handled a meaningful sample of issues.
+1. **A fresh install gives static-analyzer output only.** With zero sessions in `~/.itervox/logs/` or Codex history, the analytics response has `HasRuntimeEvidence: false` and the runtime recommendation endpoint returns an empty list. Phase-2 signals (`HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`) need real runs to fire.
 2. **The lookback window is 25 sessions by default** (defined in `parseClaudeRuntime`). Sessions older than that age out of the analysis. As your daemon runs more issues, the window shifts forward and stale evidence is discarded — so a skill that was heavy six months ago but trimmed last week will correctly fall off the warn list once enough new sessions accumulate.
-3. **The signal sharpens as variety grows.** A daemon that has run the same profile 25 times against the same kind of issue will correctly report which skills *that profile* loads. Multi-profile, multi-issue-type evidence catches `LOADED_NOT_CONFIGURED` (a skill the model used implicitly but isn't in the YAML) and `CONFIGURED_NOT_LOADED` (a skill that pays its token cost but never gets used). Run a representative cross-section of profiles before treating the recommendation list as final.
+3. **The signal sharpens as variety grows.** Multi-profile, multi-issue-type evidence catches `LOADED_NOT_CONFIGURED` (a capability observed in runtime logs but absent from static inventory) and `CONFIGURED_NOT_LOADED` (a static inventory skill not observed in runtime evidence). Run a representative cross-section of profiles before treating the recommendation list as final.
 
-Operationally: leave the daemon running, accumulate evidence, then come back and act on the warnings — the longer the daemon has been running real work, the more confident the recommendations are.
+Operationally: leave the daemon running, accumulate evidence, then come back and act on the warnings once the recent-session lookback represents real work. v0.2.0 does not include a long-term learning store beyond the recent log lookback.
 
 ---
 
@@ -86,6 +86,14 @@ Operationally: leave the daemon running, accumulate evidence, then come back and
 | `GET` | `/api/v1/skills/analytics/recommendations` | Runtime-side recommendations |
 
 All routes require the standard bearer-token authentication (`Authorization: Bearer <token>`).
+
+Scanner failures are best-effort. If one scanner fails but another source succeeds, the daemon stores and returns the partial inventory with `Partial: true` and `ScanError: "<joined scanner errors>"`. The Settings UI renders this as a warning while still showing successfully collected data. A later successful scan replaces the warning state.
+
+### Scan freshness
+
+The Settings UI shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`; click **Re-scan** to refresh the inventory and recommendations.
+
+Automatic stale detection is intentionally limited to the files the scanner tracks from known roots. Newly-created files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred so v0.2.0 does not add a noisy filesystem watcher.
 
 ---
 
@@ -144,6 +152,6 @@ The orchestrator adapter (`cmd/itervox/skills_adapter.go`) implements the `serve
 ## Trade-offs and limitations
 
 - **Token counts are approximate** (labelled "estimated" in the UI). They're useful for ratio comparisons, not absolute claims.
-- **Runtime evidence depends on log capture** — if `CLAUDE_CODE_LOG_DIR` is unset and `~/.itervox/logs/` is empty, the Analytics tab falls back to the static heuristic and surfaces the "no runtime evidence" hint.
+- **Runtime evidence depends on logs** — if `~/.itervox/logs/`, `~/.codex/history.jsonl`, and `~/.codex/sessions/**` are all empty, the Analytics tab falls back to the static heuristic and surfaces the "no runtime evidence" hint.
 - **The MCP duplicate fix is intentionally manual.** Editing user-controlled config (`~/.claude/settings.json`) from a daemon is reversible only with explicit guards (lockfile, backup copy, structured-edit). Until those guards land, the recommendation surfaces without a Fix button and the operator edits manually.
 - **The analyzer is not a substitute for runtime testing.** It catches structural issues (duplicates, dead config, oversized context) but not semantic problems (skill-vs-skill conflicts, prompt regressions). Pair with the Lane-2 route-mocked Playwright suite for those.

@@ -9,7 +9,10 @@ Use it to understand what upgrades are safe and where silent breakage can occur.
 
 | Component | Tested version | Notes |
 |---|---|---|
-| Go toolchain | **1.25.9** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
+| Go toolchain | **1.25.10** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
+| golangci-lint | **v2.1.6** | Pinned in Go CI and release preflight. Local contributors can use newer versions for ad-hoc checks, but release CI uses this pin. |
+| govulncheck | **v1.1.4** | Pinned in Go CI and release preflight. Run with `-tags dev ./cmd/... ./internal/...`. |
+| GoReleaser | **v2.14.3** | Pinned in release CI. v0.2.0 intentionally keeps the existing `brews` stanza under this version; `goreleaser check` validates it with a deprecation warning. |
 
 ---
 
@@ -42,8 +45,8 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 
 | Component | Tested version | Notes |
 |---|---|---|
-| Node.js | **20 LTS** | Required only to build the dashboard from source. |
-| pnpm | **9+** | Used as the package manager (`web/` directory). |
+| Node.js | **20 LTS** for `web/`, **22 LTS** for `site/` | Required only to build the dashboard or docs site from source. |
+| pnpm | **9+** | Used as the package manager (`web/` and `site/` directories). |
 | Vite | See `web/package.json` | Bundler; version pinned in lockfile. |
 
 ---

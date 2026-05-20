@@ -1,15 +1,16 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const defaultHookTimeoutMs = 60000
+const maxHookOutputBytes = 256 * 1024
 
 // RunHook runs a shell script in the given workspacePath directory using
 // `bash -lc <script>`. An empty script is a no-op. timeoutMs <= 0 falls
@@ -33,11 +34,12 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	hookCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	var out bytes.Buffer
+	out := &cappedOutput{max: maxHookOutputBytes}
 	cmd := exec.CommandContext(hookCtx, "bash", "-lc", script)
 	cmd.Dir = workspacePath
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stdout = out
+	cmd.Stderr = out
+	setHookProcessGroup(cmd)
 
 	runErr := cmd.Run()
 
@@ -61,4 +63,47 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 		return fmt.Errorf("hook_failed: %w", runErr)
 	}
 	return nil
+}
+
+type cappedOutput struct {
+	max       int
+	buf       []byte
+	truncated bool
+}
+
+func (b *cappedOutput) Write(p []byte) (int, error) {
+	if b.max <= 0 {
+		return len(p), nil
+	}
+	if len(p) >= b.max {
+		b.buf = append(b.buf[:0], p[len(p)-b.max:]...)
+		b.truncated = true
+		return len(p), nil
+	}
+	if len(b.buf)+len(p) > b.max {
+		drop := len(b.buf) + len(p) - b.max
+		copy(b.buf, b.buf[drop:])
+		b.buf = b.buf[:len(b.buf)-drop]
+		b.truncated = true
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *cappedOutput) String() string {
+	if !b.truncated {
+		return string(b.buf)
+	}
+	return "[hook output truncated]\n" + string(b.buf)
+}
+
+func setHookProcessGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
 }

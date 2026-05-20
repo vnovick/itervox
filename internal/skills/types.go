@@ -18,6 +18,9 @@ import "time"
 // to be cached on disk between runs and recomputed on file mtime change.
 type Inventory struct {
 	ScanTime     time.Time
+	Partial      bool                           // true when one or more scanners failed but best-effort data is available
+	ScanError    string                         // joined scanner errors for partial inventories
+	Stale        bool                           // true when tracked capability files changed or disappeared since ScanTime
 	Profiles     map[string]ProfileCapabilities // reserved daemon-managed profile graph
 	Capabilities []Capability                   // reserved normalized graph nodes
 	Skills       []Skill                        // Claude + Codex + shared
@@ -74,6 +77,7 @@ type InstructionDoc struct {
 type Plugin struct {
 	Name         string
 	Provider     string
+	FilePath     string
 	Skills       []Skill
 	Hooks        []HookEntry
 	Agents       []AgentDef
@@ -107,11 +111,12 @@ type HookEntry struct {
 
 // AnalyticsSnapshot is the Phase-2 runtime evidence projection.
 type AnalyticsSnapshot struct {
-	GeneratedAt     time.Time
-	SkillStats      []CapabilityStat
-	HookStats       []CapabilityStat
-	ProfileCosts    []ProfileCost
-	Recommendations []Recommendation
+	GeneratedAt        time.Time
+	HasRuntimeEvidence bool
+	SkillStats         []CapabilityStat
+	HookStats          []CapabilityStat
+	ProfileCosts       []ProfileCost
+	Recommendations    []Recommendation
 }
 
 // CapabilityStat aggregates per-capability runtime usage data.
@@ -168,6 +173,7 @@ type Fix struct {
 // RuntimeEvidenceSnapshot is the Phase-2 raw extraction from session logs.
 type RuntimeEvidenceSnapshot struct {
 	GeneratedAt        time.Time
+	HasRuntimeEvidence bool
 	SourceLogPaths     []string
 	CapabilityLoads    map[string]int
 	HookExecutionCount map[string]int

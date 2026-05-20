@@ -325,6 +325,7 @@ describe('useCancelIssue', () => {
     // Cache should be restored
     const cached = qc.getQueryData<TrackerIssue[]>(ISSUES_KEY);
     expect(cached?.[0].orchestratorState).toBe('idle');
+    expect(useItervoxStore.getState().snapshot).toEqual(baseSnapshot);
 
     // A toast should have been shown
     const toasts = useToastStore.getState().toasts;

@@ -30,8 +30,8 @@ test('dashboard renders + SSE goes Live + /state schema-validates', async ({ pag
   // SSE indicator transitions to Live once first snapshot arrives.
   await expect(page.getByText(/^Live$/)).toBeVisible({ timeout: 6_000 });
 
-  // Schema-validate /state — runs in the browser context to use the loaded
-  // Zod schema. Fetches with the same Authorization header the dashboard uses.
+  // Schema-validate /state using the production bundle's validation hook.
+  // Fetches with the same Authorization header the dashboard uses.
   const validation = await page.evaluate(async (token) => {
     const res = await fetch('/api/v1/state', {
       headers: { Authorization: `Bearer ${token}` },
@@ -40,25 +40,17 @@ test('dashboard renders + SSE goes Live + /state schema-validates', async ({ pag
       return { ok: false, status: res.status, error: 'fetch_failed' };
     }
     const json = await res.json();
-    // The page already imports StateSnapshotSchema for its store — reach in
-    // by re-importing via dynamic import; if that fails, fall back to a
-    // structural sanity check.
-    try {
-      const mod = await import('/src/types/schemas.ts').catch(() => null);
-      if (mod && typeof mod.StateSnapshotSchema?.parse === 'function') {
-        mod.StateSnapshotSchema.parse(json);
-        return { ok: true };
+    const validator = (
+      window as Window & {
+        __ITERVOX_VALIDATE_STATE__?: (
+          snapshot: unknown,
+        ) => { ok: true } | { ok: false; error: string };
       }
-    } catch (e) {
-      return { ok: false, error: `parse_failed: ${String(e)}` };
+    ).__ITERVOX_VALIDATE_STATE__;
+    if (typeof validator !== 'function') {
+      return { ok: false, error: 'production_state_validator_missing' };
     }
-    // Structural fallback — checks the high-impact shape contract.
-    if (typeof json.generatedAt !== 'string') return { ok: false, error: 'generatedAt missing' };
-    if (typeof json.counts !== 'object') return { ok: false, error: 'counts missing' };
-    if (!Array.isArray(json.running)) return { ok: false, error: 'running missing' };
-    if (typeof json.maxConcurrentAgents !== 'number')
-      return { ok: false, error: 'maxConcurrentAgents missing' };
-    return { ok: true };
+    return validator(json);
   }, daemon.token);
 
   expect(validation.ok, `schema validation failed: ${JSON.stringify(validation)}`).toBe(true);

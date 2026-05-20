@@ -106,7 +106,7 @@ beforeEach(() => {
   mockUseLogIdentifiers.mockReturnValue([]);
   // Reset the per-issue uiStore chip state so tests don't bleed into each
   // other (T-4 chip is Zustand-backed for persistence across navigation).
-  useUIStore.setState({ logsAutomationOnly: false });
+  useUIStore.setState({ logsAutomationOnly: false, logsIssueSearch: '' });
 });
 
 describe('Logs page', () => {
@@ -254,6 +254,50 @@ describe('Logs page', () => {
     render(<Logs />, { wrapper });
     expect(screen.queryByText('ABC-1')).not.toBeInTheDocument();
     expect(screen.getByText('0 active · 0 total')).toBeInTheDocument();
+  });
+
+  it('filters the sidebar issue list by identifier and title', async () => {
+    setupStoreMock(null);
+    const user = userEvent.setup();
+    mockUseLogIdentifiers.mockReturnValue(['ABC-1', 'TIENG-392']);
+    mockUseIssues.mockReturnValue({
+      data: [
+        makeIssue('ABC-1', { title: 'Refresh auth token' }),
+        makeIssue('TIENG-392', { title: 'Timeline labels are wrong' }),
+      ],
+    } as ReturnType<typeof useIssues>);
+
+    render(<Logs />, { wrapper });
+
+    expect(screen.getByText('ABC-1')).toBeInTheDocument();
+    expect(screen.getByText('TIENG-392')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('searchbox', { name: /search log issues/i }), 'timeline');
+
+    expect(screen.queryByText('ABC-1')).not.toBeInTheDocument();
+    expect(screen.getByText('TIENG-392')).toBeInTheDocument();
+    expect(screen.getByText('1 match')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /clear search/i }));
+
+    expect(screen.getByText('ABC-1')).toBeInTheDocument();
+    expect(screen.getByText('TIENG-392')).toBeInTheDocument();
+  });
+
+  it('shows a no-match state for issue search without claiming logs are empty', async () => {
+    setupStoreMock(null);
+    const user = userEvent.setup();
+    mockUseLogIdentifiers.mockReturnValue(['ABC-1']);
+    mockUseIssues.mockReturnValue({
+      data: [makeIssue('ABC-1', { title: 'Refresh auth token' })],
+    } as ReturnType<typeof useIssues>);
+
+    render(<Logs />, { wrapper });
+
+    await user.type(screen.getByRole('searchbox', { name: /search log issues/i }), 'missing');
+
+    expect(screen.getByText('No matching issues')).toBeInTheDocument();
+    expect(screen.queryByText('No issues loaded')).not.toBeInTheDocument();
   });
 
   it('restores branch and profile context in the header strip', () => {

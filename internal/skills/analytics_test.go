@@ -18,6 +18,9 @@ func TestBuildAnalytics_FallsBackWithoutRuntime(t *testing.T) {
 	if len(snap.SkillStats) != 1 {
 		t.Fatalf("expected 1 skill stat, got %d", len(snap.SkillStats))
 	}
+	if snap.HasRuntimeEvidence {
+		t.Errorf("expected HasRuntimeEvidence=false without runtime evidence")
+	}
 	stat := snap.SkillStats[0]
 	if stat.RuntimeVerified {
 		t.Errorf("expected RuntimeVerified=false without runtime evidence")
@@ -47,6 +50,7 @@ func TestBuildAnalytics_PopulatesRuntimeFields(t *testing.T) {
 	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
 	runtime := &RuntimeEvidenceSnapshot{
 		GeneratedAt:        now,
+		HasRuntimeEvidence: true,
 		CapabilityLoads:    map[string]int{"alpha": 7, "ctx7": 3, "fs": 2},
 		HookExecutionCount: map[string]int{"PreToolUse|echo": 4},
 		ToolCallCount:      map[string]int{"alpha": 1},
@@ -54,6 +58,9 @@ func TestBuildAnalytics_PopulatesRuntimeFields(t *testing.T) {
 	snap := BuildAnalytics(inv, runtime, []string{"p1"})
 	if snap == nil {
 		t.Fatal("expected non-nil snapshot")
+	}
+	if !snap.HasRuntimeEvidence {
+		t.Errorf("expected HasRuntimeEvidence=true with runtime evidence")
 	}
 	stat := snap.SkillStats[0]
 	if !stat.RuntimeVerified {

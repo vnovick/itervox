@@ -9,6 +9,7 @@
  * producing silent undefined values.
  */
 import { z } from 'zod';
+import { AUTOMATION_TRIGGER_TYPES } from './automationTriggers';
 
 export const CommentRowSchema = z.object({
   author: z.string(),
@@ -111,16 +112,7 @@ export const ModelOptionSchema = z.object({
 });
 
 export const AutomationTriggerSchema = z.object({
-  type: z.enum([
-    'cron',
-    'input_required',
-    'tracker_comment_added',
-    'issue_entered_state',
-    'issue_moved_to_backlog',
-    'run_failed',
-    'pr_opened',
-    'rate_limited',
-  ]),
+  type: z.enum(AUTOMATION_TRIGGER_TYPES),
   cron: z.string().optional(),
   timezone: z.string().optional(),
   state: z.string().optional(),
@@ -215,6 +207,7 @@ export const StateSnapshotSchema = z.object({
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),
   availableModels: z.record(z.string(), z.array(ModelOptionSchema)).optional(),
+  supportedAgentActions: z.array(AllowedAgentActionSchema).optional(),
   reviewerProfile: z.string().optional(),
   autoReview: z.boolean().optional(),
   activeStates: z.array(z.string()).optional(),
@@ -357,6 +350,7 @@ export const MCPServerSchema = z.object({
 export const PluginSchema = z.object({
   Name: z.string(),
   Provider: z.string(),
+  FilePath: z.string().optional(),
   Source: z.string(),
   ApproxTokens: z.number(),
   Skills: z.array(SkillSchema).nullable().optional(),
@@ -401,6 +395,9 @@ export const InventoryIssueSchema = z.object({
 
 export const InventorySchema = z.object({
   ScanTime: z.string(),
+  Partial: z.boolean().optional(),
+  ScanError: z.string().optional(),
+  Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
@@ -453,6 +450,7 @@ export const RecommendationSchema = z.object({
 
 export const AnalyticsSnapshotSchema = z.object({
   GeneratedAt: z.string(),
+  HasRuntimeEvidence: z.boolean().optional(),
   SkillStats: z.array(CapabilityStatSchema).nullable().optional(),
   HookStats: z.array(CapabilityStatSchema).nullable().optional(),
   ProfileCosts: z.array(ProfileCostSchema).nullable().optional(),

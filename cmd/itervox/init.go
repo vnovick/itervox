@@ -155,31 +155,23 @@ func detectStacks(dir string) []detectedStack {
 func detectNodeCommands(dir string) []string {
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
-		return []string{"npm test"}
+		return []string{"pnpm test"}
 	}
 	var pkg struct {
 		Scripts map[string]string `json:"scripts"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
-		return []string{"npm test"}
-	}
-
-	// Detect package manager from lock files.
-	pm := "npm"
-	if _, err := os.Stat(filepath.Join(dir, "pnpm-lock.yaml")); err == nil {
-		pm = "pnpm"
-	} else if _, err := os.Stat(filepath.Join(dir, "yarn.lock")); err == nil {
-		pm = "yarn"
+		return []string{"pnpm test"}
 	}
 
 	var cmds []string
 	for _, script := range []string{"test", "lint", "typecheck", "check", "build"} {
 		if _, ok := pkg.Scripts[script]; ok {
-			cmds = append(cmds, pm+" run "+script)
+			cmds = append(cmds, "pnpm "+script)
 		}
 	}
 	if len(cmds) == 0 {
-		cmds = []string{pm + " test"}
+		cmds = []string{"pnpm test"}
 	}
 	return cmds
 }
@@ -312,7 +304,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("  # Add custom hooks here if your project needs extra setup.\n")
 	b.WriteString("  # before_run runs once per worker attempt; after_run runs after each turn.\n")
 	b.WriteString("  # after_create: |\n")
-	b.WriteString("  #   npm install\n")
+	b.WriteString("  #   pnpm install --frozen-lockfile\n")
 	b.WriteString("  # before_run: |\n")
 	b.WriteString("  #   make prepare-agent-workspace\n")
 	b.WriteString("  # after_run: |\n")

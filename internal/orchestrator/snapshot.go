@@ -36,7 +36,6 @@ func (o *Orchestrator) Snapshot() State {
 	snap.AutoSwitchedAt = maps.Clone(snap.AutoSwitchedAt)
 	snap.InputRequiredIssues = maps.Clone(snap.InputRequiredIssues)
 	snap.PendingInputResumes = maps.Clone(snap.PendingInputResumes)
-	snap.InlineInputIssues = copyInlineInputMap(snap.InlineInputIssues)
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -447,19 +446,6 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 	return state
 }
 
-// copyInlineInputMap returns a shallow copy of the InlineInputs map.
-// Kept as a helper because maps.Clone returns nil for nil input while this
-// helper must always return a non-nil map (snapshot consumers iterate; nil
-// is fine for range/len, but several test fixtures explicitly assert
-// non-nil in newly-built snapshots).
-func copyInlineInputMap(m map[string]*InlineInputEntry) map[string]*InlineInputEntry {
-	cp := make(map[string]*InlineInputEntry, len(m))
-	for k, v := range m {
-		cp[k] = v
-	}
-	return cp
-}
-
 // copyRunningMap returns a deep copy of a map[string]*RunEntry.
 // Each RunEntry value is copied by value so that external goroutines reading
 // the snapshot cannot observe in-progress mutations by the event loop
@@ -640,7 +626,6 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.AutoSwitchedAt = maps.Clone(s.AutoSwitchedAt)
 	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
 	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
-	snap.InlineInputIssues = copyInlineInputMap(s.InlineInputIssues)
 
 	o.snapMu.Lock()
 	o.lastSnap = snap

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import { AXIS_MARGIN_LEFT, AXIS_MARGIN_RIGHT } from './styles';
 
+export function formatAxisTime(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 function NowMarker({ viewStart, viewEnd }: { viewStart: number; viewEnd: number }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -23,6 +30,7 @@ function NowMarker({ viewStart, viewEnd }: { viewStart: number; viewEnd: number 
 
 export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: number }) {
   const span = viewEnd - viewStart;
+  if (span <= 0) return null;
   const rawStep = span / 6;
   const steps = [30_000, 60_000, 5 * 60_000, 10 * 60_000, 30 * 60_000, 60 * 60_000];
   const step = steps.find((s) => s >= rawStep) ?? steps[steps.length - 1];
@@ -39,11 +47,7 @@ export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: n
       {ticks.map((t) => {
         const pct = ((t - viewStart) / span) * 100;
         if (pct < 0 || pct > 100) return null;
-        const label = new Date(t).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        });
+        const label = formatAxisTime(t);
         return (
           <span
             key={t}

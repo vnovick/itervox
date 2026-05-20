@@ -1,17 +1,19 @@
 import type { SuggestedProfile } from './suggestedProfiles';
 import { backendBadgeClass, backendLabel } from './profileBadges';
-import { AGENT_ACTION_OPTIONS } from '../profileCommands';
+import { agentActionOptionsFor } from '../profileCommands';
 
 export function SuggestedProfileCard({
   suggestion,
   onUse,
+  supportedAgentActions,
 }: {
   suggestion: SuggestedProfile;
   onUse: (s: SuggestedProfile) => void;
+  supportedAgentActions?: readonly string[];
 }) {
-  const actionLabels = AGENT_ACTION_OPTIONS.filter((option) =>
-    suggestion.allowedActions.includes(option.id),
-  ).map((option) => option.label);
+  const actionLabels = agentActionOptionsFor(supportedAgentActions)
+    .filter((option) => suggestion.allowedActions.includes(option.id))
+    .map((option) => option.label);
 
   return (
     <button

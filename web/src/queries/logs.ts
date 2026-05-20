@@ -6,9 +6,18 @@ import { z } from 'zod';
 import { authedFetch } from '../auth/authedFetch';
 import { openAuthedEventStream } from '../auth/authedEventStream';
 
+export const LIVE_LOG_ENTRY_CAP = 500;
+
 export const logsKey = (identifier: string) => ['logs', identifier] as const;
 export const sublogsKey = (identifier: string) => ['sublogs', identifier] as const;
 export const logIdentifiersKey = () => ['log-identifiers'] as const;
+
+function appendCappedLogEntry(prev: IssueLogEntry[], entry: IssueLogEntry): IssueLogEntry[] {
+  if (prev.length >= LIVE_LOG_ENTRY_CAP) {
+    return [...prev.slice(prev.length - LIVE_LOG_ENTRY_CAP + 1), entry];
+  }
+  return [...prev, entry];
+}
 
 async function fetchLogIdentifiers(): Promise<string[]> {
   const res = await authedFetch('/api/v1/logs/identifiers');
@@ -68,7 +77,7 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
           if (msg.event !== 'log') return;
           try {
             const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
-            setSseData((prev) => [...prev, entry]);
+            setSseData((prev) => appendCappedLogEntry(prev, entry));
           } catch {
             // malformed event — skip
           }
@@ -130,7 +139,7 @@ export function useSubagentLogs(identifier: string, isLive: boolean) {
           if (msg.event !== 'sublog') return;
           try {
             const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
-            setSseData((prev) => [...prev, entry]);
+            setSseData((prev) => appendCappedLogEntry(prev, entry));
           } catch {
             // malformed event — skip
           }

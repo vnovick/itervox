@@ -10,6 +10,7 @@ import { ProjectSelector } from '../../components/itervox/ProjectSelector';
 import { NarrativeFeed } from '../../components/itervox/NarrativeFeed';
 import AgentQueueView from '../../components/itervox/AgentQueueView';
 import { FilterPills, type FilterPill } from '../../components/itervox/FilterPills';
+import { SearchInput } from '../../components/itervox/SearchInput';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
@@ -30,7 +31,6 @@ import { useNotificationsTotal } from './components/useNotificationsTotal';
 import { viewModeLabel } from './components/viewModeLabel';
 import { HeroStats } from './components/HeroStats';
 
-// ─── Stable fallbacks ─────────────────────────────────────────────────────────
 import { EMPTY_PROFILES, EMPTY_STATES, EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
 const EMPTY_BACKLOG_STATES = EMPTY_STATES;
 const EMPTY_ACTIVE_STATES = EMPTY_STATES;
@@ -47,6 +47,7 @@ export default function Dashboard() {
     completionState,
     profileDefs,
     availableModels,
+    supportedAgentActions,
     defaultBackend,
     running,
     runHistory,
@@ -60,6 +61,7 @@ export default function Dashboard() {
       completionState: s.snapshot?.completionState ?? '',
       profileDefs: s.snapshot?.profileDefs,
       availableModels: s.snapshot?.availableModels,
+      supportedAgentActions: s.snapshot?.supportedAgentActions,
       defaultBackend: s.snapshot?.defaultBackend,
       running: s.snapshot?.running ?? EMPTY_RUNNING,
       runHistory: s.snapshot?.history ?? EMPTY_HISTORY,
@@ -79,9 +81,6 @@ export default function Dashboard() {
     }
     return map;
   }, [running, runHistory, issues, backlogStateSet]);
-
-  // T-6: kind + commentCount derivation is scoped to BoardView/BoardColumn
-  // because those are the surfaces that pass it down to IssueCard.
 
   const invalidateIssues = useInvalidateIssues();
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
@@ -344,14 +343,12 @@ export default function Dashboard() {
               <>
                 <FilterPills pills={filterPills} activeId={stateFilter} onChange={setStateFilter} />
                 <div className="flex gap-3">
-                  <input
-                    type="text"
+                  <SearchInput
                     placeholder="Search identifier or title…"
+                    label="Search issues"
                     value={search}
-                    onChange={(e) => {
-                      setSearch(e.target.value);
-                    }}
-                    className="border-theme-line bg-theme-bg-elevated text-theme-text min-w-0 flex-1 rounded-lg border px-3 py-1.5 text-sm focus:outline-none"
+                    onChange={setSearch}
+                    className="flex-1"
                   />
                 </div>
               </>
@@ -388,6 +385,7 @@ export default function Dashboard() {
                   availableProfiles={availableProfiles}
                   profileDefs={profileDefs}
                   availableModels={availableModels}
+                  supportedAgentActions={supportedAgentActions}
                   onProfileChange={handleProfileChange}
                   onSelect={handleIssueSelect}
                   onEditProfile={handleEditProfile}

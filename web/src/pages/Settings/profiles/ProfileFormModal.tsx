@@ -21,6 +21,7 @@ interface ProfileFormModalProps {
   initialValues: ProfileFormValues;
   submitLabel: string;
   availableModels?: Record<string, { id: string; label: string }[]>;
+  supportedAgentActions?: readonly string[];
   trackerStates?: readonly string[];
   onClose: () => void;
   onSubmit: (
@@ -45,6 +46,7 @@ export function ProfileFormModal({
   initialValues,
   submitLabel,
   availableModels,
+  supportedAgentActions,
   trackerStates,
   onClose,
   onSubmit,
@@ -86,7 +88,7 @@ export function ProfileFormModal({
         backend: values.backend,
         prompt: values.prompt.trim() || undefined,
         enabled: values.enabled,
-        allowedActions: normalizeAllowedActions(values.allowedActions),
+        allowedActions: normalizeAllowedActions(values.allowedActions, supportedAgentActions),
         createIssueState: values.createIssueState.trim() || undefined,
       },
       mode === 'edit' ? initialValues.name : undefined,
@@ -158,6 +160,7 @@ export function ProfileFormModal({
             command={command}
             prompt={prompt}
             allowedActions={allowedActions}
+            supportedAgentActions={supportedAgentActions}
             createIssueState={createIssueState}
             createIssueStateError={errors.createIssueState?.message}
             trackerStates={trackerStates}

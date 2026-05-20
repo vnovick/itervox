@@ -1,19 +1,5 @@
 import type { SuggestedAutomation } from './suggestedAutomations';
-
-// Exhaustive map over SuggestedAutomation['triggerType']. TypeScript enforces
-// completeness — adding a new trigger type to the union requires a label here.
-const TRIGGER_LABELS: Record<SuggestedAutomation['triggerType'], string> = {
-  cron: 'Cron',
-  input_required: 'Input Required',
-  tracker_comment_added: 'Tracker Comment',
-  issue_entered_state: 'Issue Entered State',
-  issue_moved_to_backlog: 'Issue Moved to Backlog',
-  run_failed: 'Run Failed',
-};
-
-function triggerLabel(triggerType: SuggestedAutomation['triggerType']): string {
-  return TRIGGER_LABELS[triggerType];
-}
+import { AUTOMATION_TRIGGER_META } from '../../../types/automationTriggers';
 
 export function SuggestedAutomationCard({
   suggestion,
@@ -38,7 +24,7 @@ export function SuggestedAutomationCard({
           <p className="text-theme-text text-sm font-semibold">{suggestion.label}</p>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <span className="bg-theme-panel text-theme-text-secondary rounded-full px-2 py-0.5 text-[10px] font-medium">
-              {triggerLabel(suggestion.triggerType)}
+              {AUTOMATION_TRIGGER_META[suggestion.triggerType].label}
             </span>
             <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent-strong)]">
               {suggestion.profile}

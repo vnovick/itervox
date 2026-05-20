@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/server"
 )
@@ -32,7 +33,7 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 		},
 	}}
 
-	cfgs := automationConfigsFromDefs(defs)
+	cfgs := automationconfig.ConfigsFromDefinitions(defs)
 	if got := cfgs[0].Filter.MaxAgeMinutes; got != 30 {
 		t.Fatalf("MaxAgeMinutes not preserved def->config: %d", got)
 	}
@@ -49,7 +50,7 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 		t.Fatalf("CooldownMinutes not preserved def->config: %d", got)
 	}
 
-	roundTrip := automationDefsFromConfig([]config.AutomationConfig{{
+	roundTrip := automationconfig.DefinitionsFromConfigs([]config.AutomationConfig{{
 		ID:      "rate-limit-switch",
 		Enabled: true,
 		Profile: "claude",
@@ -74,7 +75,7 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 func TestAutomationsToEntriesPreservesWorkflowPersistenceFields(t *testing.T) {
 	t.Parallel()
 
-	entries := automationsToEntries([]server.AutomationDef{{
+	entries := []server.AutomationDef{{
 		ID:      "input-pr",
 		Enabled: true,
 		Profile: "input-responder",
@@ -95,7 +96,7 @@ func TestAutomationsToEntriesPreservesWorkflowPersistenceFields(t *testing.T) {
 			SwitchToBackend: "codex",
 			CooldownMinutes: 45,
 		},
-	}})
+	}}
 
 	if got := entries[0].Filter.MaxAgeMinutes; got != 30 {
 		t.Fatalf("MaxAgeMinutes not preserved for workflow write: %d", got)

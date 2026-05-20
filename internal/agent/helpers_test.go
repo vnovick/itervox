@@ -5,17 +5,13 @@ package agent
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/vnovick/itervox/internal/domain"
 )
 
 // --- shellQuote ---
@@ -235,26 +231,28 @@ func TestSSHFetchClaudeViaInMemoryTar(t *testing.T) {
 	}
 	_ = tw.Close()
 
-	// Replay the sshFetchClaude tar-reading loop.
-	var entries []domain.IssueLogEntry
-	tr := tar.NewReader(&buf)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		assert.NoError(t, err)
-		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
-		scanner := bufio.NewScanner(tr)
-		scanner.Buffer(make([]byte, 1<<20), 1<<20)
-		for scanner.Scan() {
-			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseLine, sessionID)...)
-		}
-	}
+	entries := parseRemoteJSONLTar(&buf, ParseLine, "test-host", "claude")
 
 	assert.Len(t, entries, 2)
 	assert.Equal(t, "sess-001", entries[0].SessionID)
 	assert.Equal(t, "sess-002", entries[1].SessionID)
+}
+
+func TestParseRemoteJSONLTarSupportsCodexParser(t *testing.T) {
+	codexLine := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"hello from codex"}}`
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := codexLine + "\n"
+	_ = tw.WriteHeader(&tar.Header{Name: "codex-abc.jsonl", Size: int64(len(body)), Mode: 0o644})
+	_, _ = tw.Write([]byte(body))
+	_ = tw.Close()
+
+	entries := parseRemoteJSONLTar(&buf, ParseCodexLine, "test-host", "codex")
+
+	assert.Len(t, entries, 1)
+	assert.Equal(t, "codex-abc", entries[0].SessionID)
+	assert.Contains(t, entries[0].Message, "hello from codex")
 }
 
 // TestSafePromptArg guards against the argv hazard that surfaced in

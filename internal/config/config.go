@@ -106,7 +106,9 @@ type AgentConfig struct {
 	// MaxRetryBackoffMs caps the exponential back-off between agent retries.
 	// The progression is 10 s × 2^(attempt-1): 10 s, 20 s, 40 s, 80 s, 160 s,
 	// then capped at MaxRetryBackoffMs for all subsequent attempts.
-	// Default: 300 000 ms (5 min). Set to 0 to disable retries entirely.
+	// Values <= 0 fall back to the default. Retry count is controlled by
+	// MaxRetries.
+	// Default: 300 000 ms (5 min).
 	MaxRetryBackoffMs int
 	MaxTurns          int
 	Command           string
@@ -212,9 +214,9 @@ type AgentConfig struct {
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
 	// AvailableModels maps backend names ("claude", "codex") to model options
-	// discovered at init time or via the refresh-models command. The dashboard
-	// profile editor uses these for the model dropdown. When empty, the frontend
-	// falls back to a built-in default list.
+	// discovered at init time. The dashboard profile editor uses these for the
+	// model dropdown. When empty, the frontend falls back to a built-in default
+	// list.
 	AvailableModels map[string][]ModelOption
 }
 

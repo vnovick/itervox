@@ -160,7 +160,7 @@ workspace:
 
 ## agent
 
-Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, retry behaviour, and advanced features like SSH dispatch and agent teams.
+Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, retry behaviour, and advanced features like SSH dispatch and named profiles.
 
 ### Core fields
 
@@ -171,7 +171,7 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | `max_concurrent_agents` | int | `10` | Maximum number of agent workers running simultaneously across all issues. |
 | `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits that override `max_concurrent_agents`. Keys are lowercase state names. See example below. |
 | `max_retries` | int | `5` | Maximum retry attempts before an issue is moved to `tracker.failed_state` (or paused if `failed_state` is empty). `0` means unlimited retries. |
-| `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. |
+| `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. `0`/negative values fall back to the default; use `max_retries` to control retry count. |
 | `max_turns` | int | `20` | Maximum number of agent turns per session. |
 
 These retry and rate-limit settings are also editable from the Settings dashboard:
@@ -261,12 +261,6 @@ agent:
       - { id: "gpt-5.2-codex", label: "GPT-5.2-Codex - Long-horizon agentic coding" }
 ```
 
-To refresh the model list after new models become available, run:
-
-```bash
-itervox refresh-models --workflow WORKFLOW.md
-```
-
 If `available_models` is empty or missing, the dashboard falls back to a built-in default list.
 
 ---
@@ -278,7 +272,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | Field | Type | Description |
 |---|---|---|
 | `command` | string | CLI command for this profile (e.g. `"claude --model claude-haiku-4-5-20251001"`). |
-| `prompt` | string | Role description rendered through the Liquid template engine (supports `{{ issue.* }}` variables) and appended to the workflow prompt. Works in all agent modes — not just teams. See [Agent Profiles guide](/guides/agent-profiles/#liquid-variables-in-profile-prompts) for available variables. |
+| `prompt` | string | Role description rendered through the Liquid template engine (supports `{{ issue.* }}` variables) and appended to the workflow prompt whenever the profile is selected. See [Agent Profiles guide](/guides/agent-profiles/#liquid-variables-in-profile-prompts) for available variables. |
 | `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field). |
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
@@ -363,6 +357,14 @@ comment for trigger purposes.
 | `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs. |
 | `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset. |
 
+When `switch_to_backend` is set, the target profile command must be compatible with that backend. Prefer a dedicated Codex profile such as `command: codex` / `backend: codex`, or a backend-aware wrapper command.
+
+### Dependency readiness and blockers
+
+Itervox exposes tracker blockers to the prompt and dashboard, and normal issue dispatch skips `Todo` issues whose blockers are still non-terminal. That is the deterministic blocker behavior shipped in v0.2.0.
+
+Automation rules do not yet have a deterministic `blockers_resolved` trigger or a `filter.blockers` predicate. A `readiness-manager` or `unblock-manager` profile can still run today as prompt-governed backlog grooming: dispatch it from a cron or tracker-comment automation, let it inspect the issue blockers, and restrict it to `comment` unless you are comfortable with the profile making state-change decisions. Treat that pattern as advisory automation, not a guaranteed dependency resolver.
+
 ```yaml
 automations:
   - id: qa-ready
@@ -389,6 +391,24 @@ automations:
     filter:
       states: ["Backlog"]
       limit: 20
+
+  # Experimental: prompt-governed, not a deterministic blocker predicate.
+  - id: unblock-manager
+    enabled: false
+    trigger:
+      type: cron
+      cron: "*/30 * * * *"
+    profile: unblock-manager
+    instructions: |
+      Inspect this issue's blocker list and comments.
+      If any blocker is missing a terminal state, leave a concise comment and stop.
+      If every blocker is terminal and the acceptance criteria are clear, comment that
+      the issue appears ready for Todo.
+      Move state only when your profile is explicitly allowed to use move_state.
+    filter:
+      states: ["Backlog"]
+      labels_any: ["blocked"]
+      limit: 10
 ```
 
 For the full mental model, trigger semantics, and examples, see the [Automations guide](/guides/automations/).
@@ -415,13 +435,15 @@ Shell commands run at lifecycle points in each issue's workspace. All hooks run 
 
 All hooks run via `bash -lc` in the issue workspace. Itervox does not inject any per-issue environment variables into hook processes; hooks inherit the daemon's environment as-is. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
 
+v0.2.0 does not ship a fatal post-change hook such as `hooks.verify` or `hooks.after_run_required`. Treat post-change gates as CI-governed or prompt-governed unless you run them before the agent turn through `before_run` or outside Itervox.
+
 Multi-line shell scripts are supported using YAML block scalars:
 
 ```yaml
 hooks:
   after_create: |
     git clone git@github.com:owner/repo.git .
-    npm ci
+    pnpm install --frozen-lockfile
   before_run: |
     git fetch origin main
     git checkout main

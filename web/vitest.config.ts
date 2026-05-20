@@ -47,17 +47,13 @@ export default defineConfig({
         // Generic UI primitives without dedicated tests
         'src/components/common/**',
         'src/components/form/**',
-        'src/components/ui/alert/**',
         'src/components/ui/badge/**',
         'src/components/ui/button/**',
-        'src/components/ui/dropdown/**',
         'src/components/ui/modal/**',
-        'src/components/ui/table/**',
         'src/components/ui/ThemeToggle/**',
 
         // Itervox components without dedicated test suites
         'src/components/itervox/AgentQueueView.tsx',
-        'src/components/itervox/RateLimitBar.tsx',
         'src/components/itervox/StatusStrip.tsx',
         'src/components/itervox/TagInput.tsx',
         'src/components/itervox/HostPool.tsx',

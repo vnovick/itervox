@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.9) that implements the
+**Itervox** is a long-running daemon (Go 1.25.10) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
@@ -160,7 +160,7 @@ cmd/itervox (wires everything)
 | `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |
 | `web/src/auth/tokenStore.ts` | Token storage (sessionStorage default, localStorage opt-in via "Remember"), cross-tab `storage` event sync |
 | `web/src/auth/authStore.ts` | Auth state machine: `unknown` / `serverDown` / `needsToken` / `authorized` |
-| `web/src/auth/AuthGate.tsx` | Root wrapper — captures `?token=` from URL once, probes `/health` then `/state`, routes to app / login / error screen |
+| `web/src/auth/AuthGate.tsx` | Root wrapper — captures `?token=` from URL once, probes `/api/v1/health` then `/api/v1/state`, routes to app / login / error screen |
 | `web/src/auth/UnauthorizedError.ts` | Typed error used by TanStack Query retry guards to skip retrying auth failures |
 
 ### Toast API
@@ -198,8 +198,12 @@ Before claiming a field is accessed without a lock:
 
 Before claiming `context.WithTimeout(ctx, 0)` causes immediate cancellation:
 
-1. **Trace through `positiveIntField`** — `config.go` uses this helper to parse timeout fields. It rejects 0 and negative values, replacing them with the default. A zero value cannot reach `context.WithTimeout` at runtime.
-2. **Check what the config default is** — look at `config.go:defaultConfig()`.
+1. **Check the field-specific parser** — timeout fields are mixed:
+   - `agent.turn_timeout_ms`: `intField`; `<= 0` reaches runtime and intentionally disables the hard turn timeout because agent runners call `context.WithTimeout` only when the value is `> 0`.
+   - `agent.read_timeout_ms`: `positiveIntField`; `<= 0` is replaced with the 30s default and cannot reach the read-deadline path from config.
+   - `agent.stall_timeout_ms`: `intField`; `<= 0` reaches runtime and disables `ReconcileStalls`.
+   - `hooks.timeout_ms`: `intField` followed by an explicit fallback; `<= 0` becomes the 60s hook default during config load.
+2. **Check what the config default is** — look at `config.go:defaultConfig()` / `LoadFromFrontMatter` before flagging timeout behavior.
 
 ### File-existence claims
 

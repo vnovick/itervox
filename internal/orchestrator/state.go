@@ -324,24 +324,6 @@ type State struct {
 	// in the tracker, but have not yet been durably consumed by a resumed
 	// worker. Key: identifier.
 	PendingInputResumes map[string]*PendingInputResumeEntry
-	// InlineInputIssues is deprecated but kept for snapshot copy compatibility.
-	// All input-required handling now uses InputRequiredIssues.
-	InlineInputIssues map[string]*InlineInputEntry
-}
-
-// InlineInputEntry holds context for an input-required issue that was
-// delegated to the tracker via a comment (inlineInput mode).
-type InlineInputEntry struct {
-	IssueID          string
-	Identifier       string
-	SessionID        string
-	Context          string // agent's question
-	Backend          string
-	Command          string
-	WorkerHost       string
-	ProfileName      string
-	PostedAt         time.Time
-	LastCommentCount int // comment count at time of posting, to detect new ones
 }
 
 // NewState initialises a State from a config snapshot.
@@ -366,6 +348,5 @@ func NewState(cfg *config.Config) State {
 		DiscardingIdentifiers:   make(map[string]struct{}),
 		InputRequiredIssues:     make(map[string]*InputRequiredEntry),
 		PendingInputResumes:     make(map[string]*PendingInputResumeEntry),
-		InlineInputIssues:       make(map[string]*InlineInputEntry),
 	}
 }

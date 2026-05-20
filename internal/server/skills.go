@@ -15,7 +15,8 @@ type SkillsClient interface {
 	// the daemon hasn't completed its first scan yet.
 	Inventory() *skills.Inventory
 	// RefreshInventory forces a re-scan and swaps in the new inventory on
-	// success. Returns the most recent error from the scanner.
+	// success. A scanner error may still store a partial inventory with
+	// warning metadata when best-effort data is available.
 	RefreshInventory(ctx context.Context) error
 	// Issues returns the static-analysis issues against the most recent
 	// inventory. May be empty if no rules fire or if no scan has run yet.
@@ -25,8 +26,8 @@ type SkillsClient interface {
 	// destructive Fixes behind a confirm prompt.
 	ApplyFix(ctx context.Context, issueID string, fix skills.Fix) error
 	// Analytics returns the latest AnalyticsSnapshot built from the cached
-	// inventory + runtime evidence (T-102). May be nil if runtime evidence
-	// has not been collected.
+	// inventory + runtime evidence (T-102). May be nil before inventory exists;
+	// snapshots without logs report HasRuntimeEvidence=false.
 	Analytics() *skills.AnalyticsSnapshot
 	// AnalyticsRecommendations returns the recommend-analytics output
 	// (T-101) keyed off the same blend.
@@ -57,10 +58,15 @@ func (s *Server) handleSkillsInventory(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleSkillsScan triggers a re-scan and returns the freshly populated
-// inventory. Conservative: returns 500 if the scan returns an error so the
-// caller can surface a toast.
+// inventory. If a scanner fails after producing best-effort data, return the
+// partial inventory so the caller can show useful results plus a warning.
 func (s *Server) handleSkillsScan(w http.ResponseWriter, r *http.Request) {
+	before := s.skills.Inventory()
 	if err := s.skills.RefreshInventory(r.Context()); err != nil {
+		if inv := s.skills.Inventory(); inv != nil && inv != before && inv.Partial {
+			writeJSON(w, http.StatusOK, inv)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "scan_failed", err.Error())
 		return
 	}
@@ -85,13 +91,13 @@ type fixRequest struct {
 	Fix     skills.Fix `json:"fix"`
 }
 
-// handleSkillsAnalytics returns the analytics snapshot. 503 when none has
-// been built yet (no runtime evidence collected).
+// handleSkillsAnalytics returns the analytics snapshot. 503 only when no
+// snapshot can be built yet.
 func (s *Server) handleSkillsAnalytics(w http.ResponseWriter, _ *http.Request) {
 	snap := s.skills.Analytics()
 	if snap == nil {
 		writeError(w, http.StatusServiceUnavailable, "analytics_unavailable",
-			"analytics snapshot not yet computed (no runtime evidence)")
+			"analytics snapshot not yet computed")
 		return
 	}
 	writeJSON(w, http.StatusOK, snap)

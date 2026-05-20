@@ -64,8 +64,8 @@ func (s SSHSublogFetcher) FetchSubLogs(ctx context.Context, dir string) ([]domai
 // session that produced it — matching the behaviour of the local ParseSessionLogs
 // path and enabling per-run log isolation in the Timeline view.
 func sshFetchLogs(ctx context.Context, host, dir string) ([]domain.IssueLogEntry, error) {
-	claudeEntries := sshFetchClaude(ctx, host, dir)
-	codexEntries := sshFetchCodex(ctx, host, dir)
+	claudeEntries := sshFetchRemoteJSONL(ctx, host, dir, "-name '*.jsonl' ! -name 'codex-*.jsonl'", ParseLine, "claude")
+	codexEntries := sshFetchRemoteJSONL(ctx, host, dir, "-name 'codex-*.jsonl'", ParseCodexLine, "codex")
 
 	all := append(claudeEntries, codexEntries...)
 	if len(all) > maxSubLogLines {
@@ -80,98 +80,55 @@ func isCodexLogFile(name string) bool {
 	return strings.HasPrefix(name, "codex-") && strings.HasSuffix(name, ".jsonl")
 }
 
-// sshFetchClaude fetches all Claude .jsonl session files from dir on host in a
-// single SSH connection. The remote produces a tar archive; the Go client reads
-// it with archive/tar so session IDs come from tar header filenames — the same
-// source as the local readJSONLFile path. No sentinel string parsing required.
-//
-// Remote requirement: tar must be available on the SSH host (standard on Linux/macOS).
-func sshFetchClaude(ctx context.Context, host, dir string) []domain.IssueLogEntry {
+// sshFetchRemoteJSONL fetches matching .jsonl session files from dir on host in
+// a single SSH connection. The remote produces a tar archive; the Go client
+// reads it with archive/tar so session IDs come from tar header filenames, the
+// same source as the local readJSONLFile path. Remote requirement: tar must be
+// available on the SSH host (standard on Linux/macOS).
+func sshFetchRemoteJSONL(ctx context.Context, host, dir, findPredicate string, parseFn func([]byte) (StreamEvent, error), label string) []domain.IssueLogEntry {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Collect matching files into a variable first so we can skip the tar call
 	// entirely when none exist (tar with zero arguments is an error on some platforms).
-	// Exclude all codex-*.jsonl files (handled by sshFetchCodex).
-	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name '*.jsonl' ! -name 'codex-*.jsonl' 2>/dev/null | sort); ` +
+	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 ` + findPredicate + ` 2>/dev/null | sort); ` +
 		`[ -n "$files" ] && tar -cf - -C ` + shellQuote(dir) + ` $(basename -a $files) 2>/dev/null || true`
 
 	sshArgs := append(sshStrictHostOption(host), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "bash", "-c", script)
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		slog.Warn("logtailer: ssh stdout pipe failed", "host", host, "error", err)
+		slog.Warn("logtailer: ssh stdout pipe failed", "host", host, "parser", label, "error", err)
 		return nil
 	}
 	if err := cmd.Start(); err != nil {
-		slog.Warn("logtailer: ssh start failed", "host", host, "error", err)
+		slog.Warn("logtailer: ssh start failed", "host", host, "parser", label, "error", err)
 		return nil
 	}
 	defer func() { _ = cmd.Wait() }()
 
-	var entries []domain.IssueLogEntry
-	tr := tar.NewReader(stdout)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			slog.Warn("logtailer: tar read error, returning partial results", "host", host, "error", err)
-			break
-		}
-		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
-		scanner := newMaxScanner(tr)
-		for scanner.Scan() {
-			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseLine, sessionID)...)
-		}
-		if scanner.Err() != nil {
-			slog.Warn("logtailer: scanner error in tar entry", "host", host, "file", hdr.Name, "error", scanner.Err())
-		}
-	}
-	return entries
+	return parseRemoteJSONLTar(stdout, parseFn, host, label)
 }
 
-// sshFetchCodex fetches all codex-*.jsonl session files from dir on host using
-// tar-over-SSH — the same approach as sshFetchClaude but with ParseCodexLine.
-func sshFetchCodex(ctx context.Context, host, dir string) []domain.IssueLogEntry {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name 'codex-*.jsonl' 2>/dev/null | sort); ` +
-		`[ -n "$files" ] && tar -cf - -C ` + shellQuote(dir) + ` $(basename -a $files) 2>/dev/null || true`
-
-	sshArgs := append(sshStrictHostOption(host), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "bash", "-c", script)
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		slog.Warn("logtailer: ssh stdout pipe failed (codex)", "host", host, "error", err)
-		return nil
-	}
-	if err := cmd.Start(); err != nil {
-		slog.Warn("logtailer: ssh start failed (codex)", "host", host, "error", err)
-		return nil
-	}
-	defer func() { _ = cmd.Wait() }()
-
+func parseRemoteJSONLTar(r io.Reader, parseFn func([]byte) (StreamEvent, error), host, label string) []domain.IssueLogEntry {
 	var entries []domain.IssueLogEntry
-	tr := tar.NewReader(stdout)
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			slog.Warn("logtailer: tar read error (codex), returning partial results", "host", host, "error", err)
+			slog.Warn("logtailer: tar read error, returning partial results", "host", host, "parser", label, "error", err)
 			break
 		}
 		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
 		scanner := newMaxScanner(tr)
 		for scanner.Scan() {
-			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseCodexLine, sessionID)...)
+			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), parseFn, sessionID)...)
 		}
 		if scanner.Err() != nil {
-			slog.Warn("logtailer: scanner error in tar entry (codex)", "host", host, "file", hdr.Name, "error", scanner.Err())
+			slog.Warn("logtailer: scanner error in tar entry", "host", host, "parser", label, "file", hdr.Name, "error", scanner.Err())
 		}
 	}
 	return entries

@@ -58,6 +58,21 @@ export const AGENT_ACTION_OPTIONS = [
   },
 ] satisfies AllowedAgentActionOption[];
 
+function supportedActionIds(supportedActions?: readonly string[] | null): AllowedAgentAction[] {
+  if (!supportedActions?.length) return AGENT_ACTION_OPTIONS.map((option) => option.id);
+  const requested = new Set(supportedActions.map((action) => action.trim()).filter(Boolean));
+  return AGENT_ACTION_OPTIONS.filter((option) => requested.has(option.id)).map(
+    (option) => option.id,
+  );
+}
+
+export function agentActionOptionsFor(
+  supportedActions?: readonly string[] | null,
+): AllowedAgentActionOption[] {
+  const supported = new Set(supportedActionIds(supportedActions));
+  return AGENT_ACTION_OPTIONS.filter((option) => supported.has(option.id));
+}
+
 export const CLAUDE_MODELS = [
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 - Fast, cost-effective' },
   { id: 'claude-sonnet-4-5-20251001', label: 'Sonnet 4.5 - Previous gen balanced' },
@@ -82,12 +97,14 @@ export function normalizeBackend(backend: string | undefined | null): SupportedB
 
 export function normalizeAllowedActions(
   actions: string[] | undefined | null,
+  supportedActions?: readonly string[] | null,
 ): AllowedAgentAction[] {
   if (!actions?.length) return [];
   const requested = new Set(actions.map((action) => action.trim()).filter(Boolean));
-  return AGENT_ACTION_OPTIONS.filter((option) => requested.has(option.id)).map(
-    (option) => option.id,
-  );
+  const supported = new Set(supportedActionIds(supportedActions));
+  return AGENT_ACTION_OPTIONS.filter(
+    (option) => supported.has(option.id) && requested.has(option.id),
+  ).map((option) => option.id);
 }
 
 export function inferBackendFromCommand(cmd: string | undefined | null): SupportedBackend | null {

@@ -31,6 +31,7 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/app"
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
@@ -107,14 +108,6 @@ func defaultLogsDir(workflowPath string) string {
 	// Encode the slug so it is safe as a directory name component.
 	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
 	return filepath.Join(base, cfg.Tracker.Kind, safe)
-}
-
-func convertAgentModels(models []agent.ModelOption) []config.ModelOption {
-	out := make([]config.ModelOption, len(models))
-	for i, m := range models {
-		out[i] = config.ModelOption{ID: m.ID, Label: m.Label}
-	}
-	return out
 }
 
 func convertModelsForSnapshot(models map[string][]config.ModelOption) map[string][]server.ModelOption {
@@ -981,8 +974,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DispatchStrategy:             orch.DispatchStrategyCfg(),
 			DefaultBackend:               configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
 			InlineInput:                  orch.InlineInputCfg(),
-			Automations:                  automationDefsFromConfig(orch.AutomationsCfg()),
+			Automations:                  automationconfig.DefinitionsFromConfigs(orch.AutomationsCfg()),
 			AvailableModels:              convertModelsForSnapshot(cfg.Agent.AvailableModels),
+			SupportedAgentActions:        config.SupportedAgentActions(),
 			ReviewerProfile:              func() string { p, _ := orch.ReviewerCfg(); return p }(),
 			AutoReview:                   func() bool { _, a := orch.ReviewerCfg(); return a }(),
 		}
@@ -1165,77 +1159,6 @@ func buildTUIConfig(
 	return tuiCfg, tuiCancel
 }
 
-// automationConfigsFromDefs converts the API-layer AutomationDef slice back
-// into the internal config.AutomationConfig slice consumed by compileAutomations
-// and the runtime automations goroutine.
-func automationConfigsFromDefs(automations []server.AutomationDef) []config.AutomationConfig {
-	cfgs := make([]config.AutomationConfig, 0, len(automations))
-	for _, automation := range automations {
-		cfgs = append(cfgs, config.AutomationConfig{
-			ID:           automation.ID,
-			Enabled:      automation.Enabled,
-			Profile:      automation.Profile,
-			Instructions: automation.Instructions,
-			Trigger: config.AutomationTriggerConfig{
-				Type:     automation.Trigger.Type,
-				Cron:     automation.Trigger.Cron,
-				Timezone: automation.Trigger.Timezone,
-				State:    automation.Trigger.State,
-			},
-			Filter: config.AutomationFilterConfig{
-				MatchMode:         automation.Filter.MatchMode,
-				States:            automation.Filter.States,
-				LabelsAny:         automation.Filter.LabelsAny,
-				IdentifierRegex:   automation.Filter.IdentifierRegex,
-				Limit:             automation.Filter.Limit,
-				InputContextRegex: automation.Filter.InputContextRegex,
-				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
-			},
-			Policy: config.AutomationPolicyConfig{
-				AutoResume:      automation.Policy.AutoResume,
-				SwitchToProfile: automation.Policy.SwitchToProfile,
-				SwitchToBackend: automation.Policy.SwitchToBackend,
-				CooldownMinutes: automation.Policy.CooldownMinutes,
-			},
-		})
-	}
-	return cfgs
-}
-
-func automationDefsFromConfig(automations []config.AutomationConfig) []server.AutomationDef {
-	defs := make([]server.AutomationDef, 0, len(automations))
-	for _, automation := range automations {
-		defs = append(defs, server.AutomationDef{
-			ID:           automation.ID,
-			Enabled:      automation.Enabled,
-			Profile:      automation.Profile,
-			Instructions: automation.Instructions,
-			Trigger: server.AutomationTriggerDef{
-				Type:     automation.Trigger.Type,
-				Cron:     automation.Trigger.Cron,
-				Timezone: automation.Trigger.Timezone,
-				State:    automation.Trigger.State,
-			},
-			Filter: server.AutomationFilterDef{
-				MatchMode:         automation.Filter.MatchMode,
-				States:            automation.Filter.States,
-				LabelsAny:         automation.Filter.LabelsAny,
-				IdentifierRegex:   automation.Filter.IdentifierRegex,
-				Limit:             automation.Filter.Limit,
-				InputContextRegex: automation.Filter.InputContextRegex,
-				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
-			},
-			Policy: server.AutomationPolicyDef{
-				AutoResume:      automation.Policy.AutoResume,
-				SwitchToProfile: automation.Policy.SwitchToProfile,
-				SwitchToBackend: automation.Policy.SwitchToBackend,
-				CooldownMinutes: automation.Policy.CooldownMinutes,
-			},
-		})
-	}
-	return defs
-}
-
 // orchestratorAdapter implements server.OrchestratorClient using the live
 // orchestrator, log buffer, tracker, and WORKFLOW.md persistence helpers.
 // notify must be set after server construction (adapter.notify = srv.Notify).
@@ -1352,13 +1275,13 @@ func (a *orchestratorAdapter) ClearSessionSublog(identifier, sessionID string) e
 //   - SSH host → SSHSublogFetcher (tar-over-SSH, session IDs from filenames)
 //   - local    → LocalSublogFetcher (direct disk read)
 //   - Docker   → DockerSublogFetcher (planned)
-func (a *orchestratorAdapter) FetchSubLogs(identifier string) ([]domain.IssueLogEntry, error) {
+func (a *orchestratorAdapter) FetchSubLogs(ctx context.Context, identifier string) ([]domain.IssueLogEntry, error) {
 	logDir := a.orch.AgentLogDir()
 	if logDir == "" {
 		return nil, nil
 	}
 	issueLogDir := filepath.Join(logDir, workspace.SanitizeKey(identifier))
-	return a.sublogFetcher(identifier).FetchSubLogs(context.Background(), issueLogDir)
+	return a.sublogFetcher(identifier).FetchSubLogs(ctx, issueLogDir)
 }
 
 // sublogFetcher resolves the correct SublogFetcher for identifier by inspecting

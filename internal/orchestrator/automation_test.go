@@ -1,15 +1,19 @@
 package orchestrator
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // F-2: recordAutomationDispatch must append a single per-issue log entry
@@ -142,6 +146,77 @@ func TestRecordAutomationDispatchConcurrentSafe(t *testing.T) {
 		assert.Contains(t, line, "profile: p")
 		assert.Contains(t, line, "backend: claude")
 	}
+}
+
+func TestStartAutomationRunAppliesDefaultBackendHint(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.Command = "itervox-agent-wrapper"
+	cfg.Agent.Backend = "codex"
+	cfg.Agent.MaxTurns = 1
+	cfg.Agent.ReadTimeoutMs = 1_000
+	cfg.Agent.TurnTimeoutMs = 1_000
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"automation": {},
+	}
+	issue := automationIssue("Todo")
+	runner := &automationCommandCaptureRunner{done: make(chan struct{})}
+	o := &Orchestrator{
+		cfg:           cfg,
+		tracker:       tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates),
+		runner:        runner,
+		events:        make(chan OrchestratorEvent, 8),
+		workerCancels: map[string]context.CancelFunc{},
+		logBuf:        logbuffer.New(),
+	}
+	state := NewState(cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	o.startAutomationRun(ctx, &state, issue, time.Now(), AutomationDispatch{
+		AutomationID: "nightly",
+		ProfileName:  "automation",
+		Trigger: AutomationTriggerContext{
+			Type: config.AutomationTriggerCron,
+		},
+	})
+
+	entry := state.Running[issue.ID]
+	require.NotNil(t, entry)
+	assert.Equal(t, "codex", entry.Backend)
+
+	select {
+	case <-runner.done:
+	case <-ctx.Done():
+		t.Fatalf("automation runner was not called: %v", ctx.Err())
+	}
+	assert.Equal(t, "@@itervox-backend=codex itervox-agent-wrapper", runner.LastCommand())
+}
+
+type automationCommandCaptureRunner struct {
+	mu      sync.Mutex
+	once    sync.Once
+	done    chan struct{}
+	command string
+}
+
+func (r *automationCommandCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, _, _ string, _, _ int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	r.command = command
+	r.mu.Unlock()
+	r.once.Do(func() { close(r.done) })
+	return agent.TurnResult{
+		SessionID:    "automation-default-backend",
+		InputTokens:  1,
+		OutputTokens: 1,
+		TotalTokens:  2,
+		ResultText:   "done",
+	}, nil
+}
+
+func (r *automationCommandCaptureRunner) LastCommand() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.command
 }
 
 // extractMsg pulls the JSON "msg" payload out of a makeBufLine envelope so the

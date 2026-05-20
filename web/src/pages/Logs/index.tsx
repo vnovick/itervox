@@ -11,6 +11,7 @@ import { Terminal } from '../../components/ui/Terminal/Terminal';
 import { EMPTY_RUNNING, EMPTY_RETRYING } from '../../utils/constants';
 import { issueLogToTerminal } from '../../utils/logFormatting';
 import type { StateSnapshot } from '../../types/schemas';
+import { SearchInput } from '../../components/itervox/SearchInput';
 
 // Logs page filter chip (T-4) treats every entry whose .message starts with
 // this prefix as an automation event. The Go side writes the same prefix via
@@ -111,6 +112,7 @@ export default function Logs() {
                 : pausedSet.has(id)
                   ? 'paused'
                   : 'idle',
+        title: issueByIdentifier.get(id)?.title ?? '',
         branchName: issueByIdentifier.get(id)?.branchName ?? null,
         agentProfile: issueByIdentifier.get(id)?.agentProfile ?? '',
       }))
@@ -133,15 +135,34 @@ export default function Logs() {
   const [activeChips, setActiveChips] = useState<Set<FilterChip>>(new Set(FILTER_CHIPS));
   const automationOnly = useUIStore((s) => s.logsAutomationOnly);
   const setAutomationOnly = useUIStore((s) => s.setLogsAutomationOnly);
+  const issueSearch = useUIStore((s) => s.logsIssueSearch);
+  const setIssueSearch = useUIStore((s) => s.setLogsIssueSearch);
+
+  const visibleIssues = useMemo(() => {
+    const q = issueSearch.trim().toLowerCase();
+    if (!q) return sortedIssues;
+    return sortedIssues.filter((issue) =>
+      [
+        issue.identifier,
+        issue.title,
+        issue.orchestratorState,
+        issue.branchName ?? '',
+        issue.agentProfile,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [issueSearch, sortedIssues]);
 
   useEffect(() => {
-    if (!selectedId || !sortedIssues.find((i) => i.identifier === selectedId)) {
-      const first = sortedIssues[0];
+    if (!selectedId || !visibleIssues.find((i) => i.identifier === selectedId)) {
+      const first = visibleIssues[0];
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (first) setSelectedId(first.identifier);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedId intentionally omitted: effect only auto-selects first issue when the issue list changes, not on every selectedId transition
-  }, [sortedIssues]);
+  }, [visibleIssues]);
 
   const isLive =
     running.some((r) => r.identifier === selectedId) ||
@@ -212,12 +233,28 @@ export default function Logs() {
             <p className="mt-0.5 font-mono text-[10px] text-[#374151]">
               {activeCount} active · {sortedIssues.length} total
             </p>
+            <SearchInput
+              placeholder="Search issues…"
+              label="Search log issues"
+              value={issueSearch}
+              onChange={setIssueSearch}
+              className="mt-3"
+              inputClassName="h-7 border-gray-800 bg-[#080b10] font-mono text-xs text-[#9ca3af] placeholder:text-[#374151] focus:border-[#1f2937]"
+            />
+            {issueSearch.trim() !== '' && (
+              <p className="mt-1 font-mono text-[10px] text-[#374151]">
+                {visibleIssues.length} match{visibleIssues.length === 1 ? '' : 'es'}
+              </p>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto">
             {sortedIssues.length === 0 && (
               <p className="px-3 py-4 font-mono text-xs text-[#374151]">No issues loaded</p>
             )}
-            {sortedIssues.map((issue) => (
+            {sortedIssues.length > 0 && visibleIssues.length === 0 && (
+              <p className="px-3 py-4 font-mono text-xs text-[#374151]">No matching issues</p>
+            )}
+            {visibleIssues.map((issue) => (
               <button
                 key={issue.identifier}
                 onClick={() => {

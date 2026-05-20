@@ -57,6 +57,9 @@ func TestParseCodexRuntime_HistoryAndSessions(t *testing.T) {
 	if len(snap.SourceLogPaths) < 1 {
 		t.Errorf("expected at least 1 source path, got %d", len(snap.SourceLogPaths))
 	}
+	if !snap.HasRuntimeEvidence {
+		t.Errorf("expected HasRuntimeEvidence=true")
+	}
 }
 
 func TestParseCodexRuntime_MissingHomeDir(t *testing.T) {
@@ -68,6 +71,9 @@ func TestParseCodexRuntime_MissingHomeDir(t *testing.T) {
 	if snap == nil || len(snap.SourceLogPaths) != 0 {
 		t.Errorf("expected empty snapshot, got %+v", snap)
 	}
+	if snap.HasRuntimeEvidence {
+		t.Errorf("expected HasRuntimeEvidence=false without source logs")
+	}
 }
 
 func TestParseCodexRuntime_AllPathsAbsent(t *testing.T) {
@@ -78,6 +84,9 @@ func TestParseCodexRuntime_AllPathsAbsent(t *testing.T) {
 	}
 	if len(snap.CapabilityLoads) != 0 || len(snap.ToolCallCount) != 0 {
 		t.Errorf("expected empty maps, got %+v", snap)
+	}
+	if snap.HasRuntimeEvidence {
+		t.Errorf("expected HasRuntimeEvidence=false without source logs")
 	}
 }
 
@@ -99,5 +108,8 @@ func TestMergeRuntimeSnapshots(t *testing.T) {
 	}
 	if len(out.SourceLogPaths) != 2 {
 		t.Errorf("expected 2 source paths, got %d", len(out.SourceLogPaths))
+	}
+	if !out.HasRuntimeEvidence {
+		t.Errorf("expected merged runtime evidence flag")
 	}
 }

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AGENT_ACTION_OPTIONS,
+  agentActionOptionsFor,
   normalizeAllowedActions,
   isSimpleBackendCommand,
   modelsForBackend,
@@ -102,6 +102,7 @@ interface ProfileEditorFieldsProps {
   command: string;
   prompt: string;
   allowedActions: AllowedAgentAction[];
+  supportedAgentActions?: readonly string[];
   createIssueState: string;
   trackerStates?: readonly string[];
   createIssueStateError?: string;
@@ -120,6 +121,7 @@ export function ProfileEditorFields({
   command,
   prompt,
   allowedActions,
+  supportedAgentActions,
   createIssueState,
   trackerStates,
   createIssueStateError,
@@ -133,6 +135,7 @@ export function ProfileEditorFields({
 }: ProfileEditorFieldsProps) {
   const isCustomCommand = !isSimpleBackendCommand(command, backend);
   const canCreateIssue = allowedActions.includes('create_issue');
+  const actionOptions = agentActionOptionsFor(supportedAgentActions);
   const [advancedOpen, setAdvancedOpen] = useState(isCustomCommand);
   const [prevIsCustomCommand, setPrevIsCustomCommand] = useState(isCustomCommand);
 
@@ -172,7 +175,7 @@ export function ProfileEditorFields({
             </p>
           </div>
           <div className="space-y-2">
-            {AGENT_ACTION_OPTIONS.map((option) => {
+            {actionOptions.map((option) => {
               const checked = allowedActions.includes(option.id);
               return (
                 <label key={option.id} className="flex items-start gap-2 text-[11px]">
@@ -181,9 +184,13 @@ export function ProfileEditorFields({
                     checked={checked}
                     onChange={(e) => {
                       const next = e.target.checked
-                        ? normalizeAllowedActions([...allowedActions, option.id])
+                        ? normalizeAllowedActions(
+                            [...allowedActions, option.id],
+                            supportedAgentActions,
+                          )
                         : normalizeAllowedActions(
                             allowedActions.filter((action) => action !== option.id),
+                            supportedAgentActions,
                           );
                       onAllowedActionsChange(next);
                     }}

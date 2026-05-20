@@ -33,6 +33,7 @@ export function resetAllStores(): void {
     dashboardSearchVisible: false,
     expandedRunningId: null,
     expandedPausedId: null,
+    logsIssueSearch: '',
   });
 
   // Clear browser storage so token-store cross-tab state doesn't leak.

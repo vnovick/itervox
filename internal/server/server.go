@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/automationdef"
 	"github.com/vnovick/itervox/internal/domain"
 
 	"github.com/go-chi/chi/v5"
@@ -127,7 +128,7 @@ type OrchestratorClient interface {
 	ClearAllLogs() error
 	ClearIssueSubLogs(identifier string) error
 	ClearSessionSublog(identifier, sessionID string) error
-	FetchSubLogs(identifier string) ([]domain.IssueLogEntry, error)
+	FetchSubLogs(ctx context.Context, identifier string) ([]domain.IssueLogEntry, error)
 	DispatchReviewer(identifier string) error
 	CommentOnIssue(ctx context.Context, identifier, body string) error
 	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
@@ -190,17 +191,19 @@ type OrchestratorClient interface {
 // Boolean methods return false; error methods return errNotConfigured.
 type noopClient struct{}
 
-func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error)  { return nil, errNotConfigured }
-func (noopClient) CancelIssue(string) bool                              { return false }
-func (noopClient) ResumeIssue(string) bool                              { return false }
-func (noopClient) TerminateIssue(string) bool                           { return false }
-func (noopClient) ReanalyzeIssue(string) bool                           { return false }
-func (noopClient) FetchLogs(string) []string                            { return nil }
-func (noopClient) ClearLogs(string) error                               { return errNotConfigured }
-func (noopClient) ClearAllLogs() error                                  { return errNotConfigured }
-func (noopClient) ClearIssueSubLogs(string) error                       { return errNotConfigured }
-func (noopClient) ClearSessionSublog(string, string) error              { return errNotConfigured }
-func (noopClient) FetchSubLogs(string) ([]domain.IssueLogEntry, error)  { return nil, nil }
+func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error) { return nil, errNotConfigured }
+func (noopClient) CancelIssue(string) bool                             { return false }
+func (noopClient) ResumeIssue(string) bool                             { return false }
+func (noopClient) TerminateIssue(string) bool                          { return false }
+func (noopClient) ReanalyzeIssue(string) bool                          { return false }
+func (noopClient) FetchLogs(string) []string                           { return nil }
+func (noopClient) ClearLogs(string) error                              { return errNotConfigured }
+func (noopClient) ClearAllLogs() error                                 { return errNotConfigured }
+func (noopClient) ClearIssueSubLogs(string) error                      { return errNotConfigured }
+func (noopClient) ClearSessionSublog(string, string) error             { return errNotConfigured }
+func (noopClient) FetchSubLogs(context.Context, string) ([]domain.IssueLogEntry, error) {
+	return nil, nil
+}
 func (noopClient) DispatchReviewer(string) error                        { return errNotConfigured }
 func (noopClient) CommentOnIssue(context.Context, string, string) error { return errNotConfigured }
 func (noopClient) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
@@ -279,7 +282,7 @@ type FuncClient struct {
 	ClearAllWorkspacesFn              func() error
 	FetchLogIdentifiersFn             func() []string
 	UpdateTrackerStatesFn             func([]string, []string, string) error
-	FetchSubLogsFn                    func(string) ([]domain.IssueLogEntry, error)
+	FetchSubLogsFn                    func(context.Context, string) ([]domain.IssueLogEntry, error)
 	AddSSHHostFn                      func(string, string) error
 	RemoveSSHHostFn                   func(string) error
 	SetDispatchStrategyFn             func(string) error
@@ -350,9 +353,9 @@ func (c *FuncClient) ClearSessionSublog(id, sessionID string) error {
 	}
 	return errNotConfigured
 }
-func (c *FuncClient) FetchSubLogs(id string) ([]domain.IssueLogEntry, error) {
+func (c *FuncClient) FetchSubLogs(ctx context.Context, id string) ([]domain.IssueLogEntry, error) {
 	if c.FetchSubLogsFn != nil {
-		return c.FetchSubLogsFn(id)
+		return c.FetchSubLogsFn(ctx, id)
 	}
 	return nil, nil
 }
@@ -602,10 +605,11 @@ type StateSnapshot struct {
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`
 	// ProfileDefs is the map of named agent profile definitions from WORKFLOW.md.
-	ProfileDefs     map[string]ProfileDef    `json:"profileDefs,omitempty"`
-	AvailableModels map[string][]ModelOption `json:"availableModels,omitempty"`
-	ReviewerProfile string                   `json:"reviewerProfile,omitempty"`
-	AutoReview      bool                     `json:"autoReview,omitempty"`
+	ProfileDefs           map[string]ProfileDef    `json:"profileDefs,omitempty"`
+	AvailableModels       map[string][]ModelOption `json:"availableModels,omitempty"`
+	SupportedAgentActions []string                 `json:"supportedAgentActions,omitempty"`
+	ReviewerProfile       string                   `json:"reviewerProfile,omitempty"`
+	AutoReview            bool                     `json:"autoReview,omitempty"`
 	// ActiveStates is the list of tracker states the orchestrator will pick up.
 	ActiveStates []string `json:"activeStates,omitempty"`
 	// TerminalStates is the list of tracker states treated as done/closed.
@@ -700,42 +704,10 @@ type ProfileDef struct {
 	CreateIssueState string   `json:"createIssueState,omitempty"`
 }
 
-type AutomationTriggerDef struct {
-	Type     string `json:"type"`
-	Cron     string `json:"cron,omitempty"`
-	Timezone string `json:"timezone,omitempty"`
-	State    string `json:"state,omitempty"`
-}
-
-type AutomationFilterDef struct {
-	MatchMode         string   `json:"matchMode,omitempty"`
-	States            []string `json:"states,omitempty"`
-	LabelsAny         []string `json:"labelsAny,omitempty"`
-	IdentifierRegex   string   `json:"identifierRegex,omitempty"`
-	Limit             int      `json:"limit,omitempty"`
-	InputContextRegex string   `json:"inputContextRegex,omitempty"`
-	// MaxAgeMinutes — gap A. Skip stale input_required entries (queued
-	// longer than this many minutes ago). Only meaningful on input_required
-	// triggers; the validator rejects it on other trigger types.
-	MaxAgeMinutes int `json:"maxAgeMinutes,omitempty"`
-}
-
-type AutomationPolicyDef struct {
-	AutoResume      bool   `json:"autoResume,omitempty"`
-	SwitchToProfile string `json:"switchToProfile,omitempty"`
-	SwitchToBackend string `json:"switchToBackend,omitempty"`
-	CooldownMinutes int    `json:"cooldownMinutes,omitempty"`
-}
-
-type AutomationDef struct {
-	ID           string               `json:"id"`
-	Enabled      bool                 `json:"enabled"`
-	Profile      string               `json:"profile"`
-	Instructions string               `json:"instructions,omitempty"`
-	Trigger      AutomationTriggerDef `json:"trigger"`
-	Filter       AutomationFilterDef  `json:"filter,omitempty"`
-	Policy       AutomationPolicyDef  `json:"policy,omitempty"`
-}
+type AutomationTriggerDef = automationdef.Trigger
+type AutomationFilterDef = automationdef.Filter
+type AutomationPolicyDef = automationdef.Policy
+type AutomationDef = automationdef.Definition
 
 // ModelOption represents an available model for a backend (mirrors config.ModelOption for JSON).
 type ModelOption struct {

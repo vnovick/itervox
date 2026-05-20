@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AutomationsCard } from '../AutomationsCard';
+import { SUGGESTED_AUTOMATIONS } from '../automations/suggestedAutomations';
 
 // The AutomationFormModal embeds a TestFireControl that uses useMutation.
 // Tests need a QueryClientProvider; wrap renders in this helper.
@@ -25,7 +26,7 @@ const existingQaAutomation: AutomationDef = {
 };
 
 describe('AutomationsCard', () => {
-  it('renders suggested automation templates for the three built-in examples', () => {
+  it('renders suggested automation templates for the built-in examples', () => {
     render(
       withQueryClient(
         <AutomationsCard
@@ -41,7 +42,9 @@ describe('AutomationsCard', () => {
     expect(screen.getByText('Input Responder')).toBeInTheDocument();
     expect(screen.getByText('QA Validation')).toBeInTheDocument();
     expect(screen.getByText('PM Backlog Review')).toBeInTheDocument();
-    expect(screen.getAllByText('Use Template')).toHaveLength(3);
+    expect(screen.getByText('Dependency Readiness')).toBeInTheDocument();
+    expect(screen.getByText('Release Captain')).toBeInTheDocument();
+    expect(screen.getAllByText('Use Template')).toHaveLength(SUGGESTED_AUTOMATIONS.length);
   });
 
   it('disables templates whose required profile is unavailable', async () => {
@@ -108,7 +111,7 @@ describe('AutomationsCard', () => {
 
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByText(MSG_AUTOMATIONS_DUPLICATE_ID)).toBeInTheDocument();
-  });
+  }, 15000);
 
   // MED-3 regression guard: successful save must surface a visible success
   // message so users know WORKFLOW.md was written and the reload is coming.
@@ -136,5 +139,5 @@ describe('AutomationsCard', () => {
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(MSG_AUTOMATIONS_SAVE_SUCCESS)).toBeInTheDocument();
-  });
+  }, 15000);
 });

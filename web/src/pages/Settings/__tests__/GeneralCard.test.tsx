@@ -25,4 +25,11 @@ describe('GeneralCard', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/failed to save inline-input/i);
   });
+
+  it('uses the visible Resuming panel name in inline-input help text', () => {
+    render(<GeneralCard inlineInput={false} onSetInlineInput={vi.fn()} />);
+
+    expect(screen.getByText(/dashboard.s .Resuming. panel/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Pending Resume/i)).not.toBeInTheDocument();
+  });
 });

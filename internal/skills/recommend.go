@@ -21,7 +21,7 @@ import (
 // Output is sorted by (Severity desc, ID asc) so the dashboard renders the
 // most-actionable rows first.
 func RecommendAnalytics(snap *AnalyticsSnapshot, inv *Inventory) []Recommendation {
-	if snap == nil || inv == nil {
+	if snap == nil || inv == nil || !snap.HasRuntimeEvidence {
 		return nil
 	}
 	const (

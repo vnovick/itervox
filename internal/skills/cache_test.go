@@ -45,6 +45,46 @@ func TestCache_RefreshErrorPreservesPrevious(t *testing.T) {
 	}
 }
 
+func TestCache_RefreshStoresPartialInventoryAndClearsWarning(t *testing.T) {
+	t.Parallel()
+	c := NewCache()
+	scanErr := errors.New("codex scanner failed")
+	partial := &Inventory{
+		ScanTime: time.Unix(1, 0),
+		Skills:   []Skill{{Name: "ok", Provider: "claude"}},
+	}
+
+	err := c.Refresh(func() (*Inventory, error) { return partial, scanErr }, nil)
+	if !errors.Is(err, scanErr) {
+		t.Fatalf("Refresh error = %v, want %v", err, scanErr)
+	}
+	got := c.Get()
+	if got != partial {
+		t.Fatalf("expected partial inventory to be stored")
+	}
+	if !got.Partial {
+		t.Fatalf("expected partial inventory warning flag")
+	}
+	if got.ScanError != scanErr.Error() {
+		t.Fatalf("ScanError = %q, want %q", got.ScanError, scanErr.Error())
+	}
+
+	full := &Inventory{
+		ScanTime: time.Unix(2, 0),
+		Skills:   []Skill{{Name: "fresh", Provider: "codex"}},
+	}
+	if err := c.Refresh(func() (*Inventory, error) { return full, nil }, nil); err != nil {
+		t.Fatalf("successful Refresh: %v", err)
+	}
+	got = c.Get()
+	if got != full {
+		t.Fatalf("expected successful inventory to replace partial")
+	}
+	if got.Partial || got.ScanError != "" {
+		t.Fatalf("successful refresh should clear partial warning, got Partial=%v ScanError=%q", got.Partial, got.ScanError)
+	}
+}
+
 func TestCache_RefreshNilInventoryIsError(t *testing.T) {
 	t.Parallel()
 	c := NewCache()
@@ -81,6 +121,31 @@ func TestCache_StaleDetectsMtimeChange(t *testing.T) {
 	}
 }
 
+func TestCache_GetAnnotatesInventoryStaleStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tracked := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(tracked, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	c := NewCache()
+	if err := c.Refresh(func() (*Inventory, error) { return &Inventory{}, nil }, []string{tracked}); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got := c.Get(); got == nil || got.Stale {
+		t.Fatalf("fresh inventory Stale = %v, want false", got != nil && got.Stale)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(tracked, []byte("v2"), 0o644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if got := c.Get(); got == nil || !got.Stale {
+		t.Fatalf("changed tracked file should mark inventory stale, got %+v", got)
+	}
+}
+
 func TestCache_StaleDetectsMissingFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -97,6 +162,53 @@ func TestCache_StaleDetectsMissingFile(t *testing.T) {
 	}
 	if !c.Stale() {
 		t.Error("cache should be stale after tracked file removal")
+	}
+}
+
+func TestCache_StaleTracksInventorySkillAndPluginFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	skillPath := filepath.Join(dir, "SKILL.md")
+	pluginPath := filepath.Join(dir, "plugin.json")
+	childPath := filepath.Join(dir, "agent.md")
+	for _, path := range []string{skillPath, pluginPath, childPath} {
+		if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	c := NewCache()
+	inv := &Inventory{
+		Skills: []Skill{{Name: "alpha", FilePath: skillPath}},
+		Plugins: []Plugin{{
+			Name:     "plugin",
+			FilePath: pluginPath,
+			Agents:   []AgentDef{{Name: "agent", FilePath: childPath}},
+		}},
+	}
+	if err := c.Refresh(func() (*Inventory, error) { return inv, nil }, nil); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if c.Stale() {
+		t.Fatal("fresh inventory should not be stale")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(skillPath, []byte("v2"), 0o644); err != nil {
+		t.Fatalf("rewrite skill: %v", err)
+	}
+	if !c.Stale() {
+		t.Fatal("editing discovered SKILL.md should mark cache stale")
+	}
+
+	if err := c.Refresh(func() (*Inventory, error) { return inv, nil }, nil); err != nil {
+		t.Fatalf("Refresh 2: %v", err)
+	}
+	if err := os.Remove(pluginPath); err != nil {
+		t.Fatalf("remove plugin: %v", err)
+	}
+	if !c.Stale() {
+		t.Fatal("removing discovered plugin manifest should mark cache stale")
 	}
 }
 

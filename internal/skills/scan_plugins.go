@@ -211,10 +211,11 @@ func parsePluginManifest(path, source string) (Plugin, bool) {
 		if a.Name == "" {
 			continue
 		}
+		agentPath := resolvePluginChildPath(manifestDir, a.Path)
 		agents = append(agents, AgentDef{
 			Name:        a.Name,
 			Description: a.Description,
-			FilePath:    a.Path,
+			FilePath:    agentPath,
 		})
 	}
 
@@ -223,10 +224,11 @@ func parsePluginManifest(path, source string) (Plugin, bool) {
 		if c.Name == "" {
 			continue
 		}
+		commandPath := resolvePluginChildPath(manifestDir, c.Path)
 		commands = append(commands, CommandDef{
 			Name:        c.Name,
 			Description: c.Description,
-			FilePath:    c.Path,
+			FilePath:    commandPath,
 		})
 	}
 
@@ -242,6 +244,7 @@ func parsePluginManifest(path, source string) (Plugin, bool) {
 	return Plugin{
 		Name:         m.Name,
 		Provider:     "claude",
+		FilePath:     path,
 		Skills:       skills,
 		Hooks:        hooks,
 		Agents:       agents,
@@ -249,4 +252,11 @@ func parsePluginManifest(path, source string) (Plugin, bool) {
 		Source:       source,
 		ApproxTokens: approxTokens,
 	}, true
+}
+
+func resolvePluginChildPath(manifestDir, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(manifestDir, path)
 }

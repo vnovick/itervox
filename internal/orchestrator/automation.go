@@ -645,20 +645,17 @@ func (o *Orchestrator) startAutomationRun(
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
-	agentCommand := defaultCommand
-	backend := agent.BackendFromCommand(agentCommand)
-	if defaultBackend != "" {
-		backend = defaultBackend
-	}
-	runnerCommand := agentCommand
-	if profile.Command != "" {
-		agentCommand = profile.Command
-		runnerCommand = agentCommand
-		backend = agent.BackendFromCommand(agentCommand)
-	}
-	if profile.Backend != "" {
-		backend = profile.Backend
-		runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
+	// Automation workers follow the same default/profile/per-issue backend
+	// resolution as normal worker and reviewer dispatch. Rate-limit auto-switch
+	// recovery is a deliberate final override below because it represents the
+	// backend that just became available for the fallback run.
+	issueBackend := o.issueBackendForDispatch(*state, issue.Identifier)
+	agentCommand, runnerCommand, backend := resolveBackendForIssue(
+		defaultCommand, defaultBackend, &profile, issueBackend,
+	)
+	if issueBackend != "" {
+		slog.Info("orchestrator: using per-issue backend override for automation",
+			"identifier", issue.Identifier, "backend", issueBackend)
 	}
 	if automation.Trigger.Type == config.AutomationTriggerRateLimited &&
 		automation.AutoResume &&

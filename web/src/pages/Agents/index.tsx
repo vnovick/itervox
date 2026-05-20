@@ -8,6 +8,7 @@ export default function Agents() {
   const {
     profileDefs,
     availableModels,
+    supportedAgentActions,
     trackerStateOptions,
     reviewerProfile,
     autoReview,
@@ -50,6 +51,7 @@ export default function Agents() {
               onUpsert={upsertProfile}
               onDelete={deleteProfile}
               availableModels={availableModels}
+              supportedAgentActions={supportedAgentActions}
               trackerStates={trackerStateOptions}
             />
           </section>

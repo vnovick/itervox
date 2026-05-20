@@ -71,6 +71,44 @@ func TestDispatchPROpenedAutomations_IdentifierRegexFilter(t *testing.T) {
 	assert.Empty(t, o.events, "BUG-1 must not trigger an ENG-only pr_opened rule")
 }
 
+// A worker discovers a new PR before it sends TerminalSucceeded. The
+// pr_opened automation event must be queued after the exit event so the event
+// loop clears state.Running first; otherwise automation dispatch is skipped as
+// already_running.
+func TestSendExitWithBranchThenPROpenedAutomations_QueuesExitBeforeAutomation(t *testing.T) {
+	o := &Orchestrator{
+		cfg:    &config.Config{Agent: config.AgentConfig{BaseBranch: "origin/main"}},
+		events: make(chan OrchestratorEvent, 8),
+	}
+	o.SetPROpenedAutomations([]PROpenedAutomation{{ID: "pr-reviewer", ProfileName: "reviewer"}})
+
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-7", Title: "T", State: "In Progress"}
+	o.sendExitWithBranchThenPROpenedAutomations(
+		t.Context(),
+		issue,
+		0,
+		TerminalSucceeded,
+		nil,
+		"feature/eng-7",
+		"https://github.com/x/y/pull/42",
+		"https://github.com/x/y/pull/42",
+		"feature/eng-7",
+	)
+
+	first := <-o.events
+	require.Equal(t, EventWorkerExited, first.Type)
+	require.NotNil(t, first.RunEntry)
+	assert.Equal(t, "https://github.com/x/y/pull/42", first.RunEntry.PRURL)
+
+	second := <-o.events
+	require.Equal(t, EventDispatchAutomation, second.Type)
+	require.NotNil(t, second.Automation)
+	assert.Equal(t, "pr-reviewer", second.Automation.AutomationID)
+	assert.Equal(t, config.AutomationTriggerPROpened, second.Automation.Trigger.Type)
+	assert.Equal(t, "feature/eng-7", second.Automation.Trigger.PRBranch)
+	assert.Empty(t, o.events)
+}
+
 // SetPROpenedAutomations / snapPROpenedAutomations under -race: same
 // invariant as the input-required and run-failed registries.
 func TestPROpenedAutomations_RaceSafe(t *testing.T) {
