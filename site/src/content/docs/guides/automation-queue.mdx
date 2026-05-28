@@ -1,0 +1,54 @@
+---
+title: Automation Queue
+description: How Itervox queues automation triggers, handles backpressure, and surfaces queue state on the dashboard.
+sidebar:
+  order: 6
+---
+
+Itervox v0.2.0 keeps automation trigger attempts that cannot start immediately in a bounded queue owned by the orchestrator event loop. The queue is real backend state, not a dashboard-only label.
+
+## When entries queue
+
+An automation queues when its trigger fires but dispatch cannot start a worker for a retryable reason:
+
+- no worker slot is available
+- a per-state worker cap is full
+- the issue is already running or claimed
+- the issue is waiting for input or pending input resume
+- the issue is blocked by unresolved dependencies
+
+Terminal, paused, deleted, malformed, or invalid-profile cases are dropped instead of queued.
+
+## Coalescing and payloads
+
+Cron triggers coalesce by automation ID and issue. A cron rule firing every minute keeps one row and updates `lastFiredAt` / `attemptCount` rather than creating one row per minute.
+
+One-shot triggers preserve their payload while waiting:
+
+- `pr_opened` keeps the PR URL
+- `input_required` keeps the question/comment key
+- `run_failed` keeps the retry attempt
+- `rate_limited` keeps the failed profile/backend
+- `blockers_resolved` keeps the dependency audit transition version
+
+## Backpressure
+
+`agent.max_automation_queue_length` caps queued automation entries. The default is `100`; `0` or negative values fall back to that default.
+
+When the queue reaches the cap, Itervox pauses new automation trigger intake. Existing entries continue draining when capacity becomes available. Producers resume once the queue drains below the low-water mark, currently 80% of the cap.
+
+The dashboard Live Ops strip turns into a red queue-full alert while producers are paused. A non-empty queue is normal; a saturated queue means new automation intake is paused.
+
+## Dashboard queue panels
+
+The Automation Queue panel shows queued, blocked, dispatching, and ready entries with local search. Open details to inspect trigger payload, automation policy, profile permissions, dependency audit state, worker capacity, and activity path.
+
+Retry, review, and pending-resume/input queues use the same search pattern. The review queue starts collapsed; when expanded it shows five visible rows and scrolls internally for additional items.
+
+## Persistence
+
+When daemon log/state persistence is configured, queued automation entries persist beside the other runtime state files as `automation_queue.json`. The file can contain automation instructions because it preserves the original trigger semantics, so keep the runtime state directory local-only.
+
+## Boundary
+
+Queue rows are read-only. They do not move Linear or GitHub statuses. Tracker mutation happens only through explicit dashboard actions or through a profile with an allowed daemon action such as `move_state`.

@@ -40,12 +40,13 @@ type automationPollState struct {
 }
 
 type compiledAutomationSet struct {
-	cron          []compiledAutomation
-	polledEvents  []compiledAutomation
-	inputRequired []orchestrator.InputRequiredAutomation
-	runFailed     []orchestrator.RunFailedAutomation
-	prOpened      []orchestrator.PROpenedAutomation
-	rateLimited   []orchestrator.RateLimitedAutomation
+	cron             []compiledAutomation
+	polledEvents     []compiledAutomation
+	inputRequired    []orchestrator.InputRequiredAutomation
+	runFailed        []orchestrator.RunFailedAutomation
+	prOpened         []orchestrator.PROpenedAutomation
+	rateLimited      []orchestrator.RateLimitedAutomation
+	blockersResolved []orchestrator.BlockersResolvedAutomation
 }
 
 func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracker, orch *orchestrator.Orchestrator) {
@@ -57,6 +58,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 	orch.SetRunFailedAutomations(startupCompiled.runFailed)
 	orch.SetPROpenedAutomations(startupCompiled.prOpened)
 	orch.SetRateLimitedAutomations(startupCompiled.rateLimited)
+	orch.SetBlockersResolvedAutomations(startupCompiled.blockersResolved)
 
 	// Summarise what survived compilation so users can see at a glance that
 	// their configured automations registered (or that some were dropped
@@ -95,6 +97,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			orch.SetRunFailedAutomations(compiled.runFailed)
 			orch.SetPROpenedAutomations(compiled.prOpened)
 			orch.SetRateLimitedAutomations(compiled.rateLimited)
+			orch.SetBlockersResolvedAutomations(compiled.blockersResolved)
 			inputRequiredState = replayInputRequiredAutomations(ctx, tr, orch, compiled.inputRequired, inputRequiredState, now)
 
 			// Drop lastFired entries for automations no longer present so a
@@ -159,6 +162,21 @@ func automationCompileConfigView(cfg *config.Config, orch *orchestrator.Orchestr
 	return tickCfg
 }
 
+func automationProducersPaused(snap orchestrator.State) bool {
+	return snap.AutomationQueueBackpressure.PausedProducers
+}
+
+// automationProducersPausedLive reads the live paused-producers flag without
+// deep-copying the entire snapshot. Use this in pre-fetch gates where the
+// only field consumed is PausedProducers; reach for the full snapshot only
+// when other fields are also needed downstream. v0.2.0 audit P2-1.
+func automationProducersPausedLive(orch *orchestrator.Orchestrator) bool {
+	if orch == nil {
+		return false
+	}
+	return orch.IsAutomationProducersPaused()
+}
+
 func compileAutomations(cfg *config.Config) compiledAutomationSet {
 	var compiled compiledAutomationSet
 	if len(cfg.Automations) == 0 {
@@ -170,6 +188,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 	compiled.runFailed = make([]orchestrator.RunFailedAutomation, 0, len(cfg.Automations))
 	compiled.prOpened = make([]orchestrator.PROpenedAutomation, 0, len(cfg.Automations))
 	compiled.rateLimited = make([]orchestrator.RateLimitedAutomation, 0, len(cfg.Automations))
+	compiled.blockersResolved = make([]orchestrator.BlockersResolvedAutomation, 0, len(cfg.Automations))
 	for _, entry := range cfg.Automations {
 		if !entry.Enabled {
 			continue
@@ -293,6 +312,17 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				SwitchToBackend: entry.Policy.SwitchToBackend,
 				Cooldown:        cooldown,
 			})
+		case config.AutomationTriggerBlockersResolved:
+			compiled.blockersResolved = append(compiled.blockersResolved, orchestrator.BlockersResolvedAutomation{
+				ID:              entry.ID,
+				ProfileName:     entry.Profile,
+				Instructions:    entry.Instructions,
+				MatchMode:       entry.Filter.MatchMode,
+				States:          entry.Filter.States,
+				LabelsAny:       entry.Filter.LabelsAny,
+				IdentifierRegex: identifierRe,
+				MoveToState:     entry.Policy.MoveToState,
+			})
 		default:
 			slog.Warn("automation: unsupported trigger type", "automation", entry.ID, "type", entry.Trigger.Type)
 		}
@@ -309,6 +339,14 @@ func runCronAutomation(
 	activeStates []string,
 	now time.Time,
 ) {
+	// v0.2.0 audit P2-1 — gate on the live paused-producers bool before
+	// paying for Snapshot()'s deep copy; only fetch the full snapshot if we
+	// actually proceed.
+	if automationProducersPausedLive(orch) {
+		slog.Warn("automation: producers paused by automation queue backpressure", "automation", entry.cfg.ID)
+		return
+	}
+	snap := orch.Snapshot()
 	states := cronAutomationFetchStates(cfg, entry, activeStates)
 	issues, err := tr.FetchIssuesByStates(ctx, states)
 	if err != nil {
@@ -316,7 +354,6 @@ func runCronAutomation(
 		return
 	}
 
-	snap := orch.Snapshot()
 	matches := make([]domain.Issue, 0, len(issues))
 	for _, issue := range issues {
 		if shouldSkipAutomatedIssue(snap, cfg, issue) {
@@ -341,7 +378,7 @@ func runCronAutomation(
 
 	count := 0
 	for _, issue := range matches {
-		if orch.DispatchAutomation(issue, orchestrator.AutomationDispatch{
+		if orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
 			AutomationID: entry.cfg.ID,
 			ProfileName:  entry.cfg.Profile,
 			Instructions: entry.cfg.Instructions,
@@ -359,7 +396,7 @@ func runCronAutomation(
 		}
 	}
 	if count > 0 {
-		slog.Info("automation: queued issues", "automation", entry.cfg.ID, "count", count, "profile", entry.cfg.Profile)
+		slog.Info("automation: accepted automation dispatch events", "automation", entry.cfg.ID, "count", count, "profile", entry.cfg.Profile)
 	}
 }
 
@@ -368,7 +405,8 @@ func runCronAutomation(
 // so they cannot drift — adding a new dispatch guard here is a one-place edit
 // in dispatch.go (T-35 unification).
 func shouldSkipAutomatedIssue(state orchestrator.State, cfg *config.Config, issue domain.Issue) bool {
-	return orchestrator.IneligibleReasonForAutomation(issue, state, cfg) != ""
+	reason := orchestrator.IneligibleReasonForAutomation(issue, state, cfg)
+	return reason != "" && !orchestrator.IsQueueableAutomationReason(reason)
 }
 
 func matchesAutomationFilter(issue domain.Issue, entry compiledAutomation, inputContext string) bool {
@@ -451,6 +489,13 @@ func pollAutomationEvents(
 	completionState string,
 	now time.Time,
 ) automationPollState {
+	// v0.2.0 audit P2-1 — gate on the live paused-producers bool before
+	// paying for Snapshot()'s deep copy.
+	if automationProducersPausedLive(orch) {
+		slog.Warn("automation: poll-event producers paused by automation queue backpressure")
+		return prev
+	}
+	snap := orch.Snapshot()
 	states := automationPollStates(cfg, entries, activeStates, terminalStates, completionState)
 	if len(states) == 0 {
 		return prev
@@ -469,7 +514,6 @@ func pollAutomationEvents(
 		trackerComments: make(map[string]map[string]observedAutomationComment, len(prev.trackerComments)),
 	}
 
-	snap := orch.Snapshot()
 	detailCache := make(map[string]*domain.Issue)
 	getDetail := func(issue domain.Issue) *domain.Issue {
 		if detailed, ok := detailCache[issue.ID]; ok {
@@ -610,7 +654,7 @@ func pollAutomationEvents(
 		}
 		dispatched := 0
 		for _, match := range matches {
-			if orch.DispatchAutomation(match.issue, orchestrator.AutomationDispatch{
+			if orch.DispatchAutomation(ctx, match.issue, orchestrator.AutomationDispatch{
 				AutomationID: entry.cfg.ID,
 				ProfileName:  entry.cfg.Profile,
 				Instructions: entry.cfg.Instructions,
@@ -620,13 +664,13 @@ func pollAutomationEvents(
 				dispatched++
 			}
 		}
-		// Parity with runCronAutomation: log a count when any workers queued,
-		// and a debug line when dispatches were dropped (events channel full).
+		// Parity with runCronAutomation: log accepted event handoffs distinctly
+		// from actual worker starts or durable queue rows owned by orchestrator state.
 		if dispatched > 0 {
-			slog.Info("automation: queued polled-event issues", "automation", entry.cfg.ID, "count", dispatched, "profile", entry.cfg.Profile)
+			slog.Info("automation: accepted polled-event dispatch events", "automation", entry.cfg.ID, "count", dispatched, "profile", entry.cfg.Profile)
 		}
 		if dropped := len(matches) - dispatched; dropped > 0 {
-			slog.Debug("automation: polled-event dispatches dropped (events channel full)", "automation", entry.cfg.ID, "dropped", dropped)
+			slog.Debug("automation: polled-event dispatches not accepted before context done", "automation", entry.cfg.ID, "dropped", dropped)
 		}
 	}
 
@@ -705,7 +749,7 @@ func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
 		slog.Info("automations: no automations configured in WORKFLOW.md")
 		return
 	}
-	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened) + len(compiled.rateLimited)
+	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened) + len(compiled.rateLimited) + len(compiled.blockersResolved)
 	slog.Info("automations: compiled",
 		"total_configured", total,
 		"registered", registered,
@@ -716,5 +760,6 @@ func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
 		"run_failed", len(compiled.runFailed),
 		"pr_opened", len(compiled.prOpened),
 		"rate_limited", len(compiled.rateLimited),
+		"blockers_resolved", len(compiled.blockersResolved),
 	)
 }

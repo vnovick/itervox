@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-type ViewMode = 'board' | 'list' | 'agents' | 'notifications';
+type ViewMode = 'board' | 'list' | 'agents' | 'deps' | 'notifications';
 
 export type AutomationsTab = 'configure' | 'activity';
 

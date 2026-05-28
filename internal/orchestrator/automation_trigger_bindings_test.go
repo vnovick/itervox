@@ -70,3 +70,39 @@ func TestAutomationTriggerBindingsRenderPROpenedAndRateLimitedLiquid(t *testing.
 	assert.Contains(t, rendered, "switched=codex-coder")
 	assert.Contains(t, rendered, "tokens=180000")
 }
+
+func TestAutomationTriggerBindingsRenderBlockersResolvedLiquid(t *testing.T) {
+	blockerIdentifier := "ENG-1"
+	unblockedAt := time.Date(2026, 5, 7, 12, 30, 0, 0, time.UTC)
+	bindings := automationTriggerBindings(&AutomationDispatch{
+		AutomationID: "unblock-backlog-to-todo",
+		MoveToState:  "Todo",
+		Trigger: AutomationTriggerContext{
+			Type:                   config.AutomationTriggerBlockersResolved,
+			AutomationID:           "unblock-backlog-to-todo",
+			ResolvedBlockers:       []domain.BlockerRef{{Identifier: &blockerIdentifier}},
+			PreviouslyBlockedBy:    []domain.BlockerRef{{Identifier: &blockerIdentifier}},
+			DependencyAuditVersion: 4,
+			DependencyUnblockedAt:  unblockedAt,
+			MoveToState:            "Todo",
+		},
+	})
+	trigger, ok := bindings["trigger"].(map[string]any)
+	require.True(t, ok)
+	require.Len(t, trigger["resolved_blockers"], 1)
+	require.Len(t, trigger["previously_blocked_by"], 1)
+	assert.Equal(t, int64(4), trigger["dependency_audit_version"])
+	assert.Equal(t, "2026-05-07T12:30:00Z", trigger["dependency_unblocked_at"])
+	assert.Equal(t, "Todo", trigger["move_to_state"])
+
+	rendered := prompt.RenderPromptOverlay(
+		"version={{ trigger.dependency_audit_version }} unblocked={{ trigger.dependency_unblocked_at }} move={{ trigger.move_to_state }}",
+		domain.Issue{Identifier: "ENG-2", Title: "Ready"},
+		nil,
+		bindings,
+	)
+
+	assert.Contains(t, rendered, "version=4")
+	assert.Contains(t, rendered, "unblocked=2026-05-07T12:30:00Z")
+	assert.Contains(t, rendered, "move=Todo")
+}

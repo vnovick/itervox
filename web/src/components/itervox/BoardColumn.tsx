@@ -33,10 +33,11 @@ function AgentColumnHeader({
     : 'claude';
   const model = profileDef ? commandToModel(profileDef.command) : '';
   const modelDisplay = model ? modelLabel(inferredBackend, model) : '';
-  const promptSnippet = profileDef?.prompt
-    ? profileDef.prompt.length > 100
-      ? profileDef.prompt.slice(0, 100) + '…'
-      : profileDef.prompt
+  const instructionSnippet = profileDef?.instructions ?? profileDef?.prompt ?? '';
+  const promptSnippet = instructionSnippet
+    ? instructionSnippet.length > 100
+      ? instructionSnippet.slice(0, 100) + '…'
+      : instructionSnippet
     : null;
 
   return (

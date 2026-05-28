@@ -1,4 +1,3 @@
-import { useEffect, useState, startTransition } from 'react';
 import { Link } from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
@@ -6,9 +5,13 @@ import { MobileMenuButton } from '../components/ui/MobileMenuButton';
 import { ItervoxLogo } from '../components/brand/ItervoxLogo';
 import { formatOrchestratorState } from '../utils/format';
 import { inputRequiredRowState } from '../utils/inputRequired';
+import { useConnectionState } from '../hooks/useConnectionState';
 
 const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
-  const sseConnected = useItervoxStore((s) => s.sseConnected);
+  // v0.2.0 audit P2-10 — connection-state timing comes from the shared
+  // useConnectionState hook so this header and the Dashboard overlay agree
+  // on "is the API offline?" instead of running two competing timers.
+  const { sseConnected, hasSnapshot, timedOut } = useConnectionState();
   const {
     running,
     paused,
@@ -16,7 +19,6 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
     awaitingInput,
     pendingInputResumes,
     maxAgents,
-    hasSnapshot,
     projectName,
     configInvalid,
   } = useItervoxStore(
@@ -31,12 +33,10 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         (entry) => inputRequiredRowState(entry) === 'input_required',
       ).length,
       maxAgents: s.snapshot?.maxConcurrentAgents ?? 0,
-      hasSnapshot: s.snapshot !== null,
       projectName: s.snapshot?.projectName ?? '',
       configInvalid: s.snapshot?.configInvalid ?? null,
     })),
   );
-  const [timedOut, setTimedOut] = useState(false);
   const orchestratorState =
     running > 0
       ? 'running'
@@ -50,22 +50,6 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
               ? 'paused'
               : 'idle';
   const pct = maxAgents > 0 ? Math.round((running / maxAgents) * 100) : 0;
-
-  // After 6 s without a snapshot, flip from "Connecting" to "Disconnected"
-  useEffect(() => {
-    if (hasSnapshot || sseConnected) {
-      startTransition(() => {
-        setTimedOut(false);
-      });
-      return;
-    }
-    const t = setTimeout(() => {
-      setTimedOut(true);
-    }, 6000);
-    return () => {
-      clearTimeout(t);
-    };
-  }, [hasSnapshot, sseConnected]);
 
   const liveLabel = sseConnected
     ? 'Live'
@@ -95,7 +79,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
           </span>
         </div>
       )}
-      <header className="bg-theme-bg-soft border-theme-line sticky top-0 z-30 flex items-center gap-3 border-b px-4 py-3 text-sm">
+      <header className="bg-theme-bg-soft border-theme-line sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-2 border-b px-4 py-3 text-sm sm:gap-3">
         {/* Mobile menu button */}
         {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
 
@@ -105,7 +89,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         <ItervoxLogo className="h-5 w-auto" aria-label="Itervox" />
 
         {/* Live pulse */}
-        <span className="flex items-center gap-2">
+        <span className="flex shrink-0 items-center gap-2">
           <span className="relative flex h-2.5 w-2.5">
             {running > 0 && (
               <span className="bg-theme-success absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" />
@@ -120,7 +104,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         {/* Project name — disambiguates multiple daemons running for different repos. */}
         {projectName && (
           <span
-            className="text-theme-text max-w-[200px] truncate font-mono text-xs font-semibold"
+            className="text-theme-text max-w-[120px] min-w-0 truncate font-mono text-xs font-semibold sm:max-w-[200px]"
             title={`Project: ${projectName}`}
           >
             {projectName}
@@ -128,7 +112,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         )}
 
         {/* Orchestrator state */}
-        <span className="bg-theme-bg-elevated text-theme-text-secondary rounded px-2 py-0.5 font-mono text-xs">
+        <span className="bg-theme-bg-elevated text-theme-text-secondary shrink-0 rounded px-2 py-0.5 font-mono text-xs">
           {formatOrchestratorState(orchestratorState)}
         </span>
 

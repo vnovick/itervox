@@ -477,6 +477,10 @@ type ProfileEntry struct {
 	// Prompt is an optional role description for this sub-agent, shown to the
 	// orchestrating agent when agent teams are enabled.
 	Prompt string
+	// SoulFile is the configured path to the profile SOUL.md file.
+	SoulFile string
+	// InstructionsFile is the configured path to the profile INSTRUCTIONS.md file.
+	InstructionsFile string
 	// Backend is an optional explicit runner selection override.
 	Backend string
 	// Enabled controls whether the profile is selectable and dispatchable.
@@ -545,6 +549,12 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				cmd = strings.TrimPrefix(cmd, "command:")
 				replacement = append(replacement, "    "+name+":")
 				replacement = append(replacement, "      command: "+cmd)
+				if entry.SoulFile != "" {
+					replacement = append(replacement, "      soul_file: "+entry.SoulFile)
+				}
+				if entry.InstructionsFile != "" {
+					replacement = append(replacement, "      instructions_file: "+entry.InstructionsFile)
+				}
 				if entry.Backend != "" {
 					replacement = append(replacement, "      backend: "+entry.Backend)
 				}

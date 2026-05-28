@@ -216,9 +216,31 @@ A full-featured Bubbletea TUI with the same real-time data as the web dashboard.
 
 ## Agent profiles
 
-Define named agent profiles with their own command, backend, and Liquid-templated role prompt. Reference issue data like `{{ issue.identifier }}` and `{{ issue.title }}` directly in the role description. Different issue types get different profiles — a senior reviewer for security work, a fast haiku model for typo fixes, a Codex long-horizon runner for research.
+Define named agent profiles with their own command, backend, and operating instructions. Different issue types get different profiles — a senior reviewer for security work, a fast haiku model for typo fixes, a Codex long-horizon runner for research.
+
+Since v0.2.0, profile content lives in **file-backed agents** under `.itervox/agents/<name>/`:
+
+```text
+.itervox/agents/
+  implementer/
+    SOUL.md          # compact identity — who this agent is, what it values
+    INSTRUCTIONS.md  # full operating rules, checklists, Liquid template
+  reviewer/
+    SOUL.md
+    INSTRUCTIONS.md
+```
+
+`WORKFLOW.md` (`itervox_schema_version: 2`) references these via `agent.profiles.<name>.soul_file` and `instructions_file`. Reference issue data with `{{ issue.identifier }}`, `{{ issue.title }}`, etc. directly in `INSTRUCTIONS.md`. `.itervox/agents/**` is checked into git (the patched root `.gitignore` allows it); `.itervox/HEARTBEAT.md`, logs, and `.env` stay ignored.
+
+**Migrating from v0.1.x:** inline `agent.profiles.<name>.prompt` is rejected by schema 2. Run `itervox init --update --workflow WORKFLOW.md` once to extract inline prompts into `INSTRUCTIONS.md`, generate starter `SOUL.md` files, patch `.gitignore`, and stamp `itervox_schema_version: 2`. The migrator writes `WORKFLOW.md.bak` next to your workflow; review the result and delete the backup when satisfied. See the [Agent Profiles guide](https://itervox.dev/guides/agent-profiles/) for full configuration.
 
 **Rate-limit reassignment use case:** when a provider rate-limits one profile mid-run, Itervox retries the issue on a different profile — your fleet keeps moving instead of grinding to a halt.
+
+---
+
+## Operational files
+
+On startup Itervox writes `.itervox/HEARTBEAT.md` and refreshes it on state changes at a bounded interval. It is a human-readable view of daemon liveness — workflow path, schema version, dashboard URL, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Useful for ops dashboards and "is the daemon stuck?" diagnostics. The file is gitignored as transient runtime state.
 
 ---
 
@@ -226,7 +248,7 @@ Define named agent profiles with their own command, backend, and Liquid-template
 
 Autonomous, not unsupervised. Agents do the work. You stay in control at every checkpoint.
 
-- **AI Code Review.** Configure a `reviewer_profile` and optionally `auto_review` to dispatch a second worker for PR review. `agent.auto_review` and `workspace.auto_clear` are mutually exclusive today because the reviewer needs the workspace to remain available after the main worker exits.
+- **AI Code Review.** Configure a `reviewer_profile` and optionally `auto_review` to dispatch a second worker for PR review. As of v0.2.0, `agent.auto_review` and `workspace.auto_clear` safely coexist — `auto_clear` now fires only on terminal tracker states, so the reviewer gets the implementer's workspace and the clear is deferred until after the reviewer also completes.
 - **Agent asks for help.** When an agent needs input it pauses and posts a comment directly on the Linear or GitHub issue. Explicit `<!-- itervox:needs-input -->` remains the recommended way for prompts and skills to signal this. Itervox also catches common plain-English blocking questions like final choice or confirmation requests with a deterministic fallback detector, but that fallback is heuristic and English-oriented. If your prompts or skills use non-English wording or unusual phrasing, emit the explicit marker. Reply from the dashboard or from your tracker — the agent picks up your response and resumes automatically in the same session.
 - **Automation helpers stay sandboxed by profile permissions.** If an automation should comment, move state, create follow-up issues, or auto-resume a blocked run, enable only the required `allowed_actions` on that profile. The daemon issues short-lived action grants per run instead of handing the agent your dashboard API token.
 - **You merge the PR.** Agents submit PRs and post a session summary as a comment — they never merge. PR links are auto-commented on the tracker issue.
@@ -348,6 +370,8 @@ One file per project. YAML front matter plus a Liquid prompt template.
 
 ```markdown
 ---
+itervox_schema_version: 2
+
 tracker:
   kind: linear                     # or: github
   api_key: $LINEAR_API_KEY
@@ -362,7 +386,8 @@ agent:
   profiles:
     code-reviewer:
       command: claude --model claude-opus-4-6
-      prompt: "You are a senior code reviewer. Focus on correctness and test coverage."
+      soul_file: .itervox/agents/code-reviewer/SOUL.md
+      instructions_file: .itervox/agents/code-reviewer/INSTRUCTIONS.md
 
 workspace:
   root: ~/.itervox/workspaces
@@ -379,11 +404,28 @@ You are working on {{ issue.identifier }} — {{ issue.title }}.
 Implement the change, run tests, and open a PR.
 ```
 
+Profile content lives in companion files. For the `code-reviewer` profile above:
+
+```markdown
+# .itervox/agents/code-reviewer/SOUL.md
+You are a senior code reviewer.
+```
+
+```markdown
+# .itervox/agents/code-reviewer/INSTRUCTIONS.md
+## Workflow
+- Focus on correctness and test coverage.
+- Flag race conditions, missing error handling, and security issues.
+- Group findings by severity (Critical / Important / Minor).
+```
+
+`itervox init` scaffolds these files automatically. `.itervox/agents/**` is committable to git; runtime files like `.itervox/.env` and `.itervox/HEARTBEAT.md` stay ignored.
+
 The prompt template has access to `issue.*` fields (`identifier`, `title`, `description`, `state`, `priority`, `labels`, `blocked_by`, …) and the `attempt` counter on retries.
 
 Full field reference: **[itervox.dev/configuration/](https://itervox.dev/configuration/)**.
 
-`workspace.auto_clear` and `agent.auto_review` cannot be enabled together. Auto-review runs after the main worker finishes and needs that workspace and branch state to still exist.
+`workspace.auto_clear: true` was redefined in v0.2.0 to fire only when the issue reaches a terminal tracker state (`completion_state` after success, or `failed_state` after retries are exhausted). The workspace persists across retries, input-required pauses, and pipeline mid-states — so chained profiles can share `.itervox/handoff/` files on the same branch, and `auto_clear` now safely coexists with `agent.auto_review` (the clear is deferred until the reviewer also completes).
 
 ---
 

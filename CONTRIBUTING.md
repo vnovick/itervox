@@ -111,6 +111,8 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 
 > **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 
+> **Manual testing scenarios:** for end-to-end behaviour that automated tests cannot fully cover (real agent CLIs, dashboard UI, hot-reload, daemon-backed actions, full automation chains), follow the [Manual Testing Guide](https://itervox.dev/guides/manual-testing/) (source: `site/src/content/docs/guides/manual-testing.mdx`). Add a scenario there whenever you ship a feature with a non-trivial E2E behaviour or fix a regression that escaped `make verify`.
+
 ---
 
 ## Project Structure

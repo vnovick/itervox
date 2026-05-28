@@ -71,7 +71,7 @@ export function IssueRunsView({
     <div className="mt-2 space-y-0.5">
       {group.runs.map((run, idx) => (
         <RunRowWithSubagents
-          key={`${run.identifier}-${run.startedAt}`}
+          key={run.sessionId ?? `${run.identifier}-${run.startedAt}-${run.finishedAt ?? 'live'}`}
           run={run}
           logs={logs}
           viewStart={viewStart}

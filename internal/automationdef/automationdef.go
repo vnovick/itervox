@@ -30,6 +30,7 @@ type Policy struct {
 	SwitchToProfile string `json:"switchToProfile,omitempty"`
 	SwitchToBackend string `json:"switchToBackend,omitempty"`
 	CooldownMinutes int    `json:"cooldownMinutes,omitempty"`
+	MoveToState     string `json:"moveToState,omitempty"`
 }
 
 // Definition is the canonical serializable automation definition shared by

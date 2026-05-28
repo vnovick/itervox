@@ -4,6 +4,7 @@ import MarkdownPanel from './MarkdownPanel';
 import IssueDetailHeader from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
+import { IssueStatusChanges } from './IssueStatusChanges';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import {
@@ -106,6 +107,8 @@ export default function IssueDetailSlide() {
             </button>
           )}
         </div>
+
+        <IssueStatusChanges changes={issue.statusChanges} />
 
         {/* Priority + Labels */}
         {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (

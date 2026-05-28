@@ -22,6 +22,17 @@ func TestIssueThenValidate_HappyPath(t *testing.T) {
 	assert.Equal(t, "Todo", grant.CreateIssueState)
 }
 
+func TestIssueScoped_StoresMoveIssueState(t *testing.T) {
+	s := NewStore()
+	token, err := s.IssueScoped("ENG-1", "run-1", []string{"move_state"}, "", "Todo", time.Hour)
+	require.NoError(t, err)
+
+	grant, reason, ok := s.Validate(token, "ENG-1", "move_state", time.Now())
+	require.True(t, ok)
+	assert.Empty(t, reason)
+	assert.Equal(t, "Todo", grant.MoveIssueState)
+}
+
 func TestIssue_TTLZero_FallsBackTo1Hour(t *testing.T) {
 	s := NewStore()
 	start := time.Now()
@@ -122,4 +133,44 @@ func TestIssue_AllowedActionsAreClonedAndSorted(t *testing.T) {
 	require.True(t, ok)
 	// Sorted ascending: "create_issue" < "provide_input".
 	assert.Equal(t, []string{"create_issue", "provide_input"}, grant.AllowedActions)
+}
+
+// v0.2.0 audit P1-3 — Cleanup must drop expired tokens regardless of whether
+// Validate has been called on them. Without this janitor, grants issued to
+// workers that never hit the action endpoint accumulate forever.
+func TestCleanupRemovesExpiredGrants(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+
+	// Three grants: two short-TTL (will expire), one long-TTL (must survive
+	// the Cleanup window).
+	expiredA, err := s.Issue("ENG-1", "run-1", []string{"comment"}, "", time.Minute)
+	require.NoError(t, err)
+	expiredB, err := s.Issue("ENG-2", "run-2", []string{"comment"}, "", 5*time.Minute)
+	require.NoError(t, err)
+	live, err := s.Issue("ENG-3", "run-3", []string{"comment"}, "", 24*time.Hour)
+	require.NoError(t, err)
+
+	// Advance past the short-TTL grants but before the live one's expiry.
+	advanced := now.Add(time.Hour)
+	removed := s.Cleanup(advanced)
+	assert.Equal(t, 2, removed, "exactly the two expired grants should be removed")
+
+	// Both expired tokens must now resolve to unknown_token (deleted), and the
+	// live token must still validate successfully.
+	_, reasonA, okA := s.Validate(expiredA, "ENG-1", "comment", now)
+	assert.False(t, okA)
+	assert.Equal(t, "unknown_token", reasonA)
+
+	_, reasonB, okB := s.Validate(expiredB, "ENG-2", "comment", now)
+	assert.False(t, okB)
+	assert.Equal(t, "unknown_token", reasonB)
+
+	_, _, okLive := s.Validate(live, "ENG-3", "comment", now)
+	assert.True(t, okLive)
+}
+
+func TestCleanupOnNilStoreIsSafe(t *testing.T) {
+	var s *Store
+	assert.Equal(t, 0, s.Cleanup(time.Now()))
 }

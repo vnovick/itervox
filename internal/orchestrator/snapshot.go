@@ -6,7 +6,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
+
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // Snapshot returns a consistent copy of the current orchestrator state.
@@ -17,6 +20,18 @@ import (
 // automatically included in lastSnap. We overlay them here so callers — in
 // particular fetchIssues in main.go — see the live assignments without waiting
 // for the next event-loop tick to rebuild the snapshot.
+// IsAutomationProducersPaused returns the paused-producers flag from the most
+// recently published snapshot without paying the deep-copy cost of Snapshot().
+// Producer goroutines (cron, poll-event, input-required) call this to short-
+// circuit before issuing a tracker fetch when backpressure has already paused
+// dispatch — saving 16+ map clones per check on a busy daemon.
+// v0.2.0 audit P2-1.
+func (o *Orchestrator) IsAutomationProducersPaused() bool {
+	o.snapMu.RLock()
+	defer o.snapMu.RUnlock()
+	return o.lastSnap.AutomationQueueBackpressure.PausedProducers
+}
+
 func (o *Orchestrator) Snapshot() State {
 	o.snapMu.RLock()
 	snap := o.lastSnap
@@ -31,11 +46,16 @@ func (o *Orchestrator) Snapshot() State {
 	snap.PausedOpenPRs = maps.Clone(snap.PausedOpenPRs)
 	snap.ForceReanalyze = maps.Clone(snap.ForceReanalyze)
 	snap.PrevActiveIdentifiers = maps.Clone(snap.PrevActiveIdentifiers)
+	snap.PrevIssueStates = maps.Clone(snap.PrevIssueStates)
+	snap.IssueStatusHistory = copyIssueStatusHistoryMap(snap.IssueStatusHistory)
 	snap.DiscardingIdentifiers = maps.Clone(snap.DiscardingIdentifiers)
 	snap.AutoSwitchedIdentifiers = maps.Clone(snap.AutoSwitchedIdentifiers)
 	snap.AutoSwitchedAt = maps.Clone(snap.AutoSwitchedAt)
 	snap.InputRequiredIssues = maps.Clone(snap.InputRequiredIssues)
 	snap.PendingInputResumes = maps.Clone(snap.PendingInputResumes)
+	snap.AutomationQueue = copyAutomationQueueMap(snap.AutomationQueue)
+	snap.AutomationQueueOrder = append([]string(nil), snap.AutomationQueueOrder...)
+	snap.DependencyAudit = copyDependencyAuditMap(snap.DependencyAudit)
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -308,6 +328,12 @@ type inputRequiredStateDisk struct {
 	PendingResume map[string]pendingInputResumeDisk `json:"pending_resume,omitempty"`
 }
 
+type automationQueueStateDisk struct {
+	Entries      map[string]*AutomationQueueEntry `json:"entries,omitempty"`
+	Order        []string                         `json:"order,omitempty"`
+	Backpressure AutomationQueueBackpressure      `json:"backpressure,omitempty"`
+}
+
 // saveInputRequiredToDisk writes InputRequiredIssues and PendingInputResumes to disk.
 func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequiredEntry, pending map[string]*PendingInputResumeEntry) {
 	o.inputRequiredMu.RLock()
@@ -446,6 +472,105 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 	return state
 }
 
+// SetAutomationQueueFile sets the path for persisting automation queue entries.
+// Must be called before Run.
+func (o *Orchestrator) SetAutomationQueueFile(path string) {
+	if o.started.Load() {
+		slog.Error("orchestrator: SetAutomationQueueFile called after Run started; ignoring", "path", path)
+		return
+	}
+	o.automationQueueMu.Lock()
+	o.automationQueueFile = path
+	o.automationQueueMu.Unlock()
+}
+
+func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQueueEntry, order []string, backpressure AutomationQueueBackpressure) {
+	o.automationQueueMu.RLock()
+	path := o.automationQueueFile
+	o.automationQueueMu.RUnlock()
+	if path == "" {
+		return
+	}
+	disk := automationQueueStateDisk{
+		Entries:      copyAutomationQueueMap(entries),
+		Order:        append([]string(nil), order...),
+		Backpressure: backpressure,
+	}
+	data, err := json.Marshal(disk)
+	if err != nil {
+		slog.Warn("orchestrator: failed to marshal automation queue", "error", err)
+		return
+	}
+	if err := writeFileAtomically(path, data, 0o600); err != nil {
+		slog.Warn("orchestrator: failed to write automation queue file", "path", path, "error", err)
+	}
+}
+
+func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
+	o.automationQueueMu.RLock()
+	path := o.automationQueueFile
+	o.automationQueueMu.RUnlock()
+	if path == "" {
+		return state
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("orchestrator: failed to load automation queue file", "path", path, "error", err)
+		}
+		return state
+	}
+	var disk automationQueueStateDisk
+	if err := json.Unmarshal(data, &disk); err != nil {
+		slog.Warn("orchestrator: failed to parse automation queue file", "path", path, "error", err)
+		return state
+	}
+	ensureAutomationQueueState(&state)
+	state.AutomationQueue = make(map[string]*AutomationQueueEntry, len(disk.Entries))
+	state.AutomationQueueOrder = nil
+	seen := make(map[string]struct{}, len(disk.Entries))
+	for key, entry := range disk.Entries {
+		if entry == nil {
+			slog.Warn("orchestrator: dropping malformed automation queue entry", "path", path, "id", key, "reason", "nil_entry")
+			continue
+		}
+		if entry.ID == "" {
+			entry.ID = key
+		}
+		if entry.ID == "" || entry.AutomationID == "" || entry.TriggerType == "" {
+			slog.Warn("orchestrator: dropping malformed automation queue entry", "path", path, "id", key, "reason", "missing_required_fields")
+			continue
+		}
+		cp := *entry
+		cp.Issue = copyDomainIssue(entry.Issue)
+		state.AutomationQueue[cp.ID] = &cp
+	}
+	for _, id := range disk.Order {
+		if _, ok := state.AutomationQueue[id]; !ok {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		state.AutomationQueueOrder = append(state.AutomationQueueOrder, id)
+		seen[id] = struct{}{}
+	}
+	missingOrder := make([]string, 0)
+	for id := range state.AutomationQueue {
+		if _, ok := seen[id]; !ok {
+			missingOrder = append(missingOrder, id)
+		}
+	}
+	slices.Sort(missingOrder)
+	state.AutomationQueueOrder = append(state.AutomationQueueOrder, missingOrder...)
+	currentMaxLength := state.AutomationQueueBackpressure.MaxLength
+	state.AutomationQueueBackpressure = disk.Backpressure
+	state.AutomationQueueBackpressure.MaxLength = currentMaxLength
+	refreshAutomationQueueBackpressure(&state)
+	slog.Info("orchestrator: loaded automation queue", "path", path, "entries", len(state.AutomationQueue))
+	return state
+}
+
 // copyRunningMap returns a deep copy of a map[string]*RunEntry.
 // Each RunEntry value is copied by value so that external goroutines reading
 // the snapshot cannot observe in-progress mutations by the event loop
@@ -470,6 +595,59 @@ func copyRetryMap(m map[string]*RetryEntry) map[string]*RetryEntry {
 	cp := make(map[string]*RetryEntry, len(m))
 	maps.Copy(cp, m)
 	return cp
+}
+
+func copyAutomationQueueMap(m map[string]*AutomationQueueEntry) map[string]*AutomationQueueEntry {
+	cp := make(map[string]*AutomationQueueEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		entry := *v
+		entry.Issue = copyDomainIssue(v.Issue)
+		entry.Trigger.ResolvedBlockers = copyBlockerRefs(v.Trigger.ResolvedBlockers)
+		entry.Trigger.PreviouslyBlockedBy = copyBlockerRefs(v.Trigger.PreviouslyBlockedBy)
+		cp[k] = &entry
+	}
+	return cp
+}
+
+func copyDependencyAuditMap(m map[string]*DependencyAuditEntry) map[string]*DependencyAuditEntry {
+	cp := make(map[string]*DependencyAuditEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		entry := *v
+		entry.Sources = append([]DependencyAuditSource(nil), v.Sources...)
+		entry.BlockedBy = copyBlockerRefs(v.BlockedBy)
+		entry.UnresolvedBlockers = copyBlockerRefs(v.UnresolvedBlockers)
+		entry.ResolvedBlockers = copyBlockerRefs(v.ResolvedBlockers)
+		cp[k] = &entry
+	}
+	return cp
+}
+
+func copyIssueStatusHistoryMap(m map[string][]IssueStatusChange) map[string][]IssueStatusChange {
+	cp := make(map[string][]IssueStatusChange, len(m))
+	for k, v := range m {
+		cp[k] = append([]IssueStatusChange(nil), v...)
+	}
+	return cp
+}
+
+func copyDomainIssue(issue domain.Issue) domain.Issue {
+	cp := issue
+	cp.Labels = append([]string(nil), issue.Labels...)
+	cp.BlockedBy = copyBlockerRefs(issue.BlockedBy)
+	cp.Comments = append([]domain.Comment(nil), issue.Comments...)
+	return cp
+}
+
+func copyBlockerRefs(refs []domain.BlockerRef) []domain.BlockerRef {
+	return append([]domain.BlockerRef(nil), refs...)
 }
 
 // SetAutoSwitchedFile sets the path for persisting auto-switched profile/backend
@@ -621,11 +799,16 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.PausedOpenPRs = maps.Clone(s.PausedOpenPRs)
 	snap.ForceReanalyze = maps.Clone(s.ForceReanalyze)
 	snap.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
+	snap.PrevIssueStates = maps.Clone(s.PrevIssueStates)
+	snap.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)
 	snap.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
 	snap.AutoSwitchedIdentifiers = maps.Clone(s.AutoSwitchedIdentifiers)
 	snap.AutoSwitchedAt = maps.Clone(s.AutoSwitchedAt)
 	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
 	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
+	snap.AutomationQueue = copyAutomationQueueMap(s.AutomationQueue)
+	snap.AutomationQueueOrder = append([]string(nil), s.AutomationQueueOrder...)
+	snap.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
 
 	o.snapMu.Lock()
 	o.lastSnap = snap
@@ -633,6 +816,7 @@ func (o *Orchestrator) storeSnap(s State) {
 
 	o.savePausedToDisk(snap.PausedIdentifiers)
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
+	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}

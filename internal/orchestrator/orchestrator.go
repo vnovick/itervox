@@ -89,6 +89,11 @@ type Orchestrator struct {
 	inputRequiredMu   sync.RWMutex
 	inputRequiredFile string // optional path for persisting InputRequiredIssues across restarts
 
+	// automationQueueMu guards automationQueueFile only. Queue entries remain
+	// owned by the single event-loop State.
+	automationQueueMu   sync.RWMutex
+	automationQueueFile string // optional path for persisting AutomationQueue across restarts
+
 	// workerCancelsMu guards workerCancels, which is written by dispatch (event
 	// loop goroutine) and read by cancelRunningWorker (any goroutine).
 	// This is separate from lastSnap.Running because snapshot copies intentionally
@@ -155,6 +160,10 @@ type Orchestrator struct {
 	// when an exhausted-retry exit is classified rate-limit-driven. These
 	// share the automationsMu lock with the other registries.
 	rateLimitedAutomations []RateLimitedAutomation
+
+	// blockersResolvedAutomations is the compiled set of rules that fire when
+	// dependency audit observes a blocked issue becoming unblocked.
+	blockersResolvedAutomations []BlockersResolvedAutomation
 
 	// switchHistoryMu guards switchHistory which records every successful
 	// rate_limited switch so the per-issue cap (cfg.Agent.MaxSwitchesPerIssuePerWindow

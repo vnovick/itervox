@@ -33,7 +33,7 @@ Navigate to your project repo and run:
 itervox init --tracker linear --runner claude
 ```
 
-This scans your repository, detects the tech stack, and generates a `WORKFLOW.md` starter.
+This scans your repository, detects the tech stack, and generates a schema `2` `WORKFLOW.md` starter plus `.itervox/agents/implementer`, `.itervox/agents/reviewer`, and `.itervox/agents/input-responder` profile files.
 
 For GitHub Issues:
 
@@ -55,13 +55,15 @@ GITHUB_TOKEN=ghp_xxxxx
 
 Reference them in WORKFLOW.md as `$LINEAR_API_KEY` or `$GITHUB_TOKEN`.
 
+Commit `.itervox/agents/**`; those files define your project agent profiles. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, or runtime queue files.
+
 ### 3. Run
 
 ```bash
 itervox
 ```
 
-Itervox starts polling your tracker, spawning agents for active issues, and streaming logs to the terminal. By default it loads `WORKFLOW.md` from the current directory; pass `-workflow <path>` only if it lives elsewhere.
+Itervox starts polling your tracker, spawning agents for active issues, streaming logs to the terminal, and writing `.itervox/HEARTBEAT.md` with current daemon state. By default it loads `WORKFLOW.md` from the current directory; pass `-workflow <path>` only if it lives elsewhere.
 
 Open the dashboard at `http://localhost:8090` to see the Kanban board.
 
@@ -77,7 +79,7 @@ Enables DEBUG-level logging including agent output.
 
 1. Itervox polls your tracker for issues in active states (default: "Todo", "In Progress")
 2. For each issue, it creates an isolated workspace (clone or worktree)
-3. An AI agent is spawned with your WORKFLOW.md prompt template
+3. An AI agent is spawned with your `WORKFLOW.md` prompt template plus the selected profile's `SOUL.md` and `INSTRUCTIONS.md`
 4. The agent works on the issue, creates a branch, and submits a PR
 5. If the agent needs a human decision, Itervox pauses the issue in `input_required` and lets you reply from the dashboard or tracker
 6. Otherwise Itervox transitions the issue state on success
@@ -89,7 +91,7 @@ All of this is visible in real time via the web dashboard or terminal UI.
 - [What's New in v0.2.0](/guides/whats-new-v020/) — Automations, daemon actions, skills inventory, and more
 - [Configuration Reference](/configuration/) — Full WORKFLOW.md format
 - [CLI Reference](/cli/) — All flags and commands
-- [Agent Profiles](/guides/agent-profiles/) — Profiles, prompt roles, daemon actions, and SSH
+- [Agent Profiles](/guides/agent-profiles/) — Profiles, SOUL/INSTRUCTIONS files, daemon actions, and SSH
 - [Automations](/guides/automations/) — Triggers, filters, cron, and event-driven dispatch
 - [Claude vs Codex Debate](/guides/claude-vs-codex-debate/) — Experimental comment-only planning debate pattern
 - [Linear Setup Guide](/guides/linear-setup/) — Detailed Linear integration

@@ -64,6 +64,34 @@ describe('issue fixture factories', () => {
     expect(issue.ineligibleReason).toMatch(/blocked by/);
   });
 
+  it('parses issue status-change history from issue detail responses', () => {
+    const issue = TrackerIssueSchema.parse({
+      ...makeIssue(),
+      statusChanges: [
+        {
+          fromState: 'Todo',
+          toState: 'In Progress',
+          source: 'worker_lifecycle',
+          profileName: 'default',
+          backend: 'codex',
+          workerHost: 'ssh-build-1',
+          at: '2026-05-20T09:31:00Z',
+        },
+        {
+          fromState: 'In Progress',
+          toState: 'In Review',
+          source: 'automation',
+          automationId: 'dispatch-reviewer-on-pr',
+          triggerType: 'pr_opened',
+          at: '2026-05-20T10:04:00Z',
+        },
+      ],
+    });
+
+    expect(issue.statusChanges).toHaveLength(2);
+    expect(issue.statusChanges?.[1].automationId).toBe('dispatch-reviewer-on-pr');
+  });
+
   it('overrides deep-merge as expected', () => {
     const issue = makeIssue({ identifier: 'CUSTOM-1', labels: ['urgent'] });
     expect(issue.identifier).toBe('CUSTOM-1');

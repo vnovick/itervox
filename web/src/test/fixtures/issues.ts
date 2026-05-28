@@ -16,6 +16,7 @@ export function makeIssue(overrides?: DeepPartial<TrackerIssue>): TrackerIssue {
     blockedBy: [],
     blockedByDetails: [],
     comments: [],
+    statusChanges: [],
   };
   return TrackerIssueSchema.parse(applyOverrides(base, overrides));
 }

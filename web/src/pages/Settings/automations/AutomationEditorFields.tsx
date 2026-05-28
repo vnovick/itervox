@@ -11,17 +11,9 @@ import { AutomationInstructionsPanel } from './AutomationInstructionsPanel';
 import { CronPicker } from './CronPicker';
 import { getIANATimezones } from './timezones';
 import { RateLimitedFieldsBlock } from './RateLimitedFieldsBlock';
+import { BlockersResolvedFieldsBlock } from './BlockersResolvedFieldsBlock';
 
-// AutomationEditorFields composes the four sub-sections of the automation
-// editor:
-//   1. Top header (Enabled checkbox).
-//   2. Trigger config (Profile + Trigger type + conditional Cron/Timezone +
-//      conditional Entered State + conditional Auto-resume).
-//   3. AutomationInstructionsPanel — templates + variable bindings card.
-//   4. AutomationFilterFields — match-mode + state/label/regex/limit filters.
-//
-// Sub-sections were extracted to keep this file under the size-budget cap
-// (T-57). The parent owns RHF form state and threads handlers through.
+// Composes extracted automation editor sections while the parent owns form state.
 export function AutomationEditorFields({
   values,
   availableProfiles,
@@ -45,6 +37,7 @@ export function AutomationEditorFields({
   onSwitchToProfileChange,
   onSwitchToBackendChange,
   onCooldownMinutesChange,
+  onMoveToStateChange,
 }: {
   values: AutomationFormValues;
   availableProfiles: string[];
@@ -68,11 +61,13 @@ export function AutomationEditorFields({
   onSwitchToProfileChange: (value: string) => void;
   onSwitchToBackendChange: (value: '' | 'claude' | 'codex') => void;
   onCooldownMinutesChange: (value: string) => void;
+  onMoveToStateChange: (value: string) => void;
 }) {
   const isCron = values.triggerType === 'cron';
   const isInputRequired = values.triggerType === 'input_required';
   const isIssueEnteredState = values.triggerType === 'issue_entered_state';
   const isRateLimited = values.triggerType === 'rate_limited';
+  const isBlockersResolved = values.triggerType === 'blockers_resolved';
   const supportsBatchLimit =
     values.triggerType === 'cron' ||
     values.triggerType === 'tracker_comment_added' ||
@@ -228,6 +223,14 @@ export function AutomationEditorFields({
           onSwitchToProfileChange={onSwitchToProfileChange}
           onSwitchToBackendChange={onSwitchToBackendChange}
           onCooldownMinutesChange={onCooldownMinutesChange}
+        />
+      )}
+
+      {isBlockersResolved && (
+        <BlockersResolvedFieldsBlock
+          values={values}
+          availableStates={availableStates}
+          onMoveToStateChange={onMoveToStateChange}
         />
       )}
 

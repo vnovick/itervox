@@ -17,8 +17,9 @@ Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
    are editing (see the table below). These bundles are plain markdown and tool-agnostic —
    the directory name is historical. They are not optional reading.
 3. **Run tests** to establish a baseline: `go test -race ./cmd/... ./internal/...` and `cd web && pnpm test:coverage`.
-4. **Check the planning index** (`planning/README.md`) and the active v0.2.0 plan
-   (`planning/v0.2.0_pass/todolist.md`) for known open items before adding new ones —
+4. **Check the planning index** (`planning/README.md`), the active v0.2.0 plan
+   (`planning/v0.2.0_pass/todolist.md`), and the v0.2.0 queue/status addendum
+   (`planning/v0.2.0/todolist2.md`) for known open items before adding new ones -
    it may already be tracked.
 
 ## Rule bundles (read the matching one before editing)
@@ -81,6 +82,9 @@ internal/
     event_loop.go    Main select loop (Run), tick handling
     worker.go        Per-issue worker goroutine lifecycle
     snapshot.go      Snapshot construction and overlay
+    automation_queue.go Durable automation dispatch queue + backpressure
+    dependency_audit.go Normalized blocker/dependency audit state
+    status_history.go Per-issue status-change ledger
     dispatch.go      Eligibility checks, slot calculation
     reconcile.go     Stall/state reconciliation helpers
     retry.go         Retry queue scheduling
@@ -109,6 +113,62 @@ planning/            Gap analysis, design docs, roadmap
 The orchestrator `Run()` loop is the ONLY place that mutates `State`. Workers
 communicate via `o.events chan OrchestratorEvent`. Never write to state from a
 worker goroutine — send an event instead.
+
+### Automation queue, dependency audit, and status history
+
+These runtime surfaces are also event-loop-owned `State`:
+
+- `AutomationQueue`, `AutomationQueueOrder`, and `AutomationQueueBackpressure`
+  track automation triggers that could not start immediately. Queue entries are
+  bounded by `agent.max_automation_queue_length`; saturation pauses new producer
+  intake while existing queued entries continue draining.
+- `DependencyAudit` normalizes tracker blocker data into `blocked`, `unknown`,
+  or `unblocked` rows. Unknown or non-terminal blockers keep issues ineligible.
+  Known audit rows are refreshed by the event loop on poll/manual refresh so the
+  dashboard does not keep stale blocker state after an issue leaves active
+  states. Core audit does not mutate Linear/GitHub state.
+- `blockers_resolved` is an opt-in automation trigger emitted only when audit
+  observes a blocked issue become unblocked. State mutation still requires an
+  explicit automation policy and a profile with `move_state`.
+- `IssueStatusHistory` is a bounded in-memory ledger of tracker-observed,
+  dashboard, worker lifecycle, automation, and system status changes. The
+  outer map is pruned by an event-loop janitor (`pruneIssueStatusHistory`)
+  for identifiers absent from the candidate set whose most-recent change is
+  older than `issueStatusHistoryRetention` (7 days).
+
+Do not add a second dependency or queue store in the UI. Dashboard queue rows,
+Deps graph rows, and issue status timelines should come from snapshot/server
+rows derived from these state fields.
+
+### Track B — file-backed profiles, schema 2, and HEARTBEAT.md
+
+v0.2.0 moves profile content out of `WORKFLOW.md` into real agent files:
+
+- **`itervox_schema_version: 2`** is required on every `WORKFLOW.md`. Startup
+  validation in `internal/config/validate.go` fails with
+  `MissingWorkflowSchemaMessage` when the marker is missing.
+- **Inline `agent.profiles.<name>.prompt` is rejected by schema 2.** Each
+  profile points at `.itervox/agents/<name>/SOUL.md` (compact identity) and
+  `.itervox/agents/<name>/INSTRUCTIONS.md` (operating rules) via `soul_file`
+  and `instructions_file`.
+- **`.itervox/agents/**` is committable**; `itervox init` and `itervox init
+  --update` patch the root `.gitignore` to allow it while keeping
+  `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, and runtime queue files
+  ignored.
+- **Migration entry point:** `itervox init --update --workflow WORKFLOW.md`
+  writes `WORKFLOW.md.bak`, extracts inline prompts to `INSTRUCTIONS.md`,
+  generates `SOUL.md`, patches `.gitignore`, and stamps the schema version.
+- **`.itervox/HEARTBEAT.md`** is the daemon liveness file, written by
+  `cmd/itervox/heartbeat.go` on startup and refreshed at a bounded interval
+  (default 15s) via `atomicfs.WriteFile`. Transient runtime state — gitignored.
+  Records workflow path, schema version, dashboard URL, capacity, automation
+  queue pressure, dependency audit summary, retry count, and last notable
+  error.
+
+Prompt assembly order at dispatch: SOUL.md → INSTRUCTIONS.md → per-issue
+Liquid template (rendered with `domain.Issue` fields). When changing
+migration code, expect coverage in `cmd/itervox/init_migrate*_test.go` and
+`internal/config/validate*_test.go` to gate the change.
 
 ### cfgMu scope
 
@@ -177,10 +237,21 @@ cmd/itervox (wires everything)
 
 ## Open architectural items (from active gap planning)
 
-The current v0.2.0 release-readiness plan lives in `planning/v0.2.0_pass/todolist.md`,
-with `planning/gaps_130526.md` as its source gap analysis. `planning/README.md`
-is the entry point for active, deferred, future-version, and archived planning docs.
-Historical gap notes, including `gaps_300326.md`, are archived under `planning/archive/`.
+The current v0.2.0 release-readiness plan lives in `planning/v0.2.0_pass/todolist.md`.
+The queue/status addendum lives in `planning/v0.2.0/todolist2.md`, with
+`planning/v0.2.0/gaps_200526.md` and
+`planning/v0.2.0/completion_audit_200526.md` documenting the post-implementation
+audit. `planning/README.md` is the entry point for active, deferred,
+future-version, and archived planning docs. Historical gap notes, including
+`gaps_300326.md`, are archived under `planning/archive/`.
+
+The v0.2.0 addendum engineering work is implemented and verified. User decision
+on 2026-05-20: no commit, tag, push, or release artifact will be produced from the
+active no-commit pass, so the final clean-worktree `make release-check` hook is
+not required for that goal. If a later release operator tags or publishes v0.2.0,
+`make release-check` is expected to fail at `git diff --exit-code` until the
+implementation and ignored planning/marketing artifacts are committed or
+otherwise made clean.
 
 Key unresolved items:
 - T-6: Codex session log identity — single file instead of per-subagent files
@@ -188,9 +259,12 @@ Key unresolved items:
 - T-9: Extract `orchestratorAdapter` from main.go to `internal/app`
 - T-10: Replace 5s sublog polling with SSE push
 - T-11: DRY `ParseSessionLogs`/`ParseSessionLogsMulti` duplication
+- Full editable automation/workflow canvas remains deferred to v0.2.1; v0.2.0
+  ships only the read-only Deps graph over real dependency audit data.
 
-See `planning/README.md` and `planning/v0.2.0_pass/todolist.md` for the current
-task list with priorities and phases.
+See `planning/README.md`, `planning/v0.2.0_pass/todolist.md`, and
+`planning/v0.2.0/todolist2.md` for the current task list with priorities,
+phases, and release-gate status.
 
 Before adding new items, spawn a verification agent to confirm the
 issue is real (read full call chain, check for upstream validation, verify file

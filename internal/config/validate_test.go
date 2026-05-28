@@ -11,7 +11,7 @@ import (
 
 func validWorkflowPath(t *testing.T) string {
 	t.Helper()
-	return workflowWithContent(t, minimal(""))
+	return workflowWithContent(t, minimalV2(""))
 }
 
 func TestValidateDispatchPassesForValidConfig(t *testing.T) {
@@ -23,7 +23,7 @@ func TestValidateDispatchPassesForValidConfig(t *testing.T) {
 }
 
 func TestValidateDispatchFailsMissingTrackerKind(t *testing.T) {
-	content := "---\ntracker:\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -32,8 +32,16 @@ func TestValidateDispatchFailsMissingTrackerKind(t *testing.T) {
 	assert.Contains(t, err.Error(), "tracker.kind")
 }
 
+func TestValidateDispatchSchemaErrorPrecedesOtherValidation(t *testing.T) {
+	cfg := &config.Config{}
+	err := config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "itervox_schema_version")
+	assert.NotContains(t, err.Error(), "tracker.kind")
+}
+
 func TestValidateDispatchFailsUnsupportedTrackerKind(t *testing.T) {
-	content := "---\ntracker:\n  kind: jira\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -44,7 +52,7 @@ func TestValidateDispatchFailsUnsupportedTrackerKind(t *testing.T) {
 
 func TestValidateDispatchFailsMissingAPIKey(t *testing.T) {
 	_ = os.Unsetenv("MISSING_KEY_XYZ")
-	content := "---\ntracker:\n  kind: linear\n  api_key: $MISSING_KEY_XYZ\n  project_slug: proj\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: $MISSING_KEY_XYZ\n  project_slug: proj\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -55,7 +63,7 @@ func TestValidateDispatchFailsMissingAPIKey(t *testing.T) {
 
 func TestValidateDispatchLinearOKWithoutProjectSlug(t *testing.T) {
 	// Linear project_slug is optional — project is selected via TUI/dashboard.
-	content := "---\ntracker:\n  kind: linear\n  api_key: mykey\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: mykey\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -65,7 +73,7 @@ func TestValidateDispatchLinearOKWithoutProjectSlug(t *testing.T) {
 
 func TestValidateDispatchGitHubFailsMissingProjectSlug(t *testing.T) {
 	// GitHub project_slug (owner/repo) is required — it identifies the target repo.
-	content := "---\ntracker:\n  kind: github\n  api_key: ghtoken\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: github\n  api_key: ghtoken\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -76,6 +84,7 @@ func TestValidateDispatchGitHubFailsMissingProjectSlug(t *testing.T) {
 
 func TestValidateDispatchFailsMissingAgentCommand(t *testing.T) {
 	cfg := &config.Config{}
+	cfg.SchemaVersion = config.LatestWorkflowSchemaVersion
 	cfg.Tracker.Kind = "linear"
 	cfg.Tracker.APIKey = "key"
 	cfg.Tracker.ProjectSlug = "proj"
@@ -87,7 +96,7 @@ func TestValidateDispatchFailsMissingAgentCommand(t *testing.T) {
 }
 
 func TestValidateDispatchGitHubKindAccepted(t *testing.T) {
-	content := "---\ntracker:\n  kind: github\n  api_key: ghtoken\n  project_slug: owner/repo\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: github\n  api_key: ghtoken\n  project_slug: owner/repo\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -95,8 +104,12 @@ func TestValidateDispatchGitHubKindAccepted(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestValidateDispatchFailsWhenAutoReviewAndAutoClearBothEnabled(t *testing.T) {
-	content := minimal(`agent:
+// New (v0.2.0): auto_clear and auto_review now coexist. The clear is
+// deferred from main-worker success to reviewer success under the new
+// terminal-state-only semantics, so they no longer race. ValidateDispatch
+// must accept this combination.
+func TestValidateDispatchAcceptsAutoReviewWithAutoClear(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
   reviewer_profile: code-reviewer
   auto_review: true
   profiles:
@@ -110,13 +123,11 @@ workspace:
 	require.NoError(t, err)
 
 	err = config.ValidateDispatch(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "auto_clear")
-	assert.Contains(t, err.Error(), "auto_review")
+	assert.NoError(t, err, "auto_clear + auto_review must validate cleanly under terminal-state-only clear semantics")
 }
 
 func TestValidateDispatchFailsWhenAutoReviewEnabledWithoutReviewerProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2(`agent:
   auto_review: true
 `)
 	path := workflowWithContent(t, content)
@@ -130,7 +141,7 @@ func TestValidateDispatchFailsWhenAutoReviewEnabledWithoutReviewerProfile(t *tes
 }
 
 func TestValidateDispatchRejectsUnknownReviewerProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   reviewer_profile: reviewer
   profiles:
     qa:
@@ -146,7 +157,7 @@ func TestValidateDispatchRejectsUnknownReviewerProfile(t *testing.T) {
 }
 
 func TestValidateDispatchRejectsDisabledReviewerProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   reviewer_profile: reviewer
   profiles:
     reviewer:
@@ -163,7 +174,7 @@ func TestValidateDispatchRejectsDisabledReviewerProfile(t *testing.T) {
 }
 
 func TestValidateDispatchRejectsCreateIssueProfileWithoutState(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   profiles:
     qa:
       command: claude
@@ -179,7 +190,7 @@ func TestValidateDispatchRejectsCreateIssueProfileWithoutState(t *testing.T) {
 }
 
 func TestValidateDispatchRejectsDuplicateAutomationIDs(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   profiles:
     qa:
       command: claude
@@ -205,7 +216,7 @@ automations:
 }
 
 func TestValidateDispatchRejectsInvalidAutomationRegex(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   profiles:
     qa:
       command: claude
@@ -228,7 +239,7 @@ automations:
 }
 
 func TestValidateDispatchRejectsUnknownAutomationProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   profiles:
     qa:
       command: claude
@@ -249,7 +260,7 @@ automations:
 }
 
 func TestValidateDispatchRejectsDisabledAutomationProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   profiles:
     qa:
       command: claude
@@ -278,7 +289,7 @@ automations:
 // deliberately leaves a disabled automation pointing at a disabled profile
 // in lock-step.
 func TestValidateDispatchRejectsDisabledAutomationReferencingUnknownProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   profiles:
     qa:
       command: claude
@@ -304,11 +315,11 @@ automations:
 // together. Re-enabling either side without fixing the other still trips
 // the existing enabled-side validation.
 func TestValidateDispatchAllowsDisabledAutomationReferencingDisabledProfile(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2(`agent:
   profiles:
     qa:
       command: claude
-      enabled: false
+` + schema2ProfileFileFields(t, "      ") + `      enabled: false
 automations:
   - id: comment-watch
     enabled: false

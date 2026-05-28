@@ -1,180 +1,18 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/templates"
 )
-
-// repoInfo holds values discovered by scanning the current directory.
-type repoInfo struct {
-	RemoteURL     string // raw git remote URL
-	Owner         string // e.g. "vnovick"
-	Repo          string // e.g. "itervox"
-	CloneURL      string // SSH clone URL reconstructed for after_create hook
-	DefaultBranch string // "main" or "master"
-	ProjectName   string // repo name, used for workspace.root
-	HasClaudeMD   bool   // CLAUDE.md present in dir
-	HasAgentsMD   bool   // AGENTS.md present in dir
-	Stacks        []detectedStack
-	ClaudeModels  []agent.ModelOption // discovered Claude models (may be empty)
-	CodexModels   []agent.ModelOption // discovered Codex models (may be empty)
-}
-
-type detectedStack struct {
-	Name     string
-	Commands []string
-}
-
-// scanRepo inspects dir (typically ".") for git remote, branch, CLAUDE.md, and
-// language/framework indicators. All fields fall back to sensible placeholders
-// so the output is always valid even in a non-git directory.
-func scanRepo(dir string) repoInfo {
-	info := repoInfo{DefaultBranch: "main", ProjectName: "my-project"}
-
-	// ── git remote ────────────────────────────────────────────────────────────
-	if out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
-		info.RemoteURL = strings.TrimSpace(string(out))
-		info.Owner, info.Repo = parseGitRemote(info.RemoteURL)
-		if info.Repo != "" {
-			info.ProjectName = info.Repo
-		}
-		// Normalise to SSH clone URL for the after_create hook.
-		if info.Owner != "" && info.Repo != "" {
-			info.CloneURL = fmt.Sprintf("git@github.com:%s/%s.git", info.Owner, info.Repo)
-		}
-	}
-
-	// ── default branch ────────────────────────────────────────────────────────
-	if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
-		ref := strings.TrimSpace(string(out)) // refs/remotes/origin/main
-		if parts := strings.Split(ref, "/"); len(parts) > 0 {
-			info.DefaultBranch = parts[len(parts)-1]
-		}
-	}
-
-	// ── CLAUDE.md ─────────────────────────────────────────────────────────────
-	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
-		info.HasClaudeMD = true
-	}
-
-	// ── AGENTS.md ─────────────────────────────────────────────────────────────
-	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); err == nil {
-		info.HasAgentsMD = true
-	}
-
-	// ── tech stack ────────────────────────────────────────────────────────────
-	info.Stacks = detectStacks(dir)
-
-	return info
-}
-
-// parseGitRemote extracts owner and repo from an SSH or HTTPS git remote URL.
-func parseGitRemote(remote string) (owner, repo string) {
-	remote = strings.TrimSuffix(strings.TrimSpace(remote), ".git")
-	// SSH: git@github.com:owner/repo
-	if strings.HasPrefix(remote, "git@") {
-		if _, path, ok := strings.Cut(remote, ":"); ok {
-			owner, repo, _ = strings.Cut(path, "/")
-			return
-		}
-	}
-	// HTTPS: https://github.com/owner/repo
-	parts := strings.Split(remote, "/")
-	if len(parts) >= 2 {
-		repo = parts[len(parts)-1]
-		owner = parts[len(parts)-2]
-	}
-	return
-}
-
-// detectStacks scans dir for language/framework indicator files and returns
-// the detected stacks with their suggested check commands.
-func detectStacks(dir string) []detectedStack {
-	has := func(name string) bool {
-		_, err := os.Stat(filepath.Join(dir, name))
-		return err == nil
-	}
-
-	var stacks []detectedStack
-
-	if has("go.mod") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Go",
-			Commands: []string{"go test ./...", "go vet ./..."},
-		})
-	}
-
-	if has("package.json") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Node.js",
-			Commands: detectNodeCommands(dir),
-		})
-	}
-
-	if has("Cargo.toml") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Rust",
-			Commands: []string{"cargo test", "cargo clippy -- -D warnings"},
-		})
-	}
-
-	if has("pyproject.toml") || has("setup.py") || has("requirements.txt") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Python",
-			Commands: []string{"python -m pytest", "python -m mypy ."},
-		})
-	}
-
-	if has("mix.exs") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Elixir",
-			Commands: []string{"mix test", "mix credo"},
-		})
-	}
-
-	if has("Gemfile") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Ruby",
-			Commands: []string{"bundle exec rspec", "bundle exec rubocop"},
-		})
-	}
-
-	return stacks
-}
-
-// detectNodeCommands reads package.json scripts to suggest the right test/lint commands.
-func detectNodeCommands(dir string) []string {
-	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
-	if err != nil {
-		return []string{"pnpm test"}
-	}
-	var pkg struct {
-		Scripts map[string]string `json:"scripts"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return []string{"pnpm test"}
-	}
-
-	var cmds []string
-	for _, script := range []string{"test", "lint", "typecheck", "check", "build"} {
-		if _, ok := pkg.Scripts[script]; ok {
-			cmds = append(cmds, "pnpm "+script)
-		}
-	}
-	if len(cmds) == 0 {
-		cmds = []string{"pnpm test"}
-	}
-	return cmds
-}
 
 // generateWorkflow builds the WORKFLOW.md content from scanned repo info.
 func generateWorkflow(trackerKind, runner string, info repoInfo) string {
@@ -182,6 +20,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 
 	// ── frontmatter ───────────────────────────────────────────────────────────
 	b.WriteString("---\n")
+	b.WriteString("itervox_schema_version: 2\n\n")
 	b.WriteString("tracker:\n")
 	b.WriteString("  kind: " + trackerKind + "\n")
 
@@ -248,11 +87,30 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("  turn_timeout_ms: 3600000\n")
 	b.WriteString("  read_timeout_ms: 120000\n")
 	b.WriteString("  stall_timeout_ms: 300000\n")
+	b.WriteString("  profiles:\n")
+	for _, profile := range initAgentProfileNames {
+		command, backend := initProfileCommand(runner)
+		b.WriteString("    " + profile + ":\n")
+		b.WriteString("      command: " + command + "\n")
+		if backend != "" {
+			b.WriteString("      backend: " + backend + "\n")
+		}
+		b.WriteString("      soul_file: .itervox/agents/" + profile + "/SOUL.md\n")
+		b.WriteString("      instructions_file: .itervox/agents/" + profile + "/INSTRUCTIONS.md\n")
+		switch profile {
+		case "reviewer":
+			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
+		case "input-responder":
+			b.WriteString("      allowed_actions: [comment, provide_input]\n")
+		default:
+			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
+		}
+	}
 
 	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
 	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
-	b.WriteString("  # reviewer_profile: reviewer       # Uncomment and create a 'reviewer' profile to enable AI code review.\n")
-	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Cannot be combined with workspace.auto_clear.\n")
+	b.WriteString("  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.\n")
+	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.\n")
 	b.WriteString("  reviewer_prompt: |\n")
 	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
 	b.WriteString("\n")
@@ -460,9 +318,32 @@ func runInit(args []string) {
 	trackerKind := fs.String("tracker", "", "tracker kind: linear or github (required)")
 	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
 	output := fs.String("output", "WORKFLOW.md", "output file path")
+	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
 	dir := fs.String("dir", ".", "directory to scan for repo metadata")
 	force := fs.Bool("force", false, "overwrite output file if it already exists")
+	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema")
 	_ = fs.Parse(args)
+
+	if *update {
+		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
+			fatalExit(1)
+		}
+		if result.Changed {
+			fmt.Printf("itervox init --update: migrated %s to schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
+			fmt.Printf("itervox init --update: backup written to %s\n", result.BackupPath)
+			if len(result.Profiles) > 0 {
+				fmt.Printf("itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
+			}
+		} else {
+			fmt.Printf("itervox init --update: %s already uses schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
+		}
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
+		}
+		return
+	}
 
 	switch *trackerKind {
 	case "linear", "github":
@@ -499,7 +380,7 @@ func runInit(args []string) {
 	}
 
 	if _, err := os.Stat(*output); err == nil && !*force {
-		fmt.Fprintf(os.Stderr, "itervox init: %s already exists (use --force to overwrite)\n", *output)
+		fmt.Fprint(os.Stderr, existingWorkflowInitMessage(*output))
 		fatalExit(1)
 	}
 
@@ -536,9 +417,18 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 	fmt.Printf("itervox init: wrote %s\n", *output)
+	if err := writeInitAgentFiles(*output, *runner); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fatalExit(1)
+	}
+	fmt.Printf("itervox init: wrote .itervox/agents profiles\n")
 
 	// Create .itervox/.env if it doesn't exist.
-	envDir := ".itervox"
+	outputDir := filepath.Dir(*output)
+	if outputDir == "" {
+		outputDir = "."
+	}
+	envDir := filepath.Join(outputDir, ".itervox")
 	envPath := filepath.Join(envDir, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
 		_ = os.MkdirAll(envDir, 0o755)
@@ -556,10 +446,11 @@ func runInit(args []string) {
 		}
 	}
 
-	// Ensure .itervox/.env is gitignored.
-	gitignorePath := filepath.Join(envDir, ".gitignore")
-	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
-		_ = os.WriteFile(gitignorePath, []byte(".env\n"), 0o644)
+	// Ensure .itervox runtime files are gitignored and the root .gitignore
+	// has carve-outs for agent / handoff dirs (no-op if root .gitignore
+	// doesn't broadly ignore .itervox/).
+	if err := finalizeItervoxGitignore(envDir); err != nil {
+		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
 	}
 
 	fmt.Printf("Next steps:\n")
@@ -574,4 +465,8 @@ func runInit(args []string) {
 	} else {
 		fmt.Printf("  2. Run: %s\n", runCmd)
 	}
+}
+
+func existingWorkflowInitMessage(output string) string {
+	return fmt.Sprintf("itervox init: %s already exists; not overwriting.\nExisting workflows may need migration:\n  itervox init --update --workflow %s\nUse --force to overwrite instead.\n", output, output)
 }

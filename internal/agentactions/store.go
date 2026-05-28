@@ -21,6 +21,7 @@ type Grant struct {
 	RunSessionID     string
 	AllowedActions   []string
 	CreateIssueState string
+	MoveIssueState   string
 	ExpiresAt        time.Time
 }
 
@@ -44,6 +45,12 @@ func NewStore() *Store {
 // a default of one hour is applied — callers should pass a positive value for
 // production use; the fallback is a convenience for tests.
 func (s *Store) Issue(issueIdentifier, runSessionID string, allowedActions []string, createIssueState string, ttl time.Duration) (string, error) {
+	return s.IssueScoped(issueIdentifier, runSessionID, allowedActions, createIssueState, "", ttl)
+}
+
+// IssueScoped creates a new action grant with optional target-state scopes for
+// state-mutating actions.
+func (s *Store) IssueScoped(issueIdentifier, runSessionID string, allowedActions []string, createIssueState, moveIssueState string, ttl time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -64,6 +71,7 @@ func (s *Store) Issue(issueIdentifier, runSessionID string, allowedActions []str
 		RunSessionID:     runSessionID,
 		AllowedActions:   actions,
 		CreateIssueState: createIssueState,
+		MoveIssueState:   moveIssueState,
 		ExpiresAt:        expiresAt,
 	}
 	return token, nil
@@ -78,6 +86,31 @@ func (s *Store) Revoke(token string) {
 	s.mu.Lock()
 	delete(s.grants, token)
 	s.mu.Unlock()
+}
+
+// Cleanup deletes every grant whose ExpiresAt is at or before `now` and
+// returns the number of removed entries. Designed to be driven from a
+// periodic ticker so a long-running daemon never accumulates dead tokens
+// from workers that never hit the action endpoint.
+//
+// Opportunistic deletion on Validate already handles tokens the agent
+// actually exercised, but the majority of grants never call /agent-actions
+// at all (create_issue is rare) so the lifetime-bound here is the only
+// thing preventing slow growth. v0.2.0 audit P1-3.
+func (s *Store) Cleanup(now time.Time) int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for token, grant := range s.grants {
+		if !now.Before(grant.ExpiresAt) {
+			delete(s.grants, token)
+			removed++
+		}
+	}
+	return removed
 }
 
 // Validate checks whether the given token authorises the given action against

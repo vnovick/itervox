@@ -210,16 +210,5 @@ func (a *orchestratorAdapter) ApplyFix(_ context.Context, issueID string, fix sk
 }
 
 func serverProfileFromConfig(p config.AgentProfile) server.ProfileDef {
-	enabled := true
-	if p.Enabled != nil {
-		enabled = *p.Enabled
-	}
-	return server.ProfileDef{
-		Command:          p.Command,
-		Prompt:           p.Prompt,
-		Backend:          p.Backend,
-		Enabled:          enabled,
-		AllowedActions:   p.AllowedActions,
-		CreateIssueState: p.CreateIssueState,
-	}
+	return profileDefFromConfig(p)
 }

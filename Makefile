@@ -25,7 +25,7 @@ build: web-deps web-build
 # targets (web-typecheck, web-lint, web-format, web-test, web-coverage, web-build) do NOT
 # install on their own so lefthook can run them in parallel without racing
 # pnpm installs.
-verify: web-deps fmt vet lint-go test web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit
+verify: web-deps fmt vet lint-go test web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit verify-track-b-docs
 
 # Release preflight mirrors tag-time checks. Keep `verify` as the normal PR/local
 # edit gate; this target additionally requires release tooling and a clean tree.
@@ -141,6 +141,29 @@ web-spelling:
 	@if grep -rni '".*Symphony' web/src/ --include="*.ts" --include="*.tsx" 2>/dev/null | grep -q .; then \
 		echo "ERROR: 'Symphony' found in user-visible strings — should be 'Itervox'."; \
 		grep -rni '".*Symphony' web/src/ --include="*.ts" --include="*.tsx"; \
+		exit 1; \
+	fi
+
+# Guard against documentation drift on v0.2.0 Track B (schema 2, file-backed
+# profiles, HEARTBEAT.md, init --update). Each user-facing doc must reference
+# every surface so an operator reading any single doc gets the full picture.
+# Resolves todolist4 P0-4 (CHANGELOG.md), P1-12 (CLAUDE.md / AGENTS.md), and
+# P1-13 (docs/architecture.md).
+.PHONY: verify-track-b-docs
+TRACK_B_DOCS := CHANGELOG.md README.md CLAUDE.md AGENTS.md docs/architecture.md
+TRACK_B_TERMS := "itervox_schema_version" "SOUL.md" "INSTRUCTIONS.md" "HEARTBEAT.md" "init --update"
+verify-track-b-docs:
+	@fail=0; \
+	for doc in $(TRACK_B_DOCS); do \
+		for term in $(TRACK_B_TERMS); do \
+			if ! grep -q -F "$$term" "$$doc"; then \
+				echo "ERROR: $$doc is missing required Track B reference: $$term"; \
+				fail=1; \
+			fi; \
+		done; \
+	done; \
+	if [ $$fail -ne 0 ]; then \
+		echo "Fix by adding the missing references — see planning/v0.2.0/todolist4.md P0-4 / P1-12 / P1-13."; \
 		exit 1; \
 	fi
 

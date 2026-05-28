@@ -29,6 +29,7 @@ const baseValues: AutomationFormValues = {
   switchToProfile: '',
   switchToBackend: '',
   cooldownMinutes: '',
+  moveToState: '',
 };
 
 describe('automationFormSchema', () => {
@@ -53,6 +54,7 @@ describe('automationFormSchema', () => {
       switchToProfile: '',
       switchToBackend: '',
       cooldownMinutes: '',
+      moveToState: '',
     });
 
     expect(result.success).toBe(false);
@@ -83,6 +85,7 @@ describe('automationFormSchema', () => {
       switchToProfile: '',
       switchToBackend: '',
       cooldownMinutes: '',
+      moveToState: '',
     });
 
     expect(result.success).toBe(false);
@@ -113,6 +116,7 @@ describe('automationFormSchema', () => {
       switchToProfile: '',
       switchToBackend: '' as const,
       cooldownMinutes: '',
+      moveToState: '',
     };
     for (const bad of ['-1', '1.5', 'soon']) {
       const result = automationFormSchema.safeParse({ ...base, maxAgeMinutes: bad });
@@ -201,6 +205,36 @@ describe('automationFormSchema', () => {
       cooldownMinutes: '45',
     });
     expect(runFailed.policy).toBeUndefined();
+  });
+
+  it('serializes blockers-resolved move-to-state policy only on blockers-resolved triggers', () => {
+    const blockersResolved = automationDefFromValues({
+      ...baseValues,
+      triggerType: 'blockers_resolved',
+      cron: '',
+      timezone: '',
+      moveToState: ' Todo ',
+    });
+    expect(blockersResolved.policy).toEqual({ moveToState: 'Todo' });
+
+    const cron = automationDefFromValues({
+      ...baseValues,
+      moveToState: 'Todo',
+    });
+    expect(cron.policy).toBeUndefined();
+  });
+
+  it('loads move-to-state policy from an existing blockers-resolved automation', () => {
+    const values = automationValuesFromDef({
+      id: 'unblock-backlog-to-todo',
+      enabled: true,
+      profile: 'pm',
+      instructions: '',
+      trigger: { type: 'blockers_resolved' },
+      policy: { moveToState: 'Todo' },
+    });
+
+    expect(values.moveToState).toBe('Todo');
   });
 
   it('requires auto-switch for rate-limited switching rules', () => {

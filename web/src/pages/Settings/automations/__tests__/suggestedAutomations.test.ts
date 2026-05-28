@@ -32,14 +32,16 @@ describe('suggestedAutomations', () => {
     }
   });
 
-  it('keeps dependency readiness prompt-governed and disabled by operator choice', () => {
+  it('configures dependency readiness as blockers-resolved backlog-to-todo automation', () => {
     const readiness = SUGGESTED_AUTOMATIONS.find(
       (automation) => automation.id === 'dependency-readiness',
     );
 
     expect(readiness).toBeDefined();
     expect(readiness?.profile).toBe('unblock-manager');
-    expect(readiness?.triggerType).toBe('cron');
-    expect(readiness?.instructions).toContain('Do not claim deterministic dependency resolution');
+    expect(readiness?.triggerType).toBe('blockers_resolved');
+    expect(readiness?.states).toEqual(['Backlog']);
+    expect(readiness?.moveToState).toBe('Todo');
+    expect(readiness?.instructions).toContain('{{ trigger.move_to_state }}');
   });
 });

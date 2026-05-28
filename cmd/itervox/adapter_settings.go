@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
@@ -68,22 +66,6 @@ func (a *orchestratorAdapter) TestAutomation(ctx context.Context, automationID, 
 	return a.orch.TestAutomation(ctx, automationID, identifier)
 }
 
-func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
-	profiles := a.orch.ProfilesCfg()
-	defs := make(map[string]server.ProfileDef, len(profiles))
-	for name, p := range profiles {
-		defs[name] = server.ProfileDef{
-			Command:          p.Command,
-			Prompt:           p.Prompt,
-			Backend:          p.Backend,
-			Enabled:          config.ProfileEnabled(p),
-			AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
-			CreateIssueState: p.CreateIssueState,
-		}
-	}
-	return defs
-}
-
 func (a *orchestratorAdapter) ReviewerConfig() (string, bool) {
 	return a.orch.ReviewerCfg()
 }
@@ -121,128 +103,6 @@ func (a *orchestratorAdapter) AvailableModels() map[string][]server.ModelOption 
 		result[backend] = converted
 	}
 	return result
-}
-
-func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, originalName string) error {
-	currentProfiles := a.orch.ProfilesCfg()
-	if currentProfiles == nil {
-		currentProfiles = make(map[string]config.AgentProfile)
-	}
-	if originalName != "" && originalName != name {
-		if _, exists := currentProfiles[name]; exists {
-			return fmt.Errorf("profile %q already exists", name)
-		}
-	} else if _, exists := currentProfiles[name]; exists && originalName == "" {
-		return fmt.Errorf("profile %q already exists", name)
-	}
-	finalProfiles := make(map[string]config.AgentProfile, len(currentProfiles)+1)
-	maps.Copy(finalProfiles, currentProfiles)
-	if originalName != "" && originalName != name {
-		delete(finalProfiles, originalName)
-	}
-	finalProfiles[name] = config.AgentProfile{
-		Command:          strings.TrimSpace(def.Command),
-		Prompt:           def.Prompt,
-		Backend:          def.Backend,
-		Enabled:          func() *bool { enabled := def.Enabled; return &enabled }(),
-		AllowedActions:   config.NormalizeAllowedActions(def.AllowedActions),
-		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
-	}
-	automations := a.orch.AutomationsCfg()
-	automationsChanged := false
-	if originalName != "" && originalName != name {
-		var renamed bool
-		automations, renamed = renameAutomationsProfile(automations, originalName, name)
-		automationsChanged = automationsChanged || renamed
-	}
-	if !def.Enabled {
-		var disabled bool
-		automations, disabled = disableAutomationsForProfile(automations, name)
-		automationsChanged = automationsChanged || disabled
-	}
-	reviewerProfile, autoReview := a.orch.ReviewerCfg()
-	reviewerChanged := false
-	if originalName != "" && originalName != name && reviewerProfile == originalName {
-		reviewerProfile = name
-		reviewerChanged = true
-	}
-	if !def.Enabled && reviewerProfile == name {
-		reviewerProfile = ""
-		autoReview = false
-		reviewerChanged = true
-	}
-
-	// Persist profiles + automations + reviewer config in a SINGLE atomic
-	// rewrite of WORKFLOW.md. Previously this issued up to four sequential
-	// writes; a SIGKILL or atomicfs failure between them could leave the
-	// file referencing a renamed profile that the profiles block had not
-	// yet been updated to declare. ApplyAndWriteFrontMatter composes
-	// mutators against one in-memory copy of frontLines and writes once.
-	mutators := []workflow.Mutator{
-		workflow.MutateProfilesBlock(profilesToEntries(finalProfiles)),
-	}
-	if automationsChanged {
-		mutators = append(mutators, workflow.MutateAutomationsBlock(
-			automationconfig.DefinitionsFromConfigs(automations),
-		))
-	}
-	if reviewerChanged {
-		mutators = append(mutators, workflow.MutateReviewerConfig(reviewerProfile, autoReview))
-	}
-	if err := workflow.ApplyAndWriteFrontMatter(a.workflowPath, mutators...); err != nil {
-		return err
-	}
-	a.orch.SetProfilesCfg(finalProfiles)
-	if automationsChanged {
-		a.orch.SetAutomationsCfg(automations)
-	}
-	if reviewerChanged {
-		if err := a.orch.SetReviewerCfg(reviewerProfile, autoReview); err != nil {
-			return err
-		}
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) DeleteProfile(name string) error {
-	profiles := a.orch.ProfilesCfg()
-	delete(profiles, name)
-	automations, automationsChanged := removeAutomationsForProfile(a.orch.AutomationsCfg(), name)
-	reviewerProfile, autoReview := a.orch.ReviewerCfg()
-	reviewerChanged := false
-	if reviewerProfile == name {
-		reviewerProfile = ""
-		autoReview = false
-		reviewerChanged = true
-	}
-	// Single atomic rewrite — see comment in UpsertProfile above for the
-	// transactional rationale.
-	mutators := []workflow.Mutator{
-		workflow.MutateProfilesBlock(profilesToEntries(profiles)),
-	}
-	if automationsChanged {
-		mutators = append(mutators, workflow.MutateAutomationsBlock(
-			automationconfig.DefinitionsFromConfigs(automations),
-		))
-	}
-	if reviewerChanged {
-		mutators = append(mutators, workflow.MutateReviewerConfig(reviewerProfile, autoReview))
-	}
-	if err := workflow.ApplyAndWriteFrontMatter(a.workflowPath, mutators...); err != nil {
-		return err
-	}
-	a.orch.SetProfilesCfg(profiles)
-	if automationsChanged {
-		a.orch.SetAutomationsCfg(automations)
-	}
-	if reviewerChanged {
-		if err := a.orch.SetReviewerCfg(reviewerProfile, autoReview); err != nil {
-			return err
-		}
-	}
-	a.notify()
-	return nil
 }
 
 func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef) error {

@@ -24,6 +24,10 @@ export interface ProfileCommandDraft {
   model: string;
   command: string;
   prompt: string;
+  soul: string;
+  instructions: string;
+  soulFile: string;
+  instructionsFile: string;
   enabled: boolean;
   allowedActions: AllowedAgentAction[];
   createIssueState: string;
@@ -206,11 +210,16 @@ export function modelLabel(backend: SupportedBackend, modelId: string): string {
 
 export function draftFromProfileDef(def: ProfileDef): ProfileCommandDraft {
   const backend = commandToBackend(def.command, def.backend);
+  const instructions = def.instructions ?? def.prompt ?? '';
   return {
     backend,
     model: commandToModel(def.command),
     command: normalizeCommandForSave(def.command, backend),
-    prompt: def.prompt ?? '',
+    prompt: instructions,
+    soul: def.soul ?? '',
+    instructions,
+    soulFile: def.soulFile ?? '',
+    instructionsFile: def.instructionsFile ?? '',
     enabled: def.enabled ?? true,
     allowedActions: normalizeAllowedActions(def.allowedActions),
     createIssueState: def.createIssueState ?? '',

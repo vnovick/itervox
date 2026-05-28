@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback } from 'react';
+import { useConnectionState } from '../../hooks/useConnectionState';
 import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
 import RunningSessionsTable from '../../components/itervox/RunningSessionsTable';
@@ -8,38 +9,34 @@ import { ReviewQueueSection } from '../../components/itervox/ReviewQueueSection'
 import { HostPool } from '../../components/itervox/HostPool';
 import { ProjectSelector } from '../../components/itervox/ProjectSelector';
 import { NarrativeFeed } from '../../components/itervox/NarrativeFeed';
-import AgentQueueView from '../../components/itervox/AgentQueueView';
-import { FilterPills, type FilterPill } from '../../components/itervox/FilterPills';
-import { SearchInput } from '../../components/itervox/SearchInput';
 import { useItervoxStore } from '../../store/itervoxStore';
-import { useUIStore } from '../../store/uiStore';
-import { useToastStore } from '../../store/toastStore';
-import {
-  useIssues,
-  useInvalidateIssues,
-  useUpdateIssueState,
-  useSetIssueProfile,
-} from '../../queries/issues';
-import { useSettingsActions } from '../../hooks/useSettingsActions';
-import { authedFetch } from '../../auth/authedFetch';
-import { UnauthorizedError } from '../../auth/UnauthorizedError';
-
-import { BoardView } from './components/BoardView';
-import { ListView } from './components/ListView';
-import { NotificationsView } from '../../components/itervox/NotificationsView';
-import { useNotificationsTotal } from './components/useNotificationsTotal';
-import { viewModeLabel } from './components/viewModeLabel';
+import { useIssues, useUpdateIssueState, useSetIssueProfile } from '../../queries/issues';
 import { HeroStats } from './components/HeroStats';
+import { LiveOpsStrip } from './components/LiveOpsStrip';
+import { AutomationQueueList } from './components/AutomationQueueList';
+import { AutomationQueueDetailPanel } from './components/AutomationQueueDetailPanel';
+import { DashboardIssuesPanel } from './components/DashboardIssuesPanel';
 
-import { EMPTY_PROFILES, EMPTY_STATES, EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
-const EMPTY_BACKLOG_STATES = EMPTY_STATES;
-const EMPTY_ACTIVE_STATES = EMPTY_STATES;
-const EMPTY_TERMINAL_STATES = EMPTY_STATES;
+// v0.2.0 audit P2-9 — typed empty arrays now live in `utils/constants.ts`
+// alongside the other module-level stable references. The three local
+// aliases (BACKLOG/ACTIVE/TERMINAL → EMPTY_STATES) are gone; callers below
+// just use `EMPTY_STATES` directly.
+import {
+  EMPTY_PROFILES,
+  EMPTY_STATES,
+  EMPTY_RUNNING,
+  EMPTY_HISTORY,
+  EMPTY_HOSTS,
+  EMPTY_AUTOMATIONS,
+  EMPTY_DEPS_NODES,
+  EMPTY_DEPS_EDGES,
+  EMPTY_AUTOMATION_QUEUE,
+  EMPTY_DEPENDENCY_AUDIT,
+} from '../../utils/constants';
 
 export default function Dashboard() {
   const { data: issues = [] } = useIssues();
   const {
-    hasSnapshot,
     availableProfiles,
     backlogStates,
     activeStates,
@@ -51,13 +48,20 @@ export default function Dashboard() {
     defaultBackend,
     running,
     runHistory,
+    maxConcurrentAgents,
+    sshHosts,
+    automations,
+    dependencyGraphNodes,
+    dependencyGraphEdges,
+    automationQueue,
+    automationQueueBackpressure,
+    dependencyAudit,
   } = useItervoxStore(
     useShallow((s) => ({
-      hasSnapshot: s.snapshot !== null,
       availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
-      backlogStates: s.snapshot?.backlogStates ?? EMPTY_BACKLOG_STATES,
-      activeStates: s.snapshot?.activeStates ?? EMPTY_ACTIVE_STATES,
-      terminalStates: s.snapshot?.terminalStates ?? EMPTY_TERMINAL_STATES,
+      backlogStates: s.snapshot?.backlogStates ?? EMPTY_STATES,
+      activeStates: s.snapshot?.activeStates ?? EMPTY_STATES,
+      terminalStates: s.snapshot?.terminalStates ?? EMPTY_STATES,
       completionState: s.snapshot?.completionState ?? '',
       profileDefs: s.snapshot?.profileDefs,
       availableModels: s.snapshot?.availableModels,
@@ -65,6 +69,14 @@ export default function Dashboard() {
       defaultBackend: s.snapshot?.defaultBackend,
       running: s.snapshot?.running ?? EMPTY_RUNNING,
       runHistory: s.snapshot?.history ?? EMPTY_HISTORY,
+      maxConcurrentAgents: s.snapshot?.maxConcurrentAgents ?? 0,
+      sshHosts: s.snapshot?.sshHosts ?? EMPTY_HOSTS,
+      automations: s.snapshot?.automations ?? EMPTY_AUTOMATIONS,
+      dependencyGraphNodes: s.snapshot?.dependencyGraphNodes ?? EMPTY_DEPS_NODES,
+      dependencyGraphEdges: s.snapshot?.dependencyGraphEdges ?? EMPTY_DEPS_EDGES,
+      automationQueue: s.snapshot?.automationQueue ?? EMPTY_AUTOMATION_QUEUE,
+      automationQueueBackpressure: s.snapshot?.automationQueueBackpressure,
+      dependencyAudit: s.snapshot?.dependencyAudit ?? EMPTY_DEPENDENCY_AUDIT,
     })),
   );
   const backlogStateSet = useMemo(() => new Set(backlogStates), [backlogStates]);
@@ -82,101 +94,42 @@ export default function Dashboard() {
     return map;
   }, [running, runHistory, issues, backlogStateSet]);
 
-  const invalidateIssues = useInvalidateIssues();
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
   const { mutateAsync: updateIssueState } = useUpdateIssueState();
   const setIssueProfileMutation = useSetIssueProfile();
 
-  // UI preferences — persisted in Zustand so they survive navigation
-  const viewMode = useUIStore((s) => s.dashboardViewMode);
-  const setViewMode = useUIStore((s) => s.setDashboardViewMode);
-  const search = useUIStore((s) => s.dashboardSearch);
-  const setSearch = useUIStore((s) => s.setDashboardSearch);
-  const stateFilter = useUIStore((s) => s.dashboardStateFilter);
-  const setStateFilter = useUIStore((s) => s.setDashboardStateFilter);
-
-  const [loading, setLoading] = useState(false);
-  const [apiOffline, setApiOffline] = useState(false);
+  // v0.2.0 audit P2-10 — connection-state timing is centralised in
+  // useConnectionState (8s timeout, single source of truth shared with
+  // AppHeader).
+  const { isOffline: apiOffline } = useConnectionState();
+  const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null);
   const handleIssueSelect = useCallback(
     (identifier: string) => {
       setSelectedIdentifier(identifier);
     },
     [setSelectedIdentifier],
   );
-
-  useEffect(() => {
-    if (hasSnapshot) {
-      setApiOffline(false);
-      return;
-    }
-    const t = setTimeout(() => {
-      setApiOffline(true);
-    }, 8000);
-    return () => {
-      clearTimeout(t);
-    };
-  }, [hasSnapshot]);
-
-  // Build Linear-style filter pills from snapshot states
-  const filterPills = useMemo<FilterPill[]>(() => {
-    const pills: FilterPill[] = [{ id: 'all', label: 'All Issues', states: [] }];
-    if (activeStates.length > 0) {
-      pills.push({ id: 'active', label: 'Active', states: activeStates });
-    }
-    if (backlogStates.length > 0) {
-      pills.push({ id: 'backlog', label: 'Backlog', states: backlogStates });
-    }
-    if (completionState) {
-      pills.push({ id: 'review', label: completionState, states: [completionState] });
-    }
-    if (terminalStates.length > 0) {
-      pills.push({ id: 'done', label: 'Done', states: terminalStates });
-    }
-    return pills;
-  }, [activeStates, backlogStates, terminalStates, completionState]);
-
-  // Find matching pill states for filtering
-  const activePillStates = useMemo(() => {
-    if (stateFilter === 'all') return null;
-    const pill = filterPills.find((p) => p.id === stateFilter);
-    return pill?.states ?? null;
-  }, [stateFilter, filterPills]);
-
-  const filtered = useMemo(
-    () =>
-      issues.filter((issue) => {
-        const q = search.trim().toLowerCase();
-        if (
-          q &&
-          !issue.identifier.toLowerCase().includes(q) &&
-          !issue.title.toLowerCase().includes(q)
-        )
-          return false;
-        if (activePillStates !== null) {
-          const match = activePillStates.some((s) => s.toLowerCase() === issue.state.toLowerCase());
-          if (!match) return false;
-        }
-        return true;
-      }),
-    [issues, search, activePillStates],
+  const handleQueueSelect = useCallback((queueId: string) => {
+    setSelectedQueueId(queueId);
+  }, []);
+  const selectedQueueRow = useMemo(
+    () => automationQueue.find((item) => item.id === selectedQueueId) ?? null,
+    [automationQueue, selectedQueueId],
   );
-
-  const notificationsTotal = useNotificationsTotal(issues);
-
-  const handleRefresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      await authedFetch('/api/v1/refresh', { method: 'POST' });
-      await invalidateIssues();
-      await useItervoxStore.getState().refreshSnapshot();
-    } catch (err) {
-      if (!(err instanceof UnauthorizedError)) {
-        useToastStore.getState().addToast('Refresh failed — check the server.', 'error');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [invalidateIssues]);
+  const selectedQueueAutomation = useMemo(
+    () =>
+      selectedQueueRow
+        ? automations.find((automation) => automation.id === selectedQueueRow.automationId)
+        : undefined,
+    [automations, selectedQueueRow],
+  );
+  const selectedQueueDependency = useMemo(
+    () =>
+      selectedQueueRow
+        ? dependencyAudit.find((row) => row.identifier === selectedQueueRow.identifier)
+        : undefined,
+    [dependencyAudit, selectedQueueRow],
+  );
 
   const handleStateChange = useCallback(
     async (identifier: string, newState: string) => {
@@ -196,34 +149,6 @@ export default function Dashboard() {
     [setIssueProfileMutation],
   );
 
-  const { upsertProfile } = useSettingsActions();
-  const handleEditProfile = useCallback(
-    async (
-      name: string,
-      def: {
-        command: string;
-        backend?: string;
-        prompt?: string;
-        enabled?: boolean;
-        allowedActions?: string[];
-        createIssueState?: string;
-        originalName?: string;
-      },
-    ) => {
-      await upsertProfile(
-        name,
-        def.command,
-        def.backend,
-        def.prompt,
-        def.enabled,
-        def.allowedActions,
-        def.createIssueState,
-        def.originalName,
-      );
-    },
-    [upsertProfile],
-  );
-
   return (
     <>
       <PageMeta
@@ -232,6 +157,7 @@ export default function Dashboard() {
       />
       <div className="space-y-[14px]">
         <ProjectSelector />
+        <LiveOpsStrip />
 
         {/* Hero-compact banner — responsive: stacks on mobile */}
         <div className="border-theme-line bg-theme-bg-elevated relative overflow-hidden rounded-[var(--radius-lg)] border px-4 py-4 sm:px-[22px] sm:py-[18px]">
@@ -242,7 +168,7 @@ export default function Dashboard() {
                 'radial-gradient(ellipse at top left, var(--accent-soft) 0%, transparent 60%)',
             }}
           />
-          <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+          <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
             <div className="min-w-0">
               <div className="mb-2">
                 <span className="bg-theme-accent-soft text-theme-accent-strong inline-flex items-center rounded-full px-3 py-[5px] text-[11px] font-semibold tracking-[0.03em] uppercase">
@@ -267,6 +193,14 @@ export default function Dashboard() {
           </div>
         </div>
 
+        <AutomationQueueList
+          queue={automationQueue}
+          backpressure={automationQueueBackpressure}
+          dependencyAudit={dependencyAudit}
+          onSelectIssue={handleIssueSelect}
+          onSelectQueue={handleQueueSelect}
+        />
+
         {apiOffline && (
           <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-[var(--radius-md)] border p-4 text-sm">
             <p className="mb-1 font-semibold">Cannot reach the Itervox API</p>
@@ -287,117 +221,39 @@ export default function Dashboard() {
         <PendingResumePanel onSelect={handleIssueSelect} />
         <RetryQueueTable />
 
-        {/* Issues panel */}
-        <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
-          {/* Panel header — search always visible */}
-          <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3 sm:px-[18px] sm:py-[14px]">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold tracking-tight">
-                  Issues
-                  <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
-                    {filtered.length}
-                  </span>
-                </h2>
-              </div>
-              <div className="flex flex-shrink-0 items-center gap-2">
-                {/* View toggle — segmented */}
-                <div className="bg-theme-bg-elevated border-theme-line inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px]">
-                  {(
-                    [
-                      'board',
-                      'list',
-                      ...(availableProfiles.length > 0 ? (['agents'] as const) : []),
-                      'notifications',
-                    ] as ('board' | 'list' | 'agents' | 'notifications')[]
-                  ).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => {
-                        setViewMode(mode);
-                      }}
-                      className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-semibold transition-all ${
-                        viewMode === mode ? 'bg-theme-accent text-white' : 'text-theme-muted'
-                      }`}
-                    >
-                      {viewModeLabel(mode, notificationsTotal)}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Refresh */}
-                <button
-                  onClick={handleRefresh}
-                  disabled={loading}
-                  className="border-theme-line text-theme-text-secondary flex h-7 w-7 items-center justify-center rounded-lg border text-sm transition-colors disabled:opacity-50"
-                  title={loading ? 'Refreshing…' : 'Refresh issues'}
-                  aria-label="Refresh issues"
-                >
-                  {loading ? '…' : '↻'}
-                </button>
-              </div>
-            </div>
-
-            {/* Filter pills + search — hidden in agents view (agents group by profile, not state) */}
-            {viewMode !== 'agents' && viewMode !== 'notifications' && (
-              <>
-                <FilterPills pills={filterPills} activeId={stateFilter} onChange={setStateFilter} />
-                <div className="flex gap-3">
-                  <SearchInput
-                    placeholder="Search identifier or title…"
-                    label="Search issues"
-                    value={search}
-                    onChange={setSearch}
-                    className="flex-1"
-                  />
-                </div>
-              </>
-            )}
-          </div>
-
-          <div className="px-4 pt-3 pb-4 sm:px-[18px] sm:pt-[14px] sm:pb-[18px]">
-            {viewMode === 'board' && (
-              <BoardView
-                issues={filtered}
-                onSelect={handleIssueSelect}
-                onStateChange={handleStateChange}
-                availableProfiles={availableProfiles}
-                onProfileChange={handleProfileChange}
-              />
-            )}
-            {viewMode === 'list' && (
-              <ListView
-                issues={filtered}
-                onSelect={handleIssueSelect}
-                availableProfiles={availableProfiles}
-                profileDefs={profileDefs}
-                runningBackendByIdentifier={runningBackendByIdentifier}
-                defaultBackend={defaultBackend}
-                backlogStates={backlogStates}
-                onProfileChange={handleProfileChange}
-              />
-            )}
-            {viewMode === 'agents' && (
-              <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
-                <AgentQueueView
-                  issues={issues}
-                  backlogStates={backlogStates}
-                  availableProfiles={availableProfiles}
-                  profileDefs={profileDefs}
-                  availableModels={availableModels}
-                  supportedAgentActions={supportedAgentActions}
-                  onProfileChange={handleProfileChange}
-                  onSelect={handleIssueSelect}
-                  onEditProfile={handleEditProfile}
-                />
-              </div>
-            )}
-            {viewMode === 'notifications' && <NotificationsView onSelect={handleIssueSelect} />}
-          </div>
-        </div>
+        <DashboardIssuesPanel
+          issues={issues}
+          activeStates={activeStates}
+          backlogStates={backlogStates}
+          terminalStates={terminalStates}
+          completionState={completionState}
+          availableProfiles={availableProfiles}
+          profileDefs={profileDefs}
+          availableModels={availableModels}
+          supportedAgentActions={supportedAgentActions}
+          runningBackendByIdentifier={runningBackendByIdentifier}
+          defaultBackend={defaultBackend}
+          dependencyGraphNodes={dependencyGraphNodes}
+          dependencyGraphEdges={dependencyGraphEdges}
+          onIssueSelect={handleIssueSelect}
+          onStateChange={handleStateChange}
+          onProfileChange={handleProfileChange}
+        />
 
         <NarrativeFeed />
       </div>
+      <AutomationQueueDetailPanel
+        row={selectedQueueRow}
+        automation={selectedQueueAutomation}
+        dependency={selectedQueueDependency}
+        profileDef={selectedQueueRow ? profileDefs?.[selectedQueueRow.profile] : undefined}
+        running={running}
+        maxConcurrentAgents={maxConcurrentAgents}
+        sshHosts={sshHosts}
+        onClose={() => {
+          setSelectedQueueId(null);
+        }}
+      />
     </>
   );
 }

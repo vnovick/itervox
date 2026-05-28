@@ -92,6 +92,108 @@ type RetryRow struct {
 	Error      string    `json:"error,omitempty"`
 }
 
+// AutomationQueueBackpressureRow is the queue-cap snapshot used by dashboard
+// alert surfaces. It intentionally omits queued prompt/instruction payloads.
+//
+// LastRejectedAt is *time.Time so `omitempty` actually omits the field when
+// no rejection has been recorded. Go's encoding/json treats time.Time as a
+// struct and `omitempty` only omits the zero struct value — it does NOT call
+// IsZero(), so a time.Time-typed field with omitempty would still emit
+// "0001-01-01T00:00:00Z" on the wire. v0.2.0 audit P1-5.
+type AutomationQueueBackpressureRow struct {
+	Length             int        `json:"length"`
+	MaxLength          int        `json:"maxLength"`
+	Saturated          bool       `json:"saturated"`
+	PausedProducers    bool       `json:"pausedProducers"`
+	RejectedSinceBoot  int        `json:"rejectedSinceBoot"`
+	LastRejectedAt     *time.Time `json:"lastRejectedAt,omitempty"`
+	LastRejectedReason string     `json:"lastRejectedReason,omitempty"`
+}
+
+type BlockerRefRow struct {
+	ID         string `json:"id,omitempty"`
+	Identifier string `json:"identifier,omitempty"`
+	State      string `json:"state,omitempty"`
+	URL        string `json:"url,omitempty"`
+}
+
+// AutomationQueueRow is the per-entry row exposed by the snapshot.
+//
+// LastFiredAt and LastAttemptAt are *time.Time so `omitempty` actually
+// omits the field on never-fired / never-attempted entries instead of
+// emitting "0001-01-01T00:00:00Z" on the wire. v0.2.0 audit P1-5.
+type AutomationQueueRow struct {
+	ID                string     `json:"id"`
+	AutomationID      string     `json:"automationId"`
+	TriggerType       string     `json:"triggerType"`
+	Identifier        string     `json:"identifier"`
+	Title             string     `json:"title,omitempty"`
+	IssueState        string     `json:"issueState,omitempty"`
+	Profile           string     `json:"profile"`
+	Backend           string     `json:"backend,omitempty"`
+	Status            string     `json:"status"`
+	Reason            string     `json:"reason"`
+	ReasonDetail      string     `json:"reasonDetail,omitempty"`
+	QueuedAt          time.Time  `json:"queuedAt"`
+	FiredAt           time.Time  `json:"firedAt"`
+	LastFiredAt       *time.Time `json:"lastFiredAt,omitempty"`
+	LastAttemptAt     *time.Time `json:"lastAttemptAt,omitempty"`
+	AttemptCount      int        `json:"attemptCount"`
+	Cron              string     `json:"cron,omitempty"`
+	Timezone          string     `json:"timezone,omitempty"`
+	PRURL             string     `json:"prUrl,omitempty"`
+	InputContext      string     `json:"inputContext,omitempty"`
+	ErrorMessage      string     `json:"errorMessage,omitempty"`
+	SwitchedToProfile string     `json:"switchedToProfile,omitempty"`
+	SwitchedToBackend string     `json:"switchedToBackend,omitempty"`
+	MoveToState       string     `json:"moveToState,omitempty"`
+}
+
+// DependencyAuditRow is one issue's dependency state as exposed by the
+// snapshot.
+//
+// FirstBlockedAt / UnblockedAt / LastAuditedAt are *time.Time so `omitempty`
+// actually omits the field on a never-blocked / never-audited row instead of
+// emitting "0001-01-01T00:00:00Z". v0.2.0 audit P1-5.
+type DependencyAuditRow struct {
+	Identifier            string          `json:"identifier"`
+	IssueState            string          `json:"issueState"`
+	Status                string          `json:"status"`
+	Sources               []string        `json:"sources,omitempty"`
+	BlockedBy             []BlockerRefRow `json:"blockedBy,omitempty"`
+	UnresolvedBlockers    []BlockerRefRow `json:"unresolvedBlockers,omitempty"`
+	ResolvedBlockers      []BlockerRefRow `json:"resolvedBlockers,omitempty"`
+	WasBlocked            bool            `json:"wasBlocked"`
+	FirstBlockedAt        *time.Time      `json:"firstBlockedAt,omitempty"`
+	UnblockedAt           *time.Time      `json:"unblockedAt,omitempty"`
+	LastAuditedAt         *time.Time      `json:"lastAuditedAt,omitempty"`
+	LastTransitionVersion int64           `json:"lastTransitionVersion,omitempty"`
+	LastTransitionReason  string          `json:"lastTransitionReason,omitempty"`
+}
+
+type DependencyGraphNodeRow struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title,omitempty"`
+	State      string `json:"state,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Running    bool   `json:"running"`
+	Queued     bool   `json:"queued"`
+	Terminal   bool   `json:"terminal"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+	URL        string `json:"url,omitempty"`
+}
+
+type DependencyGraphEdgeRow struct {
+	ID               string `json:"id"`
+	SourceIdentifier string `json:"sourceIdentifier"`
+	TargetIdentifier string `json:"targetIdentifier"`
+	SourceState      string `json:"sourceState,omitempty"`
+	TargetState      string `json:"targetState,omitempty"`
+	Resolved         bool   `json:"resolved"`
+	SourceKnown      bool   `json:"sourceKnown"`
+}
+
 // Counts holds summary counts for the state snapshot.
 type Counts struct {
 	Running  int `json:"running"`
@@ -646,7 +748,14 @@ type StateSnapshot struct {
 	Automations []AutomationDef `json:"automations,omitempty"`
 	// InputRequired lists issues whose agent is either waiting for human input
 	// or has already received a reply that is pending resume.
-	InputRequired []InputRequiredRow `json:"inputRequired,omitempty"`
+	InputRequired   []InputRequiredRow   `json:"inputRequired,omitempty"`
+	AutomationQueue []AutomationQueueRow `json:"automationQueue,omitempty"`
+	// AutomationQueueBackpressure reports queue saturation so the dashboard can
+	// warn when automation producers are paused by the bounded durable queue.
+	AutomationQueueBackpressure *AutomationQueueBackpressureRow `json:"automationQueueBackpressure,omitempty"`
+	DependencyAudit             []DependencyAuditRow            `json:"dependencyAudit,omitempty"`
+	DependencyGraphNodes        []DependencyGraphNodeRow        `json:"dependencyGraphNodes,omitempty"`
+	DependencyGraphEdges        []DependencyGraphEdgeRow        `json:"dependencyGraphEdges,omitempty"`
 	// ConfigInvalid surfaces an in-flight WORKFLOW.md validation failure to
 	// the dashboard / TUI banner. nil/absent means the daemon is reading a
 	// valid config; non-nil means the most recent reload tick failed and the
@@ -698,6 +807,12 @@ type SSHHostInfo struct {
 type ProfileDef struct {
 	Command          string   `json:"command"`
 	Prompt           string   `json:"prompt,omitempty"`
+	Soul             string   `json:"soul,omitempty"`
+	Instructions     string   `json:"instructions,omitempty"`
+	SoulFile         string   `json:"soulFile,omitempty"`
+	InstructionsFile string   `json:"instructionsFile,omitempty"`
+	SoulSet          bool     `json:"-"`
+	InstructionsSet  bool     `json:"-"`
 	Backend          string   `json:"backend,omitempty"`
 	Enabled          bool     `json:"enabled"`
 	AllowedActions   []string `json:"allowedActions,omitempty"`
@@ -729,6 +844,18 @@ type BlockerDetail struct {
 	URL        string `json:"url,omitempty"`
 }
 
+type IssueStatusChangeRow struct {
+	FromState    string    `json:"fromState,omitempty"`
+	ToState      string    `json:"toState"`
+	Source       string    `json:"source"`
+	AutomationID string    `json:"automationId,omitempty"`
+	TriggerType  string    `json:"triggerType,omitempty"`
+	ProfileName  string    `json:"profileName,omitempty"`
+	Backend      string    `json:"backend,omitempty"`
+	WorkerHost   string    `json:"workerHost,omitempty"`
+	At           time.Time `json:"at"`
+}
+
 // TrackerIssue is a single issue row returned by /api/v1/issues.
 type TrackerIssue struct {
 	Identifier        string `json:"identifier"`
@@ -743,13 +870,14 @@ type TrackerIssue struct {
 	LastMessage       string `json:"lastMessage,omitempty"`
 	Error             string `json:"error,omitempty"`
 	// Enriched fields
-	Labels           []string        `json:"labels,omitempty"`
-	Priority         *int            `json:"priority,omitempty"`
-	BranchName       *string         `json:"branchName,omitempty"`
-	BlockedBy        []string        `json:"blockedBy,omitempty"`
-	BlockedByDetails []BlockerDetail `json:"blockedByDetails,omitempty"`
-	Comments         []CommentRow    `json:"comments,omitempty"`
-	IneligibleReason string          `json:"ineligibleReason,omitempty"`
+	Labels           []string               `json:"labels,omitempty"`
+	Priority         *int                   `json:"priority,omitempty"`
+	BranchName       *string                `json:"branchName,omitempty"`
+	BlockedBy        []string               `json:"blockedBy,omitempty"`
+	BlockedByDetails []BlockerDetail        `json:"blockedByDetails,omitempty"`
+	Comments         []CommentRow           `json:"comments,omitempty"`
+	StatusChanges    []IssueStatusChangeRow `json:"statusChanges,omitempty"`
+	IneligibleReason string                 `json:"ineligibleReason,omitempty"`
 	// AgentProfile is the name of the per-issue agent profile override, if any.
 	AgentProfile string `json:"agentProfile,omitempty"`
 	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").

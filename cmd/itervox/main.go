@@ -65,12 +65,20 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: itervox [command] [flags]
 
 Commands:
-  init    Scan a repository and generate a WORKFLOW.md starter file
-             --tracker  linear|github  (required)
+  init    Scan a repository and generate a WORKFLOW.md starter file,
+          or migrate an existing one with --update.
+             --tracker  linear|github  (required for new workflows)
              --runner   claude|codex    (default: claude)
              --output   output file path (default: WORKFLOW.md)
              --dir      directory to scan (default: .)
              --force    overwrite existing output file
+             --update   migrate an existing WORKFLOW.md to the latest
+                        schema (writes WORKFLOW.md.bak, extracts inline
+                        profile prompts to .itervox/agents/<name>/
+                        INSTRUCTIONS.md, seeds SOUL.md, stamps
+                        itervox_schema_version)
+             --workflow path to the WORKFLOW.md to migrate when using
+                        --update (default: WORKFLOW.md)
 
   clear   Remove workspace directories created by itervox
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
@@ -108,21 +116,6 @@ func defaultLogsDir(workflowPath string) string {
 	// Encode the slug so it is safe as a directory name component.
 	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
 	return filepath.Join(base, cfg.Tracker.Kind, safe)
-}
-
-func convertModelsForSnapshot(models map[string][]config.ModelOption) map[string][]server.ModelOption {
-	if len(models) == 0 {
-		return nil
-	}
-	result := make(map[string][]server.ModelOption, len(models))
-	for backend, opts := range models {
-		converted := make([]server.ModelOption, len(opts))
-		for i, m := range opts {
-			converted[i] = server.ModelOption{ID: m.ID, Label: m.Label}
-		}
-		result[backend] = converted
-	}
-	return result
 }
 
 func configuredBackend(command, explicit string) string {
@@ -577,6 +570,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetHistoryFile(filepath.Join(logDir, "history.json"))
 		orch.SetPausedFile(filepath.Join(logDir, "paused.json"))
 		orch.SetInputRequiredFile(filepath.Join(logDir, "input_required.json"))
+		orch.SetAutomationQueueFile(filepath.Join(logDir, "automation_queue.json"))
 		// Gap §5.3 — persist rate_limited auto-switch overrides so a daemon
 		// crash mid-flight doesn't lose them and re-dispatch under the
 		// original (rate-limited) profile.
@@ -646,6 +640,30 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		actionTokenStore = agentactions.NewStore()
 		orch.SetAgentActionBaseURL(agentActionBaseURL(actualAddr))
 		orch.SetAgentActionTokens(actionTokenStore)
+		// v0.2.0 audit P1-3 — periodic janitor for expired action grants.
+		// Validate() opportunistically deletes tokens it sees, but most
+		// grants are issued to workers that never call the action endpoint
+		// (create_issue is rare), so the map would otherwise grow forever
+		// on a long-running daemon. 15-minute cadence is conservative
+		// relative to the 1-hour default TTL — any expired entry is gone
+		// within one cleanup interval after expiry. Goroutine self-exits
+		// on ctx cancel; one trailing Cleanup pass on shutdown drains
+		// what the final tick missed.
+		actionStoreCleanupTicker := time.NewTicker(15 * time.Minute)
+		go func() {
+			defer actionStoreCleanupTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					actionTokenStore.Cleanup(time.Now())
+					return
+				case t := <-actionStoreCleanupTicker.C:
+					if removed := actionTokenStore.Cleanup(t); removed > 0 {
+						slog.Debug("agentactions: expired grants pruned", "removed", removed)
+					}
+				}
+			}
+		}()
 	}
 
 	// Redirect slog to file-only before the TUI takes the alt-screen.
@@ -668,6 +686,24 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// in raw mode, leaving the user's shell broken (no Ctrl-C, no echo).
 	defer func() { <-tuiDone }()
 
+	if err := ensureItervoxGitignore(filepath.Join(filepath.Dir(workflowPath), ".itervox")); err != nil {
+		slog.Warn("heartbeat: gitignore update failed", "error", err)
+	}
+	heartbeatDashboardURL := ""
+	if actualAddr != "" {
+		heartbeatDashboardURL = fmt.Sprintf("http://%s/", actualAddr)
+	}
+	heartbeat := newHeartbeatWriter(heartbeatPath(workflowPath), heartbeatOptions{
+		WorkflowPath:  workflowPath,
+		SchemaVersion: cfg.SchemaVersion,
+		DashboardURL:  heartbeatDashboardURL,
+	}, snap, heartbeatMinInterval)
+	if err := heartbeat.WriteNow(time.Now().UTC()); err != nil {
+		slog.Warn("heartbeat: startup write failed", "path", heartbeat.path, "error", err)
+	}
+	orch.OnStateChange = heartbeat.Request
+	go heartbeat.Run(ctx)
+
 	// Start serving on the already-bound listener.
 	if srvListener != nil {
 		fetchIssue := func(ctx context.Context, identifier string) (*server.TrackerIssue, error) {
@@ -678,7 +714,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			if issue == nil {
 				return nil, nil
 			}
-			ti := app.EnrichIssue(*issue, orch.Snapshot(), time.Now(), cfg)
+			snap := orch.Snapshot()
+			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
+			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
 			return &ti, nil
 		}
 
@@ -710,7 +748,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		if err := srv.Validate(); err != nil {
 			return fmt.Errorf("server configuration error: %w", err)
 		}
-		orch.OnStateChange = srv.Notify
+		orch.OnStateChange = func() {
+			srv.Notify()
+			heartbeat.Request()
+		}
 		srvDone = serveOnListener(ctx, srvListener, actualAddr, srv)
 	}
 
@@ -898,14 +939,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		if len(profiles) > 0 {
 			profileDefs = make(map[string]server.ProfileDef, len(profiles))
 			for n, p := range profiles {
-				profileDefs[n] = server.ProfileDef{
-					Command:          p.Command,
-					Prompt:           p.Prompt,
-					Backend:          p.Backend,
-					Enabled:          config.ProfileEnabled(p),
-					AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
-					CreateIssueState: p.CreateIssueState,
-				}
+				profileDefs[n] = profileDefFromConfig(p)
 			}
 		}
 
@@ -944,6 +978,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		}
 
 		pausedWithPR := orch.GetPausedOpenPRs()
+		dependencyGraphNodes, dependencyGraphEdges := dependencyGraphRows(s)
 		snap := server.StateSnapshot{
 			GeneratedAt:                  now,
 			Counts:                       server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
@@ -975,6 +1010,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DefaultBackend:               configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
 			InlineInput:                  orch.InlineInputCfg(),
 			Automations:                  automationconfig.DefinitionsFromConfigs(orch.AutomationsCfg()),
+			AutomationQueue:              automationQueueRows(s),
+			AutomationQueueBackpressure:  automationQueueBackpressureRow(s.AutomationQueueBackpressure),
+			DependencyAudit:              dependencyAuditRows(s.DependencyAudit),
+			DependencyGraphNodes:         dependencyGraphNodes,
+			DependencyGraphEdges:         dependencyGraphEdges,
 			AvailableModels:              convertModelsForSnapshot(cfg.Agent.AvailableModels),
 			SupportedAgentActions:        config.SupportedAgentActions(),
 			ReviewerProfile:              func() string { p, _ := orch.ReviewerCfg(); return p }(),
@@ -1343,7 +1383,32 @@ func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, 
 	if issue == nil {
 		return fmt.Errorf("issue %s not found", identifier)
 	}
-	return a.tr.UpdateIssueState(ctx, issue.ID, stateName)
+	if err := a.tr.UpdateIssueState(ctx, issue.ID, stateName); err != nil {
+		return err
+	}
+	source := orchestrator.StatusSourceDashboard
+	if server.IssueStatusSource(ctx) == server.IssueStatusSourceAgent {
+		source = orchestrator.StatusSourceWorkerLifecycle
+	}
+	change := orchestrator.IssueStatusChange{
+		Identifier: identifier,
+		FromState:  issue.State,
+		ToState:    stateName,
+		Source:     source,
+	}
+	snap := a.orch.Snapshot()
+	if live := snap.Running[issue.ID]; live != nil {
+		change.ProfileName = live.ProfileName
+		change.Backend = live.Backend
+		change.WorkerHost = live.WorkerHost
+		if live.AutomationID != "" && server.IssueStatusSource(ctx) == server.IssueStatusSourceAgent {
+			change.Source = orchestrator.StatusSourceAutomation
+			change.AutomationID = live.AutomationID
+			change.TriggerType = live.TriggerType
+		}
+	}
+	a.orch.RecordIssueStatusChange(change)
+	return nil
 }
 
 // deduplicateStates concatenates backlog, active, terminal states and the
@@ -1726,6 +1791,10 @@ func runAction(args []string) {
 		_ = fs.Parse(args[1:])
 		if strings.TrimSpace(*state) == "" {
 			fmt.Fprintln(os.Stderr, "itervox action move-state: --state is required")
+			fatalExit(2)
+		}
+		if allowedState := strings.TrimSpace(os.Getenv("ITERVOX_MOVE_ISSUE_STATE")); allowedState != "" && strings.TrimSpace(*state) != allowedState {
+			fmt.Fprintf(os.Stderr, "itervox action move-state: --state must be %q for this automation grant\n", allowedState)
 			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/move-state"

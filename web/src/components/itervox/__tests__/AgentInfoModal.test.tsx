@@ -63,7 +63,7 @@ describe('AgentInfoModal', () => {
     expect(screen.getByText('You are a code reviewer.')).toBeInTheDocument();
   });
 
-  it('shows fallback message when no prompt', () => {
+  it('shows fallback message when no profile files are configured', () => {
     render(
       <AgentInfoModal
         profileName="reviewer"
@@ -71,7 +71,7 @@ describe('AgentInfoModal', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText(/No prompt configured/)).toBeInTheDocument();
+    expect(screen.getByText(/No profile files configured/)).toBeInTheDocument();
   });
 
   describe('edit mode', () => {

@@ -332,7 +332,7 @@ func TestUpsertProfileIncludesBackend(t *testing.T) {
 	}
 	srv := server.New(cfg)
 
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/codex-fast", bytes.NewBufferString(`{"command":"run-codex-wrapper","prompt":"fast path","backend":"codex","enabled":false,"allowedActions":["comment","provide_input"],"originalName":"legacy-fast"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/codex-fast", bytes.NewBufferString(`{"command":"run-codex-wrapper","prompt":"fast path","soul":"Soul body","instructions":"Instructions body","soulFile":".itervox/agents/codex-fast/SOUL.md","instructionsFile":".itervox/agents/codex-fast/INSTRUCTIONS.md","backend":"codex","enabled":false,"allowedActions":["comment","provide_input"],"originalName":"legacy-fast"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -341,10 +341,39 @@ func TestUpsertProfileIncludesBackend(t *testing.T) {
 	assert.Equal(t, "codex-fast", gotName)
 	assert.Equal(t, "run-codex-wrapper", gotDef.Command)
 	assert.Equal(t, "fast path", gotDef.Prompt)
+	assert.Equal(t, "Soul body", gotDef.Soul)
+	assert.Equal(t, "Instructions body", gotDef.Instructions)
+	assert.True(t, gotDef.SoulSet)
+	assert.True(t, gotDef.InstructionsSet)
+	assert.Equal(t, ".itervox/agents/codex-fast/SOUL.md", gotDef.SoulFile)
+	assert.Equal(t, ".itervox/agents/codex-fast/INSTRUCTIONS.md", gotDef.InstructionsFile)
 	assert.Equal(t, "codex", gotDef.Backend)
 	assert.False(t, gotDef.Enabled)
 	assert.Equal(t, []string{"comment", "provide_input"}, gotDef.AllowedActions)
 	assert.Equal(t, "legacy-fast", gotOriginalName)
+}
+
+func TestUpsertProfilePreservesSubmittedEmptyProfileFileFields(t *testing.T) {
+	var gotDef server.ProfileDef
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpsertProfileFn: func(_ string, def server.ProfileDef, _ string) error {
+			gotDef = def
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/qa", bytes.NewBufferString(`{"command":"claude","soul":"","instructions":"","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, gotDef.Soul)
+	assert.Empty(t, gotDef.Instructions)
+	assert.True(t, gotDef.SoulSet)
+	assert.True(t, gotDef.InstructionsSet)
 }
 
 func TestUpdateIssueState(t *testing.T) {
@@ -387,9 +416,11 @@ func TestUpdateIssueState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			var gotSource string
 			cfg := makeTestConfig(baseSnap())
 			cfg.Client = &server.FuncClient{
 				UpdateIssueStateFn: func(ctx context.Context, identifier, stateName string) error {
+					gotSource = server.IssueStatusSource(ctx)
 					return tc.updaterErr
 				},
 			}
@@ -403,11 +434,35 @@ func TestUpdateIssueState(t *testing.T) {
 				var resp map[string]any
 				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 				assert.Equal(t, true, resp["ok"])
+				assert.Equal(t, server.IssueStatusSourceDashboard, gotSource)
 			} else {
 				assert.Contains(t, w.Body.String(), "error")
 			}
 		})
 	}
+}
+
+func TestTrackerIssueIncludesStatusChangesJSON(t *testing.T) {
+	issue := server.TrackerIssue{
+		Identifier:        "ENG-1",
+		Title:             "Track status",
+		State:             "Done",
+		OrchestratorState: "idle",
+		StatusChanges: []server.IssueStatusChangeRow{{
+			FromState:    "Todo",
+			ToState:      "Done",
+			Source:       "dashboard",
+			AutomationID: "auto-1",
+			At:           time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	data, err := json.Marshal(issue)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"statusChanges"`)
+	assert.Contains(t, string(data), `"fromState":"Todo"`)
+	assert.Contains(t, string(data), `"source":"dashboard"`)
+	assert.Contains(t, string(data), `"automationId":"auto-1"`)
 }
 
 // ─── handleIssues ─────────────────────────────────────────────────────────────
@@ -1889,6 +1944,85 @@ func TestHandleAgentMoveState_QueuesRefresh(t *testing.T) {
 	default:
 		t.Fatal("expected agent move-state to queue refresh")
 	}
+}
+
+func TestHandleAgentMoveState_RejectsStateOutsideGrant(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.IssueScoped("ENG-1", "run-1", []string{config.AgentActionMoveState}, "", "Todo", time.Minute)
+	require.NoError(t, err)
+
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		UpdateIssueStateFn: func(context.Context, string, string) error {
+			called = true
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/move-state", bytes.NewBufferString(`{"state":"Done"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called)
+	assert.Contains(t, w.Body.String(), "agent_action_denied")
+}
+
+func TestStateSnapshotIncludesAutomationQueueAndDependencyRowsJSON(t *testing.T) {
+	snap := server.StateSnapshot{
+		GeneratedAt:         time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC),
+		Counts:              server.Counts{},
+		Running:             []server.RunningRow{},
+		Retrying:            []server.RetryRow{},
+		Paused:              []string{},
+		MaxConcurrentAgents: 1,
+		MaxRetries:          5,
+		AutomationQueue: []server.AutomationQueueRow{{
+			ID:           "automation:nightly:cron:ENG-1",
+			AutomationID: "nightly",
+			TriggerType:  "cron",
+			Identifier:   "ENG-1",
+			Profile:      "pm",
+			Status:       "queued",
+			Reason:       "no_slots",
+			QueuedAt:     time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC),
+			FiredAt:      time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC),
+			AttemptCount: 1,
+		}},
+		DependencyAudit: []server.DependencyAuditRow{{
+			Identifier: "ENG-2",
+			IssueState: "Backlog",
+			Status:     "blocked",
+			BlockedBy:  []server.BlockerRefRow{{Identifier: "ENG-1", State: "Todo"}},
+			WasBlocked: true,
+		}},
+		DependencyGraphNodes: []server.DependencyGraphNodeRow{{
+			ID:         "ENG-1",
+			Identifier: "ENG-1",
+			Running:    false,
+			Queued:     true,
+			Terminal:   false,
+		}},
+		DependencyGraphEdges: []server.DependencyGraphEdgeRow{{
+			ID:               "ENG-1->ENG-2",
+			SourceIdentifier: "ENG-1",
+			TargetIdentifier: "ENG-2",
+			Resolved:         false,
+			SourceKnown:      true,
+		}},
+	}
+
+	data, err := json.Marshal(snap)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"automationQueue"`)
+	assert.Contains(t, string(data), `"dependencyAudit"`)
+	assert.Contains(t, string(data), `"dependencyGraphNodes"`)
+	assert.Contains(t, string(data), `"dependencyGraphEdges"`)
 }
 
 func TestHandleAgentCreateIssue_Success(t *testing.T) {

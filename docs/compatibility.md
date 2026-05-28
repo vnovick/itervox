@@ -46,7 +46,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 | Component | Tested version | Notes |
 |---|---|---|
 | Node.js | **20 LTS** for `web/`, **22 LTS** for `site/` | Required only to build the dashboard or docs site from source. |
-| pnpm | **9+** | Used as the package manager (`web/` and `site/` directories). |
+| pnpm | **10+** | Used as the package manager (`web/` and `site/` directories). Both `web/package.json` and `site/package.json` pin the exact version via `packageManager: pnpm@10.9.0`; running pnpm via [corepack](https://nodejs.org/api/corepack.html) selects the pinned version automatically. |
 | Vite | See `web/package.json` | Bundler; version pinned in lockfile. |
 
 ---

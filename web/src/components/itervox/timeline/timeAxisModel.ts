@@ -3,6 +3,8 @@ import { formatAxisTime } from './timeFormatting';
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const DAY_SCALE_SPAN = DAY;
+const MIN_DAY_EDGE_GAP = 4 * HOUR;
 
 const TIME_STEPS = [
   30_000,
@@ -23,9 +25,22 @@ const TIME_STEPS = [
 
 export function timeAxisStep(spanMs: number): number {
   const rawStep = spanMs / 6;
+  if (spanMs >= DAY_SCALE_SPAN && rawStep < DAY) return DAY;
   const predefined = TIME_STEPS.find((step) => step >= rawStep);
   if (predefined) return predefined;
   return Math.ceil(rawStep / (7 * DAY)) * 7 * DAY;
+}
+
+function startOfLocalDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function addLocalDays(ms: number, days: number): number {
+  const d = new Date(ms);
+  d.setDate(d.getDate() + days);
+  return d.getTime();
 }
 
 export function buildTimeAxisTicks(viewStart: number, viewEnd: number): number[] {
@@ -34,21 +49,27 @@ export function buildTimeAxisTicks(viewStart: number, viewEnd: number): number[]
 
   const step = timeAxisStep(span);
   const ticks: number[] = [];
+  if (step >= DAY) {
+    const stepDays = Math.max(1, Math.round(step / DAY));
+    ticks.push(viewStart);
+    let t = startOfLocalDay(viewStart);
+    if (t <= viewStart) t = addLocalDays(t, stepDays);
+    for (; t <= viewEnd; t = addLocalDays(t, stepDays)) ticks.push(t);
+    return ticks.filter((tick, idx) => idx === 0 || tick - ticks[idx - 1] >= MIN_DAY_EDGE_GAP);
+  }
+
   const first = Math.ceil(viewStart / step) * step;
   for (let t = first; t <= viewEnd; t += step) ticks.push(t);
   return ticks;
 }
 
-export function formatTimeAxisLabel(
-  ms: number,
-  spanMs: number,
-  stepMs = timeAxisStep(spanMs),
-): string {
+export function formatTimeAxisLabel(ms: number, spanMs: number, stepMs?: number): string {
+  // Keep the optional step parameter for older call sites/tests; day-scale labels are now date-only.
+  void stepMs;
   if (spanMs < DAY) return formatAxisTime(ms);
 
   const d = new Date(ms);
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
-  if (stepMs >= DAY) return `${month}-${day}`;
-  return `${month}-${day} ${formatAxisTime(ms)}`;
+  return `${month}-${day}`;
 }

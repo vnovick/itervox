@@ -38,6 +38,50 @@ var ErrReviewerProfileNotFound = errors.New("agent.reviewer_profile must referen
 // but is disabled.
 var ErrReviewerProfileDisabled = errors.New("agent.reviewer_profile must reference an enabled profile")
 
+func workflowUpdatePath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "WORKFLOW.md"
+	}
+	return path
+}
+
+// LegacyInlineProfilePromptMessage returns the canonical migration guidance
+// used when a workflow is still on the pre-schema-2 inline profile prompt shape.
+func LegacyInlineProfilePromptMessage(workflowPath string) string {
+	return fmt.Sprintf(`WORKFLOW.md uses the legacy inline profile-prompt schema.
+Run:
+  itervox init --update --workflow %s
+
+This creates .itervox/agents/<profile>/SOUL.md and INSTRUCTIONS.md,
+rewrites profile references, and keeps a WORKFLOW.md.bak backup.`, workflowUpdatePath(workflowPath))
+}
+
+// MissingWorkflowSchemaMessage returns the canonical migration guidance used
+// when a workflow lacks an explicit itervox_schema_version marker.
+func MissingWorkflowSchemaMessage(workflowPath string) string {
+	return fmt.Sprintf(`WORKFLOW.md is missing itervox_schema_version.
+Run:
+  itervox init --update --workflow %s
+
+This creates .itervox/agents/<profile>/SOUL.md and INSTRUCTIONS.md,
+rewrites profile references, and keeps a WORKFLOW.md.bak backup.`, workflowUpdatePath(workflowPath))
+}
+
+// ValidateWorkflowSchema rejects workflows that are not on the latest supported
+// schema before the daemon starts dispatching agents.
+func ValidateWorkflowSchema(cfg *Config) error {
+	switch {
+	case cfg.SchemaVersion == 0:
+		return errors.New(MissingWorkflowSchemaMessage(cfg.WorkflowPath))
+	case cfg.SchemaVersion < LatestWorkflowSchemaVersion:
+		return errors.New(LegacyInlineProfilePromptMessage(cfg.WorkflowPath))
+	case cfg.SchemaVersion > LatestWorkflowSchemaVersion:
+		return fmt.Errorf("unsupported itervox_schema_version %d: latest supported version is %d", cfg.SchemaVersion, LatestWorkflowSchemaVersion)
+	default:
+		return nil
+	}
+}
+
 // ValidateReviewerAutoReview rejects configurations where auto-review was
 // enabled without a reviewer profile to dispatch.
 func ValidateReviewerAutoReview(reviewerProfile string, autoReview bool) error {
@@ -47,12 +91,18 @@ func ValidateReviewerAutoReview(reviewerProfile string, autoReview bool) error {
 	return nil
 }
 
-// ValidateAutoClearAutoReview rejects configurations where automatic review is
-// enabled for a reviewer profile while workspace auto-clear is also enabled.
+// ValidateAutoClearAutoReview is retained for API compatibility with callers
+// that branched on ErrAutoClearAutoReviewConflict. Under the legacy semantics
+// the two settings raced — `auto_clear` removed the workspace immediately on
+// worker success, leaving nothing for the reviewer to inspect. The v0.2.0
+// semantic change (workspace clears only on terminal tracker states) defers
+// the clear until after the reviewer also completes, so the two settings now
+// safely coexist. This function is a no-op kept to avoid breaking external
+// consumers; new code should not call it.
 func ValidateAutoClearAutoReview(autoClear bool, reviewerProfile string, autoReview bool) error {
-	if autoClear && autoReview && strings.TrimSpace(reviewerProfile) != "" {
-		return fmt.Errorf("%w: disable either workspace.auto_clear or agent.auto_review", ErrAutoClearAutoReviewConflict)
-	}
+	_ = autoClear
+	_ = reviewerProfile
+	_ = autoReview
 	return nil
 }
 
@@ -74,6 +124,10 @@ func ValidateReviewerProfile(profiles map[string]AgentProfile, reviewerProfile s
 // ValidateDispatch runs the spec §6.3 dispatch preflight checks against an
 // already-loaded Config. Call Load first; this function does not re-read the file.
 func ValidateDispatch(cfg *Config) error {
+	if err := ValidateWorkflowSchema(cfg); err != nil {
+		return err
+	}
+
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
 		return fmt.Errorf("missing tracker.kind: must be one of: linear, github")
@@ -216,6 +270,13 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		case AutomationTriggerIssueMovedBacklog:
 		case AutomationTriggerRunFailed:
 		case AutomationTriggerPROpened:
+		case AutomationTriggerBlockersResolved:
+			moveToState := strings.TrimSpace(entry.Policy.MoveToState)
+			if moveToState != "" {
+				if !slices.Contains(NormalizeAllowedActions(profile.AllowedActions), AgentActionMoveState) {
+					return fmt.Errorf("automation %q: policy.move_to_state requires profile %q to allow %q", id, profileName, AgentActionMoveState)
+				}
+			}
 		case AutomationTriggerRateLimited:
 			// Gap E — switch_to_profile is required; switch_to_backend is
 			// optional but if set must name a known backend. cooldown_minutes
@@ -261,6 +322,9 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 			if entry.Policy.CooldownMinutes > 0 {
 				return fmt.Errorf("automation %q: policy.cooldown_minutes is only meaningful on rate_limited triggers", id)
 			}
+		}
+		if triggerType != AutomationTriggerBlockersResolved && strings.TrimSpace(entry.Policy.MoveToState) != "" {
+			return fmt.Errorf("automation %q: policy.move_to_state is only meaningful on blockers_resolved triggers", id)
 		}
 		if entry.Filter.MatchMode != "" &&
 			entry.Filter.MatchMode != AutomationFilterMatchAll &&

@@ -52,6 +52,9 @@ const (
 	// worker through the event loop using a selected profile plus extra
 	// automation instructions.
 	EventDispatchAutomation EventType = "DispatchAutomation"
+	// EventIssueStatusChanged records a tracker state transition observed from
+	// a goroutine or HTTP handler. The event loop owns the status ledger.
+	EventIssueStatusChanged EventType = "IssueStatusChanged"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -68,6 +71,7 @@ type OrchestratorEvent struct { //nolint:revive
 	Comment            *domain.Comment     // used by EventInputRequiredCommentRecorded
 	Issue              *domain.Issue       // used by EventDispatchAutomation
 	Automation         *AutomationDispatch // used by EventDispatchAutomation
+	StatusChange       *IssueStatusChange  // used by EventIssueStatusChanged
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -310,6 +314,10 @@ type State struct {
 	// auto-resume) from "issue was already active when user paused it"
 	// (must not auto-resume — wait until it leaves active and returns).
 	PrevActiveIdentifiers map[string]struct{}
+	// PrevIssueStates stores the last tracker state observed for each issue.
+	PrevIssueStates map[string]string
+	// IssueStatusHistory stores a bounded status-change ledger per issue.
+	IssueStatusHistory map[string][]IssueStatusChange
 	// DiscardingIdentifiers holds identifiers of issues whose EventTerminatePaused
 	// has been processed but whose UpdateIssueState goroutine has not yet
 	// completed. Issues in this set are ineligible for dispatch, preventing the
@@ -324,6 +332,23 @@ type State struct {
 	// in the tracker, but have not yet been durably consumed by a resumed
 	// worker. Key: identifier.
 	PendingInputResumes map[string]*PendingInputResumeEntry
+	// AutomationQueue tracks automation triggers that could not start immediately.
+	// Key: stable queue key from automationQueueKey.
+	AutomationQueue map[string]*AutomationQueueEntry
+	// AutomationQueueOrder preserves FIFO order for AutomationQueue keys.
+	AutomationQueueOrder []string
+	// AutomationQueueBackpressure tracks queue-cap saturation and rejected triggers.
+	AutomationQueueBackpressure AutomationQueueBackpressure
+	// DependencyAudit tracks normalized blocker state by issue identifier.
+	DependencyAudit map[string]*DependencyAuditEntry
+	// DependencyTransitionSeq increments when dependency audit emits a transition.
+	DependencyTransitionSeq int64
+	// LastBlockersResolvedAuditSeq snapshots DependencyTransitionSeq at the
+	// end of the most recent auditBlockersResolvedAutomationSources pass.
+	// When DependencyTransitionSeq has not advanced since the previous tick
+	// there is nothing for the audit pass to do, so the tick-scoped
+	// FetchIssuesByStates call can be skipped. v0.2.0 audit P1-2.
+	LastBlockersResolvedAuditSeq int64
 }
 
 // NewState initialises a State from a config snapshot.
@@ -345,8 +370,16 @@ func NewState(cfg *config.Config) State {
 		PausedOpenPRs:           make(map[string]string),
 		ForceReanalyze:          make(map[string]struct{}),
 		PrevActiveIdentifiers:   make(map[string]struct{}),
+		PrevIssueStates:         make(map[string]string),
+		IssueStatusHistory:      make(map[string][]IssueStatusChange),
 		DiscardingIdentifiers:   make(map[string]struct{}),
 		InputRequiredIssues:     make(map[string]*InputRequiredEntry),
 		PendingInputResumes:     make(map[string]*PendingInputResumeEntry),
+		AutomationQueue:         make(map[string]*AutomationQueueEntry),
+		AutomationQueueOrder:    []string{},
+		AutomationQueueBackpressure: AutomationQueueBackpressure{
+			MaxLength: cfg.Agent.MaxAutomationQueueLength,
+		},
+		DependencyAudit: make(map[string]*DependencyAuditEntry),
 	}
 }

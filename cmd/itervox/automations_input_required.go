@@ -32,6 +32,10 @@ func replayInputRequiredAutomations(
 	now time.Time,
 ) inputRequiredReplayState {
 	snap := orch.Snapshot()
+	if automationProducersPaused(snap) {
+		slog.Warn("automation: input-required replay paused by automation queue backpressure")
+		return prev
+	}
 	next := inputRequiredReplayState{
 		initialized: true,
 		issues:      make(map[string]inputRequiredReplayIssueState, len(snap.InputRequiredIssues)),
@@ -92,7 +96,7 @@ func replayInputRequiredAutomations(
 			if !matchesReplayInputRequiredAutomation(*issue, automation, entry.Context) {
 				continue
 			}
-			if orch.DispatchAutomation(*issue, replayInputRequiredDispatch(entry, automation, now)) {
+			if orch.DispatchAutomation(ctx, *issue, replayInputRequiredDispatch(entry, automation, now)) {
 				issueState.firedAutomationIDs[automation.ID] = struct{}{}
 				dispatched++
 			}
@@ -101,7 +105,7 @@ func replayInputRequiredAutomations(
 	}
 
 	if dispatched > 0 {
-		slog.Info("automation: queued input-required issues", "count", dispatched)
+		slog.Info("automation: accepted input-required dispatch events", "count", dispatched)
 	}
 	return next
 }

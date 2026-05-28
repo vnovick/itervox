@@ -28,6 +28,19 @@ func TestBuildSubAgentContext_SkipsActiveProfile(t *testing.T) {
 	assert.NotContains(t, ctx, "**active**")
 }
 
+func TestBuildSubAgentContext_UsesSoulSummaryInsteadOfInstructions(t *testing.T) {
+	ctx := buildSubAgentContext(map[string]config.AgentProfile{
+		"qa": {
+			Soul:         "You are the QA specialist.\n\n## Purpose\nRun focused quality checks.",
+			Instructions: "DO NOT INCLUDE: long operational checklist.",
+		},
+	}, "", "claude")
+
+	assert.Contains(t, ctx, "You are the QA specialist.")
+	assert.NotContains(t, ctx, "DO NOT INCLUDE")
+	assert.NotContains(t, ctx, "Run focused quality checks.")
+}
+
 // --- formatBufLine / makeBufLine (JSON output) ---
 
 func TestFormatBufLine_IncludesLevelAndMessage(t *testing.T) {

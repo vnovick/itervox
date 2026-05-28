@@ -24,7 +24,7 @@ describe('suggestedProfiles', () => {
     );
   });
 
-  it('keeps launch-library profiles comment-only by default', () => {
+  it('keeps launch-library profiles comment-only except explicit state movers', () => {
     const launchIDs = new Set([
       'readiness-manager',
       'unblock-manager',
@@ -41,6 +41,10 @@ describe('suggestedProfiles', () => {
     ]);
 
     for (const profile of SUGGESTED_PROFILES.filter((item) => launchIDs.has(item.id))) {
+      if (profile.id === 'unblock-manager') {
+        expect(profile.allowedActions).toEqual(['comment', 'move_state']);
+        continue;
+      }
       expect(profile.allowedActions).toEqual(['comment']);
     }
   });

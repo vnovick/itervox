@@ -25,6 +25,7 @@ const baseValues: AutomationFormValues = {
   switchToProfile: '',
   switchToBackend: '',
   cooldownMinutes: '',
+  moveToState: '',
 };
 
 function renderForm(onSubmit: (v: AutomationFormValues) => Promise<AutomationSubmitResult>) {

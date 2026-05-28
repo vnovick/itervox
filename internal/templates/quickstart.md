@@ -1,4 +1,6 @@
 ---
+itervox_schema_version: 2
+
 tracker:
   kind: memory
   active_states: ["Todo", "In Progress"]

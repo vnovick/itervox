@@ -3,6 +3,38 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProfileEditorFields } from '../profiles/ProfileEditorFields';
 
 describe('ProfileEditorFields', () => {
+  it('renders separate SOUL and INSTRUCTIONS editors for file-backed profiles', () => {
+    render(
+      <ProfileEditorFields
+        backend="claude"
+        model=""
+        command="claude"
+        prompt=""
+        soul="# Reviewer SOUL"
+        instructions="# Reviewer INSTRUCTIONS"
+        soulFile=".itervox/agents/reviewer/SOUL.md"
+        instructionsFile=".itervox/agents/reviewer/INSTRUCTIONS.md"
+        allowedActions={[]}
+        createIssueState=""
+        trackerStates={['Todo']}
+        onBackendChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onCommandChange={vi.fn()}
+        onPromptChange={vi.fn()}
+        onSoulChange={vi.fn()}
+        onInstructionsChange={vi.fn()}
+        onAllowedActionsChange={vi.fn()}
+        onCreateIssueStateChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('SOUL.md')).toBeInTheDocument();
+    expect(screen.getByText('INSTRUCTIONS.md')).toBeInTheDocument();
+    expect(screen.getByText('.itervox/agents/reviewer/SOUL.md')).toBeInTheDocument();
+    expect(screen.getByText('.itervox/agents/reviewer/INSTRUCTIONS.md')).toBeInTheDocument();
+    expect(screen.queryByText('Prompt')).not.toBeInTheDocument();
+  });
+
   it('places daemon actions and prompt variables above a prompt editor with preview controls', () => {
     const { container } = render(
       <ProfileEditorFields

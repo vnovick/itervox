@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,7 +73,14 @@ func TestPlainEnglishBlockingQuestionQueuesInputRequired(t *testing.T) {
 			require.Equal(t, 1, calls, "plain-English detection must not run a second classifier turn")
 			assert.Contains(t, entry.Context, "Which option?")
 			assert.Len(t, prompts, 1)
-			assert.Equal(t, "Complete ENG-1", prompts[0])
+			// The rendered WORKFLOW.md is the lead of the prompt; the worker
+			// also appends a Run Context block carrying the handoff path and
+			// run timestamp (v0.2.0: file-backed agent handoff). The test
+			// pins only the WORKFLOW.md part.
+			assert.True(t, strings.HasPrefix(prompts[0], "Complete ENG-1"),
+				"WORKFLOW.md should lead the prompt; got %q", prompts[0])
+			assert.Contains(t, prompts[0], "## Run Context",
+				"Run Context block must be appended for handoff plumbing")
 			history := orch.RunHistory()
 			require.Len(t, history, 1)
 			assert.Equal(t, "input_required", history[0].Status)

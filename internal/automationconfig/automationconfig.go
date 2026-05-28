@@ -38,6 +38,7 @@ func ConfigsFromDefinitions(defs []automationdef.Definition) []config.Automation
 				SwitchToProfile: def.Policy.SwitchToProfile,
 				SwitchToBackend: def.Policy.SwitchToBackend,
 				CooldownMinutes: def.Policy.CooldownMinutes,
+				MoveToState:     def.Policy.MoveToState,
 			},
 		})
 	}
@@ -77,6 +78,7 @@ func DefinitionsFromConfigs(automations []config.AutomationConfig) []automationd
 				SwitchToProfile: automation.Policy.SwitchToProfile,
 				SwitchToBackend: automation.Policy.SwitchToBackend,
 				CooldownMinutes: automation.Policy.CooldownMinutes,
+				MoveToState:     automation.Policy.MoveToState,
 			},
 		})
 	}

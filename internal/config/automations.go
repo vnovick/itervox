@@ -19,9 +19,10 @@ const (
 	// exhaustion). The policy carries SwitchToProfile / SwitchToBackend so
 	// auto_resume runs can re-dispatch the issue under a different agent
 	// instead of giving up.
-	AutomationTriggerRateLimited = "rate_limited"
-	AutomationFilterMatchAll     = "all"
-	AutomationFilterMatchAny     = "any"
+	AutomationTriggerRateLimited      = "rate_limited"
+	AutomationTriggerBlockersResolved = "blockers_resolved"
+	AutomationFilterMatchAll          = "all"
+	AutomationFilterMatchAny          = "any"
 )
 
 type AutomationTriggerConfig struct {
@@ -70,6 +71,9 @@ type AutomationPolicyConfig struct {
 	// profile) tuple after a fire, preventing thrash when both backends
 	// are throttled simultaneously. Default 30 when unset.
 	CooldownMinutes int
+	// MoveToState allows blockers_resolved automations to opt into tracker
+	// state mutation when the selected profile is allowed to move issues.
+	MoveToState string
 }
 
 type AutomationConfig struct {
@@ -126,6 +130,10 @@ func parseAutomations(raw any) []AutomationConfig {
 		if maxAge < 0 {
 			maxAge = 0
 		}
+		states := strSliceField(filter, "states", nil)
+		if len(states) == 0 {
+			states = strSliceField(filter, "states_any", nil)
+		}
 		automations = append(automations, AutomationConfig{
 			ID:           id,
 			Enabled:      boolField(m, "enabled", true),
@@ -139,7 +147,7 @@ func parseAutomations(raw any) []AutomationConfig {
 			},
 			Filter: AutomationFilterConfig{
 				MatchMode:         normalizeAutomationMatchMode(strField(filter, "match_mode", "")),
-				States:            strSliceField(filter, "states", nil),
+				States:            states,
 				LabelsAny:         strSliceField(filter, "labels_any", nil),
 				IdentifierRegex:   strField(filter, "identifier_regex", ""),
 				Limit:             limit,
@@ -155,6 +163,7 @@ func parseAutomations(raw any) []AutomationConfig {
 				SwitchToProfile: strField(policy, "switch_to_profile", ""),
 				SwitchToBackend: strField(policy, "switch_to_backend", ""),
 				CooldownMinutes: intField(policy, "cooldown_minutes", 0),
+				MoveToState:     strField(policy, "move_to_state", ""),
 			},
 		})
 	}

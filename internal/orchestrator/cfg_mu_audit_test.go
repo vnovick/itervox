@@ -34,26 +34,30 @@ import (
 
 // AllowedMutableCfgFields is the canonical list of cfg.X paths the
 // orchestrator may mutate at runtime. Mirrored in the cfgMu doc-comment.
+//
+// Keep this map alphabetically sorted by full field path so diffs between
+// this file and the CLAUDE.md / AGENTS.md `cfgMu` sections stay easy to
+// review. v0.2.0 audit P2-4.
 var AllowedMutableCfgFields = map[string]struct{}{
+	"Agent.AutoReview":                   {},
+	"Agent.DispatchStrategy":             {},
+	"Agent.InlineInput":                  {},
 	"Agent.MaxConcurrentAgents":          {},
 	"Agent.MaxRetries":                   {},
 	"Agent.MaxSwitchesPerIssuePerWindow": {},
-	"Agent.SwitchWindowHours":            {},
 	"Agent.Profiles":                     {},
-	"Agent.SSHHosts":                     {},
-	"Agent.SSHHostDescriptions":          {},
-	"Agent.DispatchStrategy":             {},
-	"Agent.ReviewerProfile":              {},
-	"Agent.AutoReview":                   {},
-	"Agent.InlineInput":                  {},
-	"Agent.SwitchRevertHours":            {},
 	"Agent.RateLimitErrorPatterns":       {},
+	"Agent.ReviewerProfile":              {},
+	"Agent.SSHHostDescriptions":          {},
+	"Agent.SSHHosts":                     {},
+	"Agent.SwitchRevertHours":            {},
+	"Agent.SwitchWindowHours":            {},
+	"Automations":                        {},
 	"Tracker.ActiveStates":               {},
-	"Tracker.TerminalStates":             {},
 	"Tracker.CompletionState":            {},
 	"Tracker.FailedState":                {},
+	"Tracker.TerminalStates":             {},
 	"Workspace.AutoClearWorkspace":       {},
-	"Automations":                        {},
 }
 
 // TestCfgMuFieldAudit walks every .go file in this package and asserts

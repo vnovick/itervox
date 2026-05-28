@@ -841,7 +841,8 @@ func (s *Server) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "state field required")
 		return
 	}
-	if err := s.client.UpdateIssueState(r.Context(), identifier, body.State); err != nil {
+	ctx := WithIssueStatusSource(r.Context(), IssueStatusSourceDashboard)
+	if err := s.client.UpdateIssueState(ctx, identifier, body.State); err != nil {
 		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
 		return
 	}
@@ -994,7 +995,8 @@ func (s *Server) handleAgentCreateIssue(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.validateAgentActionRequest(w, r, config.AgentActionMoveState); !ok {
+	grant, ok := s.validateAgentActionRequest(w, r, config.AgentActionMoveState)
+	if !ok {
 		return
 	}
 	identifier := chi.URLParam(r, "identifier")
@@ -1005,7 +1007,13 @@ func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "state field required")
 		return
 	}
-	if err := s.client.UpdateIssueState(r.Context(), identifier, body.State); err != nil {
+	targetState := strings.TrimSpace(body.State)
+	if strings.TrimSpace(grant.MoveIssueState) != "" && targetState != strings.TrimSpace(grant.MoveIssueState) {
+		writeError(w, http.StatusForbidden, "agent_action_denied", "move_state target is not allowed by this action grant")
+		return
+	}
+	ctx := WithIssueStatusSource(r.Context(), IssueStatusSourceAgent)
+	if err := s.client.UpdateIssueState(ctx, identifier, targetState); err != nil {
 		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
 		return
 	}
@@ -1141,12 +1149,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 
 // handleUpsertProfile creates or updates a named agent profile.
 // PUT /api/v1/settings/profiles/{name}
-// Body: {"command": "claude --model ...", "prompt": "...", "backend": "codex"}
+// Body: {"command": "claude --model ...", "soul": "...", "instructions": "...", "backend": "codex"}
 func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	var body struct {
 		Command          string   `json:"command"`
 		Prompt           string   `json:"prompt"`
+		Soul             *string  `json:"soul"`
+		Instructions     *string  `json:"instructions"`
+		SoulFile         string   `json:"soulFile"`
+		InstructionsFile string   `json:"instructionsFile"`
 		Backend          string   `json:"backend"`
 		Enabled          *bool    `json:"enabled"`
 		AllowedActions   []string `json:"allowedActions"`
@@ -1169,10 +1181,20 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	def := ProfileDef{
 		Command:          body.Command,
 		Prompt:           body.Prompt,
+		SoulFile:         body.SoulFile,
+		InstructionsFile: body.InstructionsFile,
 		Backend:          body.Backend,
 		Enabled:          body.Enabled == nil || *body.Enabled,
 		AllowedActions:   config.NormalizeAllowedActions(body.AllowedActions),
 		CreateIssueState: strings.TrimSpace(body.CreateIssueState),
+	}
+	if body.Soul != nil {
+		def.Soul = *body.Soul
+		def.SoulSet = true
+	}
+	if body.Instructions != nil {
+		def.Instructions = *body.Instructions
+		def.InstructionsSet = true
 	}
 	if err := s.client.UpsertProfile(name, def, strings.TrimSpace(body.OriginalName)); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already exists") {

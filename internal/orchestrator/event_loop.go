@@ -27,6 +27,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadPausedFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
 	state = o.loadInputRequiredFromDisk(state)
+	state = o.loadAutomationQueueFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	tick := time.NewTimer(0)
 	defer tick.Stop()
@@ -103,6 +104,25 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		slog.Warn("orchestrator: fetch candidates failed", "error", err)
 		return state
 	}
+	for i := range issues {
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issues[i], now)
+	}
+	o.auditBlockersResolvedAutomationSources(ctx, &state, now)
+	o.refreshKnownDependencyAudits(ctx, &state, now)
+
+	// v0.2.0 audit P1-1 — build a lookup table over the candidate fetch so
+	// drainAutomationQueue can reuse the snapshots instead of issuing a
+	// per-entry tracker fetch. Indexed by both ID and Identifier so queue
+	// entries can match either shape (Linear uses ID, GitHub uses Identifier).
+	candidateIssues := make(map[string]domain.Issue, len(issues)*2)
+	for i := range issues {
+		if issues[i].ID != "" {
+			candidateIssues[issues[i].ID] = issues[i]
+		}
+		if issues[i].Identifier != "" {
+			candidateIssues[issues[i].Identifier] = issues[i]
+		}
+	}
 
 	// Build the current active-identifier set for this tick. We compare it
 	// against the previous tick's set in the auto-resume guard below, then
@@ -150,6 +170,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// If a user replied via Linear/GitHub, auto-resume the agent.
 	state = o.checkTrackerReplies(ctx, state)
 	state = o.processPendingInputResumes(ctx, state, now)
+	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
 
 	slots := AvailableSlots(state)
 	slog.Debug("orchestrator: tick",
@@ -182,7 +203,10 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		// a fresh worker. This recovers from daemon restarts / state loss.
 		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
 			state.InputRequiredIssues[issue.Identifier] = entry
-			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now)
+			// Recovery path: no live RunEntry — the previous worker is gone
+			// (daemon restart / state loss). B1 self-reentry guard does not
+			// apply here; pass nil so the dispatch proceeds normally.
+			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now, nil)
 			slog.Info("orchestrator: recovered input-required from tracker comment",
 				"identifier", issue.Identifier)
 			if o.logBuf != nil {
@@ -206,6 +230,21 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// switch-history + cooldown maps. Cheap: one pass per tick over
 	// typically <100 entries, and short-circuits when the cap is 0.
 	o.PruneRateLimitedMaps(now)
+
+	// v0.2.0 audit P0-1 + P0-2 — bound long-lived runtime maps so a daemon
+	// observing 10k+ issues over months does not pay snapshot/SSE bandwidth
+	// for every issue it has ever seen. `currentActive` is already built
+	// above as the live candidate set; the dependency-audit janitor uses
+	// terminal-state + queue/Running membership instead.
+	statusRemoved, prevRemoved := pruneIssueStatusHistory(&state, currentActive, now, issueStatusHistoryRetention)
+	auditRemoved := pruneTerminalDependencyAudit(&state)
+	if statusRemoved > 0 || prevRemoved > 0 || auditRemoved > 0 {
+		slog.Debug("orchestrator: janitor pass",
+			"status_history_removed", statusRemoved,
+			"prev_states_removed", prevRemoved,
+			"dependency_audit_removed", auditRemoved,
+		)
+	}
 	return state
 }
 
@@ -245,6 +284,7 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			state = CancelRetry(state, issueID)
 			continue
 		}
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, refreshed[0], now)
 
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("retry: no slots, rescheduling", "issue_id", issueID)
@@ -460,6 +500,9 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 				"identifier", identifier, "error", err)
 			continue
 		}
+		if detailed != nil {
+			o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, time.Now())
+		}
 		questionIdx, questionComment, ok := findTrackedQuestionComment(detailed.Comments, entry)
 		if !ok {
 			continue // no question comment found — wait
@@ -528,6 +571,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		if detailed == nil {
 			continue
 		}
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, now)
 		if isTerminalState(detailed.State, state) {
 			delete(state.PendingInputResumes, identifier)
 			slog.Info("orchestrator: dropping pending input resume for terminal issue",
@@ -809,12 +853,24 @@ func (o *Orchestrator) transitionToWorking(ctx context.Context, issue domain.Iss
 	slog.Info("orchestrator: issue transitioned",
 		"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 		"from", issue.State, "to", target)
+	o.RecordIssueStatusChange(IssueStatusChange{
+		Identifier: issue.Identifier,
+		FromState:  issue.State,
+		ToState:    target,
+		Source:     StatusSourceWorkerLifecycle,
+	})
 	if o.logBuf != nil {
 		o.logBuf.Add(issue.Identifier, makeBufLine("INFO", fmt.Sprintf("worker: → %s", target)))
 	}
 }
 
-func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev OrchestratorEvent) State {
+func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev OrchestratorEvent) (ret State) {
+	drainAfter := shouldDrainAutomationQueueAfterEvent(ev.Type)
+	defer func() {
+		if drainAfter {
+			o.drainAutomationQueue(ctx, &ret, time.Now())
+		}
+	}()
 	switch ev.Type {
 	case EventWorkerUpdate:
 		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil {
@@ -1010,6 +1066,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Warn("orchestrator: reviewer fetch failed", "identifier", ev.Identifier, "error", err)
 			return state
 		}
+		for i := range issues {
+			o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issues[i], time.Now())
+		}
 		var found *domain.Issue
 		for i := range issues {
 			if issues[i].Identifier == ev.Identifier {
@@ -1027,36 +1086,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		if ev.Issue == nil || ev.Automation == nil {
 			return state
 		}
-		// T-16: re-check input-required status at dispatch time. A cron
-		// automation snapshots state.InputRequiredIssues when it queues the
-		// dispatch; an input-required event may arrive between then and now.
-		// input_required-typed automations are exempt — that's their purpose.
-		if _, waiting := state.InputRequiredIssues[ev.Issue.Identifier]; waiting &&
-			ev.Automation.Trigger.Type != config.AutomationTriggerInputRequired {
-			slog.Debug("orchestrator: skipping automation dispatch (input_required arrived after queue)",
-				"identifier", ev.Issue.Identifier,
-				"automation", ev.Automation.AutomationID,
-				"reason", "input_required")
-			return state
+		o.dispatchOrQueueAutomation(ctx, &state, *ev.Issue, *ev.Automation, time.Now())
+
+	case EventIssueStatusChanged:
+		if ev.StatusChange != nil {
+			appendIssueStatusChange(&state, *ev.StatusChange)
 		}
-		if ev.Automation.Trigger.Type == config.AutomationTriggerRateLimited && ev.Automation.AutoResume {
-			if _, autoSwitched := state.AutoSwitchedIdentifiers[ev.Issue.Identifier]; autoSwitched {
-				delete(state.PausedIdentifiers, ev.Issue.Identifier)
-				delete(state.PausedSessions, ev.Issue.Identifier)
-				o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
-			}
-		}
-		// Automation dispatch intentionally skips the isActiveState gate —
-		// triggers like issue_moved_to_backlog and non-active issue_entered_state
-		// targets need to fire outside the reconcile-loop active set.
-		if reason := ineligibleReasonForAutomation(*ev.Issue, state, o.cfg); reason != "" {
-			slog.Debug("orchestrator: skipping automation dispatch",
-				"identifier", ev.Issue.Identifier,
-				"automation", ev.Automation.AutomationID,
-				"reason", reason)
-			return state
-		}
-		o.startAutomationRun(ctx, &state, *ev.Issue, time.Now(), *ev.Automation)
 
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
@@ -1233,23 +1268,23 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
-			// Auto-clear workspace if configured — removes the cloned directory
-			// but leaves logs intact (they live under the logs dir, not here).
+			// Auto-clear workspace if configured.
+			//
+			// New semantics (v0.2.0): clear only when the issue reaches a
+			// terminal tracker state. For the success path that means we clear
+			// when there is no further work pending on this workspace —
+			// specifically: no reviewer will run after this worker. When an
+			// auto-review is queued, defer the clear to the reviewer's own
+			// TerminalSucceeded handler so the reviewer has the workspace
+			// available. The TerminalFailed branch below clears on the
+			// max-retries-exhausted-to-FailedState transition.
 			o.cfgMu.RLock()
 			autoClear := o.cfg.Workspace.AutoClearWorkspace
 			reviewerProfile := o.cfg.Agent.ReviewerProfile
 			autoReview := o.cfg.Agent.AutoReview
 			o.cfgMu.RUnlock()
-			if autoClear && autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry) {
-				slog.Warn("orchestrator: skipping auto-review because workspace auto-clear is enabled",
-					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
-				autoReview = false
-			}
-			if autoClear && o.workspace != nil {
-				// Run in a goroutine — os.RemoveAll can be slow on large workspaces
-				// and must not block the event loop (which would stall all workers).
-				wm := o.workspace
-				id := issue.Identifier
+			reviewerWillRun := autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry)
+			if autoClear && !reviewerWillRun {
 				// Use the actual worktree branch propagated via sendExitWithBranch.
 				// PR-continuation runs use prCtx.Branch, which differs from
 				// issue.BranchName; re-deriving the branch here would delete the
@@ -1258,25 +1293,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				if bn == "" {
 					bn = workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
 				}
-				o.autoClearWg.Add(1)
-				go func() {
-					defer o.autoClearWg.Done()
-					rmCtx, rmCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
-					defer rmCancel()
-					if err := wm.RemoveWorkspace(rmCtx, id, bn); err != nil {
-						slog.Warn("orchestrator: auto-clear workspace failed",
-							"identifier", id, "error", err)
-					} else {
-						slog.Info("orchestrator: workspace auto-cleared",
-							"identifier", id)
-					}
-				}()
+				o.scheduleWorkspaceClear(issue.Identifier, bn)
 			}
 
 			// Auto-review: if configured, dispatch a reviewer worker for this issue.
 			// Only trigger when the completed worker was NOT itself a reviewer
 			// (prevents infinite review loops).
-			if autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry) {
+			if reviewerWillRun {
 				o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
 			}
 
@@ -1286,6 +1309,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// in the run-history ring buffer. Use ev.RunEntry (not liveEntry, which
 			// is nil because ReconcileStalls already deleted it from state.Running).
 			o.recordHistory(ev.RunEntry, issue, now, "stalled")
+			// Mark any in-flight handoff file as .partial.md so subsequent
+			// agents can see the stalled worker's partial deliverable without
+			// confusing it for a clean handoff. Filesystem-driven (no need
+			// to thread the run timestamp through the stall path, which the
+			// orchestrator synthesizes itself).
+			o.markStalledHandoffPartial(ev.RunEntry, issue)
 
 		case TerminalInputRequired:
 			delete(state.Claimed, ev.IssueID)
@@ -1342,7 +1371,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				}
 			}(entry.IssueID, issue.Identifier)
 			state.InputRequiredIssues[issue.Identifier] = entry
-			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now)
+			// Pass liveEntry so the B1 self-reentry guard can suppress dispatch
+			// when the exiting worker was itself an input_required automation.
+			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now, liveEntry)
 			slog.Info("orchestrator: issue queued for human input",
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "input_required")
@@ -1357,6 +1388,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 				// Not recorded — the issue will be re-dispatched.
 			} else {
+				// Mark any in-flight handoff file as .partial.md so subsequent
+				// agents (this attempt's retry, the reviewer, or a downstream
+				// pipeline profile) see the failed worker's partial deliverable
+				// distinctly from a clean handoff. No-op if the agent never
+				// wrote a handoff this turn.
+				o.markFailedHandoffPartial(ev.RunEntry, issue)
 				errMsg := ""
 				if ev.Error != nil {
 					errMsg = ev.Error.Error()
@@ -1408,18 +1445,38 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					}
 
 					failedState := o.FailedStateCfg()
+					// v0.2.0 todolist5 B8.b — `run_failed` automations are operator
+					// safety nets and must fire on every retry-exhaustion, even when
+					// a `rate_limited` recovery was queued. The failed-state
+					// transition decision is independent: when a recovery is queued
+					// we defer the tracker move so the recovery worker can finish
+					// the issue normally.
+					o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
 					if rateLimitedQueued > 0 {
-						slog.Info("orchestrator: rate_limited recovery queued",
+						slog.Info("orchestrator: rate_limited recovery queued, deferring failed-state transition",
 							"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 							"queued", rateLimitedQueued)
-					} else {
-						if failedState != "" {
-							state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
-						} else {
-							state.PausedIdentifiers[issue.Identifier] = issue.ID
-							o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+					} else if failedState != "" {
+						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
+						// New semantics (v0.2.0): clear workspace when the
+						// issue reaches a terminal tracker state. FailedState
+						// is terminal — no retries remain and no rate-limited
+						// recovery is queued — so the workspace will not be
+						// reused. The success path clears in the
+						// TerminalSucceeded branch above.
+						o.cfgMu.RLock()
+						autoClearOnFailure := o.cfg.Workspace.AutoClearWorkspace
+						o.cfgMu.RUnlock()
+						if autoClearOnFailure {
+							bn := ev.RunEntry.BranchName
+							if bn == "" {
+								bn = workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
+							}
+							o.scheduleWorkspaceClear(issue.Identifier, bn)
 						}
-						o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
+					} else {
+						state.PausedIdentifiers[issue.Identifier] = issue.ID
+						o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 					}
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {
@@ -1435,6 +1492,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 	}
 	return state
+}
+
+func shouldDrainAutomationQueueAfterEvent(eventType EventType) bool {
+	switch eventType {
+	case EventWorkerExited, EventResumeIssue, EventProvideInput, EventDismissInput, EventDiscardComplete:
+		return true
+	default:
+		return false
+	}
 }
 
 // commentMaxRetriesExhausted posts a comment on the issue explaining that
@@ -1474,6 +1540,11 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 		} else {
 			slog.Info("orchestrator: issue transitioned to failed state",
 				"identifier", identifier, "state", targetState)
+			o.RecordIssueStatusChange(IssueStatusChange{
+				Identifier: identifier,
+				ToState:    targetState,
+				Source:     StatusSourceWorkerLifecycle,
+			})
 		}
 		updateCancel()
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1527,6 +1598,11 @@ func (o *Orchestrator) asyncDiscardAndTransition(state State, issueID, identifie
 		} else {
 			slog.Info("orchestrator: discarded issue transitioned",
 				"identifier", identifier, "state", targetState)
+			o.RecordIssueStatusChange(IssueStatusChange{
+				Identifier: identifier,
+				ToState:    targetState,
+				Source:     StatusSourceSystem,
+			})
 		}
 		updateCancel()
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1596,6 +1672,83 @@ func runEligibleForAutoReview(liveEntry *RunEntry) bool {
 	return liveEntry.Kind == "" || liveEntry.Kind == "worker"
 }
 
+// markStalledHandoffPartial renames the in-flight handoff file authored by
+// the stalled worker's profile to `<basename>.partial.md`. Filesystem-driven
+// (uses the profile name from RunEntry rather than threading the run
+// timestamp through the stall path, which the orchestrator synthesizes
+// itself). Safe to call when the worker never wrote a handoff or when no
+// workspace exists yet — both paths no-op.
+//
+// runEntry.StartedAt is passed as the rename gate so files that predate
+// the stalled worker (predecessor handoffs from successful prior runs)
+// are not eligible for renaming. If the worker never wrote a handoff this
+// run, no eligible file exists and the call is a no-op.
+func (o *Orchestrator) markStalledHandoffPartial(runEntry *RunEntry, issue domain.Issue) {
+	if o.workspace == nil || runEntry == nil {
+		return
+	}
+	wsPath := o.workspace.ResolvePath(issue.Identifier)
+	if wsPath == "" {
+		return
+	}
+	if err := markLatestHandoffPartial(wsPath, runEntry.ProfileName, runEntry.StartedAt); err != nil {
+		slog.Warn("orchestrator: failed to mark stalled handoff partial",
+			"identifier", issue.Identifier, "error", err)
+	}
+}
+
+// markFailedHandoffPartial renames the in-flight handoff file authored by
+// the failed worker's profile to `<basename>.partial.md`. Called when a
+// worker exits with TerminalFailed (process error, render error, agent
+// failure) so subsequent agents can distinguish "tried and failed" from
+// "completed cleanly." Safe no-op when no handoff was written.
+//
+// runEntry.StartedAt gates eligibility — see markStalledHandoffPartial.
+func (o *Orchestrator) markFailedHandoffPartial(runEntry *RunEntry, issue domain.Issue) {
+	if o.workspace == nil || runEntry == nil {
+		return
+	}
+	wsPath := o.workspace.ResolvePath(issue.Identifier)
+	if wsPath == "" {
+		return
+	}
+	if err := markLatestHandoffPartial(wsPath, runEntry.ProfileName, runEntry.StartedAt); err != nil {
+		slog.Warn("orchestrator: failed to mark failed handoff partial",
+			"identifier", issue.Identifier, "error", err)
+	}
+}
+
+// scheduleWorkspaceClear runs `workspace.Manager.RemoveWorkspace` in a
+// background goroutine so a slow os.RemoveAll (large workspaces) cannot
+// stall the orchestrator event loop and starve other workers. The
+// `autoClearWg` tracks in-flight clears so graceful shutdown can wait
+// for them.
+//
+// New semantics (v0.2.0): the caller is responsible for deciding
+// whether the issue has reached a terminal tracker state. This helper
+// only enqueues the goroutine.
+func (o *Orchestrator) scheduleWorkspaceClear(identifier, branchName string) {
+	if o.workspace == nil {
+		return
+	}
+	wm := o.workspace
+	id := identifier
+	bn := branchName
+	o.autoClearWg.Add(1)
+	go func() {
+		defer o.autoClearWg.Done()
+		rmCtx, rmCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
+		defer rmCancel()
+		if err := wm.RemoveWorkspace(rmCtx, id, bn); err != nil {
+			slog.Warn("orchestrator: auto-clear workspace failed",
+				"identifier", id, "error", err)
+		} else {
+			slog.Info("orchestrator: workspace auto-cleared",
+				"identifier", id)
+		}
+	}()
+}
+
 // buildSubAgentContext generates a "## Available Sub-Agents" section that is
 // appended to the rendered prompt when agent teams mode is active.
 // activeProfile is excluded from the list so the agent doesn't try to spawn itself.
@@ -1655,20 +1808,46 @@ func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile
 	b.WriteString("You can spawn the following specialised sub-agents using the ")
 	b.WriteString(toolName)
 	b.WriteString(" tool:\n\n")
+	listed := 0
 	for name, p := range profiles {
 		if name == activeProfile {
 			continue
 		}
-		if p.Prompt != "" {
-			b.WriteString("- **" + name + "**: " + p.Prompt + "\n")
+		listed++
+		if summary := profileRosterSummary(p); summary != "" {
+			b.WriteString("- **" + name + "**: " + summary + "\n")
 		} else {
 			b.WriteString("- **" + name + "**\n")
 		}
+	}
+	if listed == 0 {
+		return ""
 	}
 	b.WriteString("\nUse the ")
 	b.WriteString(toolName)
 	b.WriteString(" tool with the sub-agent description when you need specialised help.")
 	return b.String()
+}
+
+func profileRosterSummary(profile config.AgentProfile) string {
+	if profile.Soul != "" {
+		return firstProfileSummaryLine(profile.Soul)
+	}
+	return firstProfileSummaryLine(profile.Prompt)
+}
+
+func firstProfileSummaryLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if len(trimmed) > 180 {
+			return trimmed[:180] + "..."
+		}
+		return trimmed
+	}
+	return ""
 }
 
 // StartupTerminalCleanup fetches terminal issues and removes their workspaces.

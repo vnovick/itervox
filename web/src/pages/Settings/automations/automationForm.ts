@@ -45,6 +45,7 @@ export const automationFormSchema = z
     cooldownMinutes: z.string().refine((v) => v.trim() === '' || /^\d+$/.test(v.trim()), {
       message: 'Cooldown must be a non-negative integer (in minutes).',
     }),
+    moveToState: z.string(),
   })
   .superRefine((values, ctx) => {
     if (values.triggerType === 'cron' && values.cron.trim() === '') {
@@ -123,6 +124,7 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
       automation.policy?.cooldownMinutes !== undefined && automation.policy.cooldownMinutes > 0
         ? String(automation.policy.cooldownMinutes)
         : '',
+    moveToState: automation.policy?.moveToState ?? '',
   };
 }
 
@@ -180,6 +182,9 @@ function buildAutomationPolicy(values: AutomationFormValues): AutomationDef['pol
     const parsed = cooldownTrim === '' ? Number.NaN : Number.parseInt(cooldownTrim, 10);
     if (!Number.isNaN(parsed) && parsed > 0) policy.cooldownMinutes = parsed;
   }
+  if (values.triggerType === 'blockers_resolved' && values.moveToState.trim()) {
+    policy.moveToState = values.moveToState.trim();
+  }
   return Object.keys(policy).length > 0 ? policy : undefined;
 }
 
@@ -215,6 +220,7 @@ export function emptyAutomationValues(
     switchToProfile: '',
     switchToBackend: '',
     cooldownMinutes: '',
+    moveToState: '',
   };
 }
 
@@ -241,5 +247,6 @@ export function automationValuesFromSuggestion(
     switchToProfile: '',
     switchToBackend: '',
     cooldownMinutes: '',
+    moveToState: suggestion.moveToState ?? '',
   };
 }

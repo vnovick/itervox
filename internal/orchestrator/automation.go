@@ -20,7 +20,7 @@ import (
 var (
 	errInvalidTestAutomation = errors.New("orchestrator: test automation requires both rule id and issue identifier")
 	errAutomationNotFound    = errors.New("orchestrator: automation rule not found")
-	errAutomationQueueFull   = errors.New("orchestrator: automation event channel full")
+	errAutomationQueueFull   = errors.New("orchestrator: automation dispatch event not accepted")
 )
 
 // AutomationTriggerContext is the per-dispatch snapshot of why an automation
@@ -80,6 +80,13 @@ type AutomationTriggerContext struct {
 	CompletionTokensTotal int
 	SwitchedToProfile     string
 	SwitchedToBackend     string
+
+	// ─── blockers_resolved trigger fields ─────────────────────────────
+	ResolvedBlockers       []domain.BlockerRef
+	PreviouslyBlockedBy    []domain.BlockerRef
+	DependencyAuditVersion int64
+	DependencyUnblockedAt  time.Time
+	MoveToState            string
 }
 
 // AutomationDispatch is the message an automation producer (cron goroutine,
@@ -95,6 +102,7 @@ type AutomationDispatch struct {
 	Instructions string
 	Trigger      AutomationTriggerContext
 	AutoResume   bool
+	MoveToState  string
 	// UseIssueLifecycle keeps automation prompt attribution but lets the worker
 	// run through the normal issue lifecycle: working transition, PR/comment
 	// handling, completion-state transition, and active-state reconciliation.
@@ -173,6 +181,20 @@ type RateLimitedAutomation struct {
 	Cooldown        time.Duration
 }
 
+// BlockersResolvedAutomation is the compiled, event-loop-ready form of a
+// `blockers_resolved` automation rule. It fires only when dependency audit
+// observes a previously blocked issue becoming unblocked.
+type BlockersResolvedAutomation struct {
+	ID              string
+	ProfileName     string
+	Instructions    string
+	MatchMode       string
+	States          []string
+	LabelsAny       []string
+	IdentifierRegex *regexp.Regexp
+	MoveToState     string
+}
+
 // setAutomationRegistry installs a compiled-automation slice under the
 // orchestrator's automationsMu write lock. Generic helper that DRYs up the
 // per-trigger Set helpers (input_required / run_failed / pr_opened /
@@ -234,13 +256,18 @@ func (o *Orchestrator) snapPROpenedAutomations() []PROpenedAutomation {
 // the helper queues an EventDispatchAutomation through the orchestrator
 // event loop carrying the PR URL/branch/base in the trigger context. Safe
 // to call from any goroutine.
-func (o *Orchestrator) DispatchPROpenedAutomations(issue domain.Issue, prURL, prBranch, baseBranch string) {
+func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue domain.Issue, prURL, prBranch, baseBranch string) {
 	rules := o.snapPROpenedAutomations()
 	if len(rules) == 0 {
 		return
 	}
+	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	now := time.Now()
 	for _, rule := range rules {
+		if sendCtx.Err() != nil {
+			return
+		}
 		if !matchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
 			continue
 		}
@@ -267,9 +294,13 @@ func (o *Orchestrator) DispatchPROpenedAutomations(issue domain.Issue, prURL, pr
 			Issue:      &issue,
 			Automation: &dispatch,
 		}:
-		default:
-			slog.Warn("orchestrator: pr_opened dispatch channel full",
-				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL)
+		case <-sendCtx.Done():
+			slog.Warn("orchestrator: pr_opened dispatch event not accepted before context done",
+				"identifier", issue.Identifier,
+				"automation", rule.ID,
+				"pr_url", prURL,
+				"error", sendCtx.Err())
+			return
 		}
 	}
 }
@@ -295,9 +326,19 @@ func (o *Orchestrator) snapRateLimitedAutomations() []RateLimitedAutomation {
 	return snapAutomationRegistry(o, &o.rateLimitedAutomations)
 }
 
+// SetBlockersResolvedAutomations installs dependency-unblock automation rules.
+// Safe to call from any goroutine.
+func (o *Orchestrator) SetBlockersResolvedAutomations(automations []BlockersResolvedAutomation) {
+	setAutomationRegistry(o, &o.blockersResolvedAutomations, automations)
+}
+
+func (o *Orchestrator) snapBlockersResolvedAutomations() []BlockersResolvedAutomation {
+	return snapAutomationRegistry(o, &o.blockersResolvedAutomations)
+}
+
 // DispatchAutomation queues an automation worker through the event loop.
 // Safe to call from any goroutine.
-func (o *Orchestrator) DispatchAutomation(issue domain.Issue, automation AutomationDispatch) bool {
+func (o *Orchestrator) DispatchAutomation(ctx context.Context, issue domain.Issue, automation AutomationDispatch) bool {
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:       EventDispatchAutomation,
@@ -305,8 +346,11 @@ func (o *Orchestrator) DispatchAutomation(issue domain.Issue, automation Automat
 		Automation: &automation,
 	}:
 		return true
-	default:
-		slog.Warn("orchestrator: automation dispatch event channel full", "identifier", issue.Identifier, "automation", automation.AutomationID)
+	case <-ctx.Done():
+		slog.Warn("orchestrator: automation dispatch event not accepted before context done",
+			"identifier", issue.Identifier,
+			"automation", automation.AutomationID,
+			"error", ctx.Err())
 		return false
 	}
 }
@@ -324,8 +368,8 @@ const TestAutomationTriggerType = "test"
 //
 // Safe for any goroutine. Returns an error if the rule does not exist, the
 // referenced profile is missing, or the issue cannot be located via the
-// tracker. The actual dispatch is asynchronous: a successful return only
-// means the EventDispatchAutomation was queued.
+// tracker. The actual dispatch is asynchronous: a successful return only means
+// the EventDispatchAutomation handoff was accepted by the event loop.
 func (o *Orchestrator) TestAutomation(ctx context.Context, automationID, identifier string) error {
 	if automationID == "" || identifier == "" {
 		return errInvalidTestAutomation
@@ -372,7 +416,7 @@ func (o *Orchestrator) TestAutomation(ctx context.Context, automationID, identif
 			AutomationID: rule.ID,
 		},
 	}
-	if !o.DispatchAutomation(issue, dispatch) {
+	if !o.DispatchAutomation(ctx, issue, dispatch) {
 		return errAutomationQueueFull
 	}
 	return nil
@@ -384,8 +428,23 @@ func (o *Orchestrator) dispatchMatchingInputRequiredAutomations(
 	issue domain.Issue,
 	entry *InputRequiredEntry,
 	now time.Time,
+	prevRun *RunEntry,
 ) {
 	if entry == nil {
+		return
+	}
+	// v0.2.0 todolist5 B1 — self-reentry guard. If the worker that just exited
+	// input_required was itself dispatched by an input_required automation,
+	// firing another input_required automation on this issue would loop
+	// indefinitely until an unrelated rate-limit / retry budget kicks in.
+	// Skip dispatch; user-launched workers exiting input_required (AutomationID
+	// empty) still fire automations as before.
+	if prevRun != nil && prevRun.AutomationID != "" &&
+		prevRun.TriggerType == config.AutomationTriggerInputRequired {
+		slog.Warn("orchestrator: input-required dispatch suppressed (self-reentry)",
+			"identifier", issue.Identifier,
+			"prev_automation", prevRun.AutomationID,
+			"prev_trigger", prevRun.TriggerType)
 		return
 	}
 	automations := o.snapInputRequiredAutomations()
@@ -419,7 +478,7 @@ func (o *Orchestrator) dispatchMatchingInputRequiredAutomations(
 			continue
 		}
 		matchCount++
-		o.startAutomationRun(ctx, state, issue, now, AutomationDispatch{
+		o.dispatchOrQueueAutomation(ctx, state, issue, AutomationDispatch{
 			AutomationID: automation.ID,
 			ProfileName:  automation.ProfileName,
 			Instructions: automation.Instructions,
@@ -432,7 +491,7 @@ func (o *Orchestrator) dispatchMatchingInputRequiredAutomations(
 				BlockedProfile: entry.ProfileName,
 				BlockedBackend: entry.Backend,
 			},
-		})
+		}, now)
 	}
 	if matchCount == 0 {
 		// Registered automations exist but none matched the current
@@ -461,7 +520,9 @@ func (o *Orchestrator) replayPersistedInputRequiredAutomations(ctx context.Conte
 		if issue == nil {
 			continue
 		}
-		o.dispatchMatchingInputRequiredAutomations(ctx, state, *issue, entry, now)
+		// Persistence-replay path: no live RunEntry — the previous worker is
+		// gone (daemon restart). B1 self-reentry guard does not apply; nil.
+		o.dispatchMatchingInputRequiredAutomations(ctx, state, *issue, entry, now, nil)
 	}
 }
 
@@ -540,7 +601,7 @@ func (o *Orchestrator) dispatchMatchingRunFailedAutomations(
 		) {
 			continue
 		}
-		o.startAutomationRun(ctx, state, issue, now, AutomationDispatch{
+		o.dispatchOrQueueAutomation(ctx, state, issue, AutomationDispatch{
 			AutomationID: automation.ID,
 			ProfileName:  automation.ProfileName,
 			Instructions: automation.Instructions,
@@ -553,7 +614,51 @@ func (o *Orchestrator) dispatchMatchingRunFailedAutomations(
 				WillRetry:    false,
 				RetryAttempt: attempt,
 			},
-		})
+		}, now)
+	}
+}
+
+func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
+	ctx context.Context,
+	state *State,
+	issue domain.Issue,
+	audit DependencyAuditEntry,
+	now time.Time,
+) {
+	automations := o.snapBlockersResolvedAutomations()
+	if len(automations) == 0 || audit.LastTransitionVersion == 0 {
+		return
+	}
+	for _, automation := range automations {
+		if !matchesAutomationFilter(
+			issue,
+			automation.MatchMode,
+			automation.States,
+			automation.LabelsAny,
+			automation.IdentifierRegex,
+			nil,
+			"",
+		) {
+			continue
+		}
+		dispatch := AutomationDispatch{
+			AutomationID: automation.ID,
+			ProfileName:  automation.ProfileName,
+			Instructions: automation.Instructions,
+			MoveToState:  automation.MoveToState,
+			Trigger: AutomationTriggerContext{
+				Type:                   config.AutomationTriggerBlockersResolved,
+				FiredAt:                now,
+				AutomationID:           automation.ID,
+				CurrentState:           issue.State,
+				ResolvedBlockers:       copyBlockerRefs(audit.ResolvedBlockers),
+				PreviouslyBlockedBy:    copyBlockerRefs(audit.BlockedBy),
+				DependencyAuditVersion: audit.LastTransitionVersion,
+				DependencyUnblockedAt:  audit.UnblockedAt,
+				MoveToState:            automation.MoveToState,
+			},
+		}
+		o.dispatchOrQueueAutomation(ctx, state, issue, dispatch, now)
 	}
 }
 
@@ -611,18 +716,18 @@ func (o *Orchestrator) startAutomationRun(
 	issue domain.Issue,
 	now time.Time,
 	automation AutomationDispatch,
-) {
+) bool {
 	if automation.ProfileName == "" {
-		return
+		return false
 	}
 	if _, running := state.Running[issue.ID]; running {
-		return
+		return false
 	}
 	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return
+		return false
 	}
 	if AvailableSlots(*state) <= 0 {
-		return
+		return false
 	}
 
 	o.cfgMu.RLock()
@@ -635,11 +740,11 @@ func (o *Orchestrator) startAutomationRun(
 
 	if !ok {
 		slog.Warn("orchestrator: automation profile not found", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return
+		return false
 	}
 	if !config.ProfileEnabled(profile) {
 		slog.Warn("orchestrator: automation profile disabled", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return
+		return false
 	}
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -673,7 +778,7 @@ func (o *Orchestrator) startAutomationRun(
 			"worker_host", workerHost,
 			"backend", backend)
 		state.Claimed[issue.ID] = struct{}{}
-		return
+		return true
 	}
 
 	state.Claimed[issue.ID] = struct{}{}
@@ -709,6 +814,7 @@ func (o *Orchestrator) startAutomationRun(
 	o.recordAutomationDispatch(issue, automation, backend)
 
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, automation.ProfileName, false, nil, &automation)
+	return true
 }
 
 // AutomationFiredLogPrefix is the canonical leading token of the synthetic
@@ -760,10 +866,13 @@ func filterAllowedActionsForAutomation(actions []string, automation *AutomationD
 	if automation == nil {
 		return normalized
 	}
-	if automation.Trigger.Type != config.AutomationTriggerInputRequired || automation.AutoResume {
+	removeProvideInput := automation.Trigger.Type == config.AutomationTriggerInputRequired && !automation.AutoResume
+	removeMoveState := automation.Trigger.Type == config.AutomationTriggerBlockersResolved && automation.MoveToState == ""
+	if !removeProvideInput && !removeMoveState {
 		return normalized
 	}
 	return slices.DeleteFunc(normalized, func(action string) bool {
-		return action == config.AgentActionProvideInput
+		return (removeProvideInput && action == config.AgentActionProvideInput) ||
+			(removeMoveState && action == config.AgentActionMoveState)
 	})
 }

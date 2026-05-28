@@ -7,6 +7,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   'run_failed',
   'pr_opened',
   'rate_limited',
+  'blockers_resolved',
 ] as const;
 
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
@@ -50,6 +51,10 @@ export const AUTOMATION_TRIGGER_META = {
     description:
       'Fires when an exhausted-retry exit was caused by vendor rate-limit or quota errors.',
   },
+  blockers_resolved: {
+    label: 'Blockers Resolved',
+    description: 'Fires when dependency audit observes a blocked issue becoming unblocked.',
+  },
 } satisfies Record<AutomationTriggerType, AutomationTriggerMeta>;
 
 export const AUTOMATION_TRIGGER_OPTIONS = AUTOMATION_TRIGGER_TYPES.map((value) => ({
@@ -76,4 +81,20 @@ export function automationTriggerSummary(trigger: AutomationTriggerSummaryInput)
   }
 
   return AUTOMATION_TRIGGER_META[trigger.type].label;
+}
+
+/**
+ * triggerTypeLabel returns the display label for a trigger type identifier.
+ * Falls back to the raw type when the value is not a known
+ * `AutomationTriggerType` (defensive against server-side additions the
+ * client hasn't been updated for).
+ *
+ * v0.2.0 audit P2-8 — single source of truth for trigger-type labels.
+ * Callers should use this helper instead of reimplementing the lookup.
+ */
+export function triggerTypeLabel(type: string): string {
+  if (type in AUTOMATION_TRIGGER_META) {
+    return AUTOMATION_TRIGGER_META[type as AutomationTriggerType].label;
+  }
+  return type;
 }

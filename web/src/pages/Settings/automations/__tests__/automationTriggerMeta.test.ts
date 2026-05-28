@@ -26,6 +26,7 @@ const baseValues = {
   switchToProfile: '',
   switchToBackend: '',
   cooldownMinutes: '',
+  moveToState: '',
 } as const;
 
 describe('automation trigger metadata', () => {

@@ -126,31 +126,159 @@ Linear, GitHub, and an in-memory backend all implement `tracker.Tracker`. The
 orchestrator works exclusively with `domain.Issue` values, so the dispatch
 logic is backend-agnostic.
 
-## Planned v0.2.0 Automation Queue And Dependency Surfaces
+## v0.2.0 Automation Queue And Dependency Surfaces
 
-This section describes planned v0.2.0 architecture work tracked in
-`planning/v0.2.0/todolist2.md`. Do not treat these fields or UI surfaces as
-shipped until the implementation tasks and release checks land.
+Automation dispatch keeps retryable runtime failures in event-loop-owned queue
+state. If an automation trigger cannot start because there are no slots, a
+per-state cap is full, the issue is already running/claimed, input is pending,
+or blockers are unresolved, the event loop records an `AutomationQueueEntry`
+instead of dropping the trigger attempt. Queue entries drain when worker
+capacity and eligibility allow.
 
-The planned automation queue keeps retryable automation dispatch attempts in
-event-loop-owned state instead of letting no-slot or blocked-by cases disappear
-between polls. Queue entries are drained when worker capacity and eligibility
-allow. Queue length is capped, and saturation pauses new automation trigger
-intake while existing queued work continues to drain.
+The queue is capped by `agent.max_automation_queue_length` (default `100`).
+When the cap is reached, `AutomationQueueBackpressure` marks producers as
+paused. New automation trigger intake stops, rejected one-shot attempts are
+counted for audit, and existing queued work continues draining until the queue
+falls below the low-water mark.
 
-The planned dependency audit normalizes `issue.BlockedBy` into observable
-blocked, unknown, and unblocked states. Core audit is read-only: it can emit a
-`blockers_resolved` automation event when all blockers become terminal, but it
-does not mutate Linear or GitHub state directly. Tracker state changes remain
-explicit dashboard actions or opt-in automations with profile permissions.
+Dependency audit normalizes `issue.BlockedBy` into observable `blocked`,
+`unknown`, and `unblocked` states. Linear blockers come from native relations;
+GitHub blockers come from issue-body `blocked by #123` references. Unknown
+blocker state remains unresolved. A PR merge does not unblock dependents until
+the tracker later reports the blocking issue as terminal/closed/done.
 
-The planned dashboard Deps tab is a display-only React Flow graph of issue
-dependency relationships. Edge direction is blocker -> blocked issue. Nodes show
-issue status badges such as running, queued, terminal, blocked, unblocked, and
-unknown. Clicking a node should reuse the existing issue-detail panel path.
+Core dependency audit is read-only. It can emit a `blockers_resolved`
+automation event when all blockers become terminal, but it does not mutate
+Linear or GitHub state directly. Tracker state changes remain explicit
+dashboard actions or opt-in automations with profile permissions.
 
-The full editable automation/workflow canvas remains a later release concern;
-the v0.2.0 Deps graph is only an issue dependency visualization.
+The dashboard Deps tab is a display-only React Flow graph of issue dependency
+relationships. Edge direction is blocker -> blocked issue. Nodes show tracker,
+running, queued, terminal, blocked, unblocked, and unknown badges. Clicking a
+node reuses the existing issue-detail panel path.
+
+The full editable Trigger -> Automation -> Profile -> Worker canvas remains a
+v0.2.1+ concern; the v0.2.0 Deps graph is only an issue dependency
+visualization.
+
+## v0.2.0 Track B — Schema 2, file-backed profiles, and HEARTBEAT.md
+
+### Schema 2 startup validation
+
+`internal/config/validate.go` requires `itervox_schema_version: 2` at the top
+of every `WORKFLOW.md`. The daemon emits `MissingWorkflowSchemaMessage` and
+refuses to start when the marker is absent or set to an unsupported version.
+Migration is non-destructive: `itervox init --update --workflow WORKFLOW.md`
+extracts inline `agent.profiles.<name>.prompt` content into per-profile
+`INSTRUCTIONS.md` files, generates starter `SOUL.md` files, writes a
+`WORKFLOW.md.bak`, patches the root `.gitignore` so `.itervox/agents/**` is
+committable, and stamps `itervox_schema_version: 2` on the migrated file.
+
+### SOUL.md / INSTRUCTIONS.md prompt assembly
+
+Profile content lives in `.itervox/agents/<name>/` and is referenced from
+`WORKFLOW.md` via `agent.profiles.<name>.soul_file` and `instructions_file`.
+
+Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
+
+1. **Per-issue Liquid template** — rendered with `domain.Issue` fields by
+   `internal/prompt`. The strict-variables engine rejects undefined references.
+2. **`## Prior Agent Handoffs`** block (if any) — file-backed agent handoff
+   content read from `<workspace>/.itervox/handoff/*.md` in chronological
+   order, budget-truncated. See **Agent handoff** below.
+3. **`## Run Context`** block — `run.timestamp` and `run.handoff_path` for
+   this dispatch. The agent uses these to write its own deliverable.
+4. **SOUL.md** — compact identity ("who you are"), appended via
+   `renderProfilePromptBlocks`.
+5. **INSTRUCTIONS.md** — operational rules, checklists, including the
+   "Handoff Protocol" section that points at `run.handoff_path`.
+6. Optional appends: automation instructions, action context, sub-agent
+   roster, first-turn PR context.
+
+The concatenated result is passed to the agent subprocess. Inline `prompt:`
+fields are rejected at config load; this is enforced by validation tests, not
+silent fallback.
+
+### Agent handoff (`.itervox/handoff/`)
+
+`internal/orchestrator/handoff.go` implements file-backed handoff for chained
+profiles. Each worker run writes a Markdown deliverable to
+`.itervox/handoff/<ISO8601-timestamp>_<profile-name>.md` on the issue's
+worktree branch; subsequent workers see all prior deliverables prerendered
+into their prompt.
+
+**Key functions:**
+
+- `handoffRunTimestamp(t time.Time)` returns an ISO8601 timestamp with `:`
+  replaced by `-` so the value is filename-safe and lexicographically equal
+  to chronological order. The orchestrator generates one timestamp per worker
+  dispatch and exposes it as `run.timestamp`.
+- `handoffPathFor(timestamp, profileName)` builds the canonical handoff path.
+  Profile names are slugified (spaces → hyphens); empty names fall back to
+  `agent`.
+- `buildHandoffContextBlock(wsPath, budget)` reads every `.md` file in
+  `<wsPath>/.itervox/handoff/`, sorts by filename (chronological), applies the
+  budget (default 30 KB; oldest dropped first with a truncation marker), and
+  returns a `## Prior Agent Handoffs` Markdown block. Files with the
+  `.partial.md` suffix are included and explicitly marked.
+- `buildRunContextBlock(timestamp, handoffPath)` builds the `## Run Context`
+  block agents read to know where to write.
+- `markHandoffPartial(wsPath, handoffRelPath)` renames a specific in-flight
+  file to `<basename>.partial.md`. No-op when the file does not exist.
+- `markLatestHandoffPartial(wsPath, profileName)` finds the most recent
+  matching `<*>_<profile>.md` by mtime and renames it. Filesystem-driven so
+  the orchestrator does not need to remember each worker's run timestamp.
+
+**Partial rename hooks** live in `event_loop.go`. The orchestrator's
+`markFailedHandoffPartial` runs on the `TerminalFailed` branch (excluding
+`context.Canceled` orchestrator-initiated stops). `markStalledHandoffPartial`
+runs on the `TerminalStalled` branch. `TerminalSucceeded` and
+`TerminalInputRequired` do not rename — success is a clean handoff,
+input-required is a pause that will resume.
+
+**Workspace clear under handoff:** the orchestrator now treats workspace
+cleanup as terminal-state-only. `cfg.Workspace.AutoClearWorkspace` fires when:
+
+- A worker exits `TerminalSucceeded` AND no auto-review is queued. If
+  `cfg.Agent.AutoReview` + `cfg.Agent.ReviewerProfile` are set, the clear is
+  deferred to the reviewer's own `TerminalSucceeded` handler.
+- A worker exits `TerminalFailed`, retries are exhausted, no rate-limited
+  recovery is queued, and the issue moves to `cfg.Tracker.FailedState`.
+
+Workspace is preserved across retries, input-required pauses, stalls, and any
+mid-pipeline state transitions so handoff files accumulate across the chain.
+
+### IssueStatusHistory ledger
+
+`internal/orchestrator/status_history.go` keeps a per-issue ledger of state
+transitions sourced from tracker observation, dashboard actions, worker
+lifecycle moves, automation moves, and system cleanup. The per-issue slice is
+capped at `maxIssueStatusHistory = 50`. The outer map is bounded by an
+event-loop janitor (`pruneIssueStatusHistory`) that drops entries whose
+identifier is absent from the candidate set AND whose most-recent change is
+older than `issueStatusHistoryRetention` (default 7 days). Live issues are
+preserved regardless of age. Janitor runs at the tail of every `onTick`.
+
+The ledger is session-local in v0.2.0. Cross-restart persistence is gated on
+the Track B queue-persistence proposal (`planning/v0.2.0/todolist4.md` A.2).
+
+### `cmd/itervox/heartbeat.go` — `.itervox/HEARTBEAT.md`
+
+A human-readable daemon liveness file. Written on startup and refreshed after
+state changes at a bounded interval (default 15 s) via
+`atomicfs.WriteFile(path, content, 0o644)`. The file records:
+
+- active workflow path and `itervox_schema_version`
+- dashboard URL and tracker/project
+- agent capacity (running / max)
+- automation queue pressure (length / max, paused producers, recent rejects)
+- dependency audit summary (blocked / unknown / unblocked counts)
+- input-required count and retry count
+- last notable error
+
+The file is gitignored as transient runtime state. Do NOT commit. Operators
+typically wire it into `tail -f` or a monitoring dashboard for ops visibility
+without needing to scrape `/api/v1/state`.
 
 ## Request flow (web dashboard → agent dispatch)
 

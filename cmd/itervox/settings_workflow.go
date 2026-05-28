@@ -24,6 +24,8 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 		out[name] = workflow.ProfileEntry{
 			Command:          profile.Command,
 			Prompt:           profile.Prompt,
+			SoulFile:         strings.TrimSpace(profile.SoulFile),
+			InstructionsFile: strings.TrimSpace(profile.InstructionsFile),
 			Backend:          profile.Backend,
 			Enabled:          enabledField,
 			AllowedActions:   config.NormalizeAllowedActions(profile.AllowedActions),

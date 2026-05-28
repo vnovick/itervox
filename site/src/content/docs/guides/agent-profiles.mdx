@@ -1,13 +1,13 @@
 ---
 title: Agent Profiles
-description: Configure multiple AI agent profiles, prompt roles, daemon actions, and SSH remote execution.
+description: Configure multiple AI agent profiles, SOUL/INSTRUCTIONS files, daemon actions, and SSH remote execution.
 sidebar:
   order: 5
 ---
 
 import { Image } from 'astro:assets';
 
-Itervox supports named agent profiles with per-profile commands, role prompts, and daemon-backed actions, plus SSH-based remote execution and a reviewer-profile flow. This guide covers all of these.
+Itervox supports named agent profiles with per-profile commands, file-backed SOUL/INSTRUCTIONS guidance, and daemon-backed actions, plus SSH-based remote execution and a reviewer-profile flow. This guide covers all of these.
 
 ## Dashboard
 
@@ -18,18 +18,18 @@ The Agents page provides a visual overview of all configured profiles, their bac
 Each profile card shows:
 
 - **Backend and model** — at a glance.
-- **Prompt preview** — the first lines of the role description.
+- **Profile-file preview** — the first lines of the profile's SOUL/INSTRUCTIONS guidance.
 - **Context budget** — estimated token cost from all loaded skills, MCP servers, and instructions. Profiles inheriting a heavy surface area are flagged.
 - **Active/Inactive** state — inactive profiles remain in config but are hidden from dispatch and automations.
 
-Below the configured profiles, **starter templates** (Code Reviewer, QA Engineer, Input Responder) let you bootstrap common profiles with one click.
+Below the configured profiles, **starter templates** (Code Reviewer, QA Engineer, Input Responder) let you bootstrap common profiles with one click. Editing a schema `2` profile in the dashboard writes the profile's `SOUL.md` and `INSTRUCTIONS.md` files separately; the old inline `prompt` field is compatibility-only.
 
 ## How profiles work
 
-When an issue has a profile assigned (via the Agents page or API), that profile's `prompt` is rendered through the Liquid template engine and **always appended** to the rendered `WORKFLOW.md` prompt. No `agent_mode` flag is needed — profile prompts inject unconditionally.
+When an issue has a profile assigned (via the Agents page or API), Itervox renders that profile's `SOUL.md` and `INSTRUCTIONS.md` through the Liquid template engine and **always appends** them to the rendered `WORKFLOW.md` prompt. No `agent_mode` flag is needed — profile files inject unconditionally.
 
 :::note
-The `agent_mode` field was removed in v0.2.0. If your `WORKFLOW.md` still contains it, the daemon will reject the config with a clear error. Delete the field — profile prompts now always inject.
+The `agent_mode` field was removed in v0.2.0. If your `WORKFLOW.md` still contains it, the daemon will reject the config with a clear error. Delete the field — profile files now always inject.
 :::
 
 ### Defining profiles
@@ -43,36 +43,54 @@ agent:
   profiles:
     backend:
       command: claude --model claude-opus-4-6
-      prompt: >
-        You are the backend specialist. You handle API design, database schemas,
-        server-side business logic, and performance optimisation.
+      soul_file: .itervox/agents/backend/SOUL.md
+      instructions_file: .itervox/agents/backend/INSTRUCTIONS.md
 
     frontend:
       command: claude --model claude-sonnet-4-6
-      prompt: >
-        You are the frontend specialist. You handle React components, CSS,
-        accessibility, and browser compatibility.
+      soul_file: .itervox/agents/frontend/SOUL.md
+      instructions_file: .itervox/agents/frontend/INSTRUCTIONS.md
 
     qa:
       command: claude --model claude-sonnet-4-6
       enabled: true
       allowed_actions: [comment, move_state]
-      prompt: >
-        You are the QA specialist. Run test suites and report findings.
+      soul_file: .itervox/agents/qa/SOUL.md
+      instructions_file: .itervox/agents/qa/INSTRUCTIONS.md
 ```
 
-### Liquid variables in profile prompts
+Example profile files:
 
-Profile prompts support the same Liquid template variables as the main `WORKFLOW.md` prompt:
+```markdown
+<!-- .itervox/agents/backend/SOUL.md -->
+# backend SOUL
+
+## Identity
+You are the backend specialist for this repository.
+
+## Purpose
+Handle API design, database schemas, server-side business logic, and performance optimisation.
+```
+
+```markdown
+<!-- .itervox/agents/backend/INSTRUCTIONS.md -->
+# backend INSTRUCTIONS
+
+## Workflow
+- Work on {{ issue.identifier }}: {{ issue.title }}.
+- Focus on Go, APIs, database code, and regression tests.
+```
+
+### Liquid variables in profile files
+
+Profile files support the same Liquid template variables as the main `WORKFLOW.md` prompt:
 
 ```yaml
 profiles:
   backend:
     command: claude
-    prompt: >
-      You are the backend specialist working on {{ issue.identifier }}: {{ issue.title }}.
-      {% if issue.priority == "urgent" %}Treat this as high priority.{% endif %}
-      Focus on Go, APIs, and database code.
+    soul_file: .itervox/agents/backend/SOUL.md
+    instructions_file: .itervox/agents/backend/INSTRUCTIONS.md
 ```
 
 | Variable | Type | Description |
@@ -89,7 +107,30 @@ profiles:
 | `issue.blocked_by` | object[] | Blocking issues (`id`, `identifier`, `state`) |
 | `attempt` | int\|null | Current retry attempt (`null` on first attempt) |
 
-Plain-text prompts (without any `{{ }}` syntax) are passed through unchanged.
+Plain-text profile files (without any `{{ }}` syntax) are passed through unchanged.
+
+### Handoff protocol (v0.2.0)
+
+When multiple profiles run on the same issue, each one can leave a Markdown deliverable in `.itervox/handoff/` so subsequent profiles can read it. The orchestrator generates two values per dispatch and surfaces them in the agent's prompt as a `## Run Context` block:
+
+| Value | Description |
+|---|---|
+| `run.timestamp` | The dispatch instant, formatted ISO8601 with `:` replaced by `-` so it is filename-safe (e.g. `2026-05-26T14-30-45Z`). |
+| `run.handoff_path` | The canonical destination for this run's deliverable: `.itervox/handoff/<run.timestamp>_<profile-name>.md`. |
+
+The orchestrator also prepends a `## Prior Agent Handoffs` block to the prompt containing every prior agent's deliverable on this branch in chronological order, budget-truncated to 30 KB (oldest first, with a `[earlier handoffs truncated]` marker).
+
+Profile `INSTRUCTIONS.md` files generated by `itervox init` now include a **Handoff Protocol** section telling the agent to:
+
+1. Read the `## Prior Agent Handoffs` block at the top of its prompt to learn what predecessors did.
+2. Write a concise Markdown deliverable to `run.handoff_path` before exiting, summarizing what it did, key decisions, and what the next agent needs to know.
+3. Treat earlier handoffs as read-only — never overwrite a prior agent's file. The chronological order is the audit trail.
+
+You can adapt this protocol per profile. A reviewer might write findings keyed by severity; an implementer might list files changed and tests added; a researcher might list the patterns it found and risks it flagged. The orchestrator does not interpret the content — it just shuttles it forward.
+
+If a worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the in-flight file to `<basename>.partial.md` so subsequent agents see it explicitly marked. `TerminalInputRequired` does not rename — the agent intentionally paused and will resume.
+
+See the [Agent Handoff guide](/guides/agent-handoff/) for a worked example of chaining three profiles end-to-end.
 
 ### Mixing runners across profiles
 
@@ -103,13 +144,13 @@ agent:
     coder:
       command: codex
       backend: codex            # explicit backend hint (optional)
-      prompt: >
-        You are the coding specialist. Write implementation code only.
+      soul_file: .itervox/agents/coder/SOUL.md
+      instructions_file: .itervox/agents/coder/INSTRUCTIONS.md
 
     tester:
       command: claude --model claude-haiku-4-5
-      prompt: >
-        You are the testing specialist. Write unit and integration tests.
+      soul_file: .itervox/agents/tester/SOUL.md
+      instructions_file: .itervox/agents/tester/INSTRUCTIONS.md
 ```
 
 The `backend` field is an optional hint that overrides automatic runner detection. Use it when the command string is a wrapper script that Itervox cannot introspect.
@@ -137,10 +178,14 @@ agent:
   profiles:
     input-responder:
       command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/input-responder/SOUL.md
+      instructions_file: .itervox/agents/input-responder/INSTRUCTIONS.md
       allowed_actions: [comment, provide_input]
 
     qa:
       command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/qa/SOUL.md
+      instructions_file: .itervox/agents/qa/INSTRUCTIONS.md
       allowed_actions: [comment, create_issue, move_state]
       create_issue_state: Todo
 ```
@@ -224,17 +269,19 @@ agent:
   profiles:
     code-reviewer:
       command: claude --model claude-opus-4-6
-      prompt: >
-        You are a senior code reviewer. Focus on correctness, regression risk,
-        test coverage, and security.
+      soul_file: .itervox/agents/code-reviewer/SOUL.md
+      instructions_file: .itervox/agents/code-reviewer/INSTRUCTIONS.md
       allowed_actions: [comment, move_state]
 ```
 
 Notes:
 
 - `auto_review: true` requires `reviewer_profile` to be set.
-- `auto_review` cannot be combined with `workspace.auto_clear`, because the
-  reviewer needs the workspace after the main worker exits.
+- `auto_review` safely coexists with `workspace.auto_clear` as of v0.2.0 — the
+  clear was redefined to fire only on terminal tracker states, so the reviewer
+  gets the implementer's workspace and the clear is deferred until after the
+  reviewer also completes. The legacy `ValidateAutoClearAutoReview` config-load
+  conflict is now a no-op kept only for API compatibility.
 
 ## Legacy reviewer prompt
 
@@ -299,7 +346,8 @@ agent:
 | Field | Default | Description |
 |---|---|---|
 | `command` | *(required)* | CLI command for this profile |
-| `prompt` | `""` | Role description — always appended to the issue prompt when this profile is selected |
+| `soul_file` | *(required in schema 2)* | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute |
+| `instructions_file` | *(required in schema 2)* | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute |
 | `backend` | `""` | Override runner detection for wrapper scripts |
 | `enabled` | `true` | Set to `false` to hide from dispatch selectors and automations |
 | `allowed_actions` | `[]` | Daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input` |

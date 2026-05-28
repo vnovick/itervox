@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +35,7 @@ func TestDispatchPROpenedAutomations_QueuesMatchingRules(t *testing.T) {
 	})
 
 	issue := domain.Issue{ID: "id1", Identifier: "ENG-7", State: "In Progress"}
-	o.DispatchPROpenedAutomations(issue, "https://github.com/x/y/pull/42", "feat-7", "main")
+	o.DispatchPROpenedAutomations(t.Context(), issue, "https://github.com/x/y/pull/42", "feat-7", "main")
 
 	// Drain the events channel.
 	var events []OrchestratorEvent
@@ -67,12 +68,12 @@ func TestDispatchPROpenedAutomations_IdentifierRegexFilter(t *testing.T) {
 		},
 	})
 
-	o.DispatchPROpenedAutomations(domain.Issue{Identifier: "BUG-1"}, "https://x/y/pull/1", "b", "main")
+	o.DispatchPROpenedAutomations(t.Context(), domain.Issue{Identifier: "BUG-1"}, "https://x/y/pull/1", "b", "main")
 	assert.Empty(t, o.events, "BUG-1 must not trigger an ENG-only pr_opened rule")
 }
 
 // A worker discovers a new PR before it sends TerminalSucceeded. The
-// pr_opened automation event must be queued after the exit event so the event
+// pr_opened automation event must be accepted after the exit event so the event
 // loop clears state.Running first; otherwise automation dispatch is skipped as
 // already_running.
 func TestSendExitWithBranchThenPROpenedAutomations_QueuesExitBeforeAutomation(t *testing.T) {
@@ -131,24 +132,26 @@ func TestPROpenedAutomations_RaceSafe(t *testing.T) {
 	assert.Len(t, o.snapPROpenedAutomations(), 1)
 }
 
-// When the events channel is full, DispatchPROpenedAutomations must drop
-// the event with a warning rather than block — the worker goroutine that
-// invoked it cannot afford to deadlock on a full buffer.
-func TestDispatchPROpenedAutomations_NonBlockingOnFullChannel(t *testing.T) {
+// When the events channel is full, DispatchPROpenedAutomations waits only
+// until the caller's bounded context expires. The worker must not deadlock
+// forever, but one-shot PR events should no longer be dropped immediately.
+func TestDispatchPROpenedAutomations_BoundedWaitOnFullChannel(t *testing.T) {
 	// Buffered to cap=0 → any send blocks unless there's a receiver. We
 	// don't start one; the helper must give up immediately via the
 	// default branch.
 	o := &Orchestrator{events: make(chan OrchestratorEvent)}
 	o.SetPROpenedAutomations([]PROpenedAutomation{{ID: "x", ProfileName: "y"}})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		o.DispatchPROpenedAutomations(domain.Issue{Identifier: "ENG-1"}, "u", "b", "")
+		o.DispatchPROpenedAutomations(ctx, domain.Issue{Identifier: "ENG-1"}, "u", "b", "")
 		close(done)
 	}()
 	select {
 	case <-done:
-		// Returned promptly — non-blocking, as required.
-	case <-context.Background().Done():
-		t.Fatal("DispatchPROpenedAutomations blocked on full events channel")
+		// Returned once the bounded context expired.
+	case <-time.After(time.Second):
+		t.Fatal("DispatchPROpenedAutomations did not respect the bounded context")
 	}
 }

@@ -48,7 +48,7 @@ func TestInputRequiredAutomation_SkipsStaleEntries(t *testing.T) {
 		Context:    "needs clarification",
 		QueuedAt:   now.Add(-5 * time.Minute),
 	}
-	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, freshEntry, now)
+	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, freshEntry, now, nil)
 	_, freshClaimed := state.Claimed[issue.ID]
 	assert.True(t, freshClaimed, "fresh entry must be dispatched (claimed)")
 
@@ -60,7 +60,7 @@ func TestInputRequiredAutomation_SkipsStaleEntries(t *testing.T) {
 		Context:    "still asking after 2h",
 		QueuedAt:   now.Add(-2 * time.Hour),
 	}
-	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, staleEntry, now)
+	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, staleEntry, now, nil)
 	_, staleClaimed := state.Claimed[issue.ID]
 	assert.False(t, staleClaimed, "stale entry must NOT be dispatched")
 }
@@ -91,7 +91,7 @@ func TestInputRequiredAutomation_NoMaxAgeMatchesEverything(t *testing.T) {
 		Context:    "ancient",
 		QueuedAt:   now.Add(-90 * 24 * time.Hour),
 	}
-	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, veryOld, now)
+	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, veryOld, now, nil)
 	_, claimed := state.Claimed[issue.ID]
 	assert.True(t, claimed, "MaxAge=0 must dispatch every age — back-compat")
 }

@@ -2,6 +2,7 @@ package tracker_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -223,6 +224,7 @@ func TestMemoryTrackerFetchIssueDetailNotFound(t *testing.T) {
 	mem := tracker.NewMemoryTracker(nil, nil, nil)
 	_, err := mem.FetchIssueDetail(context.Background(), "missing")
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, tracker.ErrNotFound))
 }
 
 // --- ParseTime and ToIntVal tests ---
@@ -276,4 +278,58 @@ func TestToIntValFalseForString(t *testing.T) {
 func TestToIntValFalseForNil(t *testing.T) {
 	_, ok := tracker.ToIntVal(nil)
 	assert.False(t, ok)
+}
+
+// v0.2.0 audit P3-2 — FetchIssueDetail / FetchIssueByIdentifier must
+// deep-copy slice fields so callers cannot mutate the in-memory store.
+// Without the deep-copy, a test appending to the returned issue's Labels
+// slice would corrupt the store for subsequent fetches in the same test.
+func TestMemoryTrackerFetchIssueDetailDeepCopies(t *testing.T) {
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{{
+			ID:         "id-1",
+			Identifier: "ENG-1",
+			State:      "Todo",
+			Labels:     []string{"bug"},
+			Comments:   []domain.Comment{{ID: "c-1", AuthorID: "alice", Body: "first"}},
+		}},
+		[]string{"Todo"},
+		[]string{"Done"},
+	)
+
+	first, err := mt.FetchIssueDetail(context.Background(), "id-1")
+	require.NoError(t, err)
+	require.NotNil(t, first)
+
+	first.Labels = append(first.Labels, "tampered")
+	first.Comments = append(first.Comments, domain.Comment{ID: "c-2", AuthorID: "mallory", Body: "tamper"})
+
+	second, err := mt.FetchIssueDetail(context.Background(), "id-1")
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	assert.Equal(t, []string{"bug"}, second.Labels, "store Labels should be unaffected by caller mutation")
+	assert.Len(t, second.Comments, 1, "store Comments should be unaffected by caller mutation")
+}
+
+func TestMemoryTrackerFetchIssueByIdentifierDeepCopies(t *testing.T) {
+	blockerID := "blk-1"
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{{
+			ID:         "id-1",
+			Identifier: "ENG-1",
+			State:      "Todo",
+			BlockedBy:  []domain.BlockerRef{{ID: &blockerID}},
+		}},
+		[]string{"Todo"},
+		[]string{"Done"},
+	)
+
+	first, err := mt.FetchIssueByIdentifier(context.Background(), "ENG-1")
+	require.NoError(t, err)
+	tamperedID := "tampered"
+	first.BlockedBy = append(first.BlockedBy, domain.BlockerRef{ID: &tamperedID})
+
+	second, err := mt.FetchIssueByIdentifier(context.Background(), "ENG-1")
+	require.NoError(t, err)
+	assert.Len(t, second.BlockedBy, 1, "store BlockedBy should be unaffected by caller mutation")
 }

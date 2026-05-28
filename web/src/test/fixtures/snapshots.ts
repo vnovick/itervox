@@ -123,6 +123,10 @@ export function makeProfileDef(overrides?: DeepPartial<ProfileDef>): ProfileDef 
   const base: ProfileDef = {
     command: 'claude',
     prompt: 'Default prompt body.',
+    soul: '# Default SOUL',
+    instructions: 'Default prompt body.',
+    soulFile: '.itervox/agents/default/SOUL.md',
+    instructionsFile: '.itervox/agents/default/INSTRUCTIONS.md',
     backend: 'local',
     enabled: true,
     allowedActions: ['comment', 'move_state', 'provide_input'],

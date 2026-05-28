@@ -11,6 +11,33 @@
 import { z } from 'zod';
 import { AUTOMATION_TRIGGER_TYPES } from './automationTriggers';
 
+/**
+ * Optional timestamp schema. Belt-and-braces guard against the v0.2.0
+ * audit P1-5 year-0001 leak: even after the Go side migrated time.Time-typed
+ * optional fields to *time.Time, a future DTO addition could re-introduce
+ * the sentinel. This refine drops "0001-01-01T00:00:00Z" as if the field
+ * were undefined so callers do not have to repeat the guard at every
+ * consumer.
+ */
+const YEAR_ZERO_SENTINEL = '0001-01-01T00:00:00Z';
+const optionalTimeString = z
+  .string()
+  .optional()
+  .transform((v) => (v === YEAR_ZERO_SENTINEL ? undefined : v));
+
+/**
+ * Optional safe-integer schema. Belt-and-braces guard against the v0.2.0
+ * audit P1-11 int64 → number precision loss: any Go int64 field exposed via
+ * JSON loses precision above 2^53 in JavaScript. The bound below converts
+ * silent corruption into a parse error at the wire boundary.
+ */
+const optionalSafeInt = z
+  .number()
+  .int()
+  .lte(Number.MAX_SAFE_INTEGER)
+  .gte(-Number.MAX_SAFE_INTEGER)
+  .optional();
+
 export const CommentRowSchema = z.object({
   author: z.string(),
   body: z.string(),
@@ -100,6 +127,10 @@ export const AllowedAgentActionSchema = z.enum([
 export const ProfileDefSchema = z.object({
   command: z.string(),
   prompt: z.string().optional(),
+  soul: z.string().optional(),
+  instructions: z.string().optional(),
+  soulFile: z.string().optional(),
+  instructionsFile: z.string().optional(),
   backend: z.string().optional(),
   enabled: z.boolean().optional(),
   allowedActions: z.array(AllowedAgentActionSchema).optional(),
@@ -141,6 +172,7 @@ export const AutomationPolicySchema = z.object({
   switchToProfile: z.string().optional(),
   switchToBackend: z.enum(['', 'claude', 'codex']).optional(),
   cooldownMinutes: z.number().int().nonnegative().optional(),
+  moveToState: z.string().optional(),
 });
 
 export const AutomationDefSchema = z.object({
@@ -176,6 +208,89 @@ export const InputRequiredEntrySchema = z.object({
   // can render a "Stale" badge + age tooltip without re-parsing queuedAt.
   stale: z.boolean().optional(),
   ageMinutes: z.number().optional(),
+});
+
+export const AutomationQueueBackpressureSchema = z.object({
+  length: z.number(),
+  maxLength: z.number(),
+  saturated: z.boolean(),
+  pausedProducers: z.boolean(),
+  rejectedSinceBoot: z.number(),
+  lastRejectedAt: optionalTimeString,
+  lastRejectedReason: z.string().optional(),
+});
+
+export const BlockerRefSchema = z.object({
+  id: z.string().optional(),
+  identifier: z.string().optional(),
+  state: z.string().optional(),
+  url: z.string().optional(),
+});
+
+export const AutomationQueueRowSchema = z.object({
+  id: z.string(),
+  automationId: z.string(),
+  triggerType: z.string(),
+  identifier: z.string(),
+  title: z.string().optional(),
+  issueState: z.string().optional(),
+  profile: z.string(),
+  backend: z.string().optional(),
+  status: z.enum(['queued', 'blocked', 'dispatching']),
+  reason: z.string(),
+  reasonDetail: z.string().optional(),
+  queuedAt: z.string(),
+  firedAt: z.string(),
+  lastFiredAt: optionalTimeString,
+  lastAttemptAt: optionalTimeString,
+  attemptCount: z.number(),
+  cron: z.string().optional(),
+  timezone: z.string().optional(),
+  prUrl: z.string().optional(),
+  inputContext: z.string().optional(),
+  errorMessage: z.string().optional(),
+  switchedToProfile: z.string().optional(),
+  switchedToBackend: z.string().optional(),
+  moveToState: z.string().optional(),
+});
+
+export const DependencyAuditRowSchema = z.object({
+  identifier: z.string(),
+  issueState: z.string(),
+  status: z.enum(['unknown', 'blocked', 'unblocked']),
+  sources: z.array(z.string()).optional(),
+  blockedBy: z.array(BlockerRefSchema).optional(),
+  unresolvedBlockers: z.array(BlockerRefSchema).optional(),
+  resolvedBlockers: z.array(BlockerRefSchema).optional(),
+  wasBlocked: z.boolean(),
+  firstBlockedAt: optionalTimeString,
+  unblockedAt: optionalTimeString,
+  lastAuditedAt: optionalTimeString,
+  lastTransitionVersion: optionalSafeInt,
+  lastTransitionReason: z.string().optional(),
+});
+
+export const DependencyGraphNodeSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string().optional(),
+  state: z.string().optional(),
+  status: z.enum(['unknown', 'blocked', 'unblocked']).optional(),
+  running: z.boolean(),
+  queued: z.boolean(),
+  terminal: z.boolean(),
+  updatedAt: z.string().optional(),
+  url: z.string().optional(),
+});
+
+export const DependencyGraphEdgeSchema = z.object({
+  id: z.string(),
+  sourceIdentifier: z.string(),
+  targetIdentifier: z.string(),
+  sourceState: z.string().optional(),
+  targetState: z.string().optional(),
+  resolved: z.boolean(),
+  sourceKnown: z.boolean(),
 });
 
 export const StateSnapshotSchema = z.object({
@@ -222,6 +337,11 @@ export const StateSnapshotSchema = z.object({
   inlineInput: z.boolean().optional(),
   automations: z.array(AutomationDefSchema).optional(),
   inputRequired: z.array(InputRequiredEntrySchema).optional(),
+  automationQueue: z.array(AutomationQueueRowSchema).optional(),
+  automationQueueBackpressure: AutomationQueueBackpressureSchema.optional(),
+  dependencyAudit: z.array(DependencyAuditRowSchema).optional(),
+  dependencyGraphNodes: z.array(DependencyGraphNodeSchema).optional(),
+  dependencyGraphEdges: z.array(DependencyGraphEdgeSchema).optional(),
   // ConfigInvalid surfaces a failed WORKFLOW.md reload to the banner. Absent
   // when the daemon is reading a valid config; present (non-null) when the
   // most recent reload tick failed and the daemon is exponentially backing
@@ -256,6 +376,18 @@ export const BlockerDetailSchema = z.object({
   url: z.string().optional(),
 });
 
+export const IssueStatusChangeSchema = z.object({
+  fromState: z.string().optional(),
+  toState: z.string(),
+  source: z.string(),
+  automationId: z.string().optional(),
+  triggerType: z.string().optional(),
+  profileName: z.string().optional(),
+  backend: z.string().optional(),
+  workerHost: z.string().optional(),
+  at: z.string(),
+});
+
 export const TrackerIssueSchema = z.object({
   identifier: z.string(),
   title: z.string(),
@@ -281,6 +413,7 @@ export const TrackerIssueSchema = z.object({
   blockedBy: z.array(z.string()).optional(),
   blockedByDetails: z.array(BlockerDetailSchema).optional(),
   comments: z.array(CommentRowSchema).optional(),
+  statusChanges: z.array(IssueStatusChangeSchema).optional(),
   ineligibleReason: z.string().optional(),
   agentProfile: z.string().optional(),
   agentBackend: z.string().optional(),
@@ -300,8 +433,14 @@ export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 export type LogEventType = z.infer<typeof LogEventTypeSchema>;
 export type IssueLogEntry = z.infer<typeof IssueLogEntrySchema>;
 export type BlockerDetail = z.infer<typeof BlockerDetailSchema>;
+export type IssueStatusChange = z.infer<typeof IssueStatusChangeSchema>;
 export type TrackerIssue = z.infer<typeof TrackerIssueSchema>;
 export type InputRequiredEntry = z.infer<typeof InputRequiredEntrySchema>;
+export type AutomationQueueRow = z.infer<typeof AutomationQueueRowSchema>;
+export type AutomationQueueBackpressure = z.infer<typeof AutomationQueueBackpressureSchema>;
+export type DependencyAuditRow = z.infer<typeof DependencyAuditRowSchema>;
+export type DependencyGraphNode = z.infer<typeof DependencyGraphNodeSchema>;
+export type DependencyGraphEdge = z.infer<typeof DependencyGraphEdgeSchema>;
 export type ConfigInvalidStatus = z.infer<typeof ConfigInvalidStatusSchema>;
 
 // --- Skills inventory (T-89) ---

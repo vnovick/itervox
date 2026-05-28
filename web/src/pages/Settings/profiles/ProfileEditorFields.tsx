@@ -101,6 +101,10 @@ interface ProfileEditorFieldsProps {
   model: string;
   command: string;
   prompt: string;
+  soul?: string;
+  instructions?: string;
+  soulFile?: string;
+  instructionsFile?: string;
   allowedActions: AllowedAgentAction[];
   supportedAgentActions?: readonly string[];
   createIssueState: string;
@@ -110,6 +114,8 @@ interface ProfileEditorFieldsProps {
   onModelChange: (value: string) => void;
   onCommandChange: (value: string) => void;
   onPromptChange: (value: string) => void;
+  onSoulChange?: (value: string) => void;
+  onInstructionsChange?: (value: string) => void;
   onAllowedActionsChange: (value: AllowedAgentAction[]) => void;
   onCreateIssueStateChange: (value: string) => void;
   dynamicModels?: Record<string, ModelOption[]>;
@@ -120,6 +126,10 @@ export function ProfileEditorFields({
   model,
   command,
   prompt,
+  soul,
+  instructions,
+  soulFile,
+  instructionsFile,
   allowedActions,
   supportedAgentActions,
   createIssueState,
@@ -129,6 +139,8 @@ export function ProfileEditorFields({
   onModelChange,
   onCommandChange,
   onPromptChange,
+  onSoulChange,
+  onInstructionsChange,
   onAllowedActionsChange,
   onCreateIssueStateChange,
   dynamicModels,
@@ -138,6 +150,8 @@ export function ProfileEditorFields({
   const actionOptions = agentActionOptionsFor(supportedAgentActions);
   const [advancedOpen, setAdvancedOpen] = useState(isCustomCommand);
   const [prevIsCustomCommand, setPrevIsCustomCommand] = useState(isCustomCommand);
+  const isFileBacked =
+    !!soulFile || !!instructionsFile || soul !== undefined || instructions !== undefined;
 
   if (isCustomCommand !== prevIsCustomCommand) {
     setPrevIsCustomCommand(isCustomCommand);
@@ -242,7 +256,7 @@ export function ProfileEditorFields({
           <div>
             <p className="text-theme-text text-[11px] font-semibold">Prompt variables</p>
             <p className="text-theme-muted mt-0.5 text-[11px]">
-              Liquid bindings available inside the prompt editor below.
+              Liquid bindings available inside the profile text editors below.
             </p>
           </div>
           <div className="space-y-1 font-mono text-[11px]">
@@ -255,7 +269,45 @@ export function ProfileEditorFields({
         </div>
       </div>
 
-      <MarkdownPromptEditor value={prompt} onChange={onPromptChange} />
+      {isFileBacked ? (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <MarkdownPromptEditor
+            value={soul ?? ''}
+            onChange={onSoulChange ?? (() => {})}
+            label="SOUL.md"
+            placeholder="Describe this profile's stable identity, purpose, boundaries, and collaboration style."
+            helperText={
+              <>
+                {soulFile && (
+                  <span className="font-mono" data-testid="profile-soul-file">
+                    {soulFile}
+                  </span>
+                )}
+                {!soulFile && 'Stored in the profile SOUL.md file created by Itervox.'}
+              </>
+            }
+          />
+          <MarkdownPromptEditor
+            value={instructions ?? prompt}
+            onChange={onInstructionsChange ?? onPromptChange}
+            label="INSTRUCTIONS.md"
+            placeholder="Write this profile's workflow rules, checklists, and done criteria."
+            helperText={
+              <>
+                {instructionsFile && (
+                  <span className="font-mono" data-testid="profile-instructions-file">
+                    {instructionsFile}
+                  </span>
+                )}
+                {!instructionsFile &&
+                  'Stored in the profile INSTRUCTIONS.md file created by Itervox.'}
+              </>
+            }
+          />
+        </div>
+      ) : (
+        <MarkdownPromptEditor value={prompt} onChange={onPromptChange} />
+      )}
 
       <details
         className={fieldSurfaceCls}

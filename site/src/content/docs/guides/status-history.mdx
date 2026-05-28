@@ -1,0 +1,32 @@
+---
+title: Issue Status History
+description: Understand the per-issue status-change timeline shown in Itervox issue details.
+sidebar:
+  order: 9
+---
+
+Issue detail panels include a bounded status-change timeline so you can see how an issue moved during the current daemon session.
+
+## Sources
+
+Status changes can come from:
+
+- `tracker_observed` — Itervox observed a tracker state change while fetching/auditing issues
+- `dashboard` — an operator changed state through the dashboard
+- `worker_lifecycle` — a worker completion, failure, or lifecycle transition moved the issue
+- `automation` — an automation-triggered run moved the issue
+- `system` — fallback source for internal daemon changes
+
+Automation rows include automation ID, trigger type, profile, backend, and worker host when available.
+
+## Retention
+
+v0.2.0 keeps the last 50 status changes per issue in memory. The timeline is session-local and is not a restart-durable audit log.
+
+For durable history, rely on the tracker, PR history, and daemon logs. The status timeline is a dashboard observability aid for the current daemon run.
+
+## Dashboard behavior
+
+The timeline appears near the top of the issue detail panel, before the long description. Long state names and worker metadata wrap inside the panel for mobile readability.
+
+The timeline is read-only. It does not add controls that silently mutate tracker state.

@@ -85,25 +85,8 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 			return "per_state_limit"
 		}
 	}
-	if strings.EqualFold(issue.State, "todo") {
-		for _, blocker := range issue.BlockedBy {
-			if blocker.State == nil {
-				continue
-			}
-			if isTerminalState(*blocker.State, state) {
-				continue
-			}
-			if blocker.Identifier != nil {
-				if _, autoPaused := state.PausedIdentifiers[*blocker.Identifier]; autoPaused {
-					continue
-				}
-			}
-			id := ""
-			if blocker.Identifier != nil {
-				id = *blocker.Identifier
-			}
-			return "blocked_by:" + id
-		}
+	if blocker, blocked := firstUnresolvedBlocker(issue, state); blocked {
+		return "blocked_by:" + blockerIdentifier(blocker)
 	}
 	return ""
 }

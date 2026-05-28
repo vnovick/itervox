@@ -39,7 +39,11 @@ func TestReviewerCfgRoundtrip(t *testing.T) {
 	assert.False(t, autoReview)
 }
 
-func TestReviewerCfgRejectsAutoClearConflict(t *testing.T) {
+// New (v0.2.0): SetReviewerCfg used to error when AutoClear was also set
+// because they raced under the legacy semantics. Under terminal-state-only
+// clearing the two now coexist — the clear is deferred until the reviewer
+// also completes.
+func TestReviewerCfgAllowsAutoClearCoexistence(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Workspace.AutoClearWorkspace = true
 	cfg.Agent.Profiles = map[string]config.AgentProfile{
@@ -47,13 +51,11 @@ func TestReviewerCfgRejectsAutoClearConflict(t *testing.T) {
 	}
 	orch := orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), agenttest.NewFakeRunner(nil), nil)
 
-	err := orch.SetReviewerCfg("reviewer", true)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, config.ErrAutoClearAutoReviewConflict)
+	require.NoError(t, orch.SetReviewerCfg("reviewer", true))
 
 	profile, autoReview := orch.ReviewerCfg()
-	assert.Equal(t, "", profile)
-	assert.False(t, autoReview)
+	assert.Equal(t, "reviewer", profile)
+	assert.True(t, autoReview)
 }
 
 func TestReviewerCfgRejectsAutoReviewWithoutProfile(t *testing.T) {
@@ -326,7 +328,7 @@ func TestAutoReview_DoesNotTriggerForAutomationRuns(t *testing.T) {
 	go orch.Run(ctx) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	require.True(t, orch.DispatchAutomation(issue, orchestrator.AutomationDispatch{
+	require.True(t, orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
 		AutomationID: "qa-ready",
 		ProfileName:  "qa",
 		Instructions: "Run QA and report.",
@@ -485,7 +487,11 @@ func TestAutoReview_DoesNotTriggerWithoutProfile(t *testing.T) {
 	assert.NotContains(t, logs, "orchestrator: dispatching reviewer")
 }
 
-func TestAutoReview_SkipsReviewerWhenAutoClearWorkspaceEnabled(t *testing.T) {
+// New (v0.2.0): AutoClearWorkspace + AutoReview now coexist. The clear is
+// deferred from the main worker's success to the reviewer's success so the
+// reviewer has the workspace available. This test pins the new contract:
+// reviewer DOES run, and clear happens after reviewer (not after main worker).
+func TestAutoReview_RunsAlongsideAutoClearWorkspace(t *testing.T) {
 	logBuf := &syncBuffer{}
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -522,19 +528,23 @@ func TestAutoReview_SkipsReviewerWhenAutoClearWorkspaceEnabled(t *testing.T) {
 
 	go orch.Run(ctx) //nolint:errcheck
 
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("worker did not complete within 3s")
+	// Wait for both main worker and reviewer to complete.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("worker %d did not complete within 3s", i+1)
+		}
 	}
 
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 
-	assert.Equal(t, 1, countingRunner.CallCount(), "reviewer should be skipped when auto-clear is enabled")
+	assert.Equal(t, 2, countingRunner.CallCount(), "main worker and reviewer should both run even when auto-clear is enabled")
 	logs := logBuf.String()
-	assert.Contains(t, logs, "skipping auto-review because workspace auto-clear is enabled")
-	assert.NotContains(t, logs, "orchestrator: dispatching reviewer")
+	assert.Contains(t, logs, "orchestrator: dispatching reviewer", "reviewer should be dispatched after the main worker succeeds")
+	assert.NotContains(t, logs, "skipping auto-review because workspace auto-clear is enabled",
+		"legacy skip-reviewer log should no longer fire — clear is deferred until after the reviewer")
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -30,6 +30,10 @@ interface ProfileFormModalProps {
       command: string;
       backend?: string;
       prompt?: string;
+      soul?: string;
+      instructions?: string;
+      soulFile?: string;
+      instructionsFile?: string;
       enabled: boolean;
       allowedActions?: string[];
       createIssueState?: string;
@@ -67,7 +71,19 @@ export function ProfileFormModal({
   // overload returns each field in the order listed in `name`, typed per the
   // shape of ProfileFormValues (non-partial, because useForm.defaultValues
   // above is fully populated).
-  const [enabled, backend, model, command, prompt, allowedActions, createIssueState] = useWatch({
+  const [
+    enabled,
+    backend,
+    model,
+    command,
+    prompt,
+    soul,
+    instructions,
+    soulFile,
+    instructionsFile,
+    allowedActions,
+    createIssueState,
+  ] = useWatch({
     control,
     name: [
       'enabled',
@@ -75,6 +91,10 @@ export function ProfileFormModal({
       'model',
       'command',
       'prompt',
+      'soul',
+      'instructions',
+      'soulFile',
+      'instructionsFile',
       'allowedActions',
       'createIssueState',
     ],
@@ -86,7 +106,11 @@ export function ProfileFormModal({
       {
         command: normalizeCommandForSave(values.command, values.backend),
         backend: values.backend,
-        prompt: values.prompt.trim() || undefined,
+        prompt: values.instructions.trim() || values.prompt.trim() || undefined,
+        soul: values.soul,
+        instructions: values.instructions,
+        soulFile: values.soulFile || undefined,
+        instructionsFile: values.instructionsFile || undefined,
         enabled: values.enabled,
         allowedActions: normalizeAllowedActions(values.allowedActions, supportedAgentActions),
         createIssueState: values.createIssueState.trim() || undefined,
@@ -159,6 +183,10 @@ export function ProfileFormModal({
             model={model}
             command={command}
             prompt={prompt}
+            soul={soul}
+            instructions={instructions}
+            soulFile={soulFile}
+            instructionsFile={instructionsFile}
             allowedActions={allowedActions}
             supportedAgentActions={supportedAgentActions}
             createIssueState={createIssueState}
@@ -183,6 +211,14 @@ export function ProfileFormModal({
               if (inferred) setValue('backend', inferred);
             }}
             onPromptChange={(value) => {
+              setValue('prompt', value);
+              setValue('instructions', value);
+            }}
+            onSoulChange={(value) => {
+              setValue('soul', value);
+            }}
+            onInstructionsChange={(value) => {
+              setValue('instructions', value);
               setValue('prompt', value);
             }}
             onAllowedActionsChange={(value) => {

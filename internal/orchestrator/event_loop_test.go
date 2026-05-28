@@ -286,7 +286,7 @@ func TestDryRunAutomationDispatch(t *testing.T) {
 	go orch.Run(ctx) //nolint:errcheck
 	time.Sleep(20 * time.Millisecond)
 
-	require.True(t, orch.DispatchAutomation(issue, orchestrator.AutomationDispatch{
+	require.True(t, orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
 		AutomationID: "qa-ready",
 		ProfileName:  "qa",
 		Instructions: "Run QA and report.",
@@ -446,17 +446,19 @@ func TestAutoClearWorkspaceCfgRoundtrip(t *testing.T) {
 	assert.False(t, o.AutoClearWorkspaceCfg())
 }
 
-func TestAutoClearWorkspaceCfgRejectsReviewerConflict(t *testing.T) {
+// New (v0.2.0): AutoClear and AutoReview now coexist. The clear is
+// deferred from the main worker's success to the reviewer's success so the
+// reviewer has the workspace available. This test pins the new contract:
+// setting both flags simultaneously must succeed.
+func TestAutoClearWorkspaceCfgAllowsReviewerCoexistence(t *testing.T) {
 	o := newOrch()
 	o.SetProfilesCfg(map[string]config.AgentProfile{
 		"reviewer": {Command: "claude"},
 	})
 	require.NoError(t, o.SetReviewerCfg("reviewer", true))
 
-	err := o.SetAutoClearWorkspaceCfg(true)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, config.ErrAutoClearAutoReviewConflict)
-	assert.False(t, o.AutoClearWorkspaceCfg())
+	require.NoError(t, o.SetAutoClearWorkspaceCfg(true))
+	assert.True(t, o.AutoClearWorkspaceCfg(), "auto-clear should be accepted alongside auto-review under new terminal-state-only semantics")
 }
 
 func TestInlineInputCfgRoundtrip(t *testing.T) {
@@ -606,10 +608,10 @@ func TestIneligibleReasonBlockedByNilIdentifier(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 17. IneligibleReason — blocked_by with paused blocker (should be eligible)
+// 17. IneligibleReason — blocked_by with paused blocker
 // ---------------------------------------------------------------------------
 
-func TestIneligibleReasonBlockedByPausedBlockerIsEligible(t *testing.T) {
+func TestIneligibleReasonBlockedByPausedBlockerStillBlocks(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)
 	blockerState := "In Progress"
@@ -619,7 +621,7 @@ func TestIneligibleReasonBlockedByPausedBlockerIsEligible(t *testing.T) {
 	issue.BlockedBy = []domain.BlockerRef{{State: &blockerState, Identifier: &blockerID}}
 
 	reason := orchestrator.IneligibleReason(issue, state, cfg)
-	assert.Equal(t, "", reason, "blocker that is auto-paused should not block dispatch")
+	assert.Equal(t, "blocked_by:ENG-99", reason, "paused blockers are not terminal and must still block dispatch")
 }
 
 // ---------------------------------------------------------------------------
@@ -2016,8 +2018,11 @@ func TestManualPauseResumePreservesSession(t *testing.T) {
 		if callCount >= 3 {
 			require.Equal(t, "agent-session-xyz", lastSid,
 				"resumed worker must call RunTurn with the captured session ID")
-			require.Equal(t, "Resume ENG-1 :: T", resumedPrompt,
-				"manual pause/resume should keep the rendered workflow prompt")
+			// The rendered WORKFLOW.md is the lead of the prompt; the worker
+			// also appends a Run Context block (v0.2.0: file-backed agent
+			// handoff). Pin only the WORKFLOW.md portion.
+			require.True(t, strings.HasPrefix(resumedPrompt, "Resume ENG-1 :: T"),
+				"manual pause/resume should keep the rendered workflow prompt at the lead; got %q", resumedPrompt)
 			return
 		}
 		select {

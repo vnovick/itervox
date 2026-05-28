@@ -34,6 +34,17 @@ func TestIsRateLimitFailure_Classifier(t *testing.T) {
 		{"plain rate limit phrase", "rate limit reached, please retry later", true},
 		{"too many requests", "Too Many Requests", true},
 		{"case-insensitive", "RATE_LIMIT_EXCEEDED on us-central-1", true},
+		// v0.2.0 todolist5 B8.a — Claude Max / Pro / Codex phrasings that
+		// don't share a substring with the older default patterns.
+		{"claude max quota", "You're out of extra usage · resets 10pm (Asia/Jerusalem)", true},
+		{"claude pro tier limit", "You've reached the limit for your current Claude usage tier", true},
+		{"codex out of credits", "Error: account is out of credits", true},
+		{"reset hint alone", "rate window resets at 22:00", true},
+		// Generic 5xx and crash messages still classify as non-rate-limit
+		// so we don't false-positive into auto-switching.
+		{"generic 503", "503 service unavailable", false},
+		{"connection reset", "connection reset by peer", false},
+		{"undefined symbol", "compile failed: undefined symbol foo", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,16 +144,16 @@ func TestRateLimitCooldown_MutesPerProfileTuple(t *testing.T) {
 	assert.False(t, otherMuted, "cooldown is per-(issue, profile), not per-issue")
 }
 
-// dispatchMatchingRateLimitedAutomations must emit an EventDispatchAutomation
-// with the rate-limit-specific trigger context fields populated. We don't run
-// the orchestrator's event loop — we drain the events channel directly.
+// dispatchMatchingRateLimitedAutomations runs inside the event loop, so it must
+// not send to o.events. When capacity is unavailable, it should enqueue directly
+// while preserving the rate-limit-specific trigger context fields.
 func TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext(t *testing.T) {
 	o := &Orchestrator{
-		cfg:    &config.Config{},
-		events: make(chan OrchestratorEvent, 8),
+		cfg: &config.Config{},
 	}
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 5
 	o.cfg.Agent.SwitchWindowHours = 6
+	o.cfg.Agent.Profiles = map[string]config.AgentProfile{"codex-coder": {}}
 	o.SetRateLimitedAutomations([]RateLimitedAutomation{
 		{
 			ID:              "switch-when-claude-throttled",
@@ -154,36 +165,36 @@ func TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext(t *testi
 		},
 	})
 
-	state := State{IssueProfiles: map[string]string{"ENG-1": "claude-coder"}}
-	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}
-	o.dispatchMatchingRateLimitedAutomations(
+	state := NewState(o.cfg)
+	state.Running["busy"] = &RunEntry{Issue: domain.Issue{ID: "busy", Identifier: "BUSY-1"}}
+	state.IssueProfiles["ENG-1"] = "claude-coder"
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Rate limited", State: "In Progress"}
+	queued := o.dispatchMatchingRateLimitedAutomations(
 		context.Background(), &state, issue, time.Now(),
 		"claude-coder", "claude", "rate_limit_exceeded", 5,
 		180_000, 22_000,
 	)
 
-	require.Len(t, o.events, 1, "rule must dispatch exactly one event")
-	ev := <-o.events
-	require.Equal(t, EventDispatchAutomation, ev.Type)
-	require.NotNil(t, ev.Automation)
-	assert.Equal(t, "codex-coder", ev.Automation.ProfileName)
-	assert.True(t, ev.Automation.UseIssueLifecycle)
-	assert.Equal(t, config.AutomationTriggerRateLimited, ev.Automation.Trigger.Type)
-	assert.Equal(t, "claude-coder", ev.Automation.Trigger.FailedProfile)
-	assert.Equal(t, "claude", ev.Automation.Trigger.FailedBackend)
-	assert.Equal(t, 180_000, ev.Automation.Trigger.PromptTokensTotal)
-	assert.Equal(t, 22_000, ev.Automation.Trigger.CompletionTokensTotal)
-	assert.Equal(t, "codex-coder", ev.Automation.Trigger.SwitchedToProfile)
-	assert.Equal(t, "codex", ev.Automation.Trigger.SwitchedToBackend)
-	assert.True(t, ev.Automation.AutoResume)
+	require.Equal(t, 1, queued, "rule must enqueue exactly one recovery")
+	require.Len(t, state.AutomationQueue, 1)
+	entry := sortedAutomationQueue(state)[0]
+	assert.Equal(t, "codex-coder", entry.ProfileName)
+	assert.True(t, entry.UseIssueLifecycle)
+	assert.Equal(t, config.AutomationTriggerRateLimited, entry.Trigger.Type)
+	assert.Equal(t, "claude-coder", entry.Trigger.FailedProfile)
+	assert.Equal(t, "claude", entry.Trigger.FailedBackend)
+	assert.Equal(t, 180_000, entry.Trigger.PromptTokensTotal)
+	assert.Equal(t, 22_000, entry.Trigger.CompletionTokensTotal)
+	assert.Equal(t, "codex-coder", entry.Trigger.SwitchedToProfile)
+	assert.Equal(t, "codex", entry.Trigger.SwitchedToBackend)
+	assert.True(t, entry.AutoResume)
 }
 
-func TestDispatchMatchingRateLimitedAutomations_ChannelFullDoesNotConsumeCapCooldownOrOverride(t *testing.T) {
+func TestDispatchMatchingRateLimitedAutomations_InvalidProfileDoesNotConsumeCapCooldownOrOverride(t *testing.T) {
 	mt := tracker.NewMemoryTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1"}}, []string{"In Progress"}, []string{"Done"})
 	o := &Orchestrator{
 		cfg:     &config.Config{},
 		tracker: mt,
-		events:  make(chan OrchestratorEvent),
 	}
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 1
 	o.cfg.Agent.SwitchWindowHours = 6
@@ -207,21 +218,21 @@ func TestDispatchMatchingRateLimitedAutomations_ChannelFullDoesNotConsumeCapCool
 	}
 	queued := o.dispatchMatchingRateLimitedAutomations(
 		context.Background(), &state,
-		domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}, now,
+		domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Rate limited", State: "In Progress"}, now,
 		"claude-coder", "claude", "rate_limit_exceeded", 5, 0, 0,
 	)
 
-	assert.Zero(t, queued, "full event channel must not report a queued recovery")
-	assert.Empty(t, state.IssueProfiles, "failed enqueue must not switch profile")
-	assert.Empty(t, state.IssueBackends, "failed enqueue must not switch backend")
-	assert.Empty(t, state.AutoSwitchedIdentifiers, "failed enqueue must not mark auto-switch")
-	assert.Empty(t, state.AutoSwitchedAt, "failed enqueue must not record switch timestamp")
-	assert.True(t, o.allowRateLimitSwitch("id1", now), "failed enqueue must not burn switch cap")
+	assert.Zero(t, queued, "invalid profile must not report an accepted recovery")
+	assert.Empty(t, state.IssueProfiles, "failed acceptance must not switch profile")
+	assert.Empty(t, state.IssueBackends, "failed acceptance must not switch backend")
+	assert.Empty(t, state.AutoSwitchedIdentifiers, "failed acceptance must not mark auto-switch")
+	assert.Empty(t, state.AutoSwitchedAt, "failed acceptance must not record switch timestamp")
+	assert.True(t, o.allowRateLimitSwitch("id1", now), "failed acceptance must not burn switch cap")
 	_, muted := o.rateLimitCooldownUntil("id1|claude-coder")
-	assert.False(t, muted, "failed enqueue must not set cooldown")
+	assert.False(t, muted, "failed acceptance must not set cooldown")
 	assert.Never(t, func() bool {
 		return countMemoryTrackerComments(t, mt, "id1") > 0
-	}, 100*time.Millisecond, 10*time.Millisecond, "failed enqueue must not post tracker comments")
+	}, 100*time.Millisecond, 10*time.Millisecond, "failed acceptance must not post tracker comments")
 }
 
 // AutoResume + SwitchToProfile must override state.IssueProfiles so the
@@ -234,6 +245,7 @@ func TestDispatchMatchingRateLimitedAutomations_AutoSwitchOverrides(t *testing.T
 	}
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 5
 	o.cfg.Agent.SwitchWindowHours = 6
+	o.cfg.Agent.Profiles = map[string]config.AgentProfile{"codex-coder": {}}
 	o.SetRateLimitedAutomations([]RateLimitedAutomation{
 		{
 			ID:              "auto",
@@ -245,7 +257,7 @@ func TestDispatchMatchingRateLimitedAutomations_AutoSwitchOverrides(t *testing.T
 	})
 
 	state := State{IssueProfiles: map[string]string{}, IssueBackends: map[string]string{}}
-	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Rate limited", State: "In Progress"}
 	o.dispatchMatchingRateLimitedAutomations(
 		context.Background(), &state, issue, time.Now(),
 		"claude-coder", "claude", "rate_limit_exceeded", 5, 1, 1,
@@ -265,6 +277,7 @@ func TestDispatchMatchingRateLimitedAutomations_MarksAutoSwitched(t *testing.T) 
 	}
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 5
 	o.cfg.Agent.SwitchWindowHours = 6
+	o.cfg.Agent.Profiles = map[string]config.AgentProfile{"codex-coder": {}}
 	o.SetRateLimitedAutomations([]RateLimitedAutomation{
 		{
 			ID:              "auto",
@@ -277,7 +290,7 @@ func TestDispatchMatchingRateLimitedAutomations_MarksAutoSwitched(t *testing.T) 
 	state := State{IssueProfiles: map[string]string{}, IssueBackends: map[string]string{}, AutoSwitchedIdentifiers: map[string]struct{}{}}
 	o.dispatchMatchingRateLimitedAutomations(
 		context.Background(), &state,
-		domain.Issue{ID: "id1", Identifier: "ENG-1"}, time.Now(),
+		domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Rate limited", State: "In Progress"}, time.Now(),
 		"claude-coder", "claude", "rate_limit_exceeded", 5, 0, 0,
 	)
 	_, marked := state.AutoSwitchedIdentifiers["ENG-1"]
@@ -379,6 +392,7 @@ func TestWorkerExitedRateLimitedAutoSwitchSkipsFailedStateAndQueuesSwitchProfile
 	o := &Orchestrator{
 		cfg:           cfg,
 		tracker:       mt,
+		runner:        &agenttest.FakeRunner{Stall: true},
 		events:        make(chan OrchestratorEvent, 2),
 		workerCancels: map[string]context.CancelFunc{},
 	}
@@ -414,18 +428,16 @@ func TestWorkerExitedRateLimitedAutoSwitchSkipsFailedStateAndQueuesSwitchProfile
 	assert.NotContains(t, out.PausedIdentifiers, issue.Identifier)
 	assert.NotContains(t, out.DiscardingIdentifiers, issue.Identifier,
 		"rate_limited recovery must run before failed_state discard marks the issue ineligible")
-	assert.NotContains(t, out.Claimed, issue.ID)
+	assert.Contains(t, out.Claimed, issue.ID)
 	assert.Equal(t, "fallback", out.IssueProfiles[issue.Identifier])
 	assert.Equal(t, "codex", out.IssueBackends[issue.Identifier])
-
-	require.Len(t, o.events, 1)
-	ev := <-o.events
-	require.NotNil(t, ev.Automation)
-	assert.Equal(t, config.AutomationTriggerRateLimited, ev.Automation.Trigger.Type)
-	assert.Equal(t, "fallback", ev.Automation.ProfileName)
-	assert.True(t, ev.Automation.UseIssueLifecycle)
-	assert.Equal(t, "fallback", ev.Automation.Trigger.SwitchedToProfile)
-	assert.Equal(t, "codex", ev.Automation.Trigger.SwitchedToBackend)
+	require.Contains(t, out.Running, issue.ID)
+	recovery := out.Running[issue.ID]
+	assert.Equal(t, "rate-limit-switch", recovery.AutomationID)
+	assert.Equal(t, config.AutomationTriggerRateLimited, recovery.TriggerType)
+	assert.Equal(t, "fallback", recovery.ProfileName)
+	assert.Equal(t, "codex", recovery.Backend)
+	assert.Equal(t, "worker", recovery.Kind)
 }
 
 func TestRateLimitedAutoSwitchRunUsesNormalIssueLifecycle(t *testing.T) {

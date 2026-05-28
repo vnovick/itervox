@@ -135,6 +135,8 @@ Useful top-level fields include:
 - `inputRequired`
 - `availableProfiles`, `profileDefs`
 - `automations`
+- `automationQueue`, `automationQueueBackpressure`
+- `dependencyAudit`, `dependencyGraphNodes`, `dependencyGraphEdges`
 - `sshHosts`, `dispatchStrategy`
 - `autoClearWorkspace`, `inlineInput`
 - `configInvalid`
@@ -266,7 +268,10 @@ Profile update body:
 ```json
 {
   "command": "codex --model gpt-5-codex",
-  "prompt": "You are a QA specialist.",
+  "soul": "# qa SOUL\n\nYou are the QA specialist for this repository.",
+  "instructions": "# qa INSTRUCTIONS\n\nRun focused verification and report failures clearly.",
+  "soulFile": ".itervox/agents/qa/SOUL.md",
+  "instructionsFile": ".itervox/agents/qa/INSTRUCTIONS.md",
   "backend": "codex",
   "enabled": true,
   "allowedActions": ["comment", "provide_input"],
@@ -274,6 +279,11 @@ Profile update body:
   "originalName": "old-name"
 }
 ```
+
+For schema `2` profiles, `soul` and `instructions` are written to the referenced
+`SOUL.md` and `INSTRUCTIONS.md` files. `prompt` is retained as a compatibility
+field derived from `instructions`; new clients should use the file-backed
+fields.
 
 ### Reviewer and models
 
@@ -308,6 +318,7 @@ Supported trigger types:
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected
 - `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours` cap automated switching; reaching the cap suppresses switching rather than causing the trigger.
+- `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
 Tracker event triggers are poll-derived, not webhook-derived. The automation
 loop runs every 15 seconds. `tracker_comment_added` compares only the latest
@@ -351,6 +362,8 @@ Automation definitions preserve these optional policy/filter fields:
 `rate_limited` triggers require `policy.autoResume: true` for the automatic
 profile/backend switch. `switchToProfile`, `switchToBackend`, and
 `cooldownMinutes` are only valid for `rate_limited` triggers.
+`blockers_resolved` may set `policy.moveToState`; the selected profile must
+allow `move_state` before the daemon accepts that policy.
 
 Validation failures return `400` with typed error codes such as:
 
@@ -429,13 +442,21 @@ Denials on these routes use codes such as:
 ```json
 {
   "command": "claude",
-  "prompt": "You are a reviewer.",
+  "prompt": "# reviewer INSTRUCTIONS\n\nReview the change.",
+  "soul": "# reviewer SOUL\n\nYou are the code reviewer.",
+  "instructions": "# reviewer INSTRUCTIONS\n\nReview the change.",
+  "soulFile": ".itervox/agents/reviewer/SOUL.md",
+  "instructionsFile": ".itervox/agents/reviewer/INSTRUCTIONS.md",
   "backend": "claude",
   "enabled": true,
   "allowedActions": ["comment", "move_state"],
   "createIssueState": "Todo"
 }
 ```
+
+`soulFile` and `instructionsFile` mirror the `WORKFLOW.md` profile references.
+The dashboard profile editor uses `soul` and `instructions` as the authoritative
+editable text for schema `2` profiles.
 
 ### `AutomationDef`
 

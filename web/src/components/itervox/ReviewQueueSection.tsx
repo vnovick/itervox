@@ -1,11 +1,11 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useIssues, useTriggerAIReview } from '../../queries/issues';
-import { fmtMs } from '../../utils/format';
 import { EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
-import { ReviewSourcePill } from './ReviewSourcePill';
 import { classifyReviewSource } from '../../lib/operatorQueue';
+import { QueueSearchInput } from './QueueSearchInput';
+import { ReviewQueueRows } from './ReviewQueueRows';
 
 /**
  * ReviewQueueSection shows a dashboard section with:
@@ -16,19 +16,23 @@ import { classifyReviewSource } from '../../lib/operatorQueue';
  * Only rendered when reviewerProfile is configured.
  */
 export function ReviewQueueSection() {
-  const { reviewerProfile, completionState, running, history, currentAppSessionId } =
-    useItervoxStore(
-      useShallow((s) => ({
-        reviewerProfile: s.snapshot?.reviewerProfile ?? '',
-        completionState: s.snapshot?.completionState ?? '',
-        running: s.snapshot?.running ?? EMPTY_RUNNING,
-        history: s.snapshot?.history ?? EMPTY_HISTORY,
-        currentAppSessionId: s.snapshot?.currentAppSessionId ?? '',
-      })),
-    );
+  // v0.2.0 audit P3-4 — drop `currentAppSessionId` and the `void` no-op
+  // statements left over from an earlier refactor. `classifyReviewSource`
+  // reads the session id from the snapshot it already receives, so the
+  // destructured field was dead weight.
+  const { reviewerProfile, completionState, running, history } = useItervoxStore(
+    useShallow((s) => ({
+      reviewerProfile: s.snapshot?.reviewerProfile ?? '',
+      completionState: s.snapshot?.completionState ?? '',
+      running: s.snapshot?.running ?? EMPTY_RUNNING,
+      history: s.snapshot?.history ?? EMPTY_HISTORY,
+    })),
+  );
 
   const { data: issues = [] } = useIssues();
   const triggerReview = useTriggerAIReview();
+  const [expanded, setExpanded] = useState(false);
+  const [search, setSearch] = useState('');
 
   // Issues in completionState awaiting review
   const awaitingReview = useMemo(() => {
@@ -64,96 +68,115 @@ export function ReviewQueueSection() {
     }
     return map;
   }, [awaitingReview, snapshot]);
-  // currentAppSessionId is now read inside classifyReviewSource via the
-  // snapshot; mark the destructured value as intentionally unused.
-  void currentAppSessionId;
-  void history;
+  const totalItems = awaitingReview.length + reviewing.length + recentReviews.length;
+  const q = search.trim().toLowerCase();
+  const filteredAwaiting = useMemo(
+    () =>
+      q === ''
+        ? awaitingReview
+        : awaitingReview.filter((issue) =>
+            [
+              issue.identifier,
+              issue.title,
+              issue.state,
+              reviewSourceByIdentifier[issue.identifier] ?? 'tracker',
+            ]
+              .join(' ')
+              .toLowerCase()
+              .includes(q),
+          ),
+    [awaitingReview, q, reviewSourceByIdentifier],
+  );
+  const filteredReviewing = useMemo(
+    () =>
+      q === ''
+        ? reviewing
+        : reviewing.filter((row) =>
+            [row.identifier, row.state, row.kind, `turn ${String(row.turnCount)}`]
+              .join(' ')
+              .toLowerCase()
+              .includes(q),
+          ),
+    [reviewing, q],
+  );
+  const filteredRecentReviews = useMemo(
+    () =>
+      q === ''
+        ? recentReviews
+        : recentReviews.filter((row) =>
+            [row.identifier, row.status, row.kind].join(' ').toLowerCase().includes(q),
+          ),
+    [recentReviews, q],
+  );
+  const visibleItems =
+    filteredAwaiting.length + filteredReviewing.length + filteredRecentReviews.length;
 
   // Don't render if no reviewer profile
   if (!reviewerProfile) return null;
 
-  const totalItems = awaitingReview.length + reviewing.length + recentReviews.length;
-
   return (
     <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
       {/* Header */}
-      <div className="border-theme-line flex items-center justify-between border-b px-4 py-3">
+      <div className="border-theme-line flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <h2 className="text-theme-text text-sm font-semibold tracking-tight">Review Queue</h2>
           <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
-            {totalItems}
+            {q ? `${String(visibleItems)}/${String(totalItems)}` : totalItems}
           </span>
         </div>
-        <span className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2 py-0.5 text-[10px] font-medium">
-          {reviewerProfile}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2 py-0.5 text-[10px] font-medium">
+            {reviewerProfile}
+          </span>
+          <button
+            type="button"
+            aria-label={expanded ? 'Collapse review queue' : 'Expand review queue'}
+            onClick={() => {
+              setExpanded((prev) => !prev);
+            }}
+            className="border-theme-line text-theme-text-secondary hover:text-theme-text min-h-8 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium"
+          >
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
+        </div>
       </div>
 
-      {totalItems === 0 ? (
+      {!expanded ? null : totalItems === 0 ? (
         <div className="text-theme-muted px-4 py-8 text-center text-sm">
           No issues in review queue
         </div>
       ) : (
-        <div className="divide-theme-line divide-y">
-          {/* Awaiting review */}
-          {awaitingReview.map((issue) => (
+        <>
+          <div className="border-theme-line border-b px-4 py-3">
+            <QueueSearchInput
+              value={search}
+              onChange={setSearch}
+              label="Search review queue"
+              placeholder="Search review issue, title, source, or status..."
+            />
+          </div>
+          {visibleItems === 0 ? (
+            <div className="text-theme-muted px-4 py-8 text-center text-sm">
+              No matching review queue items
+            </div>
+          ) : (
             <div
-              key={issue.identifier}
-              className="hover:bg-theme-bg-soft flex items-center gap-3 px-4 py-2.5 transition-colors"
+              data-testid="review-queue-scroll"
+              className="divide-theme-line max-h-[260px] divide-y overflow-y-auto"
             >
-              <span className="text-xs text-amber-400">⏳</span>
-              <span className="text-theme-accent font-mono text-xs font-semibold">
-                {issue.identifier}
-              </span>
-              <ReviewSourcePill source={reviewSourceByIdentifier[issue.identifier] ?? 'tracker'} />
-              <span className="text-theme-text-secondary flex-1 truncate text-xs">
-                {issue.title}
-              </span>
-              <button
-                onClick={() => {
-                  triggerReview.mutate(issue.identifier);
+              <ReviewQueueRows
+                awaitingReview={filteredAwaiting}
+                reviewing={filteredReviewing}
+                recentReviews={filteredRecentReviews}
+                reviewSourceByIdentifier={reviewSourceByIdentifier}
+                reviewPending={triggerReview.isPending}
+                onTriggerReview={(identifier) => {
+                  triggerReview.mutate(identifier);
                 }}
-                disabled={triggerReview.isPending}
-                className="border-theme-line text-theme-accent flex-shrink-0 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[10px] font-medium transition-colors hover:opacity-80"
-              >
-                {triggerReview.isPending ? '…' : '▶ Review'}
-              </button>
+              />
             </div>
-          ))}
-
-          {/* Currently reviewing */}
-          {reviewing.map((row) => (
-            <div
-              key={row.identifier}
-              className="bg-theme-success-soft/30 flex items-center gap-3 px-4 py-2.5"
-            >
-              <span className="text-theme-success text-xs">🔍</span>
-              <span className="text-theme-accent font-mono text-xs font-semibold">
-                {row.identifier}
-              </span>
-              <span className="text-theme-text-secondary flex-1 text-xs">
-                Reviewing…
-                {row.turnCount > 0 && ` (turn ${String(row.turnCount)})`}
-              </span>
-              <span className="text-theme-muted font-mono text-[10px]">{fmtMs(row.elapsedMs)}</span>
-            </div>
-          ))}
-
-          {/* Recent completions */}
-          {recentReviews.map((row) => (
-            <div
-              key={`${row.identifier}-${String(row.sessionId)}`}
-              className="flex items-center gap-3 px-4 py-2.5 opacity-70"
-            >
-              <span className="text-xs">{row.status === 'succeeded' ? '✓' : '✗'}</span>
-              <span className="text-theme-text-secondary font-mono text-xs font-semibold">
-                {row.identifier}
-              </span>
-              <span className="text-theme-muted flex-1 text-xs">Review {row.status}</span>
-              <span className="text-theme-muted font-mono text-[10px]">{fmtMs(row.elapsedMs)}</span>
-            </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -157,6 +157,9 @@ export function AutomationFormModal({
                 setValue('switchToBackend', '');
                 setValue('cooldownMinutes', '');
               }
+              if (value !== 'blockers_resolved') {
+                setValue('moveToState', '');
+              }
             }}
             onTriggerStateChange={(value) => {
               setValue('triggerState', value, { shouldValidate: true });
@@ -199,6 +202,9 @@ export function AutomationFormModal({
             }}
             onCooldownMinutesChange={(value) => {
               setValue('cooldownMinutes', value, { shouldValidate: true });
+            }}
+            onMoveToStateChange={(value) => {
+              setValue('moveToState', value, { shouldValidate: true });
             }}
           />
 

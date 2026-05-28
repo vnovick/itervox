@@ -75,6 +75,10 @@ func (p *stableWorkspaceProvider) RemoveWorkspace(_ context.Context, _, _ string
 	return nil
 }
 
+func (p *stableWorkspaceProvider) ResolvePath(_ string) string {
+	return p.path
+}
+
 func (p *stableWorkspaceProvider) snapshot() (ensureCalls int, branchByCall []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1147,7 +1151,7 @@ func TestOrchestratorAutomationDispatchPipeline(t *testing.T) {
 	// Fire an automation dispatch for a BACKLOG issue — the reconcile loop
 	// would reject this via isActiveState, but automation dispatch must
 	// accept it (CRIT-3 invariant).
-	ok := orch.DispatchAutomation(backlogIssue, orchestrator.AutomationDispatch{
+	ok := orch.DispatchAutomation(ctx, backlogIssue, orchestrator.AutomationDispatch{
 		AutomationID: "test-backlog-review",
 		ProfileName:  "reviewer",
 		Instructions: "Review the backlog issue.",

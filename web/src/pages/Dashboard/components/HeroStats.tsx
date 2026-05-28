@@ -3,6 +3,12 @@ import { useNavigate } from 'react-router';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { useUIStore } from '../../../store/uiStore';
 import { EMPTY_HISTORY } from '../../../utils/constants';
+import { automationsFiredToday } from './dashboardMetrics';
+
+// v0.2.0 audit P3-5 — the backward-compat re-export was bridge code from the
+// dashboardMetrics extraction; all production callers now import from
+// `./dashboardMetrics` directly. The test was the last user of the re-export
+// and was migrated alongside this change.
 
 function StatTile({
   label,
@@ -54,26 +60,6 @@ function StatTile({
   );
 }
 
-function startOfTodayMs(now: number = Date.now()): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-export function automationsFiredToday(
-  rows: Array<{ automationId?: string; finishedAt: string; startedAt?: string }>,
-  now: number = Date.now(),
-): number {
-  const start = startOfTodayMs(now);
-  let count = 0;
-  for (const row of rows) {
-    if (!row.automationId) continue;
-    const t = Date.parse(row.finishedAt);
-    if (!Number.isNaN(t) && t >= start) count++;
-  }
-  return count;
-}
-
 export function HeroStats() {
   const { running, paused, retrying, inputRequired, max, history } = useItervoxStore(
     useShallow((s) => ({
@@ -90,7 +76,7 @@ export function HeroStats() {
   const automationsToday = automationsFiredToday(history);
   return (
     <div
-      className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 md:w-auto md:grid-cols-6"
+      className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:w-auto lg:grid-cols-6"
       data-testid="hero-stats"
     >
       <StatTile

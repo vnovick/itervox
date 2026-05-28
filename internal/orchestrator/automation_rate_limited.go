@@ -32,6 +32,14 @@ var defaultRateLimitErrorPatterns = []string{
 	"429",
 	"quota",
 	"too many requests",
+	// Anthropic vendor surface — phrasings used in 2026 by Claude Max
+	// (extra-usage quota), Pro/Team tier limits, and Codex/Claude wrappers.
+	// None of these substrings appears in generic 5xx, network, or compile
+	// errors, so the conservative-by-default classification holds.
+	"out of extra usage",
+	"reached the limit for your current claude",
+	"out of credits",
+	"resets at",
 }
 
 // IsRateLimitFailure reports whether an exhausted-retry terminal error
@@ -127,15 +135,6 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 				"until", untilT.Format(time.RFC3339))
 			continue
 		}
-		// Gap §2.1 evaluated and kept as-is: rate_limited queues an
-		// EventDispatchAutomation while run_failed (sibling helper)
-		// calls startAutomationRun directly. Switching rate_limited to startAutomationRun
-		// breaks the unit test that asserts the queued event shape
-		// (TestDispatchMatchingRateLimitedAutomations_PopulatesTriggerContext)
-		// — the test is the contract because the queue carries the
-		// trigger-context fields we want to verify in isolation.
-		// run_failed has no equivalent test, which is why it could call
-		// startAutomationRun. Marking §2.1 closed-with-rationale.
 		dispatchProfile := rule.ProfileName
 		if rule.AutoResume && rule.SwitchToProfile != "" {
 			dispatchProfile = rule.SwitchToProfile
@@ -161,18 +160,9 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 				SwitchedToBackend:     rule.SwitchToBackend,
 			},
 		}
-		_ = ctx // dispatch is via channel; ctx unused in queue path
-		issueCopy := issue
-		select {
-		case o.events <- OrchestratorEvent{
-			Type:       EventDispatchAutomation,
-			Issue:      &issueCopy,
-			Automation: &dispatch,
-		}:
+		if o.dispatchOrQueueAutomation(ctx, state, issue, dispatch, now) {
 			queued++
-		default:
-			slog.Warn("orchestrator: rate_limited dispatch channel full",
-				"identifier", issue.Identifier, "automation", rule.ID)
+		} else {
 			continue
 		}
 

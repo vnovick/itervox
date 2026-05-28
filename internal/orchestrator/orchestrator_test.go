@@ -347,6 +347,118 @@ func TestDispatchReviewer_Success(t *testing.T) {
 	}
 }
 
+func TestWorkerPromptAppendsSoulInstructionsAutomationAndActionContextInOrder(t *testing.T) {
+	cfg := baseConfig()
+	cfg.PromptTemplate = "Main {{ issue.identifier }}"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer": {
+			Command:        "claude",
+			Soul:           "Soul {{ issue.identifier }}",
+			Instructions:   "Instructions {{ issue.title }}",
+			AllowedActions: []string{config.AgentActionComment},
+		},
+	}
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	mt := &noCandidateTracker{base: tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetAgentActionBaseURL("http://127.0.0.1:8090")
+	orch.SetAgentActionTokens(agentactions.NewStore())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.True(t, orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
+		AutomationID:      "auto",
+		ProfileName:       "implementer",
+		Instructions:      "Automation {{ issue.identifier }}",
+		Trigger:           orchestrator.AutomationTriggerContext{Type: config.AutomationTriggerCron, AutomationID: "auto", FiredAt: time.Now()},
+		AutoResume:        true,
+		UseIssueLifecycle: true,
+	}))
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("worker did not run")
+	}
+
+	prompt := wrapped.LastPrompt()
+	mainIdx := strings.Index(prompt, "Main ENG-1")
+	soulIdx := strings.Index(prompt, "Soul ENG-1")
+	instructionsIdx := strings.Index(prompt, "Instructions T")
+	automationIdx := strings.Index(prompt, "Automation ENG-1")
+	actionIdx := strings.Index(prompt, "Itervox daemon actions are available for this profile")
+	require.NotEqual(t, -1, mainIdx, prompt)
+	require.NotEqual(t, -1, soulIdx, prompt)
+	require.NotEqual(t, -1, instructionsIdx, prompt)
+	require.NotEqual(t, -1, automationIdx, prompt)
+	require.NotEqual(t, -1, actionIdx, prompt)
+	assert.Less(t, mainIdx, soulIdx)
+	assert.Less(t, soulIdx, instructionsIdx)
+	assert.Less(t, instructionsIdx, automationIdx)
+	assert.Less(t, automationIdx, actionIdx)
+}
+
+func TestDispatchReviewer_AppendsFileBackedReviewerProfile(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.ReviewerPrompt = "Reviewer base {{ issue.identifier }}"
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {
+			Command:      "claude",
+			Soul:         "Reviewer soul {{ issue.title }}",
+			Instructions: "Reviewer instructions {{ issue.identifier }}",
+		},
+	}
+	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.NoError(t, orch.DispatchReviewer("ENG-1"))
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("reviewer did not run")
+	}
+
+	prompt := wrapped.LastPrompt()
+	baseIdx := strings.Index(prompt, "Reviewer base ENG-1")
+	soulIdx := strings.Index(prompt, "Reviewer soul T")
+	instructionsIdx := strings.Index(prompt, "Reviewer instructions ENG-1")
+	require.NotEqual(t, -1, baseIdx, prompt)
+	require.NotEqual(t, -1, soulIdx, prompt)
+	require.NotEqual(t, -1, instructionsIdx, prompt)
+	assert.Less(t, baseIdx, soulIdx)
+	assert.Less(t, soulIdx, instructionsIdx)
+}
+
 func TestDispatchUsesProfileBackendOverride(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20

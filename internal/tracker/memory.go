@@ -2,7 +2,6 @@ package tracker
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -188,11 +187,11 @@ func (m *MemoryTracker) FetchIssueDetail(_ context.Context, issueID string) (*do
 	defer m.mu.RUnlock()
 	for _, issue := range m.issues {
 		if issue.ID == issueID {
-			cp := issue
+			cp := deepCopyIssue(issue)
 			return &cp, nil
 		}
 	}
-	return nil, fmt.Errorf("issue %s not found", issueID)
+	return nil, &NotFoundError{Adapter: "memory", Identifier: issueID}
 }
 
 // FetchIssueByIdentifier returns the issue matching the human-readable identifier.
@@ -201,11 +200,33 @@ func (m *MemoryTracker) FetchIssueByIdentifier(_ context.Context, identifier str
 	defer m.mu.RUnlock()
 	for _, issue := range m.issues {
 		if issue.Identifier == identifier {
-			cp := issue
+			cp := deepCopyIssue(issue)
 			return &cp, nil
 		}
 	}
-	return nil, fmt.Errorf("issue %s not found", identifier)
+	return nil, &NotFoundError{Adapter: "memory", Identifier: identifier}
+}
+
+// deepCopyIssue clones an issue including its slice/map fields so callers
+// cannot mutate the in-memory store by mutating the returned value.
+//
+// v0.2.0 audit P3-2 — the previous `cp := issue; return &cp` produced a
+// shallow copy: the struct itself was new but Labels, BlockedBy, and
+// Comments shared the same backing array. Test mutations could corrupt the
+// store and create false-positive bug confirmations. Linear/GitHub adapters
+// build issues from JSON so they are already safe; only the memory adapter
+// needed this defence.
+func deepCopyIssue(issue domain.Issue) domain.Issue {
+	if len(issue.Labels) > 0 {
+		issue.Labels = append([]string(nil), issue.Labels...)
+	}
+	if len(issue.BlockedBy) > 0 {
+		issue.BlockedBy = append([]domain.BlockerRef(nil), issue.BlockedBy...)
+	}
+	if len(issue.Comments) > 0 {
+		issue.Comments = append([]domain.Comment(nil), issue.Comments...)
+	}
+	return issue
 }
 
 func (m *MemoryTracker) isActive(state string) bool {

@@ -44,6 +44,7 @@ export function ProfileRow({
     )
     .map((option) => option.label);
   const isEnabled = def.enabled ?? true;
+  const instructionsText = (def.instructions ?? def.prompt ?? '').trim();
 
   // Approx token cost this profile inherits from the global skills inventory.
   // Until per-profile whitelist/blacklist lands (see planning/skills_pass/),
@@ -81,9 +82,9 @@ export function ProfileRow({
             )}
           </div>
           <p className="text-theme-text-secondary mt-2 text-[11px] leading-relaxed">
-            {def.prompt?.trim()
-              ? `${def.prompt.slice(0, 180)}${def.prompt.length > 180 ? '…' : ''}`
-              : 'No profile prompt configured yet.'}
+            {instructionsText
+              ? `${instructionsText.slice(0, 180)}${instructionsText.length > 180 ? '…' : ''}`
+              : 'No profile instructions configured yet.'}
           </p>
         </div>
         <span

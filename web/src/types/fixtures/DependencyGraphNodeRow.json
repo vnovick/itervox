@@ -1,0 +1,12 @@
+{
+  "id": "node-1",
+  "identifier": "ENG-1",
+  "title": "Dependent task",
+  "state": "Todo",
+  "status": "blocked",
+  "running": false,
+  "queued": true,
+  "terminal": false,
+  "updatedAt": "2026-05-25T12:00:00Z",
+  "url": "https://linear.app/x/issue/ENG-1"
+}

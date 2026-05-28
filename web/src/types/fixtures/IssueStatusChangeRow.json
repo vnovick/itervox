@@ -1,0 +1,11 @@
+{
+  "fromState": "Todo",
+  "toState": "In Progress",
+  "source": "automation",
+  "automationId": "auto-impl",
+  "triggerType": "blockers_resolved",
+  "profileName": "implementer",
+  "backend": "claude",
+  "workerHost": "local",
+  "at": "2026-05-25T12:00:00Z"
+}

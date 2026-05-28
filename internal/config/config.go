@@ -13,6 +13,10 @@ import (
 
 var envVarRe = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
 
+// LatestWorkflowSchemaVersion is the newest WORKFLOW.md front-matter shape
+// accepted for daemon startup.
+const LatestWorkflowSchemaVersion = 2
+
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
 	Kind           string
@@ -82,9 +86,19 @@ Be concise in your review comments. Focus on real problems, not style nits.`
 type AgentProfile struct {
 	// Command overrides the default agent CLI command (e.g. "claude --model ...").
 	Command string
-	// Prompt is a role description for this sub-agent, appended to the main
-	// WORKFLOW.md prompt as context when agent teams are enabled.
+	// Prompt is the legacy inline role description for this sub-agent.
+	// Schema 2 rejects this field; it remains for legacy migration and tests.
 	Prompt string
+	// SoulFile is the configured path to this profile's SOUL.md file, relative
+	// to WORKFLOW.md when not absolute.
+	SoulFile string
+	// InstructionsFile is the configured path to this profile's INSTRUCTIONS.md
+	// file, relative to WORKFLOW.md when not absolute.
+	InstructionsFile string
+	// Soul is the loaded SOUL.md template content for this profile.
+	Soul string
+	// Instructions is the loaded INSTRUCTIONS.md template content for this profile.
+	Instructions string
 	// Backend optionally overrides runner selection when it cannot be inferred
 	// from the command binary alone (for example, a wrapper script around codex).
 	Backend string
@@ -103,6 +117,10 @@ type AgentProfile struct {
 type AgentConfig struct {
 	MaxConcurrentAgents        int
 	MaxConcurrentAgentsByState map[string]int
+	// MaxAutomationQueueLength caps durable automation dispatch entries waiting
+	// for worker capacity or dependency resolution. Values <= 0 use the default
+	// of 100; the queue is never unlimited.
+	MaxAutomationQueueLength int
 	// MaxRetryBackoffMs caps the exponential back-off between agent retries.
 	// The progression is 10 s × 2^(attempt-1): 10 s, 20 s, 40 s, 80 s, 160 s,
 	// then capped at MaxRetryBackoffMs for all subsequent attempts.
@@ -250,6 +268,13 @@ type ServerConfig struct {
 
 // Config is the fully-parsed, defaulted, and resolved Itervox configuration.
 type Config struct {
+	// SchemaVersion is the WORKFLOW.md schema version declared by
+	// itervox_schema_version. Missing versions parse as 0 and are rejected
+	// by ValidateDispatch before daemon startup.
+	SchemaVersion int
+	// WorkflowPath is the path passed to Load, used for actionable validation
+	// and migration errors.
+	WorkflowPath   string
 	Tracker        TrackerConfig
 	Polling        PollingConfig
 	Workspace      WorkspaceConfig
@@ -273,7 +298,8 @@ func Load(path string) (*Config, error) {
 	// instead of silently-changed behavior. (`agent_mode` + `enable_agent_teams`
 	// were removed in favor of always-on profile prompt + subagent roster
 	// injection — see CHANGELOG.)
-	if agent := nestedMap(wf.Config, "agent"); agent != nil {
+	if intField(wf.Config, "itervox_schema_version", 0) == LatestWorkflowSchemaVersion {
+		agent := nestedMap(wf.Config, "agent")
 		if _, has := agent["agent_mode"]; has {
 			return nil, fmt.Errorf("config: agent.agent_mode has been removed; delete this field from WORKFLOW.md (see CHANGELOG)")
 		}
@@ -281,15 +307,24 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("config: agent.enable_agent_teams has been removed; delete this field from WORKFLOW.md (see CHANGELOG)")
 		}
 	}
-	return fromWorkflow(wf), nil
+	cfg, err := fromWorkflow(wf, path)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // fromWorkflow builds a Config from a parsed Workflow, applying all defaults.
-func fromWorkflow(wf *workflow.Workflow) *Config {
+func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	raw := wf.Config
 
 	cfg := &Config{
+		SchemaVersion:  intField(raw, "itervox_schema_version", 0),
+		WorkflowPath:   workflowPath,
 		PromptTemplate: wf.PromptTemplate,
+	}
+	if cfg.SchemaVersion > LatestWorkflowSchemaVersion {
+		return nil, fmt.Errorf("unsupported itervox_schema_version %d: latest supported version is %d", cfg.SchemaVersion, LatestWorkflowSchemaVersion)
 	}
 
 	// Tracker
@@ -332,6 +367,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	// Agent
 	agent := nestedMap(raw, "agent")
 	cfg.Agent.MaxConcurrentAgents = positiveIntField(agent, "max_concurrent_agents", 10)
+	cfg.Agent.MaxAutomationQueueLength = positiveIntField(agent, "max_automation_queue_length", 100)
 	cfg.Agent.MaxRetryBackoffMs = positiveIntField(agent, "max_retry_backoff_ms", 300000)
 	cfg.Agent.MaxTurns = positiveIntField(agent, "max_turns", 20)
 	cfg.Agent.Command = strField(agent, "command", "claude")
@@ -361,7 +397,11 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.RateLimitErrorPatterns = strSliceField(agent, "rate_limit_error_patterns", nil)
 	cfg.Agent.SwitchWindowHours = intField(agent, "switch_window_hours", 6)
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
-	cfg.Agent.Profiles = parseAgentProfiles(mapField(agent, "profiles"))
+	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agent.Profiles = profiles
 	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
 
 	// Hooks
@@ -394,7 +434,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 		cfg.Automations = legacy
 	}
 
-	return cfg
+	return cfg, nil
 }
 
 // resolveSecret resolves $VAR_NAME references for secret fields.
@@ -466,14 +506,48 @@ func normalizeStateLimits(raw map[string]any) map[string]int {
 }
 
 // parseAgentProfiles parses the agent.profiles map from YAML into a
-// map[string]AgentProfile. Unknown or invalid entries are silently skipped.
-func parseAgentProfiles(raw map[string]any) map[string]AgentProfile {
+// map[string]AgentProfile. Unknown or invalid legacy entries are silently skipped.
+func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath string) (map[string]AgentProfile, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	profiles := make(map[string]AgentProfile, len(raw))
 	for name, v := range raw {
 		m := nestedMap(map[string]any{name: v}, name)
+		if schemaVersion == LatestWorkflowSchemaVersion {
+			if _, hasPrompt := m["prompt"]; hasPrompt {
+				return nil, fmt.Errorf("%s", LegacyInlineProfilePromptMessage(workflowPath))
+			}
+			soulFile := strField(m, "soul_file", "")
+			instructionsFile := strField(m, "instructions_file", "")
+			if soulFile == "" || instructionsFile == "" {
+				return nil, fmt.Errorf("config: agent.profiles.%s requires soul_file and instructions_file in schema %d", name, LatestWorkflowSchemaVersion)
+			}
+			soul, err := readProfileTemplateFile(workflowPath, soulFile)
+			if err != nil {
+				return nil, fmt.Errorf("config: agent.profiles.%s.soul_file: %w", name, err)
+			}
+			instructions, err := readProfileTemplateFile(workflowPath, instructionsFile)
+			if err != nil {
+				return nil, fmt.Errorf("config: agent.profiles.%s.instructions_file: %w", name, err)
+			}
+			cmd := strField(m, "command", "")
+			if cmd == "" {
+				return nil, fmt.Errorf("config: agent.profiles.%s.command is required in schema %d", name, LatestWorkflowSchemaVersion)
+			}
+			profiles[name] = AgentProfile{
+				Command:          cmd,
+				SoulFile:         soulFile,
+				InstructionsFile: instructionsFile,
+				Soul:             soul,
+				Instructions:     instructions,
+				Backend:          strField(m, "backend", ""),
+				Enabled:          boolPtr(boolField(m, "enabled", true)),
+				AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
+				CreateIssueState: strField(m, "create_issue_state", ""),
+			}
+			continue
+		}
 		cmd := strField(m, "command", "")
 		if cmd == "" {
 			continue
@@ -488,9 +562,29 @@ func parseAgentProfiles(raw map[string]any) map[string]AgentProfile {
 		}
 	}
 	if len(profiles) == 0 {
-		return nil
+		return nil, nil
 	}
-	return profiles
+	return profiles, nil
+}
+
+func readProfileTemplateFile(workflowPath, configuredPath string) (string, error) {
+	resolved := resolveWorkflowRelativeFile(workflowPath, configuredPath)
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", resolved, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func resolveWorkflowRelativeFile(workflowPath, configuredPath string) string {
+	if filepath.IsAbs(configuredPath) {
+		return filepath.Clean(configuredPath)
+	}
+	base := "."
+	if workflowPath != "" {
+		base = filepath.Dir(workflowPath)
+	}
+	return filepath.Clean(filepath.Join(base, configuredPath))
 }
 
 func boolPtr(v bool) *bool {

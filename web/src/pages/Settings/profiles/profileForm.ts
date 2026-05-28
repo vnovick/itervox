@@ -19,6 +19,10 @@ export const profileFormSchema = z
     model: z.string(),
     command: z.string().min(1, 'Command is required.'),
     prompt: z.string(),
+    soul: z.string(),
+    instructions: z.string(),
+    soulFile: z.string(),
+    instructionsFile: z.string(),
     allowedActions: z.array(
       z.enum(['comment', 'comment_pr', 'create_issue', 'move_state', 'provide_input']),
     ),
@@ -44,6 +48,10 @@ export function emptyProfileValues(): ProfileFormValues {
     model: '',
     command: buildCanonicalCommand('claude', ''),
     prompt: '',
+    soul: '',
+    instructions: '',
+    soulFile: '',
+    instructionsFile: '',
     allowedActions: [],
     createIssueState: '',
   };
@@ -58,6 +66,10 @@ export function profileValuesFromDef(name: string, def: ProfileDef): ProfileForm
     model: draft.model,
     command: draft.command,
     prompt: draft.prompt,
+    soul: draft.soul,
+    instructions: draft.instructions,
+    soulFile: draft.soulFile,
+    instructionsFile: draft.instructionsFile,
     allowedActions: draft.allowedActions,
     createIssueState: draft.createIssueState,
   };
@@ -71,6 +83,10 @@ export function profileValuesFromSuggestion(suggestion: SuggestedProfile): Profi
     model: suggestion.model,
     command: buildCanonicalCommand(suggestion.backend, suggestion.model),
     prompt: suggestion.prompt,
+    soul: '',
+    instructions: suggestion.prompt,
+    soulFile: '',
+    instructionsFile: '',
     allowedActions: suggestion.allowedActions,
     createIssueState: suggestion.createIssueState ?? '',
   };
@@ -83,8 +99,23 @@ export function profileValuesWithName(
   model: string,
   command: string,
   prompt: string,
+  soul: string,
+  instructions: string,
   allowedActions: AllowedAgentAction[],
   createIssueState: string,
 ): ProfileFormValues {
-  return { name, enabled, backend, model, command, prompt, allowedActions, createIssueState };
+  return {
+    name,
+    enabled,
+    backend,
+    model,
+    command,
+    prompt,
+    soul,
+    instructions,
+    soulFile: '',
+    instructionsFile: '',
+    allowedActions,
+    createIssueState,
+  };
 }

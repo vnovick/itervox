@@ -7,7 +7,7 @@ const noProjectSentinel = "__no_project__"
 // QueryCandidateIssues fetches paginated issues by project + state filter.
 const QueryCandidateIssues = `
 query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
-  issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+  issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}, trashedAt: {null: true}}, first: $first, after: $after) {
     nodes {
       id
       identifier
@@ -87,7 +87,7 @@ query ItervoxResolveCreateIssueContext($id: String!) {
 // Used when the runtime project filter is set to "all issues".
 const QueryCandidateIssuesAll = `
 query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
-  issues(filter: {state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+  issues(filter: {state: {name: {in: $stateNames}}, trashedAt: {null: true}}, first: $first, after: $after) {
     nodes {
       id
       identifier
@@ -115,7 +115,7 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
 // assigned, filtered by state.
 const QueryCandidateIssuesNoProject = `
 query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
-  issues(filter: {project: {null: true}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+  issues(filter: {project: {null: true}, state: {name: {in: $stateNames}}, trashedAt: {null: true}}, first: $first, after: $after) {
     nodes {
       id
       identifier

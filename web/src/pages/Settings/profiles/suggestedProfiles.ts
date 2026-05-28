@@ -168,15 +168,15 @@ Do not move tracker state, approve production changes, or claim deterministic ga
     id: 'unblock-manager',
     label: 'Unblock Manager',
     description:
-      'Reviews blocker state and comments to advise whether a blocked issue appears ready for Todo.',
+      'Handles deterministic blockers-resolved automation for backlog issues, with optional Todo moves.',
     backend: 'claude',
     model: 'claude-sonnet-4-6',
-    allowedActions: ['comment'],
-    prompt: `You are a prompt-governed unblock manager.
+    allowedActions: ['comment', 'move_state'],
+    prompt: `You are a deterministic unblock manager for dependency-ready backlog issues.
 
-Inspect the issue's blockers, labels, description, and comments. If any blocker is missing, unclear, or non-terminal, leave a concise comment and stop. If every blocker appears terminal and the issue is otherwise ready, comment that it appears ready for Todo.
+Itervox only invokes you for this workflow after dependency audit observes a previously blocked issue becoming unblocked. Confirm the issue is still backlog/Backlog and still safe to start.
 
-Do not claim deterministic dependency resolution. Do not move state unless a human later grants that permission explicitly.`,
+If trigger.move_to_state is present and the issue is still backlog/Backlog, move it only to that state. Do not move review, in-review, PR-open, merged, closed, or otherwise terminal issues. If anything looks inconsistent, leave one concise comment and do not move state.`,
   },
   {
     id: 'planner-claude',

@@ -163,6 +163,38 @@ describe('IssueDetailSlide', () => {
     expect(await screen.findByText('A detailed description')).toBeInTheDocument();
   });
 
+  it('shows status changes before the issue description', async () => {
+    setupDefaultMocks('ENG-10', {
+      statusChanges: [
+        {
+          fromState: 'Todo',
+          toState: 'In Progress',
+          source: 'worker_lifecycle',
+          profileName: 'default',
+          backend: 'codex',
+          workerHost: 'ssh-build-1',
+          at: '2026-05-20T09:31:00Z',
+        },
+        {
+          fromState: 'In Progress',
+          toState: 'In Review',
+          source: 'automation',
+          automationId: 'dispatch-reviewer-on-pr',
+          triggerType: 'pr_opened',
+          at: '2026-05-20T10:04:00Z',
+        },
+      ],
+    } as unknown as Partial<typeof baseIssue>);
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    const statusHeading = await screen.findByRole('heading', { name: /status changes/i });
+    const descriptionHeading = screen.getByRole('heading', { name: /description/i });
+    expect(statusHeading.compareDocumentPosition(descriptionHeading)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(screen.getByText('dispatch-reviewer-on-pr')).toBeInTheDocument();
+  });
+
   it('calls setSelectedIdentifier(null) when close button clicked', async () => {
     const setSelectedIdentifier = setupDefaultMocks('ENG-10');
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });

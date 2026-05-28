@@ -31,6 +31,14 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 			SwitchToBackend: "codex",
 			CooldownMinutes: 20,
 		},
+	}, {
+		ID:      "unblock-backlog-to-todo",
+		Enabled: true,
+		Profile: "pm",
+		Trigger: server.AutomationTriggerDef{Type: "blockers_resolved"},
+		Policy: server.AutomationPolicyDef{
+			MoveToState: "Todo",
+		},
 	}}
 
 	cfgs := automationconfig.ConfigsFromDefinitions(defs)
@@ -49,6 +57,9 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 	if got := cfgs[1].Policy.CooldownMinutes; got != 20 {
 		t.Fatalf("CooldownMinutes not preserved def->config: %d", got)
 	}
+	if got := cfgs[2].Policy.MoveToState; got != "Todo" {
+		t.Fatalf("MoveToState not preserved def->config: %q", got)
+	}
 
 	roundTrip := automationconfig.DefinitionsFromConfigs([]config.AutomationConfig{{
 		ID:      "rate-limit-switch",
@@ -60,6 +71,14 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 			SwitchToBackend: "codex",
 			CooldownMinutes: 20,
 		},
+	}, {
+		ID:      "unblock-backlog-to-todo",
+		Enabled: true,
+		Profile: "pm",
+		Trigger: config.AutomationTriggerConfig{Type: "blockers_resolved"},
+		Policy: config.AutomationPolicyConfig{
+			MoveToState: "Todo",
+		},
 	}})
 	if got := roundTrip[0].Policy.SwitchToProfile; got != "codex" {
 		t.Fatalf("SwitchToProfile not preserved config->def: %q", got)
@@ -69,6 +88,9 @@ func TestAutomationDefConfigConversionsPreserveInputRequiredAndRateLimitFields(t
 	}
 	if got := roundTrip[0].Policy.CooldownMinutes; got != 20 {
 		t.Fatalf("CooldownMinutes not preserved config->def: %d", got)
+	}
+	if got := roundTrip[1].Policy.MoveToState; got != "Todo" {
+		t.Fatalf("MoveToState not preserved config->def: %q", got)
 	}
 }
 

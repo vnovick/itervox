@@ -7,6 +7,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// v0.2.0 todolist5 B3 — the orchestrator-controlled envelope tells every
+// agent how to reach a human via the dashboard's Reply & Resume textarea.
+func TestOperatorReplyEnvelope_MentionsReplyAndResume(t *testing.T) {
+	if operatorReplyEnvelope == "" {
+		t.Fatal("operatorReplyEnvelope must be non-empty")
+	}
+	assert.Contains(t, operatorReplyEnvelope, "Reply & Resume Agent",
+		"envelope must point agents at the dashboard textarea")
+	assert.Contains(t, operatorReplyEnvelope, "input_required",
+		"envelope must mention the exit status that triggers it")
+}
+
 func TestPrependEnvToCommand_PreservesBackendHintPrefix(t *testing.T) {
 	command := "@@itervox-backend=codex /tmp/codex-wrapper --flag"
 

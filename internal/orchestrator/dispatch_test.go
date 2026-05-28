@@ -77,6 +77,17 @@ func TestIsEligibleTodoWithNonTerminalBlocker(t *testing.T) {
 	assert.False(t, orchestrator.IsEligible(issue, state, cfg))
 }
 
+func TestIsEligibleTodoWithUnknownBlockerIsBlocked(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	blockerID := "ENG-0"
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	issue.BlockedBy = []domain.BlockerRef{{Identifier: &blockerID}}
+
+	assert.Equal(t, "blocked_by:ENG-0", orchestrator.IneligibleReason(issue, state, cfg))
+	assert.False(t, orchestrator.IsEligible(issue, state, cfg))
+}
+
 func TestIsEligibleTodoWithTerminalBlockerIsEligible(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)
@@ -98,6 +109,37 @@ func TestSortForDispatch(t *testing.T) {
 	assert.Equal(t, "ENG-2", sorted[0].Identifier) // prio 1 first
 	assert.Equal(t, "ENG-1", sorted[1].Identifier) // prio 2 second
 	assert.Equal(t, "ENG-3", sorted[2].Identifier) // null prio last
+}
+
+func TestDependencyAwareDispatchOrder(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	created := time.Unix(1000, 0)
+	blockerState := "In Progress"
+	blockerID := "ENG-0"
+	dependent := makeIssue("dependent", "ENG-1", "Todo", prio(0), &created)
+	dependent.BlockedBy = []domain.BlockerRef{{Identifier: &blockerID, State: &blockerState}}
+	blocker := makeIssue("blocker", "ENG-0", "Todo", prio(1), &created)
+
+	sorted := orchestrator.SortForDispatch([]domain.Issue{dependent, blocker})
+	var eligible []domain.Issue
+	for _, issue := range sorted {
+		if orchestrator.IsEligible(issue, state, cfg) {
+			eligible = append(eligible, issue)
+		}
+	}
+	assert.Equal(t, []string{"ENG-0"}, []string{eligible[0].Identifier})
+
+	done := "Done"
+	dependent.BlockedBy[0].State = &done
+	sorted = orchestrator.SortForDispatch([]domain.Issue{dependent, blocker})
+	eligible = eligible[:0]
+	for _, issue := range sorted {
+		if orchestrator.IsEligible(issue, state, cfg) {
+			eligible = append(eligible, issue)
+		}
+	}
+	assert.Equal(t, []string{"ENG-1", "ENG-0"}, []string{eligible[0].Identifier, eligible[1].Identifier})
 }
 
 func TestAvailableSlots(t *testing.T) {

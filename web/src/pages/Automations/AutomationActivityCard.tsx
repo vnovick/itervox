@@ -20,6 +20,7 @@ interface RunRowEntry {
   elapsedMs: number;
   timestamp: string;
   isLive: boolean;
+  sessionId?: string;
 }
 
 interface AggregateStats {
@@ -80,7 +81,7 @@ export function AutomationActivityCard({
           <ul className="space-y-1" data-testid={`automation-runs-${automation.id}`}>
             {data.runs.map((run) => (
               <li
-                key={`${run.identifier}-${run.timestamp}`}
+                key={run.sessionId ?? `${run.identifier}-${run.timestamp}-${run.isLive ? 'live' : 'done'}`}
                 className="flex items-center gap-2 text-xs"
               >
                 <span className="text-theme-text font-mono">{run.identifier}</span>
@@ -159,6 +160,7 @@ function buildCardData(
       elapsedMs: r.elapsedMs,
       timestamp: r.startedAt,
       isLive: true,
+      sessionId: r.sessionId,
     }));
 
   const completed = history.filter((r) => r.automationId === automationId);
@@ -168,6 +170,7 @@ function buildCardData(
     elapsedMs: r.elapsedMs,
     timestamp: r.finishedAt,
     isLive: false,
+    sessionId: r.sessionId,
   }));
 
   const allRuns = [...liveRuns, ...completedRuns]

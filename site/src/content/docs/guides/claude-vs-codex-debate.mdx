@@ -10,7 +10,7 @@ Claude vs Codex debate is a planning workflow for issues where two strong models
 Use it for architecture decisions, risky refactors, migration strategy, performance tradeoffs, and release-blocker analysis. Do not use it for routine implementation work where a single focused profile is enough.
 
 :::caution
-Native debate run groups are not production-ready in v0.2.0. The workflow below is an experimental pattern built from existing automations, labels, comment sentinels, and comment-only planner profiles.
+Native multi-step debate workflow execution is not production-ready in v0.2.0. The workflow below is an experimental pattern built from existing automations, labels, comment sentinels, and comment-only planner profiles.
 :::
 
 ## Mental Model
@@ -43,34 +43,49 @@ agent:
       command: claude --model claude-opus-4-6
       backend: claude
       allowed_actions: [comment]
-      prompt: |
-        You are the Claude planning profile.
-        Do not modify code.
-        Post exactly one tracker comment starting with:
-        <!-- itervox:debate:claude-plan -->
-        Include the recommended approach, risks, tests, and rollout plan.
+      soul_file: .itervox/agents/planner-claude/SOUL.md
+      instructions_file: .itervox/agents/planner-claude/INSTRUCTIONS.md
 
     planner-codex:
       command: codex
       backend: codex
       allowed_actions: [comment]
-      prompt: |
-        You are the Codex planning profile.
-        Do not modify code.
-        Post exactly one tracker comment starting with:
-        <!-- itervox:debate:codex-plan -->
-        Include the recommended approach, risks, tests, and rollout plan.
+      soul_file: .itervox/agents/planner-codex/SOUL.md
+      instructions_file: .itervox/agents/planner-codex/INSTRUCTIONS.md
 
     debate-moderator:
       command: claude --model claude-opus-4-6
       backend: claude
       allowed_actions: [comment]
-      prompt: |
-        You are the debate moderator.
-        Read the Claude and Codex debate comments.
-        If either sentinel is missing, post a short "debate incomplete" comment and stop.
-        If both are present, compare the plans and post one decision comment starting with:
-        <!-- itervox:debate:decision -->
+      soul_file: .itervox/agents/debate-moderator/SOUL.md
+      instructions_file: .itervox/agents/debate-moderator/INSTRUCTIONS.md
+```
+
+The corresponding profile files:
+
+```markdown
+# .itervox/agents/planner-claude/INSTRUCTIONS.md
+## Workflow
+- You are the Claude planning profile. Do not modify code.
+- Post exactly one tracker comment starting with the sentinel `<!-- itervox:debate:claude-plan -->`.
+- Include the recommended approach, risks, tests, and rollout plan.
+```
+
+```markdown
+# .itervox/agents/planner-codex/INSTRUCTIONS.md
+## Workflow
+- You are the Codex planning profile. Do not modify code.
+- Post exactly one tracker comment starting with the sentinel `<!-- itervox:debate:codex-plan -->`.
+- Include the recommended approach, risks, tests, and rollout plan.
+```
+
+```markdown
+# .itervox/agents/debate-moderator/INSTRUCTIONS.md
+## Workflow
+- You are the debate moderator.
+- Read the Claude and Codex debate comments.
+- If either sentinel is missing, post a short "debate incomplete" comment and stop.
+- If both are present, compare the plans and post one decision comment starting with `<!-- itervox:debate:decision -->`.
 ```
 
 ## Example Automations
@@ -112,7 +127,7 @@ automations:
 ```
 
 :::note
-`tracker_comment_added` is poll-derived and currently observes the latest comment between polls. Automation filters do not regex-match tracker comment bodies today, so the moderator must inspect `{{ trigger.comment_body }}` and `{{ issue.comments }}` in its prompt. For production debate workflows, prefer native run groups once available.
+`tracker_comment_added` is poll-derived and currently observes the latest comment between polls. Automation filters do not regex-match tracker comment bodies today, so the moderator must inspect `{{ trigger.comment_body }}` and `{{ issue.comments }}` in its prompt. For production debate workflows, prefer native multi-step workflow execution once available.
 :::
 
 ## Safety Rules
@@ -128,14 +143,14 @@ automations:
 | Failure | What happens today | Production fix |
 |---|---|---|
 | One planner fails | Moderator must notice missing sentinel | Run-group participant status |
-| Both planners post at once | Latest-comment polling can miss one trigger | Native run-group join barrier |
+| Both planners post at once | Latest-comment polling can miss one trigger | Native multi-step workflow join barrier |
 | Moderator loops | Prompt must dedupe by decision sentinel | Run-group idempotency key |
 | Planner writes code | Prevent with comment-only action grants and prompt | Enforced planner profile mode |
 | Debate burns tokens | Manual monitoring today | Cost caps and debate deadlines |
 
 ## Production Target
 
-Native debate should be modeled as an automation run group:
+Native debate should be modeled as a multi-step automation workflow:
 
 ```yaml
 automations:
@@ -152,7 +167,7 @@ automations:
     moderator_profile: debate-moderator
 ```
 
-Production run groups should store participant artifacts, status, deadlines, failure policy, and moderator output separately from tracker comments. Tracker comments can mirror the final decision, but they should not be the only source of truth.
+Production multi-step workflows should store participant artifacts, status, deadlines, failure policy, and moderator output separately from tracker comments. Tracker comments can mirror the final decision, but they should not be the only source of truth.
 
 ## When Not To Debate
 

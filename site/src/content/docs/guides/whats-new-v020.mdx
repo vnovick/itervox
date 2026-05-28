@@ -13,11 +13,21 @@ Itervox v0.2.0 is the biggest release since launch. It adds event-driven automat
 
 ## Dashboard
 
-The dashboard now shows a unified overview with hero stats, host pool utilization, running sessions with inline logs, and a multi-view issue board.
+The dashboard now shows a unified overview with a live operations strip, hero stats, host pool utilization, running sessions with inline logs, and a multi-view issue board.
 
-<Image src="/screenshots/v0.2.0/dashboard-kanban.png" alt="Full dashboard showing hero stats (Running, Paused, Retrying, Input Required, Automations, Capacity), host pool with local worker at 0/3, and Kanban board with Backlog, Todo, In Progress, and In Review columns. View switcher shows Board, List, Agents, and Notifications tabs." width={900} height={680} />
+<Image src="/screenshots/v0.2.0/dashboard-kanban.png" alt="Full dashboard showing hero stats (Running, Paused, Retrying, Input Required, Automations, Capacity), host pool with local worker at 0/3, automation queue status, and Kanban board with Backlog, Todo, In Progress, and In Review columns. View switcher shows Board, List, Agents, Deps, and Notifications tabs." width={900} height={680} />
 
-The hero stats bar now includes **Automations** (how many fired today) and **Capacity** (used/total agent slots). Below the host pool, the **Running Sessions** panel shows every active agent with expandable inline logs:
+The new **Live Ops** strip sits directly under the project selector and shows live/waiting/offline state, agent capacity, automation queue length, blocked dependency counts, retries, paused/input-required work, SSH worker activity, and today's automation dispatch count. If the automation queue reaches its configured cap, the strip turns into a red queue-full warning and makes it clear that new automation triggers are paused.
+
+The dashboard also includes an **Automation Queue** panel. It shows queued, blocked, dispatching, and dependency-ready automation entries with profile/backend context, blocker badges, queued age, and local search. Open an entry's details panel to inspect trigger metadata, dependency audit state, automation filters and policy, profile permissions, worker capacity, and the fired-to-running activity path. Retry, resume, and review queues now use the same local search pattern; the review queue starts collapsed so the main dashboard stays scannable.
+
+These surfaces were checked at desktop, tablet, and mobile widths. On mobile, the queue-full alert wraps instead of truncating, queue details stay in a full-width slide panel, and the dependency graph remains bounded without widening the page.
+
+The dashboard also adds a **Deps** tab near Agents. It renders a display-only React Flow graph of blocker -> blocked issue relationships from dependency audit data, with badges for running, queued, terminal, blocked, unblocked, and unknown state. Clicking a node opens the existing issue detail panel; it does not edit dependencies or tracker state.
+
+Issue detail panels now include a **Status changes** timeline near the top of the panel. It shows state direction, source chips, timestamps, and automation/profile/backend/worker metadata when a worker or automation moved the issue.
+
+The hero stats bar still includes **Automations** (how many fired today) and **Capacity** (used/total agent slots). Below the host pool, the **Running Sessions** panel shows every active agent with expandable inline logs:
 
 <Image src="/screenshots/v0.2.0/running-sessions.png" alt="Dashboard with one running agent session expanded, showing live tool-call logs (Bash, Grep, Read), session ID run-1608, worker host 'local', elapsed time 35s, and Pause/Cancel action buttons." width={900} height={620} />
 
@@ -49,16 +59,18 @@ Each template pre-fills the automation ID, trigger type, profile reference, filt
 
 The launch template library also includes advanced helper designs for dependency readiness, planning gates, Claude/Codex planner pairs, debate moderation, evaluator loops, release checks, and skills hygiene. They are shipped as helper patterns, not as deterministic production workflow chains.
 
+Dependency readiness now has one deterministic v0.2.0 path: `blockers_resolved` fires from dependency audit when a previously blocked issue becomes unblocked. The release-safe default keeps the source filter to `backlog` / `Backlog` and moves to `Todo` only through an explicitly permissioned `move_state` profile.
+
 ### Trigger types and the automation editor
 
-<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor modal showing the PM Backlog Review template with the trigger dropdown open, listing all eight trigger types: Cron, Input Required, Tracker Comment Added, Issue Entered State, Issue Moved To Backlog, Run Failed, PR Opened, and Rate Limited" width={900} height={580} />
+<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor modal showing the trigger dropdown with nine trigger types including Blockers Resolved" width={900} height={580} />
 
 The automation editor modal lets you configure every aspect of an automation rule:
 
 - **Automation ID** — a stable identifier used in logs and YAML.
 - **Enabled** toggle — disabled automations stay in config but don't fire.
 - **Profile** — which agent profile runs when the trigger fires.
-- **Trigger type** — choose from eight types:
+- **Trigger type** — choose from nine types:
   - **Cron** — five-field cron schedule with a visual picker and IANA timezone typeahead.
   - **Input Required** — fires when a running agent blocks and asks for human input.
   - **Tracker Comment Added** — fires when a new comment is detected on an issue.
@@ -67,6 +79,7 @@ The automation editor modal lets you configure every aspect of an automation rul
   - **Run Failed** — fires when a worker run fails permanently after retries are exhausted.
   - **PR Opened** — fires when a pull request is detected on the issue.
   - **Rate Limited** — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven.
+  - **Blockers Resolved** — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
 For `cron` triggers, the visual picker and the raw expression field stay in sync — edit either one and the other updates. The expression field accepts standard five-field cron syntax (`minute hour day month weekday`).
 
@@ -74,15 +87,15 @@ All automations are persisted to the `automations:` block in `WORKFLOW.md` and t
 
 ### Automation release boundary
 
-v0.2.0 automations are single-profile helper runs. They are not advertised as deterministic downstream workflow orchestration. In particular, v0.2.0 does not ship fatal post-change gates, automation skip-decision logs, schedule run-now/next-fire operations, label-to-profile routing, reserved automation slots, deterministic blocker predicates, structured gate artifacts, PR-check triggers, cost caps, or native planner/debate run groups. Use the documented examples as starter automation patterns, not as production MindWar/Stories-style autonomy templates.
+v0.2.0 automations are single-profile helper runs. They are not advertised as deterministic downstream workflow orchestration. In particular, v0.2.0 does not ship fatal post-change gates, automation skip-decision logs, schedule run-now/next-fire operations, label-to-profile routing, reserved automation slots, generic/editable blocker predicates, full DAG scheduling, structured gate artifacts, PR-check triggers, cost caps, or native multi-step planner/debate workflow execution. Use the documented examples as starter automation patterns, not as production MindWar/Stories-style autonomy templates.
 
-See the [Automations guide](/guides/automations/) for the full configuration reference, filter syntax, and prompt variables.
+See the [Automations guide](/guides/automations/) for the full configuration reference, filter syntax, and prompt variables. Runtime guides are also available for the [Automation Queue](/guides/automation-queue/), [Dependency Management](/guides/dependency-management/), [Dashboard Deps](/guides/dashboard-deps/), and [Issue Status History](/guides/status-history/).
 
 ---
 
 ## Agent profiles and daemon actions
 
-Agent profiles now have a richer configuration surface. The profile editor lets you set the backend, model, prompt, and — new in v0.2.0 — **daemon-backed actions** that give the agent controlled access to tracker and daemon operations.
+Agent profiles now have a richer configuration surface. In schema `2`, `WORKFLOW.md` stores each profile's command plus `soul_file` and `instructions_file` references, while profile text lives under `.itervox/agents/<profile>/SOUL.md` and `INSTRUCTIONS.md`. The profile editor lets you set the backend and model, edit SOUL and INSTRUCTIONS separately, and — new in v0.2.0 — configure **daemon-backed actions** that give the agent controlled access to tracker and daemon operations.
 
 <Image src="/screenshots/v0.2.0/agents.png" alt="Agents page showing a 'pm' profile card with Claude backend, Sonnet 4.6 model, context budget estimate of 106k tokens across 36 skills, and three action buttons: Edit, Deactivate, Delete. Below are three profile templates: Code Reviewer, QA Engineer, and Input Responder." width={900} height={560} />
 
@@ -109,7 +122,35 @@ The profile editor now includes a **Daemon Actions** section. These are not arbi
 
 These actions are invoked by the agent via `itervox action ...` CLI commands, not via the model's native tool use. The daemon validates every request against the profile's `allowed_actions` list and the per-run bearer grant.
 
+`itervox init` now generates schema `2` workflows and starter `.itervox/agents/**` files by default. `itervox init --update --workflow WORKFLOW.md` migrates legacy inline profile prompts by writing a fresh `WORKFLOW.md.bak`, extracting full prompt text into `INSTRUCTIONS.md`, generating compact `SOUL.md` files, and patching broad root `.gitignore` rules so `.itervox/agents/**` can be committed. Keep `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, and runtime queue files ignored.
+
 See the [Agent Profiles guide](/guides/agent-profiles/) for YAML examples and the full field reference.
+
+### File-backed agent handoff for chained profiles
+
+v0.2.0 introduces **agent handoff**: a structured way for multiple profiles working on the same issue to share findings and deliverables. Each worker run writes a Markdown summary to `.itervox/handoff/<timestamp>_<profile-name>.md` on the issue's worktree branch; the next worker reads every prior file as a `## Prior Agent Handoffs` block prepended to its prompt.
+
+This unlocks the "software factory" pattern teams have been emulating with brittle conventions: a research profile maps the codebase, an implementer reads that research and ships code, a reviewer reads both and validates. Each step's structured output IS the next step's input — and the entire pipeline trail commits cleanly into PRs because `.itervox/handoff/**` is whitelisted by `itervox init`.
+
+Key behaviors:
+
+- **Chronological ordering** — the ISO8601 filename prefix sorts lexicographically, so the orchestrator's prerender block reflects dispatch order without a separate index.
+- **Budget-truncated** — a 30 KB cap on the prior-handoffs section drops oldest first with a `[earlier handoffs truncated]` marker so long-running issues with many runs do not blow the context window.
+- **Partial markers** — when a worker exits via `TerminalFailed` or `TerminalStalled`, the orchestrator renames the in-flight file to `<basename>.partial.md` so subsequent agents distinguish a clean handoff from a crash mid-deliverable. Input-required pauses do not mark partial.
+- **`run.timestamp` and `run.handoff_path`** — the orchestrator surfaces these in a `## Run Context` block in every agent prompt; profile INSTRUCTIONS.md scaffolds now include a "Handoff Protocol" section telling the agent to write its deliverable to `run.handoff_path` before exiting.
+
+See the [Agent Handoff guide](/guides/agent-handoff/) for a worked example.
+
+### Workspace clear is now terminal-state-only (breaking)
+
+`workspace.auto_clear: true` no longer fires after every successful run. The workspace is preserved across retries, input-required pauses, stalls, and pipeline mid-state transitions, and is only removed when the issue reaches a terminal tracker state — either `tracker.completion_state` after a successful run, or `tracker.failed_state` after retries are exhausted. This change is what makes the handoff convention above viable: chained profiles can accumulate `.itervox/handoff/` files on the same branch without the clear hook erasing them between runs.
+
+Two operational consequences:
+
+1. `auto_clear` and `auto_review` now safely coexist — the clear is deferred until the reviewer also completes. The legacy validation that rejected the combination is now a no-op (the `ErrAutoClearAutoReviewConflict` symbol is retained for API compatibility but never fires).
+2. Workspaces of flaky issues that retry many times will accumulate across attempts. If eager disk-space hygiene matters more than handoff continuity, run an external cleanup (e.g. `find <workspace_root> -mtime +1 -delete`) outside the daemon.
+
+`itervox init --update --workflow WORKFLOW.md` prints a one-line notice when it finds `workspace.auto_clear: true` so the semantic shift is visible during migration.
 
 ---
 
@@ -167,12 +208,20 @@ The Settings page now surfaces retry and rate-limit controls that were previousl
 - **On exhausted retries** — what happens when the retry budget is burned. Options include pausing the issue (do not move) or transitioning it to a configured failure state.
 - **Rate-limit switch cap** — how many times a `rate_limited` automation can switch an issue to a different profile within a rolling window. Prevents automation ping-pong between profiles. Set to 0 for unlimited. Reaching the cap suppresses switching; it does not cause the trigger.
 
+## Operational files
+
+The daemon writes `.itervox/HEARTBEAT.md` on startup and refreshes it after state changes at a bounded interval. It records the active workflow path, schema version, dashboard URL, tracker/project, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. It is generated runtime state, not a file to commit.
+
 ---
 
 ## Next steps
 
 - [Automations guide](/guides/automations/) — triggers, filters, instructions, and YAML examples.
-- [Agent Profiles guide](/guides/agent-profiles/) — prompt roles, daemon actions, SSH, and reviewer config.
+- [Automation Queue guide](/guides/automation-queue/) — queue drain, cap, and backpressure behavior.
+- [Dependency Management guide](/guides/dependency-management/) — blockers, dependency audit, and safe unblock automation.
+- [Dashboard Deps guide](/guides/dashboard-deps/) — dependency graph semantics.
+- [Issue Status History guide](/guides/status-history/) — status timeline sources and retention.
+- [Agent Profiles guide](/guides/agent-profiles/) — SOUL/INSTRUCTIONS files, daemon actions, SSH, and reviewer config.
 - [Claude vs Codex Debate guide](/guides/claude-vs-codex-debate/) — experimental comment-only planning debate pattern.
 - [Configuration reference](/configuration/) — full WORKFLOW.md field reference.
 - [Changelog](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md) — complete v0.2.0 changelog.

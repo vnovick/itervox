@@ -29,6 +29,7 @@ func TestCompileAutomations_SplitsCronAndInputRequired(t *testing.T) {
 				"qa":              {Command: "claude"},
 				"input-responder": {Command: "claude"},
 				"reviewer":        {Command: "claude"},
+				"pm":              {Command: "claude", AllowedActions: []string{config.AgentActionMoveState}},
 			},
 		},
 		Automations: []config.AutomationConfig{
@@ -78,6 +79,20 @@ func TestCompileAutomations_SplitsCronAndInputRequired(t *testing.T) {
 					Type: "run_failed",
 				},
 			},
+			{
+				ID:      "unblock-backlog",
+				Enabled: true,
+				Profile: "pm",
+				Trigger: config.AutomationTriggerConfig{
+					Type: config.AutomationTriggerBlockersResolved,
+				},
+				Filter: config.AutomationFilterConfig{
+					States: []string{"Backlog"},
+				},
+				Policy: config.AutomationPolicyConfig{
+					MoveToState: "Todo",
+				},
+			},
 		},
 	}
 
@@ -86,9 +101,11 @@ func TestCompileAutomations_SplitsCronAndInputRequired(t *testing.T) {
 	require.Len(t, compiled.inputRequired, 1)
 	require.Len(t, compiled.polledEvents, 2)
 	require.Len(t, compiled.runFailed, 1)
+	require.Len(t, compiled.blockersResolved, 1)
 	assert.Equal(t, "qa-ready", compiled.cron[0].cfg.ID)
 	assert.Equal(t, "input-responder", compiled.inputRequired[0].ID)
 	assert.Equal(t, "input-responder", compiled.inputRequired[0].ProfileName)
+	assert.Equal(t, "Todo", compiled.blockersResolved[0].MoveToState)
 }
 
 func TestLogAutomationCompileSummaryIncludesRateLimitedRules(t *testing.T) {
@@ -109,6 +126,26 @@ func TestLogAutomationCompileSummaryIncludesRateLimitedRules(t *testing.T) {
 	assert.Contains(t, out, `"registered":1`)
 	assert.Contains(t, out, `"dropped":0`)
 	assert.Contains(t, out, `"rate_limited":1`)
+}
+
+func TestLogAutomationCompileSummaryIncludesBlockersResolvedRules(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+	})
+
+	logAutomationCompileSummary(1, compiledAutomationSet{
+		blockersResolved: []orchestrator.BlockersResolvedAutomation{
+			{ID: "unblock-backlog-to-todo", ProfileName: "pm"},
+		},
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, `"registered":1`)
+	assert.Contains(t, out, `"dropped":0`)
+	assert.Contains(t, out, `"blockers_resolved":1`)
 }
 
 func TestCompileAutomationsRateLimitedRequiresUsableSwitchProfile(t *testing.T) {
@@ -175,6 +212,57 @@ func TestAutomationCompileConfigViewUsesRuntimeProfiles(t *testing.T) {
 
 	require.Len(t, compiled.rateLimited, 1)
 	assert.Equal(t, "fallback", compiled.rateLimited[0].SwitchToProfile)
+}
+
+func TestShouldSkipAutomatedIssueAllowsQueueableNoSlots(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Agent.MaxConcurrentAgents = 1
+	cfg.Agent.MaxConcurrentAgentsByState = map[string]int{}
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	state := orchestrator.NewState(cfg)
+	state.Running["busy"] = &orchestrator.RunEntry{
+		Issue: domain.Issue{ID: "busy", Identifier: "ENG-BUSY", State: "Todo"},
+	}
+
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Queued", State: "Todo"}
+
+	require.False(t, shouldSkipAutomatedIssue(state, cfg, issue))
+}
+
+func TestShouldSkipAutomatedIssueAllowsQueueableBlockers(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Agent.MaxConcurrentAgents = 3
+	cfg.Agent.MaxConcurrentAgentsByState = map[string]int{}
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	state := orchestrator.NewState(cfg)
+	blockerIdentifier := "ENG-0"
+	blockerState := "In Progress"
+	issue := domain.Issue{
+		ID:         "id1",
+		Identifier: "ENG-1",
+		Title:      "Blocked",
+		State:      "Todo",
+		BlockedBy: []domain.BlockerRef{{
+			Identifier: &blockerIdentifier,
+			State:      &blockerState,
+		}},
+	}
+
+	require.False(t, shouldSkipAutomatedIssue(state, cfg, issue))
+}
+
+func TestShouldSkipAutomatedIssueStillSkipsNonQueueableTerminal(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Agent.MaxConcurrentAgents = 3
+	cfg.Agent.MaxConcurrentAgentsByState = map[string]int{}
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	state := orchestrator.NewState(cfg)
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "Done"}
+
+	require.True(t, shouldSkipAutomatedIssue(state, cfg, issue))
 }
 
 func TestMatchesAutomationFilter_ChecksLabelsAndInputContext(t *testing.T) {
@@ -288,6 +376,15 @@ func TestAutomationManagedCommentMarkers(t *testing.T) {
 	assert.True(t, isAutomationManagedComment(domain.Comment{Body: marked}))
 	assert.True(t, isAutomationManagedComment(domain.Comment{AuthorName: "Itervox"}))
 	assert.False(t, isAutomationManagedComment(domain.Comment{Body: body, AuthorName: "alice"}))
+}
+
+func TestAutomationProducersPausedUsesQueueBackpressure(t *testing.T) {
+	assert.False(t, automationProducersPaused(orchestrator.State{}))
+	assert.True(t, automationProducersPaused(orchestrator.State{
+		AutomationQueueBackpressure: orchestrator.AutomationQueueBackpressure{
+			PausedProducers: true,
+		},
+	}))
 }
 
 type pollTracker struct {

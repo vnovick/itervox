@@ -63,4 +63,23 @@ describe('profileCommands', () => {
       allowedActions: ['comment', 'provide_input'],
     });
   });
+
+  it('hydrates file-backed profile text from soul and instructions', () => {
+    expect(
+      draftFromProfileDef({
+        command: 'claude',
+        soul: '# QA SOUL',
+        instructions: '# QA INSTRUCTIONS',
+        prompt: 'legacy fallback',
+        soulFile: '.itervox/agents/qa/SOUL.md',
+        instructionsFile: '.itervox/agents/qa/INSTRUCTIONS.md',
+      }),
+    ).toMatchObject({
+      soul: '# QA SOUL',
+      instructions: '# QA INSTRUCTIONS',
+      prompt: '# QA INSTRUCTIONS',
+      soulFile: '.itervox/agents/qa/SOUL.md',
+      instructionsFile: '.itervox/agents/qa/INSTRUCTIONS.md',
+    });
+  });
 });

@@ -17,6 +17,7 @@ export interface SuggestedAutomation {
   limit?: number;
   inputContextRegex?: string;
   autoResume?: boolean;
+  moveToState?: string;
 }
 
 export const SUGGESTED_AUTOMATIONS: readonly SuggestedAutomation[] = [
@@ -74,20 +75,17 @@ export const SUGGESTED_AUTOMATIONS: readonly SuggestedAutomation[] = [
     id: 'dependency-readiness',
     label: 'Dependency Readiness',
     description:
-      'Runs a prompt-governed unblock check for blocked backlog issues and comments readiness advice.',
+      'Runs when dependency audit sees a blocked backlog issue become unblocked and moves it to Todo.',
     profile: 'unblock-manager',
-    triggerType: 'cron',
-    cron: '*/30 * * * *',
-    timezone: 'UTC',
+    triggerType: 'blockers_resolved',
     matchMode: 'all',
     states: ['Backlog'],
-    labelsAny: ['blocked'],
-    limit: 10,
-    instructions: `Review blocker state for this issue.
+    moveToState: 'Todo',
+    instructions: `Dependency audit has resolved every tracked blocker for this issue.
 
-- If any blocker is missing, unclear, or non-terminal, leave one concise comment and stop.
-- If every blocker appears terminal and the issue is otherwise ready, comment that it appears ready for Todo.
-- Do not claim deterministic dependency resolution; this is advisory automation only.`,
+- Move only backlog/Backlog issues to {{ trigger.move_to_state }}.
+- Do not move review, in-review, PR-open, merged, or closed issues.
+- If the issue is not ready for implementation despite resolved blockers, leave one concise comment instead.`,
   },
   {
     id: 'plan-required-gate',

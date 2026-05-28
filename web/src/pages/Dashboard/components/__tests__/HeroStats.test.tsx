@@ -2,7 +2,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type * as ReactRouter from 'react-router';
-import { HeroStats, automationsFiredToday } from '../HeroStats';
+import { HeroStats } from '../HeroStats';
+import { automationsFiredToday } from '../dashboardMetrics';
 import { useItervoxStore } from '../../../../store/itervoxStore';
 import { useUIStore } from '../../../../store/uiStore';
 
@@ -58,6 +59,30 @@ describe('HeroStats', () => {
 
     expect(screen.getByText('Input Required')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('keeps six-column stats for desktop instead of tablet widths', () => {
+    useItervoxStore.setState({
+      snapshot: {
+        generatedAt: new Date().toISOString(),
+        counts: { running: 0, retrying: 0, paused: 0 },
+        running: [],
+        retrying: [],
+        paused: [],
+        maxConcurrentAgents: 3,
+        inputRequired: [],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <HeroStats />
+      </MemoryRouter>,
+    );
+
+    const stats = screen.getByTestId('hero-stats');
+    expect(stats.className).toContain('lg:grid-cols-6');
+    expect(stats.className).not.toContain('md:grid-cols-6');
   });
 });
 

@@ -68,6 +68,40 @@ func TestRecordAutomationDispatchTolerantOfNilLogBuf(t *testing.T) {
 	})
 }
 
+func TestDispatchAutomationWaitsForReceiverUntilContextDone(t *testing.T) {
+	o := &Orchestrator{events: make(chan OrchestratorEvent)}
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1"}
+	dispatch := AutomationDispatch{
+		AutomationID: "nightly-cron",
+		Trigger:      AutomationTriggerContext{Type: config.AutomationTriggerCron},
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	received := make(chan OrchestratorEvent, 1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		received <- <-o.events
+	}()
+
+	require.True(t, o.DispatchAutomation(ctx, issue, dispatch))
+
+	ev := <-received
+	require.Equal(t, EventDispatchAutomation, ev.Type)
+	require.NotNil(t, ev.Automation)
+	require.Equal(t, "nightly-cron", ev.Automation.AutomationID)
+}
+
+func TestDispatchAutomationReturnsFalseWhenContextExpires(t *testing.T) {
+	o := &Orchestrator{events: make(chan OrchestratorEvent)}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+
+	require.False(t, o.DispatchAutomation(ctx, domain.Issue{Identifier: "ENG-1"}, AutomationDispatch{
+		AutomationID: "nightly-cron",
+		Trigger:      AutomationTriggerContext{Type: config.AutomationTriggerCron},
+	}))
+}
+
 // 240-char cap (with ellipsis) keeps the buffer entry comfortably below the
 // 64 KiB per-line limit added by the logbuffer per-line truncation guard.
 func TestRecordAutomationDispatchTruncatesLongContext(t *testing.T) {
@@ -146,6 +180,134 @@ func TestRecordAutomationDispatchConcurrentSafe(t *testing.T) {
 		assert.Contains(t, line, "profile: p")
 		assert.Contains(t, line, "backend: claude")
 	}
+}
+
+func TestDispatchMatchingInputRequiredAutomationsQueuesWhenNoSlots(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.MaxConcurrentAgents = 1
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"input-responder": {Command: "claude", Backend: "claude"},
+	}
+	o := newOrchestratorForTest(cfg)
+	o.SetInputRequiredAutomations([]InputRequiredAutomation{{
+		ID:          "input-responder",
+		ProfileName: "input-responder",
+	}})
+	state := NewState(cfg)
+	state.Running["busy"] = &RunEntry{
+		Issue: domain.Issue{ID: "busy", Identifier: "ENG-BUSY", State: "Todo"},
+	}
+	issue := automationIssue("Todo")
+	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+
+	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, &InputRequiredEntry{
+		IssueID:     issue.ID,
+		Identifier:  issue.Identifier,
+		Context:     "Which branch should I use?",
+		ProfileName: "worker",
+		Backend:     "codex",
+	}, now, nil)
+
+	require.Len(t, state.AutomationQueue, 1)
+	entry := state.AutomationQueue[state.AutomationQueueOrder[0]]
+	require.Equal(t, AutomationQueueReasonNoSlots, entry.Reason)
+	require.Equal(t, config.AutomationTriggerInputRequired, entry.Trigger.Type)
+	require.Equal(t, "Which branch should I use?", entry.Trigger.InputContext)
+	require.Equal(t, "worker", entry.Trigger.BlockedProfile)
+	require.Equal(t, "codex", entry.Trigger.BlockedBackend)
+	require.NotContains(t, state.Claimed, issue.ID)
+}
+
+// v0.2.0 todolist5 B1 — when the exiting worker was itself launched by an
+// input_required automation, dispatching another input_required automation on
+// the same issue must be suppressed. Otherwise the agent loops indefinitely
+// (an input_required automation produces another input_required exit, which
+// re-fires the same automation, until an unrelated retry / rate-limit budget
+// drains).
+func TestDispatchInputRequired_SkipsSelfReentry(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"input-responder": {Command: "claude", Backend: "claude"},
+	}
+	o := newOrchestratorForTest(cfg)
+	o.SetInputRequiredAutomations([]InputRequiredAutomation{
+		{ID: "responder", ProfileName: "input-responder"},
+	})
+	now := time.Now()
+	state := NewState(cfg)
+	issue := automationIssue("Todo")
+	prevRun := &RunEntry{
+		AutomationID: "responder",
+		TriggerType:  config.AutomationTriggerInputRequired,
+		Issue:        issue,
+	}
+	entry := &InputRequiredEntry{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Context:    "still need input",
+	}
+	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, entry, now, prevRun)
+	_, claimed := state.Claimed[issue.ID]
+	assert.False(t, claimed, "self-reentry must be suppressed — no new claim")
+	assert.Empty(t, state.AutomationQueue, "self-reentry must not enqueue either")
+}
+
+// Companion test: user-launched workers (AutomationID empty) exiting
+// input_required MUST still fire automations. The guard reads AutomationID,
+// not "this issue has fired before."
+func TestDispatchInputRequired_FiresForUserLaunchedWorker(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"input-responder": {Command: "claude", Backend: "claude"},
+	}
+	o := newOrchestratorForTest(cfg)
+	o.SetInputRequiredAutomations([]InputRequiredAutomation{
+		{ID: "responder", ProfileName: "input-responder"},
+	})
+	now := time.Now()
+	state := NewState(cfg)
+	issue := automationIssue("Todo")
+	prevRun := &RunEntry{
+		AutomationID: "", // user-launched (not an automation)
+		Issue:        issue,
+	}
+	entry := &InputRequiredEntry{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Context:    "user worker asks a question",
+	}
+	o.dispatchMatchingInputRequiredAutomations(t.Context(), &state, issue, entry, now, prevRun)
+	_, claimed := state.Claimed[issue.ID]
+	assert.True(t, claimed, "user-launched workers must still trigger input_required automations")
+}
+
+func TestDispatchMatchingRunFailedAutomationsQueuesWhenNoSlots(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.MaxConcurrentAgents = 1
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"failure-reviewer": {Command: "claude", Backend: "claude"},
+	}
+	o := newOrchestratorForTest(cfg)
+	o.SetRunFailedAutomations([]RunFailedAutomation{{
+		ID:          "failure-reviewer",
+		ProfileName: "failure-reviewer",
+	}})
+	state := NewState(cfg)
+	state.Running["busy"] = &RunEntry{
+		Issue: domain.Issue{ID: "busy", Identifier: "ENG-BUSY", State: "Todo"},
+	}
+	issue := automationIssue("Todo")
+	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+
+	o.dispatchMatchingRunFailedAutomations(t.Context(), &state, issue, now, "tests failed", 2)
+
+	require.Len(t, state.AutomationQueue, 1)
+	entry := state.AutomationQueue[state.AutomationQueueOrder[0]]
+	require.Equal(t, AutomationQueueReasonNoSlots, entry.Reason)
+	require.Equal(t, config.AutomationTriggerRunFailed, entry.Trigger.Type)
+	require.Equal(t, "tests failed", entry.Trigger.ErrorMessage)
+	require.Equal(t, 2, entry.Trigger.RetryAttempt)
+	require.NotContains(t, state.Claimed, issue.ID)
 }
 
 func TestStartAutomationRunAppliesDefaultBackendHint(t *testing.T) {

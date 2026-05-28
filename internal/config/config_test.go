@@ -3,6 +3,8 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,6 +21,40 @@ func workflowWithContent(t *testing.T, content string) string {
 
 func minimal(extras string) string {
 	return "---\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: my-project\n" + extras + "---\n\nPrompt.\n"
+}
+
+func minimalV2(extras string) string {
+	return "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: my-project\n" + extras + "---\n\nPrompt.\n"
+}
+
+func schema2ProfileFileFields(t *testing.T, indent string) string {
+	t.Helper()
+	dir := t.TempDir()
+	soulPath := filepath.Join(dir, "SOUL.md")
+	instructionsPath := filepath.Join(dir, "INSTRUCTIONS.md")
+	require.NoError(t, os.WriteFile(soulPath, []byte("# SOUL"), 0o644))
+	require.NoError(t, os.WriteFile(instructionsPath, []byte("# INSTRUCTIONS"), 0o644))
+	return indent + "soul_file: " + strconv.Quote(soulPath) + "\n" +
+		indent + "instructions_file: " + strconv.Quote(instructionsPath) + "\n"
+}
+
+func minimalV2WithProfileFiles(t *testing.T, extras string) string {
+	t.Helper()
+	lines := strings.Split(extras, "\n")
+	out := make([]string, 0, len(lines)*2)
+	inProfiles := false
+	for _, line := range lines {
+		if line == "  profiles:" {
+			inProfiles = true
+		} else if inProfiles && line != "" && !strings.HasPrefix(line, " ") {
+			inProfiles = false
+		}
+		out = append(out, line)
+		if inProfiles && strings.HasPrefix(line, "      command:") {
+			out = append(out, strings.TrimSuffix(schema2ProfileFileFields(t, "      "), "\n"))
+		}
+	}
+	return minimalV2(strings.Join(out, "\n"))
 }
 
 func TestDefaults(t *testing.T) {
@@ -45,7 +81,7 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestTrackerKindRequired(t *testing.T) {
-	content := "---\ntracker:\n  api_key: key\n  project_slug: slug\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  api_key: key\n  project_slug: slug\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err) // Load no longer validates
@@ -104,6 +140,37 @@ func TestMaxRetriesZeroMeansUnlimited(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, 0, cfg.Agent.MaxRetries)
+}
+
+func TestDefaultAutomationQueueLength(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 100, cfg.Agent.MaxAutomationQueueLength)
+}
+
+func TestZeroAutomationQueueLengthFallsBackToDefault(t *testing.T) {
+	content := minimal("agent:\n  max_automation_queue_length: 0\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 100, cfg.Agent.MaxAutomationQueueLength)
+}
+
+func TestNegativeAutomationQueueLengthFallsBackToDefault(t *testing.T) {
+	content := minimal("agent:\n  max_automation_queue_length: -1\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 100, cfg.Agent.MaxAutomationQueueLength)
+}
+
+func TestPositiveAutomationQueueLengthIsHonored(t *testing.T) {
+	content := minimal("agent:\n  max_automation_queue_length: 25\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 25, cfg.Agent.MaxAutomationQueueLength)
 }
 
 func TestFailedStateExplicit(t *testing.T) {
@@ -173,6 +240,281 @@ func TestAgentProfileBackendField(t *testing.T) {
 	require.NotNil(t, cfg.Agent.Profiles)
 	assert.Equal(t, "codex", cfg.Agent.Profiles["codex-fast"].Backend)
 	assert.Equal(t, "", cfg.Agent.Profiles["inferred"].Backend)
+}
+
+func TestWorkflowSchemaVersionParsed(t *testing.T) {
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: my-project\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, cfg.SchemaVersion)
+}
+
+func TestWorkflowSchemaMissingFailsDispatchValidation(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "itervox_schema_version")
+	assert.Contains(t, err.Error(), "itervox init --update --workflow")
+}
+
+func TestMissingWorkflowSchemaMessageExact(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.EqualError(t, err, "WORKFLOW.md is missing itervox_schema_version.\nRun:\n  itervox init --update --workflow "+path+"\n\nThis creates .itervox/agents/<profile>/SOUL.md and INSTRUCTIONS.md,\nrewrites profile references, and keeps a WORKFLOW.md.bak backup.")
+}
+
+func TestWorkflowSchemaStaleFailsDispatchValidation(t *testing.T) {
+	content := "---\nitervox_schema_version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: my-project\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy inline profile-prompt schema")
+	assert.Contains(t, err.Error(), "itervox init --update --workflow")
+}
+
+func TestLegacyWorkflowSchemaMessageExact(t *testing.T) {
+	content := "---\nitervox_schema_version: 1\ntracker:\n  kind: linear\n  api_key: test-key\n  project_slug: my-project\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.EqualError(t, err, "WORKFLOW.md uses the legacy inline profile-prompt schema.\nRun:\n  itervox init --update --workflow "+path+"\n\nThis creates .itervox/agents/<profile>/SOUL.md and INSTRUCTIONS.md,\nrewrites profile references, and keeps a WORKFLOW.md.bak backup.")
+}
+
+func TestSchema2ProfileLoadsSoulAndInstructionsFilesRelativeToWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "implementer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "SOUL.md"), []byte("Soul {{ issue.identifier }}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "INSTRUCTIONS.md"), []byte("Instructions {{ issue.title }}"), 0o644))
+	path := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Contains(t, cfg.Agent.Profiles, "implementer")
+	profile := cfg.Agent.Profiles["implementer"]
+	assert.Equal(t, ".itervox/agents/implementer/SOUL.md", profile.SoulFile)
+	assert.Equal(t, ".itervox/agents/implementer/INSTRUCTIONS.md", profile.InstructionsFile)
+	assert.Equal(t, "Soul {{ issue.identifier }}", profile.Soul)
+	assert.Equal(t, "Instructions {{ issue.title }}", profile.Instructions)
+}
+
+func TestSchema2ProfileRejectsMissingInstructionFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "implementer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "SOUL.md"), []byte("Soul"), 0o644))
+	path := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ".itervox/agents/implementer/INSTRUCTIONS.md")
+}
+
+func TestSchema2ProfileValidatesFilesBeforeCommand(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ".itervox/agents/implementer/SOUL.md")
+}
+
+func TestSchema2ProfileRejectsInlinePrompt(t *testing.T) {
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      command: claude
+      prompt: inline legacy prompt
+---
+
+Prompt.
+`
+	path := workflowWithContent(t, content)
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy inline profile-prompt schema")
+	assert.Contains(t, err.Error(), "itervox init --update --workflow")
+}
+
+func TestSchema2InlineProfilePromptMessageExact(t *testing.T) {
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      command: claude
+      prompt: inline legacy prompt
+---
+
+Prompt.
+`
+	path := workflowWithContent(t, content)
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.EqualError(t, err, "WORKFLOW.md uses the legacy inline profile-prompt schema.\nRun:\n  itervox init --update --workflow "+path+"\n\nThis creates .itervox/agents/<profile>/SOUL.md and INSTRUCTIONS.md,\nrewrites profile references, and keeps a WORKFLOW.md.bak backup.")
+}
+
+func TestSchema2ProfileRejectsInlinePromptWithoutCommand(t *testing.T) {
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      prompt: inline legacy prompt
+---
+
+Prompt.
+`
+	path := workflowWithContent(t, content)
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy inline profile-prompt schema")
+}
+
+func TestFutureWorkflowSchemaRejectedBeforeProfileParsing(t *testing.T) {
+	content := `---
+itervox_schema_version: 99
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  profiles:
+    implementer:
+      command: claude
+---
+
+Prompt.
+`
+	path := workflowWithContent(t, content)
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported itervox_schema_version 99")
+	assert.NotContains(t, err.Error(), "soul_file")
+}
+
+func TestWorkflowSchemaErrorPrecedesRemovedAgentMode(t *testing.T) {
+	content := `---
+itervox_schema_version: 99
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  agent_mode: teams
+---
+
+Prompt.
+`
+	path := workflowWithContent(t, content)
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported itervox_schema_version 99")
+	assert.NotContains(t, err.Error(), "agent.agent_mode")
+}
+
+func TestMissingWorkflowSchemaPrecedesRemovedAgentMode(t *testing.T) {
+	content := `---
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: my-project
+agent:
+  agent_mode: teams
+---
+
+Prompt.
+`
+	path := workflowWithContent(t, content)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "itervox_schema_version")
+	assert.NotContains(t, err.Error(), "agent.agent_mode")
 }
 
 func TestAgentProfileAllowedActionsField(t *testing.T) {
@@ -442,13 +784,13 @@ func TestAutomationPolicy_AutoSwitchAlias(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			content := minimal(`automations:
+			content := minimalV2WithProfileFiles(t, `automations:
   - id: rl
     enabled: true
     profile: fallback
     trigger:
       type: rate_limited
-    ` + tc.yaml + `
+    `+tc.yaml+`
       switch_to_profile: codex-coder
 agent:
   profiles:
@@ -474,8 +816,84 @@ agent:
 	}
 }
 
+func TestAutomationBlockersResolvedValidatesBacklogToTodoPolicy(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  profiles:
+    pm:
+      command: claude
+      allowed_actions: [comment, move_state]
+automations:
+  - id: unblock-backlog-to-todo
+    enabled: true
+    profile: pm
+    trigger:
+      type: blockers_resolved
+    filter:
+      states_any: ["backlog", "Backlog"]
+    policy:
+      move_to_state: "Todo"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(cfg))
+	require.Len(t, cfg.Automations, 1)
+	assert.Equal(t, "blockers_resolved", cfg.Automations[0].Trigger.Type)
+	assert.Equal(t, []string{"backlog", "Backlog"}, cfg.Automations[0].Filter.States)
+	assert.Equal(t, "Todo", cfg.Automations[0].Policy.MoveToState)
+}
+
+func TestAutomationBlockersResolvedMoveToStateRequiresMoveStatePermission(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  profiles:
+    pm:
+      command: claude
+      allowed_actions: [comment]
+automations:
+  - id: unblock-backlog-to-todo
+    enabled: true
+    profile: pm
+    trigger:
+      type: blockers_resolved
+    filter:
+      states_any: ["Backlog"]
+    policy:
+      move_to_state: "Todo"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "move_state")
+}
+
+func TestAutomationMoveToStateOnlyAllowedOnBlockersResolved(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  profiles:
+    pm:
+      command: claude
+      allowed_actions: [comment, move_state]
+automations:
+  - id: wrong-trigger
+    enabled: true
+    profile: pm
+    trigger:
+      type: cron
+      cron: "0 9 * * 1"
+    policy:
+      move_to_state: "Todo"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy.move_to_state")
+}
+
 func TestV020AutomationBoundaryExamplesValidate(t *testing.T) {
-	content := minimal(`agent:
+	content := minimalV2WithProfileFiles(t, `agent:
   max_concurrent_agents: 3
   profiles:
     implementer-codex:
@@ -658,7 +1076,7 @@ func TestRateLimitedAutomationValidatesSwitchToProfileReference(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			content := minimal(`automations:
+			content := minimalV2WithProfileFiles(t, `automations:
   - id: rl
     enabled: true
     profile: fallback
@@ -666,9 +1084,9 @@ func TestRateLimitedAutomationValidatesSwitchToProfileReference(t *testing.T) {
       type: rate_limited
     policy:
       auto_switch: true
-      switch_to_profile: ` + tc.profile + `
+      switch_to_profile: `+tc.profile+`
 agent:
-  profiles:` + tc.profiles)
+  profiles:`+tc.profiles)
 			path := workflowWithContent(t, content)
 			cfg, err := config.Load(path)
 			require.NoError(t, err)

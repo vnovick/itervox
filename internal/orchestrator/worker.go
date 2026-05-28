@@ -36,6 +36,12 @@ const (
 	maxTransitionAttempts = 4
 )
 
+// operatorReplyEnvelope is the orchestrator-controlled prompt block that tells
+// every dispatched agent how the human operator will reply when the agent
+// exits `input_required`. v0.2.0 todolist5 B3.
+const operatorReplyEnvelope = "## Operator Reply Channel\n\n" +
+	"If you exit with status `input_required`, a human operator will see your question in the Itervox dashboard and reply via the \"Reply & Resume Agent\" textarea on this issue. Their reply will resume you with the answer prepended to your next prompt. Do not attempt to reach the operator through the tracker, email, or external APIs."
+
 // runWorker implements the full per-issue lifecycle: workspace, hooks, multi-turn loop.
 // Runs in its own goroutine; communicates back only via o.events.
 // workerHost is the SSH host to run the agent on; empty string means run locally.
@@ -217,10 +223,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
 	profileCreateIssueState := strings.TrimSpace(profilesSnap[profileName].CreateIssueState)
+	profileMoveIssueState := ""
+	if automation != nil && automation.Trigger.Type == config.AutomationTriggerBlockersResolved {
+		profileMoveIssueState = strings.TrimSpace(automation.MoveToState)
+	}
 	actionContext := ""
 	if len(profileAllowedActions) > 0 {
 		if workerHost != "" {
-			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, true)
+			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, true)
 		} else if o.agentActionTokens == nil || o.agentActionBaseURL == "" {
 			slog.Warn("worker: profile allowed_actions configured but daemon action bridge is unavailable",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName)
@@ -230,6 +240,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			runLogID,
 			profileAllowedActions,
 			profileCreateIssueState,
+			profileMoveIssueState,
 			turnTimeoutMs,
 		); err != nil {
 			slog.Warn("worker: failed to prepare daemon action bridge",
@@ -244,10 +255,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				"ITERVOX_DAEMON_URL":         o.agentActionBaseURL,
 				"ITERVOX_CREATE_ISSUE_STATE": profileCreateIssueState,
 				"ITERVOX_ISSUE_IDENTIFIER":   issue.Identifier,
+				"ITERVOX_MOVE_ISSUE_STATE":   profileMoveIssueState,
 				"ITERVOX_RUN_ID":             runLogID,
 				"PATH":                       pathValue,
 			})
-			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, false)
+			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, false)
 			defer func() {
 				o.agentActionTokens.Revoke(token)
 				_ = os.RemoveAll(shimDir)
@@ -318,6 +330,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		effectiveMaxTurns = 1
 	}
 	startedAt := time.Now()
+	// Agent handoff plumbing: generate ONE timestamp per worker invocation
+	// (not per turn) so the `run.handoff_path` the agent sees is stable
+	// across all turns. If we regenerated per turn, an agent following
+	// INSTRUCTIONS would write multiple files per worker run, and turn N's
+	// prompt would include turn 1..N-1's outputs as "prior agent handoffs."
+	runTimestamp := handoffRunTimestamp(startedAt)
+	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
 	turn := 1
 	for ; turn <= effectiveMaxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
@@ -367,6 +386,26 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
 		}
+
+		// v0.2.0 todolist5 B3 — operator-reply envelope notice. Lives in the
+		// orchestrator-controlled wrapper (not in any profile's INSTRUCTIONS.md)
+		// so individual `agent.profiles.<name>.instructions_file` overrides
+		// cannot drop it. Without this, agents that decide they need human
+		// input often escalate via tracker / external API calls instead of
+		// exiting input_required, because nothing in their prompt tells them
+		// a reply lane exists.
+		renderedPrompt += "\n\n" + operatorReplyEnvelope
+
+		// Agent handoff plumbing: inline any prior agents' handoffs from the
+		// workspace (chronological, budget-truncated) and tell the agent
+		// where to write its own deliverable. runTimestamp / runHandoffRelPath
+		// are generated once per worker invocation above the turn loop so the
+		// agent sees a stable path across all turns of this run.
+		if priorHandoffs := buildHandoffContextBlock(wsPath, DefaultHandoffBudgetBytes); priorHandoffs != "" {
+			renderedPrompt += "\n\n" + priorHandoffs
+		}
+		renderedPrompt += "\n\n" + buildRunContextBlock(runTimestamp, runHandoffRelPath)
+
 		// Append the active profile's prompt (role context) whenever a named
 		// profile is selected. The pre-removal `agent_mode == "teams"` gate
 		// has been deleted (agent_mode is gone — see CHANGELOG); the
@@ -374,8 +413,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// multi-profile setups always tell the agent who its peers are.
 		if profileName != "" {
 			if profile, ok := profilesSnap[profileName]; ok {
-				if profile.Prompt != "" {
-					renderedPrompt += "\n\n" + prompt.RenderProfilePrompt(profile.Prompt, issue, attemptPtr)
+				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr) {
+					if block != "" {
+						renderedPrompt += "\n\n" + block
+					}
 				}
 			}
 		}
@@ -842,6 +883,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		} else {
 			slog.Info("worker: issue moved to completion state",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "state", completionState)
+			o.RecordIssueStatusChange(IssueStatusChange{
+				Identifier:  issue.Identifier,
+				FromState:   issue.State,
+				ToState:     completionState,
+				Source:      StatusSourceWorkerLifecycle,
+				ProfileName: profileName,
+				Backend:     backend,
+				WorkerHost:  workerHost,
+			})
 			if o.logBuf != nil {
 				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: → %s", completionState), runLogID))
 				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: ✓ issue moved to %q", completionState), runLogID))
@@ -1082,8 +1132,8 @@ func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs 
 }
 
 func prepareAgentActionRuntime(tokens interface {
-	Issue(issueIdentifier, runSessionID string, allowedActions []string, createIssueState string, ttl time.Duration) (string, error)
-}, issueIdentifier, runLogID string, allowedActions []string, createIssueState string, turnTimeoutMs int) (string, string, error) {
+	IssueScoped(issueIdentifier, runSessionID string, allowedActions []string, createIssueState, moveIssueState string, ttl time.Duration) (string, error)
+}, issueIdentifier, runLogID string, allowedActions []string, createIssueState, moveIssueState string, turnTimeoutMs int) (string, string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", "", fmt.Errorf("resolve current executable: %w", err)
@@ -1098,7 +1148,7 @@ func prepareAgentActionRuntime(tokens interface {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("write shim: %w", err)
 	}
-	token, err := tokens.Issue(issueIdentifier, runLogID, allowedActions, createIssueState, agentActionTokenTTL(turnTimeoutMs))
+	token, err := tokens.IssueScoped(issueIdentifier, runLogID, allowedActions, createIssueState, moveIssueState, agentActionTokenTTL(turnTimeoutMs))
 	if err != nil {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("issue action token: %w", err)
@@ -1153,7 +1203,7 @@ func prependEnvToCommand(command string, env map[string]string) string {
 	return b.String()
 }
 
-func buildAgentActionContext(actions []string, createIssueState string, remoteUnavailable bool) string {
+func buildAgentActionContext(actions []string, createIssueState, moveIssueState string, remoteUnavailable bool) string {
 	normalized := config.NormalizeAllowedActions(actions)
 	if len(normalized) == 0 {
 		return ""
@@ -1176,12 +1226,30 @@ func buildAgentActionContext(actions []string, createIssueState string, remoteUn
 				lines = append(lines, "- `itervox action create-issue --title \"...\" --body \"...\"` creates a follow-up issue using the profile's configured target state.")
 			}
 		case config.AgentActionMoveState:
-			lines = append(lines, "- `itervox action move-state --state \"...\"` moves the current issue to a new tracker state.")
+			if moveIssueState != "" {
+				lines = append(lines, "- `itervox action move-state --state \""+moveIssueState+"\"` moves the current issue to the automation-approved tracker state.")
+			} else {
+				lines = append(lines, "- `itervox action move-state --state \"...\"` moves the current issue to a new tracker state.")
+			}
 		case config.AgentActionProvideInput:
 			lines = append(lines, "- `itervox action provide-input --message \"...\"` answers an input-required prompt and resumes the blocked run.")
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderProfilePromptBlocks(profile config.AgentProfile, issue domain.Issue, attempt *int) []string {
+	var blocks []string
+	if profile.Soul != "" {
+		blocks = append(blocks, prompt.RenderProfilePrompt(profile.Soul, issue, attempt))
+	}
+	if profile.Instructions != "" {
+		blocks = append(blocks, prompt.RenderProfilePrompt(profile.Instructions, issue, attempt))
+	}
+	if len(blocks) == 0 && profile.Prompt != "" {
+		blocks = append(blocks, prompt.RenderProfilePrompt(profile.Prompt, issue, attempt))
+	}
+	return blocks
 }
 
 func shellQuote(value string) string {
@@ -1252,7 +1320,7 @@ func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Con
 	if o.cfg != nil {
 		baseBranch = o.cfg.Agent.BaseBranch
 	}
-	o.DispatchPROpenedAutomations(issue, openedPRURL, openedPRBranch, baseBranch)
+	o.DispatchPROpenedAutomations(ctx, issue, openedPRURL, openedPRBranch, baseBranch)
 }
 
 func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *RunEntry, entry *InputRequiredEntry) {

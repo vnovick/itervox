@@ -12,6 +12,7 @@ import (
 type Provider interface {
 	EnsureWorkspace(ctx context.Context, identifier, branchName string) (Workspace, error)
 	RemoveWorkspace(ctx context.Context, identifier, branchName string) error
+	ResolvePath(identifier string) string
 }
 
 // Workspace represents a resolved per-issue workspace directory.
@@ -69,6 +70,19 @@ func (m *Manager) ensureDirectory(identifier string) (Workspace, error) {
 
 	createdNow := info == nil || !info.IsDir()
 	return Workspace{Path: path, Identifier: identifier, CreatedNow: createdNow}, nil
+}
+
+// ResolvePath returns the workspace directory path for the given identifier
+// without creating it. This mirrors the path resolution used by
+// EnsureWorkspace and RemoveWorkspace and is intended for callers that
+// need to read files inside an already-provisioned workspace (e.g. agent
+// handoff bookkeeping after a worker has exited).
+func (m *Manager) ResolvePath(identifier string) string {
+	root := m.cfg.Workspace.Root
+	if m.cfg.Workspace.Worktree {
+		return worktreePath(root, identifier)
+	}
+	return WorkspacePath(root, identifier)
 }
 
 // RemoveWorkspace deletes the workspace for identifier.

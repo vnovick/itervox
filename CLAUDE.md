@@ -68,30 +68,52 @@ Workers communicate back via `o.events chan OrchestratorEvent`.
 `State` is a plain struct passed by value into reconcile/dispatch functions.
 No mutex is needed for `State` fields — only the event loop writes them.
 
+### Queue, dependency audit, and status ledgers are event-loop state
+
+`AutomationQueue`, `AutomationQueueOrder`, `AutomationQueueBackpressure`,
+`DependencyAudit`, and `IssueStatusHistory` are normal `orchestrator.State`
+fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
+only the event loop mutates them.
+
+- Automation producers send `EventDispatchAutomation`; the event loop decides
+  whether to start immediately, enqueue, coalesce, drop, or record backpressure.
+- Queue persistence is local runtime state under `.itervox/`; do not persist it
+  through tracker comments or the dashboard store.
+- Dependency audit is read-only with respect to Linear/GitHub. It can emit the
+  `blockers_resolved` automation trigger when blockers transition to terminal,
+  but tracker state moves require explicit automation policy plus a profile with
+  `move_state`.
+- The dashboard Deps tab is display-only in v0.2.0 and must derive from
+  snapshot dependency graph rows, not a parallel frontend dependency store.
+- Issue status history is bounded runtime-session history unless future work
+  explicitly adds restart durability.
+
 ### `cfgMu` guards exactly these fields (and nothing else)
 
 These `Orchestrator.cfg` fields can be mutated at runtime by HTTP handler goroutines
-and must always be accessed under `cfgMu`:
+and must always be accessed under `cfgMu`. **Keep this list alphabetically sorted by
+full field path** so the test allowlist (`AllowedMutableCfgFields`) and this docs
+section stay easy to diff (v0.2.0 audit P2-4).
 
+- `cfg.Agent.AutoReview`
+- `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.InlineInput`
 - `cfg.Agent.MaxConcurrentAgents`
 - `cfg.Agent.MaxRetries`
 - `cfg.Agent.MaxSwitchesPerIssuePerWindow`
-- `cfg.Agent.SwitchWindowHours`
-- `cfg.Agent.SwitchRevertHours`
-- `cfg.Agent.RateLimitErrorPatterns`
 - `cfg.Agent.Profiles`
-- `cfg.Agent.SSHHosts`
-- `cfg.Agent.SSHHostDescriptions`
-- `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.RateLimitErrorPatterns`
 - `cfg.Agent.ReviewerProfile`
-- `cfg.Agent.AutoReview`
-- `cfg.Agent.InlineInput`
+- `cfg.Agent.SSHHostDescriptions`
+- `cfg.Agent.SSHHosts`
+- `cfg.Agent.SwitchRevertHours`
+- `cfg.Agent.SwitchWindowHours`
+- `cfg.Automations`
 - `cfg.Tracker.ActiveStates`
-- `cfg.Tracker.TerminalStates`
 - `cfg.Tracker.CompletionState`
 - `cfg.Tracker.FailedState`
+- `cfg.Tracker.TerminalStates`
 - `cfg.Workspace.AutoClearWorkspace`
-- `cfg.Automations`
 
 The canonical allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`;
 keep this section in sync with that test. All **other** `cfg` fields are read-only after startup — no lock needed for them.
@@ -100,6 +122,52 @@ keep this section in sync with that test. All **other** `cfg` fields are read-on
 
 `Snapshot()` acquires `snapMu.RLock` and returns a copy of `lastSnap`.
 HTTP handlers call `Snapshot()` — they must never hold `cfgMu` while doing so.
+
+### Track B — file-backed profiles, schema 2, and HEARTBEAT.md
+
+Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
+
+- **`itervox_schema_version: 2`** is mandatory at the top of every `WORKFLOW.md`.
+  Startup validation in `internal/config/validate.go` emits `MissingWorkflowSchemaMessage`
+  and the daemon hard-fails if the marker is absent or set to a different version.
+- **Inline `agent.profiles.<name>.prompt` is rejected** by schema 2. Each profile
+  must reference its identity and operating instructions via `soul_file` and
+  `instructions_file`, typically `.itervox/agents/<name>/SOUL.md` and
+  `.itervox/agents/<name>/INSTRUCTIONS.md`.
+- **Prompt assembly order** at dispatch time: SOUL.md → INSTRUCTIONS.md → the
+  per-issue Liquid prompt template. Concatenated and passed to the agent
+  subprocess via stdin/argv depending on backend. SOUL is the compact identity
+  ("who you are"); INSTRUCTIONS is the operational/behavioural rules.
+- **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
+  root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
+  Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and
+  daemon logs MUST remain gitignored as transient runtime state.
+- **Migration entry point** is `itervox init --update --workflow WORKFLOW.md`.
+  It writes a `WORKFLOW.md.bak` next to the workflow, extracts each profile's
+  inline `prompt:` into `INSTRUCTIONS.md`, generates a starter `SOUL.md`, patches
+  the root `.gitignore`, and stamps `itervox_schema_version: 2`.
+- **`.itervox/HEARTBEAT.md`** is the daemon liveness file. Written on startup by
+  `cmd/itervox/heartbeat.go` and refreshed after state changes at a bounded
+  interval (15s by default). Atomic write via `atomicfs.WriteFile`. The dashboard
+  URL, schema version, workflow path, capacity, queue pressure, dependency audit
+  summary, input-required count, and last notable error live here. Never commit.
+- **`.itervox/handoff/<ISO8601>_<role>.md` is the agent pipeline handoff dir.**
+  Each worker run writes a Markdown deliverable at this path on the issue's
+  worktree branch; the orchestrator pre-renders all prior handoffs (sorted
+  chronologically by filename prefix, budget-truncated oldest-first) into every
+  subsequent worker's prompt as a `## Prior Agent Handoffs` block. Liquid bindings
+  `{{ run.timestamp }}` and `{{ run.handoff_path }}` expose the current run's
+  metadata to the agent. The directory is committable via a `.gitignore`
+  carve-out (`!.itervox/handoff/`, `!.itervox/handoff/**`, added alongside the
+  agents carve-out by `itervox init` and `itervox init --update`). Non-success
+  worker exits (`TerminalFailed`, `TerminalStalled`) rename the in-flight file
+  to `<basename>.partial.md` so partials are visible to the next agent without
+  being mistaken for completed work; `TerminalInputRequired` does not rename
+  (the agent will resume).
+
+When editing migration or schema-validation code, expect tests under
+`cmd/itervox/init_migrate.go`/`init.go` and `internal/config/validate*.go` to
+gate the change.
 
 ---
 
@@ -155,6 +223,12 @@ cmd/itervox (wires everything)
 | `web/src/hooks/useSettingsActions.ts` | Settings mutations — PUT/POST/DELETE with toast error surface |
 | `web/src/store/uiStore.ts` | View mode, search, filters, accordion expansion |
 | `web/src/types/schemas.ts` | Canonical Zod schemas (source of truth) |
+| `web/src/pages/Dashboard/components/LiveOpsStrip.tsx` | Dashboard status strip over live capacity, queue pressure, dependency audit, retry/input, SSH, and automation activity |
+| `web/src/pages/Dashboard/components/AutomationQueueList.tsx` | Durable automation queue list and local search surface |
+| `web/src/pages/Dashboard/components/AutomationQueueDetailPanel.tsx` | Queue entry detail panel for trigger/profile/permission/dependency context |
+| `web/src/pages/Dashboard/components/DepsGraph.tsx` | Read-only React Flow dependency graph over blocker -> blocked issue rows |
+| `web/src/components/itervox/IssueStatusChanges.tsx` | Per-issue status-change timeline rendered inside issue detail |
+| `web/src/components/itervox/QueueSearchInput.tsx` | Shared local search input for queue-like dashboard panels |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |
 | `web/src/auth/authedFetch.ts` | `fetch()` wrapper — injects `Authorization: Bearer`, throws `UnauthorizedError` on 401 |
 | `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |
