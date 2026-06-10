@@ -1,6 +1,7 @@
 // Pure derivation helper for the Notifications dashboard tab. No React
 // imports — `NotificationsView` calls this with snapshot + issues and
-// renders the result. Per planning/notifications_plan.md §B.
+// renders the result. Output shape is `OperatorQueueItem[]`, grouped by
+// the five operator-attention categories defined below.
 
 import type { StateSnapshot, TrackerIssue } from '../types/schemas';
 

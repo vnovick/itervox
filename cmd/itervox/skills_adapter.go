@@ -177,11 +177,14 @@ func (a *orchestratorAdapter) AnalyticsRecommendations() []skills.Recommendation
 //     profile in WORKFLOW.md by calling UpsertProfile with Enabled=false.
 //     Used by UNUSED_PROFILE (T-96).
 //
-// "remove-mcp" (DUPLICATE_MCP, T-95) is intentionally rejected here for stale
+// "remove-mcp" (DUPLICATE_MCP) is intentionally rejected here for stale
 // clients or manually-crafted requests: editing the user's settings.json from
 // the daemon is high-risk. The analyzer keeps DUPLICATE_MCP advisory-only so
-// the dashboard shows guidance without an automatic mutation path. See
-// `planning/deferred_290426.md` for the long form.
+// the dashboard shows guidance without an automatic mutation path. Automatic
+// removal will land only once four safety guards are in place — file locking
+// against concurrent edits, a backup of the prior settings.json, a structured
+// edit that preserves comments and ordering, and a per-call confirm — none
+// of which exist today.
 func (a *orchestratorAdapter) ApplyFix(_ context.Context, issueID string, fix skills.Fix) error {
 	switch fix.Action {
 	case "edit-yaml":
@@ -203,7 +206,7 @@ func (a *orchestratorAdapter) ApplyFix(_ context.Context, issueID string, fix sk
 		def.Enabled = false
 		return a.UpsertProfile(profileName, def, profileName)
 	case "remove-mcp":
-		return fmt.Errorf("skills.ApplyFix: %s 'remove-mcp' is intentionally deferred — edit settings.json by hand; see planning/deferred_290426.md", issueID)
+		return fmt.Errorf("skills.ApplyFix: %s 'remove-mcp' is intentionally deferred — edit settings.json by hand (automatic removal needs file locking + backup + structured edit + per-call confirm before it is safe)", issueID)
 	default:
 		return fmt.Errorf("skills.ApplyFix: unknown action %q for issue %s", fix.Action, issueID)
 	}

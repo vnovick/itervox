@@ -1,11 +1,9 @@
 // Package skills implements the read-mostly skills inventory + runtime
-// analytics surface described in
-// `planning/plans/2026-04-16-skills-inventory-design.md`. It scans Claude /
-// Codex skill, plugin, hook, MCP, and instruction-doc layouts under both the
-// project working directory and the user home, and surfaces static issues plus
-// runtime analytics. Capability graph fields are reserved for the next phase;
-// v0.2.0 callers should treat Inventory as direct inventory/recommendation
-// data.
+// analytics surface. It scans Claude / Codex skill, plugin, hook, MCP, and
+// instruction-doc layouts under both the project working directory and the
+// user home, then surfaces static issues plus runtime analytics. Capability
+// graph fields are reserved for a future phase; current callers should treat
+// Inventory as direct inventory/recommendation data.
 //
 // All scanning is read-only — no subprocess execution, no API calls, no
 // destructive operations. One-click fixes from the analysis layer are opt-in

@@ -15,11 +15,10 @@ import (
 // commands; we attribute them to the parent plugin and aggregate token
 // estimates across the whole plugin tree.
 //
-// The contract follows the design draft (see
-// `planning/plans/2026-04-16-skills-inventory-design.md`): we scan the
-// per-project / per-user `.claude/plugins/<name>/plugin.json` shape. The
-// production marketplace layout (`.claude-plugin/plugin.json`) is a separate
-// scanner pass and is not in scope for T-79.
+// We scan the per-project and per-user `.claude/plugins/<name>/plugin.json`
+// shape. The production marketplace layout (`.claude-plugin/plugin.json`)
+// requires a separate scanner pass and is intentionally out of scope here —
+// the two layouts have different attribution rules and cache lifecycles.
 //
 // homeDir == "" disables the user-home walk.
 func scanClaudePlugins(projectDir, homeDir string) ([]Plugin, error) {

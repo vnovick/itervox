@@ -69,11 +69,17 @@ Before adding new follow-up items, spawn a verification agent to confirm the
 issue is real (read full call chain, check for upstream validation, verify
 file exists). See "Gap analysis — avoiding false positives" in CLAUDE.md.
 
-## Track B vocabulary (canonical pointer to CLAUDE.md)
+## File-backed profile surfaces (read CLAUDE.md before editing)
 
-These v0.2.0 Track B concepts are defined and enforced in CLAUDE.md; this
-section names them so doc-coverage tooling has an anchor to grep for.
-`itervox_schema_version`, `SOUL.md`, `INSTRUCTIONS.md`, `HEARTBEAT.md`, and
-`init --update` are mandatory references — read the corresponding sections
-in CLAUDE.md before touching schema 2, profile-backed files, the daemon
-liveness file, or the migration entry point.
+Five concrete surfaces define how agents and the daemon interact with on-disk
+profile state. CLAUDE.md is the canonical reference for each; read the
+matching section there before changing behaviour:
+
+- `itervox_schema_version` — schema-version marker required at the top of
+  every `WORKFLOW.md`. Mismatch is a hard startup failure.
+- `SOUL.md` — compact per-profile identity file under `.itervox/agents/<name>/`.
+- `INSTRUCTIONS.md` — full per-profile operating rules, same directory.
+- `HEARTBEAT.md` — daemon liveness file written under `.itervox/`. Transient
+  runtime state; never committed.
+- `init --update` — the migration subcommand that moves v0.1.x inline profile
+  prompts into the file-backed layout and stamps the schema marker.

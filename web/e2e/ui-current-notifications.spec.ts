@@ -1,5 +1,5 @@
 // Phase 4 — visual + interaction smoke for the Notifications dashboard tab.
-// Covers the six checks from planning/notifications_plan.md "Verification" §:
+// Covers six checks:
 //   1. Notifications tab is visible alongside Board / List / Agents
 //   2. Tab badge shows "Notifications · 5" for the populated scenario
 //   3. Clicking the tab shows all five group sections

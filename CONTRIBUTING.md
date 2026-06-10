@@ -413,9 +413,7 @@ Add a doc comment to every exported type and function. A wrong comment is worse 
 
 - Open an issue to discuss significant changes before writing code.
 - For bug fixes, a short description in the PR is sufficient.
-- Check `planning/README.md` before adding backlog items or release tasks; it lists
-  the active v0.2.0 plan, deferred items, future-version pass folders, and archived
-  historical notes.
+- Before opening a feature PR, check the open GitHub Issues for prior discussion of the same area, and look at `CHANGELOG.md` to confirm the change has not already landed in a recent release.
 
 ### Maintainer map
 

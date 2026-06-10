@@ -150,11 +150,10 @@ web-spelling:
 		exit 1; \
 	fi
 
-# Guard against documentation drift on v0.2.0 Track B (schema 2, file-backed
-# profiles, HEARTBEAT.md, init --update). Each user-facing doc must reference
-# every surface so an operator reading any single doc gets the full picture.
-# Resolves todolist4 P0-4 (CHANGELOG.md), P1-12 (CLAUDE.md / AGENTS.md), and
-# P1-13 (docs/architecture.md).
+# Guard against documentation drift on the Track B file-backed-profile
+# surfaces (schema 2, SOUL.md / INSTRUCTIONS.md, HEARTBEAT.md, init --update).
+# Each user-facing doc must reference every surface so an operator reading
+# any single doc gets the full picture.
 .PHONY: verify-track-b-docs
 TRACK_B_DOCS := CHANGELOG.md README.md CLAUDE.md AGENTS.md docs/architecture.md
 TRACK_B_TERMS := "itervox_schema_version" "SOUL.md" "INSTRUCTIONS.md" "HEARTBEAT.md" "init --update"
@@ -169,7 +168,7 @@ verify-track-b-docs:
 		done; \
 	done; \
 	if [ $$fail -ne 0 ]; then \
-		echo "Fix by adding the missing references — see planning/v0.2.0/todolist4.md P0-4 / P1-12 / P1-13."; \
+		echo "Fix by adding the missing term to the listed doc. Every Track B surface must appear in every TRACK_B_DOCS file."; \
 		exit 1; \
 	fi
 

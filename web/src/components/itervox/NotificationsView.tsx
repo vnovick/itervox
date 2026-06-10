@@ -3,7 +3,7 @@
 // `useItervoxStore` for the snapshot and `useIssues` for tracker rows, then
 // derives the grouped queue via `buildOperatorQueueItems` (pure helper).
 //
-// Design notes per planning/notifications_plan.md:
+// Design notes:
 // - Existing panels (PendingResumePanel, ReviewQueueSection, RetryQueueTable)
 //   are NOT replaced — they stay visible. Notifications is a higher-level
 //   rollup view.

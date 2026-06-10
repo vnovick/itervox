@@ -277,7 +277,7 @@ older than `issueStatusHistoryRetention` (default 7 days). Live issues are
 preserved regardless of age. Janitor runs at the tail of every `onTick`.
 
 The ledger is session-local in v0.2.0. Cross-restart persistence is gated on
-the Track B queue-persistence proposal (`planning/v0.2.0/todolist4.md` A.2).
+the queue-persistence v2 envelope described in the next section.
 
 ### v2 envelope queue persistence (todolist4 A.2)
 

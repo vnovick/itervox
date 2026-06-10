@@ -43,7 +43,7 @@ Seven production rules ship in `internal/skills/analyze.go`:
 inventory sources, but v0.2.0 does not populate `Inventory.Schedules` from the
 validated `WORKFLOW.md` automations config.
 
-The remaining 7 design-draft rules (cross-runtime Jaccard, Levenshtein hook similarity, model mismatch, teams-mode capability overlap, missing-action, instruction-shadowing-via-similarity, missing-skill-ref) are tracked in `planning/deferred_290426.md` and land in a follow-up.
+Seven additional rules from the original design draft (cross-runtime Jaccard similarity, Levenshtein hook similarity, model mismatch, teams-mode capability overlap, missing-action, instruction-shadowing-via-similarity, missing-skill-ref) are deferred to a follow-up release — each needs more validation against real operator inventories before shipping a non-advisory recommendation.
 
 ---
 
@@ -104,7 +104,7 @@ The dashboard's Recommendations panel renders a "Fix" button per issue when the 
 | Rule | Fix label | Status |
 |---|---|---|
 | `UNUSED_PROFILE` | **Disable profile** | ✅ Working. Non-destructive `edit-yaml` action; calls `UpsertProfile` with `Enabled: false`; queues a re-scan. Covered by backend and UI mutation tests. |
-| `DUPLICATE_MCP` | (none) | Advisory only. The analyzer does not emit a Fix descriptor because `remove-mcp` is intentionally rejected until four safety guards land — flock + backup + structured-edit + per-call confirm. See `planning/deferred_290426.md::T-95`. |
+| `DUPLICATE_MCP` | (none) | Advisory only. The analyzer does not emit a Fix descriptor because `remove-mcp` is intentionally rejected until four safety guards land — flock against concurrent edits + backup of prior settings.json + structured edit preserving comments and ordering + per-call confirm. None ship today. |
 | `DUPLICATE_SKILL`, `BLOATED_PROFILE`, `LARGE_CONTEXT`, `INSTRUCTION_SHADOWING`, `ORPHAN_MCP` | (none) | Advisory only — no Fix descriptor populated. The recommendation tells you what to do; the edit is yours. |
 | All Phase-2 (runtime) recommendations | (none) | Advisory only — `HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`, `LOADED_NOT_CONFIGURED` ship without Fix descriptors, and the analytics-recommendations section in `SkillsCard` passes a no-op `onApplyFix` stub regardless. |
 

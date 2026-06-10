@@ -293,7 +293,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Migrated `react-hook-form` `watch()` calls to `useWatch`** in `AutomationFormModal`, `AddSSHHostModal`, `TrackerStatesCard`, and `ProfileFormModal`, reducing the `react-hooks/incompatible-library` lint-warning count from 9 to 3 and improving React Compiler memoization eligibility.
 - **Stale test filename renamed**: `ScheduleEditorFields.test.tsx` → `AutomationEditorFields.test.tsx`. The file already tested `AutomationEditorFields`; only the name lagged the component rename.
 - **Dead code removed**: `markAutomationComment` wrapper (never called by any production path — `tracker.MarkManagedComment` is the real entry point); two copies of `containsFold` (collapsed to inline `slices.ContainsFunc` + `strings.EqualFold`); `sort.Strings` / `sort.Slice` calls in `internal/orchestrator/event_loop.go`, `worker.go`, and `cmd/itervox/automations.go` replaced with `slices.Sort` / `slices.SortFunc`.
-- **Current-functionality QA baseline**: route-mocked Playwright smoke (`make qa-current-ui`), real-daemon smoke (`make qa-daemon`), and the combined `make qa-current` gate now protect the existing dashboard before UI-overhaul work. Added the repeatable `.claude/skills/current-ui-qa/SKILL.md` exploratory QA skill, `planning/qa_framework.md`, and the tracked `planning/qa_reports/` baseline-report flow.
+- **Current-functionality QA baseline**: route-mocked Playwright smoke (`make qa-current-ui`), real-daemon smoke (`make qa-daemon`), and the combined `make qa-current` gate now protect the existing dashboard before UI-overhaul work. Added the repeatable `.claude/skills/current-ui-qa/SKILL.md` exploratory QA skill that drives both lanes and captures qualitative issues automated tests cannot.
 - **Atomic write tests** (`internal/atomicfs`): happy path, permission preservation, no leftover temps, and read-only-dir failure leaving original untouched.
 - **Single-write cascade tests**: mutators run in order and write once, error leaves file untouched, concurrent edits serialize, rename atomicity on write failure.
 - **Persist-then-mutate tests**: `SetWorkers` and `BumpWorkers` return 500 on persist failure.
@@ -331,7 +331,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`internal/schedule` package-level and exported-symbol doc comments** on `Expression`, `Parse`, and `Matches`, making the 5-field cron syntax and the day-of-month / day-of-week OR semantics explicit for future callers.
 - **`internal/orchestrator/automation.go` exported type doc comments** on `AutomationTriggerContext`, `AutomationDispatch`, `InputRequiredAutomation`, and `RunFailedAutomation`, explaining which fields are populated for which trigger types and the runtime invariant that automation dispatch targets may be in non-active states.
 - **Orphan GET handlers documented as API-only** (`GET /settings/profiles`, `GET /settings/models`, `GET /settings/reviewer`) — dashboard reads via the `/state` snapshot; these endpoints are exposed for non-web clients.
-- **Manual release checklist** (`planning/manual-test-checklist_270426.md`) covering auth-gate first-run, server-down recovery, automation CRUD validation, profile-delete cascade, and a 30-minute single-page releasability smoke.
+- **Manual release checklist** covering auth-gate first-run, server-down recovery, automation CRUD validation, profile-delete cascade, and a 30-minute single-page releasability smoke. Maintained by release engineering and run before every tag.
 
 ## [0.1.3] — 2026-04-08
 

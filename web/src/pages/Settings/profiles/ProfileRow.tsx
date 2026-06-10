@@ -47,9 +47,9 @@ export function ProfileRow({
   const instructionsText = (def.instructions ?? def.prompt ?? '').trim();
 
   // Approx token cost this profile inherits from the global skills inventory.
-  // Until per-profile whitelist/blacklist lands (see planning/skills_pass/),
-  // every profile inherits the full inventory surface — we surface that here
-  // so operators can see at a glance which agents are over-loaded.
+  // Until per-profile whitelist/blacklist lands, every profile inherits the
+  // full inventory surface — we surface the total here so operators can see
+  // at a glance which agents are over-loaded.
   const { data: inventory } = useSkillsInventory();
   const tokenSummary = useMemo(() => {
     if (!inventory) return null;
@@ -114,7 +114,7 @@ export function ProfileRow({
       {tokenSummary && (
         <p
           className="text-theme-muted text-[10px]"
-          title="Approx. token cost this profile inherits from the global skills inventory. Per-profile whitelist/blacklist coming — see planning/skills_pass."
+          title="Approx. token cost this profile inherits from the global skills inventory. Per-profile whitelist/blacklist is on the roadmap; until it ships, every profile loads the full surface."
         >
           Inherits ~{fmtTokens(tokenSummary.total)} tok ({tokenSummary.skillCount} skills) — every
           profile loads the full surface today
