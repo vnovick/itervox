@@ -324,7 +324,7 @@ describe('Logs page', () => {
       setupStoreMock('ABC-1');
       mockUseLogIdentifiers.mockReturnValue(['ABC-1']);
       render(<Logs />, { wrapper });
-      expect(screen.getByTestId('chip-automation')).toBeInTheDocument();
+      expect(screen.getByTestId('chip-automation-only')).toBeInTheDocument();
     });
 
     it('toggles to show only AUTOMATION FIRED entries when active', async () => {
@@ -344,7 +344,7 @@ describe('Logs page', () => {
       await waitFor(() => {
         expect(screen.getAllByTestId('terminal-entry')).toHaveLength(3);
       });
-      await user.click(screen.getByTestId('chip-automation'));
+      await user.click(screen.getByTestId('chip-automation-only'));
       // After toggling: only the AUTOMATION FIRED entry remains.
       await waitFor(() => {
         const visible = screen.getAllByTestId('terminal-entry');
@@ -352,7 +352,7 @@ describe('Logs page', () => {
         expect(visible[0].textContent).toContain('AUTOMATION FIRED');
       });
       // Toggle off restores everything.
-      await user.click(screen.getByTestId('chip-automation'));
+      await user.click(screen.getByTestId('chip-automation-only'));
       await waitFor(() => {
         expect(screen.getAllByTestId('terminal-entry')).toHaveLength(3);
       });
@@ -363,7 +363,7 @@ describe('Logs page', () => {
       const user = userEvent.setup();
       mockUseLogIdentifiers.mockReturnValue(['ABC-1']);
       render(<Logs />, { wrapper });
-      const chip = screen.getByTestId('chip-automation');
+      const chip = screen.getByTestId('chip-automation-only');
       expect(chip).toHaveAttribute('aria-pressed', 'false');
       await user.click(chip);
       expect(chip).toHaveAttribute('aria-pressed', 'true');

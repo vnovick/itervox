@@ -10,9 +10,12 @@ Status changes can come from:
 - `dashboard`: an operator changed state through the dashboard.
 - `worker_lifecycle`: a worker completion, failure, or lifecycle transition moved the issue.
 - `automation`: an automation-triggered run moved the issue.
+- `janitor`: the runtime-ledger janitor swept the issue and recorded the cleanup (codex-B2 / B9). Janitor rows additionally carry a `Reason` tag:
+  - `issue_terminal` — terminal-state pruning removed runtime ledger entries for an issue whose tracker state became terminal.
+  - `absent_from_tracker` — absent-issue pruning removed runtime ledger entries for an issue no longer present in tracker polls (after a two-tick grace window).
 - `system`: fallback source for internal daemon changes.
 
-Automation rows include automation ID, trigger type, profile, backend, and worker host when those fields are available.
+Automation rows include automation ID, trigger type, profile, backend, and worker host when those fields are available. Janitor rows include the `Reason` tag listed above; the row is a backend-only ledger entry today and is not yet propagated through the `IssueStatusChangeRow` DTO consumed by the dashboard. Operators can read it via the daemon log and forthcoming snapshot surface.
 
 ## Retention
 

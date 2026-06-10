@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
@@ -182,8 +183,8 @@ func statusChangeRows(changes []orchestrator.IssueStatusChange) []server.IssueSt
 	return rows
 }
 
-func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow, []server.DependencyGraphEdgeRow) {
-	if len(s.DependencyAudit) == 0 {
+func dependencyGraphRows(s orchestrator.State, sidecar *depsanalysis.Sidecar) ([]server.DependencyGraphNodeRow, []server.DependencyGraphEdgeRow) {
+	if len(s.DependencyAudit) == 0 && (sidecar == nil || len(sidecar.Edges) == 0) {
 		return nil, nil
 	}
 	running := make(map[string]bool, len(s.Running))
@@ -211,6 +212,7 @@ func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow,
 
 	nodes := make(map[string]server.DependencyGraphNodeRow)
 	var edges []server.DependencyGraphEdgeRow
+	trackerEdgeKeys := make(map[string]struct{})
 	for _, entry := range s.DependencyAudit {
 		if entry == nil || entry.Identifier == "" {
 			continue
@@ -254,6 +256,47 @@ func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow,
 				TargetState:      entry.IssueState,
 				Resolved:         resolved,
 				SourceKnown:      sourceKnown,
+				Origin:           string(depsanalysis.OriginTracker),
+			})
+			trackerEdgeKeys[sourceID+"->"+targetID] = struct{}{}
+		}
+	}
+	if sidecar != nil {
+		for _, ie := range sidecar.Edges {
+			if ie.Source == "" || ie.Target == "" {
+				continue
+			}
+			edgeID := ie.Source + "->" + ie.Target
+			if _, dup := trackerEdgeKeys[edgeID]; dup {
+				continue
+			}
+			// Ensure both endpoints have at least a minimal node entry.
+			nodes[ie.Source] = mergeDependencyGraphNode(nodes[ie.Source], server.DependencyGraphNodeRow{
+				ID:         ie.Source,
+				Identifier: ie.Source,
+				Title:      nodeTitles[ie.Source],
+				Running:    running[ie.Source],
+				Queued:     queued[ie.Source],
+				URL:        nodeURLs[ie.Source],
+			})
+			nodes[ie.Target] = mergeDependencyGraphNode(nodes[ie.Target], server.DependencyGraphNodeRow{
+				ID:         ie.Target,
+				Identifier: ie.Target,
+				Title:      nodeTitles[ie.Target],
+				Running:    running[ie.Target],
+				Queued:     queued[ie.Target],
+				URL:        nodeURLs[ie.Target],
+			})
+			edges = append(edges, server.DependencyGraphEdgeRow{
+				ID:               edgeID,
+				SourceIdentifier: ie.Source,
+				TargetIdentifier: ie.Target,
+				SourceState:      nodes[ie.Source].State,
+				TargetState:      nodes[ie.Target].State,
+				Resolved:         nodes[ie.Source].Terminal,
+				SourceKnown:      true,
+				Origin:           string(depsanalysis.OriginInferred),
+				Evidence:         ie.Evidence,
 			})
 		}
 	}

@@ -8,7 +8,8 @@ import {
   type NodeMouseHandler,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { DependencyGraphEdge, DependencyGraphNode } from '../../../types/schemas';
+import { useAnalyzeDeps } from '../../../queries/deps';
+import type { DependencyGraphEdge, DependencyGraphNode, ProfileDef } from '../../../types/schemas';
 
 const NODE_WIDTH = 220;
 const ROW_HEIGHT = 118;
@@ -63,22 +64,46 @@ export function layoutDependencyGraph(
 
   return {
     nodes: positioned,
-    edges: graphEdges.map((edge) => ({
-      id: edge.id,
-      source: edge.sourceIdentifier,
-      target: edge.targetIdentifier,
-      animated: !edge.resolved && edge.sourceKnown,
-      label: edge.resolved ? 'resolved' : edge.sourceKnown ? 'blocking' : 'unknown',
-      style: {
-        stroke: edge.resolved
-          ? 'var(--text-muted)'
+    edges: graphEdges.map((edge) => {
+      const isInferred = edge.origin === 'inferred';
+      // v0.2.0 todolist7 C5 — surface the agent's `evidence` string on hover
+      // for inferred edges. React Flow renders edge labels as <text> nodes
+      // inside the SVG; wrapping the visible string in a span with the
+      // evidence as the `title` attribute would require a custom edge type,
+      // so we instead suffix the visible label with a hint and expose the
+      // full evidence via the existing `data.evidence` field. The
+      // accompanying test asserts the evidence is reachable through the
+      // edge data so a future custom-edge component can render it inline.
+      const evidence = isInferred ? (edge.evidence ?? '') : '';
+      const label = isInferred
+        ? evidence
+          ? `inferred: ${truncateEvidence(evidence)}`
+          : 'inferred'
+        : edge.resolved
+          ? 'resolved'
           : edge.sourceKnown
-            ? 'var(--accent)'
-            : 'var(--warning, #f59e0b)',
-        strokeWidth: edge.resolved ? 1 : 2,
-        opacity: edge.resolved ? 0.55 : 0.9,
-      },
-    })),
+            ? 'blocking'
+            : 'unknown';
+      return {
+        id: edge.id,
+        source: edge.sourceIdentifier,
+        target: edge.targetIdentifier,
+        animated: !isInferred && !edge.resolved && edge.sourceKnown,
+        label,
+        labelStyle: isInferred ? { fontStyle: 'italic' } : undefined,
+        data: edge.evidence ? { evidence: edge.evidence } : undefined,
+        style: {
+          stroke: edge.resolved
+            ? 'var(--text-muted)'
+            : edge.sourceKnown
+              ? 'var(--accent)'
+              : 'var(--warning, #f59e0b)',
+          strokeWidth: edge.resolved ? 1 : 2,
+          strokeDasharray: isInferred ? '4 2' : undefined,
+          opacity: edge.resolved ? 0.55 : 0.9,
+        },
+      };
+    }),
   };
 }
 
@@ -86,10 +111,16 @@ export function DepsGraph({
   graphNodes,
   graphEdges,
   onSelectIssue,
+  depsAnalyzerProfile,
+  depsLastAnalyzedAt,
+  profileDefs,
 }: {
   graphNodes: readonly DependencyGraphNode[];
   graphEdges: readonly DependencyGraphEdge[];
   onSelectIssue: (identifier: string) => void;
+  depsAnalyzerProfile?: string;
+  depsLastAnalyzedAt?: string;
+  profileDefs?: Record<string, ProfileDef>;
 }) {
   // v0.2.0 audit P1-7 — memoise layout so it does not recompute on every
   // snapshot tick when nodes/edges did not change. Must run BEFORE the early
@@ -108,6 +139,37 @@ export function DepsGraph({
     return `Dependency graph: ${String(blocking)} blocking edge${blocking === 1 ? '' : 's'}, ${String(resolved)} resolved edge${resolved === 1 ? '' : 's'}`;
   }, [graphEdges]);
 
+  return (
+    <div className="space-y-3">
+      <DepsToolbar
+        depsAnalyzerProfile={depsAnalyzerProfile}
+        depsLastAnalyzedAt={depsLastAnalyzedAt}
+        profileDefs={profileDefs}
+      />
+      <DepsGraphCanvas
+        graphNodes={graphNodes}
+        graphEdges={graphEdges}
+        onSelectIssue={onSelectIssue}
+        layout={layout}
+        ariaSummary={ariaSummary}
+      />
+    </div>
+  );
+}
+
+function DepsGraphCanvas({
+  graphNodes,
+  graphEdges,
+  onSelectIssue,
+  layout,
+  ariaSummary,
+}: {
+  graphNodes: readonly DependencyGraphNode[];
+  graphEdges: readonly DependencyGraphEdge[];
+  onSelectIssue: (identifier: string) => void;
+  layout: { nodes: Node[]; edges: Edge[] };
+  ariaSummary: string;
+}) {
   // v0.2.0 audit P1-9 — distinguish the two genuinely-different empty states.
   // An empty edges set is the normal "no blockers configured" case; an empty
   // nodes set when edges exist is a server bug (the edge references nodes the
@@ -120,7 +182,6 @@ export function DepsGraph({
     );
   }
   if (graphNodes.length === 0) {
-    // eslint-disable-next-line no-console
     console.warn('DepsGraph: edges present but node metadata is empty — likely a server bug');
     return (
       <div className="border-theme-line bg-theme-bg-soft text-theme-warning flex min-h-[280px] items-center justify-center rounded-[var(--radius-md)] border px-4 py-8 text-sm">
@@ -138,7 +199,7 @@ export function DepsGraph({
       data-testid="deps-graph-canvas"
       role="img"
       aria-label={ariaSummary}
-      className="border-theme-line bg-theme-bg-soft h-[520px] min-h-[320px] w-full overflow-hidden rounded-[var(--radius-md)] border md:h-[620px]"
+      className="border-theme-line bg-theme-bg-soft relative h-[520px] min-h-[320px] w-full overflow-hidden rounded-[var(--radius-md)] border md:h-[620px]"
     >
       <ReactFlow
         nodes={layout.nodes}
@@ -154,8 +215,113 @@ export function DepsGraph({
         <Background />
         <Controls showInteractive={false} />
       </ReactFlow>
+      <DepsEdgeLegend />
     </div>
   );
+}
+
+function DepsToolbar({
+  depsAnalyzerProfile,
+  depsLastAnalyzedAt,
+  profileDefs,
+}: {
+  depsAnalyzerProfile?: string;
+  depsLastAnalyzedAt?: string;
+  profileDefs?: Record<string, ProfileDef>;
+}) {
+  const analyzeDeps = useAnalyzeDeps();
+  const profileMissing = !depsAnalyzerProfile;
+  const profileDef = depsAnalyzerProfile ? profileDefs?.[depsAnalyzerProfile] : undefined;
+  const profileDisabled = profileDef !== undefined && profileDef.enabled === false;
+  const profileUnknown = depsAnalyzerProfile !== undefined && profileDef === undefined;
+  const isRunning = analyzeDeps.isPending;
+  const buttonDisabled = profileMissing || profileDisabled || profileUnknown || isRunning;
+
+  let disabledReason = '';
+  if (profileMissing) {
+    disabledReason = 'Set agent.deps_analyzer_profile in WORKFLOW.md to enable.';
+  } else if (profileUnknown) {
+    disabledReason = `Profile "${depsAnalyzerProfile}" is not defined in agent.profiles.`;
+  } else if (profileDisabled) {
+    disabledReason = `Profile "${depsAnalyzerProfile}" is disabled.`;
+  } else if (isRunning) {
+    disabledReason = 'Analysis pass already running.';
+  }
+
+  return (
+    <div
+      data-testid="deps-graph-toolbar"
+      className="border-theme-line bg-theme-panel flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border px-3 py-2"
+    >
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          disabled={buttonDisabled}
+          onClick={() => {
+            analyzeDeps.mutate({ profile: depsAnalyzerProfile });
+          }}
+          title={disabledReason || `Run the ${depsAnalyzerProfile ?? 'analyzer'} pass`}
+          className="bg-theme-accent hover:bg-theme-accent-strong rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="Analyze dependencies"
+        >
+          {isRunning ? 'Analyzing…' : 'Analyze dependencies'}
+        </button>
+        {depsAnalyzerProfile && (
+          <span className="text-theme-text-secondary text-[11px]">
+            Profile: <span className="font-mono">{depsAnalyzerProfile}</span>
+          </span>
+        )}
+      </div>
+      <span className="text-theme-text-secondary text-[11px]" aria-live="polite">
+        Last analyzed: {formatRelativeTime(depsLastAnalyzedAt)}
+      </span>
+    </div>
+  );
+}
+
+function DepsEdgeLegend() {
+  return (
+    <div className="border-theme-line bg-theme-bg-elevated text-theme-text-secondary absolute right-3 bottom-3 z-10 flex flex-col gap-1 rounded-md border px-2 py-1.5 text-[10px] leading-tight shadow-sm">
+      <div className="flex items-center gap-1.5">
+        <span className="bg-theme-accent inline-block h-0.5 w-6" aria-hidden />
+        <span>tracker</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span
+          className="inline-block h-0.5 w-6 border-t-2 border-dashed"
+          style={{ borderColor: 'var(--accent)' }}
+          aria-hidden
+        />
+        <span>inferred</span>
+      </div>
+    </div>
+  );
+}
+
+// truncateEvidence keeps the visible edge label readable on small graphs by
+// capping long evidence strings to a single line. The full string remains
+// accessible via the edge's `data.evidence` field for future hover-tooltip
+// surfacing. v0.2.0 todolist7 C5.
+function truncateEvidence(s: string, max = 36): string {
+  const trimmed = s.trim();
+  if (trimmed.length <= max) return trimmed;
+  return trimmed.slice(0, max - 1) + '…';
+}
+
+function formatRelativeTime(iso?: string): string {
+  if (!iso) return 'Never';
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return 'Never';
+  const diffMs = Date.now() - time;
+  if (diffMs < 0) return 'just now';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return `${String(sec)}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${String(min)}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${String(hr)}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${String(day)}d ago`;
 }
 
 function IssueGraphLabel({ node }: { node: DependencyGraphNode }) {

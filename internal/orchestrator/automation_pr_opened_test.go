@@ -110,6 +110,68 @@ func TestSendExitWithBranchThenPROpenedAutomations_QueuesExitBeforeAutomation(t 
 	assert.Empty(t, o.events)
 }
 
+// v0.2.0 todolist5 B4 — when `openedPRURL` is empty (resumed worker found the
+// tracker comment already posted, OR CreateComment failed) but `prURL` is set,
+// the helper must still dispatch the pr_opened automation. The previous gate
+// required `openedPRURL != ""` which silently swallowed the reviewer on every
+// resumed worker — the most common production path.
+func TestSendExitWithBranchThenPROpenedAutomations_FiresOnResumeWithoutOpenedPRURL(t *testing.T) {
+	o := &Orchestrator{
+		cfg:    &config.Config{Agent: config.AgentConfig{BaseBranch: "origin/main"}},
+		events: make(chan OrchestratorEvent, 8),
+	}
+	o.SetPROpenedAutomations([]PROpenedAutomation{{ID: "pr-reviewer", ProfileName: "reviewer"}})
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-7", Title: "T", State: "In Progress"}
+	o.sendExitWithBranchThenPROpenedAutomations(
+		t.Context(),
+		issue,
+		0,
+		TerminalSucceeded,
+		nil,
+		"feature/eng-7",
+		"https://github.com/x/y/pull/42", // detectedPRURL
+		"",                               // openedPRURL — empty (resumed run, comment already posted)
+		"",                               // openedPRBranch
+	)
+	first := <-o.events
+	require.Equal(t, EventWorkerExited, first.Type)
+	second := <-o.events
+	require.Equal(t, EventDispatchAutomation, second.Type, "pr_opened dispatch must fire even with openedPRURL empty")
+	assert.Equal(t, "https://github.com/x/y/pull/42", second.Automation.Trigger.PRURL)
+	assert.Equal(t, "feature/eng-7", second.Automation.Trigger.PRBranch,
+		"PR branch must fall back to the worker's active branch when openedPRBranch is empty")
+}
+
+// v0.2.0 todolist5 B4 — dedup: a re-dispatch for the same
+// (issue, prURL, automationID) triple must be skipped.
+func TestDispatchOrQueueAutomation_PROpenedDedup(t *testing.T) {
+	cfg := automationBaseCfg()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Backend: "claude"},
+	}
+	o := newOrchestratorForTest(cfg)
+	now := time.Now()
+	state := NewState(cfg)
+	issue := automationIssue("In Progress")
+	dispatch := AutomationDispatch{
+		AutomationID: "pr-reviewer",
+		ProfileName:  "reviewer",
+		Trigger: AutomationTriggerContext{
+			Type:         config.AutomationTriggerPROpened,
+			PRURL:        "https://github.com/x/y/pull/1",
+			AutomationID: "pr-reviewer",
+		},
+	}
+	// First call: ledger empty → proceed past dedup. We don't care about the
+	// downstream startAutomationRun return; only that dedup recorded the key.
+	o.dispatchOrQueueAutomation(t.Context(), &state, issue, dispatch, now)
+	require.Len(t, state.PROpenedDispatched, 1, "first dispatch must record the dedup key")
+	// Second call: must short-circuit via dedup and return false.
+	accepted := o.dispatchOrQueueAutomation(t.Context(), &state, issue, dispatch, now)
+	assert.False(t, accepted, "dedup must reject the second dispatch")
+	assert.Len(t, state.PROpenedDispatched, 1, "ledger must not grow on dedup")
+}
+
 // SetPROpenedAutomations / snapPROpenedAutomations under -race: same
 // invariant as the input-required and run-failed registries.
 func TestPROpenedAutomations_RaceSafe(t *testing.T) {

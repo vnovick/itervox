@@ -121,3 +121,81 @@ func processAlive(pid int) bool {
 	}
 	return true
 }
+
+// requireNoLiveDaemon refuses to start if a previous PID file points at a
+// live process. Returns the running PID + recorded workflow when found so the
+// caller can print an operator-friendly error before exiting.
+//
+// Mitigates the "two itervox daemons fight over .itervox state" failure mode
+// where the previous daemon's HEARTBEAT.md, automation_queue.json, etc. would
+// be silently clobbered by a second daemon for the same WORKFLOW.md.
+func requireNoLiveDaemon(workflowPath string) (livePid int, recordedWorkflow string, pidPath string, err error) {
+	pid, recorded, path, readErr := readPIDFile(workflowPath)
+	if readErr != nil {
+		// No pidfile or unreadable → treat as no previous daemon.
+		return 0, "", path, nil
+	}
+	if !processAlive(pid) {
+		// Stale pidfile — log and let the caller overwrite.
+		slog.Info("itervox: previous PID file is stale; overwriting",
+			"path", path, "stale_pid", pid)
+		return 0, "", path, nil
+	}
+	return pid, recorded, path, fmt.Errorf(
+		"itervox: another daemon already running for this WORKFLOW.md (pid=%d, recorded_workflow=%q). Either stop it with `itervox stop` or remove %s after confirming the process is gone",
+		pid, recorded, path)
+}
+
+// dashboardURLFilePath returns the canonical .itervox/dashboard_url file
+// path. The file holds a single line — the dashboard URL the daemon bound
+// to. Vite's dev proxy reads this so the proxy target follows the running
+// daemon's actual bound port (mitigates the silent auto-shift / hard-coded
+// 8090 failure mode).
+func dashboardURLFilePath(workflowPath string) string {
+	base := filepath.Dir(workflowPath)
+	if base == "" {
+		base = "."
+	}
+	return filepath.Join(base, ".itervox", "dashboard_url")
+}
+
+// writeDashboardURLFile atomically persists the bound dashboard URL so the
+// Vite dev proxy can discover it without operator configuration.
+func writeDashboardURLFile(workflowPath, dashboardURL string) error {
+	if dashboardURL == "" {
+		return nil
+	}
+	path := dashboardURLFilePath(workflowPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	return atomicfs.WriteFile(path, []byte(dashboardURL+"\n"), 0o644)
+}
+
+// removeDashboardURLFile is the shutdown counterpart to writeDashboardURLFile.
+// Best-effort — operators reading the file after a crash see whatever the
+// last daemon wrote; doctor's "is the URL responding?" probe catches the
+// stale case.
+func removeDashboardURLFile(workflowPath string) {
+	path := dashboardURLFilePath(workflowPath)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Warn("itervox: failed to remove dashboard URL file", "path", path, "error", err)
+	}
+}
+
+// removeHeartbeatFile removes the .itervox/HEARTBEAT.md file on shutdown so
+// a clean exit leaves no stale liveness signal. The heartbeat writer is the
+// authoritative path for refresh during steady state; this is purely a
+// shutdown courtesy that prevents an operator from being misled by a
+// post-crash HEARTBEAT.md (mitigates the "looks alive but the daemon is
+// gone" failure mode).
+func removeHeartbeatFile(workflowPath string) {
+	base := filepath.Dir(workflowPath)
+	if base == "" {
+		base = "."
+	}
+	path := filepath.Join(base, ".itervox", "HEARTBEAT.md")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Warn("itervox: failed to remove HEARTBEAT.md", "path", path, "error", err)
+	}
+}

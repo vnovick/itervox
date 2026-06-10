@@ -291,6 +291,35 @@ export const DependencyGraphEdgeSchema = z.object({
   targetState: z.string().optional(),
   resolved: z.boolean(),
   sourceKnown: z.boolean(),
+  // v0.2.0 todolist6 — provenance tag for the inferred-dependency layer.
+  // Absent treated as 'tracker' for back-compat with snapshots written before
+  // the Phase 2.2 enrichment landed.
+  origin: z.enum(['tracker', 'inferred']).optional().catch('tracker'),
+  // Inferred edges carry an evidence string from the analyzer agent.
+  evidence: z.string().optional(),
+});
+
+// v0.2.0 todolist6 — Phase 2.3 job-status wire shape returned by
+// POST /api/v1/deps/analyze and GET /api/v1/deps/analyze/:jobId.
+export const DepsAnalyzeJobSchema = z.object({
+  jobId: z.string(),
+  profile: z.string().optional(),
+  status: z.enum(['queued', 'running', 'succeeded', 'failed']),
+  queuedAt: z.string(),
+  startedAt: optionalTimeString,
+  finishedAt: optionalTimeString,
+  issuesScanned: z.number().optional(),
+  edgesFound: z.number().optional(),
+  error: z.string().optional(),
+});
+
+// The POST /api/v1/deps/analyze 202 body — partial shape that overlaps with
+// DepsAnalyzeJobSchema but is parsed separately because the server returns
+// just {jobId, profile, queuedAt} for the enqueue acknowledgement.
+export const DepsAnalyzeEnqueueResponseSchema = z.object({
+  jobId: z.string(),
+  profile: z.string().optional(),
+  queuedAt: z.string(),
 });
 
 export const StateSnapshotSchema = z.object({
@@ -342,6 +371,15 @@ export const StateSnapshotSchema = z.object({
   dependencyAudit: z.array(DependencyAuditRowSchema).optional(),
   dependencyGraphNodes: z.array(DependencyGraphNodeSchema).optional(),
   dependencyGraphEdges: z.array(DependencyGraphEdgeSchema).optional(),
+  // v0.2.0 todolist6 — gates the dashboard "Analyze dependencies" button.
+  // Absent / empty disables the button. The frontend ALSO checks that the
+  // named profile exists in profileDefs and is enabled before enabling the
+  // button — empty here is the only daemon-side gate.
+  depsAnalyzerProfile: z.string().optional(),
+  // v0.2.0 todolist6 — surfaced as a "Last analyzed N ago" label on the Deps
+  // toolbar. Absent means the sidecar has never been written; the label
+  // reads "Never" in that case.
+  depsLastAnalyzedAt: optionalTimeString.optional(),
   // ConfigInvalid surfaces a failed WORKFLOW.md reload to the banner. Absent
   // when the daemon is reading a valid config; present (non-null) when the
   // most recent reload tick failed and the daemon is exponentially backing
@@ -358,10 +396,18 @@ export const LogEventTypeSchema = z.enum([
   'warn',
   'info',
   'error',
+  // v0.2.0 todolist5 B5 — surfaces the orchestrator's AUTOMATION FIRED log block
+  // in the per-issue timeline so operators can confirm dispatch decisions.
+  'automation',
 ]);
 
 export const IssueLogEntrySchema = z.object({
   level: z.string(),
+  // codex-B5: `info` remains the catch fallback because the orchestrator's
+  // text logging defaults to `info` for any unstructured line — preserving
+  // that as the parse sentinel means a future trailing line without a
+  // recognised event tag renders as a plain info entry instead of being
+  // dropped from the per-issue log view.
   event: LogEventTypeSchema.catch('info'),
   message: z.string(),
   tool: z.string().optional(),
@@ -441,6 +487,8 @@ export type AutomationQueueBackpressure = z.infer<typeof AutomationQueueBackpres
 export type DependencyAuditRow = z.infer<typeof DependencyAuditRowSchema>;
 export type DependencyGraphNode = z.infer<typeof DependencyGraphNodeSchema>;
 export type DependencyGraphEdge = z.infer<typeof DependencyGraphEdgeSchema>;
+export type DepsAnalyzeJob = z.infer<typeof DepsAnalyzeJobSchema>;
+export type DepsAnalyzeEnqueueResponse = z.infer<typeof DepsAnalyzeEnqueueResponseSchema>;
 export type ConfigInvalidStatus = z.infer<typeof ConfigInvalidStatusSchema>;
 
 // --- Skills inventory (T-89) ---

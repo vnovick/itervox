@@ -4,8 +4,34 @@ import type {
   AutomationQueueBackpressure,
   AutomationQueueRow,
   DependencyAuditRow,
+  RunningRow,
 } from '../../../../types/schemas';
 import { AutomationQueueList, sortAutomationQueueRows } from '../AutomationQueueList';
+
+// v0.2.0 todolist7 C2 — fixture builder for RunningRow with kind="automation".
+// Mirrors the `row()` helper above so the two surfaces' fixture shapes rhyme.
+function runningRow(overrides: Partial<RunningRow> = {}): RunningRow {
+  return {
+    identifier: overrides.identifier ?? 'ENG-RUNNING',
+    state: overrides.state ?? 'In Progress',
+    turnCount: overrides.turnCount ?? 1,
+    tokens: overrides.tokens ?? 0,
+    inputTokens: overrides.inputTokens ?? 0,
+    outputTokens: overrides.outputTokens ?? 0,
+    elapsedMs: overrides.elapsedMs ?? 5000,
+    startedAt: overrides.startedAt ?? '2026-05-20T09:58:00.000Z',
+    kind: overrides.kind ?? 'automation',
+    automationId: overrides.automationId ?? 'live-automation',
+    triggerType: overrides.triggerType ?? 'input_required',
+    backend: overrides.backend,
+    sessionId: overrides.sessionId,
+    workerHost: overrides.workerHost,
+    subagentCount: overrides.subagentCount,
+    lastEvent: overrides.lastEvent,
+    lastEventAt: overrides.lastEventAt,
+    commentCount: overrides.commentCount,
+  };
+}
 
 const now = '2026-05-20T10:00:00.000Z';
 
@@ -223,6 +249,135 @@ describe('AutomationQueueList', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /open issue ENG-CRON/i }));
     expect(onSelectIssue).toHaveBeenCalledWith('ENG-CRON');
+  });
+
+  // v0.2.0 todolist7 C2 — Running section (B7) regression coverage.
+  // The five tests below close the verification gap left by todolist5 B7,
+  // which shipped the AutomationRunningItem render path without any Vitest
+  // coverage. Existing queue-only tests pass through with `running` undefined,
+  // so the new branch was previously silently unverified.
+
+  it('renders the running section when snapshot has running automations', () => {
+    render(
+      <AutomationQueueList
+        queue={[]}
+        running={[
+          runningRow({
+            identifier: 'ENG-RUNNING-1',
+            automationId: 'clarify-blocked',
+            triggerType: 'input_required',
+            backend: 'claude',
+          }),
+          runningRow({
+            identifier: 'ENG-RUNNING-2',
+            automationId: 'rate-limit-fallback',
+            triggerType: 'rate_limited',
+            backend: 'codex',
+            startedAt: '2026-05-20T09:55:00.000Z',
+          }),
+        ]}
+        dependencyAudit={[]}
+        onSelectIssue={vi.fn()}
+        onSelectQueue={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('automation-running-section')).toBeInTheDocument();
+    expect(screen.getByTestId('automation-running-card-ENG-RUNNING-1')).toBeInTheDocument();
+    expect(screen.getByTestId('automation-running-card-ENG-RUNNING-2')).toBeInTheDocument();
+    expect(screen.getByText('clarify-blocked')).toBeInTheDocument();
+    expect(screen.getByText('rate-limit-fallback')).toBeInTheDocument();
+    // Each row also exposes its trigger type chip.
+    expect(screen.getByText('input_required')).toBeInTheDocument();
+    expect(screen.getByText('rate_limited')).toBeInTheDocument();
+  });
+
+  it('filters the running section by the queue search input', () => {
+    render(
+      <AutomationQueueList
+        queue={[row({ automationId: 'cron-nightly', identifier: 'ENG-CRON' })]}
+        running={[
+          runningRow({ identifier: 'ENG-A', automationId: 'auto-alpha' }),
+          runningRow({ identifier: 'ENG-B', automationId: 'auto-beta' }),
+        ]}
+        dependencyAudit={[]}
+        onSelectIssue={vi.fn()}
+        onSelectQueue={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('automation-running-card-ENG-A')).toBeInTheDocument();
+    expect(screen.getByTestId('automation-running-card-ENG-B')).toBeInTheDocument();
+
+    const search = screen.getByRole('searchbox', { name: /search automation queue/i });
+    fireEvent.change(search, { target: { value: 'alpha' } });
+
+    // Running section shrinks to the matching row…
+    expect(screen.getByTestId('automation-running-card-ENG-A')).toBeInTheDocument();
+    expect(screen.queryByTestId('automation-running-card-ENG-B')).not.toBeInTheDocument();
+    // …and the queued cron-nightly row drops because the filter doesn't match.
+    expect(screen.queryByText('cron-nightly')).not.toBeInTheDocument();
+  });
+
+  it('shows the empty state only when both running and queue sections are empty', () => {
+    const { rerender } = render(
+      <AutomationQueueList
+        queue={[]}
+        running={[runningRow({ identifier: 'ENG-LIVE-ONLY', automationId: 'live-only' })]}
+        dependencyAudit={[]}
+        onSelectIssue={vi.fn()}
+        onSelectQueue={vi.fn()}
+      />,
+    );
+
+    // Running automation present → empty state must NOT render.
+    expect(screen.queryByText('No automation queue items')).not.toBeInTheDocument();
+    expect(screen.getByTestId('automation-running-section')).toBeInTheDocument();
+
+    rerender(
+      <AutomationQueueList
+        queue={[]}
+        running={[]}
+        dependencyAudit={[]}
+        onSelectIssue={vi.fn()}
+        onSelectQueue={vi.fn()}
+      />,
+    );
+
+    // Both sections empty → empty state DOES render.
+    expect(screen.getByText('No automation queue items')).toBeInTheDocument();
+    expect(screen.queryByTestId('automation-running-section')).not.toBeInTheDocument();
+  });
+
+  it('links a running automation row to issue detail via onSelectIssue', () => {
+    const onSelectIssue = vi.fn();
+    render(
+      <AutomationQueueList
+        queue={[]}
+        running={[runningRow({ identifier: 'ENG-CLICK', automationId: 'auto-click' })]}
+        dependencyAudit={[]}
+        onSelectIssue={onSelectIssue}
+        onSelectQueue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /open issue ENG-CLICK/i }));
+    expect(onSelectIssue).toHaveBeenCalledWith('ENG-CLICK');
+  });
+
+  it('omits the running section when the running prop is undefined (back-compat)', () => {
+    render(
+      <AutomationQueueList
+        queue={[row({ automationId: 'cron-nightly', identifier: 'ENG-CRON' })]}
+        dependencyAudit={[]}
+        onSelectIssue={vi.fn()}
+        onSelectQueue={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('automation-running-section')).not.toBeInTheDocument();
+    // Existing queue rendering is unaffected.
+    expect(screen.getByText('cron-nightly')).toBeInTheDocument();
   });
 
   it('keeps the dense queue table at desktop widths to avoid tablet clipping', () => {

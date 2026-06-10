@@ -53,6 +53,8 @@ export default function Dashboard() {
     automations,
     dependencyGraphNodes,
     dependencyGraphEdges,
+    depsAnalyzerProfile,
+    depsLastAnalyzedAt,
     automationQueue,
     automationQueueBackpressure,
     dependencyAudit,
@@ -74,6 +76,8 @@ export default function Dashboard() {
       automations: s.snapshot?.automations ?? EMPTY_AUTOMATIONS,
       dependencyGraphNodes: s.snapshot?.dependencyGraphNodes ?? EMPTY_DEPS_NODES,
       dependencyGraphEdges: s.snapshot?.dependencyGraphEdges ?? EMPTY_DEPS_EDGES,
+      depsAnalyzerProfile: s.snapshot?.depsAnalyzerProfile,
+      depsLastAnalyzedAt: s.snapshot?.depsLastAnalyzedAt,
       automationQueue: s.snapshot?.automationQueue ?? EMPTY_AUTOMATION_QUEUE,
       automationQueueBackpressure: s.snapshot?.automationQueueBackpressure,
       dependencyAudit: s.snapshot?.dependencyAudit ?? EMPTY_DEPENDENCY_AUDIT,
@@ -195,6 +199,7 @@ export default function Dashboard() {
 
         <AutomationQueueList
           queue={automationQueue}
+          running={running}
           backpressure={automationQueueBackpressure}
           dependencyAudit={dependencyAudit}
           onSelectIssue={handleIssueSelect}
@@ -235,6 +240,8 @@ export default function Dashboard() {
           defaultBackend={defaultBackend}
           dependencyGraphNodes={dependencyGraphNodes}
           dependencyGraphEdges={dependencyGraphEdges}
+          depsAnalyzerProfile={depsAnalyzerProfile}
+          depsLastAnalyzedAt={depsLastAnalyzedAt}
           onIssueSelect={handleIssueSelect}
           onStateChange={handleStateChange}
           onProfileChange={handleProfileChange}

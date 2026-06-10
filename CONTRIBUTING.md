@@ -81,7 +81,8 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
 | `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
 | `make test` | `go test -race ./cmd/... ./internal/... -count=1` |

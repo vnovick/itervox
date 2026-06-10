@@ -259,9 +259,13 @@ type State struct {
 	// throughout a tick. These are the cfg fields governed by cfgMu.
 	ActiveStates   []string
 	TerminalStates []string
-	Running        map[string]*RunEntry
-	Claimed        map[string]struct{}
-	RetryAttempts  map[string]*RetryEntry
+	// PauseDispatchWhenAnyInState snapshots Agent.PauseDispatchWhenAnyInState
+	// at the tick boundary so dispatch guards can read it lock-free. Lowercase,
+	// case-folded copies. Empty disables the guard.
+	PauseDispatchWhenAnyInState []string
+	Running                     map[string]*RunEntry
+	Claimed                     map[string]struct{}
+	RetryAttempts               map[string]*RetryEntry
 	// PausedIdentifiers tracks issues paused by user kill.
 	// Key: identifier (e.g. "TIPRD-25"), Value: issue UUID (empty when loaded
 	// from an old disk snapshot that predates UUID persistence).
@@ -349,37 +353,72 @@ type State struct {
 	// there is nothing for the audit pass to do, so the tick-scoped
 	// FetchIssuesByStates call can be skipped. v0.2.0 audit P1-2.
 	LastBlockersResolvedAuditSeq int64
+	// PROpenedDispatched dedups `pr_opened` automation dispatches so a resumed
+	// worker, a retry, or a secondary run on the same issue does not re-fire
+	// the same `(issue, prURL, automationID)` triple. Lifetime is event-loop
+	// owned; pruned by pruneTerminalRuntimeLedgers when the issue reaches a
+	// terminal tracker state. v0.2.0 todolist5 B4.
+	//
+	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
+	PROpenedDispatched map[string]struct{}
+
+	// PRMergedDispatched is the pr_merged sibling of PROpenedDispatched.
+	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
+	PRMergedDispatched map[string]struct{}
+
+	// AutomationDropsSelfReentryTotal is a monotonic counter incremented every
+	// time an `input_required` automation dispatch is suppressed because the
+	// previous worker on this issue was itself an automation-driven run
+	// (codex-B1). Surfaced on the snapshot for the dashboard's live-ops strip
+	// so operators can distinguish "guarded loop" from "automation never
+	// fired".
+	AutomationDropsSelfReentryTotal uint64
+
+	// AutomationDispatchesPROpenedTotal / AutomationDroppedPROpenedDedupTotal
+	// surface pr_opened automation telemetry for the dashboard. codex-B4.
+	AutomationDispatchesPROpenedTotal   uint64
+	AutomationDroppedPROpenedDedupTotal uint64
+	AutomationDispatchesPRMergedTotal   uint64
+	AutomationDroppedPRMergedDedupTotal uint64
+
+	// TransportFailureCount counts agent-runner errors classified as
+	// transport-level (codex stream disconnected, network resets) so the
+	// dashboard's LiveOpsStrip can surface a paused_transport tile.
+	// todolist4 A.4.
+	TransportFailureCount uint64
 }
 
 // NewState initialises a State from a config snapshot.
 func NewState(cfg *config.Config) State {
 	return State{
-		PollIntervalMs:          cfg.Polling.IntervalMs,
-		MaxConcurrentAgents:     cfg.Agent.MaxConcurrentAgents,
-		ActiveStates:            append([]string{}, cfg.Tracker.ActiveStates...),
-		TerminalStates:          append([]string{}, cfg.Tracker.TerminalStates...),
-		Running:                 make(map[string]*RunEntry),
-		Claimed:                 make(map[string]struct{}),
-		RetryAttempts:           make(map[string]*RetryEntry),
-		PausedIdentifiers:       make(map[string]string),
-		PausedSessions:          make(map[string]*PausedSessionInfo),
-		IssueProfiles:           make(map[string]string),
-		IssueBackends:           make(map[string]string),
-		AutoSwitchedIdentifiers: make(map[string]struct{}),
-		AutoSwitchedAt:          make(map[string]time.Time),
-		PausedOpenPRs:           make(map[string]string),
-		ForceReanalyze:          make(map[string]struct{}),
-		PrevActiveIdentifiers:   make(map[string]struct{}),
-		PrevIssueStates:         make(map[string]string),
-		IssueStatusHistory:      make(map[string][]IssueStatusChange),
-		DiscardingIdentifiers:   make(map[string]struct{}),
-		InputRequiredIssues:     make(map[string]*InputRequiredEntry),
-		PendingInputResumes:     make(map[string]*PendingInputResumeEntry),
-		AutomationQueue:         make(map[string]*AutomationQueueEntry),
-		AutomationQueueOrder:    []string{},
+		PollIntervalMs:              cfg.Polling.IntervalMs,
+		MaxConcurrentAgents:         cfg.Agent.MaxConcurrentAgents,
+		ActiveStates:                append([]string{}, cfg.Tracker.ActiveStates...),
+		TerminalStates:              append([]string{}, cfg.Tracker.TerminalStates...),
+		PauseDispatchWhenAnyInState: normalizePauseStates(cfg.Agent.PauseDispatchWhenAnyInState),
+		Running:                     make(map[string]*RunEntry),
+		Claimed:                     make(map[string]struct{}),
+		RetryAttempts:               make(map[string]*RetryEntry),
+		PausedIdentifiers:           make(map[string]string),
+		PausedSessions:              make(map[string]*PausedSessionInfo),
+		IssueProfiles:               make(map[string]string),
+		IssueBackends:               make(map[string]string),
+		AutoSwitchedIdentifiers:     make(map[string]struct{}),
+		AutoSwitchedAt:              make(map[string]time.Time),
+		PausedOpenPRs:               make(map[string]string),
+		ForceReanalyze:              make(map[string]struct{}),
+		PrevActiveIdentifiers:       make(map[string]struct{}),
+		PrevIssueStates:             make(map[string]string),
+		IssueStatusHistory:          make(map[string][]IssueStatusChange),
+		DiscardingIdentifiers:       make(map[string]struct{}),
+		InputRequiredIssues:         make(map[string]*InputRequiredEntry),
+		PendingInputResumes:         make(map[string]*PendingInputResumeEntry),
+		AutomationQueue:             make(map[string]*AutomationQueueEntry),
+		AutomationQueueOrder:        []string{},
 		AutomationQueueBackpressure: AutomationQueueBackpressure{
 			MaxLength: cfg.Agent.MaxAutomationQueueLength,
 		},
-		DependencyAudit: make(map[string]*DependencyAuditEntry),
+		DependencyAudit:    make(map[string]*DependencyAuditEntry),
+		PROpenedDispatched: make(map[string]struct{}),
 	}
 }

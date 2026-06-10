@@ -58,6 +58,31 @@ func TestSkipEntry_PassesThroughNormalLines(t *testing.T) {
 // parseLogLine — JSON input
 // ---------------------------------------------------------------------------
 
+// v0.2.0 todolist5 B5 — the orchestrator's automation dispatch path writes a
+// 4-line block prefixed `AUTOMATION FIRED · <id>` as a single multi-line msg.
+// parseLogLine must tag it as `"automation"` so the dashboard chip filter
+// can render it; previously these entries fell through to the Level-driven
+// default which mapped INFO to `"info"` — a sentinel the frontend filters out.
+func TestParseLogLine_AutomationFiredPrefix(t *testing.T) {
+	msg := "AUTOMATION FIRED · clarify-blocked-issues\n  trigger: input_required\n  context: needs answer\n  profile: input-responder"
+	line := makeLogLine(bufLogEntry{Level: "INFO", Msg: msg, Time: "12:00:00"})
+	entry, skip := parseLogLine(line)
+	require.False(t, skip)
+	assert.Equal(t, "automation", entry.Event)
+	assert.Contains(t, entry.Message, "AUTOMATION FIRED")
+	assert.Contains(t, entry.Message, "clarify-blocked-issues")
+}
+
+// Negative guard: a generic INFO line that does not start with the
+// AUTOMATION FIRED prefix must still land in the `"info"` fallthrough so the
+// new chip doesn't over-fire on unrelated entries.
+func TestParseLogLine_GenericInfoNotAutomation(t *testing.T) {
+	line := makeLogLine(bufLogEntry{Level: "INFO", Msg: "orchestrator: tick complete", Time: "12:00:00"})
+	entry, skip := parseLogLine(line)
+	require.False(t, skip)
+	assert.Equal(t, "info", entry.Event)
+}
+
 func TestParseLogLine_NonJSONSkipped(t *testing.T) {
 	_, skip := parseLogLine(`INFO claude: text session_id=s1 text="hello world"`)
 	assert.True(t, skip, "legacy text-format lines must be skipped")

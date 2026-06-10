@@ -17,6 +17,12 @@ const DEFAULTS_BY_EVENT: Record<
   warn: { message: 'Soft warning.' },
   info: { message: 'Informational note.' },
   error: { message: 'Tool error.', detail: 'permission denied' },
+  // v0.2.0 todolist5 B5 — orchestrator's AUTOMATION FIRED dispatch block,
+  // surfaced as a first-class log event the dashboard chip can toggle.
+  automation: {
+    message:
+      'AUTOMATION FIRED · clarify-blocked-issues\n  trigger: input_required\n  context: needs answer\n  profile: input-responder',
+  },
 };
 
 export function makeLogEntry(
@@ -45,6 +51,7 @@ export function makeAllEventTypes(): IssueLogEntry[] {
     'warn',
     'info',
     'error',
+    'automation',
   ];
   return events.map((e) => makeLogEntry(e));
 }

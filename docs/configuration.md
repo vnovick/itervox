@@ -4,7 +4,7 @@ Itervox is configured via a single `WORKFLOW.md` file in your project root
 (or wherever you point `--workflow`). The file contains a YAML front matter
 block followed by a Liquid-templated agent prompt.
 
-**Note:** `server.port` is required for the dashboard. If omitted, no HTTP server is started.
+**Note:** As of v0.2.0, `server.port` defaults to `0` — the OS picks a free port and the actual URL is written to `.itervox/dashboard_url` (read by Vite's dev proxy) and surfaced in `HEARTBEAT.md` + the startup banner. Set an explicit port if you need a stable known URL; otherwise leave it unset for multi-repo coexistence. Previous v0.1.x behaviour (`port omitted → no HTTP server`) is removed; if you genuinely want to run without the dashboard, kill the dashboard process or run `itervox` with a binary that omits the listener (currently not supported via config).
 
 ```markdown
 ---
@@ -18,7 +18,7 @@ agent:
 workspace:
   root: ~/.itervox/workspaces
 server:
-  port: 8090
+  port: 0  # 0 = OS picks a free port (recommended for multi-repo setups); pin a number for a stable URL
 ---
 
 You are working on {{ issue.identifier }} — {{ issue.title }}.
@@ -93,7 +93,13 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `auto_review` | bool | `false` | When `true`, dispatches a reviewer worker after every successful worker completion |
 | `reviewer_prompt` | string | Built-in default | **Deprecated** — prefer `reviewer_profile`. Liquid template used when no reviewer profile is set |
 | `profiles` | map | `{}` | Named agent profiles — see below. Runtime-editable |
-| `available_models` | map | `{}` | Backend → model-option list used by the dashboard model picker |
+| `available_models` | map | discovered at init | Backend → model-option list used by the dashboard model picker. Populated by `itervox init` from the Anthropic / OpenAI APIs when keys are set (fallback: hardcoded defaults). Refresh after a new model release via `itervox models refresh` (CLI) or the dashboard Settings → Models → **Refresh** button (HTTP `POST /api/v1/settings/models/refresh`). |
+| `pause_dispatch_when_any_in_state` | []string | `[]` | When ANY tracked issue is in one of these case-insensitive state names, no new dispatch begins. Use case: pause Todo dispatch while any issue is "In Review" so PRs queue/merge before the next start. Empty disables the guard. Load-time only (no runtime setter) |
+| `merge_strategy` | string | `"squash"` | Default merge strategy for the daemon-backed `merge_pr` agent action. One of `squash`, `rebase`, `merge`. Per-request `strategy` field on the action body overrides per-call |
+| `merge_block_labels` | []string | `["needs-human","migration","auth","feature-flag","breaking"]` | Case-insensitive PR labels that cause the `merge_pr` action to refuse the merge with reason `blocked_label:<label>`. Empty list disables the guard |
+| `transport_error_patterns` | []string | `["stream disconnected","connection reset","i/o timeout"]` | Substrings (case-insensitive) that classify an agent-runner error as a transient transport failure rather than a generic failure. Increments `state.TransportFailureCount` when matched |
+| `sort.prefer_high_outdegree` | bool | `false` | When `true`, the dispatch comparator inserts a tiebreaker that ranks issues blocking more dependent siblings ahead of others, between the priority and createdAt tiers (P2) |
+| `deps_analyzer_profile` | string | `""` | Profile name used by the dashboard's "Analyze dependencies" sidecar. Empty disables the analyzer button |
 
 ### Agent profiles
 
@@ -177,6 +183,7 @@ Supported triggers:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected (gap B)
+- `pr_merged` — fires when a PR opened by an itervox-managed branch transitions to MERGED, either via the daemon-side `merge_pr` action or an externally-observed merge. Trigger context carries `pr_url`, `pr_number`, `merged_sha`, `base_ref`, `merged_at` (P1).
 - `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. The per-issue switch cap limits or suppresses profile/backend switching; it is not the trigger condition.
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
@@ -210,6 +217,8 @@ trigger intake while existing queued entries continue draining.
 | `filter.limit` | int | Maximum issues to queue from one cron tick or event poll batch |
 | `filter.input_context_regex` | string | Only for `input_required`; matched against the blocked-agent question text |
 | `filter.max_age_minutes` | int | Only for `input_required`; skips blocked entries older than this many minutes. `0`/absent means no age limit |
+| `filter.body_contains` | []string | Only for `tracker_comment_added`. Case-insensitive substring list (OR-of-list). A comment body that contains none of the listed substrings short-circuits the dispatch before any agent runs. Empty = match all (P0-B) |
+| `filter.body_regex` | string | Only for `tracker_comment_added`. Regex pattern applied to the comment body. AND-combines with `body_contains` when both are set (P0-B) |
 | `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted as a compatibility alias for `policy.auto_switch` |
 | `policy.auto_switch` | bool | Required for `rate_limited` automatic profile/backend switching; allows immediate switching without a human approval step |
 | `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run |

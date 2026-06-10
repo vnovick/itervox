@@ -38,6 +38,14 @@ var ErrReviewerProfileNotFound = errors.New("agent.reviewer_profile must referen
 // but is disabled.
 var ErrReviewerProfileDisabled = errors.New("agent.reviewer_profile must reference an enabled profile")
 
+// ErrDepsAnalyzerProfileNotFound reports that a configured dependency-analyzer
+// profile does not exist in agent.profiles.
+var ErrDepsAnalyzerProfileNotFound = errors.New("agent.deps_analyzer_profile must reference an existing profile")
+
+// ErrDepsAnalyzerProfileDisabled reports that a configured dependency-analyzer
+// profile exists but is disabled.
+var ErrDepsAnalyzerProfileDisabled = errors.New("agent.deps_analyzer_profile must reference an enabled profile")
+
 func workflowUpdatePath(path string) string {
 	if strings.TrimSpace(path) == "" {
 		return "WORKFLOW.md"
@@ -121,6 +129,24 @@ func ValidateReviewerProfile(profiles map[string]AgentProfile, reviewerProfile s
 	return nil
 }
 
+// ValidateDepsAnalyzerProfile rejects configurations whose
+// agent.deps_analyzer_profile names a profile that is missing or disabled.
+// Empty is accepted (analyzer simply disabled).
+func ValidateDepsAnalyzerProfile(profiles map[string]AgentProfile, depsAnalyzerProfile string) error {
+	depsAnalyzerProfile = strings.TrimSpace(depsAnalyzerProfile)
+	if depsAnalyzerProfile == "" {
+		return nil
+	}
+	profile, ok := profiles[depsAnalyzerProfile]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrDepsAnalyzerProfileNotFound, depsAnalyzerProfile)
+	}
+	if !ProfileEnabled(profile) {
+		return fmt.Errorf("%w: %q", ErrDepsAnalyzerProfileDisabled, depsAnalyzerProfile)
+	}
+	return nil
+}
+
 // ValidateDispatch runs the spec §6.3 dispatch preflight checks against an
 // already-loaded Config. Call Load first; this function does not re-read the file.
 func ValidateDispatch(cfg *Config) error {
@@ -192,6 +218,9 @@ func ValidateDispatch(cfg *Config) error {
 		return err
 	}
 	if err := ValidateReviewerProfile(cfg.Agent.Profiles, cfg.Agent.ReviewerProfile); err != nil {
+		return err
+	}
+	if err := ValidateDepsAnalyzerProfile(cfg.Agent.Profiles, cfg.Agent.DepsAnalyzerProfile); err != nil {
 		return err
 	}
 	if err := ValidateAutoClearAutoReview(
@@ -269,7 +298,7 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		case AutomationTriggerTrackerComment:
 		case AutomationTriggerIssueMovedBacklog:
 		case AutomationTriggerRunFailed:
-		case AutomationTriggerPROpened:
+		case AutomationTriggerPROpened, AutomationTriggerPRMerged:
 		case AutomationTriggerBlockersResolved:
 			moveToState := strings.TrimSpace(entry.Policy.MoveToState)
 			if moveToState != "" {
@@ -349,6 +378,19 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 			if _, err := regexp.Compile(entry.Filter.InputContextRegex); err != nil {
 				return fmt.Errorf("automation %q invalid input_context_regex: %w", id, err)
 			}
+		}
+		if entry.Filter.BodyRegex != "" {
+			if _, err := regexp.Compile(entry.Filter.BodyRegex); err != nil {
+				return fmt.Errorf("automation %q invalid body_regex: %w", id, err)
+			}
+		}
+		// body_contains / body_regex are only meaningful on triggers that
+		// carry a comment body (currently tracker_comment_added). On other
+		// triggers they're silently ignored at match time but flagged here
+		// so operators see their mistake at startup.
+		if (len(entry.Filter.BodyContains) > 0 || entry.Filter.BodyRegex != "") &&
+			triggerType != AutomationTriggerTrackerComment {
+			return fmt.Errorf("automation %q: filter.body_contains and filter.body_regex are only meaningful on tracker_comment_added triggers", id)
 		}
 	}
 	return nil

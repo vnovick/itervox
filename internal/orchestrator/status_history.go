@@ -15,6 +15,18 @@ const (
 	StatusSourceWorkerLifecycle IssueStatusSource = "worker_lifecycle"
 	StatusSourceAutomation      IssueStatusSource = "automation"
 	StatusSourceSystem          IssueStatusSource = "system"
+	// StatusSourceJanitor flags rows authored by the runtime-ledger janitor
+	// (codex-B2). The Reason field carries a short tag like
+	// `issue_terminal` or `absent_from_tracker`.
+	StatusSourceJanitor IssueStatusSource = "janitor"
+
+	// JanitorReasonIssueTerminal records that a runtime entry was removed
+	// because the issue reached a terminal tracker state. codex-B2.
+	JanitorReasonIssueTerminal = "issue_terminal"
+	// JanitorReasonAbsentFromTracker records that a runtime entry was
+	// removed because the issue is no longer present in tracker polls.
+	// codex-B9.
+	JanitorReasonAbsentFromTracker = "absent_from_tracker"
 
 	maxIssueStatusHistory = 50
 )
@@ -29,7 +41,10 @@ type IssueStatusChange struct {
 	ProfileName  string
 	Backend      string
 	WorkerHost   string
-	At           time.Time
+	// Reason is a short tag carried by janitor-source rows
+	// (codex-B2 / B9). Empty for non-janitor sources.
+	Reason string
+	At     time.Time
 }
 
 func recordObservedIssueState(state *State, issue domain.Issue, now time.Time) {
@@ -72,7 +87,7 @@ func appendIssueStatusChange(state *State, change IssueStatusChange) {
 	if change.FromState == "" {
 		change.FromState = state.PrevIssueStates[change.Identifier]
 	}
-	if change.FromState == change.ToState {
+	if change.FromState == change.ToState && change.Source != StatusSourceJanitor {
 		state.PrevIssueStates[change.Identifier] = change.ToState
 		return
 	}

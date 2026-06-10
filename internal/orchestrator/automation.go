@@ -68,10 +68,16 @@ type AutomationTriggerContext struct {
 	RetryAttempt   int
 	RetryBackoffMs int
 
-	// ─── pr_opened trigger fields (gap B) ─────────────────────────────
+	// ─── pr_opened / pr_merged trigger fields (gap B / P1) ────────────
 	PRURL        string
 	PRBranch     string
 	PRBaseBranch string
+	// PRNumber is set on pr_opened and pr_merged triggers.
+	PRNumber int
+	// MergedSHA is set on pr_merged only.
+	MergedSHA string
+	// MergedAt is set on pr_merged only. Zero value means "not a merge event".
+	MergedAt time.Time
 
 	// ─── rate_limited trigger fields (gap E) ──────────────────────────
 	FailedProfile         string
@@ -441,10 +447,12 @@ func (o *Orchestrator) dispatchMatchingInputRequiredAutomations(
 	// empty) still fire automations as before.
 	if prevRun != nil && prevRun.AutomationID != "" &&
 		prevRun.TriggerType == config.AutomationTriggerInputRequired {
+		state.AutomationDropsSelfReentryTotal++
 		slog.Warn("orchestrator: input-required dispatch suppressed (self-reentry)",
 			"identifier", issue.Identifier,
 			"prev_automation", prevRun.AutomationID,
-			"prev_trigger", prevRun.TriggerType)
+			"prev_trigger", prevRun.TriggerType,
+			"automation_drops_self_reentry_total", state.AutomationDropsSelfReentryTotal)
 		return
 	}
 	automations := o.snapInputRequiredAutomations()

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -1233,6 +1234,10 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 			}
 		case config.AgentActionProvideInput:
 			lines = append(lines, "- `itervox action provide-input --message \"...\"` answers an input-required prompt and resumes the blocked run.")
+		case config.AgentActionCommentPR:
+			lines = append(lines, "- `itervox action comment-pr --summary \"...\" --findings findings.json` posts a structured review comment (summary + sorted findings).")
+		case config.AgentActionMergePR:
+			lines = append(lines, "- `itervox action merge-pr --pr <number>` finalizes a PR through the daemon's guarded merge_pr action.")
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -1313,14 +1318,21 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 
 func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string) {
 	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL)
-	if reason != TerminalSucceeded || err != nil || openedPRURL == "" {
+	// v0.2.0 todolist5 B4 — dispatch when this completed run has a PR (any
+	// detected URL counts), not only when the tracker-comment write succeeded.
+	// Strict succeeded-only kept until operators confirm a liberal reading.
+	if err != nil || reason != TerminalSucceeded {
+		return
+	}
+	resolvedURL := cmp.Or(openedPRURL, prURL)
+	if resolvedURL == "" {
 		return
 	}
 	baseBranch := ""
 	if o.cfg != nil {
 		baseBranch = o.cfg.Agent.BaseBranch
 	}
-	o.DispatchPROpenedAutomations(ctx, issue, openedPRURL, openedPRBranch, baseBranch)
+	o.DispatchPROpenedAutomations(ctx, issue, resolvedURL, cmp.Or(openedPRBranch, branchName), baseBranch)
 }
 
 func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *RunEntry, entry *InputRequiredEntry) {

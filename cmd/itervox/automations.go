@@ -45,6 +45,8 @@ type compiledAutomationSet struct {
 	inputRequired    []orchestrator.InputRequiredAutomation
 	runFailed        []orchestrator.RunFailedAutomation
 	prOpened         []orchestrator.PROpenedAutomation
+	prMerged         []orchestrator.PRMergedAutomation
+	trackerComments  []orchestrator.TrackerCommentAutomation
 	rateLimited      []orchestrator.RateLimitedAutomation
 	blockersResolved []orchestrator.BlockersResolvedAutomation
 }
@@ -57,6 +59,8 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 	orch.SetInputRequiredAutomations(startupCompiled.inputRequired)
 	orch.SetRunFailedAutomations(startupCompiled.runFailed)
 	orch.SetPROpenedAutomations(startupCompiled.prOpened)
+	orch.SetPRMergedAutomations(startupCompiled.prMerged)
+	orch.SetTrackerCommentAutomations(startupCompiled.trackerComments)
 	orch.SetRateLimitedAutomations(startupCompiled.rateLimited)
 	orch.SetBlockersResolvedAutomations(startupCompiled.blockersResolved)
 
@@ -96,6 +100,8 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			orch.SetInputRequiredAutomations(compiled.inputRequired)
 			orch.SetRunFailedAutomations(compiled.runFailed)
 			orch.SetPROpenedAutomations(compiled.prOpened)
+			orch.SetPRMergedAutomations(compiled.prMerged)
+			orch.SetTrackerCommentAutomations(compiled.trackerComments)
 			orch.SetRateLimitedAutomations(compiled.rateLimited)
 			orch.SetBlockersResolvedAutomations(compiled.blockersResolved)
 			inputRequiredState = replayInputRequiredAutomations(ctx, tr, orch, compiled.inputRequired, inputRequiredState, now)
@@ -263,6 +269,31 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				identifierRe:   identifierRe,
 				inputContextRe: inputContextReFor(entry),
 			})
+			// P0-B — additionally register tracker_comment_added rules in the
+			// body-filter registry so the poll-comment dispatch helper can
+			// pre-filter on body_contains / body_regex before any agent runs.
+			if entry.Trigger.Type == config.AutomationTriggerTrackerComment {
+				var bodyRe *regexp.Regexp
+				if entry.Filter.BodyRegex != "" {
+					re, err := regexp.Compile(entry.Filter.BodyRegex)
+					if err != nil {
+						slog.Warn("automation: invalid body_regex", "automation", entry.ID, "regex", entry.Filter.BodyRegex, "error", err)
+					} else {
+						bodyRe = re
+					}
+				}
+				compiled.trackerComments = append(compiled.trackerComments, orchestrator.TrackerCommentAutomation{
+					ID:              entry.ID,
+					ProfileName:     entry.Profile,
+					Instructions:    entry.Instructions,
+					MatchMode:       entry.Filter.MatchMode,
+					States:          entry.Filter.States,
+					LabelsAny:       entry.Filter.LabelsAny,
+					IdentifierRegex: identifierRe,
+					BodyContainsAny: entry.Filter.BodyContains,
+					BodyRegex:       bodyRe,
+				})
+			}
 		case config.AutomationTriggerRunFailed:
 			compiled.runFailed = append(compiled.runFailed, orchestrator.RunFailedAutomation{
 				ID:              entry.ID,
@@ -275,6 +306,18 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 			})
 		case config.AutomationTriggerPROpened:
 			compiled.prOpened = append(compiled.prOpened, orchestrator.PROpenedAutomation{
+				ID:              entry.ID,
+				ProfileName:     entry.Profile,
+				Instructions:    entry.Instructions,
+				MatchMode:       entry.Filter.MatchMode,
+				States:          entry.Filter.States,
+				LabelsAny:       entry.Filter.LabelsAny,
+				IdentifierRegex: identifierRe,
+			})
+		case config.AutomationTriggerPRMerged:
+			// P1 — pr_merged sibling of pr_opened. Wired here so
+			// SetPRMergedAutomations receives the compiled rules below.
+			compiled.prMerged = append(compiled.prMerged, orchestrator.PRMergedAutomation{
 				ID:              entry.ID,
 				ProfileName:     entry.Profile,
 				Instructions:    entry.Instructions,
@@ -628,6 +671,22 @@ func pollAutomationEvents(
 				}
 				if isAutomationManagedComment(comment) {
 					continue
+				}
+				// P0-B — consult the body-filter registry (BodyContains /
+				// BodyRegex) before dispatching. A configured filter that does
+				// not match this comment body short-circuits the dispatch so
+				// the merge-bot only wakes on its trigger phrase.
+				if len(entry.cfg.Filter.BodyContains) > 0 || entry.cfg.Filter.BodyRegex != "" {
+					ok := false
+					for _, matched := range orch.FilterTrackerCommentAutomationsByBody(comment.Body) {
+						if matched.ID == entry.cfg.ID {
+							ok = true
+							break
+						}
+					}
+					if !ok {
+						continue
+					}
 				}
 				trigger := orchestrator.AutomationTriggerContext{
 					Type:              config.AutomationTriggerTrackerComment,

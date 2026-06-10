@@ -173,6 +173,67 @@ func TestValidateDispatchRejectsDisabledReviewerProfile(t *testing.T) {
 	assert.ErrorIs(t, err, config.ErrReviewerProfileDisabled)
 }
 
+func TestValidateDispatchAcceptsEmptyDepsAnalyzerProfile(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  profiles:
+    qa:
+      command: claude
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	require.NoError(t, config.ValidateDispatch(cfg))
+}
+
+func TestValidateDispatchAcceptsValidDepsAnalyzerProfile(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  deps_analyzer_profile: deps-analyzer
+  profiles:
+    deps-analyzer:
+      command: claude
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	require.NoError(t, config.ValidateDispatch(cfg))
+	assert.Equal(t, "deps-analyzer", cfg.Agent.DepsAnalyzerProfile)
+}
+
+func TestValidateDispatchRejectsUnknownDepsAnalyzerProfile(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  deps_analyzer_profile: deps-analyzer
+  profiles:
+    qa:
+      command: claude
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrDepsAnalyzerProfileNotFound)
+}
+
+func TestValidateDispatchRejectsDisabledDepsAnalyzerProfile(t *testing.T) {
+	content := minimalV2WithProfileFiles(t, `agent:
+  deps_analyzer_profile: deps-analyzer
+  profiles:
+    deps-analyzer:
+      command: claude
+      enabled: false
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrDepsAnalyzerProfileDisabled)
+}
+
 func TestValidateDispatchRejectsCreateIssueProfileWithoutState(t *testing.T) {
 	content := minimalV2WithProfileFiles(t, `agent:
   profiles:

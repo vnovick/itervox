@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"strconv"
@@ -702,6 +703,21 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Surface the GraphQL error body in daemon logs so a 400 from a bad
+		// filter shape (or any other vendor-side validation) is debuggable
+		// without HTTP capture. Body may be empty; we just truncate to keep
+		// the log line bounded. The returned error wraps the status code so
+		// callers can still classify it with errors.As(*APIStatusError).
+		body, _ := io.ReadAll(resp.Body)
+		if snippet := strings.TrimSpace(string(body)); snippet != "" {
+			const maxLen = 512
+			if len(snippet) > maxLen {
+				snippet = snippet[:maxLen] + "…"
+			}
+			slog.Warn("linear: graphql error response",
+				"status", resp.StatusCode,
+				"body", snippet)
+		}
 		return nil, &tracker.APIStatusError{Adapter: "linear", Status: resp.StatusCode}
 	}
 

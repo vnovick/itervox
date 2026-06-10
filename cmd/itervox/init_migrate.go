@@ -12,6 +12,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
+	builtinprofiles "github.com/vnovick/itervox/internal/profiles"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,7 +65,38 @@ func migrateWorkflowToSchema2(workflowPath string, force bool, now time.Time) (w
 			break
 		}
 	}
-	if version == config.LatestWorkflowSchemaVersion && !inlinePromptSeen {
+	// v0.2.0 todolist5 — `agent.reviewer_prompt` is the legacy top-level
+	// reviewer template that pre-dates file-backed profiles. When the
+	// schema marker is already 2, the previous idempotency check missed it
+	// and reported "already uses schema 2" while leaving the legacy block
+	// in place. Now we detect it and (with --force) move its content into
+	// the reviewer profile's INSTRUCTIONS.md.
+	reviewerProfileName := yamlString(agent["reviewer_profile"])
+	legacyReviewerPrompt := strings.TrimSpace(yamlString(agent["reviewer_prompt"]))
+	legacyReviewerPromptSeen := legacyReviewerPrompt != "" &&
+		legacyReviewerPrompt != strings.TrimSpace(config.DefaultReviewerPrompt)
+
+	// Detect the dependency-analyzer scaffold gap: workflows generated before
+	// the deps-analyzer profile + agent.deps_analyzer_profile field landed
+	// need both written. Setting the field alone (without the profile) would
+	// fail validation, so we always pair the two.
+	depsAnalyzerFieldUnset := strings.TrimSpace(yamlString(agent["deps_analyzer_profile"])) == ""
+	depsAnalyzerProfileMissing := yamlMap(profiles[initDepsAnalyzerProfileName]) == nil
+	needsDepsAnalyzerScaffold := depsAnalyzerFieldUnset || depsAnalyzerProfileMissing
+
+	// We only rewrite WORKFLOW.md when there is migratable content:
+	//   - inline `prompt:` inside any profile (always migratable), or
+	//   - legacy `reviewer_prompt` AND the user passed --force, or
+	//   - the deps-analyzer scaffold is missing (field unset or profile entry missing).
+	// Without --force the legacy reviewer_prompt yields a warning only, so
+	// the caller can decide whether to re-run with --force after reading the
+	// reviewer profile's INSTRUCTIONS.md.
+	needsRewrite := inlinePromptSeen || (legacyReviewerPromptSeen && force) || needsDepsAnalyzerScaffold
+	if version == config.LatestWorkflowSchemaVersion && !needsRewrite {
+		if legacyReviewerPromptSeen {
+			result.Warnings = append(result.Warnings,
+				"agent.reviewer_prompt is a legacy field still consumed by worker.go (base Liquid template for reviewer runs). Re-run with --force to append it to the reviewer profile's INSTRUCTIONS.md and delete the inline field. NOTE: with --force the migrated content becomes an appended profile block instead of the base template — placeholders still resolve identically, but the prompt ordering changes (base falls back to DefaultReviewerPrompt). Review the appended section before the next reviewer run.")
+		}
 		if err := patchRootGitignoreForAgents(filepath.Dir(workflowPath)); err != nil {
 			return result, err
 		}
@@ -89,6 +121,10 @@ func migrateWorkflowToSchema2(workflowPath string, force bool, now time.Time) (w
 	}
 
 	backupPath := workflowPath + ".bak"
+	// todolist4 A.3: refuse to silently overwrite a stale .bak without --force.
+	if !force && !fileMissing(backupPath) {
+		return result, fmt.Errorf("itervox init --update: %s already exists; rerun with --force to overwrite or move/delete the existing backup first", backupPath)
+	}
 	if err := atomicfs.WriteFile(backupPath, original, 0o644); err != nil {
 		return result, fmt.Errorf("itervox init --update: write %s: %w", backupPath, err)
 	}
@@ -117,11 +153,68 @@ func migrateWorkflowToSchema2(workflowPath string, force bool, now time.Time) (w
 			result.Profiles = append(result.Profiles, name)
 		}
 	}
+	if needsDepsAnalyzerScaffold {
+		if profiles == nil {
+			profiles = make(map[string]any)
+			agent["profiles"] = profiles
+		}
+		runner := detectMigrationRunner(profiles)
+		if depsAnalyzerProfileMissing {
+			command, backend := initProfileCommand(runner)
+			depsEntry := map[string]any{
+				"command":           command,
+				"soul_file":         filepath.ToSlash(filepath.Join(".itervox", "agents", initDepsAnalyzerProfileName, "SOUL.md")),
+				"instructions_file": filepath.ToSlash(filepath.Join(".itervox", "agents", initDepsAnalyzerProfileName, "INSTRUCTIONS.md")),
+			}
+			if backend != "" {
+				depsEntry["backend"] = backend
+			}
+			profiles[initDepsAnalyzerProfileName] = depsEntry
+			if err := writeDepsAnalyzerProfileFiles(workflowPath, runner); err != nil {
+				return result, err
+			}
+			result.Profiles = append(result.Profiles, initDepsAnalyzerProfileName)
+		}
+		if depsAnalyzerFieldUnset {
+			agent["deps_analyzer_profile"] = initDepsAnalyzerProfileName
+		}
+	}
+	// v0.2.0 todolist5 — legacy `agent.reviewer_prompt` migration. Append the
+	// template into the reviewer profile's INSTRUCTIONS.md under a clearly
+	// labelled section, then drop the inline field. Only runs with --force
+	// because the appended content changes the reviewer profile's effective
+	// prompt envelope (existing INSTRUCTIONS.md content is preserved).
+	if legacyReviewerPromptSeen && force {
+		if err := appendLegacyReviewerPrompt(workflowPath, reviewerProfileName, legacyReviewerPrompt, now); err != nil {
+			return result, err
+		}
+		delete(agent, "reviewer_prompt")
+		result.Warnings = append(result.Warnings,
+			"agent.reviewer_prompt migrated into the reviewer profile's INSTRUCTIONS.md and removed from WORKFLOW.md. Review the appended section before the next reviewer run.")
+	}
 	if err := ensureItervoxGitignore(filepath.Join(filepath.Dir(workflowPath), ".itervox")); err != nil {
 		return result, err
 	}
 	if err := patchRootGitignoreForAgents(filepath.Dir(workflowPath)); err != nil {
 		return result, err
+	}
+	// P0-A — scaffold built-in profile files for any built-in name that the
+	// WORKFLOW.md profile map references. Idempotent (writeFileIfMissing).
+	// IsBuiltin pre-filters the iteration so non-built-in profile names
+	// (operator-authored or migrated-from-legacy) skip the built-in scaffold
+	// path entirely.
+	if profiles != nil {
+		referenced := make([]string, 0, len(profiles))
+		for name := range profiles {
+			if builtinprofiles.IsBuiltin(name) {
+				referenced = append(referenced, name)
+			}
+		}
+		if len(referenced) > 0 {
+			if err := writeBuiltinProfileFilesIfMissing(workflowPath, referenced); err != nil {
+				return result, err
+			}
+		}
 	}
 
 	encoded, err := yaml.Marshal(doc)
@@ -216,12 +309,17 @@ func writeMigratedAgentFiles(workflowPath, name string, profile map[string]any, 
 	}
 	soulPath := filepath.Join(dir, "SOUL.md")
 	instructionsPath := filepath.Join(dir, "INSTRUCTIONS.md")
-	if force || fileMissing(soulPath) {
+	// v0.2.0 todolist5 — when the profile carries no inline `prompt:` (the
+	// already-migrated case), the SOUL/INSTRUCTIONS files are operator-owned
+	// and must not be overwritten — even with --force. --force is reserved
+	// for replacing the boilerplate scaffolds, not user-authored content.
+	hasInlinePrompt := strings.TrimSpace(promptText) != ""
+	if shouldWriteAgentFile(soulPath, hasInlinePrompt, force) {
 		if err := atomicfs.WriteFile(soulPath, []byte(migratedSoulContent(name, profile, promptText, now)), 0o644); err != nil {
 			return fmt.Errorf("itervox init --update: write %s: %w", soulPath, err)
 		}
 	}
-	if force || fileMissing(instructionsPath) {
+	if shouldWriteAgentFile(instructionsPath, hasInlinePrompt, force) {
 		if err := atomicfs.WriteFile(instructionsPath, []byte(migratedInstructionsContent(name, promptText, now)), 0o644); err != nil {
 			return fmt.Errorf("itervox init --update: write %s: %w", instructionsPath, err)
 		}
@@ -229,7 +327,24 @@ func writeMigratedAgentFiles(workflowPath, name string, profile map[string]any, 
 	return nil
 }
 
+// shouldWriteAgentFile returns true when the SOUL/INSTRUCTIONS file at `path`
+// should be (over)written by the profile-migration step. Rules:
+//   - File missing: always write — scaffolds need to exist for schema 2.
+//   - Profile has an inline `prompt:` to migrate: write (overwrite when --force).
+//   - Profile has no inline prompt AND the file already exists: leave alone.
+//     This is the "already migrated, operator-edited" case — destroying that
+//     content was the pre-fix bug.
+func shouldWriteAgentFile(path string, hasInlinePrompt, force bool) bool {
+	if fileMissing(path) {
+		return true
+	}
+	return hasInlinePrompt && force
+}
+
 func migratedSoulContent(name string, profile map[string]any, promptText string, now time.Time) string {
+	if bp := builtinprofiles.Lookup(name); bp != nil && strings.TrimSpace(promptText) == "" {
+		return bp.Soul + "\n"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!-- Generated by itervox init --update from agent.profiles.%s on %s. -->\n\n", name, now.Format(time.RFC3339))
 	fmt.Fprintf(&b, "# %s SOUL\n\n", name)
@@ -255,6 +370,9 @@ func migratedSoulContent(name string, profile map[string]any, promptText string,
 }
 
 func migratedInstructionsContent(name string, promptText string, now time.Time) string {
+	if bp := builtinprofiles.Lookup(name); bp != nil && strings.TrimSpace(promptText) == "" {
+		return bp.Instructions + "\n"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!-- Generated by itervox init --update from agent.profiles.%s.prompt on %s. -->\n\n", name, now.Format(time.RFC3339))
 	fmt.Fprintf(&b, "# %s INSTRUCTIONS\n\n", name)
@@ -268,6 +386,48 @@ func migratedInstructionsContent(name string, promptText string, now time.Time) 
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// appendLegacyReviewerPrompt writes the legacy `agent.reviewer_prompt`
+// content into the reviewer profile's INSTRUCTIONS.md. If INSTRUCTIONS.md
+// already exists it is APPENDED with a labelled section so existing content
+// is preserved; if absent, a fresh file is created. v0.2.0 todolist5.
+//
+// `reviewerProfile` is the value of `agent.reviewer_profile` from the
+// workflow front matter. Empty falls back to "reviewer" — the conventional
+// scaffold name.
+func appendLegacyReviewerPrompt(workflowPath, reviewerProfile, prompt string, now time.Time) error {
+	if reviewerProfile == "" {
+		reviewerProfile = "reviewer"
+	}
+	dir := filepath.Join(filepath.Dir(workflowPath), ".itervox", "agents", reviewerProfile)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("itervox init --update: create %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "INSTRUCTIONS.md")
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("itervox init --update: read %s: %w", path, err)
+	}
+	var b strings.Builder
+	if len(existing) > 0 {
+		b.Write(existing)
+		if !bytes.HasSuffix(existing, []byte("\n")) {
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	} else {
+		fmt.Fprintf(&b, "<!-- Created by itervox init --update on %s. -->\n\n# %s INSTRUCTIONS\n\n",
+			now.Format(time.RFC3339), reviewerProfile)
+	}
+	fmt.Fprintf(&b, "## Reviewer Template (migrated from agent.reviewer_prompt on %s)\n\n",
+		now.Format(time.RFC3339))
+	b.WriteString(strings.TrimSpace(prompt))
+	b.WriteString("\n")
+	if err := atomicfs.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("itervox init --update: write %s: %w", path, err)
+	}
+	return nil
 }
 
 var youAreSentenceRE = regexp.MustCompile(`(?is)\bYou are\b[^.!?\n]*(?:[.!?]|$)`)

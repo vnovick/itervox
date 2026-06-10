@@ -10,12 +10,18 @@ import (
 const pageSize = 50
 
 // normalizeIssue converts a raw Linear API issue map into a domain.Issue.
-// Returns nil if the issue map is missing required fields.
+// Returns nil if the issue map is missing required fields OR if the issue
+// is in Linear's trash (codex-B9). Trashed issues poll-side filtering means
+// daemon never dispatches against an issue an operator has moved to the
+// archive bucket.
 func normalizeIssue(raw map[string]any) *domain.Issue {
 	id, _ := raw["id"].(string)
 	identifier, _ := raw["identifier"].(string)
 	title, _ := raw["title"].(string)
 	if id == "" || identifier == "" || title == "" {
+		return nil
+	}
+	if trashed, ok := raw["trashed"].(bool); ok && trashed {
 		return nil
 	}
 

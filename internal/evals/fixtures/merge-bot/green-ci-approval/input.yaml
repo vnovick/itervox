@@ -1,0 +1,12 @@
+issue:
+  identifier: ENG-42
+  state: In Review
+  title: Add merge-bot evals foundation
+  body: |
+    Implement the foundation of the evals harness so prompt regressions
+    in merge-bot are caught by CI before they ship.
+  branch_name: feat/merge-bot-evals
+comment:
+  body: "AI review passed — ready for merge"
+pr:
+  number: 42

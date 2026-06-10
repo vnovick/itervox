@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"os"
@@ -93,6 +94,10 @@ type Orchestrator struct {
 	// owned by the single event-loop State.
 	automationQueueMu   sync.RWMutex
 	automationQueueFile string // optional path for persisting AutomationQueue across restarts
+	// daemonInstanceID stamps the queue persistence envelope so a reader can
+	// distinguish state written by this daemon from state inherited from
+	// another (todolist4 A.2). Set once at construction; reads are lock-free.
+	daemonInstanceID string
 
 	// workerCancelsMu guards workerCancels, which is written by dispatch (event
 	// loop goroutine) and read by cancelRunningWorker (any goroutine).
@@ -155,6 +160,15 @@ type Orchestrator struct {
 	// the worker's pr_opened signal. Race-safe via the same automationsMu
 	// guard as the other registries.
 	prOpenedAutomations []PROpenedAutomation
+
+	// prMergedAutomations (P1) mirrors prOpenedAutomations for the merge-side
+	// trigger. Compiled rules are installed via SetPRMergedAutomations.
+	prMergedAutomations []PRMergedAutomation
+
+	// trackerCommentAutomations (P0-B) holds compiled tracker_comment_added
+	// rules so the body-filter dispatch helper can short-circuit comments
+	// that fail body_contains / body_regex matching.
+	trackerCommentAutomations []TrackerCommentAutomation
 
 	// rateLimitedAutomations (gap E) is the compiled set of rules that fire
 	// when an exhausted-retry exit is classified rate-limit-driven. These
@@ -249,7 +263,15 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		issueBackends:            make(map[string]string),
 		commentCounts:            make(map[string]int),
 		sshHostDescs:             sshHostDescs,
+		daemonInstanceID:         newDaemonInstanceID(),
 	}
+}
+
+// newDaemonInstanceID returns a process-unique tag for the queue persistence
+// envelope. PID + boot timestamp are sufficient — the envelope is local to a
+// single repo and not synchronised across daemons. todolist4 A.2.
+func newDaemonInstanceID() string {
+	return fmt.Sprintf("itervox-%d-%d", os.Getpid(), time.Now().UnixNano())
 }
 
 // BumpCommentCount increments the per-identifier comment counter (T-6).
@@ -546,6 +568,37 @@ func (o *Orchestrator) ReviewerCfg() (profile string, autoReview bool) {
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
 	return o.cfg.Agent.ReviewerProfile, o.cfg.Agent.AutoReview
+}
+
+// DepsAnalyzerProfileCfg returns the configured deps-analyzer profile name
+// under cfgMu. Empty means the analyzer is disabled and the dashboard's
+// "Analyze dependencies" button stays disabled. v0.2.0 todolist6.
+func (o *Orchestrator) DepsAnalyzerProfileCfg() string {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Agent.DepsAnalyzerProfile
+}
+
+// AgentProfileCfg returns a copy of the named agent profile under cfgMu. The
+// deps-analyzer service uses this to resolve SOUL/INSTRUCTIONS at job-run
+// time without snapshotting the full profile map. v0.2.0 todolist6.
+func (o *Orchestrator) AgentProfileCfg(name string) (config.AgentProfile, bool) {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	p, ok := o.cfg.Agent.Profiles[name]
+	return p, ok
+}
+
+// SetDepsAnalyzerProfileCfg updates the deps-analyzer profile name at runtime
+// under cfgMu. Settings UI surface; Phase 2.3. v0.2.0 todolist6.
+func (o *Orchestrator) SetDepsAnalyzerProfileCfg(profile string) error {
+	o.cfgMu.Lock()
+	defer o.cfgMu.Unlock()
+	if err := config.ValidateDepsAnalyzerProfile(o.cfg.Agent.Profiles, profile); err != nil {
+		return err
+	}
+	o.cfg.Agent.DepsAnalyzerProfile = profile
+	return nil
 }
 
 // SetReviewerCfg sets the reviewer profile name and auto-review flag under cfgMu.

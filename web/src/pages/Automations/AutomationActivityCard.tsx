@@ -81,7 +81,13 @@ export function AutomationActivityCard({
           <ul className="space-y-1" data-testid={`automation-runs-${automation.id}`}>
             {data.runs.map((run) => (
               <li
-                key={run.sessionId ?? `${run.identifier}-${run.timestamp}-${run.isLive ? 'live' : 'done'}`}
+                key={
+                  // codex-B6: include the live/done discriminator EVEN when
+                  // sessionId is non-null, because live and history sources
+                  // can carry the same sessionId for the same run during the
+                  // brief window between live exit and history index update.
+                  `${run.sessionId ?? `${run.identifier}-${run.timestamp}`}-${run.isLive ? 'live' : 'done'}`
+                }
                 className="flex items-center gap-2 text-xs"
               >
                 <span className="text-theme-text font-mono">{run.identifier}</span>

@@ -25,6 +25,8 @@ interface DashboardIssueViewsProps {
   defaultBackend?: string;
   dependencyGraphNodes: DependencyGraphNode[];
   dependencyGraphEdges: DependencyGraphEdge[];
+  depsAnalyzerProfile?: string;
+  depsLastAnalyzedAt?: string;
   onIssueSelect: (identifier: string) => void;
   onStateChange: (identifier: string, newState: string) => void;
   onProfileChange: (identifier: string, profile: string) => void;
@@ -44,6 +46,8 @@ export function DashboardIssueViews({
   defaultBackend,
   dependencyGraphNodes,
   dependencyGraphEdges,
+  depsAnalyzerProfile,
+  depsLastAnalyzedAt,
   onIssueSelect,
   onStateChange,
   onProfileChange,
@@ -92,6 +96,9 @@ export function DashboardIssueViews({
           graphNodes={dependencyGraphNodes}
           graphEdges={dependencyGraphEdges}
           onSelectIssue={onIssueSelect}
+          depsAnalyzerProfile={depsAnalyzerProfile}
+          depsLastAnalyzedAt={depsLastAnalyzedAt}
+          profileDefs={profileDefs}
         />
       )}
       {viewMode === 'notifications' && <NotificationsView onSelect={onIssueSelect} />}

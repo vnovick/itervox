@@ -1,4 +1,4 @@
-import type { AutomationQueueRow, DependencyAuditRow } from '../../../types/schemas';
+import type { AutomationQueueRow, DependencyAuditRow, RunningRow } from '../../../types/schemas';
 
 export type DependencyByIssue = Map<string, DependencyAuditRow>;
 
@@ -87,6 +87,30 @@ export function filterQueueRows(
   const sorted = sortAutomationQueueRows(rows);
   if (!q) return sorted;
   return sorted.filter((row) => queueSearchText(row, dependencies.get(row.identifier)).includes(q));
+}
+
+// v0.2.0 todolist5 B7 — surfacing running automations in the queue panel
+// (path 1 of dispatchOrQueueAutomation). Reuses queue's search + sort idioms.
+
+function runningAutomationSearchText(row: RunningRow): string {
+  // RunningRow doesn't carry title/profile — those live on the issue
+  // snapshot map; the operator gets them by clicking through to the issue
+  // detail. Search fields are the ones the row actually renders.
+  return [row.identifier, row.state, row.backend, row.automationId, row.triggerType, row.workerHost]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+export function filterRunningAutomations(
+  running: readonly RunningRow[] | undefined,
+  query: string,
+): RunningRow[] {
+  const automations = (running ?? []).filter((r) => r.kind === 'automation');
+  const sorted = [...automations].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  const q = query.trim().toLowerCase();
+  if (!q) return sorted;
+  return sorted.filter((row) => runningAutomationSearchText(row).includes(q));
 }
 
 export function queuedAge(queuedAt: string): string {

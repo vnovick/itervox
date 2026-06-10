@@ -21,7 +21,15 @@ const AUTOMATION_FIRED_PREFIX = 'AUTOMATION FIRED';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const FILTER_CHIPS = ['text', 'action', 'subagent', 'warn', 'error'] as const;
+// v0.2.0 todolist5 B5 / todolist6 codex-B5 — AUTOMATION FIRED entries are
+// tagged `event === 'automation'` (Go-side parseLogLine + Zod
+// LogEventTypeSchema). `'automation'` is included in FILTER_CHIPS so the
+// type-driven filter recognises the event sentinel, AND a dedicated
+// `chip-automation` toggle below filters by message prefix for the visually
+// distinct row treatment. The two surfaces are deliberately complementary:
+// FILTER_CHIPS is the generic per-event-type chip set; chip-automation is
+// the operator-facing "show me automation lines only" affordance.
+const FILTER_CHIPS = ['text', 'action', 'subagent', 'warn', 'error', 'automation'] as const;
 type FilterChip = (typeof FILTER_CHIPS)[number];
 type InputRequiredRow = NonNullable<StateSnapshot['inputRequired']>[number];
 const EMPTY_INPUT_REQUIRED: readonly InputRequiredRow[] = [];
@@ -388,7 +396,11 @@ export default function Logs() {
               ))}
               <button
                 type="button"
-                data-testid="chip-automation"
+                // codex-B5: dedicated automation-only toggle. Renamed from
+                // `chip-automation` to `chip-automation-only` so the now-
+                // included FILTER_CHIPS 'automation' entry can keep the
+                // standard `chip-${name}` testid pattern without colliding.
+                data-testid="chip-automation-only"
                 aria-pressed={automationOnly}
                 onClick={() => {
                   setAutomationOnly(!automationOnly);

@@ -39,6 +39,15 @@ cd web && pnpm dev   # HMR at localhost:5173, proxies /api/* to localhost:8090
 Git hooks (lefthook) run `go vet`, `golangci-lint`, `tsc --noEmit`, ESLint,
 Prettier on pre-commit; full test + build suites on pre-push.
 
+Testing specifics not obvious from the commands above:
+- **TUI tests** use `charmbracelet/x/exp/teatest` (e.g. `model_teatest_test.go`)
+  with catwalk golden files. Regenerate golden files via `make tui-golden`
+  after intentional render changes.
+- **Integration tests** that hit a real tracker API are gated behind a build
+  tag; they are NOT run by default with `go test ./...`.
+- **Frontend tests** use Vitest + Testing Library. Coverage gates live in
+  `web/vitest.config.ts`; `pnpm test:coverage` is the canonical entry point.
+
 ---
 
 ## Architecture — critical invariants
@@ -90,12 +99,18 @@ only the event loop mutates them.
 
 ### `cfgMu` guards exactly these fields (and nothing else)
 
+> **Canonical source for codex too** — AGENTS.md is a thin pointer that tells
+> codex to read CLAUDE.md. If you add, remove, or rename a field here, mirror
+> the change into `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`
+> in the same commit. No second copy in AGENTS.md to keep in sync.
+
 These `Orchestrator.cfg` fields can be mutated at runtime by HTTP handler goroutines
 and must always be accessed under `cfgMu`. **Keep this list alphabetically sorted by
 full field path** so the test allowlist (`AllowedMutableCfgFields`) and this docs
-section stay easy to diff (v0.2.0 audit P2-4).
+section stay easy to diff.
 
 - `cfg.Agent.AutoReview`
+- `cfg.Agent.DepsAnalyzerProfile`
 - `cfg.Agent.DispatchStrategy`
 - `cfg.Agent.InlineInput`
 - `cfg.Agent.MaxConcurrentAgents`
@@ -323,6 +338,152 @@ Before claiming a component is missing an accessibility attribute:
 
 ---
 
+## Verification before completion — MANDATORY
+
+> **Canonical source for every agent that touches this repo, codex included.**
+> AGENTS.md is a thin pointer that directs codex to read CLAUDE.md first; this
+> section does not need to be mirrored anywhere. If you edit it, that edit is
+> immediately authoritative for both Claude Code and codex.
+
+You MUST NOT mark anything as "done", "shipped", "fixed", "ready",
+"addressed", "implemented", "covered", or "resolved" from inference.
+**Inference is forbidden as evidence**, including:
+
+- Recognising related code, infrastructure, function names, or patterns
+- Reading a passing top-level test suite (`make verify`, `go test ./...`)
+- Recalling that you (or another agent) wrote the code earlier in the session
+- Trusting another agent's, tool's, or user's claim of completion
+- "I see the code that should do it"
+- "The feature appears complete"
+- "Mostly there"
+
+These are CLAIMS. A claim is not verification. Treat every claim as
+UNMET until proven by one of the evidence forms below.
+
+### Evidence forms that count
+
+Each form requires a runnable command whose output you can quote. "I
+checked" without a quoted command and its output is not evidence.
+
+1. **Named-test execution.** Run the exact test name from the
+   acceptance criterion:
+   ```bash
+   go test -race -run '^TestFooBar$' ./internal/orchestrator/... -v
+   ```
+   The output MUST contain `--- PASS: TestFooBar`. If the output is
+   `ok ... [no tests to run]`, the test does not exist — the criterion
+   is UNMET regardless of how complete the surrounding code looks. A
+   substring-match run (`-run TestFoo`) does NOT prove the named test
+   exists; always anchor with `^...$`.
+
+2. **Symbol-presence grep.** For acceptance criteria that name a
+   specific counter, field, function, route, or constant:
+   ```bash
+   grep -rn 'automation_drops_self_reentry_total\b' internal/
+   grep -rn 'PauseDispatchWhenAnyInState\b' internal/config/
+   ```
+   Zero hits = UNMET. A "similar" symbol is not the named one — do not
+   substitute. Symbol presence proves declaration only; for behaviour
+   criteria, also grep the call site / read site / increment site.
+
+3. **Runtime output.** Run the actual command/action and quote the
+   relevant output line. For e.g. an `itervox doctor` acceptance, run
+   it and quote the line in the output that satisfies the criterion.
+
+4. **Endpoint / file shape.** For HTTP routes, hit the endpoint
+   (`curl ... | jq`) and quote the response shape. For files, read the
+   path and quote the lines that match the criterion.
+
+### Evidence forms explicitly REJECTED
+
+- "I checked" without a quoted command and its output
+- "All tests pass" when the acceptance names a specific test
+- "The code is there" without citing file:line that matches the
+  criterion verbatim
+- "The user said it works" — treat as claim, verify independently
+- A green `make verify` — proves "nothing regressed", not "the named
+  criterion is satisfied"
+- Memory of having implemented it — implementations can drift; the
+  current tree is the only source of truth
+- Presence of a sibling / related symbol — not the named one
+
+### Mandatory completion annotation
+
+For every item you mark done, write a `Verified by:` annotation
+immediately below it, with the exact command and a one-line excerpt of
+the relevant output:
+
+```
+- [x] Add automation_drops_self_reentry_total counter
+  Verified by: grep -rn 'automation_drops_self_reentry_total\b' internal/
+              → 4 hits: state.go:312, snapshot.go:88, dispatch.go:156, automation_test.go:412
+              go test -run '^TestSelfReentryCounter$' ./internal/orchestrator/... -v
+              → --- PASS: TestSelfReentryCounter (0.02s)
+```
+
+If you cannot produce a `Verified by:` annotation for an item, the item
+is not done. Two possible reasons:
+
+1. The acceptance is too vague to verify — escalate to clarify what
+   would count as evidence before marking anything.
+2. The work isn't actually finished — leave it open.
+
+### Sampling — strict
+
+For lists of 5+ items, sampling is permitted ONLY under all of these
+conditions:
+
+- The sample is the highest-risk subset (justify the choice in writing).
+- The sample size is recorded (e.g. "sampled 3 of 9: items 4, 8, 9").
+- **Unsampled items remain explicitly "claimed, unverified" — never
+  silently promoted.**
+- A 100% pass rate on a 30% sample does NOT promote the other 70%.
+  They stay unverified until individually checked.
+
+### "Looks done but isn't" — common evasions to refuse
+
+- **Symbol exists, behaviour missing.** Function with the right name
+  that no live caller reaches = UNMET. Grep the call site.
+- **One sub-criterion of N.** An acceptance with multiple bullets is
+  done when ALL bullets are verified, not when one is.
+- **Test exists, body is a skip.** `t.Skip("TODO")` does NOT count as
+  a passing test. Read the test body before quoting the PASS line.
+- **Counter declared, never incremented.** `var fooCounter int` with
+  no `fooCounter++` site is UNMET. Grep the increment.
+- **Config field declared, never read.** Struct field with no read
+  site is UNMET. Grep the read.
+- **UI component imported, never rendered.** Presence in an imports
+  block does not equal "visible to the operator". Grep the JSX usage.
+- **Server route registered, handler is a 501.** Verify the handler's
+  success path actually performs the work.
+- **Logged-but-not-acted-on event.** An event written to a log file is
+  not the same as an event consumed by a downstream system.
+
+### When the user (or another agent) says "X is done"
+
+Treat as a claim, not a fact. Run the acceptance check. If it passes,
+confirm with the evidence. If it fails, surface the specific gap with
+the exact command + output that proves the gap (don't just say "I
+disagree"). The user is debugging the same uncertainty; corroborating
+evidence is what they need.
+
+### Failure mode
+
+If something is marked done without a `Verified by:` annotation and is
+later discovered unmet, the correct response is: revert the
+done-marking, reopen the criterion, and write what was assumed vs. what
+was true. This is the contract — it preserves the signal that an OPEN
+item is genuinely open and a DONE item is genuinely done. A done-list
+contaminated by inferred-completions is worse than no done-list at all,
+because it silently consumes attention that should have caught the gap.
+
+This rule is operationalised by the `verify-before-done` skill —
+invoke it on every "are we done / is this ready / can I merge"
+question. The skill enforces the same evidence rules; this section is
+the canonical text.
+
+---
+
 ## Never do
 
 - **Do not commit** 
@@ -331,3 +492,5 @@ Before claiming a component is missing an accessibility attribute:
 - **Do not call `patchSnapshot` from settings mutations** — they must call `refreshSnapshot()` to get the authoritative server state
 - **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored.
 - **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It restores the terminal to a sane mode (`stty sane`) before exiting, which is required for any code path that may run after `go statusui.Run` puts the terminal into raw mode. The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.
+- **Do not declare anything done by inference.** See "Verification before completion — MANDATORY" above. Every named test, counter, field, CLI subcommand, route, and UI surface in an acceptance section MUST be grepped or run, and the result MUST appear in a `Verified by:` annotation. Marking an item done without that annotation is a contract violation, not a style preference. The common evasions enumerated above (symbol-exists-but-callless, one-sub-criterion-of-N, test-body-is-skip, counter-declared-never-incremented, component-imported-never-rendered, route-registered-handler-is-501) are explicitly refused.
+- **Do not move agent guidance into AGENTS.md if it is not codex-specific.** AGENTS.md is a thin pointer at CLAUDE.md plus a small "Codex-specific notes" section. Architecture invariants, the `cfgMu` allowlist, verification rules, conventions, false-positive patterns, the Never-do list — all of those live ONLY in CLAUDE.md and AGENTS.md tells codex to read them there. If you find yourself duplicating a CLAUDE.md section into AGENTS.md, stop: either the content belongs in CLAUDE.md (where it already is) or it's genuinely codex-specific (in which case it shouldn't be in CLAUDE.md). Picking only one home is the contract.

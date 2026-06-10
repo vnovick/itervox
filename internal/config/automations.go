@@ -13,6 +13,11 @@ const (
 	// happens in-process from worker.go so no external webhook ingestion
 	// is required.
 	AutomationTriggerPROpened = "pr_opened"
+	// AutomationTriggerPRMerged (P1) fires when a tracked PR opened by an
+	// itervox-managed branch transitions to MERGED. Mirrors PR-opened but on
+	// the merge side. Trigger context carries pr_url, pr_number, merged_sha,
+	// base_ref, merged_at.
+	AutomationTriggerPRMerged = "pr_merged"
 	// AutomationTriggerRateLimited (gap E) is a specialisation of
 	// run_failed that fires only when the orchestrator's terminal-failure
 	// classifier tags the exit as rate-limit-driven (vendor 429 / quota
@@ -45,6 +50,14 @@ type AutomationFilterConfig struct {
 	// retry doesn't keep hammering an issue that's been blocked for days.
 	// 0 means "no age limit" — preserves pre-feature behaviour.
 	MaxAgeMinutes int
+	// BodyContains restricts tracker_comment_added (and any future body-bearing
+	// trigger) to comments whose body contains at least one of the listed
+	// substrings (case-insensitive). Empty list = match all bodies.
+	BodyContains []string
+	// BodyRegex restricts the same triggers to comments whose body matches the
+	// given regular expression. Empty = no regex check. BodyContains and
+	// BodyRegex are AND-combined when both are set.
+	BodyRegex string
 }
 
 type AutomationPolicyConfig struct {
@@ -153,6 +166,8 @@ func parseAutomations(raw any) []AutomationConfig {
 				Limit:             limit,
 				InputContextRegex: strField(filter, "input_context_regex", ""),
 				MaxAgeMinutes:     maxAge,
+				BodyContains:      strSliceField(filter, "body_contains", nil),
+				BodyRegex:         strField(filter, "body_regex", ""),
 			},
 			Policy: AutomationPolicyConfig{
 				// Gap §5.2 — `auto_switch` is the preferred YAML key for

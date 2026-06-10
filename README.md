@@ -69,7 +69,8 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
 - **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
-- **Automations** — trigger helper runs from cron schedules, blocked-input events, tracker comments, issue-state transitions, backlog moves, or failed runs. Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
+- **Automations** — trigger helper runs from ten event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
+- **Built-in `merge-bot` profile** — ships embedded in the binary; reference it from `WORKFLOW.md` with `agent.profiles.merge-bot: {}` and the daemon resolves SOUL/INSTRUCTIONS from the embedded registry. The new `merge_pr` agent action runs `gh pr view` / `gh pr checks --required` / `gh pr merge` with required-check + block-label guards.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
 - **Stall detection** — no output inside the stall window? Worker is killed and retried automatically.
@@ -356,6 +357,12 @@ open http://127.0.0.1:8090
 |---|---|
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
+| `itervox init --template <preset>` | Scaffold with one of `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa` |
+| `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
+| `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md` |
+| `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |
+| `itervox stop` | Gracefully stop a running daemon |
+| `itervox action <subcommand>` | Daemon-backed agent actions: `comment`, `comment-pr`, `merge-pr`, `create-issue`, `move-state`, `provide-input` |
 | `itervox clear [IDENTIFIER…]` | Remove workspace directories (all, or specific issues) |
 | `itervox --version` | Print version, commit, and build date |
 | `itervox help` | Show all commands and run-mode flags |

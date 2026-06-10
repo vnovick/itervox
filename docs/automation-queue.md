@@ -60,6 +60,43 @@ When daemon log/state persistence is configured, the automation queue is stored 
 
 Prompt instructions may be present in persisted queue entries because they preserve the original trigger semantics. Keep the runtime state directory local-only.
 
+### v2 envelope (todolist4 A.2)
+
+As of v0.2.0 the queue write is wrapped in a versioned envelope:
+
+```json
+{
+  "schema_version": 2,
+  "daemon_instance_id": "itervox-<pid>-<bootns>",
+  "payload": { "Entries": {...}, "Order": [...], "Backpressure": {...} },
+  "payload_sha256": "<hex>"
+}
+```
+
+The reader peeks `schema_version` via `IsQueueEnvelopeShape`. Legacy v1
+raw payload files (no envelope) are still read via fallback. Mismatched
+schema version or payload SHA-256 moves the file to
+`automation_queue.json.quarantine` and the queue starts empty rather than
+silently consuming corrupt state. A mismatched `daemon_instance_id` is
+logged as a warning but still loads.
+
+## Backpressure structured rejection fields (todolist4 P2-2)
+
+`AutomationQueueBackpressure` exposes the most recent rejection in two
+parallel forms: the legacy colon-joined `LastRejectedReason` (preserved
+for back-compat with the dashboard) and the structured fields
+`LastRejectedAutomationID`, `LastRejectedTrigger`,
+`LastRejectedIdentifier`. New code should prefer the structured fields;
+the legacy single string remains accurate for back-compat clients.
+
+## Terminal-state pruning audit trail (codex-B2)
+
+When `pruneTerminalRuntimeLedgers` removes runtime entries for an issue
+that reached a terminal tracker state, the janitor appends an
+`IssueStatusChange` row with `source: janitor, reason: "issue_terminal"`
+so the per-issue status timeline explains the disappearance. Absent-issue
+pruning (codex-B9) similarly emits `reason: "absent_from_tracker"`.
+
 ## Boundaries
 
 Queue rows do not mutate Linear or GitHub state. Tracker mutations only happen through explicit dashboard actions or through an automation profile with an allowed daemon action such as `move_state`.

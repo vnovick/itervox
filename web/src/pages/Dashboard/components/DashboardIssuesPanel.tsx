@@ -33,6 +33,8 @@ interface DashboardIssuesPanelProps {
   defaultBackend?: string;
   dependencyGraphNodes: DependencyGraphNode[];
   dependencyGraphEdges: DependencyGraphEdge[];
+  depsAnalyzerProfile?: string;
+  depsLastAnalyzedAt?: string;
   onIssueSelect: (identifier: string) => void;
   onStateChange: (identifier: string, newState: string) => void;
   onProfileChange: (identifier: string, profile: string) => void;
@@ -52,6 +54,8 @@ export function DashboardIssuesPanel({
   defaultBackend,
   dependencyGraphNodes,
   dependencyGraphEdges,
+  depsAnalyzerProfile,
+  depsLastAnalyzedAt,
   onIssueSelect,
   onStateChange,
   onProfileChange,
@@ -177,6 +181,8 @@ export function DashboardIssuesPanel({
         defaultBackend={defaultBackend}
         dependencyGraphNodes={dependencyGraphNodes}
         dependencyGraphEdges={dependencyGraphEdges}
+        depsAnalyzerProfile={depsAnalyzerProfile}
+        depsLastAnalyzedAt={depsLastAnalyzedAt}
         onIssueSelect={onIssueSelect}
         onStateChange={onStateChange}
         onProfileChange={onProfileChange}

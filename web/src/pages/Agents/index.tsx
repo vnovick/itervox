@@ -1,5 +1,6 @@
 import PageMeta from '../../components/common/PageMeta';
 import { CapacityCard } from '../Settings/CapacityCard';
+import { ModelsCard } from '../Settings/ModelsCard';
 import { ProfilesCard } from '../Settings/ProfilesCard';
 import { ReviewerCard } from '../Settings/ReviewerCard';
 import { useSettingsPageData } from '../Settings/useSettingsPageData';
@@ -81,6 +82,16 @@ export default function Agents() {
                 Capacity
               </h2>
               <CapacityCard />
+            </section>
+
+            <section aria-labelledby="section-models">
+              <h2
+                id="section-models"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Models
+              </h2>
+              <ModelsCard availableModels={availableModels || {}} />
             </section>
           </div>
         </div>

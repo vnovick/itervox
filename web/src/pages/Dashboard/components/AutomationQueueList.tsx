@@ -4,20 +4,33 @@ import type {
   AutomationQueueBackpressure,
   AutomationQueueRow,
   DependencyAuditRow,
+  RunningRow,
 } from '../../../types/schemas';
 import { AutomationQueueItem } from './AutomationQueueItem';
-import { dependencyMap, filterQueueRows, sortAutomationQueueRows } from './automationQueueModel';
+import { AutomationRunningItem } from './AutomationRunningItem';
+import {
+  dependencyMap,
+  filterQueueRows,
+  filterRunningAutomations,
+  sortAutomationQueueRows,
+} from './automationQueueModel';
 
 export { sortAutomationQueueRows };
 
+// v0.2.0 todolist5 B7 — most automations dispatch immediately (slots free,
+// no blockers) and never enter `state.AutomationQueue`. Surfacing them
+// alongside the queued rows in the same panel matches the operator mental
+// model that "the automation panel shows what my automations did."
 export function AutomationQueueList({
   queue,
+  running,
   dependencyAudit,
   backpressure,
   onSelectIssue,
   onSelectQueue,
 }: {
   queue: readonly AutomationQueueRow[];
+  running?: readonly RunningRow[];
   dependencyAudit: readonly DependencyAuditRow[];
   backpressure?: AutomationQueueBackpressure;
   onSelectIssue: (identifier: string) => void;
@@ -28,6 +41,10 @@ export function AutomationQueueList({
   const rows = useMemo(
     () => filterQueueRows(queue, dependencies, search),
     [queue, dependencies, search],
+  );
+  const runningAutomations = useMemo(
+    () => filterRunningAutomations(running, search),
+    [running, search],
   );
   const saturated = Boolean(backpressure?.saturated || backpressure?.pausedProducers);
 
@@ -47,7 +64,10 @@ export function AutomationQueueList({
             </p>
           </div>
         </div>
-        {queue.length > 0 && (
+        {(queue.length > 0 || runningAutomations.length > 0) && (
+          // codex-B7: render the search input when EITHER queued rows OR
+          // running automations are present, so the operator can filter the
+          // running section even before anything has queued.
           <QueueSearchInput
             value={search}
             onChange={setSearch}
@@ -69,11 +89,35 @@ export function AutomationQueueList({
         </div>
       )}
 
-      {queue.length === 0 ? (
+      {runningAutomations.length > 0 && (
+        <div data-testid="automation-running-section">
+          <div className="border-theme-line text-theme-muted bg-theme-bg-soft flex items-center gap-2 border-b px-4 py-2 text-[10px] font-semibold tracking-[0.06em] uppercase">
+            <span className="bg-theme-success-soft text-theme-success rounded px-1.5 py-0.5 text-[10px]">
+              Running
+            </span>
+            <span>{runningAutomations.length} active</span>
+          </div>
+          <div className="divide-theme-line divide-y">
+            {runningAutomations.map((row) => (
+              <AutomationRunningItem
+                // codex-B6: include a row-source discriminator so a live
+                // session that briefly coexists with the same id in the
+                // history snapshot does not produce a React duplicate-key
+                // warning. "running" makes the dedup explicit.
+                key={`${row.sessionId ?? `${row.identifier}-${row.startedAt}`}-running`}
+                row={row}
+                onSelectIssue={onSelectIssue}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {queue.length === 0 && runningAutomations.length === 0 ? (
         <div className="text-theme-muted px-4 py-8 text-center text-sm">
           No automation queue items
         </div>
-      ) : rows.length === 0 ? (
+      ) : queue.length === 0 ? null : rows.length === 0 ? (
         <div className="text-theme-muted px-4 py-8 text-center text-sm">
           No matching automation queue items
         </div>

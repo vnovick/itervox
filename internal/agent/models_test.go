@@ -1,10 +1,114 @@
 package agent
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestListClaudeModels_HitsAnthropicEndpoint exercises the real GET path
+// against a fake httptest server pointed at via ITERVOX_ANTHROPIC_API_BASE.
+// Asserts the headers Anthropic requires AND the response-shape parser.
+func TestListClaudeModels_HitsAnthropicEndpoint(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("expected GET /v1/models; got %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "test-key" {
+			t.Errorf("missing x-api-key header; got %q", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") == "" {
+			t.Error("missing anthropic-version header")
+		}
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id": "claude-sonnet-4-7", "display_name": "Sonnet 4.7 - Future"},
+				{"id": "claude-opus-4-7",   "display_name": "Opus 4.7 - Future"},
+				{"id": "voyage-3",          "display_name": "Voyage embeddings"}
+			]
+		}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ITERVOX_ANTHROPIC_API_BASE", srv.URL)
+
+	got := ListClaudeModels()
+	if !hit {
+		t.Fatal("fake Anthropic endpoint was never called")
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 claude-named models; got %d: %v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if !ids["claude-sonnet-4-7"] || !ids["claude-opus-4-7"] {
+		t.Errorf("expected sonnet-4-7 + opus-4-7; got %v", got)
+	}
+	if ids["voyage-3"] {
+		t.Error("non-claude IDs must be filtered out")
+	}
+}
+
+// TestListClaudeModels_APIErrorFallsBackToDefaults — 500 from upstream
+// returns the hardcoded catalog, not an empty slice. Protects the
+// dashboard model picker from going empty after a transient API outage.
+func TestListClaudeModels_APIErrorFallsBackToDefaults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ITERVOX_ANTHROPIC_API_BASE", srv.URL)
+
+	got := ListClaudeModels()
+	if len(got) == 0 {
+		t.Error("API failure must fall back to defaults, not return empty")
+	}
+}
+
+// TestListCodexModels_HitsOpenAIEndpoint — codex side uses Bearer auth.
+func TestListCodexModels_HitsOpenAIEndpoint(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("expected GET /v1/models; got %s %s", r.Method, r.URL.Path)
+		}
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			t.Errorf("expected Bearer auth; got %q", auth)
+		}
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id": "gpt-5.4-codex"},
+				{"id": "gpt-5.3-codex"},
+				{"id": "text-embedding-3-small"}
+			]
+		}`))
+	}))
+	defer srv.Close()
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("ITERVOX_OPENAI_API_BASE", srv.URL)
+
+	got := ListCodexModels()
+	if !hit {
+		t.Fatal("fake OpenAI endpoint was never called")
+	}
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if !ids["gpt-5.4-codex"] || !ids["gpt-5.3-codex"] {
+		t.Errorf("expected gpt-5.4-codex + gpt-5.3-codex; got %v", got)
+	}
+}
 
 func TestListClaudeModels_FallsBackWithoutKey(t *testing.T) {
 	// When ANTHROPIC_API_KEY is not set, should return the default list.

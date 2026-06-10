@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"maps"
 	"os"
@@ -496,9 +497,17 @@ func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQ
 		Order:        append([]string(nil), order...),
 		Backpressure: backpressure,
 	}
-	data, err := json.Marshal(disk)
+	payload, err := json.Marshal(disk)
 	if err != nil {
 		slog.Warn("orchestrator: failed to marshal automation queue", "error", err)
+		return
+	}
+	// todolist4 A.2 — wrap the payload in the versioned envelope so future
+	// readers can detect schema drift, corruption, or daemon-instance
+	// mismatch instead of silently consuming stale state.
+	data, err := EncodeQueueEnvelope(payload, o.daemonInstanceID)
+	if err != nil {
+		slog.Warn("orchestrator: failed to envelope automation queue", "error", err)
 		return
 	}
 	if err := writeFileAtomically(path, data, 0o600); err != nil {
@@ -520,8 +529,27 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 		}
 		return state
 	}
+	// todolist4 A.2 — try the v2 envelope first; fall back to v1 raw payload
+	// for backward compatibility with files written before the envelope wrap.
+	payload := data
+	if IsQueueEnvelopeShape(data) {
+		envelope, reason, decodeErr := DecodeQueueEnvelope(data, o.daemonInstanceID)
+		if decodeErr == nil {
+			payload = envelope
+			if reason != "" {
+				slog.Warn("orchestrator: queue envelope warning", "path", path, "reason", reason)
+			}
+		} else if errors.Is(decodeErr, ErrQueueEnvelopeQuarantined) {
+			quarantinePath := path + ".quarantine"
+			if writeErr := writeFileAtomically(quarantinePath, data, 0o600); writeErr != nil {
+				slog.Warn("orchestrator: failed to write quarantine file", "path", quarantinePath, "error", writeErr)
+			}
+			slog.Warn("orchestrator: automation queue envelope quarantined", "path", path, "error", decodeErr)
+			return state
+		}
+	}
 	var disk automationQueueStateDisk
-	if err := json.Unmarshal(data, &disk); err != nil {
+	if err := json.Unmarshal(payload, &disk); err != nil {
 		slog.Warn("orchestrator: failed to parse automation queue file", "path", path, "error", err)
 		return state
 	}

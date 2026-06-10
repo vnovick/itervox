@@ -191,6 +191,75 @@ func PatchWorkspaceBoolField(path, key string, enabled bool) error {
 	return patchBlockBoolField(path, "workspace", key, enabled)
 }
 
+// defaultBlockIndent matches the convention written by `itervox init` for
+// freshly-scaffolded workflows. Used as the fallback when the target block
+// has no existing children to learn from.
+const defaultBlockIndent = "  "
+
+// detectBlockIndent scans forward from the block-header line for the first
+// child entry and returns its leading-whitespace prefix (spaces or tabs).
+// Falls back to `defaultBlockIndent` when:
+//   - blockLine is negative (block not present yet),
+//   - the block is empty,
+//   - every child line is blank or a comment.
+//
+// v0.2.0 todolist5 B10 — without this, the Patch* helpers hardcoded a
+// 2-space prefix and silently corrupted any WORKFLOW.md whose front matter
+// used 4-space indent (yaml.v3's default serialisation produces 4-space
+// nested keys on common Go YAML codecs).
+func detectBlockIndent(frontLines []string, blockLine int) string {
+	if blockLine < 0 {
+		return defaultBlockIndent
+	}
+	for j := blockLine + 1; j < len(frontLines); j++ {
+		line := frontLines[j]
+		// Stop at the next top-level key (no leading whitespace).
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+			break
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return line[:len(line)-len(trimmed)]
+	}
+	return defaultBlockIndent
+}
+
+// findBlockHeader returns the index of the line equal to "<block>:", or -1.
+func findBlockHeader(frontLines []string, block string) int {
+	target := block + ":"
+	for i, l := range frontLines {
+		if l == target {
+			return i
+		}
+	}
+	return -1
+}
+
+// findKeyInBlock searches inside the block for a child line whose stripped
+// content starts with `key:`. Returns -1 when absent. Honours arbitrary
+// indent (so a 4-space-indented file gets matched as cleanly as a 2-space).
+func findKeyInBlock(frontLines []string, blockLine int, key string) int {
+	if blockLine < 0 {
+		return -1
+	}
+	for j := blockLine + 1; j < len(frontLines); j++ {
+		line := frontLines[j]
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+			return -1 // next top-level block reached
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, key+":") {
+			return j
+		}
+	}
+	return -1
+}
+
+// writeFrontMatter is defined in settings_patch.go (shared trailing-newline
+// policy for every patcher in this package).
+
 // patchBlockBoolField is the shared implementation used by PatchAgentBoolField
 // and PatchWorkspaceBoolField.
 func patchBlockBoolField(path, block, key string, enabled bool) error {
@@ -204,58 +273,35 @@ func patchBlockBoolField(path, block, key string, enabled bool) error {
 		return fmt.Errorf("workflow patch bool: no front matter in %s", path)
 	}
 
-	keyLine := "  " + key + ": "
-	keyFound := -1
-	blockLine := -1
-	// Find the target block header, then search for the key only within that
-	// block (i.e. lines after the header that start with two-space indent,
-	// stopping at the next top-level key or end of front matter).
-	for i, l := range frontLines {
-		if l == block+":" {
-			blockLine = i
-			// Scan forward within this block for the key.
-			for j := i + 1; j < len(frontLines); j++ {
-				line := frontLines[j]
-				// A line with no leading spaces is the start of the next block.
-				if len(line) > 0 && line[0] != ' ' {
-					break
-				}
-				if strings.HasPrefix(line, keyLine) {
-					keyFound = j
-					break
-				}
-			}
-			break
-		}
-	}
+	blockLine := findBlockHeader(frontLines, block)
+	indent := detectBlockIndent(frontLines, blockLine)
+	keyLine := indent + key + ": "
+	keyFound := findKeyInBlock(frontLines, blockLine, key)
 
-	if keyFound >= 0 {
-		if !enabled {
-			frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-		} else {
-			frontLines[keyFound] = keyLine + "true"
-		}
-	} else if enabled {
-		insertAt := len(frontLines)
-		if blockLine >= 0 {
-			insertAt = blockLine + 1
-		}
-		newLines := make([]string, 0, len(frontLines)+1)
-		newLines = append(newLines, frontLines[:insertAt]...)
-		newLines = append(newLines, keyLine+"true")
-		newLines = append(newLines, frontLines[insertAt:]...)
-		frontLines = newLines
+	switch {
+	case keyFound >= 0 && !enabled:
+		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
+	case keyFound >= 0:
+		frontLines[keyFound] = keyLine + "true"
+	case enabled:
+		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyLine+"true")
 	}
+	return writeFrontMatter(path, frontLines, bodyLines)
+}
 
-	var b strings.Builder
-	b.WriteString("---\n")
-	b.WriteString(strings.Join(frontLines, "\n"))
-	b.WriteString("\n---\n")
-	b.WriteString(strings.Join(bodyLines, "\n"))
-	if len(bodyLines) > 0 && bodyLines[len(bodyLines)-1] != "" {
-		b.WriteString("\n")
+// insertAfterBlockHeader inserts `line` immediately after `blockLine`, or at
+// the end of frontLines when the block header is absent (defensive — patcher
+// callers always pass a valid header in practice).
+func insertAfterBlockHeader(frontLines []string, blockLine int, line string) []string {
+	insertAt := len(frontLines)
+	if blockLine >= 0 {
+		insertAt = blockLine + 1
 	}
-	return atomicfs.WriteFile(path, []byte(b.String()), 0o644)
+	out := make([]string, 0, len(frontLines)+1)
+	out = append(out, frontLines[:insertAt]...)
+	out = append(out, line)
+	out = append(out, frontLines[insertAt:]...)
+	return out
 }
 
 // PatchAgentStringField sets or removes a string key under the agent: block of the YAML front matter.
@@ -271,47 +317,20 @@ func PatchAgentStringField(path, key, value string) error {
 		return fmt.Errorf("workflow patch string: no front matter in %s", path)
 	}
 
-	keyPrefix := "  " + key + ": "
-	keyFound := -1
-	agentLine := -1
-	for i, l := range frontLines {
-		if l == "agent:" {
-			agentLine = i
-		}
-		if strings.HasPrefix(l, keyPrefix) {
-			keyFound = i
-			break
-		}
-	}
+	blockLine := findBlockHeader(frontLines, "agent")
+	indent := detectBlockIndent(frontLines, blockLine)
+	keyPrefix := indent + key + ": "
+	keyFound := findKeyInBlock(frontLines, blockLine, key)
 
-	if keyFound >= 0 {
-		if value == "" {
-			// Remove the key line.
-			frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-		} else {
-			frontLines[keyFound] = keyPrefix + strconv.Quote(value)
-		}
-	} else if value != "" {
-		insertAt := len(frontLines)
-		if agentLine >= 0 {
-			insertAt = agentLine + 1
-		}
-		newLines := make([]string, 0, len(frontLines)+1)
-		newLines = append(newLines, frontLines[:insertAt]...)
-		newLines = append(newLines, keyPrefix+strconv.Quote(value))
-		newLines = append(newLines, frontLines[insertAt:]...)
-		frontLines = newLines
+	switch {
+	case keyFound >= 0 && value == "":
+		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
+	case keyFound >= 0:
+		frontLines[keyFound] = keyPrefix + strconv.Quote(value)
+	case value != "":
+		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyPrefix+strconv.Quote(value))
 	}
-
-	var b strings.Builder
-	b.WriteString("---\n")
-	b.WriteString(strings.Join(frontLines, "\n"))
-	b.WriteString("\n---\n")
-	b.WriteString(strings.Join(bodyLines, "\n"))
-	if len(bodyLines) > 0 && bodyLines[len(bodyLines)-1] != "" {
-		b.WriteString("\n")
-	}
-	return atomicfs.WriteFile(path, []byte(b.String()), 0o644)
+	return writeFrontMatter(path, frontLines, bodyLines)
 }
 
 // PatchAgentStringSliceField sets or removes a string-slice key under the
@@ -336,53 +355,20 @@ func patchBlockStringSliceField(path, block, key string, values []string) error 
 		return fmt.Errorf("workflow patch string slice: marshal %q: %w", key, err)
 	}
 
-	keyLine := "  " + key + ": "
-	keyFound := -1
-	blockLine := -1
-	for i, l := range frontLines {
-		if l == block+":" {
-			blockLine = i
-			for j := i + 1; j < len(frontLines); j++ {
-				line := frontLines[j]
-				if len(line) > 0 && line[0] != ' ' {
-					break
-				}
-				if strings.HasPrefix(line, keyLine) {
-					keyFound = j
-					break
-				}
-			}
-			break
-		}
-	}
+	blockLine := findBlockHeader(frontLines, block)
+	indent := detectBlockIndent(frontLines, blockLine)
+	keyLine := indent + key + ": "
+	keyFound := findKeyInBlock(frontLines, blockLine, key)
 
-	if keyFound >= 0 {
-		if len(values) == 0 {
-			frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-		} else {
-			frontLines[keyFound] = keyLine + string(encoded)
-		}
-	} else if len(values) > 0 {
-		insertAt := len(frontLines)
-		if blockLine >= 0 {
-			insertAt = blockLine + 1
-		}
-		newLines := make([]string, 0, len(frontLines)+1)
-		newLines = append(newLines, frontLines[:insertAt]...)
-		newLines = append(newLines, keyLine+string(encoded))
-		newLines = append(newLines, frontLines[insertAt:]...)
-		frontLines = newLines
+	switch {
+	case keyFound >= 0 && len(values) == 0:
+		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
+	case keyFound >= 0:
+		frontLines[keyFound] = keyLine + string(encoded)
+	case len(values) > 0:
+		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyLine+string(encoded))
 	}
-
-	var b strings.Builder
-	b.WriteString("---\n")
-	b.WriteString(strings.Join(frontLines, "\n"))
-	b.WriteString("\n---\n")
-	b.WriteString(strings.Join(bodyLines, "\n"))
-	if len(bodyLines) > 0 && bodyLines[len(bodyLines)-1] != "" {
-		b.WriteString("\n")
-	}
-	return atomicfs.WriteFile(path, []byte(b.String()), 0o644)
+	return writeFrontMatter(path, frontLines, bodyLines)
 }
 
 // PatchAgentStringMapField replaces or removes a string map under the agent:
@@ -398,14 +384,19 @@ func PatchAgentStringMapField(path, key string, values map[string]string) error 
 		return fmt.Errorf("workflow patch string map: no front matter in %s", path)
 	}
 
+	// v0.2.0 todolist5 B10 — honour the file's existing indent convention.
+	// The block header `<indent>key:` and the child entries are written with
+	// the indent the rest of the agent: block already uses (so a 4-space
+	// workflow stays at 4-space, a 2-space workflow stays at 2-space).
+	agentLine := findBlockHeader(frontLines, "agent")
+	indent := detectBlockIndent(frontLines, agentLine)
+	childIndent := indent + indent
+	headerLine := indent + key + ":"
+
 	blockStart := -1
 	blockEnd := -1
-	agentLine := -1
 	for i, line := range frontLines {
-		if line == "agent:" {
-			agentLine = i
-		}
-		if line != "  "+key+":" {
+		if line != headerLine {
 			continue
 		}
 		blockStart = i
@@ -416,9 +407,8 @@ func PatchAgentStringMapField(path, key string, values map[string]string) error 
 				j++
 				continue
 			}
-			trimmed := strings.TrimLeft(l, " ")
-			indent := len(l) - len(trimmed)
-			if indent > 2 {
+			trimmed := strings.TrimLeft(l, " \t")
+			if len(l)-len(trimmed) > len(indent) {
 				j++
 			} else {
 				break
@@ -430,43 +420,44 @@ func PatchAgentStringMapField(path, key string, values map[string]string) error 
 
 	var replacement []string
 	if len(values) > 0 {
-		replacement = append(replacement, "  "+key+":")
+		replacement = append(replacement, headerLine)
 		keys := make([]string, 0, len(values))
 		for mapKey := range values {
 			keys = append(keys, mapKey)
 		}
 		sort.Strings(keys)
 		for _, mapKey := range keys {
-			replacement = append(replacement, "    "+strconv.Quote(mapKey)+": "+strconv.Quote(values[mapKey]))
+			replacement = append(replacement, childIndent+strconv.Quote(mapKey)+": "+strconv.Quote(values[mapKey]))
 		}
 	}
 
 	var newFrontLines []string
-	if blockStart >= 0 {
+	switch {
+	case blockStart >= 0:
 		newFrontLines = append(newFrontLines, frontLines[:blockStart]...)
 		newFrontLines = append(newFrontLines, replacement...)
 		newFrontLines = append(newFrontLines, frontLines[blockEnd:]...)
-	} else if len(replacement) > 0 {
-		insertAt := len(frontLines)
-		if agentLine >= 0 {
-			insertAt = agentLine + 1
-		}
-		newFrontLines = append(newFrontLines, frontLines[:insertAt]...)
-		newFrontLines = append(newFrontLines, replacement...)
-		newFrontLines = append(newFrontLines, frontLines[insertAt:]...)
-	} else {
+	case len(replacement) > 0:
+		newFrontLines = insertLinesAfter(frontLines, agentLine, replacement)
+	default:
 		return nil
 	}
+	return writeFrontMatter(path, newFrontLines, bodyLines)
+}
 
-	var b strings.Builder
-	b.WriteString("---\n")
-	b.WriteString(strings.Join(newFrontLines, "\n"))
-	b.WriteString("\n---\n")
-	b.WriteString(strings.Join(bodyLines, "\n"))
-	if len(bodyLines) > 0 && bodyLines[len(bodyLines)-1] != "" {
-		b.WriteString("\n")
+// insertLinesAfter inserts a sequence of lines immediately after `at`
+// (defensively appends when `at` < 0). Companion to insertAfterBlockHeader
+// for callers that need to insert more than one line at once.
+func insertLinesAfter(frontLines []string, at int, lines []string) []string {
+	insertAt := len(frontLines)
+	if at >= 0 {
+		insertAt = at + 1
 	}
-	return atomicfs.WriteFile(path, []byte(b.String()), 0o644)
+	out := make([]string, 0, len(frontLines)+len(lines))
+	out = append(out, frontLines[:insertAt]...)
+	out = append(out, lines...)
+	out = append(out, frontLines[insertAt:]...)
+	return out
 }
 
 // ProfileEntry describes one named agent profile for PatchProfilesBlock.

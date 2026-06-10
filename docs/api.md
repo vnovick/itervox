@@ -33,6 +33,7 @@ API token. These routes are:
 
 - `POST /agent-actions/{identifier}/comment`
 - `POST /agent-actions/{identifier}/comment_pr`
+- `POST /agent-actions/{identifier}/merge_pr`
 - `POST /agent-actions/{identifier}/create-issue`
 - `POST /agent-actions/{identifier}/move-state`
 - `POST /agent-actions/{identifier}/provide-input`
@@ -162,7 +163,6 @@ Useful top-level fields include:
 | `POST` | `/issues/{identifier}/reanalyze` | — | `{"queued":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/terminate` | — | `{"terminated":true,"identifier":"ENG-1"}` | `404 not_found` if not running or paused |
 | `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch |
-| `PATCH` | `/issues/{identifier}/state` | `{"state":"In Review"}` | `{"ok":true,"identifier":"ENG-1","state":"In Review"}` | Triggers immediate refresh |
 
 ### Per-issue overrides and human-input flow
 
@@ -242,6 +242,13 @@ surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 | `POST` | `/skills/fix` | `{"issueID":"UNUSED_PROFILE","fix": Fix}` | `{"status":"ok"}` | v0.2.0 only applies the non-destructive `UNUSED_PROFILE` `edit-yaml` fix; unsafe actions such as `remove-mcp` are rejected |
 | `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | Includes `HasRuntimeEvidence`; `503 analytics_unavailable` only before analytics can be computed |
 | `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; empty until `HasRuntimeEvidence` is true |
+
+### Dependency analyzer sidecar
+
+| Method | Path | Request body | Success response | Notes |
+|---|---|---|---|---|
+| `POST` | `/deps/analyze` | — | `{"jobID":"<uuid>","status":"queued"}` | Starts an async analyzer job over the snapshot's dependency graph |
+| `GET`  | `/deps/analyze/{jobID}` | — | `{"jobID":"<uuid>","status":"running\|completed\|failed","result":{...}}` | Polled by the dashboard until status is terminal |
 
 `Inventory` is a direct inventory/recommendation snapshot, not a complete
 normalized capability graph in v0.2.0. The response includes `ScanTime`,
@@ -403,9 +410,12 @@ daemon-backed permissions through profile `allowed_actions`.
 |---|---|---|---|
 | `POST` | `/agent-actions/{identifier}/comment` | `{"body":"..."}` | `{"ok":true}` |
 | `POST` | `/agent-actions/{identifier}/comment_pr` | `{"summary":"...","findings":[{"path":"...","line":42,"severity":"warning","body":"..."}]}` | `{"ok":true,"findings":N}` |
+| `POST` | `/agent-actions/{identifier}/merge_pr` | `{"pr":42,"strategy":"squash"}` | `{"ok":true,"merge_commit":"<sha>","strategy":"squash"}` |
 | `POST` | `/agent-actions/{identifier}/create-issue` | `{"title":"...","body":"..."}` | `{"ok":true,"issue":{...}}` |
 | `POST` | `/agent-actions/{identifier}/move-state` | `{"state":"Todo"}` | `{"ok":true}` |
 | `POST` | `/agent-actions/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
+
+`merge_pr` runs the daemon-side gh-CLI sequence (`gh pr view` → `gh pr checks --required` → `gh pr merge`) with required-checks, block-label, and mergeable-state guards. `strategy` defaults to `squash` when omitted and must be one of `squash` / `rebase` / `merge`. Refusal returns `409 merge_blocked` with a structured reason (`blocked_label:<label>`, `checks_failed:<excerpt>`, `not_mergeable:<state>`). Idempotent: a second call with the same `(identifier, pr)` returns the previously-merged commit SHA with `already_merged: true`. Block-list labels default to `["needs-human","migration","auth","feature-flag","breaking"]` via `agent.merge_block_labels`.
 
 These routes require an `Authorization: Bearer <grant-token>` header carrying a
 short-lived action grant for the specific issue and action.

@@ -11,6 +11,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/templates"
 )
 
@@ -102,6 +103,9 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
 		case "input-responder":
 			b.WriteString("      allowed_actions: [comment, provide_input]\n")
+		case initDepsAnalyzerProfileName:
+			// Dependency analyzer is read-only with respect to the tracker;
+			// it has no allowed_actions.
 		default:
 			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
 		}
@@ -110,6 +114,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
 	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
 	b.WriteString("  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.\n")
+	b.WriteString("  deps_analyzer_profile: " + initDepsAnalyzerProfileName + "    # Profile used by the dashboard \"Analyze dependencies\" button. Empty disables the button.\n")
 	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.\n")
 	b.WriteString("  reviewer_prompt: |\n")
 	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
@@ -170,7 +175,13 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("  # before_remove: |\n")
 	b.WriteString("  #   tar -czf ../workspace-backup.tgz .\n")
 
-	b.WriteString("\nserver:\n  port: 8090\n")
+	// port: 0 = OS picks a free port. Operators running a single itervox can
+	// pin a fixed port (e.g. 8090) here; running two itervox daemons in
+	// parallel in different repos is the common case, and `0` makes it
+	// just work. The actual bound URL is written to .itervox/dashboard_url
+	// (read by the Vite dev proxy) and surfaced in HEARTBEAT.md + the
+	// startup banner.
+	b.WriteString("\nserver:\n  port: 0\n")
 
 	b.WriteString("\n# ── automations (optional) ────────────────────────────────────────────\n")
 	b.WriteString("# Cron and event-driven helper rules layered on top of your agent profiles.\n")
@@ -322,7 +333,30 @@ func runInit(args []string) {
 	dir := fs.String("dir", ".", "directory to scan for repo metadata")
 	force := fs.Bool("force", false, "overwrite output file if it already exists")
 	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema")
+	templateName := fs.String("template", "minimal", "scaffold preset: minimal | full | rate-limit-fallback | pr-review | daily-qa")
+	// --server-port is opt-in for --update. When set (>= 0), the migration
+	// rewrites server.port in WORKFLOW.md. The recommended value for the
+	// "two itervox daemons in different repos" workflow is 0 (OS picks a
+	// free port). Negative = leave the field unchanged.
+	serverPort := fs.Int("server-port", -1, "for --update: rewrite server.port (use 0 to let the OS pick a free port; -1 = leave unchanged)")
+	// --analyze / --no-analyze override the placeholder-env heuristic that
+	// gates the synchronous one-shot dependency-analysis pass on fresh init.
+	// Default (analyzeMode == "auto") preserves the existing behaviour: run
+	// the pass when the env file looks populated; skip when it still has the
+	// placeholder hex chars from the scaffold.
+	analyzeMode := fs.String("analyze", "auto", "init-time dependency analysis: auto | always | never")
 	_ = fs.Parse(args)
+	switch *analyzeMode {
+	case "auto", "always", "never":
+	default:
+		fmt.Fprintf(os.Stderr, "itervox init: invalid --analyze %q (auto|always|never)\n", *analyzeMode)
+		fatalExit(2)
+	}
+	if !IsKnownTemplateName(*templateName) {
+		fmt.Fprintf(os.Stderr, "itervox init: unknown --template %q (valid: %s)\n", *templateName, strings.Join(KnownTemplateNames(), ", "))
+		fatalExit(2)
+	}
+	_ = *templateName // currently scaffolds the same default; future presets emit different blocks.
 
 	if *update {
 		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
@@ -338,6 +372,13 @@ func runInit(args []string) {
 			}
 		} else {
 			fmt.Printf("itervox init --update: %s already uses schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
+		}
+		if *serverPort >= 0 {
+			if err := rewriteServerPort(*workflowPath, *serverPort); err != nil {
+				fmt.Fprintf(os.Stderr, "itervox init --update: rewrite server.port: %v\n", err)
+				fatalExit(1)
+			}
+			fmt.Printf("itervox init --update: server.port set to %d in %s\n", *serverPort, *workflowPath)
 		}
 		for _, warning := range result.Warnings {
 			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
@@ -422,6 +463,13 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 	fmt.Printf("itervox init: wrote .itervox/agents profiles\n")
+	// P0-A — scaffold built-in profile files to disk so operators see them
+	// in version control next to their custom profiles. Idempotent; uses
+	// writeFileIfMissing semantics so operator edits are preserved.
+	if err := writeBuiltinProfileFilesIfMissing(*output, profiles.Names()); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fatalExit(1)
+	}
 
 	// Create .itervox/.env if it doesn't exist.
 	outputDir := filepath.Dir(*output)
@@ -451,6 +499,32 @@ func runInit(args []string) {
 	// doesn't broadly ignore .itervox/).
 	if err := finalizeItervoxGitignore(envDir); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
+	}
+
+	// Phase 1.3 — best-effort one-shot dependency analysis pass. Default
+	// behaviour ("auto") skips when the .env stub still has placeholder hex
+	// chars (the operator hasn't filled in credentials yet); the dashboard's
+	// "Analyze dependencies" button runs the pass instead. The --analyze
+	// flag lets operators override:
+	//   auto    (default) — run only when env file is populated
+	//   always           — run unconditionally; fail loud on missing keys
+	//   never            — skip; operator will run the pass later
+	shouldAnalyze := decideInitDepsAnalysis(*analyzeMode, envPath)
+	switch {
+	case !shouldAnalyze && *analyzeMode == "never":
+		fmt.Printf("itervox init: skipping initial dependency analysis (--analyze=never)\n")
+	case !shouldAnalyze:
+		fmt.Printf("itervox init: skipping initial dependency analysis (fill in %s, then run \"Analyze dependencies\" from the dashboard)\n", envPath)
+	default:
+		// Load the freshly-written .env so the analysis pass sees the same
+		// secrets the daemon will see on first launch.
+		loadDotEnv()
+		issueCount, edgeCount, sidecarPath, err := runInitDepsAnalysis(*output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "itervox init: WARNING: dependency analysis pass skipped (%v); run \"itervox deps analyze\" or click \"Analyze dependencies\" from the dashboard once credentials are configured.\n", err)
+		} else {
+			fmt.Printf("itervox init: analyzed %d issue(s); inferred %d edge(s) (wrote %s)\n", issueCount, edgeCount, sidecarPath)
+		}
 	}
 
 	fmt.Printf("Next steps:\n")

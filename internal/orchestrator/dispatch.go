@@ -79,6 +79,9 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 	if AvailableSlots(state) <= 0 {
 		return "no_slots"
 	}
+	if pauseState, paused := pausedByAnyInState(state); paused {
+		return "paused_by_state:" + pauseState
+	}
 	stateKey := strings.ToLower(issue.State)
 	if limit, ok := cfg.Agent.MaxConcurrentAgentsByState[stateKey]; ok {
 		if countRunningInState(state, issue.State) >= limit {

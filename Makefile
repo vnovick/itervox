@@ -1,9 +1,9 @@
 .PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
-# always use go1.25.10, even on machines where /usr/local/go is an older version.
+# always use go1.25.11, even on machines where /usr/local/go is an older version.
 # Must stay in sync with the `go` directive in go.mod.
-export GOTOOLCHAIN := go1.25.10
+export GOTOOLCHAIN := go1.25.11
 GO_PACKAGES := ./cmd/... ./internal/...
 
 all: build verify
@@ -25,7 +25,13 @@ build: web-deps web-build
 # targets (web-typecheck, web-lint, web-format, web-test, web-coverage, web-build) do NOT
 # install on their own so lefthook can run them in parallel without racing
 # pnpm installs.
-verify: web-deps fmt vet lint-go test web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit verify-track-b-docs
+verify: web-deps fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit verify-track-b-docs
+
+# evals-fast runs the deterministic recorded-mode evals suite. Sub-second
+# wall-clock; no API spend. Wired into `verify` so a prompt-change that
+# breaks recorded scenarios fails the build (P1.a).
+evals-fast:
+	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport' ./internal/evals/...
 
 # Release preflight mirrors tag-time checks. Keep `verify` as the normal PR/local
 # edit gate; this target additionally requires release tooling and a clean tree.

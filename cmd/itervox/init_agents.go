@@ -7,9 +7,45 @@ import (
 	"strings"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/profiles"
 )
 
-var initAgentProfileNames = []string{"implementer", "reviewer", "input-responder"}
+// writeBuiltinProfileFilesIfMissing scaffolds embedded SOUL.md and
+// INSTRUCTIONS.md to .itervox/agents/<name>/ for every profile name in
+// profileNames that resolves to a shipped built-in. Existing files are left
+// intact (writeFileIfMissing semantics). Returns nil if no built-ins are
+// referenced.
+func writeBuiltinProfileFilesIfMissing(workflowPath string, profileNames []string) error {
+	base := filepath.Dir(workflowPath)
+	if base == "" {
+		base = "."
+	}
+	for _, name := range profileNames {
+		b := profiles.Lookup(name)
+		if b == nil {
+			continue
+		}
+		dir := filepath.Join(base, ".itervox", "agents", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("itervox init: create %s: %w", dir, err)
+		}
+		if err := writeFileIfMissing(filepath.Join(dir, "SOUL.md"), b.Soul+"\n"); err != nil {
+			return err
+		}
+		if err := writeFileIfMissing(filepath.Join(dir, "INSTRUCTIONS.md"), b.Instructions+"\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var initAgentProfileNames = []string{"implementer", "reviewer", "input-responder", "deps-analyzer"}
+
+// initDepsAnalyzerProfileName is the canonical name for the file-backed
+// dependency-analyzer profile written by `itervox init`. The dashboard's
+// "Analyze dependencies" button keys off agent.deps_analyzer_profile, which is
+// wired to this name in the generated WORKFLOW.md front matter.
+const initDepsAnalyzerProfileName = "deps-analyzer"
 
 func writeInitAgentFiles(workflowPath, runner string) error {
 	baseDir := filepath.Dir(workflowPath)
@@ -65,7 +101,7 @@ func ensureItervoxGitignore(itervoxDir string) error {
 		return fmt.Errorf("itervox init: create %s: %w", itervoxDir, err)
 	}
 	path := filepath.Join(itervoxDir, ".gitignore")
-	lines := []string{".env", "HEARTBEAT.md", "logs/", "runtime/", "/*.json"}
+	lines := []string{".env", "HEARTBEAT.md", "logs/", "runtime/", "/*.json", "bin/"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)
@@ -102,8 +138,68 @@ func initProfileCommand(runner string) (command string, backend string) {
 	return "claude", ""
 }
 
+// writeDepsAnalyzerProfileFiles writes the deps-analyzer SOUL + INSTRUCTIONS
+// scaffolds into `.itervox/agents/deps-analyzer/` next to the given workflow
+// path. Existing files are left intact (writeFileIfMissing semantics) so a
+// user's prior edits to the scaffold are preserved across re-runs.
+func writeDepsAnalyzerProfileFiles(workflowPath, runner string) error {
+	dir := filepath.Join(filepath.Dir(workflowPath), ".itervox", "agents", initDepsAnalyzerProfileName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("itervox init --update: create %s: %w", dir, err)
+	}
+	if err := writeFileIfMissing(filepath.Join(dir, "SOUL.md"), initSoulContent(initDepsAnalyzerProfileName)); err != nil {
+		return err
+	}
+	return writeFileIfMissing(filepath.Join(dir, "INSTRUCTIONS.md"), initInstructionsContent(initDepsAnalyzerProfileName, runner))
+}
+
+// detectMigrationRunner inspects existing agent.profiles entries and returns
+// "codex" when any profile's command mentions codex, else "claude". Used by
+// migrate paths that don't have a --runner flag to pick a sensible default
+// for newly-scaffolded profiles.
+func detectMigrationRunner(profiles map[string]any) string {
+	for _, raw := range profiles {
+		profile, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		command, _ := profile["command"].(string)
+		if strings.Contains(strings.ToLower(command), "codex") {
+			return "codex"
+		}
+		backend, _ := profile["backend"].(string)
+		if strings.EqualFold(backend, "codex") {
+			return "codex"
+		}
+	}
+	return "claude"
+}
+
 func initSoulContent(profile string) string {
 	switch profile {
+	case initDepsAnalyzerProfileName:
+		return `# deps-analyzer SOUL
+
+## Identity
+You are the dependency analyzer for this itervox-managed project. You read
+the full issue list and surface dependency relations the tracker does not
+declare.
+
+## Purpose
+Detect natural-language "X depends on Y" / "X blocked by Y" / "X is a
+sub-task of Y" relations in issue titles and bodies, and emit them as a
+strict JSON edge list. You never modify tracker state and never speculate
+beyond explicit textual evidence.
+
+## Boundaries
+- Never write to the tracker. Read-only.
+- Skip any relation already declared by the tracker.
+- Stop on ambiguity rather than guess.
+
+## Output Contract
+A single JSON object on stdout: {"edges":[{"source":"FOO-12","target":"FOO-34","evidence":"..."}]}.
+Nothing else — no surrounding prose, no markdown fences.
+`
 	case "reviewer":
 		return `# reviewer SOUL
 
@@ -168,6 +264,43 @@ const handoffProtocolSection = `## Handoff Protocol
 
 func initInstructionsContent(profile string, runner string) string {
 	switch profile {
+	case initDepsAnalyzerProfileName:
+		return `# deps-analyzer INSTRUCTIONS
+
+## Required Reading
+- Read the supplied "## Issues" block in your prompt. Each entry has identifier, title, body, and current state.
+- Read the supplied "## Existing Tracker Edges" block; these are relations the tracker already declares.
+
+## Workflow
+1. Walk every issue. For each issue, look for natural-language references that imply a dependency:
+   - "blocked by FOO-12"
+   - "depends on FOO-34"
+   - "sub-task of FOO-56"
+   - "needs FOO-78 first"
+2. Skip any relation already present in the tracker-edges block.
+3. For each surviving relation, emit one edge object with:
+   - "source": the blocking issue identifier
+   - "target": the blocked issue identifier
+   - "evidence": a short quotation or paraphrase showing why you inferred the edge
+4. If you cannot identify any non-tracker relations, return {"edges":[]}.
+
+## Done Criteria
+- Output is a single JSON object on stdout matching the schema below.
+- No prose before or after the JSON; no markdown code fences.
+- Every emitted edge has all three fields populated.
+- You never modified the tracker, the workspace, or any file.
+
+## Output Schema
+{
+  "edges": [
+    { "source": "FOO-12", "target": "FOO-34", "evidence": "issue body mentions \"blocked by FOO-12\"" }
+  ]
+}
+
+## Ambiguity Policy
+If the evidence is weak or contradictory, omit the edge. Operators prefer
+the dashboard miss an inferred relation over showing a false one.
+`
 	case "reviewer":
 		return `# reviewer INSTRUCTIONS
 

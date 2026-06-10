@@ -322,7 +322,7 @@ func TestWriteInitAgentFiles_CreatesAgentFilesAndGitignore(t *testing.T) {
 
 	require.NoError(t, writeInitAgentFiles(workflowPath, "claude"))
 
-	for _, profile := range []string{"implementer", "reviewer", "input-responder"} {
+	for _, profile := range []string{"implementer", "reviewer", "input-responder", "deps-analyzer"} {
 		assert.FileExists(t, filepath.Join(dir, ".itervox", "agents", profile, "SOUL.md"))
 		assert.FileExists(t, filepath.Join(dir, ".itervox", "agents", profile, "INSTRUCTIONS.md"))
 	}
@@ -413,7 +413,8 @@ Body {{ issue.identifier }}.
 	result, err := migrateWorkflowToSchema2(workflowPath, false, time.Date(2026, 5, 21, 9, 0, 0, 0, time.UTC))
 	require.NoError(t, err)
 	assert.True(t, result.Changed)
-	assert.Equal(t, []string{"implementer", "reviewer"}, result.Profiles)
+	assert.Equal(t, []string{"implementer", "reviewer", "deps-analyzer"}, result.Profiles,
+		"migration carries inline-prompt profiles plus the new always-on deps-analyzer scaffold")
 	assert.FileExists(t, workflowPath+".bak")
 
 	backup, err := os.ReadFile(workflowPath + ".bak")
@@ -517,7 +518,8 @@ Body.
 	require.NoError(t, os.WriteFile(workflowPath, []byte(legacy), 0o644))
 	require.NoError(t, os.WriteFile(workflowPath+".bak", []byte("stale backup\n"), 0o644))
 
-	result, err := migrateWorkflowToSchema2(workflowPath, false, time.Date(2026, 5, 21, 9, 0, 0, 0, time.UTC))
+	// todolist4 A.3 — destructive overwrite now requires --force.
+	result, err := migrateWorkflowToSchema2(workflowPath, true, time.Date(2026, 5, 21, 9, 0, 0, 0, time.UTC))
 	require.NoError(t, err)
 	assert.True(t, result.Changed)
 
@@ -635,6 +637,236 @@ Body.
 	assert.Contains(t, string(migrated), "itervox_schema_version: 2")
 }
 
+// v0.2.0 todolist5 — when the workflow already uses schema 2 (no inline
+// profile prompts) but still carries the legacy top-level
+// `agent.reviewer_prompt`, the migration must emit a warning explaining
+// the field is legacy and NOT silently report "already uses schema 2".
+// Without --force, no files change; the warning is the entire payload.
+func TestMigrateWorkflowToSchema2_DetectsLegacyReviewerPromptWithoutForce(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	// Pre-populate deps-analyzer scaffold so the new always-on deps-analyzer
+	// path does not trigger and confound the legacy reviewer_prompt assertion.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "deps-analyzer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "SOUL.md"), []byte("# deps-analyzer SOUL\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "INSTRUCTIONS.md"), []byte("# deps-analyzer INSTRUCTIONS\n"), 0o644))
+	source := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  reviewer_profile: reviewer
+  deps_analyzer_profile: deps-analyzer
+  reviewer_prompt: |
+    You are the custom reviewer for issue {{ issue.identifier }}.
+    Be terse.
+  profiles:
+    reviewer:
+      command: claude
+      soul_file: .itervox/agents/reviewer/SOUL.md
+      instructions_file: .itervox/agents/reviewer/INSTRUCTIONS.md
+    deps-analyzer:
+      command: claude
+      soul_file: .itervox/agents/deps-analyzer/SOUL.md
+      instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
+---
+
+Body.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	now := time.Date(2026, 5, 28, 18, 0, 0, 0, time.UTC)
+
+	result, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+	assert.False(t, result.Changed, "no rewrite without --force")
+	require.NotEmpty(t, result.Warnings, "legacy reviewer_prompt must produce a warning")
+	assert.Contains(t, result.Warnings[0], "reviewer_prompt")
+	// The workflow file must be untouched.
+	got, _ := os.ReadFile(workflowPath)
+	assert.Equal(t, source, string(got), "without --force the workflow is unchanged")
+}
+
+// v0.2.0 todolist5 — with --force, the legacy reviewer_prompt is appended
+// into the reviewer profile's INSTRUCTIONS.md and removed from WORKFLOW.md.
+func TestMigrateWorkflowToSchema2_MigratesLegacyReviewerPromptWithForce(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	// Existing INSTRUCTIONS.md to confirm preservation + append semantics.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "reviewer"), 0o755))
+	existingInstructions := "# reviewer INSTRUCTIONS\n\n## Existing content\n\nKeep me alive.\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".itervox", "agents", "reviewer", "INSTRUCTIONS.md"),
+		[]byte(existingInstructions), 0o644))
+
+	source := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  reviewer_profile: reviewer
+  reviewer_prompt: |
+    You are the custom reviewer for issue {{ issue.identifier }}.
+    Be terse.
+  profiles:
+    reviewer:
+      command: claude
+      soul_file: .itervox/agents/reviewer/SOUL.md
+      instructions_file: .itervox/agents/reviewer/INSTRUCTIONS.md
+---
+
+Body.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	now := time.Date(2026, 5, 28, 18, 0, 0, 0, time.UTC)
+
+	result, err := migrateWorkflowToSchema2(workflowPath, true, now)
+	require.NoError(t, err)
+	require.True(t, result.Changed, "force must rewrite the workflow")
+
+	migrated, _ := os.ReadFile(workflowPath)
+	assert.NotContains(t, string(migrated), "reviewer_prompt",
+		"legacy field must be removed from front matter")
+
+	instructions, err := os.ReadFile(filepath.Join(dir, ".itervox", "agents", "reviewer", "INSTRUCTIONS.md"))
+	require.NoError(t, err)
+	got := string(instructions)
+	assert.Contains(t, got, "## Existing content", "existing content must be preserved")
+	assert.Contains(t, got, "Keep me alive.", "existing body must be preserved")
+	assert.Contains(t, got, "## Reviewer Template (migrated from agent.reviewer_prompt",
+		"migrated content must land under a labelled section")
+	assert.Contains(t, got, "You are the custom reviewer for issue", "migrated content body")
+	assert.Contains(t, got, "{{ issue.identifier }}", "Liquid placeholders preserved verbatim")
+}
+
+// v0.2.0 todolist7 C3 — `itervox init --update` on a schema-2 workflow that
+// pre-dates the `deps_analyzer_profile` field (i.e. anyone who migrated to
+// Track B before todolist6 landed) must scaffold both the profile entry and
+// the field, so the dashboard "Analyze dependencies" button enables without
+// the operator having to hand-edit YAML.
+func TestMigrateWorkflowToSchema2_AddsMissingDepsAnalyzerProfile(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	source := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Body.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	now := time.Date(2026, 6, 2, 9, 0, 0, 0, time.UTC)
+
+	result, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+	require.True(t, result.Changed, "migration must rewrite when deps-analyzer scaffold is missing")
+
+	migrated, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	got := string(migrated)
+	assert.Contains(t, got, "deps_analyzer_profile: "+initDepsAnalyzerProfileName,
+		"missing field must be added")
+	assert.Contains(t, got, initDepsAnalyzerProfileName+":",
+		"profile entry must be registered under agent.profiles")
+	assert.Contains(t, got, ".itervox/agents/"+initDepsAnalyzerProfileName+"/SOUL.md")
+	assert.Contains(t, got, ".itervox/agents/"+initDepsAnalyzerProfileName+"/INSTRUCTIONS.md")
+	soulPath := filepath.Join(dir, ".itervox", "agents", initDepsAnalyzerProfileName, "SOUL.md")
+	instructionsPath := filepath.Join(dir, ".itervox", "agents", initDepsAnalyzerProfileName, "INSTRUCTIONS.md")
+	_, soulErr := os.Stat(soulPath)
+	_, instructionsErr := os.Stat(instructionsPath)
+	assert.NoError(t, soulErr, "SOUL.md scaffold must exist for the new deps-analyzer profile")
+	assert.NoError(t, instructionsErr, "INSTRUCTIONS.md scaffold must exist for the new deps-analyzer profile")
+	assert.Contains(t, got, "implementer:", "pre-existing profile must be preserved")
+}
+
+// v0.2.0 todolist7 C3 — running the migration twice on the same workflow must
+// produce no additional writes for the deps-analyzer artefacts. Operator
+// edits to the scaffolded INSTRUCTIONS.md must survive the second run.
+func TestMigrateWorkflowToSchema2_DepsAnalyzerScaffoldIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	source := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Body.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	now := time.Date(2026, 6, 2, 9, 0, 0, 0, time.UTC)
+
+	firstResult, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+	require.True(t, firstResult.Changed)
+
+	instructionsPath := filepath.Join(dir, ".itervox", "agents", initDepsAnalyzerProfileName, "INSTRUCTIONS.md")
+	contentAfterFirst, err := os.ReadFile(instructionsPath)
+	require.NoError(t, err)
+	const operatorMarker = "## Operator edit\n\nDo not delete."
+	require.NoError(t, os.WriteFile(instructionsPath,
+		append([]byte(operatorMarker+"\n\n"), contentAfterFirst...), 0o644))
+
+	workflowBefore, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+
+	secondResult, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+	assert.False(t, secondResult.Changed,
+		"second migration on an already-scaffolded workflow must be a no-op")
+
+	workflowAfter, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, workflowBefore, workflowAfter, "workflow file must be byte-identical")
+
+	instructionsAfter, err := os.ReadFile(instructionsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(instructionsAfter), operatorMarker,
+		"operator edit must survive the idempotency-run")
+}
+
+// v0.2.0 todolist5 — DefaultReviewerPrompt content carries no signal; the
+// migration must treat it as if no legacy field is present.
+func TestMigrateWorkflowToSchema2_IgnoresDefaultReviewerPrompt(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	// Pre-populate deps-analyzer scaffold so the new always-on deps-analyzer
+	// path does not trigger and turn this Changed=false assertion into a flake.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "deps-analyzer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "SOUL.md"), []byte("# deps-analyzer SOUL\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "INSTRUCTIONS.md"), []byte("# deps-analyzer INSTRUCTIONS\n"), 0o644))
+	source := "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nagent:\n  deps_analyzer_profile: deps-analyzer\n  reviewer_prompt: |\n    " +
+		strings.ReplaceAll(strings.TrimSpace(config.DefaultReviewerPrompt), "\n", "\n    ") +
+		"\n  profiles:\n    reviewer:\n      command: claude\n      soul_file: .itervox/agents/reviewer/SOUL.md\n      instructions_file: .itervox/agents/reviewer/INSTRUCTIONS.md\n    deps-analyzer:\n      command: claude\n      soul_file: .itervox/agents/deps-analyzer/SOUL.md\n      instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md\n---\n\nBody.\n"
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	now := time.Date(2026, 5, 28, 18, 0, 0, 0, time.UTC)
+
+	result, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+	assert.False(t, result.Changed)
+	assert.Empty(t, result.Warnings, "DefaultReviewerPrompt must not produce a legacy warning")
+}
+
 // v0.2.0 audit P2-14 — covers `prompt: ""`. Same expected behavior as the
 // missing-prompt case: scaffolds get written, schema gets stamped.
 func TestMigrateWorkflowToSchema2_EmptyPrompt(t *testing.T) {
@@ -666,8 +898,9 @@ Body.
 }
 
 // v0.2.0 audit P2-14 — covers `agent: {}` with no profiles block at all.
-// The migrator must stamp the schema version and NOT create empty agent
-// directories.
+// The migrator stamps the schema version and creates the always-on
+// deps-analyzer scaffold. Other profiles must NOT be created, since they
+// were never declared by the operator.
 func TestMigrateWorkflowToSchema2_ZeroProfiles(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
@@ -690,12 +923,15 @@ Body.
 	migrated, err := os.ReadFile(workflowPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(migrated), "itervox_schema_version: 2")
+	assert.Contains(t, string(migrated), "deps_analyzer_profile: deps-analyzer",
+		"migration wires the deps-analyzer profile even when no profiles existed")
 
-	// Nothing under .itervox/agents/ should have been created.
+	// Only the deps-analyzer scaffold should exist — no other operator profiles.
 	agentsDir := filepath.Join(dir, ".itervox", "agents")
-	if entries, err := os.ReadDir(agentsDir); err == nil {
-		assert.Empty(t, entries, "no agent files should be created when there are no profiles")
-	}
+	entries, err := os.ReadDir(agentsDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "exactly one profile (deps-analyzer) should be scaffolded")
+	assert.Equal(t, "deps-analyzer", entries[0].Name())
 }
 
 func TestMigrateWorkflowToSchema2IsIdempotent(t *testing.T) {
@@ -738,9 +974,113 @@ Body.
 	assert.Equal(t, instructionsAfterFirst, instructionsAfterSecond)
 }
 
+// v0.2.0 todolist6 — migrate scaffolds the deps-analyzer profile + the
+// deps_analyzer_profile field when both are absent. After migration the
+// workflow validates cleanly against schema 2.
+func TestMigrateWorkflowToSchema2_ScaffoldsDepsAnalyzerWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	source := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Body.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "implementer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "SOUL.md"), []byte("# implementer SOUL\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "INSTRUCTIONS.md"), []byte("# implementer INSTRUCTIONS\n"), 0o644))
+	now := time.Date(2026, 5, 28, 9, 0, 0, 0, time.UTC)
+
+	result, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+	require.True(t, result.Changed, "scaffolding deps-analyzer is a workflow rewrite")
+	assert.Contains(t, result.Profiles, "deps-analyzer")
+
+	migrated, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(migrated), "deps_analyzer_profile: deps-analyzer",
+		"migration wires the deps_analyzer_profile field")
+	assert.Contains(t, string(migrated), "deps-analyzer:")
+
+	assert.FileExists(t, filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "SOUL.md"))
+	assert.FileExists(t, filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "INSTRUCTIONS.md"))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(cfg))
+	assert.Equal(t, "deps-analyzer", cfg.Agent.DepsAnalyzerProfile)
+}
+
+// v0.2.0 todolist6 — re-running --update is idempotent: a second pass over a
+// migrated workflow must not overwrite the operator's deps-analyzer edits.
+func TestMigrateWorkflowToSchema2_DepsAnalyzerScaffoldIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	source := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+
+Body.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(source), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "implementer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "SOUL.md"), []byte("# implementer SOUL\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "implementer", "INSTRUCTIONS.md"), []byte("# implementer INSTRUCTIONS\n"), 0o644))
+	now := time.Date(2026, 5, 28, 9, 0, 0, 0, time.UTC)
+
+	_, err := migrateWorkflowToSchema2(workflowPath, false, now)
+	require.NoError(t, err)
+
+	// Operator edits the scaffold.
+	soulPath := filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "SOUL.md")
+	custom := "# deps-analyzer SOUL\n\n## My custom soul\n"
+	require.NoError(t, os.WriteFile(soulPath, []byte(custom), 0o644))
+
+	migratedAfterFirst, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+
+	second, err := migrateWorkflowToSchema2(workflowPath, false, now.Add(time.Hour))
+	require.NoError(t, err)
+	assert.False(t, second.Changed, "second migration must be a no-op once scaffolding is present")
+
+	migratedAfterSecond, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, migratedAfterFirst, migratedAfterSecond, "second migration must not rewrite WORKFLOW.md")
+
+	soul, err := os.ReadFile(soulPath)
+	require.NoError(t, err)
+	assert.Equal(t, custom, string(soul), "operator edits must survive a second migration")
+}
+
 func TestMigrateWorkflowToSchema2WarnsOnAutoClearWorkspaceTrue(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	// Pre-populate deps-analyzer scaffold so the new always-on deps-analyzer
+	// path does not trigger and turn this Changed=false assertion into a flake.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "agents", "deps-analyzer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "SOUL.md"), []byte("# deps-analyzer SOUL\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "agents", "deps-analyzer", "INSTRUCTIONS.md"), []byte("# deps-analyzer INSTRUCTIONS\n"), 0o644))
 	legacy := `---
 itervox_schema_version: 2
 tracker:
@@ -750,11 +1090,16 @@ tracker:
 workspace:
   auto_clear: true
 agent:
+  deps_analyzer_profile: deps-analyzer
   profiles:
     implementer:
       command: claude
       soul_file: .itervox/agents/implementer/SOUL.md
       instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+    deps-analyzer:
+      command: claude
+      soul_file: .itervox/agents/deps-analyzer/SOUL.md
+      instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
 ---
 
 Body.

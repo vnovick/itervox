@@ -181,7 +181,13 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	)
 
 	dispatched := 0
-	for _, issue := range SortForDispatch(issues) {
+	// P2 — when prefer_high_outdegree is enabled, sort with the outdegree
+	// tiebreaker so foundation issues that unblock siblings dispatch first.
+	o.cfgMu.RLock()
+	preferOutdegree := o.cfg.Agent.PreferHighOutdegreeSort
+	o.cfgMu.RUnlock()
+	sorted := SortForDispatchWithOutdegree(issues, preferOutdegree)
+	for _, issue := range sorted {
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("orchestrator: no slots available, stopping dispatch",
 				"running", len(state.Running),
@@ -238,14 +244,59 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// terminal-state + queue/Running membership instead.
 	statusRemoved, prevRemoved := pruneIssueStatusHistory(&state, currentActive, now, issueStatusHistoryRetention)
 	auditRemoved := pruneTerminalDependencyAudit(&state)
-	if statusRemoved > 0 || prevRemoved > 0 || auditRemoved > 0 {
+
+	// v0.2.0 todolist5 B2 — sweep ledgers for identifiers whose last-observed
+	// tracker state is terminal (agent moved issue to "Done" via direct API).
+	// v0.2.0 todolist5 B9.b — also sweep ledgers for identifiers absent from
+	// the tracker entirely (deleted / hard-trashed / archived issues).
+	// Running workers are not cancelled — they complete naturally.
+	terminalCounts := pruneTerminalRuntimeLedgers(&state, buildTerminalIdentifierSet(&state))
+	absentCounts := pruneAbsentTrackerIssues(&state, currentActive)
+	ledger := LedgerJanitorCounts{
+		InputRequired: terminalCounts.InputRequired + absentCounts.InputRequired,
+		Retry:         terminalCounts.Retry + absentCounts.Retry,
+		Queue:         terminalCounts.Queue + absentCounts.Queue,
+		Paused:        terminalCounts.Paused + absentCounts.Paused,
+		Profile:       absentCounts.Profile,
+		Backend:       absentCounts.Backend,
+	}
+
+	if statusRemoved > 0 || prevRemoved > 0 || auditRemoved > 0 ||
+		ledger.InputRequired > 0 || ledger.Retry > 0 || ledger.Queue > 0 ||
+		ledger.Paused > 0 || ledger.Profile > 0 || ledger.Backend > 0 {
 		slog.Debug("orchestrator: janitor pass",
 			"status_history_removed", statusRemoved,
 			"prev_states_removed", prevRemoved,
 			"dependency_audit_removed", auditRemoved,
+			"input_required_removed", ledger.InputRequired,
+			"retry_removed", ledger.Retry,
+			"automation_queue_removed", ledger.Queue,
+			"paused_removed", ledger.Paused,
+			"profile_removed", ledger.Profile,
+			"backend_removed", ledger.Backend,
 		)
 	}
 	return state
+}
+
+// buildTerminalIdentifierSet walks PrevIssueStates and returns identifiers
+// whose last-observed state is terminal. The terminal predicate matches the
+// completion-state path used elsewhere in the orchestrator (case-insensitive
+// against CompletionState / FailedState / TerminalStates). v0.2.0 todolist5 B2.
+func buildTerminalIdentifierSet(state *State) map[string]struct{} {
+	if len(state.PrevIssueStates) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(state.PrevIssueStates))
+	for ident, lastState := range state.PrevIssueStates {
+		if lastState == "" {
+			continue
+		}
+		if isTerminalState(lastState, *state) {
+			out[ident] = struct{}{}
+		}
+	}
+	return out
 }
 
 // fireRetries processes all RetryAttempts whose DueAt <= now.
@@ -1422,7 +1473,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					// when present; otherwise fall back to defaults.
 					o.cfgMu.RLock()
 					rlPatterns := append([]string(nil), o.cfg.Agent.RateLimitErrorPatterns...)
+					transportPatterns := append([]string(nil), o.cfg.Agent.TransportErrorPatterns...)
 					o.cfgMu.RUnlock()
+					// todolist4 A.4 — classify the exhausted-retry exit as a
+					// transport failure so the dashboard can surface a
+					// distinct paused_transport tile instead of conflating
+					// it with the generic failure path.
+					if IsTransportFailure(errMsg, transportPatterns) {
+						state.TransportFailureCount++
+					}
 					if IsRateLimitFailureWithPatterns(errMsg, rlPatterns) {
 						failedProfile := ""
 						failedBackend := ""

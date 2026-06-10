@@ -11,7 +11,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
+
+// assertValidWorkflowYAML extracts the YAML front matter from a workflow
+// file's contents and confirms it parses cleanly. The original B10 symptom
+// was a mid-block indent mismatch that produced "mapping values are not
+// allowed in this context" at parse time. v0.2.0 todolist5 B10.
+func assertValidWorkflowYAML(t *testing.T, contents string) {
+	t.Helper()
+	body := strings.TrimPrefix(contents, "---\n")
+	end := strings.Index(body, "\n---\n")
+	if end < 0 {
+		t.Fatalf("expected closing front-matter delimiter, got:\n%s", contents)
+	}
+	front := body[:end]
+	var into map[string]any
+	if err := yaml.Unmarshal([]byte(front), &into); err != nil {
+		t.Fatalf("front matter must be valid YAML after Patch*; got error %v\n--- front matter ---\n%s", err, front)
+	}
+}
 
 func TestLoadBasicWorkflow(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "workflows", "basic.md")
@@ -474,6 +493,42 @@ func TestPatchAgentBoolFieldInsertWhenMissing(t *testing.T) {
 
 	data, _ := os.ReadFile(f)
 	assert.Contains(t, string(data), "  auto_resume: true")
+}
+
+// v0.2.0 todolist5 B10 — toggling a bool field in a workflow whose `agent:`
+// block uses 4-space indent (the default produced by yaml.v3 serialisation
+// on many Go encoders) MUST preserve that indent. Before the fix, the
+// patcher hardcoded 2-space indent and produced "  inline_input: true\n
+// auto_review: false" — invalid YAML at line 3.
+func TestPatchAgentBoolFieldPreserves4SpaceIndent(t *testing.T) {
+	source := "---\nagent:\n    auto_review: false\n    max_turns: 50\n---\n\nBody.\n"
+	f := writeTmp(t, source)
+	require.NoError(t, workflow.PatchAgentBoolField(f, "inline_input", true))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "    inline_input: true", "new key must adopt the 4-space indent the block already uses")
+	// The file must still parse as valid YAML — the actual symptom on
+	// inhabited workflows was a parse error at the mismatch line. This
+	// catches both an outright indent mismatch and any subtle prefix-overlap
+	// regression that might survive the textual contains check.
+	assertValidWorkflowYAML(t, got)
+}
+
+// v0.2.0 todolist5 B10 — toggling off (delete) on a 4-space file must also
+// preserve the file's indent for siblings.
+func TestPatchAgentBoolFieldSetFalsePreserves4SpaceIndent(t *testing.T) {
+	source := "---\nagent:\n    inline_input: true\n    auto_review: false\n---\n\nBody.\n"
+	f := writeTmp(t, source)
+	require.NoError(t, workflow.PatchAgentBoolField(f, "inline_input", false))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.NotContains(t, got, "inline_input")
+	assert.Contains(t, got, "    auto_review: false", "remaining sibling must keep its original 4-space indent")
+	assertValidWorkflowYAML(t, got)
 }
 
 func TestPatchAgentBoolFieldNoFrontMatterErrors(t *testing.T) {

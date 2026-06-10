@@ -1,0 +1,6 @@
+required_action_calls:
+  - merge_pr
+forbidden_actions:
+  - create_issue
+marker_phrases:
+  - "merged"

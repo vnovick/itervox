@@ -40,6 +40,7 @@ import (
 // review. v0.2.0 audit P2-4.
 var AllowedMutableCfgFields = map[string]struct{}{
 	"Agent.AutoReview":                   {},
+	"Agent.DepsAnalyzerProfile":          {},
 	"Agent.DispatchStrategy":             {},
 	"Agent.InlineInput":                  {},
 	"Agent.MaxConcurrentAgents":          {},

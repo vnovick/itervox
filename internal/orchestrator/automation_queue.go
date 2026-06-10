@@ -72,6 +72,13 @@ type AutomationQueueBackpressure struct {
 	RejectedSinceBoot  int
 	LastRejectedAt     time.Time
 	LastRejectedReason string
+	// todolist4 P2-2 — structured fields parallel to LastRejectedReason.
+	// LastRejectedReason continues to carry the colon-joined `reason:auto:
+	// trigger:ident` legacy string for backwards-compat with the dashboard;
+	// these structured fields are the operator-friendly split.
+	LastRejectedAutomationID string
+	LastRejectedTrigger      string
+	LastRejectedIdentifier   string
 }
 
 // DependencyAuditStatus is the normalized dependency state for one issue.
@@ -283,6 +290,9 @@ func recordAutomationQueueRejected(state *State, dispatch AutomationDispatch, is
 		dispatch.Trigger.Type,
 		issue.Identifier,
 	}, ":")
+	state.AutomationQueueBackpressure.LastRejectedAutomationID = dispatch.AutomationID
+	state.AutomationQueueBackpressure.LastRejectedTrigger = dispatch.Trigger.Type
+	state.AutomationQueueBackpressure.LastRejectedIdentifier = issue.Identifier
 	slog.Warn("orchestrator: automation queue full, rejecting dispatch",
 		"identifier", issue.Identifier,
 		"automation", dispatch.AutomationID,
@@ -406,6 +416,37 @@ func (o *Orchestrator) automationProfileUnavailableReason(dispatch AutomationDis
 	return ""
 }
 
+// claimPROpenedDedup mark-and-attempts the pr_opened dispatch dedup ledger:
+// returns true when the (identifier, prURL, automationID) triple is fresh and
+// records the key for future calls; returns false when an earlier dispatch
+// already claimed the same triple. No-op for non-pr_opened triggers.
+//
+// v0.2.0 todolist5 B4.
+func claimPROpenedDedup(state *State, issue domain.Issue, dispatch AutomationDispatch) bool {
+	if dispatch.Trigger.Type != config.AutomationTriggerPROpened {
+		return true
+	}
+	if dispatch.Trigger.PRURL == "" {
+		return true
+	}
+	key := issue.Identifier + "|" + dispatch.Trigger.PRURL + "|" + dispatch.AutomationID
+	if state.PROpenedDispatched == nil {
+		state.PROpenedDispatched = make(map[string]struct{})
+	}
+	if _, fired := state.PROpenedDispatched[key]; fired {
+		state.AutomationDroppedPROpenedDedupTotal++
+		slog.Info("orchestrator: pr_opened automation skipped (dedup)",
+			"identifier", issue.Identifier,
+			"automation", dispatch.AutomationID,
+			"pr_url", dispatch.Trigger.PRURL,
+			"automation_dropped_pr_opened_dedup_total", state.AutomationDroppedPROpenedDedupTotal)
+		return false
+	}
+	state.PROpenedDispatched[key] = struct{}{}
+	state.AutomationDispatchesPROpenedTotal++
+	return true
+}
+
 func (o *Orchestrator) dispatchOrQueueAutomation(
 	ctx context.Context,
 	state *State,
@@ -413,6 +454,11 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 	dispatch AutomationDispatch,
 	now time.Time,
 ) bool {
+	// v0.2.0 todolist5 B4 — pr_opened dedup. Resumed workers, retries, and
+	// secondary runs on the same issue all re-detect the same PR URL.
+	if !claimPROpenedDedup(state, issue, dispatch) {
+		return false
+	}
 	if reason := o.automationProfileUnavailableReason(dispatch); reason != "" {
 		slog.Warn("orchestrator: dropping automation dispatch with invalid profile",
 			"identifier", issue.Identifier,

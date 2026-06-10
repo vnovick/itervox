@@ -33,12 +33,11 @@ import (
 	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
-	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
-	"github.com/vnovick/itervox/internal/skills"
 	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
@@ -278,6 +277,7 @@ func main() {
 	}()
 
 	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
+	setItervoxBinEnv()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "init":
@@ -294,6 +294,15 @@ func main() {
 			return
 		case "status":
 			runStatus(os.Args[2:])
+			return
+		case "doctor":
+			runDoctor(os.Args[2:])
+			return
+		case "models":
+			runModels(os.Args[2:])
+			return
+		case "deps":
+			runDeps(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
@@ -375,16 +384,33 @@ func main() {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
+	// Refuse to start when a previous daemon is still running for this
+	// workflow. Without this guard a second daemon would silently stomp the
+	// first's HEARTBEAT.md, automation_queue.json, and per-issue logs,
+	// producing the symptom triad: "stale HEARTBEAT.md", "lost queue
+	// entries", "dashboard URL points at a daemon I can't find".
+	if pid, recorded, pidPath, err := requireNoLiveDaemon(*workflowPath); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		writeStartupErrorMarker(*workflowPath, err)
+		_ = pid
+		_ = recorded
+		_ = pidPath
+		fatalExit(1)
+	}
+
 	// Write a per-project PID file so `itervox stop` can find and terminate
-	// this daemon. Cleaned up on graceful shutdown (see defer below). A
-	// previous PID file from an unclean shutdown is silently overwritten;
-	// `itervox stop` validates liveness before signalling so a stale file
-	// cannot cause harm.
+	// this daemon. Cleaned up on graceful shutdown (see defer below).
 	if path, err := writePIDFile(*workflowPath); err != nil {
 		slog.Warn("itervox: failed to write PID file — `itervox stop` will not find this daemon", "error", err)
 	} else {
 		slog.Info("itervox: wrote PID file", "path", path, "pid", os.Getpid())
+		// Clean shutdown removes pidfile, dashboard_url, and HEARTBEAT.md
+		// together so a future operator never sees stale state from this
+		// run. Doctor / `itervox status` rely on these files being either
+		// fresh or absent to give accurate "is it alive" verdicts.
 		defer removePIDFile(*workflowPath)
+		defer removeDashboardURLFile(*workflowPath)
+		defer removeHeartbeatFile(*workflowPath)
 	}
 
 	// Outer loop: restart when WORKFLOW.md changes.
@@ -404,6 +430,7 @@ func main() {
 		if err != nil {
 			if firstIter {
 				slog.Error("startup: config invalid", "path", *workflowPath, "error", err)
+				writeStartupErrorMarker(*workflowPath, err)
 				fatalExit(1)
 			}
 			wait := reloadBackoff(reloadAttempt)
@@ -487,6 +514,15 @@ func main() {
 
 		if ctx.Err() != nil {
 			return // top-level shutdown
+		}
+
+		// Fatal startup errors (e.g. configured port already in use) MUST
+		// NOT be retried — the operator needs to change WORKFLOW.md or stop
+		// the conflicting process. Looping every 1s spams the log and gives
+		// no signal that intervention is required.
+		if isFatalStartupError(runErr) {
+			slog.Error("run aborted with fatal startup error — fix the cause and restart", "error", runErr)
+			fatalExit(1)
 		}
 
 		reloadMsg, reloadDelay := reloadPlanForRunExit(runErr)
@@ -584,21 +620,52 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	appSessionID := newAppSessionID()
 	orch.SetAppSessionID(appSessionID)
 
+	// Phase 1.3 advisory — when deps_analyzer_profile is set but no sidecar
+	// has been written, surface a single info-level line so operators
+	// understand why the Deps tab shows tracker-only relations. The
+	// dashboard's "Analyze dependencies" button (or `itervox deps analyze`
+	// from the shell) closes the gap.
+	advertiseMissingDepsSidecar(cfg, workflowPath)
+
 	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath)
 
 	// HTTP server — bind listener early so we know the actual port before
 	// starting the TUI (the TUI needs the correct dashboard URL for 'w' key).
+	//
+	// Default behaviour (server.port unset in WORKFLOW.md): bind port 0 so
+	// the OS picks a free port. This makes "two daemons in different repos"
+	// work out of the box. The actual port is written to
+	// .itervox/dashboard_url (read by Vite's dev proxy) and HEARTBEAT.md.
+	//
+	// Explicit port from WORKFLOW.md: NEVER auto-shift on EADDRINUSE. Silent
+	// shifting is the canonical "Vite proxies to 8090 but the daemon is on
+	// 8091" trap — operators trust WORKFLOW.md to be the source of truth
+	// for the port. If the explicit port is taken, the operator must change
+	// WORKFLOW.md OR stop the conflicting process.
 	var srvDone <-chan error
 	var srvListener net.Listener
 	var actualAddr string
 	var actionTokenStore *agentactions.Store
+	port := 0
 	if cfg.Server.Port != nil {
+		port = *cfg.Server.Port
+	}
+	{
 		var err error
-		srvListener, actualAddr, err = listenWithFallback(cfg.Server.Host, *cfg.Server.Port, 10)
+		srvListener, actualAddr, err = listenStrict(cfg.Server.Host, port)
 		if err != nil {
-			return fmt.Errorf("server: %w", err)
+			fmt.Fprintln(os.Stderr, err.Error())
+			fmt.Fprintln(os.Stderr,
+				"hint: to run two itervox daemons in parallel, set `server.port: 0` in WORKFLOW.md to let the OS pick a free port, or set a distinct explicit port per repo.")
+			writeStartupErrorMarker(workflowPath, err)
+			return fatalStartupError{err}
 		}
 		slog.Info("HTTP server listening", "addr", actualAddr)
+		// Persist the bound URL for Vite's dev proxy and for `itervox doctor`.
+		dashboardURL := "http://" + actualAddr + "/"
+		if err := writeDashboardURLFile(workflowPath, dashboardURL); err != nil {
+			slog.Warn("itervox: failed to write dashboard URL file", "error", err)
+		}
 		// Secure-by-default for non-loopback binds: if no token is set and the
 		// user hasn't explicitly opted into unauthenticated LAN access, we
 		// auto-generate an ephemeral token and install the bearer middleware.
@@ -689,6 +756,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	if err := ensureItervoxGitignore(filepath.Join(filepath.Dir(workflowPath), ".itervox")); err != nil {
 		slog.Warn("heartbeat: gitignore update failed", "error", err)
 	}
+	if err := refreshItervoxBinSymlink(filepath.Dir(workflowPath)); err != nil {
+		slog.Warn("itervox: bin symlink refresh failed", "error", err)
+	}
 	heartbeatDashboardURL := ""
 	if actualAddr != "" {
 		heartbeatDashboardURL = fmt.Sprintf("http://%s/", actualAddr)
@@ -733,6 +803,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			workflowPath: workflowPath,
 		}
 		adapter.initSkillsCache()
+		depsSvc, bindDepsNotify := wireDepsAnalyzerService(ctx, orch, cfg, tr, runner, workflowPath)
 		srv := server.New(server.Config{
 			Snapshot:         snap,
 			RefreshChan:      refreshChan,
@@ -743,8 +814,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
+			DepsAnalyzer:     depsSvc,
 		})
 		adapter.notify = srv.Notify
+		bindDepsNotify(srv.Notify)
 		if err := srv.Validate(); err != nil {
 			return fmt.Errorf("server configuration error: %w", err)
 		}
@@ -843,6 +916,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 	// neither the tracker slug nor the workflow path change within a daemon
 	// run (config reload restarts the process, so this closure is recreated).
 	projectName := resolveProjectName(cfg, workflowPath)
+	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
+	// file has changed since the last successful load. v0.2.0 todolist6.
+	depsSidecar := newDepsSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
@@ -978,7 +1054,13 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		}
 
 		pausedWithPR := orch.GetPausedOpenPRs()
-		dependencyGraphNodes, dependencyGraphEdges := dependencyGraphRows(s)
+		sidecar := depsSidecar.Latest()
+		dependencyGraphNodes, dependencyGraphEdges := dependencyGraphRows(s, sidecar)
+		var depsLastAnalyzedAt *time.Time
+		if sidecar != nil && !sidecar.GeneratedAt.IsZero() {
+			t := sidecar.GeneratedAt
+			depsLastAnalyzedAt = &t
+		}
 		snap := server.StateSnapshot{
 			GeneratedAt:                  now,
 			Counts:                       server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
@@ -1015,6 +1097,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DependencyAudit:              dependencyAuditRows(s.DependencyAudit),
 			DependencyGraphNodes:         dependencyGraphNodes,
 			DependencyGraphEdges:         dependencyGraphEdges,
+			DepsAnalyzerProfile:          orch.DepsAnalyzerProfileCfg(),
+			DepsLastAnalyzedAt:           depsLastAnalyzedAt,
 			AvailableModels:              convertModelsForSnapshot(cfg.Agent.AvailableModels),
 			SupportedAgentActions:        config.SupportedAgentActions(),
 			ReviewerProfile:              func() string { p, _ := orch.ReviewerCfg(); return p }(),
@@ -1197,218 +1281,6 @@ func buildTUIConfig(
 		return true
 	}
 	return tuiCfg, tuiCancel
-}
-
-// orchestratorAdapter implements server.OrchestratorClient using the live
-// orchestrator, log buffer, tracker, and WORKFLOW.md persistence helpers.
-// notify must be set after server construction (adapter.notify = srv.Notify).
-type orchestratorAdapter struct {
-	orch         *orchestrator.Orchestrator
-	logBuf       *logbuffer.Buffer
-	cfg          *config.Config
-	tr           tracker.Tracker
-	workflowPath string
-	notify       func()
-	skillsCache  *skills.Cache
-}
-
-func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {
-	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, a.cfg.Tracker.ActiveStates, a.cfg.Tracker.TerminalStates, a.cfg.Tracker.CompletionState)
-	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
-	if err != nil {
-		return nil, err
-	}
-	snap := a.orch.Snapshot()
-	now := time.Now()
-	result := make([]server.TrackerIssue, len(issues))
-	for i, issue := range issues {
-		result[i] = app.EnrichIssue(issue, snap, now, a.cfg)
-	}
-	return result, nil
-}
-
-func (a *orchestratorAdapter) CancelIssue(identifier string) bool {
-	return a.orch.CancelIssue(identifier)
-}
-
-func (a *orchestratorAdapter) ResumeIssue(identifier string) bool {
-	ok := a.orch.ResumeIssue(identifier)
-	if ok {
-		a.orch.Refresh()
-	}
-	return ok
-}
-
-func (a *orchestratorAdapter) TerminateIssue(identifier string) bool {
-	ok := a.orch.TerminateIssue(identifier)
-	if ok {
-		a.orch.Refresh()
-	}
-	return ok
-}
-
-func (a *orchestratorAdapter) ReanalyzeIssue(identifier string) bool {
-	return a.orch.ReanalyzeIssue(identifier)
-}
-
-func (a *orchestratorAdapter) FetchLogs(identifier string) []string {
-	return a.logBuf.Get(identifier)
-}
-
-func (a *orchestratorAdapter) FetchLogIdentifiers() []string {
-	return a.logBuf.Identifiers()
-}
-
-func (a *orchestratorAdapter) ClearLogs(identifier string) error {
-	return a.logBuf.Clear(identifier)
-}
-
-func (a *orchestratorAdapter) ClearAllLogs() error {
-	return a.logBuf.ClearAll()
-}
-
-func (a *orchestratorAdapter) ClearIssueSubLogs(identifier string) error {
-	logDir := a.orch.AgentLogDir()
-	if logDir == "" {
-		return nil
-	}
-	issueDir := filepath.Join(logDir, workspace.SanitizeKey(identifier))
-	if err := workspace.AssertContained(logDir, issueDir); err != nil {
-		return fmt.Errorf("clear sublogs: %w", err)
-	}
-	entries, err := os.ReadDir(issueDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		_ = os.Remove(filepath.Join(issueDir, e.Name()))
-	}
-	return nil
-}
-
-func (a *orchestratorAdapter) ClearSessionSublog(identifier, sessionID string) error {
-	logDir := a.orch.AgentLogDir()
-	if logDir == "" {
-		return nil
-	}
-	// Sanitize both path components to prevent directory traversal.
-	safeID := workspace.SanitizeKey(identifier)
-	safeSess := workspace.SanitizeKey(sessionID)
-	p := filepath.Join(logDir, safeID, safeSess+".jsonl")
-	if err := workspace.AssertContained(logDir, p); err != nil {
-		return fmt.Errorf("clear session sublog: %w", err)
-	}
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// FetchSubLogs returns parsed Claude Code session logs from CLAUDE_CODE_LOG_DIR.
-// The fetcher is selected based on where the issue was last run:
-//   - SSH host → SSHSublogFetcher (tar-over-SSH, session IDs from filenames)
-//   - local    → LocalSublogFetcher (direct disk read)
-//   - Docker   → DockerSublogFetcher (planned)
-func (a *orchestratorAdapter) FetchSubLogs(ctx context.Context, identifier string) ([]domain.IssueLogEntry, error) {
-	logDir := a.orch.AgentLogDir()
-	if logDir == "" {
-		return nil, nil
-	}
-	issueLogDir := filepath.Join(logDir, workspace.SanitizeKey(identifier))
-	return a.sublogFetcher(identifier).FetchSubLogs(ctx, issueLogDir)
-}
-
-// sublogFetcher resolves the correct SublogFetcher for identifier by inspecting
-// run history and live running sessions. Returns LocalSublogFetcher when no
-// remote host is found.
-func (a *orchestratorAdapter) sublogFetcher(identifier string) agent.SublogFetcher {
-	// Check currently-running sessions first (most recent wins).
-	// Running is keyed by issue ID, not identifier — iterate values.
-	snap := a.orch.Snapshot()
-	for _, entry := range snap.Running {
-		if entry.Issue.Identifier == identifier && entry.WorkerHost != "" {
-			return agent.SSHSublogFetcher{Host: entry.WorkerHost}
-		}
-	}
-	// Fall back to run history.
-	for _, run := range a.orch.RunHistory() {
-		if run.Identifier == identifier && run.WorkerHost != "" {
-			return agent.SSHSublogFetcher{Host: run.WorkerHost}
-		}
-	}
-	return agent.LocalSublogFetcher{}
-}
-
-func (a *orchestratorAdapter) DispatchReviewer(identifier string) error {
-	return a.orch.DispatchReviewer(identifier)
-}
-
-func (a *orchestratorAdapter) CommentOnIssue(ctx context.Context, identifier, body string) error {
-	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
-	if err != nil {
-		return fmt.Errorf("fetch issue: %w", err)
-	}
-	if issue == nil {
-		return fmt.Errorf("issue %s not found", identifier)
-	}
-	_, err = a.tr.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(body))
-	return err
-}
-
-func (a *orchestratorAdapter) CreateIssue(
-	ctx context.Context,
-	identifier, title, body, stateName string,
-) (*domain.Issue, error) {
-	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
-	if err != nil {
-		return nil, fmt.Errorf("fetch issue: %w", err)
-	}
-	if issue == nil {
-		return nil, fmt.Errorf("issue %s not found", identifier)
-	}
-	return a.tr.CreateIssue(ctx, issue.ID, title, body, stateName)
-}
-
-func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, stateName string) error {
-	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
-	if err != nil {
-		return fmt.Errorf("fetch issue: %w", err)
-	}
-	if issue == nil {
-		return fmt.Errorf("issue %s not found", identifier)
-	}
-	if err := a.tr.UpdateIssueState(ctx, issue.ID, stateName); err != nil {
-		return err
-	}
-	source := orchestrator.StatusSourceDashboard
-	if server.IssueStatusSource(ctx) == server.IssueStatusSourceAgent {
-		source = orchestrator.StatusSourceWorkerLifecycle
-	}
-	change := orchestrator.IssueStatusChange{
-		Identifier: identifier,
-		FromState:  issue.State,
-		ToState:    stateName,
-		Source:     source,
-	}
-	snap := a.orch.Snapshot()
-	if live := snap.Running[issue.ID]; live != nil {
-		change.ProfileName = live.ProfileName
-		change.Backend = live.Backend
-		change.WorkerHost = live.WorkerHost
-		if live.AutomationID != "" && server.IssueStatusSource(ctx) == server.IssueStatusSourceAgent {
-			change.Source = orchestrator.StatusSourceAutomation
-			change.AutomationID = live.AutomationID
-			change.TriggerType = live.TriggerType
-		}
-	}
-	a.orch.RecordIssueStatusChange(change)
-	return nil
 }
 
 // deduplicateStates concatenates backlog, active, terminal states and the
@@ -1809,6 +1681,52 @@ func runAction(args []string) {
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/provide-input"
 		body = map[string]string{"message": *message}
+	case "comment-pr":
+		// P0-E Option A: structured-findings sibling of `comment`. Accepts
+		// --summary plus optional --findings (path JSON file) and POSTs to
+		// /agent-actions/{id}/comment_pr. The handler is handleAgentCommentPR
+		// (internal/server/comment_pr.go).
+		fs := flag.NewFlagSet("action comment-pr", flag.ExitOnError)
+		summary := fs.String("summary", "", "review summary")
+		findingsPath := fs.String("findings", "", "path to JSON file containing the findings array")
+		_ = fs.Parse(args[1:])
+		var findings []map[string]any
+		if strings.TrimSpace(*findingsPath) != "" {
+			raw, err := os.ReadFile(*findingsPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "itervox action comment-pr: cannot read --findings %s: %v\n", *findingsPath, err)
+				fatalExit(2)
+			}
+			if err := json.Unmarshal(raw, &findings); err != nil {
+				fmt.Fprintf(os.Stderr, "itervox action comment-pr: invalid JSON in --findings: %v\n", err)
+				fatalExit(2)
+			}
+		}
+		if strings.TrimSpace(*summary) == "" && len(findings) == 0 {
+			fmt.Fprintln(os.Stderr, "itervox action comment-pr: --summary or --findings is required")
+			fatalExit(2)
+		}
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/comment_pr"
+		payload := map[string]any{}
+		if strings.TrimSpace(*summary) != "" {
+			payload["summary"] = *summary
+		}
+		if len(findings) > 0 {
+			payload["findings"] = findings
+		}
+		body = payload
+	case "merge-pr":
+		// P0-C: structured wrapper around the daemon's merge_pr endpoint.
+		fs := flag.NewFlagSet("action merge-pr", flag.ExitOnError)
+		pr := fs.Int("pr", 0, "GitHub pull request number to merge")
+		strategy := fs.String("strategy", "", "merge strategy (squash|rebase|merge); empty = use daemon default")
+		_ = fs.Parse(args[1:])
+		if *pr <= 0 {
+			fmt.Fprintln(os.Stderr, "itervox action merge-pr: --pr is required")
+			fatalExit(2)
+		}
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/merge_pr"
+		body = map[string]any{"pr": *pr, "strategy": *strategy}
 	default:
 		fmt.Fprintf(os.Stderr, "itervox action: unknown subcommand %q\n", args[0])
 		fatalExit(1)
@@ -1910,6 +1828,52 @@ func agentActionBaseURL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+// listenStrict tries to listen on the given host:port exactly. On
+// EADDRINUSE it returns an operator-friendly diagnostic instead of silently
+// shifting to the next port. Use this when the operator explicitly
+// configured a port in WORKFLOW.md — silent shifting would mismatch the
+// Vite dev proxy / `.itervox/dashboard_url` / HEARTBEAT contract.
+//
+// Special case `port == 0`: pass through to net.Listen, which makes the
+// kernel pick any free port. The returned addr reflects the actual bound
+// port so the dashboard URL and dashboard_url file are accurate. This is
+// the recommended setting in WORKFLOW.md for "two repos in parallel"
+// workflows.
+func listenStrict(host string, port int) (net.Listener, string, error) {
+	requested := fmt.Sprintf("%s:%d", host, port)
+	ln, err := net.Listen("tcp", requested)
+	if err == nil {
+		// When port == 0 the actual bound addr differs from requested. Always
+		// return the actual addr — callers use it for the dashboard URL.
+		return ln, ln.Addr().String(), nil
+	}
+	if !isAddrInUse(err) {
+		return nil, "", fmt.Errorf("http listen %s: %w", requested, err)
+	}
+	holder := describePortHolder(port)
+	return nil, "", fmt.Errorf(
+		"itervox: port %d already in use%s. Stop the conflicting process, change `server.port` in WORKFLOW.md, or set `server.port: 0` to let the OS pick a free port",
+		port, holder)
+}
+
+// describePortHolder runs `lsof -nP -iTCP:<port> -sTCP:LISTEN` so the
+// startup error names the process holding the port. Returns "" when lsof is
+// absent or returned nothing useful — best-effort. Operators on Linux
+// without lsof installed still get the actionable port-in-use message.
+func describePortHolder(port int) string {
+	cmd := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+	// Skip header; first data line is good enough for the operator.
+	return " (held by " + strings.Join(strings.Fields(lines[1]), " ") + ")"
 }
 
 // listenWithFallback tries to listen on the given host:port. If the port is

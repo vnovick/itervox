@@ -56,7 +56,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`itervox init --update` migration notice for `workspace.auto_clear: true`.** When migrating a workflow that has the setting enabled, the updater prints a one-line notice via `result.Warnings` describing the semantic shift to terminal-state-only clearing. Fires on every `--update` run, even when no schema migration is required, so operators discovering the setting late still see the notice.
 - **`itervox init --update --workflow <path>`** migrates v0.1.x workflows to schema 2. It writes a `WORKFLOW.md.bak` backup, extracts each profile's inline `prompt:` text into `INSTRUCTIONS.md`, generates a starter `SOUL.md`, patches the root `.gitignore` for `.itervox/agents/**`, and stamps `itervox_schema_version: 2` on the migrated workflow. Re-run on the same file is supported; existing agent files are preserved.
 - **`.itervox/HEARTBEAT.md` daemon liveness file.** A human-readable status file is written on startup and refreshed after state changes at a bounded interval (default 15 s). It records the active workflow path, schema version, dashboard URL, tracker/project, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. The file is gitignored as transient runtime state — it is NOT a tracked artefact.
-- **Automations v1**: a new top-level `automations:` block in `WORKFLOW.md` replaces the cron-only `schedules:` surface with nine trigger types — `cron`, `input_required`, `tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened` (gap B — fires when a worker's PR is detected), `rate_limited` (gap E — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven; the switch cap only limits/suppresses switching), and `blockers_resolved` (fires when dependency audit observes a previously blocked issue becoming unblocked). Each rule carries its own filter (`states` / `states_any`, `labels_any`, `identifier_regex`, `input_context_regex`, `limit`, `match_mode`) and instruction block layered on top of a selected profile. Legacy `schedules:` blocks are still parsed and upgraded to `cron` automations for back-compat.
+- **Automations v1**: a new top-level `automations:` block in `WORKFLOW.md` replaces the cron-only `schedules:` surface with ten trigger types — `cron`, `input_required`, `tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened` (gap B — fires when a worker's PR is detected), `pr_merged` (P1 — fires after a daemon-side merge succeeds or an external GitHub merge is observed), `rate_limited` (gap E — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven; the switch cap only limits/suppresses switching), and `blockers_resolved` (fires when dependency audit observes a previously blocked issue becoming unblocked). Each rule carries its own filter (`states` / `states_any`, `labels_any`, `identifier_regex`, `input_context_regex`, `limit`, `match_mode`) and instruction block layered on top of a selected profile. Legacy `schedules:` blocks are still parsed and upgraded to `cron` automations for back-compat.
 - **Automation launch boundary documented**: v0.2.0 is scoped to single-profile helper automations. It does not claim production downstream workflow orchestration: no fatal post-change gates, automation skip-decision logs, schedule run-now/next-fire operations, label-to-profile routing, reserved automation slots, structured gate artifacts, PR-check triggers, cost caps, or native multi-step planner/debate workflow execution. The docs now label dependency readiness as deterministic but intentionally narrow, and debate patterns as prompt-governed/advisory until native multi-step workflow execution lands.
 - **Durable automation queue and backpressure**: automation triggers that cannot start immediately are now represented in bounded orchestrator-owned queue state instead of disappearing when worker slots are full. `agent.max_automation_queue_length` defaults to 100; when saturated, cron/polled producers pause and the snapshot exposes `automationQueueBackpressure` for dashboard alerts.
 - **Dashboard Live Ops strip**: the top of the dashboard now shows live/waiting/offline state, agent capacity, automation queue length, blocked/unblocked dependency counts, retry/paused/input counters, SSH worker activity, today's automation dispatch count, and a red queue-full warning when automation producers are paused.
@@ -92,6 +92,112 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`useDebouncedCommit<T>` shared hook** : new `web/src/hooks/useDebouncedCommit.ts` generic hook owns draft-state + commit-on-blur for settings inputs. `SwitchCapSection` (E switch cap and window-hours inputs) now uses it. Avoids `Object.prototype.toString` collision in destructure defaults by naming the option `serialize` instead of `toString`.
 - **Shared `agenttest` scenario doubles** : new `internal/agent/agenttest/scenarios.go` package provides `SuccessRunner(sessionID)`, `FailRunner(failureText)` (returning `*CountingFailRunner` with atomic `CallCount() int64`), `RateLimitedFailRunner()` (pre-built failure text guaranteed to trip `IsRateLimitFailure`), and `InputRequiredRunner(sessionID, question)`. New tests in `scenarios_test.go` cover each helper. Existing per-test fakes stay for back-compat; new tests should adopt the shared doubles.
 - **`TestCfgMuFieldAudit` meta-test** : new `internal/orchestrator/cfg_mu_audit_test.go` walks every non-test `.go` file in the orchestrator package via `go/parser`/`go/ast`, finds every `o.cfg.<X> = ...` assignment, and asserts the field path is in `AllowedMutableCfgFields`. New runtime-mutable cfg fields fail the build until the doc-comment in `orchestrator.go` and the allowlist are both updated. Delivers the typed-`MutableConfig` invariant (deferred refactor) at a fraction of the cost.
+
+### Model catalog refresh (v0.2.0 closing-pass)
+
+- **`itervox models <list|refresh>` CLI subcommand.** `models list` prints
+  the current `agent.available_models` block from `WORKFLOW.md`. `models
+  refresh` queries Anthropic `/v1/models` (with `ANTHROPIC_API_KEY`) and
+  OpenAI `/v1/models` (with `OPENAI_API_KEY`), merges the result into
+  WORKFLOW.md, and writes atomically. Flags: `--backend claude|codex|all`
+  (default `all`), `--dry-run` (preview without writing), `--workflow PATH`
+  (default `WORKFLOW.md`). Per-backend semantics: refreshed backends
+  replace their list entirely; backends not named on the command line
+  keep their previous entries untouched.
+- **`POST /api/v1/settings/models/refresh` HTTP route.** Same logic as
+  the CLI; body `{"backend": "claude"|"codex"|"all"}` (default `all`).
+  Returns `{ok: true, models: {...}}` on success and triggers an SSE
+  state refresh so the dashboard model picker reflects the new options
+  without a reload. Non-orchestrator backends (in-memory quickstart,
+  tests) return `501 not_implemented` pointing at the CLI subcommand.
+- **Settings → Models card on the Agents page.** New `ModelsCard`
+  component lists every backend's current models and exposes a single
+  "Refresh from APIs" button (all backends) plus per-backend Refresh
+  links. Toast on success / failure.
+
+### Multi-daemon coexistence and operator diagnostics (v0.2.0 closing-pass)
+
+- **Default `server.port` is now `0` (OS picks a free port).** When
+  `server.port` is omitted from `WORKFLOW.md`, the daemon binds an
+  OS-assigned free port instead of skipping the HTTP server. Two itervox
+  daemons in two different repos now coexist out of the box. The actual
+  bound URL is written to `.itervox/dashboard_url` and surfaced in
+  `HEARTBEAT.md`, the startup banner, and `itervox doctor`. **Operators
+  who explicitly pinned a port in WORKFLOW.md are unaffected**; an
+  explicit port still binds strictly.
+- **`EADDRINUSE` is now a fatal startup error.** When `server.port` is
+  explicitly set to a port already in use, the daemon prints a structured
+  diagnostic naming the holding process (via `lsof`), writes
+  `.itervox/STARTUP_ERROR.md`, and exits non-zero. The previous behaviour
+  silently auto-shifted to the next free port, mismatching the Vite dev
+  proxy / `dashboard_url` / `HEARTBEAT.md` contract. The hint in the error
+  recommends `server.port: 0` for "two daemons in parallel" workflows.
+- **`itervox init --update --server-port <n>` migration flag.** Rewrites
+  `server.port` in an existing `WORKFLOW.md` (back-compat: omit the flag
+  to leave the field alone). `0` is the recommended value for new
+  multi-daemon setups; explicit ports still work for single-daemon
+  setups that pin a known URL.
+- **`itervox init` scaffolds `server.port: 0`** by default in fresh
+  `WORKFLOW.md` files. Operators who want a fixed port edit the value
+  after init.
+- **Pidfile + `HEARTBEAT.md` cleanup on shutdown.** `.itervox/daemon.pid`,
+  `.itervox/HEARTBEAT.md`, and `.itervox/dashboard_url` are removed
+  together on SIGINT/SIGTERM so a clean exit leaves no stale liveness
+  state. Doctor's HEARTBEAT-stale check catches the crashed-without-
+  cleanup case.
+- **Refuse-to-start when a previous daemon is alive.** Startup reads the
+  pidfile; if the recorded PID is still alive, the daemon refuses to
+  start with `itervox: another daemon already running for this WORKFLOW.md
+  (pid=<n>, recorded_workflow=<path>)`. Stale pidfiles (PID dead) are
+  silently overwritten with a slog notice. Prevents the "two daemons
+  fight over `.itervox/automation_queue.json`" symptom triad.
+- **`.itervox/dashboard_url` file + Vite auto-discovery.** Daemon writes
+  the actual bound URL atomically after the listener binds. `vite.config.ts`
+  walks up from `process.cwd()` looking for the file and uses it as the
+  proxy target. `ITERVOX_PROXY_TARGET` env var overrides for CI.
+  Fallback to `http://127.0.0.1:8090` keeps fresh-checkout `pnpm dev`
+  working.
+- **`itervox doctor` mitigation checks.** New `DoctorReport` fields:
+  - `PortInUseWarning`: configured port held by a non-itervox process.
+  - `HeartbeatStaleWarning`: `HEARTBEAT.md` exists but the recorded
+    daemon PID is dead.
+  - `DashboardURL` + `DashboardURLReachable`: probe `<dashboard_url>/api/v1/health`.
+  - `ItervoxBinEnv`: read from the env so the drift report can
+    downgrade severity when the operator has pinned `ITERVOX_BIN`.
+  - `--clear-startup-error` flag for the "I already fixed it" workflow.
+  - Binary-drift severity heuristic: only the "dev vs stable" case
+    (one binary reports `version=dev`, the other a release tag) is
+    ERROR; two stable installs with different SHAs render as `info:`.
+- **Restart loop bails on fatal startup errors.** A new
+  `fatalStartupError` sentinel marks "operator must intervene" failures
+  (e.g. configured port in use). The outer `run()` restart loop exits
+  via `fatalExit(1)` instead of retrying every second.
+
+### Added (v0.2.0 batched closing-pass items)
+
+- **Built-in `merge-bot` profile (P0-A)**: `internal/profiles/builtin/merge-bot/{SOUL.md,INSTRUCTIONS.md}` ships as the first embedded profile. Operators reference it from `WORKFLOW.md` via `agent.profiles.merge-bot: {}` and the daemon resolves the SOUL/INSTRUCTIONS content from the embedded registry (`internal/profiles/registry.go`). `itervox init` and `itervox init --update` scaffold these files to disk for version control; operator edits on disk override the embedded defaults via the existing `soul_file` / `instructions_file` precedence.
+- **`merge_pr` agent action (P0-C)**: new `POST /api/v1/agent-actions/{identifier}/merge_pr` route backed by `internal/server/merge_pr.go::MergePRGate` runs `gh pr view` / `gh pr checks --required` / `gh pr merge` with required-check + block-label + mergeable guards. New config knobs `agent.merge_strategy` (default `squash`) and `agent.merge_block_labels` (default `["needs-human","migration","auth","feature-flag","breaking"]`). Process-level dedup ledger prevents double-merge across re-fire.
+- **`tracker_comment_added.filter.body_contains` / `body_regex` (P0-B)**: pre-filter on the comment body so a merge-bot only wakes on its trigger phrase. Wired via `commentBodyMatchesFilter` + `FilterTrackerCommentAutomationsByBody`; substring matching is case-insensitive; both keys AND-combine when present.
+- **`STARTUP_ERROR.md` + `itervox doctor` subcommand (P0-D / P0-G)**: on startup config-load failure the daemon writes `.itervox/STARTUP_ERROR.md` with the YAML/schema diagnostic before exiting, and clears it on the next healthy boot. `itervox doctor` reports schema validity, daemon binary path vs. `which itervox` drift (warning/error), built-in profile list, and last STARTUP_ERROR.md.
+- **`itervox action comment-pr` and `itervox action merge-pr` CLI subcommands (P0-E)**: structured-findings comment and guarded merge invocation. Menu lines surfaced by `buildAgentActionContext`.
+- **`ITERVOX_BIN` env var threading (P0-F)**: daemon sets `ITERVOX_BIN` at startup and `internal/workspace/hooks.go::hookEnv` allowlists it into hook subprocess env, eliminating the stale-system-binary class of "funky automation" bugs.
+- **`.itervox/bin/itervox` symlink (P0-H)**: refreshed on every daemon boot to point at `os.Executable()`. Operators can prepend `.itervox/bin/` to PATH for stable per-repo invocation.
+- **`pr_merged` automation trigger (P1)**: native merge-side signal, compiled into the automation registry, with per-(issue, PR URL, automation ID) dedup ledger and dispatch/drop counters on `State`.
+- **`pause_dispatch_when_any_in_state` config knob (P1)**: when ANY tracked issue is in a listed state (case-insensitive), no new dispatch begins. Use case: pause Todo dispatch while any issue is "In Review" so PRs queue and merge before the next start. Empty (default) disables the guard.
+- **Evals suite foundation (P1.a)**: new `internal/evals` package with `Scenario`, `Recording`, deterministic + structural judges, `Report`, and a `make evals-fast` target chained into `make verify`. First merge-bot scenario (`green-ci-approval`) shipped with `input.yaml` / `expected.yaml` / `recording.jsonl`.
+- **`agent.sort.prefer_high_outdegree` dispatch tiebreaker (P2)**: when enabled, ranks candidate issues that block more dependent siblings ahead of others, between the priority and createdAt tiers of the existing comparator.
+- **`automation_drops_self_reentry_total` counter on `State` (codex-B1)**: monotonically increments every time an `input_required` automation dispatch is suppressed because the prior worker was itself an automation-driven run. Surfaced for the dashboard's live-ops strip.
+- **Linear `trashed` filtering (codex-B9)**: all candidate-issue queries (`QueryCandidateIssues`, `QueryCandidateIssuesAll`, `QueryCandidateIssuesNoProject`, `QueryIssueDetail`) request the `trashed` field; `normalizeIssue` drops issues marked trashed so a Linear archive never produces a dispatch.
+- **Queue persistence v2 envelope (todolist4 A.2)**: on-disk `.itervox/automation_queue.json` is now wrapped in `{schema_version, daemon_instance_id, payload, payload_sha256}`. Mismatched envelopes (schema or checksum) move to `.itervox/automation_queue.json.quarantine` instead of being silently consumed. Legacy v1 raw payload files are still read via fallback for back-compat.
+- **`agent.transport_error_patterns` circuit breaker (todolist4 A.4)**: classify exhausted-retry exits whose error message matches a configurable substring list (default `["stream disconnected","connection reset","i/o timeout"]`) as transient-transport failures instead of generic failures. `state.TransportFailureCount` exposes the count for the dashboard.
+- **`itervox init --template <name>` flag (todolist4 A.1)**: accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`. Unknown values exit non-zero with the accepted list. Registry lives at `internal/templates/scaffold/`.
+- **`WORKFLOW.md.bak` stale-detection (todolist4 A.3)**: `init --update` now refuses to overwrite an existing `.bak` unless `--force` is passed.
+- **Janitor `issue_terminal` / `absent_from_tracker` status-history reasons (codex-B2 / B9)**: terminal-state pruning and absent-tracker pruning now emit a status-history row with `source: janitor` and a structured `reason` tag so the per-issue timeline explains the disappearance.
+- **`automation_dispatches_pr_opened_total` / `automation_dropped_pr_opened_dedup_total` / `automation_dispatches_pr_merged_total` / `automation_dropped_pr_merged_dedup_total` counters (codex-B4)**: surface pr-side dispatch telemetry for dashboards and the live-ops strip.
+- **Logs page `'automation'` filter chip (codex-B5)**: the type-driven filter array `FILTER_CHIPS` now includes `'automation'`, alongside the existing dedicated `chip-automation-only` toggle for the per-line prefix filter.
+- **Duplicate-key dedup on Timeline / Automation Activity rows (codex-B6)**: list keys always carry a `live`/`done`/`running` discriminator so a live row briefly coexisting with the same `sessionId` in history does not produce a React duplicate-key warning.
+- **AutomationQueueList search input renders for running rows (codex-B7)**: previously hidden when only running automations were present; now visible whenever queue OR running rows exist.
+- **Structured `LastRejectedAutomationID` / `LastRejectedTrigger` / `LastRejectedIdentifier` on `AutomationQueueBackpressure` (todolist4 P2-2)**: parallel to the legacy colon-joined `LastRejectedReason`.
 
 ### Changed
 

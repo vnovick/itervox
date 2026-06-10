@@ -188,6 +188,176 @@ func TestDependencyAuditJanitorMatchesQueueByIssueID(t *testing.T) {
 	assert.NotNil(t, state.DependencyAudit["key-1"])
 }
 
+// v0.2.0 todolist5 B2 — pruneTerminalRuntimeLedgers must sweep runtime
+// ledgers for issues whose last-observed tracker state is terminal, and
+// must leave entries for non-terminal identifiers alone.
+func TestPruneTerminalRuntimeLedgers_DropsInputRequired(t *testing.T) {
+	state := &State{
+		TerminalStates:       []string{"Done", "Cancelled"},
+		InputRequiredIssues:  map[string]*InputRequiredEntry{},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+	}
+	state.InputRequiredIssues["DONE-1"] = &InputRequiredEntry{Identifier: "DONE-1"}
+	state.InputRequiredIssues["LIVE-1"] = &InputRequiredEntry{Identifier: "LIVE-1"}
+	terminal := map[string]struct{}{"DONE-1": {}}
+	counts := pruneTerminalRuntimeLedgers(state, terminal)
+	assert.Equal(t, 1, counts.InputRequired)
+	_, donePresent := state.InputRequiredIssues["DONE-1"]
+	_, livePresent := state.InputRequiredIssues["LIVE-1"]
+	assert.False(t, donePresent, "terminal identifier must be dropped")
+	assert.True(t, livePresent, "non-terminal identifier must survive")
+}
+
+func TestPruneTerminalRuntimeLedgers_DropsRetryAttempts(t *testing.T) {
+	state := &State{
+		TerminalStates:       []string{"Done"},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		InputRequiredIssues:  map[string]*InputRequiredEntry{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+	}
+	state.RetryAttempts["DONE-1"] = &RetryEntry{Identifier: "DONE-1"}
+	state.RetryAttempts["TODO-1"] = &RetryEntry{Identifier: "TODO-1"}
+	counts := pruneTerminalRuntimeLedgers(state, map[string]struct{}{"DONE-1": {}})
+	assert.Equal(t, 1, counts.Retry)
+	assert.Nil(t, state.RetryAttempts["DONE-1"])
+	assert.NotNil(t, state.RetryAttempts["TODO-1"])
+}
+
+func TestPruneTerminalRuntimeLedgers_DropsAutomationQueue(t *testing.T) {
+	state := &State{
+		TerminalStates: []string{"Done"},
+		AutomationQueue: map[string]*AutomationQueueEntry{
+			"q-done": {Issue: domain.Issue{Identifier: "DONE-1"}},
+			"q-live": {Issue: domain.Issue{Identifier: "LIVE-1"}},
+		},
+		AutomationQueueOrder: []string{"q-done", "q-live"},
+		InputRequiredIssues:  map[string]*InputRequiredEntry{},
+		RetryAttempts:        map[string]*RetryEntry{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+	}
+	counts := pruneTerminalRuntimeLedgers(state, map[string]struct{}{"DONE-1": {}})
+	assert.Equal(t, 1, counts.Queue)
+	_, donePresent := state.AutomationQueue["q-done"]
+	assert.False(t, donePresent, "queue entry with terminal issue must drop")
+	assert.NotNil(t, state.AutomationQueue["q-live"])
+	assert.Equal(t, []string{"q-live"}, state.AutomationQueueOrder,
+		"queue order must shrink in lockstep with the map")
+}
+
+func TestPruneTerminalRuntimeLedgers_DropsPaused(t *testing.T) {
+	state := &State{
+		TerminalStates: []string{"Done"},
+		PausedIdentifiers: map[string]string{
+			"DONE-1": "id-done",
+			"TODO-1": "id-todo",
+		},
+		PausedSessions: map[string]*PausedSessionInfo{
+			"DONE-1":  {SessionID: "sess-1"},
+			"id-done": {SessionID: "sess-1"},
+		},
+		InputRequiredIssues:  map[string]*InputRequiredEntry{},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+	}
+	counts := pruneTerminalRuntimeLedgers(state, map[string]struct{}{"DONE-1": {}})
+	assert.Equal(t, 1, counts.Paused)
+	_, donePresent := state.PausedIdentifiers["DONE-1"]
+	assert.False(t, donePresent)
+	assert.Equal(t, "id-todo", state.PausedIdentifiers["TODO-1"])
+	_, sessDonePresent := state.PausedSessions["DONE-1"]
+	assert.False(t, sessDonePresent, "paused session must be cleaned in lockstep")
+}
+
+// v0.2.0 todolist5 B9.b — pruneAbsentTrackerIssues drops ledger entries for
+// identifiers that have been absent from both the current and the previous
+// tick's candidate set. Live workers (state.Running) MUST be preserved.
+func TestPruneAbsentTrackerIssues_DropsAbsentFromBothTicks(t *testing.T) {
+	state := &State{
+		// At least one prior observation must exist to enable pruning
+		// (persistence-replay safety gate).
+		PrevActiveIdentifiers: map[string]struct{}{"LIVE-1": {}},
+		Running:               map[string]*RunEntry{},
+		PrevIssueStates:       map[string]string{"LIVE-1": "In Progress"},
+		InputRequiredIssues:   map[string]*InputRequiredEntry{},
+		RetryAttempts:         map[string]*RetryEntry{},
+		AutomationQueue:       map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder:  []string{},
+		PausedIdentifiers:     map[string]string{},
+		PausedSessions:        map[string]*PausedSessionInfo{},
+		IssueProfiles:         map[string]string{},
+		IssueBackends:         map[string]string{},
+	}
+	state.InputRequiredIssues["DELETED-1"] = &InputRequiredEntry{Identifier: "DELETED-1"}
+	state.InputRequiredIssues["LIVE-1"] = &InputRequiredEntry{Identifier: "LIVE-1"}
+	state.IssueProfiles["DELETED-1"] = "reviewer"
+	currentActive := map[string]struct{}{"LIVE-1": {}}
+	counts := pruneAbsentTrackerIssues(state, currentActive)
+	assert.Equal(t, 1, counts.InputRequired)
+	assert.Equal(t, 1, counts.Profile)
+	_, gonePresent := state.InputRequiredIssues["DELETED-1"]
+	assert.False(t, gonePresent)
+	assert.NotNil(t, state.InputRequiredIssues["LIVE-1"])
+}
+
+func TestPruneAbsentTrackerIssues_RespectsTwoTickGrace(t *testing.T) {
+	state := &State{
+		PrevActiveIdentifiers: map[string]struct{}{"BLIP-1": {}},
+		Running:               map[string]*RunEntry{},
+		PrevIssueStates:       map[string]string{},
+		InputRequiredIssues: map[string]*InputRequiredEntry{
+			"BLIP-1": {Identifier: "BLIP-1"},
+		},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+		IssueProfiles:        map[string]string{},
+		IssueBackends:        map[string]string{},
+	}
+	// Identifier was observed last tick (PrevActiveIdentifiers contains it)
+	// but not this tick. The two-tick grace window must preserve the entry.
+	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{})
+	assert.Equal(t, 0, counts.InputRequired, "single-tick absence must NOT prune")
+	assert.NotNil(t, state.InputRequiredIssues["BLIP-1"])
+}
+
+func TestPruneAbsentTrackerIssues_DoesNotPruneRunning(t *testing.T) {
+	state := &State{
+		// Persistence-replay safety gate: need at least one observation.
+		// Use a sentinel observation different from INFLIGHT-1 so the test
+		// still proves that Running by itself is sufficient to preserve.
+		PrevActiveIdentifiers: map[string]struct{}{"SENTINEL-1": {}},
+		Running: map[string]*RunEntry{
+			"INFLIGHT-1": {Issue: domain.Issue{Identifier: "INFLIGHT-1"}},
+		},
+		PrevIssueStates: map[string]string{"SENTINEL-1": "In Progress"},
+		InputRequiredIssues: map[string]*InputRequiredEntry{
+			"INFLIGHT-1": {Identifier: "INFLIGHT-1"},
+		},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+		IssueProfiles:        map[string]string{},
+		IssueBackends:        map[string]string{},
+	}
+	// Identifier absent from currentActive AND from PrevActiveIdentifiers
+	// but a worker is running — must NOT prune any sibling ledger entry.
+	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{})
+	assert.Equal(t, 0, counts.InputRequired, "in-flight worker identifier must keep sibling ledgers alive")
+}
+
 // identifierForFixture returns a stable identifier for table tests.
 func identifierForFixture(i int) string {
 	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

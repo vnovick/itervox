@@ -57,6 +57,7 @@ dashboard. `Orchestrator.cfgMu` (`sync.RWMutex`) guards exactly these:
 - `cfg.Agent.Profiles`
 - `cfg.Agent.SSHHosts`
 - `cfg.Agent.SSHHostDescriptions`
+- `cfg.Agent.DepsAnalyzerProfile`
 - `cfg.Agent.DispatchStrategy`
 - `cfg.Agent.ReviewerProfile`
 - `cfg.Agent.AutoReview`
@@ -165,6 +166,7 @@ visualization.
 
 ### Schema 2 startup validation
 
+Itervox runs on **schema 2** WORKFLOW.md files exclusively.
 `internal/config/validate.go` requires `itervox_schema_version: 2` at the top
 of every `WORKFLOW.md`. The daemon emits `MissingWorkflowSchemaMessage` and
 refuses to start when the marker is absent or set to an unsupported version.
@@ -173,6 +175,21 @@ extracts inline `agent.profiles.<name>.prompt` content into per-profile
 `INSTRUCTIONS.md` files, generates starter `SOUL.md` files, writes a
 `WORKFLOW.md.bak`, patches the root `.gitignore` so `.itervox/agents/**` is
 committable, and stamps `itervox_schema_version: 2` on the migrated file.
+
+### Built-in profile registry
+
+In addition to operator-authored profiles on disk, Itervox ships built-in
+profiles embedded into the binary via `internal/profiles/registry.go`. The
+first built-in is **`merge-bot`** at `internal/profiles/builtin/merge-bot/`.
+Operators reference a built-in by name (`agent.profiles.merge-bot: {}` in
+`WORKFLOW.md`) and the loader resolves SOUL/INSTRUCTIONS content from the
+embedded `embed.FS`. File-on-disk content always wins — copying
+`.itervox/agents/merge-bot/SOUL.md` to disk lets the operator customise
+tone while still getting the embedded defaults for unset files. The
+default `command`, `backend`, and `allowed_actions` for built-ins live in
+`builtinDefaults` and apply only when the operator does not override them.
+`itervox init` and `itervox init --update` scaffold built-in files to
+disk; `itervox doctor` enumerates the shipped built-in profile list.
 
 ### SOUL.md / INSTRUCTIONS.md prompt assembly
 
@@ -262,6 +279,55 @@ preserved regardless of age. Janitor runs at the tail of every `onTick`.
 The ledger is session-local in v0.2.0. Cross-restart persistence is gated on
 the Track B queue-persistence proposal (`planning/v0.2.0/todolist4.md` A.2).
 
+### v2 envelope queue persistence (todolist4 A.2)
+
+Automation queue writes are wrapped in a versioned envelope:
+
+```
+{
+  "schema_version": 2,
+  "daemon_instance_id": "itervox-<pid>-<bootns>",
+  "payload": { ... automationQueueStateDisk ... },
+  "payload_sha256": "<hex>"
+}
+```
+
+`EncodeQueueEnvelope` / `DecodeQueueEnvelope` (`internal/orchestrator/queue_persistence_envelope.go`)
+own the serialisation. The reader peeks the top-level `schema_version` via
+`IsQueueEnvelopeShape` — when absent, the file is treated as a legacy v1 raw
+payload for back-compat. Mismatched `schema_version`, mismatched `payload_sha256`,
+or a corrupt envelope move the file to `<path>.quarantine` instead of being
+silently consumed. A mismatched `daemon_instance_id` is logged as a warning
+but still loads, since the persistence file is local to a single repo and
+not synchronised across processes.
+
+### `pr_merged` automation trigger (P1)
+
+Sibling of `pr_opened`. Compiled into `compiledAutomationSet.prMerged` by
+`cmd/itervox/automations.go::compileAutomations` and installed via
+`Orchestrator.SetPRMergedAutomations`. The daemon-side `merge_pr` action's
+success path emits the trigger through `orchestratorAdapter.EmitPRMerged →
+Orchestrator.DispatchPRMergedAutomations`. Per-(issue, PR URL, automation ID)
+dedup ledger on `State.PRMergedDispatched`; `AutomationDispatchesPRMergedTotal`
+and `AutomationDroppedPRMergedDedupTotal` counters surface dispatch
+telemetry.
+
+### `itervox doctor` (P0-D / P0-G)
+
+A preflight subcommand that runs WORKFLOW.md schema validation + dispatch
+checks without starting the daemon and reports binary-resolution drift
+between the running daemon's binary (`os.Executable()`) and whatever
+`which itervox` resolves on the daemon's PATH. The report also lists the
+shipped built-in profile names (`profiles.Names()`) and surfaces any
+existing `.itervox/STARTUP_ERROR.md`. Exits non-zero on schema failure,
+binary drift, version mismatch, or a present startup-error marker.
+
+On startup config-load failure the daemon writes
+`.itervox/STARTUP_ERROR.md` (timestamp, workflow path, YAML/schema diagnostic,
+suggested fix) before exiting via `fatalExit(1)`, then clears the file on
+the next healthy boot. Operators running the daemon under nohup / launchd
+get a durable record of what broke.
+
 ### `cmd/itervox/heartbeat.go` — `.itervox/HEARTBEAT.md`
 
 A human-readable daemon liveness file. Written on startup and refreshed after
@@ -320,5 +386,14 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/server` | chi-based HTTP API, SSE broadcaster, embedded web assets |
 | `internal/statusui` | Bubbletea terminal UI; reads `Orchestrator.Snapshot()` |
 | `internal/templates` | WORKFLOW.md scaffolding and human-input template |
+| `internal/templates/scaffold` | Registry of `--template` presets for `itervox init` (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) |
 | `internal/logging` | slog setup and shared logging helpers |
+| `internal/profiles` | Built-in profile registry: `embed.FS` of `builtin/<name>/{SOUL,INSTRUCTIONS}.md` plus per-profile `Default{Command,Backend,Actions}` |
+| `internal/depsanalysis` | Dependency analyzer sidecar — async job that runs an analyzer profile over the snapshot graph and caches results |
+| `internal/evals` | Profile evaluation suite (`Scenario`, `Recording`, `Judge`, `Report`) wired into `make evals-fast`; first merge-bot fixtures live under `internal/evals/fixtures/merge-bot/` |
+| `internal/agentactions` | Short-lived per-run bearer grant store for the `/api/v1/agent-actions/*` routes |
+| `internal/atomicfs` | Tmp-file + fsync + rename helpers; used for every WORKFLOW.md mutation, scaffold write, pidfile, and queue persistence file |
+| `internal/automationconfig` / `internal/automationdef` | Helper packages for automation YAML parsing and rule definitions |
+| `internal/schedule` | Cron parsing for the `cron` automation trigger and the legacy `schedules:` block |
+| `internal/skills` | Capability inventory scanner for the Settings → Skills surface |
 | `web/` | React 19 + Vite + TypeScript dashboard, embedded into the binary via `internal/server/embed.go` (`go:embed web/dist`) |

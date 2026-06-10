@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -11,6 +12,20 @@ import (
 
 const defaultHookTimeoutMs = 60000
 const maxHookOutputBytes = 256 * 1024
+
+// itervoxEnvAllowlist lists env vars the daemon explicitly threads into hook
+// subprocesses on top of the inherited environment. ITERVOX_BIN is critical
+// (P0-F) — without it, hooks that call `itervox action ...` resolve to whatever
+// `which itervox` finds on the hook PATH, which is typically the system-
+// installed binary, not the running daemon's binary. The other ITERVOX_* vars
+// are surfaced for completeness so hooks can address the running daemon
+// without scraping arguments.
+var itervoxEnvAllowlist = []string{
+	"ITERVOX_BIN",
+	"ITERVOX_API_TOKEN",
+	"ITERVOX_DAEMON_URL",
+	"ITERVOX_ACTION_TOKEN",
+}
 
 // RunHook runs a shell script in the given workspacePath directory using
 // `bash -lc <script>`. An empty script is a no-op. timeoutMs <= 0 falls
@@ -39,6 +54,7 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	cmd.Dir = workspacePath
 	cmd.Stdout = out
 	cmd.Stderr = out
+	cmd.Env = hookEnv(os.Environ())
 	setHookProcessGroup(cmd)
 
 	runErr := cmd.Run()
@@ -95,6 +111,38 @@ func (b *cappedOutput) String() string {
 		return string(b.buf)
 	}
 	return "[hook output truncated]\n" + string(b.buf)
+}
+
+// hookEnv assembles the env slice for a hook subprocess. It starts from the
+// inherited base (typically os.Environ() — the daemon's env), guarantees that
+// every variable in itervoxEnvAllowlist whose process-level value is non-empty
+// is present, and overwrites any inherited duplicates so the daemon's view
+// wins over any pre-existing stale value (e.g. an operator who exported
+// ITERVOX_BIN in their shell rc).
+func hookEnv(base []string) []string {
+	out := make([]string, 0, len(base)+len(itervoxEnvAllowlist))
+	for _, v := range base {
+		if isItervoxAllowlistKey(v) {
+			continue
+		}
+		out = append(out, v)
+	}
+	for _, key := range itervoxEnvAllowlist {
+		if val, ok := os.LookupEnv(key); ok && val != "" {
+			out = append(out, key+"="+val)
+		}
+	}
+	return out
+}
+
+func isItervoxAllowlistKey(kv string) bool {
+	for _, key := range itervoxEnvAllowlist {
+		prefix := key + "="
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func setHookProcessGroup(cmd *exec.Cmd) {

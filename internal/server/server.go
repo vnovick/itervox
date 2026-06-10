@@ -192,6 +192,14 @@ type DependencyGraphEdgeRow struct {
 	TargetState      string `json:"targetState,omitempty"`
 	Resolved         bool   `json:"resolved"`
 	SourceKnown      bool   `json:"sourceKnown"`
+	// Origin labels the edge's provenance for the dashboard.
+	// "tracker" — declared by Linear/GitHub via BlockedBy.
+	// "inferred" — produced by the deps-analyzer agent pass.
+	// Empty/absent is treated as "tracker" by the frontend.
+	Origin string `json:"origin,omitempty"`
+	// Evidence is the short quotation/paraphrase the analyzer attached to the
+	// edge. Populated only when Origin == "inferred".
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // Counts holds summary counts for the state snapshot.
@@ -219,6 +227,14 @@ type ProjectManager interface {
 
 // OrchestratorClient abstracts the orchestrator and workflow operations called
 // by HTTP handlers. A nil value in Config is replaced with noopClient.
+// PRMergedEmitter is an optional capability some OrchestratorClient
+// implementations expose: the daemon-side merge_pr handler invokes it on a
+// successful gh merge so pr_merged automations fire downstream. Discovered
+// via type assertion to avoid bloating the main interface.
+type PRMergedEmitter interface {
+	EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef string) error
+}
+
 type OrchestratorClient interface {
 	FetchIssues(ctx context.Context) ([]TrackerIssue, error)
 	CancelIssue(identifier string) bool
@@ -756,12 +772,50 @@ type StateSnapshot struct {
 	DependencyAudit             []DependencyAuditRow            `json:"dependencyAudit,omitempty"`
 	DependencyGraphNodes        []DependencyGraphNodeRow        `json:"dependencyGraphNodes,omitempty"`
 	DependencyGraphEdges        []DependencyGraphEdgeRow        `json:"dependencyGraphEdges,omitempty"`
+	// DepsAnalyzerProfile is the configured agent.deps_analyzer_profile (Phase
+	// 1.1). The dashboard gates the "Analyze dependencies" button on this being
+	// non-empty + the named profile existing + enabled.
+	DepsAnalyzerProfile string `json:"depsAnalyzerProfile,omitempty"`
+	// DepsLastAnalyzedAt is the GeneratedAt timestamp from
+	// `.itervox/dependencies.json`. Absent when the sidecar is missing or
+	// outdated. Surfaced as a "Last analyzed N ago" label in the Deps toolbar.
+	DepsLastAnalyzedAt *time.Time `json:"depsLastAnalyzedAt,omitempty"`
 	// ConfigInvalid surfaces an in-flight WORKFLOW.md validation failure to
 	// the dashboard / TUI banner. nil/absent means the daemon is reading a
 	// valid config; non-nil means the most recent reload tick failed and the
 	// daemon is running on the previously-valid config while exponentially
 	// backing off retries (T-26).
 	ConfigInvalid *ConfigInvalidStatus `json:"configInvalid,omitempty"`
+}
+
+// DepsAnalyzeJobRow is the wire shape returned by the deps-analyze status
+// endpoint. Times are omitted when zero (the *time.Time pattern matches the
+// existing v0.2.0 audit P1-5 fix elsewhere in this file).
+type DepsAnalyzeJobRow struct {
+	JobID         string     `json:"jobId"`
+	Profile       string     `json:"profile,omitempty"`
+	Status        string     `json:"status"`
+	QueuedAt      time.Time  `json:"queuedAt"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	IssuesScanned int        `json:"issuesScanned,omitempty"`
+	EdgesFound    int        `json:"edgesFound,omitempty"`
+	Error         string     `json:"error,omitempty"`
+}
+
+// DepsAnalyzer is the optional service backing the `/api/v1/deps/analyze`
+// endpoints (Phase 2.3 of v0.2.0 todolist6). A nil DepsAnalyzer in Config
+// makes both endpoints return 503.
+type DepsAnalyzer interface {
+	// EnqueueAnalysis kicks off (or returns the in-flight) analyzer job for the
+	// given profile. Empty `profile` falls back to the configured
+	// agent.deps_analyzer_profile.
+	EnqueueAnalysis(profile string) (jobID string, queuedAt time.Time, err error)
+	// Status returns the analyzer job with the given ID, or false when absent.
+	Status(jobID string) (DepsAnalyzeJobRow, bool)
+	// DefaultProfile returns the configured agent.deps_analyzer_profile, or
+	// empty when the analyzer is disabled.
+	DefaultProfile() string
 }
 
 // ConfigInvalidStatus is the wire shape for a current WORKFLOW.md validation
@@ -990,6 +1044,9 @@ type Config struct {
 	ActionTokenStore *agentactions.Store
 	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
 	SkillsClient SkillsClient
+	// DepsAnalyzer backs the /api/v1/deps/analyze endpoints (Phase 2.3 of
+	// v0.2.0 todolist6). Nil makes the endpoints return 503.
+	DepsAnalyzer DepsAnalyzer
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1005,6 +1062,7 @@ type Server struct {
 	apiToken       string
 	actionTokens   *agentactions.Store
 	skills         SkillsClient
+	depsAnalyzer   DepsAnalyzer
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
@@ -1029,6 +1087,7 @@ func New(cfg Config) *Server {
 		apiToken:       cfg.APIToken,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
+		depsAnalyzer:   cfg.DepsAnalyzer,
 	}
 	s.routes()
 	return s
@@ -1092,6 +1151,7 @@ func (s *Server) routes() {
 		r.Get("/health", s.handleHealth)
 		r.Post("/agent-actions/{identifier}/comment", s.handleAgentComment)
 		r.Post("/agent-actions/{identifier}/comment_pr", s.handleAgentCommentPR)
+		r.Post("/agent-actions/{identifier}/merge_pr", s.handleAgentMergePR)
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
@@ -1138,6 +1198,7 @@ func (s *Server) routes() {
 			r.Delete("/workspaces", s.handleClearAllWorkspaces)
 			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
 			r.Get("/settings/models", s.handleListModels)
+			r.Post("/settings/models/refresh", s.handleRefreshModels)
 			r.Get("/settings/reviewer", s.handleGetReviewer)
 			r.Put("/settings/reviewer", s.handleSetReviewer)
 			r.Get("/settings/profiles", s.handleListProfiles)
@@ -1153,6 +1214,10 @@ func (s *Server) routes() {
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
 			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+
+			// Dependency analysis (Phase 2.3 of v0.2.0 todolist6).
+			r.Post("/deps/analyze", s.handleDepsAnalyzeEnqueue)
+			r.Get("/deps/analyze/{jobId}", s.handleDepsAnalyzeStatus)
 
 			// Skills inventory + analytics (T-87, T-95/T-96, T-102).
 			r.Get("/skills/inventory", s.handleSkillsInventory)

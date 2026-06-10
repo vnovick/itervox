@@ -157,6 +157,71 @@ The `backend` field is an optional hint that overrides automatic runner detectio
 
 ---
 
+## Keeping the model catalog current
+
+`itervox init` populates `agent.available_models` by calling the Anthropic
+`/v1/models` API (with `ANTHROPIC_API_KEY`) and the OpenAI `/v1/models` API
+(with `OPENAI_API_KEY`). When either key is missing, a hardcoded fallback
+list is written so the dashboard model picker still has sensible
+suggestions out of the box.
+
+When Anthropic or OpenAI ship a new model — e.g. Sonnet 4.7 lands — your
+existing `WORKFLOW.md` keeps the v0.2.0-era list and the picker won't show
+the new option. Two ways to refresh:
+
+### From the CLI
+
+```bash
+# Refresh both backends (default)
+itervox models refresh
+
+# Refresh just one backend
+itervox models refresh --backend claude
+itervox models refresh --backend codex
+
+# Preview without writing
+itervox models refresh --dry-run
+
+# Print the current list from WORKFLOW.md without hitting the APIs
+itervox models list
+```
+
+The command queries `/v1/models` with whichever API keys are loaded from
+`.itervox/.env`, merges the result into `agent.available_models`, and
+writes `WORKFLOW.md` atomically. Per-backend semantics: refreshed backends
+have their list replaced entirely; backends NOT named on the command line
+keep their previous entries untouched.
+
+### From the dashboard
+
+Settings → Models → **Refresh from APIs** triggers the same logic via
+`POST /api/v1/settings/models/refresh`. The body accepts
+`{"backend": "claude" | "codex" | "all"}` (default `"all"`). On success
+the server returns the new map and immediately notifies SSE subscribers,
+so the model picker reflects the new options without a page reload.
+
+If the daemon is running a build that does not implement the refresh
+capability (e.g. the in-memory quickstart binary), the route returns
+`501 not_implemented` with a hint pointing at the `itervox models refresh`
+CLI subcommand.
+
+### Recommended cadence
+
+- **After every Claude/Codex release** the team cares about. Anthropic
+  and OpenAI typically publish a release note 24–48 hours before the
+  model is broadly available via the API; refresh once you can hit
+  `/v1/models` from your account and see the new ID.
+- **As part of project onboarding**. The first thing a new contributor
+  does after cloning is set their API keys in `.itervox/.env` and run
+  `itervox models refresh` so their local picker matches the team
+  baseline.
+- **Never blindly in CI**. The refresh writes to `WORKFLOW.md`, which is
+  a tracked file. Running it in CI would create a commit diff every time
+  a model launches; prefer running it in a developer shell and
+  committing intentionally.
+
+---
+
 ## Daemon-backed profile actions
 
 Profiles can opt into a small set of daemon-backed actions. The profile editor exposes these as checkboxes with clear descriptions of what each action allows:

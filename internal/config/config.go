@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,8 +9,16 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
 )
+
+// profiles_Lookup is a thin wrapper that lets parseAgentProfiles call the
+// built-in profile registry without colliding with the local profiles map
+// variable name elsewhere in this file.
+func profiles_Lookup(name string) *profiles.Builtin {
+	return profiles.Lookup(name)
+}
 
 var envVarRe = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
 
@@ -117,6 +126,33 @@ type AgentProfile struct {
 type AgentConfig struct {
 	MaxConcurrentAgents        int
 	MaxConcurrentAgentsByState map[string]int
+	// PauseDispatchWhenAnyInState lists tracker states (case-insensitive); when
+	// ANY tracked issue is in one of these states, no new dispatch may begin
+	// regardless of available slots. Use case: pause Todo dispatch while any
+	// issue is "In Review" so PRs queue and merge before the next start. Empty
+	// disables the guard. Snapshotted into State at tick boundary.
+	PauseDispatchWhenAnyInState []string
+	// MergeStrategy controls how the daemon-backed `merge_pr` agent action
+	// finalizes a pull request: "squash" (default), "rebase", or "merge".
+	// Read at request time by the merge_pr handler; misconfigured values
+	// fall back to "squash".
+	MergeStrategy string
+	// MergeBlockLabels lists case-insensitive PR labels that, when present,
+	// cause the `merge_pr` action to refuse the merge with reason
+	// "blocked_label:<label>". Empty list disables the guard. Default at
+	// load time:
+	//   ["needs-human", "migration", "auth", "feature-flag", "breaking"]
+	MergeBlockLabels []string
+	// PreferHighOutdegreeSort, when true, inserts a tiebreaker between
+	// priority and createdAt that ranks issues which block more dependent
+	// siblings first (P2). Default false to preserve existing behaviour.
+	PreferHighOutdegreeSort bool
+	// TransportErrorPatterns lists case-insensitive substrings that, when
+	// matched against an agent-runner error message, classify the failure
+	// as a transient transport error (codex "stream disconnected", network
+	// hiccups, etc.) so the orchestrator pauses dispatch with reason
+	// "transport_error" instead of marking the issue failed. todolist4 A.4.
+	TransportErrorPatterns []string
 	// MaxAutomationQueueLength caps durable automation dispatch entries waiting
 	// for worker capacity or dependency resolution. Values <= 0 use the default
 	// of 100; the queue is never unlimited.
@@ -192,6 +228,11 @@ type AgentConfig struct {
 	// override the default agent Command. Profiles can be selected per-issue
 	// from the web UI.
 	Profiles map[string]AgentProfile
+	// DepsAnalyzerProfile is the name of the agent profile used to populate
+	// the inferred dependency layer for the Deps tab. When empty, the
+	// dashboard's "Analyze dependencies" button is disabled and the Deps tab
+	// shows tracker-declared edges only.
+	DepsAnalyzerProfile string
 	// InlineInput controls whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	// When true, the issue moves to the completion state with a question comment;
@@ -376,6 +417,12 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
 	cfg.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(mapField(agent, "max_concurrent_agents_by_state"))
+	cfg.Agent.PauseDispatchWhenAnyInState = strSliceField(agent, "pause_dispatch_when_any_in_state", nil)
+	cfg.Agent.MergeStrategy = strField(agent, "merge_strategy", "squash")
+	cfg.Agent.MergeBlockLabels = strSliceField(agent, "merge_block_labels", []string{"needs-human", "migration", "auth", "feature-flag", "breaking"})
+	cfg.Agent.TransportErrorPatterns = strSliceField(agent, "transport_error_patterns", []string{"stream disconnected", "connection reset", "i/o timeout"})
+	sortMap := mapField(agent, "sort")
+	cfg.Agent.PreferHighOutdegreeSort = boolField(sortMap, "prefer_high_outdegree", false)
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)
 	cfg.Agent.SSHHostDescriptions = stringMapField(agent, "ssh_host_descriptions", nil)
 	// T-32: optional StrictHostKeyChecking config. Default "accept-new" (TOFU)
@@ -386,6 +433,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
+	cfg.Agent.DepsAnalyzerProfile = strField(agent, "deps_analyzer_profile", "")
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
@@ -520,20 +568,52 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			}
 			soulFile := strField(m, "soul_file", "")
 			instructionsFile := strField(m, "instructions_file", "")
-			if soulFile == "" || instructionsFile == "" {
-				return nil, fmt.Errorf("config: agent.profiles.%s requires soul_file and instructions_file in schema %d", name, LatestWorkflowSchemaVersion)
-			}
-			soul, err := readProfileTemplateFile(workflowPath, soulFile)
-			if err != nil {
-				return nil, fmt.Errorf("config: agent.profiles.%s.soul_file: %w", name, err)
-			}
-			instructions, err := readProfileTemplateFile(workflowPath, instructionsFile)
-			if err != nil {
-				return nil, fmt.Errorf("config: agent.profiles.%s.instructions_file: %w", name, err)
+			builtin := profiles_Lookup(name)
+			var soul, instructions string
+			if soulFile == "" && instructionsFile == "" && builtin != nil {
+				soul = builtin.Soul
+				instructions = builtin.Instructions
+				soulFile = builtin.SoulFilePath
+				instructionsFile = builtin.InstructionsPath
+			} else {
+				if soulFile == "" || instructionsFile == "" {
+					return nil, fmt.Errorf("config: agent.profiles.%s requires soul_file and instructions_file in schema %d", name, LatestWorkflowSchemaVersion)
+				}
+				readSoul, err := readProfileTemplateFile(workflowPath, soulFile)
+				if err != nil {
+					if builtin != nil && os.IsNotExist(errors.Unwrap(err)) {
+						soul = builtin.Soul
+					} else {
+						return nil, fmt.Errorf("config: agent.profiles.%s.soul_file: %w", name, err)
+					}
+				} else {
+					soul = readSoul
+				}
+				readInstructions, err := readProfileTemplateFile(workflowPath, instructionsFile)
+				if err != nil {
+					if builtin != nil && os.IsNotExist(errors.Unwrap(err)) {
+						instructions = builtin.Instructions
+					} else {
+						return nil, fmt.Errorf("config: agent.profiles.%s.instructions_file: %w", name, err)
+					}
+				} else {
+					instructions = readInstructions
+				}
 			}
 			cmd := strField(m, "command", "")
+			if cmd == "" && builtin != nil {
+				cmd = builtin.DefaultCommand
+			}
 			if cmd == "" {
 				return nil, fmt.Errorf("config: agent.profiles.%s.command is required in schema %d", name, LatestWorkflowSchemaVersion)
+			}
+			backend := strField(m, "backend", "")
+			if backend == "" && builtin != nil {
+				backend = builtin.DefaultBackend
+			}
+			allowed := NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil))
+			if len(allowed) == 0 && builtin != nil {
+				allowed = NormalizeAllowedActions(builtin.DefaultActions)
 			}
 			profiles[name] = AgentProfile{
 				Command:          cmd,
@@ -541,9 +621,9 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				InstructionsFile: instructionsFile,
 				Soul:             soul,
 				Instructions:     instructions,
-				Backend:          strField(m, "backend", ""),
+				Backend:          backend,
 				Enabled:          boolPtr(boolField(m, "enabled", true)),
-				AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
+				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
 			}
 			continue
