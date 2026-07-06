@@ -25,7 +25,11 @@ build: web-deps web-build
 # targets (web-typecheck, web-lint, web-format, web-test, web-coverage, web-build) do NOT
 # install on their own so lefthook can run them in parallel without racing
 # pnpm installs.
-verify: web-deps fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-build web-spelling size-budget no-os-exit verify-track-b-docs
+# web-build MUST run before vet/lint-go/test: internal/server/embed.go embeds
+# internal/server/web/dist (gitignored), so on a fresh checkout every Go
+# compile step fails with "pattern web/dist: no matching files found" until
+# the frontend is built. Order is load-bearing — verify runs serially.
+verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit verify-track-b-docs
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
