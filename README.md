@@ -22,6 +22,16 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 Itervox is a long-running Go daemon that polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
+## Spec conformance
+
+Itervox is the reference implementation of the
+[Orchestrated Coding spec](https://github.com/vnovick/orchestrated-coding) and
+conforms at **L3** — every L1–L3 MUST verified against code with named
+regression tests run under `-race`. Evidence: the audited conformance map in
+[IMPLEMENTATIONS.md](https://github.com/vnovick/orchestrated-coding/blob/main/IMPLEMENTATIONS.md)
+and the closed-gaps ledger in [`v0.2.0/gaps_must.md`](./v0.2.0/gaps_must.md).
+Itervox is also a conforming [OpenAI Symphony](https://github.com/openai/symphony) runtime.
+
 ## Install
 
 ```bash
@@ -357,7 +367,7 @@ open http://127.0.0.1:8090
 |---|---|
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
-| `itervox init --template <preset>` | Scaffold with one of `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa` |
+| `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
 | `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md` |
 | `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |

@@ -1,7 +1,7 @@
 import type { RunningRow } from '../../../types/schemas';
 import { queuedAge } from './automationQueueModel';
 
-// v0.2.0 todolist5 B7 — visual sibling of AutomationQueueItem for the
+// Visual sibling of AutomationQueueItem for the
 // "Running" section of AutomationQueueList. Mirrors the queue item's grid
 // columns, font sizes, and palette so the two sections feel like one panel.
 // RunningRow does not carry title or profile (those live on the issue

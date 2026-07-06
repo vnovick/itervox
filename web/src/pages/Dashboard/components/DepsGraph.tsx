@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Background,
   Controls,
@@ -66,7 +66,7 @@ export function layoutDependencyGraph(
     nodes: positioned,
     edges: graphEdges.map((edge) => {
       const isInferred = edge.origin === 'inferred';
-      // v0.2.0 todolist7 C5 — surface the agent's `evidence` string on hover
+      // Surface the agent's `evidence` string on hover
       // for inferred edges. React Flow renders edge labels as <text> nodes
       // inside the SVG; wrapping the visible string in a span with the
       // evidence as the `title` attribute would require a custom edge type,
@@ -230,10 +230,31 @@ function DepsToolbar({
   profileDefs?: Record<string, ProfileDef>;
 }) {
   const analyzeDeps = useAnalyzeDeps();
-  const profileMissing = !depsAnalyzerProfile;
-  const profileDef = depsAnalyzerProfile ? profileDefs?.[depsAnalyzerProfile] : undefined;
+
+  // gaps_11 G-14 / deps design §3.3 — operator-picked per-request override.
+  // null means "follow the configured agent.deps_analyzer_profile default";
+  // the backend accepts an explicit `profile` field on POST /deps/analyze
+  // (handlers_deps.go) so no config change is needed to run a one-off pass
+  // with a different profile.
+  const [pickedProfile, setPickedProfile] = useState<string | null>(null);
+  const selectedProfile = pickedProfile ?? depsAnalyzerProfile;
+
+  // gaps_11 G-14 — the design asks for "profiles that can run dependency
+  // analysis", but no `analyze_dependencies` capability exists in
+  // AllowedAgentActionSchema, so no capability filter is derivable from the
+  // snapshot. We list every configured profile, plus the configured analyzer
+  // profile even when it is missing from profileDefs so the unknown-profile
+  // state stays visible in the picker.
+  const profileOptions = useMemo(() => {
+    const names = new Set(Object.keys(profileDefs ?? {}));
+    if (depsAnalyzerProfile) names.add(depsAnalyzerProfile);
+    return Array.from(names).sort();
+  }, [profileDefs, depsAnalyzerProfile]);
+
+  const profileMissing = !selectedProfile;
+  const profileDef = selectedProfile ? profileDefs?.[selectedProfile] : undefined;
   const profileDisabled = profileDef !== undefined && profileDef.enabled === false;
-  const profileUnknown = depsAnalyzerProfile !== undefined && profileDef === undefined;
+  const profileUnknown = selectedProfile !== undefined && profileDef === undefined;
   const isRunning = analyzeDeps.isPending;
   const buttonDisabled = profileMissing || profileDisabled || profileUnknown || isRunning;
 
@@ -241,9 +262,9 @@ function DepsToolbar({
   if (profileMissing) {
     disabledReason = 'Set agent.deps_analyzer_profile in WORKFLOW.md to enable.';
   } else if (profileUnknown) {
-    disabledReason = `Profile "${depsAnalyzerProfile}" is not defined in agent.profiles.`;
+    disabledReason = `Profile "${selectedProfile}" is not defined in agent.profiles.`;
   } else if (profileDisabled) {
-    disabledReason = `Profile "${depsAnalyzerProfile}" is disabled.`;
+    disabledReason = `Profile "${selectedProfile}" is disabled.`;
   } else if (isRunning) {
     disabledReason = 'Analysis pass already running.';
   }
@@ -258,18 +279,32 @@ function DepsToolbar({
           type="button"
           disabled={buttonDisabled}
           onClick={() => {
-            analyzeDeps.mutate({ profile: depsAnalyzerProfile });
+            analyzeDeps.mutate({ profile: selectedProfile });
           }}
-          title={disabledReason || `Run the ${depsAnalyzerProfile ?? 'analyzer'} pass`}
+          title={disabledReason || `Run the ${selectedProfile ?? 'analyzer'} pass`}
           className="bg-theme-accent hover:bg-theme-accent-strong rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
           aria-label="Analyze dependencies"
         >
           {isRunning ? 'Analyzing…' : 'Analyze dependencies'}
         </button>
-        {depsAnalyzerProfile && (
-          <span className="text-theme-text-secondary text-[11px]">
-            Profile: <span className="font-mono">{depsAnalyzerProfile}</span>
-          </span>
+        {selectedProfile !== undefined && (
+          <label className="text-theme-text-secondary flex items-center gap-1.5 text-[11px]">
+            Profile:
+            <select
+              data-testid="deps-profile-select"
+              value={selectedProfile}
+              onChange={(event) => {
+                setPickedProfile(event.target.value);
+              }}
+              className="border-theme-line bg-theme-bg-soft text-theme-text rounded-md border px-1.5 py-0.5 font-mono text-[11px]"
+            >
+              {profileOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
       </div>
       <span className="text-theme-text-secondary text-[11px]" aria-live="polite">
@@ -301,7 +336,7 @@ function DepsEdgeLegend() {
 // truncateEvidence keeps the visible edge label readable on small graphs by
 // capping long evidence strings to a single line. The full string remains
 // accessible via the edge's `data.evidence` field for future hover-tooltip
-// surfacing. v0.2.0 todolist7 C5.
+// surfacing.
 function truncateEvidence(s: string, max = 36): string {
   const trimmed = s.trim();
   if (trimmed.length <= max) return trimmed;

@@ -93,7 +93,7 @@ func TestJobManager_LatestTracksMostRecentJob(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
-// v0.2.0 todolist7 C4 — SetOnTransition wires the JobManager to the SSE hub.
+// SetOnTransition wires the JobManager to the SSE hub.
 // The callback must fire on EVERY transition: running on enqueue, and the
 // terminal transition (succeeded or failed) when execute() completes.
 func TestJobManager_OnTransitionFiresOnRunningAndTerminal(t *testing.T) {
@@ -129,7 +129,7 @@ func TestJobManager_OnTransitionFiresOnRunningAndTerminal(t *testing.T) {
 	assert.Equal(t, JobSucceeded, events[1].status, "second transition must be succeeded")
 }
 
-// v0.2.0 todolist7 C4 — the terminal-failure path must also fire the
+// The terminal-failure path must also fire the
 // callback so the SSE listener can surface the failure reason to the operator.
 func TestJobManager_OnTransitionFiresOnFailure(t *testing.T) {
 	var (
@@ -157,7 +157,7 @@ func TestJobManager_OnTransitionFiresOnFailure(t *testing.T) {
 	assert.Equal(t, JobFailed, events[1], "failure path must emit JobFailed as the terminal transition")
 }
 
-// v0.2.0 todolist7 C4 — SetOnTransition(nil) disables the broadcast without
+// SetOnTransition(nil) disables the broadcast without
 // breaking concurrent job lifecycle.
 func TestJobManager_OnTransitionNilCallbackIsSafe(t *testing.T) {
 	mgr := NewJobManager(func(_ context.Context, _ string) (*Sidecar, error) {

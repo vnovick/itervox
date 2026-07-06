@@ -116,10 +116,14 @@ export const SSHHostInfoSchema = z.object({
   description: z.string().optional(),
 });
 
+// Keep in sync with internal/config/agent_actions.go (the Go source of truth).
+// A value the daemon emits that is missing here fails StateSnapshotSchema.parse
+// and silently nulls the whole snapshot — Board/Deps/LiveOps go "Offline".
 export const AllowedAgentActionSchema = z.enum([
   'comment',
   'comment_pr',
   'create_issue',
+  'merge_pr',
   'move_state',
   'provide_input',
 ]);
@@ -368,6 +372,10 @@ export const StateSnapshotSchema = z.object({
   inputRequired: z.array(InputRequiredEntrySchema).optional(),
   automationQueue: z.array(AutomationQueueRowSchema).optional(),
   automationQueueBackpressure: AutomationQueueBackpressureSchema.optional(),
+  // gaps_11 G-11 — monotonic count of input_required automation dispatches
+  // suppressed by the self-reentry guard. Go-side omitempty: absent (not 0)
+  // until the first drop, and absent from snapshots emitted by older daemons.
+  automationDropsSelfReentryTotal: optionalSafeInt,
   dependencyAudit: z.array(DependencyAuditRowSchema).optional(),
   dependencyGraphNodes: z.array(DependencyGraphNodeSchema).optional(),
   dependencyGraphEdges: z.array(DependencyGraphEdgeSchema).optional(),
@@ -396,8 +404,8 @@ export const LogEventTypeSchema = z.enum([
   'warn',
   'info',
   'error',
-  // v0.2.0 todolist5 B5 — surfaces the orchestrator's AUTOMATION FIRED log block
-  // in the per-issue timeline so operators can confirm dispatch decisions.
+  // Surfaces the orchestrator's AUTOMATION FIRED log block in the per-issue
+  // timeline so operators can confirm dispatch decisions.
   'automation',
 ]);
 

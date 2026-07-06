@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import { AllowedAgentActionSchema } from '../../../types/schemas';
 import {
+  AGENT_ACTION_OPTIONS,
   applyBackendSelection,
   applyModelSelection,
   commandToBackend,
   draftFromProfileDef,
   isSimpleBackendCommand,
+  normalizeAllowedActions,
   normalizeCommandForSave,
 } from '../profileCommands';
 
@@ -81,5 +84,18 @@ describe('profileCommands', () => {
       soulFile: '.itervox/agents/qa/SOUL.md',
       instructionsFile: '.itervox/agents/qa/INSTRUCTIONS.md',
     });
+  });
+});
+
+describe('FE-3: agent-action options track the canonical schema', () => {
+  it('AGENT_ACTION_OPTIONS covers every canonical action (incl. merge_pr)', () => {
+    const canonical = AllowedAgentActionSchema.options as readonly string[];
+    const optionIds = AGENT_ACTION_OPTIONS.map((o) => o.id);
+    for (const action of canonical) expect(optionIds).toContain(action);
+  });
+
+  it('normalizeAllowedActions preserves merge_pr on save', () => {
+    const result = normalizeAllowedActions(['comment', 'merge_pr'], ['comment', 'merge_pr']);
+    expect(result).toContain('merge_pr');
   });
 });

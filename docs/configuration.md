@@ -97,6 +97,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `pause_dispatch_when_any_in_state` | []string | `[]` | When ANY tracked issue is in one of these case-insensitive state names, no new dispatch begins. Use case: pause Todo dispatch while any issue is "In Review" so PRs queue/merge before the next start. Empty disables the guard. Load-time only (no runtime setter) |
 | `merge_strategy` | string | `"squash"` | Default merge strategy for the daemon-backed `merge_pr` agent action. One of `squash`, `rebase`, `merge`. Per-request `strategy` field on the action body overrides per-call |
 | `merge_block_labels` | []string | `["needs-human","migration","auth","feature-flag","breaking"]` | Case-insensitive PR labels that cause the `merge_pr` action to refuse the merge with reason `blocked_label:<label>`. Empty list disables the guard |
+| `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge a PR on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning |
 | `transport_error_patterns` | []string | `["stream disconnected","connection reset","i/o timeout"]` | Substrings (case-insensitive) that classify an agent-runner error as a transient transport failure rather than a generic failure. Increments `state.TransportFailureCount` when matched |
 | `sort.prefer_high_outdegree` | bool | `false` | When `true`, the dispatch comparator inserts a tiebreaker that ranks issues blocking more dependent siblings ahead of others, between the priority and createdAt tiers (P2) |
 | `deps_analyzer_profile` | string | `""` | Profile name used by the dashboard's "Analyze dependencies" sidecar. Empty disables the analyzer button |
@@ -196,8 +197,10 @@ When an automation trigger cannot start immediately for a retryable runtime
 reason such as `no_slots`, `per_state_limit`, `already_running`,
 `input_required`, `pending_input_resume`, or `blocked_by`, Itervox records a
 durable automation queue entry instead of dropping the attempt. The queue is
-capped by `agent.max_automation_queue_length`; saturation pauses new automation
-trigger intake while existing queued entries continue draining.
+capped by `agent.max_automation_queue_length`. Saturation pauses
+recurring/cron/polled producer intake; one-shot and internal dispatch attempts
+are rejected and counted for audit rather than paused. Existing queued entries
+continue draining until the queue falls below the low-water mark.
 
 | Field | Type | Description |
 |---|---|---|
@@ -336,12 +339,12 @@ See the [Agent Handoff guide](https://itervox.dev/guides/agent-handoff/) for a w
 
 Lifecycle scripts run via `bash -lc` inside each workspace. `after_create` and
 `before_run` are fatal on non-zero exit; `after_run` and `before_remove`
-failures are logged and ignored.
+failures are logged and ignored by default.
 
-v0.2.0 does not ship a fatal post-change hook such as `hooks.verify` or
-`hooks.after_run_required`. Treat post-change gates as CI-governed or
-prompt-governed unless you run them before the agent turn through `before_run`
-or outside Itervox.
+To make `after_run` a per-unit completion gate, set
+`hooks.after_run_required: true`: a worker whose final `after_run` hook exits
+non-zero fails the unit instead of completing it, so "done" requires the
+operator's gate (e.g. `make test`) to pass — not just the agent's clean exit.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -349,6 +352,7 @@ or outside Itervox.
 | `after_create` | string | `""` | Shell script run once, right after the workspace directory is created |
 | `before_run` | string | `""` | Shell script run before every agent turn |
 | `after_run` | string | `""` | Shell script run after every agent turn |
+| `after_run_required` | bool | `false` | When `true`, a failing final `after_run` hook blocks the unit from completing (per-unit gate) |
 | `before_remove` | string | `""` | Shell script run before the workspace is removed (auto-clear) |
 
 ```yaml

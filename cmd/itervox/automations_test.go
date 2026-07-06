@@ -253,6 +253,32 @@ func TestShouldSkipAutomatedIssueAllowsQueueableBlockers(t *testing.T) {
 	require.False(t, shouldSkipAutomatedIssue(state, cfg, issue))
 }
 
+// TestShouldSkipAutomatedIssueAllowsQueueablePausedByState is the
+// baseline-half regression for AUTO-2: the poll producer (automations.go)
+// gates issue_entered_state / issue_moved_backlog dispatch on
+// shouldSkipAutomatedIssue BEFORE the transition edge is recorded into
+// next.issues. Previously "paused_by_state:<state>" was not in the queueable
+// allowlist, so shouldSkipAutomatedIssue returned true and the producer
+// dropped the trigger entirely; because the baseline still advances
+// unconditionally, the transition edge was lost forever (next poll's
+// prevIssue already reflects the new state, so the trigger never re-fires).
+// With paused_by_state now queueable, the producer must NOT skip — the event
+// gets produced and durably queued instead of vanishing.
+func TestShouldSkipAutomatedIssueAllowsQueueablePausedByState(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Agent.MaxConcurrentAgents = 3
+	cfg.Agent.MaxConcurrentAgentsByState = map[string]int{}
+	cfg.Agent.PauseDispatchWhenAnyInState = []string{"In Review"}
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	state := orchestrator.NewState(cfg)
+	state.PrevIssueStates = map[string]string{"other-id": "In Review"}
+
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Paused window", State: "Todo"}
+
+	require.False(t, shouldSkipAutomatedIssue(state, cfg, issue))
+}
+
 func TestShouldSkipAutomatedIssueStillSkipsNonQueueableTerminal(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Agent.MaxConcurrentAgents = 3
@@ -304,6 +330,47 @@ func TestMatchesAutomationFilter_AnyMatchMode(t *testing.T) {
 	assert.True(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-42"}, entry, ""))
 	assert.True(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-99", Labels: []string{"triage"}}, entry, ""))
 	assert.False(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-99", Labels: []string{"docs"}}, entry, ""))
+}
+
+// Default match mode + explicit filter.states must narrow the fetch to ONLY
+// those states — this is the branch cron anchors (states: [Backlog]) and
+// completion-state sweeps (states: [In Review]) rely on to avoid scanning the
+// whole active/backlog pool. Regression guard for gaps_11-era sweep configs.
+func TestCronAutomationFetchStates_DefaultModeUsesExplicitStatesOnly(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			BacklogStates: []string{"Backlog"},
+			ActiveStates:  []string{"Todo", "In Progress"},
+		},
+	}
+	entry := compiledAutomation{
+		cfg: config.AutomationConfig{
+			Filter: config.AutomationFilterConfig{
+				// MatchMode unset = default all-conditions mode.
+				States: []string{"In Review"},
+			},
+		},
+	}
+
+	states := cronAutomationFetchStates(cfg, entry, cfg.Tracker.ActiveStates)
+
+	assert.Equal(t, []string{"In Review"}, states)
+}
+
+// No filter.states in default mode falls back to the backlog+active union —
+// the pool a label-anchored cron without an explicit states filter scans.
+func TestCronAutomationFetchStates_DefaultModeNoStatesUsesBacklogAndActive(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			BacklogStates: []string{"Backlog"},
+			ActiveStates:  []string{"Todo", "In Progress"},
+		},
+	}
+	entry := compiledAutomation{cfg: config.AutomationConfig{}}
+
+	states := cronAutomationFetchStates(cfg, entry, cfg.Tracker.ActiveStates)
+
+	assert.ElementsMatch(t, []string{"Backlog", "Todo", "In Progress"}, states)
 }
 
 func TestCronAutomationFetchStates_IncludesExplicitStatesInAnyMode(t *testing.T) {
@@ -375,6 +442,12 @@ func TestAutomationManagedCommentMarkers(t *testing.T) {
 	assert.Contains(t, marked, body)
 	assert.True(t, isAutomationManagedComment(domain.Comment{Body: marked}))
 	assert.True(t, isAutomationManagedComment(domain.Comment{AuthorName: "Itervox"}))
+	// Third arm: the input-required notification prefix is managed even
+	// without the marker or author (it predates MarkManagedComment).
+	assert.True(t, isAutomationManagedComment(domain.Comment{
+		Body:       "🤖 **Agent needs your input**\nWhich approach should I take?",
+		AuthorName: "alice",
+	}))
 	assert.False(t, isAutomationManagedComment(domain.Comment{Body: body, AuthorName: "alice"}))
 }
 

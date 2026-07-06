@@ -1,0 +1,47 @@
+---
+title: The Orchestrated Coding Spec
+description: Itervox is the reference implementation of the Orchestrated Coding spec — what the spec is, how Itervox maps to it, and the L3 conformance evidence.
+sidebar:
+  order: 2
+---
+
+Itervox is the **reference implementation** of [**Orchestrated Coding**](https://github.com/vnovick/orchestrated-coding) — a vendor-neutral spec for building real software with *fleets* of coding agents. Where single-agent guides tell you how to build one reliable agent, Orchestrated Coding specifies the system layer above: one owner of context, isolated workers, durable handoffs, and deterministic gates.
+
+Itervox is also a conforming [OpenAI Symphony](https://github.com/openai/symphony) runtime — Symphony specifies a single orchestrator daemon's engine (poll → workspace → run → retry); Orchestrated Coding is the fleet layer above it. Itervox implements both, which is the cleanest proof that the layers compose.
+
+## Why a spec?
+
+Chaining agents naively makes reliability *worse*, not better — errors compound instead of cancelling. The measured failure research behind the spec (the MAST taxonomy) found that roughly **79% of multi-agent failures are organizational** — specification, handoff, and verification problems — not model-capability problems. The spec is those organizational fixes, written down: **3 Foundations** and **7 Disciplines**, with conformance levels L0–L3.
+
+## How Itervox maps to the spec
+
+| Spec item | How Itervox implements it |
+|---|---|
+| **F1** — source of truth as law | `WORKFLOW.md` (schema-versioned, hard-fails on mismatch) + committable `SOUL.md`/`INSTRUCTIONS.md` per profile |
+| **F2** — shared context protocol | `.itervox/handoff/` deliverables assembled into every next prompt; "done" **requires** the handoff — a clean exit without one gets a synthesized, explicitly-marked handoff, committed on the issue branch |
+| **F3** — deterministic gates | merge-bot requires green `gh pr checks --required`; refuses **unarmed gates** (repos with zero required checks) unless explicitly opted out; optional per-unit gate via [`hooks.after_run_required`](/configuration/#hooks) |
+| **D1** — orchestrator owns dispatch | single-goroutine event loop, bounded concurrency, pidfile single-authority guard |
+| **D2** — isolation per unit | one git worktree per issue; open PRs are continued on their branch, never duplicated |
+| **D3** — handoffs as durable artifacts | timestamped Markdown deliverables, partial-on-failure marking, budgeted chronological assembly |
+| **D4** — dependency-ordered release | `BlockedBy` gating with strict fail-safe: *any* blocker fetch error (including 404) leaves the dependency unknown ⇒ blocked |
+| **D5** — review + merge gate | reviewer profiles + `auto_review`; daemon-guarded `merge_pr` with required checks and block labels |
+| **D6** — multiple harnesses | per-profile `claude`/`codex` backends; automatic switch on rate limits |
+| **D7** — control loops | ten event triggers wired to agent profiles, with a durable, restart-surviving automation queue |
+| **Recovery** | bounded retries with backoff, stall detection, partial-work preservation, `input_required` human-in-the-loop resume, corrupt-state quarantine |
+
+See the [Automations](/guides/automations/), [Agent Profiles](/guides/agent-profiles/), and [Dependency Management](/guides/dependency-management/) guides for the operational detail behind each row.
+
+## Conformance: L3
+
+The spec's rule is strict: *a system may claim a level only if it satisfies every requirement at that level and below.* Itervox **conforms at L3** — every L1–L3 MUST verified against code with named regression tests run under Go's race detector.
+
+That claim is deliberately evidence-linked rather than asserted:
+
+- [**IMPLEMENTATIONS.md**](https://github.com/vnovick/orchestrated-coding/blob/main/IMPLEMENTATIONS.md) — the audited conformance map in the spec repo
+- [`v0.2.0/gaps_must.md`](https://github.com/vnovick/itervox/blob/main/v0.2.0/gaps_must.md) — the MUST-level gaps the spec's own audit found in Itervox, and the named tests that closed them
+
+The honest part of that story: the audit caught real MUST-level gaps in the spec's *own reference implementation* — fail-open dependency handling, best-effort-only handoffs, an unvalidated merge gate. They were closed with tests before the L3 badge went on. That's the spec's strict rule working as intended.
+
+## Building your own implementation?
+
+The spec is the point — Itervox is one way to build it. If you're building an orchestrator (or already run one), self-assess against the [conformance checklist](https://github.com/vnovick/orchestrated-coding/blob/main/IMPLEMENTATIONS.md) and add your system to the list. An evidenced L1 is more useful to readers than an aspirational L3.

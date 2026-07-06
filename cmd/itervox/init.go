@@ -186,7 +186,10 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("\n# ── automations (optional) ────────────────────────────────────────────\n")
 	b.WriteString("# Cron and event-driven helper rules layered on top of your agent profiles.\n")
 	b.WriteString("# Trigger types: cron, input_required, tracker_comment_added, issue_entered_state,\n")
-	b.WriteString("#                issue_moved_to_backlog, run_failed.\n")
+	b.WriteString("#                issue_moved_to_backlog, run_failed, pr_opened, pr_merged,\n")
+	b.WriteString("#                rate_limited, blockers_resolved.\n")
+	b.WriteString("# Tip: an automation whose final output starts with [SILENT] posts no tracker\n")
+	b.WriteString("# comment (run stays in the dashboard logs) — use it for scan-and-found-nothing crons.\n")
 	b.WriteString("# Full reference: https://itervox.dev/guides/automations/\n")
 	b.WriteString("# automations:\n")
 	b.WriteString("#   - id: input-responder\n")
@@ -366,7 +369,9 @@ func runInit(args []string) {
 		}
 		if result.Changed {
 			fmt.Printf("itervox init --update: migrated %s to schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-			fmt.Printf("itervox init --update: backup written to %s\n", result.BackupPath)
+			// gaps_11 G-19 — tell the operator the .bak is disposable once
+			// the migration is confirmed, so stale backups don't linger.
+			fmt.Printf("itervox init --update: backup written to %s — review the migrated workflow, then remove the backup once the migration is confirmed\n", result.BackupPath)
 			if len(result.Profiles) > 0 {
 				fmt.Printf("itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
 			}

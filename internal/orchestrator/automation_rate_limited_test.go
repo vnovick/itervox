@@ -34,7 +34,7 @@ func TestIsRateLimitFailure_Classifier(t *testing.T) {
 		{"plain rate limit phrase", "rate limit reached, please retry later", true},
 		{"too many requests", "Too Many Requests", true},
 		{"case-insensitive", "RATE_LIMIT_EXCEEDED on us-central-1", true},
-		// v0.2.0 todolist5 B8.a — Claude Max / Pro / Codex phrasings that
+		// Claude Max / Pro / Codex phrasings that
 		// don't share a substring with the older default patterns.
 		{"claude max quota", "You're out of extra usage · resets 10pm (Asia/Jerusalem)", true},
 		{"claude pro tier limit", "You've reached the limit for your current Claude usage tier", true},

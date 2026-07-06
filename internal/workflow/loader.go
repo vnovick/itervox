@@ -203,7 +203,7 @@ const defaultBlockIndent = "  "
 //   - the block is empty,
 //   - every child line is blank or a comment.
 //
-// v0.2.0 todolist5 B10 — without this, the Patch* helpers hardcoded a
+// Without this, the Patch* helpers hardcoded a
 // 2-space prefix and silently corrupted any WORKFLOW.md whose front matter
 // used 4-space indent (yaml.v3's default serialisation produces 4-space
 // nested keys on common Go YAML codecs).
@@ -384,7 +384,7 @@ func PatchAgentStringMapField(path, key string, values map[string]string) error 
 		return fmt.Errorf("workflow patch string map: no front matter in %s", path)
 	}
 
-	// v0.2.0 todolist5 B10 — honour the file's existing indent convention.
+	// Honour the file's existing indent convention.
 	// The block header `<indent>key:` and the child entries are written with
 	// the indent the rest of the agent: block already uses (so a 4-space
 	// workflow stays at 4-space, a 2-space workflow stays at 2-space).
@@ -500,34 +500,46 @@ func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
 // agent.profiles: block. See PatchProfilesBlock.
 func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 	return func(frontLines []string) ([]string, error) {
-		profilesStart := -1
-		profilesEnd := -1
-		for i, line := range frontLines {
-			if line == "  profiles:" {
-				profilesStart = i
-				j := i + 1
-				for j < len(frontLines) {
-					l := frontLines[j]
-					if l == "" {
-						j++
-						continue
-					}
-					trimmed := strings.TrimLeft(l, " ")
-					indent := len(l) - len(trimmed)
-					if indent > 2 {
-						j++
-					} else {
-						break
-					}
+		// The whole block is emitted at the file's own indentation unit, not a
+		// hardcoded 2-space prefix. A WORKFLOW.md whose front matter uses 4-space
+		// indent (yaml.v3's default) keeps profiles: at one unit, names at two,
+		// fields at three, list items at four. Hardcoding 2-space here used to
+		// make this mutator fail to find a 4-space profiles: block and then
+		// INSERT a duplicate at 2-space — a duplicate key at inconsistent indent
+		// that breaks YAML parsing and freezes the daemon on reload. See
+		// detectBlockIndent's comment and TestPatchProfilesBlock_Replace4SpaceNoDuplicate.
+		agentLine := findBlockHeader(frontLines, "agent")
+		unit := detectBlockIndent(frontLines, agentLine) // per-level indent ("  " or "    ")
+		lvl1 := unit                                     // profiles:
+		lvl2 := unit + unit                              // profile names
+		lvl3 := unit + unit + unit                       // profile fields
+		lvl4 := lvl3 + unit                              // allowed_actions list items
+
+		// Locate an existing agent.profiles: block at whatever indent it uses.
+		profilesStart, profilesEnd := -1, -1
+		if idx := findKeyInBlock(frontLines, agentLine, "profiles"); idx >= 0 {
+			profilesStart = idx
+			blockIndent := len(frontLines[idx]) - len(strings.TrimLeft(frontLines[idx], " \t"))
+			j := idx + 1
+			for j < len(frontLines) {
+				l := frontLines[j]
+				if strings.TrimSpace(l) == "" {
+					j++
+					continue
 				}
-				profilesEnd = j
-				break
+				indent := len(l) - len(strings.TrimLeft(l, " \t"))
+				if indent > blockIndent {
+					j++
+				} else {
+					break
+				}
 			}
+			profilesEnd = j
 		}
 
 		var replacement []string
 		if len(profiles) > 0 {
-			replacement = append(replacement, "  profiles:")
+			replacement = append(replacement, lvl1+"profiles:")
 			names := make([]string, 0, len(profiles))
 			for n := range profiles {
 				names = append(names, n)
@@ -538,34 +550,34 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				// Strip accidental "command: " prefix users may have typed in the UI.
 				cmd := strings.TrimPrefix(entry.Command, "command: ")
 				cmd = strings.TrimPrefix(cmd, "command:")
-				replacement = append(replacement, "    "+name+":")
-				replacement = append(replacement, "      command: "+cmd)
+				replacement = append(replacement, lvl2+name+":")
+				replacement = append(replacement, lvl3+"command: "+cmd)
 				if entry.SoulFile != "" {
-					replacement = append(replacement, "      soul_file: "+entry.SoulFile)
+					replacement = append(replacement, lvl3+"soul_file: "+entry.SoulFile)
 				}
 				if entry.InstructionsFile != "" {
-					replacement = append(replacement, "      instructions_file: "+entry.InstructionsFile)
+					replacement = append(replacement, lvl3+"instructions_file: "+entry.InstructionsFile)
 				}
 				if entry.Backend != "" {
-					replacement = append(replacement, "      backend: "+entry.Backend)
+					replacement = append(replacement, lvl3+"backend: "+entry.Backend)
 				}
 				if entry.Enabled != nil && !*entry.Enabled {
-					replacement = append(replacement, "      enabled: false")
+					replacement = append(replacement, lvl3+"enabled: false")
 				}
 				if len(entry.AllowedActions) > 0 {
-					replacement = append(replacement, "      allowed_actions:")
+					replacement = append(replacement, lvl3+"allowed_actions:")
 					for _, action := range entry.AllowedActions {
 						if action == "" {
 							continue
 						}
-						replacement = append(replacement, "        - "+action)
+						replacement = append(replacement, lvl4+"- "+action)
 					}
 				}
 				if entry.CreateIssueState != "" {
-					replacement = append(replacement, "      create_issue_state: "+strconv.Quote(entry.CreateIssueState))
+					replacement = append(replacement, lvl3+"create_issue_state: "+strconv.Quote(entry.CreateIssueState))
 				}
 				if entry.Prompt != "" {
-					replacement = append(replacement, "      prompt: "+strconv.Quote(entry.Prompt))
+					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))
 				}
 			}
 		}
@@ -577,30 +589,22 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 			newFrontLines = append(newFrontLines, replacement...)
 			newFrontLines = append(newFrontLines, frontLines[profilesEnd:]...)
 		case len(profiles) > 0:
-			// Block not found; find the agent: key and insert after its block.
-			agentEnd := len(frontLines)
-			agentFound := false
-			for i, line := range frontLines {
-				if line == "agent:" {
-					agentFound = true
-					for j := i + 1; j < len(frontLines); j++ {
-						l := frontLines[j]
-						if l == "" {
-							continue
-						}
-						trimmed := strings.TrimLeft(l, " ")
-						indent := len(l) - len(trimmed)
-						if indent == 0 {
-							agentEnd = j
-							break
-						}
-					}
-					break
-				}
-			}
-			if !agentFound {
+			// No existing block: insert after the agent: block (or append if
+			// there is no agent: key at all).
+			if agentLine < 0 {
 				newFrontLines = append(frontLines, replacement...)
 			} else {
+				agentEnd := len(frontLines)
+				for j := agentLine + 1; j < len(frontLines); j++ {
+					l := frontLines[j]
+					if strings.TrimSpace(l) == "" {
+						continue
+					}
+					if l[0] != ' ' && l[0] != '\t' { // next top-level key
+						agentEnd = j
+						break
+					}
+				}
 				newFrontLines = append(newFrontLines, frontLines[:agentEnd]...)
 				newFrontLines = append(newFrontLines, replacement...)
 				newFrontLines = append(newFrontLines, frontLines[agentEnd:]...)

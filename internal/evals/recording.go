@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -63,9 +64,29 @@ func EvaluateScenario(scenario Scenario) ScenarioVerdict {
 		// expected.yaml not yet populated for this fixture. Load it.
 		_ = readExpectedYAML(scenario.Dir, &scenario.Expect)
 	}
+	// gaps_11 G-4 — surface stale recordings instead of silently trusting
+	// them: a recording older than its source files still passes the judges,
+	// but the verdict carries Stale=true so Report.Format flags it with
+	// "(stale recording)". SOUL.md / INSTRUCTIONS.md siblings are optional
+	// per-fixture sources (absent → mtime 0, never newer); the input.yaml
+	// comparison lives inside IsRecordingStale itself.
+	verdict.Stale = IsRecordingStale(scenario,
+		fileMtimeUnix(filepath.Join(scenario.Dir, "SOUL.md")),
+		fileMtimeUnix(filepath.Join(scenario.Dir, "INSTRUCTIONS.md")))
 	verdict.Deterministic = JudgeDeterministic(scenario, recording)
 	verdict.Structural = JudgeStructural(scenario, recording)
 	return verdict
+}
+
+// fileMtimeUnix returns the Unix mtime of path, or 0 when the file is
+// absent or unreadable — an absent source file can never out-date a
+// recording.
+func fileMtimeUnix(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.ModTime().Unix()
 }
 
 func readExpectedYAML(dir string, into *ScenarioExpect) error {

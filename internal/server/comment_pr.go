@@ -2,7 +2,9 @@ package server
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -13,16 +15,24 @@ import (
 
 // handleAgentCommentPR (gap D) is the structured-findings sibling of
 // handleAgentComment. It accepts a CommentPRRequest, validates it, renders
-// the findings into a deterministic Markdown body, and posts it via the
-// existing CommentOnIssue path.
+// the findings into a deterministic Markdown body, and posts it.
 //
-// v1 caveat (gap §6.4): the rendered comment lands on the tracker ISSUE,
-// not on the GitHub Pull Request. For Linear-tracked work this is correct
-// (the issue IS the workflow surface). For GitHub-tracked work where the
-// issue and the PR are distinct objects, the structured findings appear
-// on the issue, not the PR. True GitHub PR API integration is deferred to
-// a future gap; the action name retains "_pr" because the *intent* is
-// review feedback (vs. freeform comment).
+// Comment target (gaps_11 G-16 — resolves the former "lands on the tracker
+// issue, not the GitHub PR" v1 caveat):
+//
+//  1. When the issue has a known open-PR URL (the auto-review pause ledger,
+//     exposed as StateSnapshot.PausedWithPR) AND that URL is a github.com
+//     pull-request URL, the comment is posted directly on the GitHub PR via
+//     `gh pr comment <url>` — the same gh-CLI surface (and auth) that the
+//     merge_pr action already relies on.
+//  2. Otherwise — no PR URL recorded, a non-GitHub PR host, or a gh failure
+//     (gh missing / unauthenticated) — the comment falls back to the tracker
+//     issue via CommentOnIssue, with a slog line explaining why. For
+//     Linear-tracked work without a recorded PR this matches v1 behaviour:
+//     the issue IS the workflow surface.
+//
+// The action name retains "_pr" because the *intent* is review feedback
+// (vs. freeform comment).
 //
 // The action grant must include AgentActionCommentPR — which is a separate
 // scope from AgentActionComment so operators can authorise reviewer
@@ -43,12 +53,65 @@ func (s *Server) handleAgentCommentPR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := tracker.MarkManagedComment(RenderCommentPRMarkdown(req))
+
+	if prURL, posted := s.tryCommentOnGitHubPR(r, identifier, body); posted {
+		s.client.BumpCommentCount(identifier)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"findings": len(req.Findings),
+			"target":   "github_pr",
+			"pr_url":   prURL,
+		})
+		return
+	}
+
 	if err := s.client.CommentOnIssue(r.Context(), identifier, body); err != nil {
 		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
 		return
 	}
 	s.client.BumpCommentCount(identifier)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "findings": len(req.Findings)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"findings": len(req.Findings),
+		"target":   "tracker_issue",
+	})
+}
+
+// githubPRURLRegex matches a bare github.com pull-request URL. Kept in sync
+// with internal/prdetector's PR URL shape.
+var githubPRURLRegex = regexp.MustCompile(`^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+$`)
+
+// tryCommentOnGitHubPR attempts to land the rendered review body on the
+// issue's open GitHub PR (gaps_11 G-16). Returns (prURL, true) on success.
+// Every non-success path returns false and logs why, so the caller's
+// tracker-issue fallback is never silent.
+func (s *Server) tryCommentOnGitHubPR(r *http.Request, identifier, body string) (string, bool) {
+	prURL := strings.TrimSpace(s.snapshot().PausedWithPR[identifier])
+	if prURL == "" {
+		slog.Debug("comment_pr: no open-PR URL recorded for issue; commenting on tracker issue",
+			"identifier", identifier)
+		return "", false
+	}
+	if !githubPRURLRegex.MatchString(prURL) {
+		slog.Info("comment_pr: recorded PR URL is not a github.com pull request; falling back to tracker issue",
+			"identifier", identifier, "pr_url", prURL)
+		return "", false
+	}
+	gh := s.ghRun
+	if gh == nil {
+		gh = runGH
+	}
+	// gh resolves the repo from the full PR URL, so this works regardless of
+	// the daemon's working directory; gh supplies its own auth.
+	if out, err := gh(r.Context(), "pr", "comment", prURL, "--body", body); err != nil {
+		slog.Warn("comment_pr: gh pr comment failed; falling back to tracker issue",
+			"identifier", identifier, "pr_url", prURL, "error", err,
+			"output", truncateForReason(string(out)))
+		return "", false
+	}
+	slog.Info("comment_pr: review comment posted on GitHub PR",
+		"identifier", identifier, "pr_url", prURL)
+	return prURL, true
 }
 
 // CommentPRFinding is one structured review finding submitted by an agent

@@ -330,7 +330,12 @@ func TestWriteInitAgentFiles_CreatesAgentFilesAndGitignore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(gitignore), ".env")
 	assert.Contains(t, string(gitignore), "HEARTBEAT.md")
+	assert.Contains(t, string(gitignore), "daemon.pid")
+	assert.Contains(t, string(gitignore), "dashboard_url")
+	assert.Contains(t, string(gitignore), "STARTUP_ERROR.md")
+	assert.Contains(t, string(gitignore), "*.db")
 	assert.NotContains(t, string(gitignore), "agents")
+	assert.NotContains(t, string(gitignore), "WORKFLOW.md.bak") // repo-root file — CFG-4, out of scope
 }
 
 func TestWriteInitAgentFiles_UsesWorkflowDirectory(t *testing.T) {
@@ -456,6 +461,53 @@ Body {{ issue.identifier }}.
 	assert.Contains(t, string(rootIgnore), "!.itervox/")
 	assert.Contains(t, string(rootIgnore), "!.itervox/agents/")
 	assert.Contains(t, string(rootIgnore), "!.itervox/agents/**")
+}
+
+// gaps_11 G-19(a) — `itervox init --update` must tell the operator that the
+// WORKFLOW.md.bak backup can be removed once the migration is confirmed.
+func TestRunInitUpdatePrintsBackupRemovalNote(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	legacy := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  profiles:
+    implementer:
+      command: claude
+      prompt: |
+        You are the implementer.
+---
+
+Body {{ issue.identifier }}.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(legacy), 0o644))
+
+	stdout, _ := captureStdout(t, func() {
+		runInit([]string{"--update", "--workflow", workflowPath})
+	})
+
+	assert.Contains(t, stdout, "backup written to "+workflowPath+".bak")
+	assert.Contains(t, stdout, "remove the backup once the migration is confirmed")
+}
+
+// gaps_11 G-19(b) — patchRootGitignoreForAgents adds the WORKFLOW.md.bak
+// ignore entry to the root .gitignore exactly once, no matter how many times
+// it runs and independent of the agents carve-out branch.
+func TestPatchRootGitignoreAddsWorkflowBakOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("node_modules/\n"), 0o644))
+
+	require.NoError(t, patchRootGitignoreForAgents(dir))
+	require.NoError(t, patchRootGitignoreForAgents(dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(data), "WORKFLOW.md.bak"),
+		"WORKFLOW.md.bak must be ignored exactly once after repeated patching")
+	assert.Contains(t, string(data), "node_modules/")
 }
 
 func TestMigrateWorkflowToSchema2FailsBeforeDroppingPromptWhenAgentFileExists(t *testing.T) {
@@ -742,9 +794,9 @@ Body.
 	assert.Contains(t, got, "{{ issue.identifier }}", "Liquid placeholders preserved verbatim")
 }
 
-// v0.2.0 todolist7 C3 — `itervox init --update` on a schema-2 workflow that
+// `itervox init --update` on a schema-2 workflow that
 // pre-dates the `deps_analyzer_profile` field (i.e. anyone who migrated to
-// Track B before todolist6 landed) must scaffold both the profile entry and
+// Track B before the deps-analyzer feature landed) must scaffold both the profile entry and
 // the field, so the dashboard "Analyze dependencies" button enables without
 // the operator having to hand-edit YAML.
 func TestMigrateWorkflowToSchema2_AddsMissingDepsAnalyzerProfile(t *testing.T) {
@@ -791,7 +843,7 @@ Body.
 	assert.Contains(t, got, "implementer:", "pre-existing profile must be preserved")
 }
 
-// v0.2.0 todolist7 C3 — running the migration twice on the same workflow must
+// Running the migration twice on the same workflow must
 // produce no additional writes for the deps-analyzer artefacts. Operator
 // edits to the scaffolded INSTRUCTIONS.md must survive the second run.
 func TestMigrateWorkflowToSchema2_DepsAnalyzerScaffoldIdempotent(t *testing.T) {

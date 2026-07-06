@@ -755,10 +755,3 @@ func TestTerminateIssue_NotRunning(t *testing.T) {
 	// Neither running nor paused — should return false.
 	assert.False(t, o.TerminateIssue("ENG-99"))
 }
-
-func TestGetPausedOpenPRs_Empty(t *testing.T) {
-	o := newOrch()
-	result := o.GetPausedOpenPRs()
-	assert.NotNil(t, result)
-	assert.Empty(t, result)
-}

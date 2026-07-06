@@ -9,6 +9,7 @@ import {
   DependencyGraphNodeSchema,
   DependencyGraphEdgeSchema,
   IssueStatusChangeSchema,
+  StateSnapshotSchema,
 } from '../schemas';
 
 // v0.2.0 audit P1-14 — every Go DTO marshaled into the dashboard SSE stream
@@ -67,4 +68,36 @@ describe('Go DTO ↔ Zod schema parity (v0.2.0 audit P1-14)', () => {
       }
     });
   }
+});
+
+// gaps_11 G-11 — the self-reentry drop counter rides the top-level
+// StateSnapshot DTO (not a fixture-backed Row), so its Go↔Zod parity is
+// asserted directly here: present parses to the number, absent (omitempty /
+// older daemon) parses to undefined.
+describe('StateSnapshot automationDropsSelfReentryTotal parity (gaps_11 G-11)', () => {
+  const minimalSnapshot = {
+    generatedAt: '2026-05-25T12:00:00Z',
+    counts: { running: 0, retrying: 0, paused: 0 },
+    running: [],
+    retrying: [],
+    paused: [],
+    maxConcurrentAgents: 3,
+    maxRetries: 5,
+    maxSwitchesPerIssuePerWindow: 2,
+    switchWindowHours: 6,
+    rateLimits: null,
+  };
+
+  it('parses the counter when the daemon emits it', () => {
+    const parsed = StateSnapshotSchema.parse({
+      ...minimalSnapshot,
+      automationDropsSelfReentryTotal: 4,
+    });
+    expect(parsed.automationDropsSelfReentryTotal).toBe(4);
+  });
+
+  it('parses snapshots that omit the counter (omitempty / older daemon)', () => {
+    const parsed = StateSnapshotSchema.parse(minimalSnapshot);
+    expect(parsed.automationDropsSelfReentryTotal).toBeUndefined();
+  });
 });

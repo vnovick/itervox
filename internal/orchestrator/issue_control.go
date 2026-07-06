@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"log/slog"
-	"maps"
 
 	"github.com/vnovick/itervox/internal/domain"
 )
@@ -159,16 +158,6 @@ func (o *Orchestrator) ReanalyzeIssue(identifier string) bool {
 	}
 	slog.Info("orchestrator: issue queued for forced re-analysis", "identifier", identifier)
 	return true
-}
-
-// GetPausedOpenPRs returns a copy of the map of paused identifiers that were
-// auto-paused due to an open PR being detected. Safe to call from any goroutine.
-func (o *Orchestrator) GetPausedOpenPRs() map[string]string {
-	o.snapMu.RLock()
-	defer o.snapMu.RUnlock()
-	result := make(map[string]string, len(o.lastSnap.PausedOpenPRs))
-	maps.Copy(result, o.lastSnap.PausedOpenPRs)
-	return result
 }
 
 // SetIssueProfile sets (or clears) a named agent profile override for a specific issue.

@@ -11,7 +11,7 @@ Itervox v0.2.0 is the biggest release since launch. It adds event-driven automat
 
 ## TL;DR — what shipped
 
-- **10 automation triggers** including new `pr_merged` (daemon-side merges + external GitHub merges) and `body_contains` / `body_regex` filters on `tracker_comment_added`.
+- **10 automation triggers** including new `pr_merged` (fires after a successful daemon-side `merge_pr` action) and `body_contains` / `body_regex` filters on `tracker_comment_added`.
 - **Built-in `merge-bot` profile + `merge_pr` agent action** — embedded in the binary; `gh pr merge` with required-check, block-label, and mergeable-state guards.
 - **Schema 2 WORKFLOW.md** with file-backed `SOUL.md` / `INSTRUCTIONS.md` profile content, `.itervox/agents/**` committable.
 - **Multi-daemon coexistence**: `server.port` defaults to `0` (OS picks), `EADDRINUSE` is fatal (no silent shift), `.itervox/dashboard_url` lets Vite auto-discover the URL, `itervox doctor` names the entire failure triad.
@@ -20,7 +20,7 @@ Itervox v0.2.0 is the biggest release since launch. It adds event-driven automat
 - **`itervox init --update --server-port <n>`** migration flag.
 - **Profile evals suite foundation (P1.a)** — `internal/evals` + `make evals-fast` chained into `make verify` so prompt regressions break the build.
 - **`pause_dispatch_when_any_in_state`** + **`prefer_high_outdegree`** dispatch knobs.
-- **Transport-error circuit breaker** (`agent.transport_error_patterns`).
+- **Transport-error classifier** (`agent.transport_error_patterns`).
 - **Queue persistence v2 envelope** (`schema_version` + `daemon_instance_id` + `payload_sha256`; corruption goes to `.quarantine`).
 - **Linear `trashed` filtering**, **`automation_drops_self_reentry_total`** counter, **status-history janitor reasons**, **Logs `automation` filter chip**, **Vite dev proxy auto-discovery**, **`itervox action comment-pr` / `merge-pr`** CLI subcommands.
 - **`itervox init --template <preset>`** flag (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`).
@@ -83,7 +83,7 @@ Dependency readiness now has one deterministic v0.2.0 path: `blockers_resolved` 
 
 ### Trigger types and the automation editor
 
-<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor modal showing the trigger dropdown with nine trigger types including Blockers Resolved" width={900} height={580} />
+<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor modal showing the trigger dropdown with ten trigger types including Blockers Resolved" width={900} height={580} />
 
 The automation editor modal lets you configure every aspect of an automation rule:
 
@@ -98,13 +98,23 @@ The automation editor modal lets you configure every aspect of an automation rul
   - **Issue Moved To Backlog** — fires when an issue enters a backlog state.
   - **Run Failed** — fires when a worker run fails permanently after retries are exhausted.
   - **PR Opened** — fires when a pull request is detected on the issue.
-  - **PR Merged** — fires when an itervox-managed PR transitions to MERGED, either via the daemon-side `merge_pr` action or an external GitHub merge. Trigger context carries `pr_url`, `pr_number`, `merged_sha`, `base_ref`, `merged_at`.
+  - **PR Merged** — fires when an itervox-managed PR transitions to MERGED via the daemon-side `merge_pr` action (a poller for externally-merged PRs is planned). Trigger context carries `pr_url`, `pr_number`, `merged_sha`, `base_ref`, `merged_at`.
   - **Rate Limited** — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven.
   - **Blockers Resolved** — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
 For `cron` triggers, the visual picker and the raw expression field stay in sync — edit either one and the other updates. The expression field accepts standard five-field cron syntax (`minute hour day month weekday`).
 
 All automations are persisted to the `automations:` block in `WORKFLOW.md` and take effect on the next tick without a daemon restart.
+
+### `[SILENT]` no-op convention
+
+Recurring automations whose common case is "nothing to report" can suppress the
+tracker comment: when the agent's final output begins with `[SILENT]`
+(case-sensitive), no tracker or PR comment is posted, while the run stays fully
+visible in the dashboard logs. Instruct scan-style cron automations to reply
+`[SILENT] <short reason>` on the no-findings path. See the
+[Automations guide](/guides/automations/#suppressing-the-tracker-comment-with-silent)
+for the full rules and a cron example.
 
 ### Automation release boundary
 
@@ -331,17 +341,13 @@ When ANY tracked issue is in one of the listed states (case-insensitive), no new
 
 `agent.sort.prefer_high_outdegree: true` inserts a tiebreaker that ranks issues blocking more dependent siblings ahead of others, between the priority and createdAt tiers. Foundation issues that unblock the rest of the backlog dispatch first.
 
-### Transport-error circuit breaker
+### Transport-error classifier
 
-`agent.transport_error_patterns` (default `["stream disconnected","connection reset","i/o timeout"]`) classifies exhausted-retry exits as transient transport failures rather than generic failures. `state.TransportFailureCount` is incremented for dashboard surfaces.
-
-### Linear `trashed` filtering
-
-Linear candidate queries now request the `trashed` field; trashed issues are dropped at the normalizer so a Linear archive never produces a dispatch.
+`agent.transport_error_patterns` (default `["stream disconnected","connection reset","i/o timeout"]`) classifies exhausted-retry exits as transient transport failures rather than generic failures. An internal counter is tracked in orchestrator state; dashboard surfacing is planned for a follow-up release.
 
 ### `init --template` flag
 
-`itervox init --template <minimal|full|rate-limit-fallback|pr-review|daily-qa>` selects among shipped scaffolds. Unknown values exit non-zero with the accepted list.
+`itervox init --template <minimal|full|rate-limit-fallback|pr-review|daily-qa>` accepts the five named presets and rejects unknown values non-zero with the accepted list. In v0.2.0 every preset emits the same default scaffold; preset-specific scaffolds land in a future release.
 
 ### Queue persistence v2 envelope
 
@@ -349,11 +355,11 @@ Automation queue writes are now wrapped in a versioned envelope (`schema_version
 
 ### Profile evals suite (P1.a foundation)
 
-A new `internal/evals` package + `make evals-fast` target gates merge-bot prompt regressions on every `make verify`. Six merge-bot scenarios live under `internal/evals/fixtures/merge-bot/` with `input.yaml` / `expected.yaml` / `recording.jsonl` shaped fixtures. Live mode (real Claude/Codex API calls to refresh recordings) is deferred to P1.c.
+A new `internal/evals` package + `make evals-fast` target gates merge-bot prompt regressions on every `make verify`. Six merge-bot scenarios live under `internal/evals/fixtures/merge-bot/` — the green-CI happy path plus the five refusal/selection edges (red CI with approval, block label, wrong marker phrase, multiple matching PRs, no matching PR) — and a two-scenario `reviewer` suite locks the producer side of the merge handshake (the `/ai-approved` marker on approve, numbered failures + `move_state` on reject). Each scenario is an `input.yaml` / `expected.yaml` / `recording.jsonl` triple. The recordings are hand-authored behavioral contracts for now; live mode (real Claude/Codex API calls to record and refresh transcripts, plus phrase-absence assertions) is follow-up work, and the report flags any recording older than its sources as stale.
 
 ### Automation telemetry counters
 
-New `State` counters increment for `automation_dispatches_pr_opened_total`, `automation_dropped_pr_opened_dedup_total`, `automation_dispatches_pr_merged_total`, `automation_dropped_pr_merged_dedup_total`, and `automation_drops_self_reentry_total`. Surfaced on the live-ops strip.
+New `State` counters increment for `automation_dispatches_pr_opened_total`, `automation_dropped_pr_opened_dedup_total`, `automation_dispatches_pr_merged_total`, `automation_dropped_pr_merged_dedup_total`, and `automation_drops_self_reentry_total`. They are tracked in orchestrator state for audit; dashboard surfacing is planned for a follow-up release.
 
 ### `itervox action` CLI subcommands
 

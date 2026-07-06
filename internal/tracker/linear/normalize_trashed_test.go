@@ -39,7 +39,7 @@ func TestNormalizeIssue_TrashedMissingFieldPassesThrough(t *testing.T) {
 	}
 }
 
-// v0.2.0 todolist7 C1 — QueryIssueDetail must SELECT the `trashed` field so
+// QueryIssueDetail must SELECT the `trashed` field so
 // a direct detail lookup of a trashed issue (e.g. a stale dashboard URL)
 // is also filtered through the normalize step. Without this, the bulk poll
 // drops trashed issues but a per-issue detail GET would still surface them.

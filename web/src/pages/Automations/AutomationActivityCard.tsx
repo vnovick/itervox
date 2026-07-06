@@ -179,7 +179,21 @@ function buildCardData(
     sessionId: r.sessionId,
   }));
 
+  // gaps_11 G-13(b) / todolist6 codex-B6 box 2 — the same run can appear in
+  // BOTH `running` (stale for the brief window after worker exit) and
+  // `history` (fresh) with the same sessionId. Dedup before rendering,
+  // preferring the live row (live rows are listed first so a keep-first pass
+  // does that naturally). Rows without a sessionId have no safe identity to
+  // match on and are kept as-is — the React key's live/done suffix below
+  // keeps those from colliding.
+  const seenSessions = new Set<string>();
   const allRuns = [...liveRuns, ...completedRuns]
+    .filter((run) => {
+      if (!run.sessionId) return true;
+      if (seenSessions.has(run.sessionId)) return false;
+      seenSessions.add(run.sessionId);
+      return true;
+    })
     .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
     .slice(0, MAX_RUN_ROWS);
 

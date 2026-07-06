@@ -81,7 +81,7 @@ func newDepsAnalyzerService(
 		logger:      slog.Default().With("component", "deps_analyzer"),
 	}
 	s.jobs = depsanalysis.NewJobManager(s.run)
-	// v0.2.0 todolist7 C4 — wake every SSE subscriber on every analyzer-job
+	// Wake every SSE subscriber on every analyzer-job
 	// transition (queued→running and terminal) so the dashboard repaints
 	// without waiting for its polling fallback. The frontend then re-fetches
 	// the snapshot, which carries DepsLastAnalyzedAt + the inferred-edge set.
@@ -137,9 +137,15 @@ func (s *depsAnalyzerService) run(ctx context.Context, profile string) (*depsana
 	if !ok {
 		return nil, fmt.Errorf("profile %q vanished between enqueue and run", profile)
 	}
+	// cfg.Tracker.ActiveStates/TerminalStates are cfgMu-guarded (runtime
+	// setter: SetTrackerStatesCfg via PUT /settings/tracker/states) and this
+	// pass runs on a daemon-scoped goroutine well after startup (triggered by
+	// EnqueueAnalysis), so read via the getter. BacklogStates has no runtime
+	// setter, so the direct cfg read stays legal.
+	active, terminal, _ := s.orch.TrackerStatesCfg()
 	states := depsanalysis.DedupeStateNames(
-		s.cfg.Tracker.ActiveStates,
-		s.cfg.Tracker.TerminalStates,
+		active,
+		terminal,
 		s.cfg.Tracker.BacklogStates,
 	)
 	issues, trackerEdges, err := depsanalysis.FetchIssues(ctx, s.tracker, states)

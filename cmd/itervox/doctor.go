@@ -81,6 +81,9 @@ type DoctorReport struct {
 	// non-empty URL means the daemon died after writing the file.
 	DashboardURL          string
 	DashboardURLReachable bool
+	// GitignoreMissingLines reports missing required lines in .itervox/.gitignore,
+	// if the file exists but is incomplete.
+	GitignoreMissingLines []string
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -138,7 +141,7 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 		port := *cfg.Server.Port
 		if holder := describePortHolder(port); holder != "" {
 			report.PortInUseWarning = fmt.Sprintf(
-				"port %d in use%s — if this is not your stories-ai/expected daemon, the dashboard URL will reach the wrong process",
+				"port %d in use%s — if this is not your expected itervox daemon, the dashboard URL will reach the wrong process",
 				port, holder)
 		}
 	}
@@ -164,6 +167,22 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 		if data, urlErr := os.ReadFile(urlPath); urlErr == nil {
 			report.DashboardURL = strings.TrimSpace(string(data))
 			report.DashboardURLReachable = probeDashboardHealth(report.DashboardURL)
+		}
+	}
+
+	// Gitignore completeness check: verify that .itervox/.gitignore contains
+	// all required lines. If the file exists but is incomplete (e.g., after a
+	// binary upgrade), warn the operator.
+	requiredGitignoreLines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "/*.json", "bin/", "*.db"}
+	if dir := filepath.Dir(workflowPath); dir != "" {
+		gitignorePath := filepath.Join(dir, ".itervox", ".gitignore")
+		if data, gitErr := os.ReadFile(gitignorePath); gitErr == nil {
+			content := string(data)
+			for _, line := range requiredGitignoreLines {
+				if !strings.Contains(content, line) {
+					report.GitignoreMissingLines = append(report.GitignoreMissingLines, line)
+				}
+			}
 		}
 	}
 
@@ -249,6 +268,10 @@ func renderDoctorReport(r DoctorReport) string {
 		} else {
 			fmt.Fprintf(&b, "dashboard URL: %s (NOT reachable — daemon may have died after writing this file)\n", r.DashboardURL)
 		}
+	}
+	if len(r.GitignoreMissingLines) > 0 {
+		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
+			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
 	}
 	return b.String()
 }

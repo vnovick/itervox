@@ -64,6 +64,23 @@ func suggestStartupErrorFix(err error) string {
 	}
 }
 
+// startupErrorSummary returns a one-line pointer to the STARTUP_ERROR.md
+// marker when one exists next to the workflow, or "" when the last startup
+// was healthy. Consumed by the heartbeat writer so HEARTBEAT.md reports
+// `Daemon: degraded` plus a `Last startup error:` line while the marker is
+// present (todolist6 P0-D / gaps_11 G-15).
+func startupErrorSummary(workflowPath string) string {
+	dir := filepath.Dir(workflowPath)
+	if dir == "" {
+		dir = "."
+	}
+	path := filepath.Join(dir, ".itervox", "STARTUP_ERROR.md")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("see %s (clear with `itervox doctor --clear-startup-error`)", path)
+}
+
 // clearStartupErrorMarker removes a previously written STARTUP_ERROR.md so
 // the next healthy boot leaves a clean .itervox/. Called after the first
 // successful snapshot is produced.

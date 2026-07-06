@@ -6,6 +6,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   'issue_moved_to_backlog',
   'run_failed',
   'pr_opened',
+  'pr_merged',
   'rate_limited',
   'blockers_resolved',
 ] as const;
@@ -45,6 +46,10 @@ export const AUTOMATION_TRIGGER_META = {
   pr_opened: {
     label: 'PR Opened',
     description: 'Fires the moment a worker confirms a brand-new pull request for the issue.',
+  },
+  pr_merged: {
+    label: 'PR Merged',
+    description: 'Fires when a tracked pull request opened by an itervox-managed branch merges.',
   },
   rate_limited: {
     label: 'Rate Limited',

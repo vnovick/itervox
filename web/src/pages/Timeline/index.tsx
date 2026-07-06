@@ -10,6 +10,7 @@ import { useClearIssueLogs, useClearIssueSubLogs } from '../../queries/issues';
 import {
   EMPTY_RUNNING,
   EMPTY_HISTORY,
+  dedupSessionsPreferLive,
   fromRunning,
   fromHistory,
   extractSubagents,
@@ -34,7 +35,10 @@ export default function Timeline() {
   const setAutomationOnly = useUIStore((s) => s.setTimelineAutomationOnly);
 
   const allSessions = useMemo<NormalisedSession[]>(() => {
-    const sorted = [...historySessions, ...liveSessions].sort(
+    // dedupSessionsPreferLive guards the ~5s stale-running window where the
+    // same sessionId can appear in both `running` (via useStableValue) and
+    // `history`, which would double-count sidebar runs. G-13 relay.
+    const sorted = dedupSessionsPreferLive([...historySessions, ...liveSessions]).sort(
       (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
     );
     return automationOnly

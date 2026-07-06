@@ -116,6 +116,15 @@ describe('liveOpsStripModel', () => {
     expect(model.sshLabel).toBe('2 hosts · 1 active');
     expect(model.automationsToday).toBe(1);
   });
+
+  // gaps_11 G-11 — the self-reentry drop counter is omitempty on the wire:
+  // absent (older daemon / never fired) must read as 0, present must surface.
+  it('reads the self-reentry drop counter and defaults absent to zero', () => {
+    expect(liveOpsStripModel(makeSnapshot()).selfReentryDrops).toBe(0);
+    expect(
+      liveOpsStripModel(makeSnapshot({ automationDropsSelfReentryTotal: 3 })).selfReentryDrops,
+    ).toBe(3);
+  });
 });
 
 describe('LiveOpsStrip', () => {
@@ -273,6 +282,18 @@ describe('LiveOpsStrip', () => {
     });
     render(<LiveOpsStrip />);
     expect(screen.getByText('Deps 3 unresolved (2 unknown)')).toBeInTheDocument();
+  });
+
+  // gaps_11 G-11 — the chip only appears once the guard has fired; healthy
+  // daemons keep the strip compact.
+  it('renders the self-reentry drops chip only when the counter is positive', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot() });
+    const { rerender } = render(<LiveOpsStrip />);
+    expect(screen.queryByText(/Self-reentry drops/)).not.toBeInTheDocument();
+
+    useItervoxStore.setState({ snapshot: makeSnapshot({ automationDropsSelfReentryTotal: 3 }) });
+    rerender(<LiveOpsStrip />);
+    expect(screen.getByText('Self-reentry drops 3')).toBeInTheDocument();
   });
 
   it('falls back to the plain "Deps N blocked" label when no unknown rows exist', () => {

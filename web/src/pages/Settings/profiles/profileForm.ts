@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ProfileDef } from '../../../types/schemas';
+import { AllowedAgentActionSchema, type ProfileDef } from '../../../types/schemas';
 import {
   buildCanonicalCommand,
   draftFromProfileDef,
@@ -23,9 +23,7 @@ export const profileFormSchema = z
     instructions: z.string(),
     soulFile: z.string(),
     instructionsFile: z.string(),
-    allowedActions: z.array(
-      z.enum(['comment', 'comment_pr', 'create_issue', 'move_state', 'provide_input']),
-    ),
+    allowedActions: z.array(AllowedAgentActionSchema),
     createIssueState: z.string(),
   })
   .superRefine((values, ctx) => {

@@ -52,14 +52,21 @@ func auditIssueDependencies(state *State, issue domain.Issue, now time.Time) Dep
 		next.LastTransitionReason = prev.LastTransitionReason
 	}
 
-	if next.Status == DependencyAuditBlocked || next.Status == DependencyAuditUnknown {
+	// AUTO-1: only a known Blocked status arms the WasBlocked latch. Unknown is
+	// the dispatch-time fail-safe (a transient tracker outage flips blocker
+	// states to nil), but it is NOT evidence that the issue was ever genuinely
+	// blocked, so it must not arm the blockers_resolved transition. The audit
+	// Status for unknown remains DependencyAuditUnknown (dispatch behaviour is
+	// unchanged); only the latch that gates the transition changes here.
+	if next.Status == DependencyAuditBlocked {
 		next.WasBlocked = true
 		if next.FirstBlockedAt.IsZero() {
 			next.FirstBlockedAt = now
 		}
 	}
 
-	if issueHasResolvedBlockersTransition(prev, next) {
+	fired := issueHasResolvedBlockersTransition(prev, next)
+	if fired {
 		state.DependencyTransitionSeq++
 		next.UnblockedAt = now
 		next.LastTransitionVersion = state.DependencyTransitionSeq
@@ -67,6 +74,15 @@ func auditIssueDependencies(state *State, issue domain.Issue, now time.Time) Dep
 	}
 
 	stored := next
+	if fired {
+		// AUTO-1: disarm the persisted WasBlocked latch once the transition has
+		// been consumed so a later transient-outage flap
+		// (unblocked -> unknown -> unblocked) cannot re-fire blockers_resolved.
+		// The returned entry keeps WasBlocked=true so this pass's callers still
+		// observe the genuine blocked->unblocked history; only the copy that
+		// becomes `prev` on the next audit is disarmed.
+		stored.WasBlocked = false
+	}
 	state.DependencyAudit[key] = &stored
 	return next
 }
@@ -167,7 +183,13 @@ func issueHasResolvedBlockersTransition(prev *DependencyAuditEntry, next Depende
 	if prev.Status == DependencyAuditUnblocked {
 		return false
 	}
-	return prev.WasBlocked || len(prev.BlockedBy) > 0 || len(prev.UnresolvedBlockers) > 0
+	// AUTO-1: gate the transition solely on the WasBlocked latch, which is now
+	// armed only by a known Blocked status. The prior fallback clauses
+	// (len(prev.BlockedBy) > 0 || len(prev.UnresolvedBlockers) > 0) fired for any
+	// prev that merely had blocker rows — including an Unknown outage state whose
+	// blockers were never genuinely blocking — which produced spurious/duplicate
+	// blockers_resolved dispatches on tracker-outage flaps.
+	return prev.WasBlocked
 }
 
 func auditFetchedIssueDependencies(state *State, issue domain.Issue, now time.Time) DependencyAuditEntry {

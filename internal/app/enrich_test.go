@@ -32,7 +32,6 @@ func emptyState() orchestrator.State {
 		PausedSessions:        make(map[string]*orchestrator.PausedSessionInfo),
 		IssueProfiles:         make(map[string]string),
 		IssueBackends:         make(map[string]string),
-		PausedOpenPRs:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),
 		PrevActiveIdentifiers: make(map[string]struct{}),
 		DiscardingIdentifiers: make(map[string]struct{}),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -222,9 +223,7 @@ func (r *chainingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent
 	// Extract run.handoff_path from the Run Context block in the prompt.
 	if hasDeliverable {
 		const marker = "run.handoff_path: `"
-		idx := strings.Index(prompt, marker)
-		if idx >= 0 {
-			rest := prompt[idx+len(marker):]
+		if _, rest, found := strings.Cut(prompt, marker); found {
 			end := strings.Index(rest, "`")
 			if end > 0 {
 				handoffRel := rest[:end]
@@ -427,6 +426,62 @@ func TestAutoClearFiresOnTerminalFailureAfterRetriesExhausted(t *testing.T) {
 	cancel()
 }
 
+// F2 — a worker that exits clean WITHOUT writing its handoff must not reach
+// TerminalSucceeded unmodified: the orchestrator synthesizes the handoff from
+// the session summary before the completion-state transition, so "done"
+// always includes the durable shared-state update.
+func TestSuccessWithoutHandoffSynthesizesDeliverable(t *testing.T) {
+	wsDir := t.TempDir()
+
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 1
+	cfg.Tracker.CompletionState = "Done"
+
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+
+	// promptCaptureRunner exits successfully without ever writing a handoff.
+	runner := &promptCaptureRunner{done: make(chan struct{}, 1)}
+	wsProvider := &recordingWorkspaceProvider{path: wsDir}
+	orch := orchestrator.New(cfg, mt, runner, wsProvider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	// The completion-state transition happens strictly AFTER handoff
+	// synthesis on the success path, so once the issue is Done the
+	// synthesized file must already exist.
+	require.Eventually(t, func() bool {
+		issues, err := mt.FetchIssueStatesByIDs(ctx, []string{"id1"})
+		return err == nil && len(issues) == 1 && issues[0].State == "Done"
+	}, 5*time.Second, 30*time.Millisecond, "issue must reach the completion state")
+
+	handoffDir := filepath.Join(wsDir, ".itervox", "handoff")
+	entries, err := os.ReadDir(handoffDir)
+	require.NoError(t, err, "handoff dir must exist after a successful run with no agent handoff")
+	var synthesized int
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(handoffDir, e.Name()))
+		require.NoError(t, readErr)
+		if strings.Contains(string(data), "Synthesized handoff") {
+			synthesized++
+			assert.NotContains(t, e.Name(), ".partial.md",
+				"a synthesized handoff on the success path must not be marked partial")
+		}
+	}
+	require.GreaterOrEqual(t, synthesized, 1,
+		"the orchestrator must synthesize a handoff when the agent wrote none")
+	cancel()
+}
+
 // alwaysFailingRunner returns a Failed turn result on every call so the
 // orchestrator's retry loop runs to exhaustion.
 type alwaysFailingRunner struct {
@@ -445,4 +500,67 @@ func (r *alwaysFailingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(
 		InputTokens:   1,
 		OutputTokens:  1,
 	}, nil
+}
+
+// mustGit runs `git -C dir args...` and fails the test on error.
+func mustGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+// gitOutput runs `git -C dir args...` and returns trimmed stdout, failing on error.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// WORK-1: the synthesized handoff must be COMMITTED on the issue branch, not
+// left as an untracked working-tree file. When the workspace is a real git
+// repo, the orchestrator scopes a `git add .itervox/handoff` + commit to the
+// issue branch on the success path so the deliverable survives auto-clear and
+// reaches reviewers via the PR push.
+func TestSynthesizedHandoffIsCommitted(t *testing.T) {
+	wsDir := t.TempDir()
+	mustGit(t, wsDir, "init", "-b", "main")
+	mustGit(t, wsDir, "config", "user.email", "test@example.com")
+	mustGit(t, wsDir, "config", "user.name", "Test")
+	mustGit(t, wsDir, "commit", "--allow-empty", "-m", "root")
+
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 1
+	cfg.Tracker.CompletionState = "Done"
+
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+
+	// promptCaptureRunner exits successfully without ever writing a handoff,
+	// so the orchestrator synthesizes one and must commit it.
+	runner := &promptCaptureRunner{done: make(chan struct{}, 1)}
+	wsProvider := &recordingWorkspaceProvider{path: wsDir}
+	orch := orchestrator.New(cfg, mt, runner, wsProvider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	require.Eventually(t, func() bool {
+		issues, err := mt.FetchIssueStatesByIDs(ctx, []string{"id1"})
+		return err == nil && len(issues) == 1 && issues[0].State == "Done"
+	}, 5*time.Second, 30*time.Millisecond, "issue must reach the completion state")
+
+	out := gitOutput(t, wsDir, "log", "--oneline", "--", ".itervox/handoff")
+	require.NotEmpty(t, out, "handoff must be committed on the branch (WORK-1)")
+	cancel()
 }

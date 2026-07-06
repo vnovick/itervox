@@ -22,6 +22,12 @@ type heartbeatOptions struct {
 	WorkflowPath  string
 	SchemaVersion int
 	DashboardURL  string
+	// StartupError is a one-line pointer to .itervox/STARTUP_ERROR.md when a
+	// previous startup failed. Non-empty flips `Daemon:` to `degraded` and
+	// adds a `Last startup error:` line to the rendered heartbeat. Populated
+	// per write via the writer's startupError getter so the line disappears
+	// once the marker is cleared (gaps_11 G-15 / todolist6 P0-D).
+	StartupError string
 }
 
 type heartbeatWriter struct {
@@ -30,6 +36,10 @@ type heartbeatWriter struct {
 	snapshot    func() server.StateSnapshot
 	minInterval time.Duration
 	writeFile   func(path string, content string) error
+	// startupError re-reads the STARTUP_ERROR.md marker on every write so
+	// the heartbeat reports degraded while the marker exists and recovers as
+	// soon as an operator clears it (`itervox doctor --clear-startup-error`).
+	startupError func() string
 
 	mu        sync.Mutex
 	dirty     bool
@@ -52,12 +62,13 @@ func newHeartbeatWriter(path string, opts heartbeatOptions, snapshot func() serv
 		snapshot = func() server.StateSnapshot { return server.StateSnapshot{} }
 	}
 	return &heartbeatWriter{
-		path:        path,
-		options:     opts,
-		snapshot:    snapshot,
-		minInterval: minInterval,
-		writeFile:   writeHeartbeat,
-		dirty:       true,
+		path:         path,
+		options:      opts,
+		snapshot:     snapshot,
+		minInterval:  minInterval,
+		writeFile:    writeHeartbeat,
+		startupError: func() string { return startupErrorSummary(opts.WorkflowPath) },
+		dirty:        true,
 	}
 }
 
@@ -129,7 +140,11 @@ func (w *heartbeatWriter) Run(ctx context.Context) {
 }
 
 func (w *heartbeatWriter) writeAt(now time.Time) error {
-	return w.writeFile(w.path, renderHeartbeat(w.snapshot(), w.options, now))
+	opts := w.options
+	if w.startupError != nil {
+		opts.StartupError = w.startupError()
+	}
+	return w.writeFile(w.path, renderHeartbeat(w.snapshot(), opts, now))
 }
 
 func renderHeartbeat(snap server.StateSnapshot, opts heartbeatOptions, now time.Time) string {
@@ -146,7 +161,15 @@ func renderHeartbeat(snap server.StateSnapshot, opts heartbeatOptions, now time.
 	if opts.SchemaVersion != 0 {
 		fmt.Fprintf(&b, "Schema: %d\n", opts.SchemaVersion)
 	}
-	b.WriteString("Daemon: running\n")
+	// gaps_11 G-15 / todolist6 P0-D — a present STARTUP_ERROR.md marker means
+	// the last startup failed; report degraded plus a pointer line until the
+	// operator clears the marker.
+	if strings.TrimSpace(opts.StartupError) != "" {
+		b.WriteString("Daemon: degraded\n")
+		fmt.Fprintf(&b, "Last startup error: %s\n", opts.StartupError)
+	} else {
+		b.WriteString("Daemon: running\n")
+	}
 	dashboard := opts.DashboardURL
 	if dashboard == "" {
 		dashboard = "disabled"

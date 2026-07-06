@@ -71,7 +71,7 @@ The Automations page's **Configure** tab lets you manage all automation rules wi
 
 Clicking **Add Automation** or **Use Template** opens the automation editor modal, where you can configure every field — trigger type, cron expression, profile, filters, and instructions:
 
-<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor showing the trigger type dropdown with all nine trigger types" width={900} height={580} />
+<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor showing the trigger type dropdown with all ten trigger types" width={900} height={580} />
 
 The cron picker and raw expression field stay in sync. For non-cron triggers, the editor adapts to show trigger-specific fields (e.g. `state` for `issue_entered_state`, `input_context_regex` for `input_required`).
 
@@ -150,6 +150,13 @@ Important caveat:
 - Itervox detects it by comparing the latest known comment with the latest currently fetched comment
 - if multiple comments arrive between polls, only the latest observed comment is available to the trigger
 
+Relevant fields:
+
+- `filter.body_contains` — only wake when the comment body contains one of the listed substrings (case-insensitive)
+- `filter.body_regex` — only wake when the comment body matches the regular expression
+
+Use these to keep a comment-driven bot quiet until its trigger phrase appears (e.g. a merge-bot that only wakes on "AI review passed — ready for merge"). The daemon pre-filters comments before any agent runs.
+
 ### `issue_entered_state`
 
 Fires when an issue transitions into a specific tracker state.
@@ -190,6 +197,23 @@ Use this for:
 - auto-dispatching a reviewer profile
 - posting a summary comment on the PR
 - notifying a Slack channel
+
+### `pr_merged`
+
+Fires when an itervox-managed PR transitions to MERGED via the daemon-side `merge_pr` action — the trigger fires after the action's guarded `gh pr merge` sequence succeeds.
+
+Use this for:
+
+- post-merge follow-up (close or transition the tracker issue via a `move_state`-permissioned profile)
+- changelog or release-notes drafting
+- dispatching a deploy-verification or smoke-test profile
+
+Important behavior:
+
+- per-(issue, PR URL, automation ID) dedup: a re-fired merge event never dispatches the same automation twice for the same PR
+- in v0.2.0 the trigger fires only from the daemon-side `merge_pr` action's success path; a poller that detects PRs merged externally (a human clicking **Merge** on GitHub) is planned but not shipped
+
+Available prompt variables: `{{ trigger.pr_url }}`, `{{ trigger.pr_branch }}`, `{{ trigger.pr_base_branch }}`.
 
 ### `rate_limited`
 
@@ -244,6 +268,7 @@ Supported filters:
 - `labels_any`
 - `identifier_regex`
 - `input_context_regex` for `input_required`
+- `body_contains` / `body_regex` for `tracker_comment_added`
 - `limit`
 - `match_mode`
 
@@ -301,6 +326,31 @@ It matches the blocked agent’s question text, so you can safely limit helper a
 - `which file`
 - `test command`
 
+### `body_contains` and `body_regex`
+
+Only meaningful for `tracker_comment_added` — config validation rejects them on any other trigger type.
+
+They restrict the automation to comments whose body matches:
+
+- `body_contains` — a list of substrings; the comment matches when it contains **at least one** of them. Matching is **case-insensitive**.
+- `body_regex` — a single regular expression (Go/RE2 syntax) matched against the raw comment body. Case-sensitive unless you use an inline `(?i)` flag. An invalid expression fails config validation at startup.
+
+When both are set, **both must match** (AND-combined). Leaving both empty preserves the default "every new comment matches" behavior.
+
+The daemon evaluates these filters before any agent runs, so a merge-bot wired to `tracker_comment_added` only wakes on its trigger phrase instead of every reviewer chat comment:
+
+```yaml
+automations:
+  - id: merge-on-approval
+    enabled: true
+    trigger:
+      type: tracker_comment_added
+    profile: merge-bot
+    filter:
+      body_contains: ["ready for merge"]
+      body_regex: "AI review passed"
+```
+
 ### `max_age_minutes`
 
 Only meaningful for `input_required`.
@@ -330,6 +380,40 @@ Examples:
 
 - a `qa` profile can be used by both a nightly QA sweep and a state-entry QA check
 - a `pm` profile can be used by both a backlog review automation and a comment-triage automation
+
+### Suppressing the tracker comment with `[SILENT]`
+
+When a run finishes, Itervox normally posts the agent's session summary as a
+tracker comment. For recurring automations that often find nothing — an hourly
+stale-issue scan, a nightly health check — that becomes comment spam fast.
+
+The `[SILENT]` convention opts a run out of comment delivery: when the agent's
+**final output begins with `[SILENT]`** (case-sensitive, leading whitespace
+ignored), no tracker or PR comment is posted. The run still appears in the
+dashboard logs in full, so the audit trail is unchanged — only the tracker
+notification is suppressed. `[SILENT]` appearing mid-message does not suppress.
+
+Instruct the agent to use it for the nothing-to-report path:
+
+```yaml
+automations:
+  - id: stale-issue-scan
+    enabled: true
+    profile: pm
+    trigger:
+      type: cron
+      cron: "0 * * * *"
+    filter:
+      states: ["In Progress"]
+      max_age_minutes: 1440
+    instructions: |
+      Review each stale issue and summarise what is blocking it.
+      If nothing is stale or no action is needed, reply with exactly:
+      [SILENT] no stale issues found
+```
+
+With that instruction, the hourly scan only comments when there is something
+worth a human's attention.
 
 ## Prompt variables
 
@@ -381,7 +465,7 @@ Run failed:
 - `{{ trigger.will_retry }}`
 - `{{ trigger.retry_backoff_ms }}`
 
-PR opened:
+PR opened / PR merged:
 - `{{ trigger.pr_url }}`
 - `{{ trigger.pr_branch }}`
 - `{{ trigger.pr_base_branch }}`
@@ -609,7 +693,7 @@ For high-risk plans, you can run a comment-only debate pattern before implementa
 
 Use this pattern for planning and design review, not for direct state-changing implementation. Keep the planner profiles comment-only so the debate cannot move tracker state or start work prematurely.
 
-Current automation filters cannot regex-match tracker comment bodies. The moderator profile should inspect issue comments and `{{ trigger.comment_body }}` itself, then stop if either planner sentinel is missing.
+`tracker_comment_added` automations can pre-filter on the comment body with `filter.body_contains` / `filter.body_regex` (e.g. keyed on each planner's sentinel header). The moderator profile should still inspect the full comment history via `{{ issue.comments }}` and stop if either planner sentinel is missing — the body filter only sees the latest observed comment.
 
 See the [Claude vs Codex Debate guide](/guides/claude-vs-codex-debate/) for the full workflow and YAML example.
 
@@ -654,6 +738,80 @@ The `pm` profile's `INSTRUCTIONS.md` reinforces the state-mutation safety bounda
 - Never move review, PR-open, merged, or closed issues.
 ```
 
+### 7. Autonomous merge sweep (advanced — read the caution first)
+
+The [built-in `merge-bot` profile](/guides/agent-profiles/#built-in-merge-bot-profile)
+is normally wired **human-gated**: a `tracker_comment_added` automation with a
+`body_contains` filter fires when a *person* posts an approval phrase like
+"ready for merge" on the issue. That is the recommended default, and it is the
+only shape the comment trigger supports — Itervox deliberately ignores its own
+comments when polling for `tracker_comment_added` (anti-loop), so **an AI
+reviewer's approval comment can never fire a comment-triggered merge**.
+
+If you want a *fully* autonomous review → merge pipeline, the supported shape
+is a **cron sweep** over issues sitting in your completion state, with an
+explicit approval marker handshake between the reviewer and merge-bot:
+
+**Producer side** — the reviewer profile's INSTRUCTIONS direct it to submit a
+GitHub *review* whose body contains an exact marker when its hard checks pass:
+
+```bash
+gh pr review <pr-url> --comment --body "/ai-approved"
+```
+
+Use `--comment`, never `--approve`: agent fleets typically run as one GitHub
+account, and GitHub rejects approving your own PR.
+
+**Consumer side** — the sweep:
+
+```yaml
+agent:
+  profiles:
+    merge-bot: {}   # built-in; gates, dedup, and actions come with it
+
+automations:
+  - id: merge-approved-prs
+    enabled: true
+    profile: merge-bot
+    trigger:
+      type: cron
+      cron: '*/20 * * * *'
+    filter:
+      states: ["In Review"]   # your completion_state
+      limit: 5
+    instructions: |
+      Follow your merge-bot instructions with ONE additional hard
+      precondition: the PR must carry the AI review approval marker. Check
+      `gh pr view <pr-number> --json reviews` for a review whose body
+      contains exactly `/ai-approved`; accept a plain PR comment with the
+      same marker only as a fallback. The common case is "not ready yet" —
+      no open PR, no marker, or checks still pending. In that case do NOT
+      post any comment; end your final message with
+      `[SILENT] not ready: <one-line reason>`. Only comment on genuine
+      failures. After a successful merge_pr action, move the issue to
+      "Done" and comment with the merge SHA.
+```
+
+**Caution — understand what protects you before enabling this:**
+
+- **The marker is advisory, not enforced.** The marker check lives in the
+  prompt, and anyone with PR comment access can post the string. The
+  daemon-enforced safety is the [`merge_pr` gate](/guides/agent-profiles/#built-in-merge-bot-profile):
+  required checks green, `MERGEABLE`/`CLEAN`, the block-label list, and the
+  dedup ledger. The marker decides *when* merge-bot tries; the gate decides
+  *whether* anything lands.
+- **Branch protection interaction.** If your base branch requires approving
+  reviews, a single-account setup cannot satisfy it (no self-approval).
+  Either rely on required status checks instead of required approvals, or
+  run the agents under a separate bot account.
+- **Cost and noise.** The sweep dispatches one merge-bot run per matching
+  issue per tick. Use a cheap model (the built-in default), a `limit`, a
+  20–30 minute cadence, and the `[SILENT]` convention so "not ready yet"
+  never posts a comment.
+- **Graduate into it.** Start with the human-gated `body_contains` wiring;
+  switch to the sweep only after you trust your reviewer profile's judgment
+  and your CI gate quality.
+
 ## Additional automation designs
 
 The Automations page includes starter templates for these v0.2.0-safe patterns. They are deliberately comment-first and single-profile; none of them adds a hidden workflow engine.
@@ -679,6 +837,7 @@ Use profile `allowed_actions` as the safety boundary. Automations read private w
 | Input-required helpers | Medium | `comment`, `provide_input`; narrow with `input_context_regex` and `max_age_minutes` |
 | QA or reviewer handoff | Medium | `comment`; add `move_state` only when the destination state and failure behavior are explicit |
 | Follow-up issue creation | Medium to high | `create_issue` with `create_issue_state` set to an intake state |
+| Autonomous merge sweep | High — merges code without a human | Built-in `merge-bot` actions only; keep the `merge_pr` gate list intact; see [example 7](#7-autonomous-merge-sweep-advanced--read-the-caution-first) |
 | SSH-hosted action profiles | High until bridge support is verified | Local execution, or comment-only remote profiles |
 | Destructive cleanup, secret handling, external communications | High | Keep manual or require human approval outside Itervox |
 

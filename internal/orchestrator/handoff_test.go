@@ -52,6 +52,82 @@ func TestHandoffPathForEmptyProfileFallback(t *testing.T) {
 	assert.Equal(t, filepath.Join(".itervox", "handoff", "2026-05-25T14-30-45Z_agent.md"), path)
 }
 
+// F2 — success requires a durable handoff. When the agent exits clean
+// without writing one, the orchestrator synthesizes it from the session
+// summary, marked as synthesized.
+func TestEnsureHandoffOnSuccessSynthesizesWhenMissing(t *testing.T) {
+	ws := t.TempDir()
+	rel := handoffPathFor("2026-07-05T10-00-00.000Z", "implementer")
+
+	synthesized, err := ensureHandoffOnSuccess(ws, rel, "Session summary body.")
+	require.NoError(t, err)
+	assert.True(t, synthesized, "missing handoff must be synthesized")
+
+	data, err := os.ReadFile(filepath.Join(ws, rel))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "Synthesized handoff",
+		"synthesized handoff must be marked as synthesized")
+	assert.Contains(t, string(data), "Session summary body.",
+		"session summary must be captured as the handoff body")
+}
+
+// F2 — the other branch: an agent-authored handoff is left untouched.
+func TestEnsureHandoffOnSuccessKeepsAgentHandoff(t *testing.T) {
+	ws := t.TempDir()
+	rel := handoffPathFor("2026-07-05T10-00-00.000Z", "implementer")
+	abs := filepath.Join(ws, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+	agentBody := "## My deliverable\n\nReal agent content."
+	require.NoError(t, os.WriteFile(abs, []byte(agentBody), 0o644))
+
+	synthesized, err := ensureHandoffOnSuccess(ws, rel, "summary that must NOT be written")
+	require.NoError(t, err)
+	assert.False(t, synthesized, "agent-authored handoff must not be replaced")
+
+	data, err := os.ReadFile(abs)
+	require.NoError(t, err)
+	assert.Equal(t, agentBody, string(data), "agent handoff content must be untouched")
+}
+
+// An empty (zero-byte) handoff file is not a durable state update — it is
+// treated the same as a missing one.
+func TestEnsureHandoffOnSuccessReplacesEmptyFile(t *testing.T) {
+	ws := t.TempDir()
+	rel := handoffPathFor("2026-07-05T10-00-00.000Z", "implementer")
+	abs := filepath.Join(ws, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+	require.NoError(t, os.WriteFile(abs, nil, 0o644))
+
+	synthesized, err := ensureHandoffOnSuccess(ws, rel, "summary")
+	require.NoError(t, err)
+	assert.True(t, synthesized, "zero-byte handoff must be synthesized over")
+}
+
+// Even with no session summary, the synthesized handoff must exist and
+// say so explicitly.
+func TestEnsureHandoffOnSuccessEmptySummaryPlaceholder(t *testing.T) {
+	ws := t.TempDir()
+	rel := handoffPathFor("2026-07-05T10-00-00.000Z", "implementer")
+
+	synthesized, err := ensureHandoffOnSuccess(ws, rel, "   ")
+	require.NoError(t, err)
+	assert.True(t, synthesized)
+
+	data, err := os.ReadFile(filepath.Join(ws, rel))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "no session summary",
+		"placeholder body must state that no summary was produced")
+}
+
+func TestEnsureHandoffOnSuccessEmptyArgsNoOp(t *testing.T) {
+	synthesized, err := ensureHandoffOnSuccess("", "x.md", "s")
+	require.NoError(t, err)
+	assert.False(t, synthesized)
+	synthesized, err = ensureHandoffOnSuccess(t.TempDir(), "", "s")
+	require.NoError(t, err)
+	assert.False(t, synthesized)
+}
+
 func TestBuildRunContextBlockContainsBindings(t *testing.T) {
 	block := buildRunContextBlock("2026-05-25T14-30-45Z", ".itervox/handoff/2026-05-25T14-30-45Z_researcher.md")
 	assert.Contains(t, block, "## Run Context")
@@ -316,7 +392,7 @@ func TestOrchestratorMarkFailedHandoffPartialWiring(t *testing.T) {
 	runEntry := &RunEntry{ProfileName: "implementer"}
 	issue := domain.Issue{Identifier: "ENG-42"}
 
-	o.markFailedHandoffPartial(runEntry, issue)
+	o.markFailedHandoffPartial(runEntry, nil, issue)
 
 	_, err := os.Stat(filepath.Join(ws, HandoffDirRelPath, "2026-05-26T11-00-00Z_implementer.md"))
 	assert.True(t, os.IsNotExist(err))
@@ -332,7 +408,7 @@ func TestOrchestratorMarkStalledHandoffPartialNoWorkspaceNoOp(t *testing.T) {
 	issue := domain.Issue{Identifier: "ENG-42"}
 	// Must not panic.
 	o.markStalledHandoffPartial(runEntry, issue)
-	o.markFailedHandoffPartial(runEntry, issue)
+	o.markFailedHandoffPartial(runEntry, nil, issue)
 }
 
 // Defensive: nil RunEntry must not panic the rename hooks.
@@ -340,5 +416,5 @@ func TestOrchestratorMarkHandoffPartialNilRunEntryNoOp(t *testing.T) {
 	ws := t.TempDir()
 	o := &Orchestrator{workspace: &stubWorkspaceProvider{path: ws}}
 	o.markStalledHandoffPartial(nil, domain.Issue{Identifier: "X"})
-	o.markFailedHandoffPartial(nil, domain.Issue{Identifier: "X"})
+	o.markFailedHandoffPartial(nil, nil, domain.Issue{Identifier: "X"})
 }

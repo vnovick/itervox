@@ -123,3 +123,21 @@ func TestRunDoctorChecks_ExitsNonZeroOnInvalidWorkflow(t *testing.T) {
 		t.Error("expected non-zero exit code for invalid workflow")
 	}
 }
+
+func TestRenderDoctorReport_GitignoreMissingLines(t *testing.T) {
+	r := DoctorReport{
+		Workflow:              "WORKFLOW.md",
+		SchemaPassed:          true,
+		GitignoreMissingLines: []string{"daemon.pid", "*.db"},
+	}
+	out := renderDoctorReport(r)
+	if !strings.Contains(out, "WARNING:") {
+		t.Errorf("expected WARNING for missing gitignore lines: %s", out)
+	}
+	if !strings.Contains(out, "daemon.pid") || !strings.Contains(out, "*.db") {
+		t.Errorf("expected missing lines in warning output: %s", out)
+	}
+	if !strings.Contains(out, "init --update") {
+		t.Errorf("expected init --update suggestion: %s", out)
+	}
+}

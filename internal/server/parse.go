@@ -140,7 +140,7 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 			entry.Message = "turn failed"
 		}
 	default:
-		// v0.2.0 todolist5 B5 — `AUTOMATION FIRED · <id>` blocks must surface
+		// `AUTOMATION FIRED · <id>` blocks must surface
 		// as a dedicated event so the frontend's automation chip catches them.
 		if strings.HasPrefix(e.Msg, "AUTOMATION FIRED · ") {
 			entry.Event = "automation"

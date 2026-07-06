@@ -439,7 +439,7 @@ func (o *Orchestrator) dispatchMatchingInputRequiredAutomations(
 	if entry == nil {
 		return
 	}
-	// v0.2.0 todolist5 B1 — self-reentry guard. If the worker that just exited
+	// Self-reentry guard. If the worker that just exited
 	// input_required was itself dispatched by an input_required automation,
 	// firing another input_required automation on this issue would loop
 	// indefinitely until an unrelated rate-limit / retry budget kicks in.

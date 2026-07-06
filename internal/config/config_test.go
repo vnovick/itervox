@@ -208,6 +208,41 @@ func TestHooksTimeoutNonPositiveFallsBackToDefault(t *testing.T) {
 	assert.Equal(t, 60000, cfg.Hooks.TimeoutMs)
 }
 
+// F3 — hooks.after_run_required roundtrip: explicit true parses; the field
+// defaults false so existing configs keep best-effort hook semantics.
+func TestAfterRunRequiredExplicit(t *testing.T) {
+	content := minimal("hooks:\n  after_run: make test\n  after_run_required: true\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.Hooks.AfterRunRequired)
+}
+
+func TestAfterRunRequiredDefaultsFalse(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Hooks.AfterRunRequired)
+}
+
+// SRV-1 — agent.allow_unchecked_merge roundtrip: explicit true parses; the
+// field defaults false so the merge_pr unarmed-gate refusal is the default
+// behavior for existing configs.
+func TestAllowUncheckedMergeExplicit(t *testing.T) {
+	content := minimal("agent:\n  allow_unchecked_merge: true\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.Agent.AllowUncheckedMerge)
+}
+
+func TestAllowUncheckedMergeDefaultsFalse(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Agent.AllowUncheckedMerge)
+}
+
 func TestWorkspaceRootDefault(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)

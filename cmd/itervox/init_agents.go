@@ -101,7 +101,7 @@ func ensureItervoxGitignore(itervoxDir string) error {
 		return fmt.Errorf("itervox init: create %s: %w", itervoxDir, err)
 	}
 	path := filepath.Join(itervoxDir, ".gitignore")
-	lines := []string{".env", "HEARTBEAT.md", "logs/", "runtime/", "/*.json", "bin/"}
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "/*.json", "bin/", "*.db"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)

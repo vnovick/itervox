@@ -15,9 +15,9 @@ import (
 )
 
 // assertValidWorkflowYAML extracts the YAML front matter from a workflow
-// file's contents and confirms it parses cleanly. The original B10 symptom
-// was a mid-block indent mismatch that produced "mapping values are not
-// allowed in this context" at parse time. v0.2.0 todolist5 B10.
+// file's contents and confirms it parses cleanly. The original indent-patching
+// bug symptom was a mid-block indent mismatch that produced "mapping values
+// are not allowed in this context" at parse time.
 func assertValidWorkflowYAML(t *testing.T, contents string) {
 	t.Helper()
 	body := strings.TrimPrefix(contents, "---\n")
@@ -266,6 +266,64 @@ func TestPatchProfilesBlock_Replace(t *testing.T) {
 	assert.Contains(t, got, "Body.")
 }
 
+// TestPatchProfilesBlock_Replace4SpaceNoDuplicate is the regression test for the
+// dashboard "add profile" corruption. A 4-space-indented agent block has an
+// existing profiles: block. The pre-fix MutateProfilesBlock matched only the
+// literal "  profiles:" (2-space), so on a 4-space file it failed to find the
+// block and INSERTED a second one at 2-space — a duplicate `profiles:` key at
+// inconsistent indent that breaks YAML parsing and freezes the daemon on reload
+// (see cmd/itervox/adapter_profiles.go::UpsertProfile).
+func TestPatchProfilesBlock_Replace4SpaceNoDuplicate(t *testing.T) {
+	content := "---\n" +
+		"agent:\n" +
+		"    command: claude\n" +
+		"    max_concurrent_agents: 3\n" +
+		"    profiles:\n" +
+		"        old:\n" +
+		"            command: claude --model old\n" +
+		"            soul_file: .itervox/agents/old/SOUL.md\n" +
+		"server:\n" +
+		"    port: 8090\n" +
+		"---\n\nBody.\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	profiles := map[string]workflow.ProfileEntry{
+		"reviewer": {Command: "claude", SoulFile: ".itervox/agents/reviewer/SOUL.md"},
+		"qa":       {Command: "claude", AllowedActions: []string{"comment"}},
+	}
+	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+
+	// Must stay valid YAML (the bug produced a duplicate key / bad indent).
+	assertValidWorkflowYAML(t, got)
+	// Exactly one profiles: block — no duplicate.
+	assert.Equal(t, 1, strings.Count(got, "profiles:"), "exactly one profiles block, got:\n%s", got)
+	// Replacement emitted at the file's own 4-space indentation.
+	assert.Contains(t, got, "    profiles:")
+	assert.Contains(t, got, "        qa:")
+	assert.Contains(t, got, "            command: claude")
+	assert.Contains(t, got, "            allowed_actions:")
+	assert.Contains(t, got, "                - comment")
+	// Old profile replaced; sibling top-level keys preserved.
+	assert.NotContains(t, got, "old:")
+	assert.Contains(t, got, "    port: 8090")
+	// And it loads cleanly with the new profiles present.
+	wf, err := workflow.Load(f)
+	require.NoError(t, err)
+	agent, ok := wf.Config["agent"].(map[string]any)
+	require.True(t, ok, "agent should be a map")
+	profs, ok := agent["profiles"].(map[string]any)
+	require.True(t, ok, "agent.profiles should be a map")
+	assert.Contains(t, profs, "qa")
+	assert.Contains(t, profs, "reviewer")
+	assert.NotContains(t, profs, "old")
+}
+
 func TestPatchProfilesBlock_QuotesCreateIssueState(t *testing.T) {
 	content := "---\nagent:\n  command: claude\n---\n\nBody.\n"
 	tmp := t.TempDir()
@@ -495,7 +553,7 @@ func TestPatchAgentBoolFieldInsertWhenMissing(t *testing.T) {
 	assert.Contains(t, string(data), "  auto_resume: true")
 }
 
-// v0.2.0 todolist5 B10 — toggling a bool field in a workflow whose `agent:`
+// Toggling a bool field in a workflow whose `agent:`
 // block uses 4-space indent (the default produced by yaml.v3 serialisation
 // on many Go encoders) MUST preserve that indent. Before the fix, the
 // patcher hardcoded 2-space indent and produced "  inline_input: true\n
@@ -516,7 +574,7 @@ func TestPatchAgentBoolFieldPreserves4SpaceIndent(t *testing.T) {
 	assertValidWorkflowYAML(t, got)
 }
 
-// v0.2.0 todolist5 B10 — toggling off (delete) on a 4-space file must also
+// Toggling off (delete) on a 4-space file must also
 // preserve the file's indent for siblings.
 func TestPatchAgentBoolFieldSetFalsePreserves4SpaceIndent(t *testing.T) {
 	source := "---\nagent:\n    inline_input: true\n    auto_review: false\n---\n\nBody.\n"

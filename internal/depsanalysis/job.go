@@ -60,7 +60,7 @@ func NewJobManager(run JobRunner) *JobManager {
 // cloned Job snapshot so the receiver can persist or broadcast it without
 // holding the manager's lock. Calling with nil disables transitions.
 //
-// v0.2.0 todolist7 C4 — the daemon wires this to the generic snapshot-notify
+// The daemon wires this to the generic snapshot-notify
 // channel so SSE subscribers re-fetch the snapshot (which carries
 // DepsLastAnalyzedAt and the inferred-edge set). No typed SSE frame is
 // emitted; the existing "something changed" signal is reused.
@@ -108,7 +108,7 @@ func (m *JobManager) Enqueue(ctx context.Context, profile string) (string, error
 	job.StartedAt = job.QueuedAt
 	m.current = job
 	m.latest = job
-	// v0.2.0 todolist7 C4 — emit the "running" transition while we still hold
+	// Emit the "running" transition while we still hold
 	// the lock so listeners observe the job before any terminal transition.
 	m.notifyLocked(job)
 	m.mu.Unlock()
@@ -136,7 +136,7 @@ func (m *JobManager) execute(ctx context.Context, job *Job) {
 	if m.current == job {
 		m.current = nil
 	}
-	// v0.2.0 todolist7 C4 — terminal transition broadcast. notifyLocked
+	// Terminal transition broadcast. notifyLocked
 	// momentarily releases the lock so the callback can do its own locking
 	// (SSE hub broadcast etc.) without deadlocking against Enqueue/Status.
 	m.notifyLocked(job)

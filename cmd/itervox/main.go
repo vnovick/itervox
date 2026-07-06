@@ -815,6 +815,11 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
 			DepsAnalyzer:     depsSvc,
+			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
+			// is passed by value rather than via cfgMu-guarded accessors.
+			MergeStrategy:       cfg.Agent.MergeStrategy,
+			MergeBlockLabels:    cfg.Agent.MergeBlockLabels,
+			AllowUncheckedMerge: cfg.Agent.AllowUncheckedMerge,
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)
@@ -1053,7 +1058,6 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			})
 		}
 
-		pausedWithPR := orch.GetPausedOpenPRs()
 		sidecar := depsSidecar.Latest()
 		dependencyGraphNodes, dependencyGraphEdges := dependencyGraphRows(s, sidecar)
 		var depsLastAnalyzedAt *time.Time
@@ -1068,7 +1072,6 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			History:                      history,
 			Retrying:                     retrying,
 			Paused:                       paused,
-			PausedWithPR:                 pausedWithPR,
 			MaxConcurrentAgents:          orch.MaxWorkers(),
 			MaxRetries:                   orch.MaxRetriesCfg(),
 			FailedState:                  orch.FailedStateCfg(),
@@ -1094,15 +1097,19 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			Automations:                  automationconfig.DefinitionsFromConfigs(orch.AutomationsCfg()),
 			AutomationQueue:              automationQueueRows(s),
 			AutomationQueueBackpressure:  automationQueueBackpressureRow(s.AutomationQueueBackpressure),
-			DependencyAudit:              dependencyAuditRows(s.DependencyAudit),
-			DependencyGraphNodes:         dependencyGraphNodes,
-			DependencyGraphEdges:         dependencyGraphEdges,
-			DepsAnalyzerProfile:          orch.DepsAnalyzerProfileCfg(),
-			DepsLastAnalyzedAt:           depsLastAnalyzedAt,
-			AvailableModels:              convertModelsForSnapshot(cfg.Agent.AvailableModels),
-			SupportedAgentActions:        config.SupportedAgentActions(),
-			ReviewerProfile:              func() string { p, _ := orch.ReviewerCfg(); return p }(),
-			AutoReview:                   func() bool { _, a := orch.ReviewerCfg(); return a }(),
+			// gaps_11 G-11 — the snapshot value is a struct-copy of the
+			// event-loop counter (State is copied by value in storeSnap), so
+			// reading it here never touches live State.
+			AutomationDropsSelfReentryTotal: s.AutomationDropsSelfReentryTotal,
+			DependencyAudit:                 dependencyAuditRows(s.DependencyAudit),
+			DependencyGraphNodes:            dependencyGraphNodes,
+			DependencyGraphEdges:            dependencyGraphEdges,
+			DepsAnalyzerProfile:             orch.DepsAnalyzerProfileCfg(),
+			DepsLastAnalyzedAt:              depsLastAnalyzedAt,
+			AvailableModels:                 convertModelsForSnapshot(cfg.Agent.AvailableModels),
+			SupportedAgentActions:           config.SupportedAgentActions(),
+			ReviewerProfile:                 func() string { p, _ := orch.ReviewerCfg(); return p }(),
+			AutoReview:                      func() bool { _, a := orch.ReviewerCfg(); return a }(),
 		}
 		// Stale threshold for the dashboard badge: pick the longest
 		// MaxAgeMinutes across all enabled input_required automations. If no
@@ -1201,18 +1208,27 @@ func buildTUIConfig(
 			return items, nil
 		}
 		if len(cfg.Tracker.ActiveStates) > 0 {
-			targetState := cfg.Tracker.ActiveStates[0]
 			tuiCfg.DispatchIssue = func(identifier string) error {
 				dispCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				allStates := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
+				// cfg.Tracker.ActiveStates is cfgMu-guarded (runtime setter:
+				// SetTrackerStatesCfg via PUT /settings/tracker/states) and this
+				// closure runs at TUI keypress time, well after the HTTP server
+				// starts serving — read via the getter at invocation time rather
+				// than closing over a value captured at startup. BacklogStates
+				// has no runtime setter, so the direct cfg read stays legal.
+				active, _, _ := orch.TrackerStatesCfg()
+				if len(active) == 0 {
+					return fmt.Errorf("no tracker.active_states configured")
+				}
+				allStates := append(append([]string{}, cfg.Tracker.BacklogStates...), active...)
 				issues, err := tr.FetchIssuesByStates(dispCtx, allStates)
 				if err != nil {
 					return err
 				}
 				for _, iss := range issues {
 					if iss.Identifier == identifier {
-						return tr.UpdateIssueState(dispCtx, iss.ID, targetState)
+						return tr.UpdateIssueState(dispCtx, iss.ID, active[0])
 					}
 				}
 				return fmt.Errorf("issue %s not found", identifier)

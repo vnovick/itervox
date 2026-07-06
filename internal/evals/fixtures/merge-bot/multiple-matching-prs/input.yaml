@@ -1,0 +1,19 @@
+# Scenario: two open PRs loosely match; the bot must pick the one whose
+# headRefName is EXACTLY the issue branch and merge only that one.
+issue:
+  identifier: ENG-55
+  state: In Review
+  title: Two open PRs share a branch prefix
+  body: |
+    PR 54 is from branch feat/eng-55-exact-extra (stacked follow-up);
+    PR 55 is from branch feat/eng-55-exact (the issue branch).
+    The bot must merge PR 55 only.
+  branch_name: feat/eng-55-exact
+comment:
+  body: "AI review passed — ready for merge"
+pr:
+  candidates:
+    - number: 54
+      head: feat/eng-55-exact-extra
+    - number: 55
+      head: feat/eng-55-exact

@@ -218,7 +218,7 @@ func TestDispatchMatchingInputRequiredAutomationsQueuesWhenNoSlots(t *testing.T)
 	require.NotContains(t, state.Claimed, issue.ID)
 }
 
-// v0.2.0 todolist5 B1 — when the exiting worker was itself launched by an
+// When the exiting worker was itself launched by an
 // input_required automation, dispatching another input_required automation on
 // the same issue must be suppressed. Otherwise the agent loops indefinitely
 // (an input_required automation produces another input_required exit, which

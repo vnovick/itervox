@@ -1,0 +1,15 @@
+# Scenario: the comment that woke the bot is NOT the approval marker
+# (a loose body_contains filter or a chatty thread can do this). The bot
+# must recognise the marker is absent, refuse, and never call merge_pr.
+issue:
+  identifier: ENG-53
+  state: In Review
+  title: Comment matched filter but is not an approval
+  body: |
+    A comment mentioning "merge" woke the bot, but no reviewer approval
+    marker exists on the issue or PR.
+  branch_name: feat/eng-53-wrong-marker
+comment:
+  body: "can we merge the design discussion into one thread?"
+pr:
+  number: 53

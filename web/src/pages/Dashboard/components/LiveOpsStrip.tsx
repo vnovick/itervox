@@ -28,6 +28,10 @@ export interface LiveOpsStripModel {
   inputRequiredCount: number;
   sshLabel: string | null;
   automationsToday: number;
+  // selfReentryDrops is the monotonic count of input_required automation
+  // dispatches suppressed by the self-reentry guard — lets operators tell
+  // "guarded loop" apart from "automation never fired". gaps_11 G-11.
+  selfReentryDrops: number;
 }
 
 export function liveOpsStripModel(
@@ -50,6 +54,7 @@ export function liveOpsStripModel(
       inputRequiredCount: 0,
       sshLabel: null,
       automationsToday: 0,
+      selfReentryDrops: 0,
     };
   }
 
@@ -98,6 +103,7 @@ export function liveOpsStripModel(
         ? `${String(sshHosts.size)} host${sshHosts.size === 1 ? '' : 's'} · ${String(activeSSH)} active`
         : null,
     automationsToday: automationsFiredToday(snapshot.history ?? [], now),
+    selfReentryDrops: snapshot.automationDropsSelfReentryTotal ?? 0,
   };
 }
 
@@ -145,6 +151,11 @@ export function LiveOpsStrip() {
         <OpsChip label={`Paused ${String(model.pausedCount)}`} />
         {model.sshLabel && <OpsChip label={`SSH ${model.sshLabel}`} />}
         <OpsChip label={`Automations ${String(model.automationsToday)} today`} />
+        {/* gaps_11 G-11 — only rendered once the guard has actually fired so
+            the strip stays compact on healthy daemons. */}
+        {model.selfReentryDrops > 0 && (
+          <OpsChip label={`Self-reentry drops ${String(model.selfReentryDrops)}`} />
+        )}
       </div>
     </section>
   );

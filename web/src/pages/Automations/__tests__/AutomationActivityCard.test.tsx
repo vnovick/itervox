@@ -38,19 +38,24 @@ describe('AutomationActivityCard (T-2)', () => {
       id: 'cron-nightly',
       trigger: { type: 'cron', cron: '0 3 * * *' },
     });
+    // Distinct sessionIds per row — the fixture default would otherwise make
+    // these distinct runs look like duplicates to the G-13 dedup pass.
     const history = [
       makeHistoryRow({
         identifier: 'ENG-1',
+        sessionId: 'sess-eng-1',
         automationId: 'cron-nightly',
         finishedAt: formatRFC3339(minutesAgo(60)),
       }),
       makeHistoryRow({
         identifier: 'ENG-2',
+        sessionId: 'sess-eng-2',
         automationId: 'cron-nightly',
         finishedAt: formatRFC3339(minutesAgo(5)),
       }),
       makeHistoryRow({
         identifier: 'ENG-OTHER',
+        sessionId: 'sess-eng-other',
         automationId: 'a-different-rule',
         finishedAt: formatRFC3339(secondsAgo(30)),
       }),
@@ -70,6 +75,8 @@ describe('AutomationActivityCard (T-2)', () => {
     const history = Array.from({ length: 15 }, (_, i) =>
       makeHistoryRow({
         identifier: `ENG-${String(i)}`,
+        // Distinct sessionIds — see comment in the newest-first test above.
+        sessionId: `sess-busy-${String(i)}`,
         automationId: 'busy',
         finishedAt: formatRFC3339(minutesAgo(i + 1)),
       }),

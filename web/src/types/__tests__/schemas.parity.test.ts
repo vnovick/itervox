@@ -1,10 +1,40 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   AutomationQueueBackpressureSchema,
   DependencyAuditRowSchema,
   AutomationQueueRowSchema,
+  AllowedAgentActionSchema,
 } from '../schemas';
+import { AUTOMATION_TRIGGER_TYPES } from '../automationTriggers';
+
+// Regression guard for the "Board/Deps go Offline" class of bug: the daemon
+// emits supportedAgentActions/allowedActions from internal/config/agent_actions.go.
+// If the Go side adds an action the Zod enum doesn't list, StateSnapshotSchema.parse
+// rejects the ENTIRE snapshot and the dashboard silently nulls out (every
+// snapshot-derived panel shows "Offline"/"Loading"). `merge_pr` shipped on the
+// Go side without this enum being updated, which is exactly what happened.
+describe('agent action parity with internal/config/agent_actions.go', () => {
+  it('Zod AllowedAgentActionSchema covers every Go AgentAction constant', () => {
+    // vitest runs with cwd = the web/ package root.
+    const goPath = resolve(process.cwd(), '../internal/config/agent_actions.go');
+    const src = readFileSync(goPath, 'utf8');
+    const goActions = [...src.matchAll(/AgentAction\w+\s*=\s*"([a-z_]+)"/g)].map((m) =>
+      String(m[1]),
+    );
+    expect(goActions.length).toBeGreaterThanOrEqual(6);
+    const zodValues = AllowedAgentActionSchema.options as readonly string[];
+    for (const action of goActions) {
+      expect(
+        zodValues,
+        `Zod AllowedAgentActionSchema is missing "${action}" — add it or the whole snapshot fails to parse`,
+      ).toContain(action);
+    }
+  });
+});
 
 // v0.2.0 audit P1-5 — Zod side. Even though the Go DTOs now use *time.Time
 // for optional time fields, the Zod refine drops "0001-01-01T00:00:00Z" as
@@ -91,5 +121,28 @@ describe('optionalSafeInt guard (v0.2.0 audit P1-11)', () => {
       wasBlocked: true,
     });
     expect(result.lastTransitionVersion).toBeUndefined();
+  });
+});
+
+// FE-2 regression guard: automation trigger types. Go accepts pr_merged etc.;
+// a missing TS enum value makes StateSnapshotSchema.parse throw on the whole
+// snapshot — the FE-1 failure class.
+describe('automation trigger parity with internal/config/automations.go', () => {
+  it('AUTOMATION_TRIGGER_TYPES covers every Go AutomationTrigger constant', () => {
+    // vitest runs with cwd = the web/ package root.
+    const goPath = resolve(process.cwd(), '../internal/config/automations.go');
+    const src = readFileSync(goPath, 'utf8');
+    // Real declaration shape is untyped, e.g. `AutomationTriggerPRMerged = "pr_merged"`
+    // inside a single const ( ... ) block — no explicit `AutomationTriggerType` annotation.
+    const goTriggers = [...src.matchAll(/AutomationTrigger\w+\s*=\s*"([a-z_]+)"/g)].map((m) =>
+      String(m[1]),
+    );
+    expect(goTriggers.length).toBeGreaterThanOrEqual(10);
+    for (const trigger of goTriggers) {
+      expect(
+        AUTOMATION_TRIGGER_TYPES as readonly string[],
+        `TS AUTOMATION_TRIGGER_TYPES is missing "${trigger}" — the whole snapshot fails to parse`,
+      ).toContain(trigger);
+    }
   });
 });

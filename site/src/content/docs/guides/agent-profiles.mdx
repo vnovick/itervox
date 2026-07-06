@@ -233,8 +233,19 @@ Available actions:
 - `comment` — post a tracker comment on the current issue.
 - `comment_pr` — post a structured review comment with file/line/severity findings on the issue.
 - `create_issue` — open a follow-up issue in the configured tracker state.
+- `merge_pr` — run the daemon's guarded `gh pr merge` sequence for a PR on the current issue. The daemon validates the request against the profile's `allowed_actions` like every other action, then enforces the merge gate server-side (see below) — the agent never gets raw `gh` credentials or an ungated merge path.
 - `move_state` — transition the current issue to another tracker column.
 - `provide_input` — answer an input-required prompt and resume the blocked session.
+
+### What gates a `merge_pr` merge
+
+Granting `merge_pr` does not mean "the agent can merge anything". Every merge request runs through a server-side gate that refuses with a structured reason unless **all** of these hold:
+
+1. **Not already merged** — an already-merged PR returns `already_merged` (and a process-level dedup ledger prevents double-merging the same `(issue, PR)` pair across re-fires).
+2. **Mergeable state is clean** — GitHub must report the PR as `MERGEABLE` with merge state `CLEAN`; conflicts, draft state, or unmet branch protections refuse with `not_mergeable:<state>`.
+3. **No block label** — if the PR carries any label from `agent.merge_block_labels` (case-insensitive; default `["needs-human", "migration", "auth", "feature-flag", "breaking"]`), the merge refuses with `blocked_label:<label>`.
+4. **All required CI checks pass** — `gh pr checks --required` must exit clean; failing or pending required checks refuse with `checks_failed:<excerpt>`.
+5. **Valid strategy** — one of `squash` (default), `rebase`, or `merge`, taken from the request or `agent.merge_strategy`. The merge runs with `--delete-branch`.
 
 Example:
 
@@ -267,6 +278,35 @@ In v0.2.0, daemon-backed action env vars and shims are injected only for local
 workers. SSH remote workers with `allowed_actions` receive a prompt warning that
 daemon-backed actions are unavailable remotely; they do not receive
 `ITERVOX_ACTION_TOKEN`, `ITERVOX_DAEMON_URL`, or the local shim PATH.
+
+---
+
+## Built-in `merge-bot` profile
+
+Itervox ships one built-in profile embedded in the binary: **`merge-bot`**. Its purpose is the final step of an automated pipeline — verifying a reviewed PR is safe to land and invoking the guarded `merge_pr` action — without you having to author the SOUL/INSTRUCTIONS files yourself.
+
+Reference it from `WORKFLOW.md` like any other profile:
+
+```yaml
+agent:
+  profiles:
+    merge-bot: {}
+```
+
+When the profile's `soul_file` / `instructions_file` are unset, the daemon resolves the embedded `SOUL.md` / `INSTRUCTIONS.md` content from the built-in registry. Built-in defaults (applied only when the corresponding field is unset):
+
+- **Command**: `claude --model claude-haiku-4-5-20251001` (a fast, cheap model — the merge gate does the safety work, not the model)
+- **Backend**: `claude`
+- **`allowed_actions`**: `[comment, comment_pr, merge_pr, move_state]`
+
+File-on-disk content always wins: `itervox init` scaffolds the built-in files to `.itervox/agents/merge-bot/` so you can customise tone or rules, and the embedded copies remain the fallback for files you delete or never create. The merge itself is still gated server-side by the `merge_pr` checks above — the built-in profile carries no special bypass.
+
+There are two supported wirings:
+
+- **Human-gated (recommended default)** — pair `merge-bot` with a `tracker_comment_added` automation using `body_contains` / `body_regex` filters so it only wakes when a *person* posts an approval phrase. Note that Itervox ignores its own comments when polling this trigger (anti-loop), so an AI reviewer's comment cannot fire it — the human comment is the deliberate gate.
+- **Fully autonomous (advanced)** — a cron sweep over completion-state issues that checks the PR for an explicit reviewer-posted approval marker before invoking `merge_pr`. See [the autonomous merge sweep example](/guides/automations/#7-autonomous-merge-sweep-advanced--read-the-caution-first) and its caution list before enabling this.
+
+See the [Automations guide](/guides/automations/) for the trigger and filter reference.
 
 ---
 

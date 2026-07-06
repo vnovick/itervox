@@ -34,3 +34,5 @@ site/node_modules/
 site/dist/
 site/.astro/
 marketing
+# Release-audit working docs (local only)
+v0.2.0/

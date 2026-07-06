@@ -8,7 +8,7 @@ import type {
 } from '../../../../types/schemas';
 import { AutomationQueueList, sortAutomationQueueRows } from '../AutomationQueueList';
 
-// v0.2.0 todolist7 C2 — fixture builder for RunningRow with kind="automation".
+// Fixture builder for RunningRow with kind="automation".
 // Mirrors the `row()` helper above so the two surfaces' fixture shapes rhyme.
 function runningRow(overrides: Partial<RunningRow> = {}): RunningRow {
   return {
@@ -251,11 +251,11 @@ describe('AutomationQueueList', () => {
     expect(onSelectIssue).toHaveBeenCalledWith('ENG-CRON');
   });
 
-  // v0.2.0 todolist7 C2 — Running section (B7) regression coverage.
-  // The five tests below close the verification gap left by todolist5 B7,
-  // which shipped the AutomationRunningItem render path without any Vitest
-  // coverage. Existing queue-only tests pass through with `running` undefined,
-  // so the new branch was previously silently unverified.
+  // Running-section regression coverage. The five tests below close a
+  // verification gap: the AutomationRunningItem render path originally
+  // shipped without any Vitest coverage. Existing queue-only tests pass
+  // through with `running` undefined, so that branch was previously
+  // silently unverified.
 
   it('renders the running section when snapshot has running automations', () => {
     render(

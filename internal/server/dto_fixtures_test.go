@@ -46,6 +46,21 @@ func TestOptionalTimeFieldsOmitWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestStateSnapshotSerializesSelfReentryDropCounter locks the gaps_11 G-11
+// wire contract: the counter serializes under the camelCase key the Zod
+// schema expects, and omitempty drops it while the daemon has never
+// suppressed a self-reentrant dispatch (so old-snapshot consumers see no
+// field rather than a noisy zero).
+func TestStateSnapshotSerializesSelfReentryDropCounter(t *testing.T) {
+	data, err := json.Marshal(StateSnapshot{AutomationDropsSelfReentryTotal: 4})
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"automationDropsSelfReentryTotal":4`)
+
+	zero, err := json.Marshal(StateSnapshot{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(zero), "automationDropsSelfReentryTotal")
+}
+
 // TestGenerateDTOFixturesForZodParity emits a canonical JSON fixture per
 // snapshot DTO under web/src/types/fixtures/. The Vitest suite reads these
 // fixtures and asserts each one parses against its Zod counterpart. The

@@ -1,12 +1,8 @@
-import type { ProfileDef } from '../../types/schemas';
+import type { z } from 'zod';
+import type { AllowedAgentActionSchema, ProfileDef } from '../../types/schemas';
 
 export type SupportedBackend = 'claude' | 'codex';
-export type AllowedAgentAction =
-  | 'comment'
-  | 'comment_pr'
-  | 'create_issue'
-  | 'move_state'
-  | 'provide_input';
+export type AllowedAgentAction = z.infer<typeof AllowedAgentActionSchema>;
 
 export interface AllowedAgentActionOption {
   id: AllowedAgentAction;
@@ -49,6 +45,12 @@ export const AGENT_ACTION_OPTIONS = [
     id: 'create_issue',
     label: 'Create follow-up issue',
     description: 'Open a new issue in the profile’s configured tracker column/state.',
+  },
+  {
+    id: 'merge_pr',
+    label: 'Merge PR',
+    description:
+      'Merge a pull request through the daemon-guarded gate (required checks + block labels).',
   },
   {
     id: 'move_state',

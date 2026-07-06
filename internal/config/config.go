@@ -143,6 +143,14 @@ type AgentConfig struct {
 	// load time:
 	//   ["needs-human", "migration", "auth", "feature-flag", "breaking"]
 	MergeBlockLabels []string
+	// AllowUncheckedMerge controls the SRV-1 unarmed-gate refusal in the
+	// merge_pr agent action. gh's `pr checks --required` exits non-zero with
+	// "no required checks reported" on a repo with no branch-protection
+	// required checks configured — that is an unarmed gate (spec F3: "a gate
+	// that can never fail is not a gate"), so the default (false) refuses the
+	// merge with reason "unarmed_gate:...". Set true to proceed anyway,
+	// logging a loud warning instead of refusing. Read-only after startup.
+	AllowUncheckedMerge bool
 	// PreferHighOutdegreeSort, when true, inserts a tiebreaker between
 	// priority and createdAt that ranks issues which block more dependent
 	// siblings first (P2). Default false to preserve existing behaviour.
@@ -292,7 +300,12 @@ type HooksConfig struct {
 	BeforeRun    string
 	AfterRun     string
 	BeforeRemove string
-	TimeoutMs    int
+	// AfterRunRequired makes the after_run hook a per-unit gate (spec F3):
+	// when true, a worker whose final after_run hook exits non-zero fails the
+	// unit instead of reaching TerminalSucceeded. Default false preserves the
+	// historical best-effort behavior (hook failures logged and ignored).
+	AfterRunRequired bool
+	TimeoutMs        int
 }
 
 // ServerConfig holds HTTP server settings.
@@ -420,6 +433,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.PauseDispatchWhenAnyInState = strSliceField(agent, "pause_dispatch_when_any_in_state", nil)
 	cfg.Agent.MergeStrategy = strField(agent, "merge_strategy", "squash")
 	cfg.Agent.MergeBlockLabels = strSliceField(agent, "merge_block_labels", []string{"needs-human", "migration", "auth", "feature-flag", "breaking"})
+	cfg.Agent.AllowUncheckedMerge = boolField(agent, "allow_unchecked_merge", false)
 	cfg.Agent.TransportErrorPatterns = strSliceField(agent, "transport_error_patterns", []string{"stream disconnected", "connection reset", "i/o timeout"})
 	sortMap := mapField(agent, "sort")
 	cfg.Agent.PreferHighOutdegreeSort = boolField(sortMap, "prefer_high_outdegree", false)
@@ -458,6 +472,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Hooks.BeforeRun = strField(hooks, "before_run", "")
 	cfg.Hooks.AfterRun = strField(hooks, "after_run", "")
 	cfg.Hooks.BeforeRemove = strField(hooks, "before_remove", "")
+	cfg.Hooks.AfterRunRequired = boolField(hooks, "after_run_required", false)
 	hooksTimeout := intField(hooks, "timeout_ms", 0)
 	if hooksTimeout <= 0 {
 		hooksTimeout = 60000

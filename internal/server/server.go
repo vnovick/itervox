@@ -736,8 +736,12 @@ type StateSnapshot struct {
 	CompletionState string `json:"completionState,omitempty"`
 	// BacklogStates are always-fetched states shown as the leftmost board column.
 	BacklogStates []string `json:"backlogStates,omitempty"`
-	// PausedWithPR is the subset of paused identifiers that were auto-paused due to an open PR.
-	// Value is the PR URL.
+	// PausedWithPR maps paused issue identifiers to a known open-PR URL.
+	// Itervox does NOT auto-pause on an existing open PR — workers continue
+	// on the PR branch instead (v0.2.0 audit D2). The daemon currently emits
+	// no entries; the field is retained for wire-schema stability (Zod marks
+	// it optional) and for snapshot producers that do record PR URLs (e.g.
+	// tests driving comment_pr's GitHub-PR routing).
 	PausedWithPR map[string]string `json:"pausedWithPR,omitempty"`
 	// PollIntervalMs is the configured tracker poll interval in milliseconds.
 	// The TUI uses this to derive a safe background refresh rate.
@@ -769,9 +773,16 @@ type StateSnapshot struct {
 	// AutomationQueueBackpressure reports queue saturation so the dashboard can
 	// warn when automation producers are paused by the bounded durable queue.
 	AutomationQueueBackpressure *AutomationQueueBackpressureRow `json:"automationQueueBackpressure,omitempty"`
-	DependencyAudit             []DependencyAuditRow            `json:"dependencyAudit,omitempty"`
-	DependencyGraphNodes        []DependencyGraphNodeRow        `json:"dependencyGraphNodes,omitempty"`
-	DependencyGraphEdges        []DependencyGraphEdgeRow        `json:"dependencyGraphEdges,omitempty"`
+	// AutomationDropsSelfReentryTotal is the monotonic count of input_required
+	// automation dispatches suppressed by the self-reentry guard (the previous
+	// worker on the issue was itself automation-launched). Surfaced on the
+	// dashboard's LiveOpsStrip so operators can distinguish "guarded loop" from
+	// "automation never fired". omitempty: absent until the first drop.
+	// gaps_11 G-11.
+	AutomationDropsSelfReentryTotal uint64                   `json:"automationDropsSelfReentryTotal,omitempty"`
+	DependencyAudit                 []DependencyAuditRow     `json:"dependencyAudit,omitempty"`
+	DependencyGraphNodes            []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
+	DependencyGraphEdges            []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
 	// DepsAnalyzerProfile is the configured agent.deps_analyzer_profile (Phase
 	// 1.1). The dashboard gates the "Analyze dependencies" button on this being
 	// non-empty + the named profile existing + enabled.
@@ -1047,6 +1058,19 @@ type Config struct {
 	// DepsAnalyzer backs the /api/v1/deps/analyze endpoints (Phase 2.3 of
 	// v0.2.0 todolist6). Nil makes the endpoints return 503.
 	DepsAnalyzer DepsAnalyzer
+	// MergeStrategy is the operator-configured default strategy for the
+	// merge_pr agent action (agent.merge_strategy). Used when a request omits
+	// its own strategy; empty falls back to "squash". Read-only after startup
+	// (not in the cfgMu allowlist), so it is passed by value here. gaps_11 G-3.
+	MergeStrategy string
+	// MergeBlockLabels is the operator-configured PR label block-list for the
+	// merge_pr agent action (agent.merge_block_labels). Nil/empty falls back
+	// to DefaultMergeBlockLabels(). Read-only after startup. gaps_11 G-3.
+	MergeBlockLabels []string
+	// AllowUncheckedMerge mirrors config.AgentConfig.AllowUncheckedMerge
+	// (agent.allow_unchecked_merge) — SRV-1 unarmed-gate opt-out for the
+	// merge_pr agent action. Read-only after startup.
+	AllowUncheckedMerge bool
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1063,6 +1087,16 @@ type Server struct {
 	actionTokens   *agentactions.Store
 	skills         SkillsClient
 	depsAnalyzer   DepsAnalyzer
+	// mergeStrategy / mergeBlockLabels mirror Config.MergeStrategy /
+	// Config.MergeBlockLabels — startup-fixed merge_pr policy. gaps_11 G-3.
+	mergeStrategy    string
+	mergeBlockLabels []string
+	// allowUncheckedMerge mirrors Config.AllowUncheckedMerge — SRV-1
+	// unarmed-gate opt-out, startup-fixed.
+	allowUncheckedMerge bool
+	// ghRun invokes the gh CLI for PR-surface handlers (merge_pr, comment_pr).
+	// Nil falls back to runGH; tests inject a fake.
+	ghRun func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
@@ -1088,6 +1122,10 @@ func New(cfg Config) *Server {
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
 		depsAnalyzer:   cfg.DepsAnalyzer,
+
+		mergeStrategy:       cfg.MergeStrategy,
+		mergeBlockLabels:    cfg.MergeBlockLabels,
+		allowUncheckedMerge: cfg.AllowUncheckedMerge,
 	}
 	s.routes()
 	return s

@@ -1,0 +1,15 @@
+# Scenario: approval arrived but no open PR exists for the issue branch
+# (closed manually, or never opened). The bot must report "no open PR"
+# and stop — no merge, no state move.
+issue:
+  identifier: ENG-56
+  state: In Review
+  title: Approval without an open PR
+  body: |
+    The reviewer approved, but the PR was closed manually before the bot
+    woke. Nothing is mergeable.
+  branch_name: feat/eng-56-missing
+comment:
+  body: "AI review passed — ready for merge"
+pr:
+  candidates: []

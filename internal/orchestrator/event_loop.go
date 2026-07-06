@@ -152,7 +152,6 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 				continue
 			}
 			delete(state.PausedIdentifiers, issue.Identifier)
-			delete(state.PausedOpenPRs, issue.Identifier)
 			// Keep PausedSessions so that auto-resume from a tracker state change
 			// can also reuse the captured session ID. Dispatch will consume it.
 			slog.Info("orchestrator: auto-resumed issue re-activated in tracker",
@@ -164,6 +163,11 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		}
 	}
 
+	// gaps_11 G-2 — capture the prior tick's poll set BEFORE overwriting it.
+	// pruneAbsentTrackerIssues (below) needs the genuinely-previous set for
+	// its two-tick grace window; reading state.PrevActiveIdentifiers after
+	// this assignment would compare the current set against itself.
+	prevActive := state.PrevActiveIdentifiers
 	state.PrevActiveIdentifiers = currentActive
 
 	// Check for tracker comment replies to input-required issues.
@@ -245,13 +249,13 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	statusRemoved, prevRemoved := pruneIssueStatusHistory(&state, currentActive, now, issueStatusHistoryRetention)
 	auditRemoved := pruneTerminalDependencyAudit(&state)
 
-	// v0.2.0 todolist5 B2 — sweep ledgers for identifiers whose last-observed
-	// tracker state is terminal (agent moved issue to "Done" via direct API).
-	// v0.2.0 todolist5 B9.b — also sweep ledgers for identifiers absent from
+	// Sweep ledgers for identifiers whose last-observed
+	// tracker state is terminal (agent moved issue to "Done" via direct API),
+	// and also sweep ledgers for identifiers absent from
 	// the tracker entirely (deleted / hard-trashed / archived issues).
 	// Running workers are not cancelled — they complete naturally.
 	terminalCounts := pruneTerminalRuntimeLedgers(&state, buildTerminalIdentifierSet(&state))
-	absentCounts := pruneAbsentTrackerIssues(&state, currentActive)
+	absentCounts := pruneAbsentTrackerIssues(&state, currentActive, prevActive)
 	ledger := LedgerJanitorCounts{
 		InputRequired: terminalCounts.InputRequired + absentCounts.InputRequired,
 		Retry:         terminalCounts.Retry + absentCounts.Retry,
@@ -282,7 +286,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 // buildTerminalIdentifierSet walks PrevIssueStates and returns identifiers
 // whose last-observed state is terminal. The terminal predicate matches the
 // completion-state path used elsewhere in the orchestrator (case-insensitive
-// against CompletionState / FailedState / TerminalStates). v0.2.0 todolist5 B2.
+// against CompletionState / FailedState / TerminalStates).
 func buildTerminalIdentifierSet(state *State) map[string]struct{} {
 	if len(state.PrevIssueStates) == 0 {
 		return nil
@@ -315,6 +319,14 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		// Skip retries for paused issues and release the claim.
 		if _, paused := state.PausedIdentifiers[entry.Identifier]; paused {
 			state = CancelRetry(state, issueID)
+			continue
+		}
+		// ORCH-2 belt-and-braces: never dispatch a retry over a live worker.
+		// The claim/running maps are authoritative; if the issue is already
+		// Running (e.g. a late Canceled exit raced with this retry being
+		// scheduled), skip without cancelling — the retry should fire later
+		// once the running worker actually exits and clears state.Running.
+		if _, running := state.Running[issueID]; running {
 			continue
 		}
 		if now.Before(entry.DueAt) {
@@ -674,7 +686,6 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	if _, forced := state.ForceReanalyze[issue.Identifier]; forced {
 		skipPRCheck = true
 		delete(state.ForceReanalyze, issue.Identifier)
-		delete(state.PausedOpenPRs, issue.Identifier)
 		if o.logBuf != nil {
 			o.logBuf.Add(issue.Identifier, makeBufLine("INFO", "worker: forced re-analysis requested"))
 		}
@@ -1434,9 +1445,20 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// (stall timeout, reload, shutdown) — not a real failure. Release the
 			// claim so the issue can be dispatched fresh on the next poll cycle.
 			if ev.Error != nil && errors.Is(ev.Error, context.Canceled) {
-				delete(state.Claimed, ev.IssueID)
-				slog.Info("orchestrator: worker context cancelled, claim released for re-dispatch",
-					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+				// ORCH-2: a reconcile kill path (e.g. ReconcileStalls) may have
+				// already re-claimed this issue via ScheduleRetry before this
+				// late exit arrived. Only release the claim when no pending
+				// retry owns it — otherwise we'd orphan the retry's claim and
+				// let the next poll cycle dispatch the issue fresh at attempt 0
+				// while the retry later fires and overwrites state.Running.
+				if _, retryPending := state.RetryAttempts[ev.IssueID]; !retryPending {
+					delete(state.Claimed, ev.IssueID)
+					slog.Info("orchestrator: worker context cancelled, claim released for re-dispatch",
+						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+				} else {
+					slog.Info("orchestrator: worker context cancelled, claim retained for pending retry",
+						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+				}
 				// Not recorded — the issue will be re-dispatched.
 			} else {
 				// Mark any in-flight handoff file as .partial.md so subsequent
@@ -1444,7 +1466,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// pipeline profile) see the failed worker's partial deliverable
 				// distinctly from a clean handoff. No-op if the agent never
 				// wrote a handoff this turn.
-				o.markFailedHandoffPartial(ev.RunEntry, issue)
+				o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
 				errMsg := ""
 				if ev.Error != nil {
 					errMsg = ev.Error.Error()
@@ -1504,7 +1526,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					}
 
 					failedState := o.FailedStateCfg()
-					// v0.2.0 todolist5 B8.b — `run_failed` automations are operator
+					// `run_failed` automations are operator
 					// safety nets and must fire on every retry-exhaustion, even when
 					// a `rate_limited` recovery was queued. The failed-state
 					// transition decision is independent: when a recovery is queued
@@ -1541,10 +1563,17 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				} else {
 					backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
 					state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
+					// liveEntry may be nil when a reconcile kill path already
+					// removed the entry and the worker's exit event arrived
+					// late (ORCH-1) — never dereference it unguarded.
+					turnCount, inTok, outTok := 0, 0, 0
+					if liveEntry != nil {
+						turnCount, inTok, outTok = liveEntry.TurnCount, liveEntry.InputTokens, liveEntry.OutputTokens
+					}
 					slog.Info("orchestrator: worker failed, retry scheduled",
 						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
 						"attempt", nextAttempt, "backoff_ms", backoff,
-						"turns", liveEntry.TurnCount, "input_tokens", liveEntry.InputTokens, "output_tokens", liveEntry.OutputTokens)
+						"turns", turnCount, "input_tokens", inTok, "output_tokens", outTok)
 					o.recordHistory(liveEntry, issue, now, "failed")
 				}
 			}
@@ -1762,16 +1791,33 @@ func (o *Orchestrator) markStalledHandoffPartial(runEntry *RunEntry, issue domai
 // failure) so subsequent agents can distinguish "tried and failed" from
 // "completed cleanly." Safe no-op when no handoff was written.
 //
-// runEntry.StartedAt gates eligibility — see markStalledHandoffPartial.
-func (o *Orchestrator) markFailedHandoffPartial(runEntry *RunEntry, issue domain.Issue) {
+// WORK-2: the exit's bare runEntry (sendExit's RunEntry, worker.go) carries
+// neither ProfileName nor StartedAt — using it directly means named-profile
+// failures never match their `_<profile>.md` suffix (handoff silently stays
+// "clean"), and a zero StartedAt disables the notBefore gate below, letting
+// a default-profile failure rename a PREDECESSOR's complete handoff. The
+// live Running entry (liveEntry, populated at dispatch — event_loop.go
+// ~748-749) is authoritative for both fields; runEntry is only a fallback
+// for when liveEntry is nil (a reconcile kill path already removed it) or
+// leaves a field unset. See markStalledHandoffPartial for the same gate.
+func (o *Orchestrator) markFailedHandoffPartial(runEntry, liveEntry *RunEntry, issue domain.Issue) {
 	if o.workspace == nil || runEntry == nil {
 		return
+	}
+	profileName, startedAt := runEntry.ProfileName, runEntry.StartedAt
+	if liveEntry != nil {
+		if liveEntry.ProfileName != "" {
+			profileName = liveEntry.ProfileName
+		}
+		if !liveEntry.StartedAt.IsZero() {
+			startedAt = liveEntry.StartedAt
+		}
 	}
 	wsPath := o.workspace.ResolvePath(issue.Identifier)
 	if wsPath == "" {
 		return
 	}
-	if err := markLatestHandoffPartial(wsPath, runEntry.ProfileName, runEntry.StartedAt); err != nil {
+	if err := markLatestHandoffPartial(wsPath, profileName, startedAt); err != nil {
 		slog.Warn("orchestrator: failed to mark failed handoff partial",
 			"identifier", issue.Identifier, "error", err)
 	}

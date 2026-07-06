@@ -1,0 +1,2 @@
+{"event":"action","action":"comment","args":{"issue":"ENG-51"}}
+{"event":"comment","body":"merge-bot: refusing to merge PR-51 — required check ci/test is failing. Fix CI, then re-approve."}

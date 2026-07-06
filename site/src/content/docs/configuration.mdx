@@ -227,6 +227,7 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. |
 | `switch_revert_hours` | int | `0` | TTL (in hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` (default) disables the revert. Operator-set overrides survive — only auto-switches with a recorded `AutoSwitchedAt` timestamp are eligible. |
 | `rate_limit_error_patterns` | string[] | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). |
+| `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning. |
 
 ```yaml
 agent:
@@ -377,8 +378,10 @@ When a trigger cannot start immediately for a retryable runtime reason such as
 `no_slots`, `per_state_limit`, `already_running`, `input_required`,
 `pending_input_resume`, or `blocked_by`, Itervox records a durable automation
 queue entry instead of dropping the attempt. The queue is capped by
-`agent.max_automation_queue_length`; saturation pauses new automation trigger
-intake while existing queue entries continue draining.
+`agent.max_automation_queue_length`. Saturation pauses recurring/cron/polled
+producer intake; one-shot and internal dispatch attempts are rejected and
+counted for audit rather than paused. Existing queue entries continue draining
+until the queue falls below the low-water mark.
 
 | Field | Type | Description |
 |---|---|---|
@@ -474,12 +477,13 @@ Shell commands run at lifecycle points in each issue's workspace. All hooks run 
 | `after_create` | string | `""` | Shell command run after the workspace directory is created, before any agent runs. Typically used to clone the repository. |
 | `before_run` | string | `""` | Shell command run once per worker invocation, before the first agent turn of that attempt. Typically used to sync the branch (`git fetch`, `git reset`). |
 | `after_run` | string | `""` | Shell command run after each completed agent turn. |
+| `after_run_required` | bool | `false` | When `true`, a worker whose final `after_run` hook exits non-zero fails the unit instead of completing it — the hook becomes a per-unit completion gate. |
 | `before_remove` | string | `""` | Shell command run before the workspace directory is deleted (when `workspace.auto_clear: true` or on manual removal). |
 | `timeout_ms` | int | `60000` | Maximum time allowed for any single hook to complete (60 seconds). |
 
 All hooks run via `bash -lc` in the issue workspace. Itervox does not inject any per-issue environment variables into hook processes; hooks inherit the daemon's environment as-is. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
 
-v0.2.0 does not ship a fatal post-change hook such as `hooks.verify` or `hooks.after_run_required`. Treat post-change gates as CI-governed or prompt-governed unless you run them before the agent turn through `before_run` or outside Itervox.
+By default `after_run` failures are logged and ignored. Set `hooks.after_run_required: true` to turn `after_run` into a per-unit completion gate: a unit whose final `after_run` hook fails does not complete, regardless of the agent's own clean exit. Use it to run `make test` (or any operator-owned verification) as part of the definition of done, complementing the CI-governed merge gate.
 
 Multi-line shell scripts are supported using YAML block scalars:
 

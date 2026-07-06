@@ -450,21 +450,31 @@ func patchRootGitignoreForAgents(projectDir string) error {
 		return fmt.Errorf("itervox init --update: read %s: %w", path, err)
 	}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	if !rootGitignoreHidesAgents(text) {
-		return nil
-	}
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	needed := []string{
-		"!.itervox/",
-		"!.itervox/agents/",
-		"!.itervox/agents/**",
-		"!.itervox/handoff/",
-		"!.itervox/handoff/**",
-	}
-	for _, line := range needed {
-		if !containsLine(lines, line) {
-			lines = append(lines, line)
+	changed := false
+	if rootGitignoreHidesAgents(text) {
+		needed := []string{
+			"!.itervox/",
+			"!.itervox/agents/",
+			"!.itervox/agents/**",
+			"!.itervox/handoff/",
+			"!.itervox/handoff/**",
 		}
+		for _, line := range needed {
+			if !containsLine(lines, line) {
+				lines = append(lines, line)
+				changed = true
+			}
+		}
+	}
+	// gaps_11 G-19 — migration backups written by `itervox init --update`
+	// must never be committed; ensure the ignore entry exists (idempotent).
+	if !containsLine(lines, "WORKFLOW.md.bak") {
+		lines = append(lines, "WORKFLOW.md.bak")
+		changed = true
+	}
+	if !changed {
+		return nil
 	}
 	if err := atomicfs.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("itervox init --update: write %s: %w", path, err)

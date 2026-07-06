@@ -89,7 +89,7 @@ export function filterQueueRows(
   return sorted.filter((row) => queueSearchText(row, dependencies.get(row.identifier)).includes(q));
 }
 
-// v0.2.0 todolist5 B7 — surfacing running automations in the queue panel
+// Surfaces running automations in the queue panel
 // (path 1 of dispatchOrQueueAutomation). Reuses queue's search + sort idioms.
 
 function runningAutomationSearchText(row: RunningRow): string {

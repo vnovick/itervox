@@ -205,6 +205,13 @@ func pausedCleanup(state *State, keep func(ident string) bool) int {
 // pruneAutomationQueue drops AutomationQueue entries whose embedded
 // issue.Identifier is rejected by `keep`, and rebuilds AutomationQueueOrder
 // in lockstep so the FIFO surface stays consistent.
+//
+// gaps_11 G-18 — backpressure is recomputed after the sweep with the same
+// helper the enqueue/drain paths use, so a prune that empties a saturated
+// queue also clears Saturated/PausedProducers. Persistence needs no extra
+// hook here: both janitor call sites run inside onTick, and Run() calls
+// storeSnap after every tick, which writes the pruned queue and the
+// recomputed backpressure through saveAutomationQueueToDisk.
 func pruneAutomationQueue(state *State, keep func(ident string) bool) int {
 	if len(state.AutomationQueue) == 0 {
 		return 0
@@ -234,19 +241,21 @@ func pruneAutomationQueue(state *State, keep func(ident string) bool) int {
 		delete(state.AutomationQueue, key)
 		removed++
 	}
+	refreshAutomationQueueBackpressure(state)
 	return removed
 }
 
 // pruneTerminalRuntimeLedgers sweeps ledger maps for issues whose current
 // tracker state is terminal (CompletionState / FailedState / any
-// TerminalStates member). v0.2.0 todolist5 B2.
+// TerminalStates member).
 //
 // Without this sweep, an issue that the agent moved to "Done" via direct
 // tracker API leaves residue in these ledgers indefinitely.
 //
 // `terminalIdentifiers` is the set of identifiers whose snapshot state is
 // terminal — caller builds it from PrevIssueStates. Identifiers absent from
-// the snapshot are NOT pruned here (B9.b handles absence separately).
+// the snapshot are NOT pruned here (pruneAbsentTrackerIssues handles
+// absence separately).
 //
 // INVARIANT: must only be called from the single event-loop goroutine.
 func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]struct{}) LedgerJanitorCounts {
@@ -257,10 +266,11 @@ func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]st
 		_, terminal := terminalIdentifiers[ident]
 		return !terminal
 	}
-	// v0.2.0 todolist5 B4 — PROpenedDispatched dedup keys carry the
+	// PROpenedDispatched dedup keys carry the
 	// identifier as the first segment. Pruned in the same pass so a
 	// re-opened issue starts with a fresh dispatch budget.
 	pruneMap(state.PROpenedDispatched, identOfPROpened, keep)
+	pruneMap(state.PRMergedDispatched, identOfPROpened, keep)
 	counts := LedgerJanitorCounts{
 		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keep),
 		Retry:         pruneMap(state.RetryAttempts, identOfRetry, keep),
@@ -288,54 +298,86 @@ func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]st
 // both the current tick's candidate set and the previous tick's set. The
 // two-tick grace window tolerates a single transient tracker miss.
 //
+// `prevActive` is the PRIOR tick's poll set, captured by the caller before
+// state.PrevActiveIdentifiers is overwritten with the current tick's set
+// (gaps_11 G-2 — reading the state field here would compare the current set
+// against itself and silently disable the grace window).
+//
 // In-flight workers (state.Running) are deliberately NOT touched — a worker
 // may be mid-write to a workspace / branch / PR and killing it
 // asynchronously is a data-loss hazard. EventWorkerExited cleans Running.
 //
-// v0.2.0 todolist5 B9.b.
-//
 // INVARIANT: must only be called from the single event-loop goroutine.
-func pruneAbsentTrackerIssues(state *State, currentActive map[string]struct{}) LedgerJanitorCounts {
-	// Persistence-replay safety: on the very first ticks after a daemon
-	// restart, PrevActiveIdentifiers and PrevIssueStates are empty.
-	// Persistence-loaded ledger entries would be pruned immediately if we
-	// ran the sweep before observation history exists.
-	if len(state.PrevActiveIdentifiers) == 0 && len(state.PrevIssueStates) == 0 {
+func pruneAbsentTrackerIssues(state *State, currentActive, prevActive map[string]struct{}) LedgerJanitorCounts {
+	// Persistence-replay safety: an empty prior set means no prior poll
+	// observation exists this session (first tick after a daemon restart, or
+	// the previous poll legitimately returned zero active issues). Skip the
+	// sweep rather than prune persistence-loaded entries on a single
+	// observation — pruning requires two consecutively observed absences.
+	if len(prevActive) == 0 {
 		return LedgerJanitorCounts{}
 	}
-	keep := buildPresentPredicate(state, currentActive)
-	return LedgerJanitorCounts{
-		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keep),
-		Retry:         pruneMap(state.RetryAttempts, identOfRetry, keep),
-		Queue:         pruneAutomationQueue(state, keep),
-		Paused:        pausedCleanup(state, keep),
-		Profile:       pruneMap(state.IssueProfiles, identOfKey, keep),
-		Backend:       pruneMap(state.IssueBackends, identOfKey, keep),
+	keep := buildPresentPredicate(state, currentActive, prevActive)
+	// gaps_11 G-12 — record which identifiers actually lose an entry so a
+	// status-history row can explain the disappearance (mirrors the
+	// issue_terminal emission in pruneTerminalRuntimeLedgers).
+	removedIdents := make(map[string]struct{})
+	keepRecording := func(ident string) bool {
+		if keep(ident) {
+			return true
+		}
+		removedIdents[ident] = struct{}{}
+		return false
 	}
+	counts := LedgerJanitorCounts{
+		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keepRecording),
+		Retry:         pruneMap(state.RetryAttempts, identOfRetry, keepRecording),
+		Queue:         pruneAutomationQueue(state, keepRecording),
+		Paused:        pausedCleanup(state, keepRecording),
+		Profile:       pruneMap(state.IssueProfiles, identOfKey, keepRecording),
+		Backend:       pruneMap(state.IssueBackends, identOfKey, keepRecording),
+	}
+	if len(removedIdents) > 0 {
+		now := time.Now()
+		for ident := range removedIdents {
+			appendIssueStatusChange(state, IssueStatusChange{
+				Identifier: ident,
+				ToState:    state.PrevIssueStates[ident],
+				Source:     StatusSourceJanitor,
+				Reason:     JanitorReasonAbsentFromTracker,
+				At:         now,
+			})
+		}
+	}
+	return counts
 }
 
 // buildPresentPredicate returns the "is this identifier still observed?"
-// closure used by both ledger janitors. An identifier counts as present
-// when ANY of the following holds:
+// closure used by the absent-issue ledger janitor. An identifier counts as
+// present when ANY of the following holds:
 //   - currentActive (this tick's poll) contains it
-//   - PrevActiveIdentifiers (previous tick) contains it
+//   - prevActive (the previous tick's poll) contains it
 //   - state.Running has a worker for it (in-flight, never prune sibling ledgers)
-//   - PrevIssueStates has a last-observed state for it
-//   - DependencyAudit references it (backlog-targeted automations operate on
-//     identifiers absent from the active poll but still tracker-resident)
-func buildPresentPredicate(state *State, currentActive map[string]struct{}) func(string) bool {
+//   - DependencyAudit references it (backlog-targeted automations and
+//     input-required detail fetches keep audit rows alive for issues outside
+//     the active poll but still tracker-resident; rows for deleted issues are
+//     dropped by the refresh path on tracker.ErrNotFound)
+//
+// gaps_11 G-2 — PrevIssueStates is deliberately NOT consulted: it is the
+// status-history ledger with ~7-day retention, so treating it as "present in
+// tracker" evidence kept deleted-issue entries alive for a week instead of
+// two ticks. Presence comes from poll results (and the audit rows those
+// polls maintain) only.
+func buildPresentPredicate(state *State, currentActive, prevActive map[string]struct{}) func(string) bool {
 	auditIdents := dependencyAuditIdentifiers(state)
 	return func(id string) bool {
 		if _, ok := currentActive[id]; ok {
 			return true
 		}
-		if _, ok := state.PrevActiveIdentifiers[id]; ok {
+		if _, ok := prevActive[id]; ok {
 			return true
 		}
 		if _, ok := state.Running[id]; ok {
-			return true
-		}
-		if _, ok := state.PrevIssueStates[id]; ok {
 			return true
 		}
 		_, ok := auditIdents[id]

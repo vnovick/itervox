@@ -34,7 +34,12 @@ type orchestratorAdapter struct {
 }
 
 func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {
-	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, a.cfg.Tracker.ActiveStates, a.cfg.Tracker.TerminalStates, a.cfg.Tracker.CompletionState)
+	// cfg.Tracker.ActiveStates/TerminalStates/CompletionState are cfgMu-guarded
+	// (runtime setter: SetTrackerStatesCfg via PUT /settings/tracker/states);
+	// read via the getter to avoid racing a concurrent HTTP settings update.
+	// BacklogStates has no runtime setter, so the direct cfg read stays legal.
+	active, terminal, completion := a.orch.TrackerStatesCfg()
+	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, active, terminal, completion)
 	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
 	if err != nil {
 		return nil, err

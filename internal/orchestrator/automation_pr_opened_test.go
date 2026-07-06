@@ -110,7 +110,7 @@ func TestSendExitWithBranchThenPROpenedAutomations_QueuesExitBeforeAutomation(t 
 	assert.Empty(t, o.events)
 }
 
-// v0.2.0 todolist5 B4 — when `openedPRURL` is empty (resumed worker found the
+// When `openedPRURL` is empty (resumed worker found the
 // tracker comment already posted, OR CreateComment failed) but `prURL` is set,
 // the helper must still dispatch the pr_opened automation. The previous gate
 // required `openedPRURL != ""` which silently swallowed the reviewer on every
@@ -142,7 +142,7 @@ func TestSendExitWithBranchThenPROpenedAutomations_FiresOnResumeWithoutOpenedPRU
 		"PR branch must fall back to the worker's active branch when openedPRBranch is empty")
 }
 
-// v0.2.0 todolist5 B4 — dedup: a re-dispatch for the same
+// Dedup: a re-dispatch for the same
 // (issue, prURL, automationID) triple must be skipped.
 func TestDispatchOrQueueAutomation_PROpenedDedup(t *testing.T) {
 	cfg := automationBaseCfg()

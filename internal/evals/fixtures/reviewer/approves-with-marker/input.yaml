@@ -1,0 +1,14 @@
+# Scenario: reviewer's hard checks pass. The producer side of the merge
+# handshake: it must leave the approval marker for the merge sweep
+# (a GitHub review whose body contains exactly "/ai-approved") AND post the
+# human-readable Linear approval comment. It must never merge or move state
+# itself on the approve path.
+issue:
+  identifier: ENG-61
+  state: In Review
+  title: Clean PR ready for approval
+  body: |
+    Implementation matches the issue, CI is green, no security findings.
+  branch_name: feat/eng-61-clean
+pr:
+  number: 61

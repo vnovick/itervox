@@ -151,6 +151,40 @@ func buildHandoffContextBlock(workspacePath string, budget int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// synthesizedHandoffHeader marks a handoff the orchestrator wrote on the
+// agent's behalf. Subsequent agents (and humans) can distinguish it from a
+// deliverable the agent authored itself.
+const synthesizedHandoffHeader = "> **Synthesized handoff** — the agent exited successfully without writing " +
+	"its handoff deliverable. The orchestrator captured the session summary instead " +
+	"(spec F2: updating shared state is part of the definition of done)."
+
+// ensureHandoffOnSuccess enforces F2 ("update the shared state MUST be part
+// of the definition of done") on the worker success path: if the run's
+// handoff file is missing or empty, the orchestrator synthesizes one from
+// the session summary, marked as synthesized. Returns synthesized=true when
+// a file was written. A non-empty agent-authored handoff is never touched.
+func ensureHandoffOnSuccess(workspacePath, handoffRelPath, sessionSummary string) (synthesized bool, err error) {
+	if workspacePath == "" || handoffRelPath == "" {
+		return false, nil
+	}
+	path := filepath.Join(workspacePath, handoffRelPath)
+	if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() && info.Size() > 0 {
+		return false, nil // agent wrote its own handoff — done is done
+	}
+	body := strings.TrimSpace(sessionSummary)
+	if body == "" {
+		body = "_The agent produced no session summary for this run._"
+	}
+	content := synthesizedHandoffHeader + "\n\n" + body + "\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("handoff: mkdir for synthesized handoff: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return false, fmt.Errorf("handoff: write synthesized handoff: %w", err)
+	}
+	return true, nil
+}
+
 // markHandoffPartial renames the worker's in-flight handoff file to
 // `<basename>.partial.md` so subsequent agents see it as an incomplete
 // deliverable. Called by the worker when it exits with a non-success

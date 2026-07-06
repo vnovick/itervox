@@ -1,0 +1,2 @@
+{"event":"action","action":"comment","args":{"issue":"ENG-56"}}
+{"event":"comment","body":"merge-bot: no open PR found for branch feat/eng-56-missing. Nothing to merge; stopping."}

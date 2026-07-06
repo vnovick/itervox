@@ -17,7 +17,7 @@ import {
 
 export { sortAutomationQueueRows };
 
-// v0.2.0 todolist5 B7 — most automations dispatch immediately (slots free,
+// Most automations dispatch immediately (slots free,
 // no blockers) and never enter `state.AutomationQueue`. Surfacing them
 // alongside the queued rows in the same panel matches the operator mental
 // model that "the automation panel shows what my automations did."

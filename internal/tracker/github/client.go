@@ -150,7 +150,7 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 		}
 	}
 
-	return all, nil
+	return c.populateBlockerStates(ctx, all), nil
 }
 
 // maxConcurrentFetches caps concurrent goroutines in boundedDo.
@@ -260,8 +260,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				continue
 			}
 			// Extract branch name from hidden itervox marker; skip adding to Comments.
-			if strings.HasPrefix(body, itervoxBranchPrefix) {
-				branch := strings.TrimPrefix(body, itervoxBranchPrefix)
+			if branch, ok := strings.CutPrefix(body, itervoxBranchPrefix); ok {
 				branch = strings.TrimSuffix(strings.TrimSpace(branch), "-->")
 				branch = strings.TrimSpace(branch)
 				if branch != "" {
@@ -298,7 +297,12 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		commentsURL = next
 	}
 
-	return issue, nil //nolint:nilerr // comment-fetch errors are non-fatal; we break and return the issue without comments
+	// TRK-2: this is a dependency-audit refresh path — blocker states must be
+	// populated here too, not just in FetchCandidateIssues, or
+	// blockers_resolved can never fire for non-active watched issues.
+	// populateBlockerStates no-ops cheaply when issue.BlockedBy has no IDs.
+	populated := c.populateBlockerStates(ctx, []domain.Issue{*issue})
+	return &populated[0], nil //nolint:nilerr // comment-fetch errors are non-fatal; we break and return the issue without comments
 }
 
 // fetchSingleIssue fetches one GitHub issue by its number (as string ID).
@@ -634,8 +638,13 @@ func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
 }
 
 // populateBlockerStates fetches the current state for each blocker referenced in issues
-// and backfills BlockerRef.State. On fetch error (including 404), the blocker is treated
-// as "closed" so it never silently blocks dispatch.
+// and backfills BlockerRef.State. Error handling is fail-safe (spec D4: unknown or
+// ambiguous prerequisite state MUST be treated as unmet): ANY fetch error — including
+// 404, which GitHub also returns for permission loss and transferred issues, not just
+// deletion — leaves State nil so the orchestrator classifies the dependency as unknown
+// and keeps dependents blocked. A genuinely deleted blocker surfaces as a permanent
+// "unknown" row in the Deps dashboard; the operator resolves it by removing the
+// dangling reference from the issue body.
 func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issue) []domain.Issue {
 	seen := make(map[string]struct{})
 	var ids []string
@@ -661,8 +670,19 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 	ch := make(chan result, len(ids))
 	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
 		issue, err := c.fetchSingleIssue(ctx, id)
-		if err != nil || issue == nil {
-			ch <- result{id: id, state: "closed"}
+		if err != nil {
+			// D4 fail-safe: ALL fetch errors — including 404, which GitHub returns
+			// for permission loss and transferred issues, not just deletion — leave
+			// State nil so the orchestrator treats the dependency as unmet. A
+			// genuinely deleted blocker surfaces as a permanent "unknown" row in the
+			// Deps dashboard; the operator resolves it by removing the reference.
+			slog.Error("github: blocker state fetch failed — dependents stay blocked until resolved",
+				"blocker_id", id, "error", err)
+			ch <- result{id: id}
+			return
+		}
+		if issue == nil {
+			ch <- result{id: id}
 			return
 		}
 		url := ""
@@ -682,8 +702,13 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 		for j := range issues[i].BlockedBy {
 			if issues[i].BlockedBy[j].ID != nil {
 				if r, ok := resultMap[*issues[i].BlockedBy[j].ID]; ok {
-					state := r.state
-					issues[i].BlockedBy[j].State = &state
+					// Empty state means the fetch failed transiently — leave
+					// State nil so the orchestrator's unknown→blocked
+					// fail-safe applies (D4).
+					if r.state != "" {
+						state := r.state
+						issues[i].BlockedBy[j].State = &state
+					}
 					if r.url != "" {
 						url := r.url
 						issues[i].BlockedBy[j].URL = &url

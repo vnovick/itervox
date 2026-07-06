@@ -21,7 +21,7 @@ const AUTOMATION_FIRED_PREFIX = 'AUTOMATION FIRED';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// v0.2.0 todolist5 B5 / todolist6 codex-B5 — AUTOMATION FIRED entries are
+// AUTOMATION FIRED entries are
 // tagged `event === 'automation'` (Go-side parseLogLine + Zod
 // LogEventTypeSchema). `'automation'` is included in FILTER_CHIPS so the
 // type-driven filter recognises the event sentinel, AND a dedicated

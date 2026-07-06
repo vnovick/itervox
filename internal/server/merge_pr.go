@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os/exec"
 	"slices"
@@ -48,6 +49,11 @@ var defaultMergePRDedup = &mergePRDedup{merged: map[string]string{}}
 type MergePRGate struct {
 	BlockLabels []string
 	Strategy    string
+	// AllowUnchecked controls the SRV-1 unarmed-gate refusal: when gh reports
+	// "no required checks reported" on the target branch, false (default)
+	// refuses the merge with MergePRReasonUnarmedGate; true logs a loud
+	// warning and proceeds. Wired from cfg.Agent.AllowUncheckedMerge.
+	AllowUnchecked bool
 	// gh is the gh-CLI invoker. Tests inject a fake; production uses runGH.
 	GH func(ctx context.Context, args ...string) ([]byte, error)
 }
@@ -59,10 +65,32 @@ const (
 	MergePRReasonNotMergeable    = "not_mergeable"
 	MergePRReasonBlockedLabel    = "blocked_label"
 	MergePRReasonInvalidStrategy = "invalid_strategy"
+	// MergePRReasonUnarmedGate is returned when gh reports zero required
+	// checks configured on the target branch (SRV-1 / spec F3: "a gate that
+	// can never fail is not a gate"). Refused by default; operators opt out
+	// via agent.allow_unchecked_merge: true.
+	MergePRReasonUnarmedGate = "unarmed_gate"
 )
 
+// runGH shells out to the gh CLI and returns stdout. On a non-zero exit,
+// exec.Cmd.Output() populates (*exec.ExitError).Stderr (since we never set
+// cmd.Stderr ourselves) — we append that to the returned bytes so callers
+// see gh's actual diagnostic (e.g. "no required checks reported on the
+// 'main' branch") instead of an empty stdout. We deliberately do NOT switch
+// to CombinedOutput(): several callers (`pr view --json ...`) parse stdout
+// as JSON on the success path, and gh is known to emit non-JSON warnings to
+// stderr even on exit 0 (e.g. auth-token nudges) — merging that into stdout
+// would break json.Unmarshal on otherwise-successful calls. Appending
+// stderr only on the error path is safe because none of those JSON calls
+// are ever read on a non-nil error.
 func runGH(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "gh", args...).Output()
+	out, err := exec.CommandContext(ctx, "gh", args...).Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			out = append(out, exitErr.Stderr...)
+		}
+	}
+	return out, err
 }
 
 func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
@@ -93,15 +121,7 @@ func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
 	}
 	defaultMergePRDedup.mu.Unlock()
 
-	strategy := strings.TrimSpace(req.Strategy)
-	if strategy == "" {
-		strategy = "squash"
-	}
-	gate := MergePRGate{
-		BlockLabels: DefaultMergeBlockLabels(),
-		Strategy:    strategy,
-		GH:          runGH,
-	}
+	gate := s.mergePRGate(req.Strategy)
 	mergeCommit, reason, err := gate.Merge(r.Context(), req.PR)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "merge_failed", err.Error())
@@ -125,7 +145,7 @@ func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, MergePRResponse{
 				OK:          true,
 				MergeCommit: mergeCommit,
-				Strategy:    strategy,
+				Strategy:    gate.Strategy,
 			})
 			return
 		}
@@ -134,8 +154,46 @@ func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, MergePRResponse{
 		OK:          true,
 		MergeCommit: mergeCommit,
-		Strategy:    strategy,
+		Strategy:    gate.Strategy,
 	})
+}
+
+// mergePRGate builds the per-request MergePRGate from the operator's
+// startup-fixed merge policy (gaps_11 G-3 — `agent.merge_strategy` /
+// `agent.merge_block_labels` were parsed but never read). Resolution order:
+//
+//   - Strategy: request body (if non-empty) overrides the configured
+//     `agent.merge_strategy`; both empty falls back to "squash". An invalid
+//     request strategy is intentionally NOT replaced here — the gate refuses
+//     it with MergePRReasonInvalidStrategy so the caller gets a clear error
+//     instead of a silently substituted merge mode.
+//   - BlockLabels: the configured `agent.merge_block_labels` replaces the
+//     defaults entirely; unset/empty falls back to DefaultMergeBlockLabels().
+//
+// Both fields are read-only after startup (not in the cfgMu allowlist), so no
+// locking is required.
+func (s *Server) mergePRGate(requestStrategy string) MergePRGate {
+	strategy := strings.TrimSpace(requestStrategy)
+	if strategy == "" {
+		strategy = strings.TrimSpace(s.mergeStrategy)
+	}
+	if strategy == "" {
+		strategy = "squash"
+	}
+	blockLabels := s.mergeBlockLabels
+	if len(blockLabels) == 0 {
+		blockLabels = DefaultMergeBlockLabels()
+	}
+	gh := s.ghRun
+	if gh == nil {
+		gh = runGH
+	}
+	return MergePRGate{
+		BlockLabels:    blockLabels,
+		Strategy:       strategy,
+		AllowUnchecked: s.allowUncheckedMerge,
+		GH:             gh,
+	}
 }
 
 // Merge runs the gh-CLI gates and the actual merge. Returns (commit, "", nil)
@@ -187,13 +245,32 @@ func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) 
 	// 2. Required checks must all pass.
 	checksOut, err := g.GH(ctx, "pr", "checks", fmt.Sprint(pr), "--required")
 	if err != nil {
-		// gh exits non-zero when any required check is failing/pending.
-		return "", MergePRReasonChecksFailed + ":" + truncateForReason(string(checksOut)), nil
+		detail := truncateForReason(string(checksOut))
+		// gh exits non-zero BOTH for failing checks and for "no required
+		// checks reported" on the target branch (an unprotected repo with no
+		// branch-protection required checks configured). The latter is an
+		// unarmed gate (spec F3: "a gate that can never fail is not a gate")
+		// — refuse by default rather than merging with zero CI coverage.
+		if strings.Contains(strings.ToLower(detail), "no required checks") {
+			if g.AllowUnchecked {
+				slog.Warn("merge_pr: merging with ZERO required checks (allow_unchecked_merge: true) — the CI gate is unarmed",
+					"pr", pr)
+			} else {
+				return "", MergePRReasonUnarmedGate + ": repository has no required checks — configure branch protection, or set agent.allow_unchecked_merge: true to merge anyway", nil
+			}
+		} else {
+			return "", MergePRReasonChecksFailed + ":" + detail, nil
+		}
 	}
 
-	// 3. Merge.
+	// 3. Merge. Deliberately no --delete-branch: gh's local-branch delete runs
+	// AFTER the remote merge already landed, and fails with a non-zero exit
+	// whenever the branch is checked out in an itervox worktree (SRV-2) —
+	// that failure would otherwise surface as a spurious merge error even
+	// though the PR merged successfully. Remote cleanup is handled
+	// separately, best-effort, below.
 	strategyFlag := "--" + g.Strategy
-	mergeOut, err := g.GH(ctx, "pr", "merge", fmt.Sprint(pr), strategyFlag, "--delete-branch")
+	mergeOut, err := g.GH(ctx, "pr", "merge", fmt.Sprint(pr), strategyFlag)
 	if err != nil {
 		return "", "", fmt.Errorf("gh pr merge: %w: %s", err, string(mergeOut))
 	}
@@ -206,6 +283,24 @@ func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) 
 		} `json:"mergeCommit"`
 	}
 	_ = json.Unmarshal(shaOut, &shaResp)
+
+	// Best-effort remote branch cleanup — replaces --delete-branch, whose
+	// LOCAL delete fails (non-zero exit AFTER a successful merge) whenever
+	// the branch is checked out in an itervox worktree (SRV-2). Local
+	// branches are cleaned by workspace auto-clear. Any failure here is
+	// logged and swallowed — it must never turn an already-successful merge
+	// into a reported failure.
+	if headOut, herr := g.GH(ctx, "pr", "view", fmt.Sprint(pr), "--json", "headRefName"); herr == nil {
+		var head struct {
+			HeadRefName string `json:"headRefName"`
+		}
+		if json.Unmarshal(headOut, &head) == nil && head.HeadRefName != "" {
+			if _, derr := g.GH(ctx, "api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/heads/"+head.HeadRefName); derr != nil {
+				slog.Warn("merge_pr: remote branch cleanup failed (non-fatal)", "pr", pr, "branch", head.HeadRefName, "error", derr)
+			}
+		}
+	}
+
 	return shaResp.MergeCommit.OID, "", nil
 }
 

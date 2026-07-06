@@ -31,7 +31,7 @@ verify: web-deps fmt vet lint-go test evals-fast web-typecheck web-lint web-form
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
 # breaks recorded scenarios fails the build (P1.a).
 evals-fast:
-	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport' ./internal/evals/...
+	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestReviewerEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport' ./internal/evals/...
 
 # Release preflight mirrors tag-time checks. Keep `verify` as the normal PR/local
 # edit gate; this target additionally requires release tooling and a clean tree.

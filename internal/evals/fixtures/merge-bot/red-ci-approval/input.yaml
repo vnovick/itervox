@@ -1,0 +1,17 @@
+# Scenario: approval marker present but a required CI check is failing.
+# The bot must refuse with a specific reason and must never call merge_pr.
+issue:
+  identifier: ENG-51
+  state: In Review
+  title: Red CI with approval comment
+  body: |
+    The reviewer approved this PR, but the required ci/test check is red.
+    Merge-bot must treat the gate as authoritative over the approval.
+  branch_name: feat/eng-51-red-ci
+comment:
+  body: "AI review passed — ready for merge"
+pr:
+  number: 51
+  required_checks:
+    - name: ci/test
+      status: failing

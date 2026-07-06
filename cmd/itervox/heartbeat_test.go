@@ -87,6 +87,61 @@ func TestRenderHeartbeatFallsBackToRetryError(t *testing.T) {
 	assert.Contains(t, content, "- Last error: agent failed")
 }
 
+// gaps_11 G-15 / todolist6 P0-D — degraded startup is surfaced in the
+// heartbeat as `Daemon: degraded` plus a `Last startup error:` line.
+func TestRenderHeartbeatDegradedIncludesLastStartupError(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+
+	content := renderHeartbeat(server.StateSnapshot{}, heartbeatOptions{
+		StartupError: "see .itervox/STARTUP_ERROR.md (clear with `itervox doctor --clear-startup-error`)",
+	}, now)
+
+	assert.Contains(t, content, "Daemon: degraded")
+	assert.Contains(t, content, "Last startup error: see .itervox/STARTUP_ERROR.md")
+	assert.NotContains(t, content, "Daemon: running")
+}
+
+func TestRenderHeartbeatHealthyOmitsStartupErrorLine(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+
+	content := renderHeartbeat(server.StateSnapshot{}, heartbeatOptions{}, now)
+
+	assert.Contains(t, content, "Daemon: running")
+	assert.NotContains(t, content, "Last startup error:")
+	assert.NotContains(t, content, "Daemon: degraded")
+}
+
+// End-to-end over the real marker file: writeStartupErrorMarker → heartbeat
+// degraded line; clearStartupErrorMarker → next write recovers to running.
+func TestHeartbeatWriterReportsStartupErrorMarker(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeStartupErrorMarker(workflowPath, errors.New("yaml: line 3: mixed indentation"))
+
+	var writes []string
+	writer := newHeartbeatWriter(heartbeatPath(workflowPath), heartbeatOptions{
+		WorkflowPath: workflowPath,
+	}, nil, time.Second)
+	writer.writeFile = func(_ string, content string) error {
+		writes = append(writes, content)
+		return nil
+	}
+
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, writer.WriteNow(now))
+	require.Len(t, writes, 1)
+	assert.Contains(t, writes[0], "Daemon: degraded")
+	assert.Contains(t, writes[0],
+		"Last startup error: see "+filepath.Join(dir, ".itervox", "STARTUP_ERROR.md"))
+
+	clearStartupErrorMarker(workflowPath)
+	writer.Request()
+	require.NoError(t, writer.MaybeWrite(now.Add(2*time.Second)))
+	require.Len(t, writes, 2)
+	assert.Contains(t, writes[1], "Daemon: running")
+	assert.NotContains(t, writes[1], "Last startup error:")
+}
+
 func TestWriteHeartbeatCreatesParentAndWritesContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".itervox", "HEARTBEAT.md")
 

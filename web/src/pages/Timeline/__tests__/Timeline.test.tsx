@@ -26,10 +26,14 @@ vi.mock('../../../queries/logs', () => ({
 }));
 
 vi.mock('../components/TimelineSidebar', () => ({
-  TimelineSidebar: ({ issueGroups }: { issueGroups: Array<{ identifier: string }> }) => (
+  TimelineSidebar: ({
+    issueGroups,
+  }: {
+    issueGroups: Array<{ identifier: string; runs: unknown[] }>;
+  }) => (
     <div data-testid="timeline-sidebar">
       {issueGroups.map((g) => (
-        <div key={g.identifier} data-testid="timeline-row">
+        <div key={g.identifier} data-testid="timeline-row" data-run-count={g.runs.length}>
           {g.identifier}
         </div>
       ))}
@@ -191,6 +195,51 @@ describe('Timeline automation chip (T-5)', () => {
     render(<Timeline />, { wrapper });
     const chip = screen.getByTestId('timeline-chip-automation');
     expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  // G-13 relay — during the ~5s stale-running window (useStableValue) the same
+  // sessionId can appear in both `running` and `history`; the sidebar run
+  // count must not double-count it.
+  it('dedups a session present in both running and history into one sidebar run', () => {
+    const now = Date.now();
+    setupStore({
+      running: [
+        {
+          identifier: 'ENG-DUP',
+          state: 'In Progress',
+          startedAt: new Date(now - 10_000).toISOString(),
+          elapsedMs: 10_000,
+          turnCount: 3,
+          tokens: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          lastEvent: '',
+          lastEventAt: null,
+          sessionId: 'sess-dup',
+          workerHost: 'local',
+          backend: 'claude',
+        },
+      ],
+      history: [
+        {
+          identifier: 'ENG-DUP',
+          startedAt: new Date(now - 10_000).toISOString(),
+          finishedAt: new Date(now - 1_000).toISOString(),
+          elapsedMs: 9_000,
+          turnCount: 3,
+          tokens: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          status: 'succeeded',
+          backend: 'claude',
+          sessionId: 'sess-dup',
+        },
+      ],
+    });
+    render(<Timeline />, { wrapper });
+
+    const row = screen.getByText('ENG-DUP');
+    expect(row).toHaveAttribute('data-run-count', '1');
   });
 
   it('keeps the chart viewport on the full selected issue span while a run is expanded', async () => {

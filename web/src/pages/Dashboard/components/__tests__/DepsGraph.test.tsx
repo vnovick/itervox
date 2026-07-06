@@ -1,13 +1,22 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DepsGraph, layoutDependencyGraph } from '../DepsGraph';
 import type {
   DependencyGraphEdge,
   DependencyGraphNode,
   ProfileDef,
 } from '../../../../types/schemas';
+
+// gaps_11 G-14 — mock the analyze mutation so picker tests can assert the
+// payload without hitting the network. The disabled-reason logic under test
+// lives entirely in the component, so the existing disabled-state tests are
+// unaffected by this mock.
+const { analyzeMutateSpy } = vi.hoisted(() => ({ analyzeMutateSpy: vi.fn() }));
+vi.mock('../../../../queries/deps', () => ({
+  useAnalyzeDeps: () => ({ mutate: analyzeMutateSpy, isPending: false }),
+}));
 
 function withQueryClient(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -250,7 +259,7 @@ describe('DepsGraph', () => {
       [inferredEdge],
     );
     const edge = result.edges.find((e) => e.id === 'A->B');
-    // v0.2.0 todolist7 C5 — inferred edges now surface a snippet of the
+    // Inferred edges surface a snippet of the
     // evidence string in the label. The full string remains on edge.data.
     expect(edge?.label).toMatch(/^inferred: /);
     expect(edge?.label).toContain('title mentions depends on A');
@@ -262,7 +271,7 @@ describe('DepsGraph', () => {
     );
   });
 
-  // v0.2.0 todolist7 C5 — inferred edges with no evidence string fall back to
+  // Inferred edges with no evidence string fall back to
   // the bare 'inferred' label (the snippet is appended only when evidence
   // exists).
   it('falls back to bare "inferred" label when evidence is missing', () => {
@@ -286,7 +295,7 @@ describe('DepsGraph', () => {
     expect((edge?.data as { evidence?: string } | undefined)?.evidence).toBeUndefined();
   });
 
-  // v0.2.0 todolist7 C5 — long evidence strings are truncated so the visible
+  // Long evidence strings are truncated so the visible
   // label stays readable on small graphs. The full string remains on
   // edge.data.evidence.
   it('truncates long evidence strings in the edge label', () => {
@@ -313,7 +322,7 @@ describe('DepsGraph', () => {
     expect((edge?.data as { evidence?: string } | undefined)?.evidence).toBe(longEvidence);
   });
 
-  // v0.2.0 todolist7 C5 — in-canvas legend explains the dashed-vs-solid
+  // The in-canvas legend explains the dashed-vs-solid
   // convention so operators don't have to infer it from edge styling alone.
   it('renders the legend explaining tracker vs inferred edge styles', () => {
     render(
@@ -339,6 +348,80 @@ describe('DepsGraph', () => {
     expect(screen.getByText(/Last analyzed/i)).toBeInTheDocument();
     // 60s ago should surface as "1m ago" (or similar relative time).
     expect(screen.getByText(/ago|just now/i)).toBeInTheDocument();
+  });
+
+  // gaps_11 G-14 / deps design §3.3 — profile picker dropdown in the toolbar.
+  describe('profile picker', () => {
+    const pickerProfileDefs: Record<string, ProfileDef> = {
+      'deps-analyzer': { command: 'claude', enabled: true },
+      'other-profile': { command: 'codex', enabled: true },
+    };
+
+    beforeEach(() => {
+      analyzeMutateSpy.mockClear();
+    });
+
+    function renderWithPicker(profileDefs: Record<string, ProfileDef> = pickerProfileDefs) {
+      render(
+        withQueryClient(
+          <DepsGraph
+            graphNodes={graphNodes}
+            graphEdges={graphEdges}
+            onSelectIssue={vi.fn()}
+            depsAnalyzerProfile="deps-analyzer"
+            profileDefs={profileDefs}
+          />,
+        ),
+      );
+    }
+
+    it('defaults the labelled picker to the configured analyzer profile and lists all profiles', () => {
+      renderWithPicker();
+      const select = screen.getByLabelText(/profile/i);
+      expect(select).toHaveValue('deps-analyzer');
+      const options = Array.from(select.querySelectorAll('option')).map((o) => o.value);
+      expect(options).toEqual(['deps-analyzer', 'other-profile']);
+    });
+
+    it('sends the configured profile to the mutation when the picker is untouched', () => {
+      renderWithPicker();
+      fireEvent.click(screen.getByRole('button', { name: /analyze dependencies/i }));
+      expect(analyzeMutateSpy).toHaveBeenCalledWith({ profile: 'deps-analyzer' });
+    });
+
+    it('sends the picked profile to the mutation after changing the selection', () => {
+      renderWithPicker();
+      fireEvent.change(screen.getByLabelText(/profile/i), {
+        target: { value: 'other-profile' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /analyze dependencies/i }));
+      expect(analyzeMutateSpy).toHaveBeenCalledWith({ profile: 'other-profile' });
+    });
+
+    it('re-evaluates the disabled state against the picked profile', () => {
+      renderWithPicker({
+        'deps-analyzer': { command: 'claude', enabled: false },
+        'other-profile': { command: 'codex', enabled: true },
+      });
+      const button = screen.getByRole('button', { name: /analyze dependencies/i });
+      // Configured profile is disabled → button disabled with the existing reason.
+      expect(button).toBeDisabled();
+      expect(button.getAttribute('title')).toMatch(/disabled/i);
+      // Picking an enabled profile lifts the restriction.
+      fireEvent.change(screen.getByLabelText(/profile/i), {
+        target: { value: 'other-profile' },
+      });
+      expect(button).not.toBeDisabled();
+    });
+
+    it('hides the picker when no analyzer profile is configured', () => {
+      render(
+        withQueryClient(
+          <DepsGraph graphNodes={graphNodes} graphEdges={graphEdges} onSelectIssue={vi.fn()} />,
+        ),
+      );
+      expect(screen.queryByLabelText(/profile/i)).toBeNull();
+    });
   });
 
   it('lays out blockers left of blocked issues', () => {

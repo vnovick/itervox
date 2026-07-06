@@ -39,7 +39,7 @@ const (
 
 // operatorReplyEnvelope is the orchestrator-controlled prompt block that tells
 // every dispatched agent how the human operator will reply when the agent
-// exits `input_required`. v0.2.0 todolist5 B3.
+// exits `input_required`.
 const operatorReplyEnvelope = "## Operator Reply Channel\n\n" +
 	"If you exit with status `input_required`, a human operator will see your question in the Itervox dashboard and reply via the \"Reply & Resume Agent\" textarea on this issue. Their reply will resume you with the answer prepended to your next prompt. Do not attempt to reach the operator through the tracker, email, or external APIs."
 
@@ -338,6 +338,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// prompt would include turn 1..N-1's outputs as "prior agent handoffs."
 	runTimestamp := handoffRunTimestamp(startedAt)
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
+	// Result of the most recent after_run hook invocation. When
+	// hooks.after_run_required is set, the final turn's hook result gates
+	// TerminalSucceeded (spec F3: a unit is not done on the agent's
+	// self-assessment alone).
+	var lastAfterRunErr error
 	turn := 1
 	for ; turn <= effectiveMaxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
@@ -388,7 +393,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			return
 		}
 
-		// v0.2.0 todolist5 B3 — operator-reply envelope notice. Lives in the
+		// Operator-reply envelope notice. Lives in the
 		// orchestrator-controlled wrapper (not in any profile's INSTRUCTIONS.md)
 		// so individual `agent.profiles.<name>.instructions_file` overrides
 		// cannot drop it. Without this, agents that decide they need human
@@ -527,8 +532,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// Accumulate all Claude text blocks for the final session comment.
 		allTextBlocks = append(allTextBlocks, result.AllTextBlocks...)
 
-		// after_run hook (best-effort, logged and ignored)
-		o.runAfterHook(ctx, afterRunHook, hookTimeoutMs, wsPath, issue.ID, issue.Identifier, runLogID)
+		// after_run hook. Best-effort by default; the final turn's result
+		// becomes the per-unit gate when hooks.after_run_required is set.
+		lastAfterRunErr = o.runAfterHook(ctx, afterRunHook, hookTimeoutMs, wsPath, issue.ID, issue.Identifier, runLogID)
 
 		// Track the current git branch after each turn so retried workers can
 		// resume from the same branch. Only fires when the agent has switched to
@@ -743,6 +749,22 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
+	// F3 — per-unit gate. When hooks.after_run_required is set, a failing
+	// after_run hook on the final turn blocks TerminalSucceeded: the unit is
+	// not done on the agent backend's clean exit alone. Checked before any
+	// success side effects (PR push, comments, completion-state transition).
+	if o.cfg.Hooks.AfterRunRequired && lastAfterRunErr != nil {
+		slog.Warn("worker: after_run gate failed — unit does not complete",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", lastAfterRunErr)
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR",
+				fmt.Sprintf("worker: after_run gate failed (after_run_required): %v", lastAfterRunErr), runLogID))
+		}
+		o.sendExit(ctx, issue, attempt, TerminalFailed,
+			fmt.Errorf("worker: after_run gate failed: %w", lastAfterRunErr))
+		return
+	}
+
 	// If the agent created a PR during this run, comment its URL on the tracker
 	// issue.  This runs before the session summary so the PR link is visible even
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
@@ -782,8 +804,67 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
-	// Build session summary once — reused for both PR comment and tracker comment.
-	sessionComment := formatSessionComment(allTextBlocks, issue.Identifier)
+	// Build session summary once — reused for handoff synthesis, the PR
+	// comment, and the tracker comment. V2-3: sessionCommentForRun returns ""
+	// when the final output begins with [SILENT], suppressing every comment
+	// surface while the log buffer keeps the audit record. Built here (before
+	// the PR push and handoff synthesis) because the synthesis below uses it as
+	// the handoff body; it depends only on the completed turn output, not on
+	// anything computed in the PR blocks.
+	sessionComment := sessionCommentForRun(allTextBlocks, issue.Identifier)
+
+	// F2 — "update the shared state" is part of the definition of done. A
+	// worker that exits clean without writing its handoff deliverable must
+	// not reach TerminalSucceeded unmodified: synthesize the handoff from
+	// the session summary (marked as synthesized) so the durable state
+	// update is committed on the issue branch (best-effort; falls back to a
+	// working-tree file). If synthesis itself fails, the unit fails — success
+	// without a handoff is not success. Runs BEFORE the PR push below so the
+	// synthesized (or agent-authored) handoff reaches the pushed branch.
+	if wsPath != "" && ctx.Err() == nil {
+		synthesized, synthErr := ensureHandoffOnSuccess(wsPath, runHandoffRelPath, sessionComment)
+		if synthErr != nil {
+			slog.Error("worker: handoff missing at success and synthesis failed — failing unit",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+				"handoff_path", runHandoffRelPath, "error", synthErr)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR",
+					fmt.Sprintf("worker: handoff synthesis failed: %v", synthErr), runLogID))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalFailed,
+				fmt.Errorf("worker: success without handoff and synthesis failed: %w", synthErr))
+			return
+		}
+		if synthesized {
+			slog.Info("worker: agent wrote no handoff — synthesized from session summary",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+				"handoff_path", runHandoffRelPath)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO",
+					fmt.Sprintf("worker: handoff synthesized at %s (agent did not write one)", runHandoffRelPath), runLogID))
+			}
+		}
+
+		// Durable shared state (F2/D3): committed on the issue branch so it
+		// reaches the remote via the push below on the PR-continuation path
+		// (prCtx != nil). On other paths the commit is local-only (best-effort;
+		// lost if auto_clear removes the worktree before any later push).
+		// Scoped add + pathspec-scoped commit — never sweeps unrelated agent
+		// changes (even pre-staged ones). In a non-git
+		// workspace `git add` fails and we skip the commit silently (previous
+		// behavior — the file remains in the working tree, no Warn spam on
+		// every success); other commit failures log.
+		addCmd := exec.CommandContext(ctx, "git", "add", HandoffDirRelPath)
+		addCmd.Dir = wsPath
+		if err := addCmd.Run(); err == nil {
+			commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "chore(itervox): record agent handoff", "--no-verify", "--", HandoffDirRelPath)
+			commitCmd.Dir = wsPath
+			if out, err := commitCmd.CombinedOutput(); err != nil && !strings.Contains(string(out), "nothing to commit") {
+				slog.Warn("worker: handoff commit failed (file remains uncommitted)",
+					"issue_identifier", issue.Identifier, "error", err)
+			}
+		}
+	}
 
 	// Push the PR branch and post a summary comment on the existing PR (best-effort).
 	// Use a fresh background-derived context with a timeout so that a cancellation
@@ -1123,13 +1204,18 @@ func buildInputRequiredExitRunEntry(
 	}
 }
 
-func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs int, wsPath, issueID, identifier, sessionID string) {
+// runAfterHook executes the after_run hook and returns its error. Callers on
+// the best-effort path log and ignore the result; when hooks.after_run_required
+// is set, the success path uses the final turn's result as a per-unit gate.
+func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs int, wsPath, issueID, identifier, sessionID string) error {
 	if wsPath == "" {
-		return
+		return nil
 	}
 	if err := workspace.RunHook(ctx, hook, wsPath, timeoutMs, o.hookLogFn(identifier, sessionID)); err != nil {
-		slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issueID, "error", err)
+		slog.Warn("worker: after_run hook failed", "issue_id", issueID, "error", err)
+		return err
 	}
+	return nil
 }
 
 func prepareAgentActionRuntime(tokens interface {
@@ -1235,7 +1321,7 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 		case config.AgentActionProvideInput:
 			lines = append(lines, "- `itervox action provide-input --message \"...\"` answers an input-required prompt and resumes the blocked run.")
 		case config.AgentActionCommentPR:
-			lines = append(lines, "- `itervox action comment-pr --summary \"...\" --findings findings.json` posts a structured review comment (summary + sorted findings).")
+			lines = append(lines, "- `itervox action comment-pr --summary \"...\" --findings findings.json` posts a structured review comment (summary + sorted findings) on the issue's open GitHub PR when one is known, otherwise on the tracker issue.")
 		case config.AgentActionMergePR:
 			lines = append(lines, "- `itervox action merge-pr --pr <number>` finalizes a PR through the daemon's guarded merge_pr action.")
 		}
@@ -1318,9 +1404,25 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 
 func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string) {
 	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL)
-	// v0.2.0 todolist5 B4 — dispatch when this completed run has a PR (any
-	// detected URL counts), not only when the tracker-comment write succeeded.
-	// Strict succeeded-only kept until operators confirm a liberal reading.
+	// Dispatch when this completed run has a PR (any
+	// detected URL counts), not only when the tracker-comment write succeeded:
+	// `resolvedURL` below falls back to the detected prURL when openedPRURL is
+	// empty, so a failed/skipped CreateComment never swallows the dispatch.
+	//
+	// WHY the gate below is STRICT (todolist6 codex-B4, gaps_11 G-18-B4):
+	// pr_opened fires ONLY for TerminalSucceeded runs. The debated liberal
+	// reading — fire on any detected PR URL regardless of terminal reason —
+	// was rejected because a run that exits TerminalFailed or TerminalStalled
+	// likely left the PR incomplete; auto-dispatching a reviewer (or any
+	// pr_opened automation) against half-finished work wastes an agent slot
+	// and produces misleading review feedback. TerminalInputRequired is also
+	// excluded: the same worker will resume and re-reach this path, firing
+	// once it actually succeeds (the PROpenedDispatched ledger dedups by
+	// issue + PR URL + automation ID, so the eventual fire is not doubled).
+	// Revisit only if operators explicitly confirm a liberal reading for
+	// input_required/stalled PRs. (The only production call site today passes
+	// TerminalSucceeded, so this gate also guards future call sites against
+	// silently loosening that contract.)
 	if err != nil || reason != TerminalSucceeded {
 		return
 	}

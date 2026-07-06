@@ -92,7 +92,11 @@ func TestDependencyAuditClassifiesUnknownBlockerStateAsUnknownAndUnresolved(t *t
 	entry := auditIssueDependencies(&state, issue, now)
 
 	require.Equal(t, DependencyAuditUnknown, entry.Status)
-	require.True(t, entry.WasBlocked)
+	// AUTO-1: an Unknown status (transient tracker outage; blocker state nil) is
+	// the dispatch fail-safe but is NOT evidence the issue was ever genuinely
+	// blocked, so it must not arm the WasBlocked latch. Arming it here let an
+	// outage flap (terminal -> nil -> terminal) mis-fire blockers_resolved.
+	require.False(t, entry.WasBlocked)
 	require.Len(t, entry.UnresolvedBlockers, 1)
 	require.Nil(t, entry.UnresolvedBlockers[0].State)
 }

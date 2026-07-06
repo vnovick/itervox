@@ -44,7 +44,6 @@ func (o *Orchestrator) Snapshot() State {
 	snap.PausedSessions = maps.Clone(snap.PausedSessions)
 	snap.IssueProfiles = maps.Clone(snap.IssueProfiles)
 	snap.IssueBackends = maps.Clone(snap.IssueBackends)
-	snap.PausedOpenPRs = maps.Clone(snap.PausedOpenPRs)
 	snap.ForceReanalyze = maps.Clone(snap.ForceReanalyze)
 	snap.PrevActiveIdentifiers = maps.Clone(snap.PrevActiveIdentifiers)
 	snap.PrevIssueStates = maps.Clone(snap.PrevIssueStates)
@@ -57,6 +56,8 @@ func (o *Orchestrator) Snapshot() State {
 	snap.AutomationQueue = copyAutomationQueueMap(snap.AutomationQueue)
 	snap.AutomationQueueOrder = append([]string(nil), snap.AutomationQueueOrder...)
 	snap.DependencyAudit = copyDependencyAuditMap(snap.DependencyAudit)
+	snap.PROpenedDispatched = maps.Clone(snap.PROpenedDispatched)
+	snap.PRMergedDispatched = maps.Clone(snap.PRMergedDispatched)
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -333,6 +334,16 @@ type automationQueueStateDisk struct {
 	Entries      map[string]*AutomationQueueEntry `json:"entries,omitempty"`
 	Order        []string                         `json:"order,omitempty"`
 	Backpressure AutomationQueueBackpressure      `json:"backpressure,omitempty"`
+	// AUTO-4 — persist the dependency-audit ledger and its transition seq
+	// alongside the queue so a blocker that reaches terminal while the daemon
+	// is down still fires blockers_resolved after restart. These are ADDITIVE,
+	// omitempty fields: they do NOT bump QueuePersistenceSchemaVersion, so files
+	// written by an older daemon (which lack these keys) load cleanly with a nil
+	// ledger + zero seq — exactly today's behavior — instead of being
+	// quarantined on upgrade. The envelope sha256 is computed over whatever
+	// payload bytes were written, so old and new payload shapes each verify.
+	DependencyAudit         map[string]*DependencyAuditEntry `json:"dependency_audit,omitempty"`
+	DependencyTransitionSeq int64                            `json:"dependency_transition_seq,omitempty"`
 }
 
 // saveInputRequiredToDisk writes InputRequiredIssues and PendingInputResumes to disk.
@@ -469,8 +480,29 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			QueuedAt:           queuedAt,
 		}
 	}
+	// gaps_11 G-2 — mirror loadPausedFromDisk: treat persistence-restored
+	// identifiers as "active before daemon start" so the absent-issue
+	// janitor's two-tick grace window spans the restart boundary instead of
+	// pruning restored entries after a single observed absence.
+	for k, v := range awaiting {
+		state.PrevActiveIdentifiers[inputRequiredPreloadIdent(v.Identifier, k)] = struct{}{}
+	}
+	for k, v := range pending {
+		state.PrevActiveIdentifiers[inputRequiredPreloadIdent(v.Identifier, k)] = struct{}{}
+	}
 	slog.Info("orchestrator: loaded input-required entries", "path", path, "awaiting", len(awaiting), "pending_resume", len(pending))
 	return state
+}
+
+// inputRequiredPreloadIdent picks the identifier to seed into
+// PrevActiveIdentifiers for a persistence-restored entry: the entry's own
+// Identifier when present, else the map key (legacy shapes keyed by
+// identifier without carrying the field). gaps_11 G-2.
+func inputRequiredPreloadIdent(identifier, key string) string {
+	if identifier != "" {
+		return identifier
+	}
+	return key
 }
 
 // SetAutomationQueueFile sets the path for persisting automation queue entries.
@@ -485,7 +517,7 @@ func (o *Orchestrator) SetAutomationQueueFile(path string) {
 	o.automationQueueMu.Unlock()
 }
 
-func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQueueEntry, order []string, backpressure AutomationQueueBackpressure) {
+func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQueueEntry, order []string, backpressure AutomationQueueBackpressure, dependencyAudit map[string]*DependencyAuditEntry, dependencyTransitionSeq int64) {
 	o.automationQueueMu.RLock()
 	path := o.automationQueueFile
 	o.automationQueueMu.RUnlock()
@@ -493,9 +525,11 @@ func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQ
 		return
 	}
 	disk := automationQueueStateDisk{
-		Entries:      copyAutomationQueueMap(entries),
-		Order:        append([]string(nil), order...),
-		Backpressure: backpressure,
+		Entries:                 copyAutomationQueueMap(entries),
+		Order:                   append([]string(nil), order...),
+		Backpressure:            backpressure,
+		DependencyAudit:         copyDependencyAuditMap(dependencyAudit),
+		DependencyTransitionSeq: dependencyTransitionSeq,
 	}
 	payload, err := json.Marshal(disk)
 	if err != nil {
@@ -572,6 +606,13 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 		cp := *entry
 		cp.Issue = copyDomainIssue(entry.Issue)
 		state.AutomationQueue[cp.ID] = &cp
+		// gaps_11 G-2 — same persistence-replay protection as the paused and
+		// input-required loaders: restored queue identifiers count as active
+		// before daemon start so the absent-issue janitor grants them the
+		// full two-tick grace window after restart.
+		if cp.Issue.Identifier != "" {
+			state.PrevActiveIdentifiers[cp.Issue.Identifier] = struct{}{}
+		}
 	}
 	for _, id := range disk.Order {
 		if _, ok := state.AutomationQueue[id]; !ok {
@@ -595,7 +636,28 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 	state.AutomationQueueBackpressure = disk.Backpressure
 	state.AutomationQueueBackpressure.MaxLength = currentMaxLength
 	refreshAutomationQueueBackpressure(&state)
-	slog.Info("orchestrator: loaded automation queue", "path", path, "entries", len(state.AutomationQueue))
+
+	// AUTO-4 — restore the dependency-audit ledger and its transition seq so a
+	// blocker that reached terminal while the daemon was down still fires
+	// blockers_resolved after restart. Rows are deep-copied on load (the disk
+	// entries are *DependencyAuditEntry pointers) so the restored map aliases
+	// nothing. Old payloads simply lack these keys → nil ledger + zero seq,
+	// which is today's behavior.
+	if len(disk.DependencyAudit) > 0 {
+		state.DependencyAudit = copyDependencyAuditMap(disk.DependencyAudit)
+	}
+	state.DependencyTransitionSeq = disk.DependencyTransitionSeq
+	// AUTO-4 aggravator — auditBlockersResolvedAutomationSources early-returns
+	// when DependencyTransitionSeq == LastBlockersResolvedAuditSeq (both 0 after
+	// a fresh restart), which would skip the one scan needed to notice blockers
+	// that closed while the daemon was down. Seed the watermark one behind the
+	// restored seq so the next pass runs exactly once, then re-converges (the
+	// pass sets LastBlockersResolvedAuditSeq = DependencyTransitionSeq).
+	if len(state.DependencyAudit) > 0 {
+		state.LastBlockersResolvedAuditSeq = state.DependencyTransitionSeq - 1
+	}
+
+	slog.Info("orchestrator: loaded automation queue", "path", path, "entries", len(state.AutomationQueue), "dependency_audit", len(state.DependencyAudit))
 	return state
 }
 
@@ -824,7 +886,6 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.PausedSessions = maps.Clone(s.PausedSessions)
 	snap.IssueProfiles = maps.Clone(s.IssueProfiles)
 	snap.IssueBackends = maps.Clone(s.IssueBackends)
-	snap.PausedOpenPRs = maps.Clone(s.PausedOpenPRs)
 	snap.ForceReanalyze = maps.Clone(s.ForceReanalyze)
 	snap.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	snap.PrevIssueStates = maps.Clone(s.PrevIssueStates)
@@ -837,6 +898,8 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.AutomationQueue = copyAutomationQueueMap(s.AutomationQueue)
 	snap.AutomationQueueOrder = append([]string(nil), s.AutomationQueueOrder...)
 	snap.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
+	snap.PROpenedDispatched = maps.Clone(s.PROpenedDispatched)
+	snap.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
 
 	o.snapMu.Lock()
 	o.lastSnap = snap
@@ -844,7 +907,7 @@ func (o *Orchestrator) storeSnap(s State) {
 
 	o.savePausedToDisk(snap.PausedIdentifiers)
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
-	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure)
+	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}

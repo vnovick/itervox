@@ -58,7 +58,7 @@ func TestSkipEntry_PassesThroughNormalLines(t *testing.T) {
 // parseLogLine — JSON input
 // ---------------------------------------------------------------------------
 
-// v0.2.0 todolist5 B5 — the orchestrator's automation dispatch path writes a
+// The orchestrator's automation dispatch path writes a
 // 4-line block prefixed `AUTOMATION FIRED · <id>` as a single multi-line msg.
 // parseLogLine must tag it as `"automation"` so the dashboard chip filter
 // can render it; previously these entries fell through to the Level-driven

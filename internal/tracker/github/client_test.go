@@ -186,6 +186,66 @@ func TestGHFetchIssuesByStatesPaginated(t *testing.T) {
 	assert.Equal(t, 2, len(issues))
 }
 
+// TRK-2: the audit refresh paths use FetchIssuesByStates/FetchIssueDetail —
+// they must populate blocker states like FetchCandidateIssues does, or
+// blockers_resolved can never fire for non-active watched issues.
+func TestGHFetchIssuesByStatesPopulatesBlockerStates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("labels") == "blocked" {
+			issue := ghIssue(3, "Blocked issue", "open", []string{"blocked"})
+			issue["body"] = "Blocked by #10"
+			_ = json.NewEncoder(w).Encode([]interface{}{issue})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]interface{}{})
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/10", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ghIssue(10, "Blocker 10", "closed", []string{}))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	issues, err := client.FetchIssuesByStates(context.Background(), []string{"blocked"})
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.Len(t, issues[0].BlockedBy, 1)
+	require.NotNil(t, issues[0].BlockedBy[0].State, "refresh path must populate blocker state (TRK-2)")
+	assert.Equal(t, "closed", *issues[0].BlockedBy[0].State)
+}
+
+// TRK-2: FetchIssueDetail is the other audit refresh path (used to hydrate a
+// single watched issue) — it must also populate blocker states.
+func TestGHFetchIssueDetailPopulatesBlockerStates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/issues/3", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		issue := ghIssue(3, "Blocked issue", "open", []string{"blocked"})
+		issue["body"] = "Blocked by #10"
+		_ = json.NewEncoder(w).Encode(issue)
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/3/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]interface{}{})
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/10", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ghIssue(10, "Blocker 10", "closed", []string{}))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	issue, err := client.FetchIssueDetail(context.Background(), "3")
+	require.NoError(t, err)
+	require.Len(t, issue.BlockedBy, 1)
+	require.NotNil(t, issue.BlockedBy[0].State, "refresh path must populate blocker state (TRK-2)")
+	assert.Equal(t, "closed", *issue.BlockedBy[0].State)
+}
+
 func TestGHFetchIssueStatesByIDsFanOut(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/owner/repo/issues/1", func(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +411,10 @@ func TestGHNormalizeBlockersParsedFromBody(t *testing.T) {
 	assert.Equal(t, "https://github.com/owner/repo/issues/20", *issues[0].BlockedBy[1].URL)
 }
 
-func TestGHBlockerStateMissingBlockerTreatedAsClosed(t *testing.T) {
+// D4 strict fail-safe: GitHub 404 is AMBIGUOUS (deleted / transferred / access
+// lost) — it must NOT resolve the blocker. State stays nil => blocked; the
+// operator unblocks by removing the dangling reference from the issue body.
+func TestGHBlockerState404LeavesStateUnknown(t *testing.T) {
 	mux := http.NewServeMux()
 	var listCalls atomic.Int32
 	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
@@ -376,8 +439,40 @@ func TestGHBlockerStateMissingBlockerTreatedAsClosed(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, issues, 1)
 	require.Len(t, issues[0].BlockedBy, 1)
-	require.NotNil(t, issues[0].BlockedBy[0].State, "deleted blocker must default to closed")
-	assert.Equal(t, "closed", *issues[0].BlockedBy[0].State)
+	assert.Nil(t, issues[0].BlockedBy[0].State,
+		"404 must leave blocker state unknown — GitHub 404s are ambiguous (permission loss, transfer)")
+}
+
+// D4 fail-safe: a transient blocker fetch error (network / rate-limit / 5xx)
+// must NOT fabricate a terminal state. State stays nil so the orchestrator's
+// unknown→blocked guard keeps the dependent issue out of dispatch.
+func TestGHBlockerStateFetchErrorLeavesStateUnknown(t *testing.T) {
+	mux := http.NewServeMux()
+	var listCalls atomic.Int32
+	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if listCalls.Add(1) == 1 {
+			issue := ghIssue(1, "Blocked issue", "open", []string{"todo"})
+			issue["body"] = "Blocked by #77"
+			_ = json.NewEncoder(w).Encode([]interface{}{issue})
+		} else {
+			_ = json.NewEncoder(w).Encode([]interface{}{})
+		}
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/77", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	issues, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.Len(t, issues[0].BlockedBy, 1)
+	assert.Nil(t, issues[0].BlockedBy[0].State,
+		"transient fetch error must leave blocker state unknown (fail-safe), not fabricate closed")
 }
 
 func TestGHRateLimitsCaptured(t *testing.T) {

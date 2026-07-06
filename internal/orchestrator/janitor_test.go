@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 )
 
@@ -188,7 +190,7 @@ func TestDependencyAuditJanitorMatchesQueueByIssueID(t *testing.T) {
 	assert.NotNil(t, state.DependencyAudit["key-1"])
 }
 
-// v0.2.0 todolist5 B2 — pruneTerminalRuntimeLedgers must sweep runtime
+// pruneTerminalRuntimeLedgers must sweep runtime
 // ledgers for issues whose last-observed tracker state is terminal, and
 // must leave entries for non-terminal identifiers alone.
 func TestPruneTerminalRuntimeLedgers_DropsInputRequired(t *testing.T) {
@@ -277,30 +279,29 @@ func TestPruneTerminalRuntimeLedgers_DropsPaused(t *testing.T) {
 	assert.False(t, sessDonePresent, "paused session must be cleaned in lockstep")
 }
 
-// v0.2.0 todolist5 B9.b — pruneAbsentTrackerIssues drops ledger entries for
+// pruneAbsentTrackerIssues drops ledger entries for
 // identifiers that have been absent from both the current and the previous
 // tick's candidate set. Live workers (state.Running) MUST be preserved.
 func TestPruneAbsentTrackerIssues_DropsAbsentFromBothTicks(t *testing.T) {
 	state := &State{
-		// At least one prior observation must exist to enable pruning
-		// (persistence-replay safety gate).
-		PrevActiveIdentifiers: map[string]struct{}{"LIVE-1": {}},
-		Running:               map[string]*RunEntry{},
-		PrevIssueStates:       map[string]string{"LIVE-1": "In Progress"},
-		InputRequiredIssues:   map[string]*InputRequiredEntry{},
-		RetryAttempts:         map[string]*RetryEntry{},
-		AutomationQueue:       map[string]*AutomationQueueEntry{},
-		AutomationQueueOrder:  []string{},
-		PausedIdentifiers:     map[string]string{},
-		PausedSessions:        map[string]*PausedSessionInfo{},
-		IssueProfiles:         map[string]string{},
-		IssueBackends:         map[string]string{},
+		Running:              map[string]*RunEntry{},
+		PrevIssueStates:      map[string]string{"LIVE-1": "In Progress"},
+		InputRequiredIssues:  map[string]*InputRequiredEntry{},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+		IssueProfiles:        map[string]string{},
+		IssueBackends:        map[string]string{},
 	}
 	state.InputRequiredIssues["DELETED-1"] = &InputRequiredEntry{Identifier: "DELETED-1"}
 	state.InputRequiredIssues["LIVE-1"] = &InputRequiredEntry{Identifier: "LIVE-1"}
 	state.IssueProfiles["DELETED-1"] = "reviewer"
 	currentActive := map[string]struct{}{"LIVE-1": {}}
-	counts := pruneAbsentTrackerIssues(state, currentActive)
+	// Prior tick's poll also lacked DELETED-1 — two consecutive absences.
+	prevActive := map[string]struct{}{"LIVE-1": {}}
+	counts := pruneAbsentTrackerIssues(state, currentActive, prevActive)
 	assert.Equal(t, 1, counts.InputRequired)
 	assert.Equal(t, 1, counts.Profile)
 	_, gonePresent := state.InputRequiredIssues["DELETED-1"]
@@ -310,9 +311,8 @@ func TestPruneAbsentTrackerIssues_DropsAbsentFromBothTicks(t *testing.T) {
 
 func TestPruneAbsentTrackerIssues_RespectsTwoTickGrace(t *testing.T) {
 	state := &State{
-		PrevActiveIdentifiers: map[string]struct{}{"BLIP-1": {}},
-		Running:               map[string]*RunEntry{},
-		PrevIssueStates:       map[string]string{},
+		Running:         map[string]*RunEntry{},
+		PrevIssueStates: map[string]string{},
 		InputRequiredIssues: map[string]*InputRequiredEntry{
 			"BLIP-1": {Identifier: "BLIP-1"},
 		},
@@ -324,19 +324,16 @@ func TestPruneAbsentTrackerIssues_RespectsTwoTickGrace(t *testing.T) {
 		IssueProfiles:        map[string]string{},
 		IssueBackends:        map[string]string{},
 	}
-	// Identifier was observed last tick (PrevActiveIdentifiers contains it)
-	// but not this tick. The two-tick grace window must preserve the entry.
-	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{})
+	// Identifier was observed last tick (prevActive contains it) but not
+	// this tick. The two-tick grace window must preserve the entry.
+	prevActive := map[string]struct{}{"BLIP-1": {}}
+	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{}, prevActive)
 	assert.Equal(t, 0, counts.InputRequired, "single-tick absence must NOT prune")
 	assert.NotNil(t, state.InputRequiredIssues["BLIP-1"])
 }
 
 func TestPruneAbsentTrackerIssues_DoesNotPruneRunning(t *testing.T) {
 	state := &State{
-		// Persistence-replay safety gate: need at least one observation.
-		// Use a sentinel observation different from INFLIGHT-1 so the test
-		// still proves that Running by itself is sufficient to preserve.
-		PrevActiveIdentifiers: map[string]struct{}{"SENTINEL-1": {}},
 		Running: map[string]*RunEntry{
 			"INFLIGHT-1": {Issue: domain.Issue{Identifier: "INFLIGHT-1"}},
 		},
@@ -352,10 +349,137 @@ func TestPruneAbsentTrackerIssues_DoesNotPruneRunning(t *testing.T) {
 		IssueProfiles:        map[string]string{},
 		IssueBackends:        map[string]string{},
 	}
-	// Identifier absent from currentActive AND from PrevActiveIdentifiers
-	// but a worker is running — must NOT prune any sibling ledger entry.
-	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{})
+	// Persistence-replay safety gate: need at least one prior observation.
+	// Use a sentinel different from INFLIGHT-1 so the test still proves that
+	// Running by itself is sufficient to preserve.
+	prevActive := map[string]struct{}{"SENTINEL-1": {}}
+	// Identifier absent from currentActive AND from prevActive but a worker
+	// is running — must NOT prune any sibling ledger entry.
+	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{}, prevActive)
 	assert.Equal(t, 0, counts.InputRequired, "in-flight worker identifier must keep sibling ledgers alive")
+}
+
+// gaps_11 G-2 — PrevIssueStates is observation HISTORY (kept ~7 days by
+// pruneIssueStatusHistory), not tracker-presence evidence. An identifier
+// whose only trace is a PrevIssueStates entry must still be pruned after two
+// consecutive absent polls.
+func TestPruneAbsentTrackerIssues_PrevIssueStatesIsNotPresenceEvidence(t *testing.T) {
+	state := &State{
+		Running:         map[string]*RunEntry{},
+		PrevIssueStates: map[string]string{"GONE-1": "Todo", "LIVE-1": "Todo"},
+		InputRequiredIssues: map[string]*InputRequiredEntry{
+			"GONE-1": {Identifier: "GONE-1"},
+		},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+		IssueProfiles:        map[string]string{},
+		IssueBackends:        map[string]string{},
+	}
+	currentActive := map[string]struct{}{"LIVE-1": {}}
+	prevActive := map[string]struct{}{"LIVE-1": {}}
+	counts := pruneAbsentTrackerIssues(state, currentActive, prevActive)
+	assert.Equal(t, 1, counts.InputRequired,
+		"a PrevIssueStates entry alone must not protect a twice-absent identifier")
+	_, gonePresent := state.InputRequiredIssues["GONE-1"]
+	assert.False(t, gonePresent)
+}
+
+// gaps_11 G-12 — pruning an absent issue must leave a status-history row
+// (source janitor, reason absent_from_tracker) so the per-issue timeline
+// explains the disappearance, mirroring the issue_terminal emission of the
+// terminal janitor.
+func TestPruneAbsentTrackerIssues_EmitsAbsentFromTrackerReason(t *testing.T) {
+	state := &State{
+		Running:         map[string]*RunEntry{},
+		PrevIssueStates: map[string]string{"GONE-1": "In Progress"},
+		InputRequiredIssues: map[string]*InputRequiredEntry{
+			"GONE-1": {Identifier: "GONE-1"},
+		},
+		RetryAttempts:        map[string]*RetryEntry{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+		IssueProfiles:        map[string]string{},
+		IssueBackends:        map[string]string{},
+		IssueStatusHistory:   map[string][]IssueStatusChange{},
+	}
+	prevActive := map[string]struct{}{"OTHER-1": {}}
+	counts := pruneAbsentTrackerIssues(state, map[string]struct{}{"OTHER-1": {}}, prevActive)
+	require.Equal(t, 1, counts.InputRequired)
+
+	history := state.IssueStatusHistory["GONE-1"]
+	found := false
+	for _, c := range history {
+		if c.Source == StatusSourceJanitor && c.Reason == JanitorReasonAbsentFromTracker {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a janitor/absent_from_tracker status row; got %+v", history)
+}
+
+// gaps_11 G-18 — pruning queue rows must recompute backpressure with the
+// shared refresh helper so a saturated/paused queue resumes once the sweep
+// drops it below the low-water mark, and the pruned shape must flow through
+// the storeSnap persistence path (the same write the enqueue/drain paths
+// rely on).
+func TestPruneAutomationQueue_RecomputesBackpressureAndPersists(t *testing.T) {
+	state := &State{
+		Running:              map[string]*RunEntry{},
+		PrevIssueStates:      map[string]string{},
+		InputRequiredIssues:  map[string]*InputRequiredEntry{},
+		RetryAttempts:        map[string]*RetryEntry{},
+		PausedIdentifiers:    map[string]string{},
+		PausedSessions:       map[string]*PausedSessionInfo{},
+		IssueProfiles:        map[string]string{},
+		IssueBackends:        map[string]string{},
+		AutomationQueue:      map[string]*AutomationQueueEntry{},
+		AutomationQueueOrder: []string{},
+	}
+	for _, ident := range []string{"GONE-1", "GONE-2", "GONE-3", "LIVE-1"} {
+		key := "q-" + ident
+		state.AutomationQueue[key] = &AutomationQueueEntry{
+			ID:           key,
+			AutomationID: "auto",
+			TriggerType:  TestAutomationTriggerType,
+			Issue:        domain.Issue{Identifier: ident},
+		}
+		state.AutomationQueueOrder = append(state.AutomationQueueOrder, key)
+	}
+	// Saturate: 4 entries at MaxLength 4 → producers paused.
+	state.AutomationQueueBackpressure.MaxLength = 4
+	refreshAutomationQueueBackpressure(state)
+	require.True(t, state.AutomationQueueBackpressure.Saturated)
+	require.True(t, state.AutomationQueueBackpressure.PausedProducers)
+
+	keep := func(ident string) bool { return ident == "LIVE-1" }
+	removed := pruneAutomationQueue(state, keep)
+	require.Equal(t, 3, removed)
+
+	// Length 1 < low-water 3 → saturation cleared, producers resumed.
+	assert.Equal(t, 1, state.AutomationQueueBackpressure.Length)
+	assert.False(t, state.AutomationQueueBackpressure.Saturated, "prune must clear saturation")
+	assert.False(t, state.AutomationQueueBackpressure.PausedProducers, "prune below low-water must resume producers")
+	assert.Equal(t, []string{"q-LIVE-1"}, state.AutomationQueueOrder)
+
+	// Persistence: storeSnap (called after every onTick by Run) must write
+	// the pruned queue + recomputed backpressure.
+	path := filepath.Join(t.TempDir(), "automation_queue.json")
+	writer := New(&config.Config{}, nil, nil, nil)
+	writer.SetAutomationQueueFile(path)
+	writer.storeSnap(*state)
+
+	reader := New(&config.Config{}, nil, nil, nil)
+	reader.SetAutomationQueueFile(path)
+	loaded := reader.loadAutomationQueueFromDisk(NewState(&config.Config{}))
+	require.Len(t, loaded.AutomationQueue, 1)
+	require.NotNil(t, loaded.AutomationQueue["q-LIVE-1"])
+	assert.False(t, loaded.AutomationQueueBackpressure.Saturated)
+	assert.False(t, loaded.AutomationQueueBackpressure.PausedProducers)
 }
 
 // identifierForFixture returns a stable identifier for table tests.

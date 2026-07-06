@@ -1,0 +1,2 @@
+{"event":"action","action":"comment","args":{"issue":"ENG-53"}}
+{"event":"comment","body":"merge-bot: the triggering comment does not contain the approval marker; refusing to merge PR-53. Waiting for the reviewer approval."}

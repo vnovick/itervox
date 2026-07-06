@@ -17,7 +17,7 @@ const DEFAULTS_BY_EVENT: Record<
   warn: { message: 'Soft warning.' },
   info: { message: 'Informational note.' },
   error: { message: 'Tool error.', detail: 'permission denied' },
-  // v0.2.0 todolist5 B5 — orchestrator's AUTOMATION FIRED dispatch block,
+  // Orchestrator's AUTOMATION FIRED dispatch block,
   // surfaced as a first-class log event the dashboard chip can toggle.
   automation: {
     message:

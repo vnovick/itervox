@@ -38,6 +38,7 @@ const (
 	AutomationQueueReasonInputRequired      AutomationQueueReason = "input_required"
 	AutomationQueueReasonPendingInputResume AutomationQueueReason = "pending_input_resume"
 	AutomationQueueReasonBlockedBy          AutomationQueueReason = "blocked_by"
+	AutomationQueueReasonPausedByState      AutomationQueueReason = "paused_by_state"
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -354,6 +355,9 @@ func automationQueueReasonFromString(reason string) (AutomationQueueReason, stri
 }
 
 func automationQueueableReason(reason string) (bool, AutomationQueueReason, string) {
+	if state, ok := strings.CutPrefix(reason, "paused_by_state:"); ok {
+		return true, AutomationQueueReasonPausedByState, state
+	}
 	queueReason, detail := automationQueueReasonFromString(reason)
 	switch queueReason {
 	case AutomationQueueReasonNoSlots,
@@ -420,8 +424,6 @@ func (o *Orchestrator) automationProfileUnavailableReason(dispatch AutomationDis
 // returns true when the (identifier, prURL, automationID) triple is fresh and
 // records the key for future calls; returns false when an earlier dispatch
 // already claimed the same triple. No-op for non-pr_opened triggers.
-//
-// v0.2.0 todolist5 B4.
 func claimPROpenedDedup(state *State, issue domain.Issue, dispatch AutomationDispatch) bool {
 	if dispatch.Trigger.Type != config.AutomationTriggerPROpened {
 		return true
@@ -454,7 +456,7 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 	dispatch AutomationDispatch,
 	now time.Time,
 ) bool {
-	// v0.2.0 todolist5 B4 — pr_opened dedup. Resumed workers, retries, and
+	// pr_opened dedup: resumed workers, retries, and
 	// secondary runs on the same issue all re-detect the same PR URL.
 	if !claimPROpenedDedup(state, issue, dispatch) {
 		return false

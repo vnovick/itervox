@@ -55,6 +55,8 @@ GitHub Issues have a simpler state model than Linear: issues are either `open` o
 
 ```yaml
 ---
+itervox_schema_version: 2
+
 tracker:
   kind: github
   api_key: $GITHUB_TOKEN          # resolved from env at runtime
@@ -157,6 +159,8 @@ The Liquid prompt template has access to the full issue object, including its la
 
 ```yaml
 ---
+itervox_schema_version: 2
+
 tracker:
   kind: github
   api_key: $GITHUB_TOKEN

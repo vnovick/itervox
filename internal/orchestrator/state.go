@@ -306,9 +306,6 @@ type State struct {
 	// exceeded the TTL, even if no successful exit cleared them. Gap §6.2.
 	// Keys mirror AutoSwitchedIdentifiers; the two maps stay in sync.
 	AutoSwitchedAt map[string]time.Time
-	// PausedOpenPRs tracks issues that were auto-paused because an open PR was detected.
-	// Key: issue identifier, Value: open PR URL.
-	PausedOpenPRs map[string]string
 	// ForceReanalyze holds identifiers queued for forced PR re-analysis.
 	// These bypass the "existing open PR = skip" guard on next dispatch.
 	ForceReanalyze map[string]struct{}
@@ -357,7 +354,7 @@ type State struct {
 	// worker, a retry, or a secondary run on the same issue does not re-fire
 	// the same `(issue, prURL, automationID)` triple. Lifetime is event-loop
 	// owned; pruned by pruneTerminalRuntimeLedgers when the issue reaches a
-	// terminal tracker state. v0.2.0 todolist5 B4.
+	// terminal tracker state.
 	//
 	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
 	PROpenedDispatched map[string]struct{}
@@ -405,7 +402,6 @@ func NewState(cfg *config.Config) State {
 		IssueBackends:               make(map[string]string),
 		AutoSwitchedIdentifiers:     make(map[string]struct{}),
 		AutoSwitchedAt:              make(map[string]time.Time),
-		PausedOpenPRs:               make(map[string]string),
 		ForceReanalyze:              make(map[string]struct{}),
 		PrevActiveIdentifiers:       make(map[string]struct{}),
 		PrevIssueStates:             make(map[string]string),
@@ -420,5 +416,6 @@ func NewState(cfg *config.Config) State {
 		},
 		DependencyAudit:    make(map[string]*DependencyAuditEntry),
 		PROpenedDispatched: make(map[string]struct{}),
+		PRMergedDispatched: make(map[string]struct{}),
 	}
 }

@@ -22,6 +22,8 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: "What's New in v0.2.0", slug: 'guides/whats-new-v020' },
+            { label: 'The Orchestrated Coding Spec', slug: 'guides/orchestrated-coding' },
+            { label: 'Migrating v0.1 → v0.2', slug: 'guides/migration-v01-to-v02' },
             { label: 'Linear Setup', slug: 'guides/linear-setup' },
             { label: 'GitHub Issues', slug: 'guides/github-issues' },
             { label: 'Agent Profiles', slug: 'guides/agent-profiles' },

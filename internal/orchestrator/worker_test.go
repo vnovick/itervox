@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// v0.2.0 todolist5 B3 — the orchestrator-controlled envelope tells every
+// The orchestrator-controlled envelope tells every
 // agent how to reach a human via the dashboard's Reply & Resume textarea.
 func TestOperatorReplyEnvelope_MentionsReplyAndResume(t *testing.T) {
 	if operatorReplyEnvelope == "" {
