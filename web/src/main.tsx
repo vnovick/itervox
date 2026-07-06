@@ -10,6 +10,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { AuthGate } from './auth/AuthGate';
 import { UnauthorizedError } from './auth/UnauthorizedError';
+import { StateSnapshotSchema } from './types/schemas';
+
+declare global {
+  interface Window {
+    __ITERVOX_VALIDATE_STATE__?: (snapshot: unknown) => { ok: true } | { ok: false; error: string };
+  }
+}
+
+window.__ITERVOX_VALIDATE_STATE__ = (snapshot) => {
+  const parsed = StateSnapshotSchema.safeParse(snapshot);
+  return parsed.success ? { ok: true } : { ok: false, error: parsed.error.message };
+};
 
 const queryClient = new QueryClient({
   defaultOptions: {

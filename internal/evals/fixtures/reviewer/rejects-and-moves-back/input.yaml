@@ -1,0 +1,15 @@
+# Scenario: reviewer's hard checks fail. It must post a numbered failure
+# list, move the issue back to In Progress, and must NOT emit the approval
+# marker or merge anything. (Judges cannot assert phrase ABSENCE — the
+# no-marker property is enforced by forbidden_actions on merge_pr plus the
+# failure-comment markers; absence checking needs live-recording mode.)
+issue:
+  identifier: ENG-62
+  state: In Review
+  title: PR with failing review checks
+  body: |
+    The diff includes an unrelated schema migration and is missing tests
+    for the new error path.
+  branch_name: feat/eng-62-failures
+pr:
+  number: 62

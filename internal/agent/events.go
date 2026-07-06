@@ -137,20 +137,29 @@ func isInputRequiredMsg(msg string) bool {
 const InputRequiredSentinel = "<!-- itervox:needs-input -->"
 
 // IsSentinelInputRequired returns true when the agent's output contains the
-// reliable opt-in sentinel. Prefer this over the heuristic detector — it has
-// no false positives and no locale dependence.
+// reliable opt-in sentinel. Prefer this when an explicit signal is available —
+// it has no false positives and no locale dependence.
+//
+// Sentinels inside fenced code blocks (``` ... ``` or ~~~ ... ~~~) are NOT
+// treated as triggers: agents frequently echo example sentinels inside docs
+// or example fences, and triggering on those would block runs spuriously.
+// Fences toggle the in-fence flag; nested or language-tagged opens (```md)
+// are handled by the prefix match.
 func IsSentinelInputRequired(text string) bool {
 	if len(text) == 0 {
 		return false
 	}
-	return strings.Contains(text, InputRequiredSentinel)
-}
-
-// IsContentInputRequired returns true when the agent's output contains the
-// input-required sentinel. This is the single source of truth — no heuristics,
-// no pattern matching, no LLM classifiers. The prompt template in WORKFLOW.md
-// instructs the agent to emit the sentinel when it needs human input. The
-// agent telling us it's blocked is the only reliable signal.
-func IsContentInputRequired(text string) bool {
-	return IsSentinelInputRequired(text)
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	inFence := false
+	for _, line := range strings.Split(normalized, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && trimmed == InputRequiredSentinel {
+			return true
+		}
+	}
+	return false
 }

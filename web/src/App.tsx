@@ -10,14 +10,25 @@ import IssueDetailSlide from './components/itervox/IssueDetailSlide';
 import Toast from './components/common/Toast';
 import { PageErrorBoundary } from './components/common/PageErrorBoundary';
 import { NavLink } from './components/layout/NavLink';
+import {
+  AgentsIcon,
+  AutomationsIcon,
+  DashboardIcon,
+  LogsIcon,
+  SettingsIcon,
+  TimelineIcon,
+} from './components/layout/NavIcons';
 import { ThemeToggle } from './components/ui/ThemeToggle/ThemeToggle';
 import AppHeader from './layout/AppHeader';
 import { useFocusTrap } from './hooks/useFocusTrap';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
+import { inputRequiredFingerprintValue } from './utils/inputRequired';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Timeline = lazy(() => import('./pages/Timeline'));
+const Agents = lazy(() => import('./pages/Agents'));
+const Automations = lazy(() => import('./pages/Automations'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 
@@ -30,25 +41,19 @@ function PageLoader() {
 }
 
 const NAV_ITEMS = [
-  { to: '/', icon: '◫', label: 'Dashboard' },
-  { to: '/timeline', icon: '◷', label: 'Timeline' },
-  { to: '/logs', icon: '⌨', label: 'Logs' },
-  { to: '/settings', icon: '⚙', label: 'Settings' },
+  { to: '/', icon: <DashboardIcon />, label: 'Dashboard' },
+  { to: '/timeline', icon: <TimelineIcon />, label: 'Timeline' },
+  { to: '/logs', icon: <LogsIcon />, label: 'Logs' },
+  { to: '/agents', icon: <AgentsIcon />, label: 'Agents' },
+  { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
+  { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
 function SidebarContent() {
   return (
     <>
-      {/* Logo mark */}
-      <div
-        className="mb-2 flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] text-base font-bold text-white"
-        style={{ background: 'var(--gradient-accent)', boxShadow: 'var(--shadow-glow)' }}
-        aria-label="Itervox"
-      >
-        S
-      </div>
-
-      {/* Nav links */}
+      {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
+          aligns with the dashboard content row in the main column. */}
       <nav className="flex flex-1 flex-col gap-1">
         {NAV_ITEMS.map((item) => (
           <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
@@ -135,27 +140,38 @@ function AppShell() {
   );
 }
 
+export function buildSnapshotInvalidationFingerprint(
+  snapshot: ReturnType<typeof useItervoxStore.getState>['snapshot'],
+): string | null {
+  if (!snapshot) return null;
+  const sortStrings = (values: readonly string[]) => [...values].sort((a, b) => a.localeCompare(b));
+  return JSON.stringify({
+    running: sortStrings(snapshot.running.map((row) => row.identifier)),
+    retrying: sortStrings(snapshot.retrying.map((row) => row.identifier)),
+    paused: sortStrings(snapshot.paused),
+    pausedWithPR: snapshot.pausedWithPR ?? {},
+    inputRequired: sortStrings(
+      (snapshot.inputRequired ?? []).map((entry) => inputRequiredFingerprintValue(entry)),
+    ),
+  });
+}
+
 /**
  * Invalidates the issues cache whenever the orchestrator's activity fingerprint
- * changes (sessions start, stop, pause, or enter the retry queue).
+ * changes (sessions start, stop, pause, enter input-required, or pick up PR metadata).
  * This bridges the real-time SSE snapshot to the issues list so the kanban
- * board refreshes within seconds of a state change — not on the 30s poll cycle.
+ * board and issue detail refresh immediately instead of waiting for a stale query.
  */
 function useSnapshotInvalidation() {
   const queryClient = useQueryClient();
-  // Subscribe to a minimal derived value to avoid invalidating on every SSE tick.
-  // The fingerprint only changes when the count of active sessions changes.
-  const fingerprint = useItervoxStore((s) => {
-    const snap = s.snapshot;
-    if (!snap) return null;
-    return `${String(snap.running.length)}:${String(snap.paused.length)}:${String(snap.retrying.length)}`;
-  });
+  const fingerprint = useItervoxStore((s) => buildSnapshotInvalidationFingerprint(s.snapshot));
   const prevRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (fingerprint === null) return; // no snapshot yet
     if (prevRef.current !== null && prevRef.current !== fingerprint) {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ['issue'] });
       void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
     }
     prevRef.current = fingerprint;
@@ -213,6 +229,26 @@ function AppWithSSE() {
               <Suspense fallback={<PageLoader />}>
                 <PageErrorBoundary>
                   <Settings />
+                </PageErrorBoundary>
+              </Suspense>
+            }
+          />
+          <Route
+            path="/agents"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PageErrorBoundary>
+                  <Agents />
+                </PageErrorBoundary>
+              </Suspense>
+            }
+          />
+          <Route
+            path="/automations"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PageErrorBoundary>
+                  <Automations />
                 </PageErrorBoundary>
               </Suspense>
             }

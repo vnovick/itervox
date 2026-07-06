@@ -22,6 +22,9 @@ export const LABEL_WIDTH = 120;
 /** Width of the elapsed time column. */
 export const ELAPSED_WIDTH = 60;
 
+/** Width of the per-run token-count column. */
+export const TOKENS_WIDTH = 60;
+
 /** Width of the subagent name label. */
 export const SUBAGENT_LABEL_WIDTH = 80;
 

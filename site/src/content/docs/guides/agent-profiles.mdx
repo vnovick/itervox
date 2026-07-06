@@ -1,100 +1,96 @@
 ---
 title: Agent Profiles
-description: Configure multiple AI agent profiles, team collaboration, and SSH remote execution.
+description: Configure multiple AI agent profiles, SOUL/INSTRUCTIONS files, daemon actions, and SSH remote execution.
 sidebar:
   order: 5
 ---
 
-Itervox supports three agent collaboration models, named profiles with per-profile commands and role prompts, SSH-based remote execution, and a configurable reviewer prompt. This guide covers all of these.
+import { Image } from 'astro:assets';
 
-## Agent modes
+Itervox supports named agent profiles with per-profile commands, file-backed SOUL/INSTRUCTIONS guidance, and daemon-backed actions, plus SSH-based remote execution and a reviewer-profile flow. This guide covers all of these.
 
-The `agent_mode` field controls how agents collaborate on each issue.
+## Dashboard
 
-| Mode | `agent_mode` value | Description |
-|---|---|---|
-| Solo | `""` (empty, default) | One agent runs alone. If a profile is assigned, its prompt is appended to the issue prompt. |
-| Subagents | `"subagents"` | The main agent may use its native helper/subagent tool. If a profile is assigned, its prompt is appended. |
-| Teams | `"teams"` | All profile role descriptions are injected as a sub-agent roster, so the main agent knows which specialists it can delegate to by name. |
+The Agents page provides a visual overview of all configured profiles, their backends, models, estimated context cost, and quick actions:
 
-Set `agent_mode` in the `agent:` section of `WORKFLOW.md`:
+<Image src="/screenshots/v0.2.0/agents.png" alt="Agents page showing a pm profile card with Claude backend and Sonnet 4.6 model, plus three profile templates" width={900} height={560} />
 
-```yaml
-agent:
-  agent_mode: teams
-```
+Each profile card shows:
 
----
+- **Backend and model** — at a glance.
+- **Profile-file preview** — the first lines of the profile's SOUL/INSTRUCTIONS guidance.
+- **Context budget** — estimated token cost from all loaded skills, MCP servers, and instructions. Profiles inheriting a heavy surface area are flagged.
+- **Active/Inactive** state — inactive profiles remain in config but are hidden from dispatch and automations.
 
-## Solo mode (default)
+Below the configured profiles, **starter templates** (Code Reviewer, QA Engineer, Input Responder) let you bootstrap common profiles with one click. Editing a schema `2` profile in the dashboard writes the profile's `SOUL.md` and `INSTRUCTIONS.md` files separately; the old inline `prompt` field is compatibility-only.
 
-In solo mode a single agent processes each issue from start to finish. If a profile is assigned to the issue (via the Agent Board), that profile's prompt is still appended — giving the agent role-specific instructions even without team coordination. This is the simplest configuration and works well for most projects.
+## How profiles work
 
-```yaml
----
-tracker:
-  kind: linear
-  api_key: $LINEAR_API_KEY
-  project_slug: my-project
-  active_states:
-    - Todo
-  working_state: "In Progress"
-  completion_state: "In Review"
-  terminal_states:
-    - Done
-    - Cancelled
-
-agent:
-  command: claude               # default; can be "codex" or any CLI runner
-  max_concurrent_agents: 5
-  max_turns: 20
-  turn_timeout_ms: 3600000     # 1 hour hard limit per session
-  stall_timeout_ms: 300000     # 5 minutes of inactivity triggers a retry
----
-
-You are an AI agent resolving {{ issue.identifier }}: {{ issue.title }}.
-
-{{ issue.description }}
-
-Push your changes and open a pull request when complete.
-```
-
----
-
-## Subagents mode
-
-Subagents mode lets the main agent use its runner's built-in tool for spawning sub-agents (e.g. Claude Code's `Agent` tool). If a profile is assigned to the issue, its prompt is appended — giving the agent role context even while delegating internally.
-
-```yaml
-agent:
-  agent_mode: subagents
-  command: claude
-  max_concurrent_agents: 3
-  profiles:
-    backend:
-      command: claude
-      prompt: >
-        You are a backend specialist. Focus on Go, APIs, and database code.
-```
-
-Use subagents mode when you want to leverage a model's native orchestration capabilities. Profile prompts are still injected, so the agent has role context — but unlike teams mode, the sub-agent roster is not appended.
+When an issue has a profile assigned (via the Agents page or API), Itervox renders that profile's `SOUL.md` and `INSTRUCTIONS.md` through the Liquid template engine and **always appends** them to the rendered `WORKFLOW.md` prompt. No `agent_mode` flag is needed — profile files inject unconditionally.
 
 :::note
-In all three modes, if an issue has a profile assigned (via the Agent Board or API), that profile's `prompt` field is rendered through the Liquid template engine (with full access to issue variables) and appended to the rendered workflow prompt. The difference with teams mode is that it also injects a roster of all available profiles so the agent can delegate by name.
+The `agent_mode` field was removed in v0.2.0. If your `WORKFLOW.md` still contains it, the daemon will reject the config with a clear error. Delete the field — profile files now always inject.
 :::
 
-### Liquid variables in profile prompts
+### Defining profiles
 
-Profile prompts support the same Liquid template variables as the main `WORKFLOW.md` prompt. This lets you write dynamic, issue-aware role descriptions:
+```yaml
+agent:
+  command: claude
+  max_concurrent_agents: 5
+  max_turns: 20
+
+  profiles:
+    backend:
+      command: claude --model claude-opus-4-6
+      soul_file: .itervox/agents/backend/SOUL.md
+      instructions_file: .itervox/agents/backend/INSTRUCTIONS.md
+
+    frontend:
+      command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/frontend/SOUL.md
+      instructions_file: .itervox/agents/frontend/INSTRUCTIONS.md
+
+    qa:
+      command: claude --model claude-sonnet-4-6
+      enabled: true
+      allowed_actions: [comment, move_state]
+      soul_file: .itervox/agents/qa/SOUL.md
+      instructions_file: .itervox/agents/qa/INSTRUCTIONS.md
+```
+
+Example profile files:
+
+```markdown
+<!-- .itervox/agents/backend/SOUL.md -->
+# backend SOUL
+
+## Identity
+You are the backend specialist for this repository.
+
+## Purpose
+Handle API design, database schemas, server-side business logic, and performance optimisation.
+```
+
+```markdown
+<!-- .itervox/agents/backend/INSTRUCTIONS.md -->
+# backend INSTRUCTIONS
+
+## Workflow
+- Work on {{ issue.identifier }}: {{ issue.title }}.
+- Focus on Go, APIs, database code, and regression tests.
+```
+
+### Liquid variables in profile files
+
+Profile files support the same Liquid template variables as the main `WORKFLOW.md` prompt:
 
 ```yaml
 profiles:
   backend:
     command: claude
-    prompt: >
-      You are the backend specialist working on {{ issue.identifier }}: {{ issue.title }}.
-      {% if issue.priority == "urgent" %}Treat this as high priority.{% endif %}
-      Focus on Go, APIs, and database code.
+    soul_file: .itervox/agents/backend/SOUL.md
+    instructions_file: .itervox/agents/backend/INSTRUCTIONS.md
 ```
 
 | Variable | Type | Description |
@@ -111,100 +107,206 @@ profiles:
 | `issue.blocked_by` | object[] | Blocking issues (`id`, `identifier`, `state`) |
 | `attempt` | int\|null | Current retry attempt (`null` on first attempt) |
 
-Plain-text prompts (without any `{{ }}` syntax) work exactly as before — they are passed through unchanged.
+Plain-text profile files (without any `{{ }}` syntax) are passed through unchanged.
 
----
+### Handoff protocol (v0.2.0)
 
-## Teams mode with named profiles
+When multiple profiles run on the same issue, each one can leave a Markdown deliverable in `.itervox/handoff/` so subsequent profiles can read it. The orchestrator generates two values per dispatch and surfaces them in the agent's prompt as a `## Run Context` block:
 
-Teams mode is the most powerful option. You define named profiles, each with its own command and role description. Itervox injects all role descriptions into the main agent's prompt so it can spawn the right specialist for each sub-task.
+| Value | Description |
+|---|---|
+| `run.timestamp` | The dispatch instant, formatted ISO8601 with `:` replaced by `-` so it is filename-safe (e.g. `2026-05-26T14-30-45Z`). |
+| `run.handoff_path` | The canonical destination for this run's deliverable: `.itervox/handoff/<run.timestamp>_<profile-name>.md`. |
 
-### Example: backend, frontend, and devops profiles
+The orchestrator also prepends a `## Prior Agent Handoffs` block to the prompt containing every prior agent's deliverable on this branch in chronological order, budget-truncated to 30 KB (oldest first, with a `[earlier handoffs truncated]` marker).
 
-```yaml
----
-tracker:
-  kind: github
-  api_key: $GITHUB_TOKEN
-  project_slug: owner/repo
-  active_states:
-    - open
-  terminal_states:
-    - closed
+Profile `INSTRUCTIONS.md` files generated by `itervox init` now include a **Handoff Protocol** section telling the agent to:
 
-agent:
-  agent_mode: teams
-  command: claude               # default runner for the orchestrating agent
-  max_concurrent_agents: 4
+1. Read the `## Prior Agent Handoffs` block at the top of its prompt to learn what predecessors did.
+2. Write a concise Markdown deliverable to `run.handoff_path` before exiting, summarizing what it did, key decisions, and what the next agent needs to know.
+3. Treat earlier handoffs as read-only — never overwrite a prior agent's file. The chronological order is the audit trail.
 
-  profiles:
-    backend:
-      command: claude --model claude-opus-4-5
-      prompt: >
-        You are the backend specialist. You handle API design, database schemas,
-        server-side business logic, and performance optimisation. You write Go,
-        Python, or Node.js code as appropriate for the project.
+You can adapt this protocol per profile. A reviewer might write findings keyed by severity; an implementer might list files changed and tests added; a researcher might list the patterns it found and risks it flagged. The orchestrator does not interpret the content — it just shuttles it forward.
 
-    frontend:
-      command: claude --model claude-sonnet-4-5
-      prompt: >
-        You are the frontend specialist. You handle React components, CSS,
-        accessibility, and browser compatibility. You write TypeScript and follow
-        the project's design system.
+If a worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the in-flight file to `<basename>.partial.md` so subsequent agents see it explicitly marked. `TerminalInputRequired` does not rename — the agent intentionally paused and will resume.
 
-    devops:
-      command: claude --model claude-haiku-4-5
-      prompt: >
-        You are the devops specialist. You handle CI/CD pipelines, Docker,
-        infrastructure-as-code, and deployment configuration. You write YAML,
-        Bash, and Terraform as needed.
----
-
-You are the lead AI agent for {{ issue.identifier }}: {{ issue.title }}.
-
-{{ issue.description }}
-
-You have access to the following specialists. Delegate sub-tasks to them as needed:
-- **backend** — API, database, and server-side logic
-- **frontend** — UI components and browser code
-- **devops** — CI/CD, Docker, and infrastructure
-
-Coordinate their work, integrate the results, and open a pull request when complete.
-```
+See the [Agent Handoff guide](/guides/agent-handoff/) for a worked example of chaining three profiles end-to-end.
 
 ### Mixing runners across profiles
 
-Each profile can use a different runner binary. This lets you route different sub-tasks to Codex, Claude, or any other CLI-compatible agent:
+Each profile can use a different runner binary:
 
 ```yaml
 agent:
-  agent_mode: teams
-  command: claude               # orchestrator uses Claude
+  command: claude
 
   profiles:
     coder:
-      command: codex            # sub-tasks routed to Codex
+      command: codex
       backend: codex            # explicit backend hint (optional)
-      prompt: >
-        You are the coding specialist. Write implementation code only —
-        no scaffolding, no tests.
+      soul_file: .itervox/agents/coder/SOUL.md
+      instructions_file: .itervox/agents/coder/INSTRUCTIONS.md
 
     tester:
       command: claude --model claude-haiku-4-5
-      prompt: >
-        You are the testing specialist. Write unit and integration tests
-        for code produced by the coder.
+      soul_file: .itervox/agents/tester/SOUL.md
+      instructions_file: .itervox/agents/tester/INSTRUCTIONS.md
 ```
 
-The `backend` field is an optional hint that overrides automatic runner detection. Use it when the command string is a wrapper script that Itervox cannot introspect:
+The `backend` field is an optional hint that overrides automatic runner detection. Use it when the command string is a wrapper script that Itervox cannot introspect.
+
+---
+
+## Keeping the model catalog current
+
+`itervox init` populates `agent.available_models` by calling the Anthropic
+`/v1/models` API (with `ANTHROPIC_API_KEY`) and the OpenAI `/v1/models` API
+(with `OPENAI_API_KEY`). When either key is missing, a hardcoded fallback
+list is written so the dashboard model picker still has sensible
+suggestions out of the box.
+
+When Anthropic or OpenAI ship a new model — e.g. Sonnet 4.7 lands — your
+existing `WORKFLOW.md` keeps the v0.2.0-era list and the picker won't show
+the new option. Two ways to refresh:
+
+### From the CLI
+
+```bash
+# Refresh both backends (default)
+itervox models refresh
+
+# Refresh just one backend
+itervox models refresh --backend claude
+itervox models refresh --backend codex
+
+# Preview without writing
+itervox models refresh --dry-run
+
+# Print the current list from WORKFLOW.md without hitting the APIs
+itervox models list
+```
+
+The command queries `/v1/models` with whichever API keys are loaded from
+`.itervox/.env`, merges the result into `agent.available_models`, and
+writes `WORKFLOW.md` atomically. Per-backend semantics: refreshed backends
+have their list replaced entirely; backends NOT named on the command line
+keep their previous entries untouched.
+
+### From the dashboard
+
+Settings → Models → **Refresh from APIs** triggers the same logic via
+`POST /api/v1/settings/models/refresh`. The body accepts
+`{"backend": "claude" | "codex" | "all"}` (default `"all"`). On success
+the server returns the new map and immediately notifies SSE subscribers,
+so the model picker reflects the new options without a page reload.
+
+If the daemon is running a build that does not implement the refresh
+capability (e.g. the in-memory quickstart binary), the route returns
+`501 not_implemented` with a hint pointing at the `itervox models refresh`
+CLI subcommand.
+
+### Recommended cadence
+
+- **After every Claude/Codex release** the team cares about. Anthropic
+  and OpenAI typically publish a release note 24–48 hours before the
+  model is broadly available via the API; refresh once you can hit
+  `/v1/models` from your account and see the new ID.
+- **As part of project onboarding**. The first thing a new contributor
+  does after cloning is set their API keys in `.itervox/.env` and run
+  `itervox models refresh` so their local picker matches the team
+  baseline.
+- **Never blindly in CI**. The refresh writes to `WORKFLOW.md`, which is
+  a tracked file. Running it in CI would create a commit diff every time
+  a model launches; prefer running it in a developer shell and
+  committing intentionally.
+
+---
+
+## Daemon-backed profile actions
+
+Profiles can opt into a small set of daemon-backed actions. The profile editor exposes these as checkboxes with clear descriptions of what each action allows:
+
+<Image src="/screenshots/v0.2.0/v0.2agent-permissions.png" alt="Profile editor showing daemon actions: Comment, Post structured review, Create follow-up issue, Move issue state, and Provide input to blocked run" width={900} height={560} />
+
+Available actions:
+
+- `comment` — post a tracker comment on the current issue.
+- `comment_pr` — post a structured review comment with file/line/severity findings on the issue.
+- `create_issue` — open a follow-up issue in the configured tracker state.
+- `merge_pr` — run the daemon's guarded `gh pr merge` sequence for a PR on the current issue. The daemon validates the request against the profile's `allowed_actions` like every other action, then enforces the merge gate server-side (see below) — the agent never gets raw `gh` credentials or an ungated merge path.
+- `move_state` — transition the current issue to another tracker column.
+- `provide_input` — answer an input-required prompt and resume the blocked session.
+
+### What gates a `merge_pr` merge
+
+Granting `merge_pr` does not mean "the agent can merge anything". Every merge request runs through a server-side gate that refuses with a structured reason unless **all** of these hold:
+
+1. **Not already merged** — an already-merged PR returns `already_merged` (and a process-level dedup ledger prevents double-merging the same `(issue, PR)` pair across re-fires).
+2. **Mergeable state is clean** — GitHub must report the PR as `MERGEABLE` with merge state `CLEAN`; conflicts, draft state, or unmet branch protections refuse with `not_mergeable:<state>`.
+3. **No block label** — if the PR carries any label from `agent.merge_block_labels` (case-insensitive; default `["needs-human", "migration", "auth", "feature-flag", "breaking"]`), the merge refuses with `blocked_label:<label>`.
+4. **All required CI checks pass** — `gh pr checks --required` must exit clean; failing or pending required checks refuse with `checks_failed:<excerpt>`.
+5. **Valid strategy** — one of `squash` (default), `rebase`, or `merge`, taken from the request or `agent.merge_strategy`. The merge runs with `--delete-branch`.
+
+Example:
 
 ```yaml
-profiles:
-  wrapped:
-    command: ./scripts/run-codex.sh
-    backend: codex              # tell Itervox to use the Codex event format
-    prompt: Specialised Codex sub-agent.
+agent:
+  profiles:
+    input-responder:
+      command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/input-responder/SOUL.md
+      instructions_file: .itervox/agents/input-responder/INSTRUCTIONS.md
+      allowed_actions: [comment, provide_input]
+
+    qa:
+      command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/qa/SOUL.md
+      instructions_file: .itervox/agents/qa/INSTRUCTIONS.md
+      allowed_actions: [comment, create_issue, move_state]
+      create_issue_state: Todo
 ```
+
+These permissions do **not** give the agent arbitrary shell or tracker access.
+They only let the daemon mint short-lived per-run bearer grants for the
+corresponding `/api/v1/agent-actions/*` routes. This is what powers things like
+automation helpers that comment on the issue, move it back to `Todo`, create a
+follow-up issue, or auto-resume a blocked run with `provide_input`.
+
+If `allowed_actions` includes `create_issue`, `create_issue_state` is required.
+
+In v0.2.0, daemon-backed action env vars and shims are injected only for local
+workers. SSH remote workers with `allowed_actions` receive a prompt warning that
+daemon-backed actions are unavailable remotely; they do not receive
+`ITERVOX_ACTION_TOKEN`, `ITERVOX_DAEMON_URL`, or the local shim PATH.
+
+---
+
+## Built-in `merge-bot` profile
+
+Itervox ships one built-in profile embedded in the binary: **`merge-bot`**. Its purpose is the final step of an automated pipeline — verifying a reviewed PR is safe to land and invoking the guarded `merge_pr` action — without you having to author the SOUL/INSTRUCTIONS files yourself.
+
+Reference it from `WORKFLOW.md` like any other profile:
+
+```yaml
+agent:
+  profiles:
+    merge-bot: {}
+```
+
+When the profile's `soul_file` / `instructions_file` are unset, the daemon resolves the embedded `SOUL.md` / `INSTRUCTIONS.md` content from the built-in registry. Built-in defaults (applied only when the corresponding field is unset):
+
+- **Command**: `claude --model claude-haiku-4-5-20251001` (a fast, cheap model — the merge gate does the safety work, not the model)
+- **Backend**: `claude`
+- **`allowed_actions`**: `[comment, comment_pr, merge_pr, move_state]`
+
+File-on-disk content always wins: `itervox init` scaffolds the built-in files to `.itervox/agents/merge-bot/` so you can customise tone or rules, and the embedded copies remain the fallback for files you delete or never create. The merge itself is still gated server-side by the `merge_pr` checks above — the built-in profile carries no special bypass.
+
+There are two supported wirings:
+
+- **Human-gated (recommended default)** — pair `merge-bot` with a `tracker_comment_added` automation using `body_contains` / `body_regex` filters so it only wakes when a *person* posts an approval phrase. Note that Itervox ignores its own comments when polling this trigger (anti-loop), so an AI reviewer's comment cannot fire it — the human comment is the deliberate gate.
+- **Fully autonomous (advanced)** — a cron sweep over completion-state issues that checks the PR for an explicit reviewer-posted approval marker before invoking `merge_pr`. See [the autonomous merge sweep example](/guides/automations/#7-autonomous-merge-sweep-advanced--read-the-caution-first) and its caution list before enabling this.
+
+See the [Automations guide](/guides/automations/) for the trigger and filter reference.
 
 ---
 
@@ -236,6 +338,7 @@ agent:
 - The target host must have the agent runner binary (`claude`, `codex`, etc.) installed and on `$PATH`.
 - The repository must be accessible on the remote host (either pre-cloned or mounted via NFS/SSHFS).
 - If `workspace.worktree` is enabled, the bare git clone must already exist at `workspace.root` on each remote host.
+- Daemon-backed profile actions are local-worker only in v0.2.0; remote workers can run the model but cannot use the `itervox action ...` bridge.
 
 ### Example with worktree mode
 
@@ -256,11 +359,39 @@ agent:
 
 ---
 
-## Reviewer prompt
+## Reviewer profile (preferred)
 
-Itervox can dispatch a reviewer agent to check PRs before marking issues complete. The reviewer uses the `reviewer_prompt` template from your config, detects the open PR branch automatically, and runs on the same worktree as the original worker.
+Itervox can dispatch a reviewer agent to check PRs before marking issues
+complete. The preferred configuration is `reviewer_profile`, which reuses a
+normal profile definition for review work. The reviewer runs on the same
+workspace as the original worker and can also be auto-dispatched with
+`auto_review: true`.
 
-Configure it in `WORKFLOW.md`:
+```yaml
+agent:
+  reviewer_profile: code-reviewer
+  auto_review: true
+  profiles:
+    code-reviewer:
+      command: claude --model claude-opus-4-6
+      soul_file: .itervox/agents/code-reviewer/SOUL.md
+      instructions_file: .itervox/agents/code-reviewer/INSTRUCTIONS.md
+      allowed_actions: [comment, move_state]
+```
+
+Notes:
+
+- `auto_review: true` requires `reviewer_profile` to be set.
+- `auto_review` safely coexists with `workspace.auto_clear` as of v0.2.0 — the
+  clear was redefined to fire only on terminal tracker states, so the reviewer
+  gets the implementer's workspace and the clear is deferred until after the
+  reviewer also completes. The legacy `ValidateAutoClearAutoReview` config-load
+  conflict is now a no-op kept only for API compatibility.
+
+## Legacy reviewer prompt
+
+The older `reviewer_prompt` field is still supported when no
+`reviewer_profile` is configured, but it is deprecated.
 
 ```yaml
 agent:
@@ -278,11 +409,9 @@ agent:
     4. If the PR looks good:
        - Post an approval comment: "AI review passed — no issues found"
        - Move issue {{ issue.identifier }} to state "Merging"
-
-    Be concise. Flag real bugs, not style preferences.
 ```
 
-### Available template variables in the reviewer prompt
+### Available template variables in the legacy reviewer prompt
 
 | Variable | Description |
 |---|---|
@@ -297,7 +426,6 @@ agent:
 
 | Field | Default | Description |
 |---|---|---|
-| `agent_mode` | `""` | Collaboration model: `""`, `"subagents"`, or `"teams"` |
 | `command` | `"claude"` | Default agent runner command |
 | `backend` | `""` | Override runner detection (`"claude"` or `"codex"`) |
 | `max_concurrent_agents` | `10` | Maximum simultaneous agents |
@@ -308,6 +436,24 @@ agent:
 | `max_retries` | `5` | Max retries before moving to `failed_state` |
 | `ssh_hosts` | `[]` | Remote hosts for SSH dispatch |
 | `dispatch_strategy` | `"round-robin"` | SSH routing: `"round-robin"` or `"least-loaded"` |
-| `profiles` | `{}` | Named agent profiles (teams mode) |
-| `reviewer_prompt` | *(built-in)* | Liquid template for AI review workers |
+| `profiles` | `{}` | Named agent profiles |
+| `reviewer_profile` | `""` | Profile used for code review dispatch |
+| `auto_review` | `false` | Auto-dispatch reviewer after a successful worker run |
+| `reviewer_prompt` | *(built-in)* | Legacy fallback reviewer template when no `reviewer_profile` is set |
 | `inline_input` | `false` | Post input-required questions as tracker comments |
+| `max_switches_per_issue_per_window` | `2` | Rate-limit switch cap for `rate_limited` automations |
+| `switch_window_hours` | `6` | Rolling window for the switch cap |
+| `switch_revert_hours` | `0` | TTL after which auto-applied switches revert to the original profile/backend (`0` disables) |
+| `rate_limit_error_patterns` | `[]` | Custom substrings for detecting rate-limit errors in agent stderr |
+
+### Profile fields
+
+| Field | Default | Description |
+|---|---|---|
+| `command` | *(required)* | CLI command for this profile |
+| `soul_file` | *(required in schema 2)* | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute |
+| `instructions_file` | *(required in schema 2)* | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute |
+| `backend` | `""` | Override runner detection for wrapper scripts |
+| `enabled` | `true` | Set to `false` to hide from dispatch selectors and automations |
+| `allowed_actions` | `[]` | Daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input` |
+| `create_issue_state` | `""` | Tracker state for new issues (required when `create_issue` is in `allowed_actions`) |

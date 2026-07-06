@@ -1,24 +1,29 @@
 # AGENTS.md — itervox
+@CLAUDE.md
 
-> This file provides context for AI coding agents (Codex, Claude Code, Cursor, Gemini CLI, OpenCode, etc.) working on this repo.
-> For human contributor docs see CONTRIBUTING.md.
-
-## Project overview
-
-Itervox is a Go 1.25.9 daemon that polls Linear/GitHub Issues, spawns Claude Code or
-Codex subagents per issue, and serves a React web dashboard + Bubbletea TUI.
-Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
+> **Read `CLAUDE.md` first. It is the canonical agent guide for this repo.**
+>
+> CLAUDE.md contains: project overview, build/test commands, architecture
+> invariants (single-goroutine orchestrator, `cfgMu` allowlist, queue +
+> dependency audit ownership, Track B file-backed profiles / schema 2 /
+> HEARTBEAT.md / handoff pipeline), package dependency order, frontend
+> architecture, the `Toast API` contract, the gap-analysis false-positive
+> patterns, Go and TypeScript conventions, the `Never do` list, and — most
+> importantly — the MANDATORY "Verification before completion" rule.
+>
+> All of that applies to codex (and any other agent) identically. This file
+> contains ONLY the things that are codex-specific or that codex needs in
+> addition to CLAUDE.md.
 
 ## Before making any change
 
-1. **Read CLAUDE.md** — it contains architecture invariants, false-positive patterns for
-   static analysis, and conventions that override defaults.
-2. **Read the matching rule bundle under `.claude/skills/<name>/SKILL.md`** for the area you
-   are editing (see the table below). These bundles are plain markdown and tool-agnostic —
-   the directory name is historical. They are not optional reading.
-3. **Run tests** to establish a baseline: `go test -race ./...` and `cd web && pnpm test`.
-4. **Check the gap doc** (`planning/gaps_300326.md`) for known open items before adding new
-   ones — it may already be tracked.
+1. **Read `CLAUDE.md` end-to-end.** No exceptions. The rules there are not a
+   superset of what's here — they are the rules. This file does not repeat
+   them.
+2. **Read the matching rule bundle from the table below** for the area you are
+   editing. The bundles live under `.claude/skills/<name>/SKILL.md` — the
+   directory name is historical; they are plain markdown that codex can read
+   like any other doc, not Claude-specific code.
 
 ## Rule bundles (read the matching one before editing)
 
@@ -34,144 +39,47 @@ Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
 | `go.mod`, `Makefile`, Go toolchain bumps, or govulncheck stdlib findings | `.claude/skills/go-toolchain-sync/SKILL.md` |
 | Before claiming complete, before committing, before opening a PR | `.claude/skills/verify-before-done/SKILL.md` |
 
-Each bundle is a focused checklist of enforced rules and verification steps for its area.
-Reading the bundle before editing prevents the entire class of bugs it was written to catch.
+Each bundle is a focused checklist of enforced rules and verification steps
+for its area. Reading the bundle before editing prevents the entire class of
+bugs it was written to catch.
 
-## Commands (developer-facing workflows)
+## Codex-specific notes
 
-| Command | Use it for |
-|---|---|
-| `/interview` (`.claude/commands/interview.md`) | Start of a feature or refactor with unclear scope — 8 structured questions that surface design intent and verification criteria before any code |
-| `/brainstorm` (`.claude/commands/brainstorm.md`) | Design decision with multiple reasonable approaches — spawns 3 subagents with forced orthogonal positions (Minimalist, Architect, Pragmatist), produces a tradeoffs table and decision document |
+- **Canonical-source precedence**: when CLAUDE.md and any rule in your
+  training/memory disagree, CLAUDE.md wins. When CLAUDE.md and a skill bundle
+  disagree on scope, the skill bundle wins for its area and CLAUDE.md wins
+  for everything else.
+- **Verification rule applies identically**: the "Verification before
+  completion — MANDATORY" section in CLAUDE.md is not Claude-specific. Codex
+  must produce the same `Verified by:` annotations, refuse the same evasions,
+  and follow the same sampling rules. There are no codex carve-outs.
+- **Tool-name equivalences**: CLAUDE.md references Claude Code tools (`Read`,
+  `Edit`, `Write`, `Bash`, `TaskCreate`, `Skill`, etc.). Use whichever tool
+  actually exists in your runtime — for codex this is typically `shell.exec`
+  for everything. The semantics are the same: read before edit, prefer
+  surgical edits over rewrites, run tests with race detector, mark tasks as
+  completed only after `Verified by:` evidence.
+- **Slash commands** (`/interview`, `/brainstorm`) are Claude Code-specific
+  and not available to codex. The underlying intent — interview before code
+  on vague specs, brainstorm before committing to an approach with multiple
+  valid options — applies regardless. Spawn subagents or run the equivalent
+  workflow manually if useful.
 
-## Build commands
+Before adding new follow-up items, spawn a verification agent to confirm the
+issue is real (read full call chain, check for upstream validation, verify
+file exists). See "Gap analysis — avoiding false positives" in CLAUDE.md.
 
-```bash
-# Go
-go build ./...
-go test -race ./...
-go vet ./...
-golangci-lint run ./...
+## File-backed profile surfaces (read CLAUDE.md before editing)
 
-# Frontend
-cd web
-pnpm install --frozen-lockfile
-pnpm test          # vitest
-pnpm build         # production bundle
-pnpm exec tsc --noEmit -p tsconfig.app.json   # type-check only
+Five concrete surfaces define how agents and the daemon interact with on-disk
+profile state. CLAUDE.md is the canonical reference for each; read the
+matching section there before changing behaviour:
 
-# Combined
-make verify        # fmt + vet + lint + go tests + web tests
-make build         # web build → go binary
-```
-
-## Repository layout
-
-```
-cmd/itervox/        CLI entry — wires all packages; main.go + main_test.go
-internal/
-  agent/             Claude/Codex subprocess runners (stream-json + JSONL protocols)
-  app/               Business logic (EnrichIssue)
-  config/            Typed config, defaults, $VAR resolution, validation
-  domain/            Shared types: Issue, BlockerRef, BufLogEntry
-  logbuffer/         Ring buffer for per-issue log streaming
-  orchestrator/      Single-goroutine state machine (split into multiple files)
-    orchestrator.go  Struct, New, Load, config setters/getters
-    event_loop.go    Main select loop (Run), tick handling
-    worker.go        Per-issue worker goroutine lifecycle
-    snapshot.go      Snapshot construction and overlay
-    dispatch.go      Eligibility checks, slot calculation
-    reconcile.go     Stall/state reconciliation helpers
-    retry.go         Retry queue scheduling
-    reviewer.go      AI review dispatch
-    issue_control.go Cancel/resume/discard/reanalyze actions
-    ssh_host.go      SSH host selection (least-loaded)
-    logging.go       Structured log formatting (BufLogEntry)
-    state.go         OrchestratorEvent types and RunEntry
-  prdetector/        PR URL detection via `gh pr list`
-  prompt/            Liquid template rendering
-  server/            HTTP API (chi router) — REST + SSE
-  statusui/          Bubbletea TUI model and golden-file tests
-  templates/         WORKFLOW.md scaffolding templates (Linear, GitHub)
-  tracker/           Tracker interface + Linear GraphQL + GitHub REST adapters
-  workflow/          WORKFLOW.md parser and file watcher
-  workspace/         Per-issue worktree lifecycle (directory + git worktree modes)
-web/                 React 19 / Vite frontend
-testdata/            WORKFLOW.md fixtures
-planning/            Gap analysis, design docs, roadmap
-```
-
-## Architecture constraints
-
-### Orchestrator event loop — single goroutine
-
-The orchestrator `Run()` loop is the ONLY place that mutates `State`. Workers
-communicate via `o.events chan OrchestratorEvent`. Never write to state from a
-worker goroutine — send an event instead.
-
-### cfgMu scope
-
-`cfgMu` protects only these `cfg` fields (mutable at runtime via HTTP):
-- `cfg.Agent.AgentMode`, `cfg.Agent.MaxConcurrentAgents`, `cfg.Agent.Profiles`
-- `cfg.Agent.SSHHosts`, `cfg.Agent.DispatchStrategy`
-- `cfg.Tracker.ActiveStates`, `cfg.Tracker.TerminalStates`, `cfg.Tracker.CompletionState`
-- `cfg.Workspace.AutoClearWorkspace`
-
-All other `cfg` fields are **read-only after startup** — no lock needed.
-
-### Config value validation
-
-`positiveIntField` in `config.go` rejects zero and negative values, replacing them
-with defaults. Timeout fields (`TurnTimeoutMs`, `ReadTimeoutMs`, etc.) can never be
-0 at runtime — do not flag `context.WithTimeout(ctx, 0)` as reachable.
-
-### Package import order (no circular deps)
-
-```
-domain ─┬── tracker, prompt, logbuffer, prdetector
-        │
-workflow ── config ── workspace
-        │
-agent (imports domain, config)
-        │
-orchestrator (imports agent, config, domain, logbuffer, prdetector,
-              prompt, tracker, workspace)
-        │
-app (imports domain, tracker) ── server (imports domain, config)
-        │
-cmd/itervox (wires everything)
-```
-
-## Testing conventions
-
-- Always run `go test -race` — the race detector catches real bugs here
-- TUI tests use `charmbracelet/x/exp/teatest` (`model_teatest_test.go`) + catwalk
-  golden files. Regenerate golden files with `make tui-golden` after intentional
-  render changes.
-- Integration tests (real API calls) are gated behind a build tag — not run by default.
-- Frontend tests use Vitest + Testing Library.
-
-## Common pitfalls
-
-- **Toast API**: `addToast(message: string, variant?)` — first arg is a string.
-  Passing an object silently renders `[object Object]`.
-- **Settings mutations** must call `refreshSnapshot()`, NOT `patchSnapshot()`.
-- **SSE hooks**: always use `useToastStore.getState()` / `useItervoxStore.getState()`
-  inside effects — never call hooks conditionally.
-- **Map copy**: use `maps.Copy(dst, src)` not manual for-range loops.
-- **Clamp pattern**: `max(1, min(n, 50))` not if-chains (Go 1.21+).
-
-## Open architectural items (from planning/gaps_300326.md)
-
-Key unresolved items:
-- T-6: Codex session log identity — single file instead of per-subagent files
-- T-7: Reviewer backend parity — does not honor backend hints like worker path does
-- T-9: Extract `orchestratorAdapter` from main.go to `internal/app`
-- T-10: Replace 5s sublog polling with SSE push
-- T-11: DRY `ParseSessionLogs`/`ParseSessionLogsMulti` duplication
-
-See `planning/gaps_300326.md` for the full task list with priorities and phases.
-
-Before adding new items, spawn a verification agent to confirm the
-issue is real (read full call chain, check for upstream validation, verify file
-exists). See the "Gap analysis — avoiding false positives" section of CLAUDE.md.
+- `itervox_schema_version` — schema-version marker required at the top of
+  every `WORKFLOW.md`. Mismatch is a hard startup failure.
+- `SOUL.md` — compact per-profile identity file under `.itervox/agents/<name>/`.
+- `INSTRUCTIONS.md` — full per-profile operating rules, same directory.
+- `HEARTBEAT.md` — daemon liveness file written under `.itervox/`. Transient
+  runtime state; never committed.
+- `init --update` — the migration subcommand that moves v0.1.x inline profile
+  prompts into the file-backed layout and stamps the schema marker.

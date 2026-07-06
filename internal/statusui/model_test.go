@@ -115,7 +115,7 @@ func TestColorLine_CodexActionStarted(t *testing.T) {
 }
 
 func TestColorLine_ClaudeActionStarted(t *testing.T) {
-	line := logLine("INFO", "claude: action_started", map[string]string{"session_id": "s1", "tool": "Bash", "description": "npm install"})
+	line := logLine("INFO", "claude: action_started", map[string]string{"session_id": "s1", "tool": "Bash", "description": "pnpm install"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "claude action_started should produce styled output")
 	assert.Contains(t, out, "Bash")

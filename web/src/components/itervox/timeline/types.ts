@@ -16,6 +16,11 @@ export interface NormalisedSession {
   tokens: number;
   status: 'live' | 'succeeded' | 'failed' | 'cancelled' | 'stalled' | 'input_required';
   sessionId?: string;
+  // Automation context (T-5). Populated by F-1 when the run was dispatched
+  // by an automation rule; undefined for manual runs. The Timeline page
+  // filters on the presence of automationId for its automation chip.
+  automationId?: string;
+  triggerType?: string;
 }
 
 export function fromRunning(r: RunningRow): NormalisedSession {
@@ -27,6 +32,8 @@ export function fromRunning(r: RunningRow): NormalisedSession {
     tokens: r.tokens,
     status: 'live',
     sessionId: r.sessionId,
+    automationId: r.automationId,
+    triggerType: r.triggerType,
   };
 }
 
@@ -41,7 +48,38 @@ export function fromHistory(h: HistoryRow): NormalisedSession {
     tokens: h.tokens,
     status: h.status,
     sessionId: h.sessionId,
+    automationId: h.automationId,
+    triggerType: h.triggerType,
   };
+}
+
+// gaps_11 G-13(b) / todolist6 codex-B6 box 1 — dedup live/history sessions
+// that share a sessionId, preferring the live row. The Timeline page passes
+// `running` through `useStableValue` (held for up to 5s after a run exits),
+// so a freshly-finished run can appear in BOTH sources within one render:
+// stale 'live' row + fresh history row with the same sessionId. Sessions
+// without a sessionId have no safe identity to dedup on and pass through.
+export function dedupSessionsPreferLive(
+  sessions: readonly NormalisedSession[],
+): NormalisedSession[] {
+  const indexBySession = new Map<string, number>();
+  const out: NormalisedSession[] = [];
+  for (const s of sessions) {
+    if (!s.sessionId) {
+      out.push(s);
+      continue;
+    }
+    const at = indexBySession.get(s.sessionId);
+    if (at === undefined) {
+      indexBySession.set(s.sessionId, out.length);
+      out.push(s);
+    } else if (s.status === 'live' && out[at].status !== 'live') {
+      // Replace in place so the duplicate keeps the first occurrence's
+      // chronological position.
+      out[at] = s;
+    }
+  }
+  return out;
 }
 
 export interface IssueGroup {

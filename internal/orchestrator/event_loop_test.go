@@ -260,6 +260,51 @@ func TestDryRunMode(t *testing.T) {
 	assert.Empty(t, snap.Running, "no workers should be running in dry-run mode")
 }
 
+func TestDryRunAutomationDispatch(t *testing.T) {
+	logBuf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	cfg := baseConfig()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"qa": {Command: "claude", Prompt: "Run QA checks."},
+	}
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	mt := &noCandidateTracker{base: tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+	fake := agenttest.NewFakeRunner([]agent.StreamEvent{
+		{Type: "system", SessionID: "s1"},
+		{Type: "result", SessionID: "s1"},
+	})
+
+	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch.DryRun = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.True(t, orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
+		AutomationID: "qa-ready",
+		ProfileName:  "qa",
+		Instructions: "Run QA and report.",
+		Trigger: orchestrator.AutomationTriggerContext{
+			Type:         config.AutomationTriggerCron,
+			AutomationID: "qa-ready",
+			FiredAt:      time.Now(),
+		},
+	}))
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	assert.Zero(t, fake.CallCount, "dry-run automation dispatch should not execute the runner")
+	assert.Contains(t, logBuf.String(), "DRY-RUN", "dry-run automation dispatch should be logged")
+	assert.Empty(t, orch.Snapshot().Running)
+}
+
 // ---------------------------------------------------------------------------
 // 10. Profile override resolution
 // ---------------------------------------------------------------------------
@@ -367,7 +412,7 @@ func TestStallTimeoutSchedulesRetry(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 
 	// Issue should be removed from Running and added to RetryAttempts.
 	_, stillRunning := state.Running["id1"]
@@ -395,10 +440,25 @@ func TestSetAppSessionID(t *testing.T) {
 
 func TestAutoClearWorkspaceCfgRoundtrip(t *testing.T) {
 	o := newOrch()
-	o.SetAutoClearWorkspaceCfg(true)
+	require.NoError(t, o.SetAutoClearWorkspaceCfg(true))
 	assert.True(t, o.AutoClearWorkspaceCfg())
-	o.SetAutoClearWorkspaceCfg(false)
+	require.NoError(t, o.SetAutoClearWorkspaceCfg(false))
 	assert.False(t, o.AutoClearWorkspaceCfg())
+}
+
+// New (v0.2.0): AutoClear and AutoReview now coexist. The clear is
+// deferred from the main worker's success to the reviewer's success so the
+// reviewer has the workspace available. This test pins the new contract:
+// setting both flags simultaneously must succeed.
+func TestAutoClearWorkspaceCfgAllowsReviewerCoexistence(t *testing.T) {
+	o := newOrch()
+	o.SetProfilesCfg(map[string]config.AgentProfile{
+		"reviewer": {Command: "claude"},
+	})
+	require.NoError(t, o.SetReviewerCfg("reviewer", true))
+
+	require.NoError(t, o.SetAutoClearWorkspaceCfg(true))
+	assert.True(t, o.AutoClearWorkspaceCfg(), "auto-clear should be accepted alongside auto-review under new terminal-state-only semantics")
 }
 
 func TestInlineInputCfgRoundtrip(t *testing.T) {
@@ -527,7 +587,7 @@ func TestReconcileStallsNoStallWhenRecent(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 	_, stillRunning := state.Running["id1"]
 	assert.True(t, stillRunning, "recent activity should not trigger stall")
 }
@@ -548,10 +608,10 @@ func TestIneligibleReasonBlockedByNilIdentifier(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 17. IneligibleReason — blocked_by with paused blocker (should be eligible)
+// 17. IneligibleReason — blocked_by with paused blocker
 // ---------------------------------------------------------------------------
 
-func TestIneligibleReasonBlockedByPausedBlockerIsEligible(t *testing.T) {
+func TestIneligibleReasonBlockedByPausedBlockerStillBlocks(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)
 	blockerState := "In Progress"
@@ -561,7 +621,7 @@ func TestIneligibleReasonBlockedByPausedBlockerIsEligible(t *testing.T) {
 	issue.BlockedBy = []domain.BlockerRef{{State: &blockerState, Identifier: &blockerID}}
 
 	reason := orchestrator.IneligibleReason(issue, state, cfg)
-	assert.Equal(t, "", reason, "blocker that is auto-paused should not block dispatch")
+	assert.Equal(t, "blocked_by:ENG-99", reason, "paused blockers are not terminal and must still block dispatch")
 }
 
 // ---------------------------------------------------------------------------
@@ -691,7 +751,8 @@ func TestResumeIssueClearsFromPaused(t *testing.T) {
 	fake := &agenttest.FakeRunner{Stall: true}
 	orch := orchestrator.New(cfg, mt, fake, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// ctx must outlast three 2s deadlines (worker appears, pauses, resumes).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Wait for the worker to be visible, then cancel it.
@@ -705,7 +766,15 @@ func TestResumeIssueClearsFromPaused(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	select {
 	case <-workerVisible:
@@ -768,7 +837,7 @@ func TestReconcileStallsEmitsStallEvent(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 
 	select {
 	case ev := <-events:
@@ -942,7 +1011,7 @@ func TestReconcileTrackerStatesIssueNotFound(t *testing.T) {
 	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events)
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 	_, stillRunning := state.Running["id1"]
 	assert.False(t, stillRunning, "issue not found should stop worker")
 	assert.True(t, cancelled, "worker cancel should be called")
@@ -1033,7 +1102,7 @@ func TestStallLogContainsIdentifier(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 
 	logs := logBuf.String()
 	assert.True(t, strings.Contains(logs, "STALL-1"), "stall log should mention the issue identifier")
@@ -1046,11 +1115,22 @@ func TestStallLogContainsIdentifier(t *testing.T) {
 func TestTerminateIssueRunning(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
+	// Without BacklogStates, asyncDiscardAndTransition transitions the
+	// terminated issue to ActiveStates[0] ("Todo"), which the next poll
+	// re-dispatches — Running never returns to 0 within the test window.
+	// Setting an explicit non-active backlog target keeps the discard
+	// landing-state out of the active set so the orchestrator leaves the
+	// terminated issue alone.
+	cfg.Tracker.BacklogStates = []string{"Backlog"}
 	mt := singleIssueTracker(t, "In Progress")
 	fake := &agenttest.FakeRunner{Stall: true}
 	orch := orchestrator.New(cfg, mt, fake, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ctx must outlast both internal deadlines (worker-appears + terminate-exits,
+	// up to 4s combined). With ctx tight against that sum, ctx expires under
+	// load, the orchestrator exits, and the worker's exit event is dropped —
+	// surfacing as "worker did not exit within 2s after terminate".
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	workerVisible := make(chan struct{}, 1)
@@ -1063,7 +1143,19 @@ func TestTerminateIssueRunning(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	// Tear down deterministically so the orchestrator goroutine is fully
+	// drained before t-Cleanup runs the next test — otherwise its log output
+	// can bleed into subsequent tests' captured stderr (TestWorkerCompletedLogHasCorrectTokenValues
+	// regression).
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	select {
 	case <-workerVisible:
@@ -1074,8 +1166,10 @@ func TestTerminateIssueRunning(t *testing.T) {
 	ok := orch.TerminateIssue("ENG-1")
 	require.True(t, ok, "terminate should succeed for running worker")
 
-	// Wait for the worker to exit and claim to be released.
-	deadline := time.After(2 * time.Second)
+	// Wait for the worker to exit and claim to be released. 2s was tight
+	// under full-suite load — the cancel signal → worker exit → event-loop
+	// processing → storeSnap chain occasionally took > 2s on a busy CPU.
+	deadline := time.After(5 * time.Second)
 	for {
 		snap := orch.Snapshot()
 		if len(snap.Running) == 0 {
@@ -1086,7 +1180,7 @@ func TestTerminateIssueRunning(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatal("worker did not exit within 2s after terminate")
+			t.Fatal("worker did not exit within 5s after terminate")
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
@@ -1099,11 +1193,16 @@ func TestTerminateIssueRunning(t *testing.T) {
 func TestTerminateIssuePaused(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
+	// Same rationale as TestTerminateIssueRunning: pin the discard target
+	// to a non-active state so the post-terminate poll doesn't immediately
+	// re-dispatch and re-populate state.PausedIdentifiers.
+	cfg.Tracker.BacklogStates = []string{"Backlog"}
 	mt := singleIssueTracker(t, "In Progress")
 	fake := &agenttest.FakeRunner{Stall: true}
 	orch := orchestrator.New(cfg, mt, fake, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ctx must outlast three 2s deadlines (worker appears, pauses, terminates).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	workerVisible := make(chan struct{}, 1)
@@ -1116,7 +1215,15 @@ func TestTerminateIssuePaused(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	select {
 	case <-workerVisible:
@@ -1208,7 +1315,11 @@ func TestHistoryFilePersistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
 
 	// Wait for the worker to complete and history to be recorded.
 	deadline := time.After(3 * time.Second)
@@ -1216,7 +1327,9 @@ func TestHistoryFilePersistence(t *testing.T) {
 		history := orch.RunHistory()
 		if len(history) > 0 {
 			assert.Equal(t, "ENG-1", history[0].Identifier)
+			// Wait for orch to exit before t.TempDir cleanup races with history.json writes.
 			cancel()
+			<-done
 			return
 		}
 		select {
@@ -1243,7 +1356,9 @@ func TestPausedFilePersistence(t *testing.T) {
 	orch := orchestrator.New(cfg, mt, fake, nil)
 	orch.SetPausedFile(pausedFile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ctx must outlast worker-appears (2s) + pause-detected (2s) + file write
+	// + roundtrip; bumped from 3s after observed under-load flakes.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	workerVisible := make(chan struct{}, 1)
@@ -1585,7 +1700,11 @@ func TestHistoryKeyScoping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done1 := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done1)
+	}()
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -1612,11 +1731,21 @@ func TestHistoryKeyScoping(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel2()
 
-	go orch2.Run(ctx2) //nolint:errcheck
+	done2 := make(chan struct{})
+	go func() {
+		_ = orch2.Run(ctx2)
+		close(done2)
+	}()
 	time.Sleep(200 * time.Millisecond)
 
 	history2 := orch2.RunHistory()
 	assert.Empty(t, history2, "history should be filtered by project key")
+
+	// Wait for both goroutines to exit so t.TempDir cleanup doesn't race history writes.
+	cancel()
+	cancel2()
+	<-done1
+	<-done2
 }
 
 // ---------------------------------------------------------------------------
@@ -1648,7 +1777,11 @@ func TestClearHistoryRemovesFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -1665,6 +1798,10 @@ func TestClearHistoryRemovesFile(t *testing.T) {
 
 	orch.ClearHistory()
 	assert.Empty(t, orch.RunHistory(), "history should be empty after clear")
+
+	// Wait for orch to exit so t.TempDir cleanup doesn't race history writes.
+	cancel()
+	<-done
 }
 
 // ---------------------------------------------------------------------------
@@ -1726,13 +1863,17 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 	orch.SetInputRequiredFile(irFile)
 
 	// Write a test file manually (simulating what saveInputRequiredToDisk does).
-	testData := `{"ENG-1":{"issue_id":"id1","identifier":"ENG-1","session_id":"s1","context":"need API key","backend":"claude","command":"claude","queued_at":"2025-01-01T00:00:00Z"}}`
+	testData := `{"ENG-1":{"issue_id":"id1","identifier":"ENG-1","session_id":"s1","context":"need API key","backend":"claude","command":"claude","branch_name":"feature/eng-1","queued_at":"2025-01-01T00:00:00Z"}}`
 	require.NoError(t, writeTestFile(irFile, testData))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done)
+	}()
 	time.Sleep(200 * time.Millisecond)
 
 	snap := orch.Snapshot()
@@ -1741,7 +1882,12 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 	if ok {
 		assert.Equal(t, "id1", entry.IssueID)
 		assert.Equal(t, "need API key", entry.Context)
+		assert.Equal(t, "feature/eng-1", entry.BranchName)
 	}
+
+	// Wait for orch to exit so t.TempDir cleanup doesn't race input_required.json writes.
+	cancel()
+	<-done
 }
 
 func writeTestFile(path, content string) error {
@@ -1762,9 +1908,10 @@ type resumeTestRunner struct {
 	mu         sync.Mutex
 	calls      int
 	sessionIDs []string // sessionID pointer values seen on each call
+	prompts    []string
 }
 
-func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	callNum := r.calls
@@ -1773,6 +1920,7 @@ func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(a
 		sid = *sessionID
 	}
 	r.sessionIDs = append(r.sessionIDs, sid)
+	r.prompts = append(r.prompts, prompt)
 	r.mu.Unlock()
 
 	switch callNum {
@@ -1805,6 +1953,7 @@ func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(a
 func TestManualPauseResumePreservesSession(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
+	cfg.PromptTemplate = "Resume {{ issue.identifier }} :: {{ issue.title }}"
 	mt := singleIssueTracker(t, "In Progress")
 	runner := &resumeTestRunner{}
 	orch := orchestrator.New(cfg, mt, runner, nil)
@@ -1853,26 +2002,32 @@ func TestManualPauseResumePreservesSession(t *testing.T) {
 	// User clicks Resume.
 	require.True(t, orch.ResumeIssue("ENG-1"))
 
-	// Wait for the runner to be called a second time.
+	// Wait for the resumed worker invocation (third RunTurn call overall:
+	// first-turn success, second-turn stall, third-turn resumed worker).
 	deadline = time.After(3 * time.Second)
 	for {
 		runner.mu.Lock()
 		callCount := runner.calls
 		var lastSid string
-		if len(runner.sessionIDs) >= 2 {
-			lastSid = runner.sessionIDs[1]
+		var resumedPrompt string
+		if len(runner.sessionIDs) >= 3 {
+			lastSid = runner.sessionIDs[2]
+			resumedPrompt = runner.prompts[2]
 		}
 		runner.mu.Unlock()
-		if callCount >= 2 {
-			// CRITICAL ASSERTION: the second call must have received the
-			// captured session ID via the resumeSessionID parameter.
+		if callCount >= 3 {
 			require.Equal(t, "agent-session-xyz", lastSid,
 				"resumed worker must call RunTurn with the captured session ID")
+			// The rendered WORKFLOW.md is the lead of the prompt; the worker
+			// also appends a Run Context block (v0.2.0: file-backed agent
+			// handoff). Pin only the WORKFLOW.md portion.
+			require.True(t, strings.HasPrefix(resumedPrompt, "Resume ENG-1 :: T"),
+				"manual pause/resume should keep the rendered workflow prompt at the lead; got %q", resumedPrompt)
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("runner was not called a second time after resume; calls=%d", callCount)
+			t.Fatalf("runner was not called by the resumed worker; calls=%d", callCount)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

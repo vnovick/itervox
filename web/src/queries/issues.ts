@@ -7,11 +7,19 @@ import { TrackerIssueSchema } from '../types/schemas';
 import { z } from 'zod';
 import { authedFetch } from '../auth/authedFetch';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
+import { logIdentifiersKey, logsKey, sublogsKey } from './logs';
 
 export const ISSUES_KEY = ['issues'] as const;
 export const ISSUE_KEY = (identifier: string) => ['issue', identifier] as const;
 
-type RollbackContext = { prevIssues?: TrackerIssue[]; prevSnapshot?: StateSnapshot } | undefined;
+type RollbackContext =
+  | {
+      prevIssue?: TrackerIssue;
+      prevIssueIdentifier?: string;
+      prevIssues?: TrackerIssue[];
+      prevSnapshot?: StateSnapshot;
+    }
+  | undefined;
 
 /**
  * Extracts a user-facing message from an unknown error and shows it as a toast.
@@ -32,9 +40,45 @@ function toastApiError(err: unknown, fallback = 'Action failed — please try ag
 function makeRollbackHandler(queryClient: QueryClient) {
   return (_error: unknown, _vars: unknown, context: RollbackContext) => {
     if (context?.prevIssues) queryClient.setQueryData(ISSUES_KEY, context.prevIssues);
+    if (context?.prevIssueIdentifier && context.prevIssue) {
+      queryClient.setQueryData(ISSUE_KEY(context.prevIssueIdentifier), context.prevIssue);
+    }
     if (context?.prevSnapshot) useItervoxStore.getState().setSnapshot(context.prevSnapshot);
     toastApiError(_error);
   };
+}
+
+function invalidateIssueQueries(queryClient: QueryClient, identifier?: string): void {
+  void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+  if (identifier) {
+    void queryClient.invalidateQueries({ queryKey: ISSUE_KEY(identifier) });
+  }
+}
+
+function refreshIssueViews(queryClient: QueryClient, identifier?: string): void {
+  void useItervoxStore.getState().refreshSnapshot();
+  invalidateIssueQueries(queryClient, identifier);
+}
+
+function updateIssueCaches(
+  queryClient: QueryClient,
+  identifier: string,
+  updater: (issue: TrackerIssue) => TrackerIssue,
+): { prevIssue?: TrackerIssue; prevIssues?: TrackerIssue[] } {
+  const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
+  if (prevIssues) {
+    queryClient.setQueryData<TrackerIssue[]>(
+      ISSUES_KEY,
+      prevIssues.map((issue) => (issue.identifier === identifier ? updater(issue) : issue)),
+    );
+  }
+
+  const prevIssue = queryClient.getQueryData<TrackerIssue>(ISSUE_KEY(identifier));
+  if (prevIssue) {
+    queryClient.setQueryData<TrackerIssue>(ISSUE_KEY(identifier), updater(prevIssue));
+  }
+
+  return { prevIssue, prevIssues };
 }
 
 async function fetchIssues(): Promise<TrackerIssue[]> {
@@ -101,18 +145,13 @@ export function useUpdateIssueState() {
     onMutate: async ({ identifier, state }: { identifier: string; state: string }) => {
       // Cancel any in-flight refetches so they don't overwrite the optimistic update.
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
-      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
+      await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
+      const { prevIssue, prevIssues } = updateIssueCaches(queryClient, identifier, (issue) => ({
+        ...issue,
+        state,
+      }));
 
-      if (prevIssues) {
-        queryClient.setQueryData<TrackerIssue[]>(
-          ISSUES_KEY,
-          prevIssues.map((issue) =>
-            issue.identifier === identifier ? { ...issue, state } : issue,
-          ),
-        );
-      }
-
-      return { prevIssues };
+      return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
     },
     mutationFn: async ({ identifier, state }: { identifier: string; state: string }) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/state`, {
@@ -123,8 +162,8 @@ export function useUpdateIssueState() {
       if (!res.ok) throw new Error(`updateIssueState failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+    onSuccess: (_data, { identifier }) => {
+      invalidateIssueQueries(queryClient, identifier);
     },
   });
 }
@@ -134,16 +173,12 @@ export function useSetIssueProfile() {
   return useMutation({
     onMutate: async ({ identifier, profile }: { identifier: string; profile: string }) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
-      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
-      if (prevIssues) {
-        queryClient.setQueryData<TrackerIssue[]>(
-          ISSUES_KEY,
-          prevIssues.map((i) =>
-            i.identifier === identifier ? { ...i, agentProfile: profile || undefined } : i,
-          ),
-        );
-      }
-      return { prevIssues };
+      await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
+      const { prevIssue, prevIssues } = updateIssueCaches(queryClient, identifier, (issue) => ({
+        ...issue,
+        agentProfile: profile || undefined,
+      }));
+      return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
     },
     mutationFn: async ({ identifier, profile }: { identifier: string; profile: string }) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/profile`, {
@@ -154,8 +189,8 @@ export function useSetIssueProfile() {
       if (!res.ok) throw new Error(`setIssueProfile failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+    onSuccess: (_data, { identifier }) => {
+      invalidateIssueQueries(queryClient, identifier);
     },
   });
 }
@@ -165,16 +200,12 @@ export function useSetIssueBackend() {
   return useMutation({
     onMutate: async ({ identifier, backend }: { identifier: string; backend: string }) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
-      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
-      if (prevIssues) {
-        queryClient.setQueryData<TrackerIssue[]>(
-          ISSUES_KEY,
-          prevIssues.map((i) =>
-            i.identifier === identifier ? { ...i, agentBackend: backend || undefined } : i,
-          ),
-        );
-      }
-      return { prevIssues };
+      await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
+      const { prevIssue, prevIssues } = updateIssueCaches(queryClient, identifier, (issue) => ({
+        ...issue,
+        agentBackend: backend || undefined,
+      }));
+      return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
     },
     mutationFn: async ({ identifier, backend }: { identifier: string; backend: string }) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/backend`, {
@@ -185,8 +216,8 @@ export function useSetIssueBackend() {
       if (!res.ok) throw new Error(`setIssueBackend failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+    onSuccess: (_data, { identifier }) => {
+      invalidateIssueQueries(queryClient, identifier);
     },
   });
 }
@@ -196,17 +227,12 @@ export function useCancelIssue() {
   return useMutation({
     onMutate: async (identifier: string) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
-      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
+      await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
+      const { prevIssue, prevIssues } = updateIssueCaches(queryClient, identifier, (issue) => ({
+        ...issue,
+        orchestratorState: 'paused',
+      }));
       const prevSnapshot = useItervoxStore.getState().snapshot;
-
-      if (prevIssues) {
-        queryClient.setQueryData<TrackerIssue[]>(
-          ISSUES_KEY,
-          prevIssues.map((issue) =>
-            issue.identifier === identifier ? { ...issue, orchestratorState: 'paused' } : issue,
-          ),
-        );
-      }
       if (prevSnapshot) {
         const updated = optimisticPauseSnapshot(prevSnapshot, identifier);
         useItervoxStore.getState().patchSnapshot({
@@ -216,7 +242,12 @@ export function useCancelIssue() {
         });
       }
 
-      return { prevIssues, prevSnapshot: prevSnapshot ?? undefined };
+      return {
+        prevIssue,
+        prevIssueIdentifier: identifier,
+        prevIssues,
+        prevSnapshot: prevSnapshot ?? undefined,
+      };
     },
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/cancel`, {
@@ -225,10 +256,8 @@ export function useCancelIssue() {
       if (!res.ok) throw new Error(`cancelIssue failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
-    onSuccess: () => {
-      // SSE + useSnapshotInvalidation handle both snapshot and issue list updates.
-      // refreshSnapshot ensures immediate consistency if SSE is lagging.
-      void useItervoxStore.getState().refreshSnapshot();
+    onSuccess: (_data, identifier) => {
+      refreshIssueViews(queryClient, identifier);
     },
   });
 }
@@ -238,17 +267,12 @@ export function useResumeIssue() {
   return useMutation({
     onMutate: async (identifier: string) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
-      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
+      await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
+      const { prevIssue, prevIssues } = updateIssueCaches(queryClient, identifier, (issue) => ({
+        ...issue,
+        orchestratorState: 'running',
+      }));
       const prevSnapshot = useItervoxStore.getState().snapshot;
-
-      if (prevIssues) {
-        queryClient.setQueryData<TrackerIssue[]>(
-          ISSUES_KEY,
-          prevIssues.map((issue) =>
-            issue.identifier === identifier ? { ...issue, orchestratorState: 'running' } : issue,
-          ),
-        );
-      }
       if (prevSnapshot) {
         const wasInPaused = prevSnapshot.paused.includes(identifier);
         const updatedPaused = prevSnapshot.paused.filter((id) => id !== identifier);
@@ -280,7 +304,12 @@ export function useResumeIssue() {
         });
       }
 
-      return { prevIssues, prevSnapshot: prevSnapshot ?? undefined };
+      return {
+        prevIssue,
+        prevIssueIdentifier: identifier,
+        prevIssues,
+        prevSnapshot: prevSnapshot ?? undefined,
+      };
     },
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/resume`, {
@@ -289,13 +318,14 @@ export function useResumeIssue() {
       if (!res.ok) throw new Error(`resumeIssue failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
-    onSuccess: () => {
-      void useItervoxStore.getState().refreshSnapshot();
+    onSuccess: (_data, identifier) => {
+      refreshIssueViews(queryClient, identifier);
     },
   });
 }
 
 export function useTerminateIssue() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/terminate`, {
@@ -303,8 +333,8 @@ export function useTerminateIssue() {
       });
       if (!res.ok) throw new Error(`terminateIssue failed: ${String(res.status)}`);
     },
-    onSuccess: () => {
-      void useItervoxStore.getState().refreshSnapshot();
+    onSuccess: (_data, identifier) => {
+      refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Terminate failed — please try again.');
@@ -313,12 +343,16 @@ export function useTerminateIssue() {
 }
 
 export function useTriggerAIReview() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/ai-review`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`triggerAIReview failed: ${String(res.status)}`);
+    },
+    onSuccess: (_data, identifier) => {
+      refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
       toastApiError(err, 'AI review trigger failed — please try again.');
@@ -327,12 +361,36 @@ export function useTriggerAIReview() {
 }
 
 export function useClearIssueLogs() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error(`clearIssueLogs failed: ${String(res.status)}`);
+      // "Clear logs" is a user-visible meta-action that must reset everything
+      // the user sees on the Logs page for this issue:
+      //   - the main Logs pane (backed by the in-memory logbuffer, wiped by
+      //     DELETE /issues/{id}/logs)
+      //   - the Timeline sub-agent panel (backed by per-session JSONL files,
+      //     wiped by DELETE /issues/{id}/sublogs)
+      // Until this change, only the first endpoint was hit — so the
+      // Timeline kept showing the same data even after a successful clear.
+      const encoded = encodeURIComponent(identifier);
+      const [logsRes, subRes] = await Promise.all([
+        authedFetch(`/api/v1/issues/${encoded}/logs`, { method: 'DELETE' }),
+        authedFetch(`/api/v1/issues/${encoded}/sublogs`, { method: 'DELETE' }),
+      ]);
+      if (!logsRes.ok) throw new Error(`clearIssueLogs failed: ${String(logsRes.status)}`);
+      if (!subRes.ok) throw new Error(`clearIssueSubLogs failed: ${String(subRes.status)}`);
+    },
+    onSuccess: (_data, identifier) => {
+      void queryClient.invalidateQueries({ queryKey: logsKey(identifier) });
+      void queryClient.invalidateQueries({ queryKey: sublogsKey(identifier) });
+      void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
+      // refreshSnapshot pulls fresh history/running data that drives the
+      // Timeline's run rows — without this, a cleared issue's run entries
+      // linger in Timeline even though their underlying logs are gone.
+      void useItervoxStore.getState().refreshSnapshot();
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Clear logs failed — please try again.');
     },
   });
 }
@@ -356,10 +414,17 @@ export function useClearAllLogs() {
 }
 
 export function useClearAllWorkspaces() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
       const res = await authedFetch('/api/v1/workspaces', { method: 'DELETE' });
       if (!res.ok) throw new Error(`clearAllWorkspaces failed: ${String(res.status)}`);
+    },
+    onSuccess: () => {
+      void useItervoxStore.getState().refreshSnapshot();
+      void queryClient.invalidateQueries({ queryKey: ['logs'] });
+      void queryClient.invalidateQueries({ queryKey: ['sublogs'] });
+      void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Reset workspaces failed — please try again.');
@@ -368,12 +433,16 @@ export function useClearAllWorkspaces() {
 }
 
 export function useClearIssueSubLogs() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`clearIssueSubLogs failed: ${String(res.status)}`);
+    },
+    onSuccess: (_data, identifier) => {
+      void queryClient.invalidateQueries({ queryKey: sublogsKey(identifier) });
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Clear session logs failed — please try again.');
@@ -382,6 +451,7 @@ export function useClearIssueSubLogs() {
 }
 
 export function useProvideInput() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ identifier, message }: { identifier: string; message: string }) => {
       const res = await authedFetch(
@@ -394,8 +464,8 @@ export function useProvideInput() {
       );
       if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
     },
-    onSuccess: () => {
-      void useItervoxStore.getState().refreshSnapshot();
+    onSuccess: (_data, { identifier }) => {
+      refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Failed to send input to agent.');
@@ -404,6 +474,7 @@ export function useProvideInput() {
 }
 
 export function useDismissInput() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(
@@ -414,8 +485,8 @@ export function useDismissInput() {
       );
       if (!res.ok) throw new Error(`dismissInput failed: ${String(res.status)}`);
     },
-    onSuccess: () => {
-      void useItervoxStore.getState().refreshSnapshot();
+    onSuccess: (_data, identifier) => {
+      refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Failed to dismiss input request.');
@@ -424,12 +495,16 @@ export function useDismissInput() {
 }
 
 export function useReanalyzeIssue() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
       const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/reanalyze`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`reanalyzeIssue failed: ${String(res.status)}`);
+    },
+    onSuccess: (_data, identifier) => {
+      refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Re-analysis failed — please try again.');

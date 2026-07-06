@@ -9,7 +9,10 @@ Use it to understand what upgrades are safe and where silent breakage can occur.
 
 | Component | Tested version | Notes |
 |---|---|---|
-| Go toolchain | **1.25.8** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
+| Go toolchain | **1.25.11** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
+| golangci-lint | **v2.1.6** | Pinned in Go CI and release preflight. Local contributors can use newer versions for ad-hoc checks, but release CI uses this pin. |
+| govulncheck | **v1.1.4** | Pinned in Go CI and release preflight. Run with `-tags dev ./cmd/... ./internal/...`. |
+| GoReleaser | **v2.14.3** | Pinned in release CI. v0.2.0 intentionally keeps the existing `brews` stanza under this version; `goreleaser check` validates it with a deprecation warning. |
 
 ---
 
@@ -42,8 +45,8 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 
 | Component | Tested version | Notes |
 |---|---|---|
-| Node.js | **20 LTS** | Required only to build the dashboard from source. |
-| pnpm | **9+** | Used as the package manager (`web/` directory). |
+| Node.js | **20 LTS** for `web/`, **22 LTS** for `site/` | Required only to build the dashboard or docs site from source. |
+| pnpm | **10+** | Used as the package manager (`web/` and `site/` directories). Both `web/package.json` and `site/package.json` pin the exact version via `packageManager: pnpm@10.9.0`; running pnpm via [corepack](https://nodejs.org/api/corepack.html) selects the pinned version automatically. |
 | Vite | See `web/package.json` | Bundler; version pinned in lockfile. |
 
 ---
@@ -62,7 +65,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 
 | Scenario | Risk | Action |
 |---|---|---|
-| New minor Go release | Low | Update `go.mod`, run `go test ./...` and `go test -race ./...`. |
+| New minor Go release | Low | Update `go.mod`, run `go test ./cmd/... ./internal/...` and `go test -race ./cmd/... ./internal/...`. |
 | New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `itervox --dry-run` and verify dispatch logs show agent starting. |
 | New Codex release | Medium | Same as above. |
 | Linear GraphQL schema change | Low | Monitor [Linear changelog](https://linear.app/changelog). If `FetchCandidateIssues` starts returning unexpected shapes, Zod-style errors will surface in logs. |

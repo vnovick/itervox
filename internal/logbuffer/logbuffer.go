@@ -61,9 +61,27 @@ func (b *Buffer) getOrCreate(identifier string) *issueBuf {
 	return v.(*issueBuf)
 }
 
+// maxLineBytes caps the on-disk and in-memory size of a single log line. A
+// pathological agent can emit a 100+MB single line (e.g. dumping a binary as
+// hex), which then pins maxLinesPerIssue × that-size in RAM and blocks all
+// readers behind serialization. 64KiB is generous for human-readable output
+// and keeps worst-case memory at ~32MB per issue (was ~500MB).
+const maxLineBytes = 64 * 1024
+
 // Add appends a line for the given identifier, dropping the oldest if over capacity.
 // If a log directory is configured, the line is also written to disk.
+// Lines longer than maxLineBytes are truncated with a trailing notice (T-11).
 func (b *Buffer) Add(identifier, line string) {
+	if len(line) > maxLineBytes {
+		suffix := fmt.Sprintf("…[truncated %d bytes]", len(line)-maxLineBytes)
+		// G-20 (gaps_280426_2): clamp with max(0, …) so a degenerate config
+		// where the suffix exceeds maxLineBytes (e.g. tests using a tiny cap)
+		// does not produce a negative slice index. At the production
+		// maxLineBytes (64 KiB) the suffix is always tiny; this guard is a
+		// belt-and-suspenders for future tunings.
+		end := min(max(0, maxLineBytes-len(suffix)), len(line))
+		line = line[:end] + suffix
+	}
 	ib := b.getOrCreate(identifier)
 	ib.mu.Lock()
 	ib.lines = append(ib.lines, line)

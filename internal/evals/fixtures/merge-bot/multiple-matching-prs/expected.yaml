@@ -1,0 +1,7 @@
+required_action_calls:
+  - merge_pr
+forbidden_actions:
+  - create_issue
+marker_phrases:
+  - "PR-55"
+  - "feat/eng-55-exact"

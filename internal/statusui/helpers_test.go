@@ -1,6 +1,8 @@
 package statusui
 
 import (
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -610,6 +612,28 @@ func TestHeaderLineCount_AllExtras(t *testing.T) {
 	}
 	// 3 base + 1 rate limit + 1 dashboard URL + 1 kill msg = 6
 	assert.Equal(t, 6, m.headerLineCount())
+}
+
+func TestHeaderLineCount_WithInputRows(t *testing.T) {
+	m := Model{
+		snap: newTestSnap(server.StateSnapshot{
+			InputRequired: []server.InputRequiredRow{
+				{Identifier: "PROJ-1", State: "input_required"},
+			},
+		}),
+		cfg: Config{},
+	}
+	assert.Equal(t, 4, m.headerLineCount())
+}
+
+func TestInputStateCounts(t *testing.T) {
+	waiting, pending := inputStateCounts([]server.InputRequiredRow{
+		{Identifier: "PROJ-1", State: "input_required"},
+		{Identifier: "PROJ-2", State: "pending_input_resume"},
+		{Identifier: "PROJ-3", State: "input_required"},
+	})
+	assert.Equal(t, 2, waiting)
+	assert.Equal(t, 1, pending)
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,6 +1282,83 @@ func TestUpdate_ProjectPickerFlow(t *testing.T) {
 	assert.NotNil(t, applied)
 }
 
+func TestUpdate_OpenWebUICopiesURL(t *testing.T) {
+	orig := copyURLToClipboardFn
+	t.Cleanup(func() { copyURLToClipboardFn = orig })
+
+	called := make(chan string, 1)
+	copyURLToClipboardFn = func(url string) {
+		called <- url
+	}
+
+	m := readyModel(nil)
+	m.cfg.DashboardURL = "http://127.0.0.1:8090/"
+
+	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = newM.(Model)
+
+	assert.Nil(t, cmd)
+	select {
+	case got := <-called:
+		assert.Equal(t, "http://127.0.0.1:8090/", got)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("copyURLToClipboardFn was not called")
+	}
+	assert.Contains(t, m.killMsg, "Web UI URL copied")
+}
+
+func TestCopyURLToClipboard_PrefersNativeClipboardOnDarwin(t *testing.T) {
+	origGOOS := clipboardGOOS
+	origNative := copyURLToNativeClipboardFn
+	origOSC52 := writeOSC52ClipboardFn
+	t.Cleanup(func() {
+		clipboardGOOS = origGOOS
+		copyURLToNativeClipboardFn = origNative
+		writeOSC52ClipboardFn = origOSC52
+	})
+
+	clipboardGOOS = "darwin"
+	nativeCalls := 0
+	osc52Calls := 0
+	copyURLToNativeClipboardFn = func(url string) error {
+		nativeCalls++
+		assert.Equal(t, "http://127.0.0.1:8090/", url)
+		return nil
+	}
+	writeOSC52ClipboardFn = func(string) {
+		osc52Calls++
+	}
+
+	copyURLToClipboard("http://127.0.0.1:8090/")
+
+	assert.Equal(t, 1, nativeCalls)
+	assert.Equal(t, 0, osc52Calls)
+}
+
+func TestCopyURLToClipboard_FallsBackToOSC52WhenNativeClipboardFails(t *testing.T) {
+	origGOOS := clipboardGOOS
+	origNative := copyURLToNativeClipboardFn
+	origOSC52 := writeOSC52ClipboardFn
+	t.Cleanup(func() {
+		clipboardGOOS = origGOOS
+		copyURLToNativeClipboardFn = origNative
+		writeOSC52ClipboardFn = origOSC52
+	})
+
+	clipboardGOOS = "darwin"
+	copyURLToNativeClipboardFn = func(string) error {
+		return errors.New("pbcopy failed")
+	}
+	copied := ""
+	writeOSC52ClipboardFn = func(url string) {
+		copied = url
+	}
+
+	copyURLToClipboard("http://127.0.0.1:8090/")
+
+	assert.Equal(t, "http://127.0.0.1:8090/", copied)
+}
+
 // ---------------------------------------------------------------------------
 // Profile picker flow
 // ---------------------------------------------------------------------------
@@ -1514,6 +1615,44 @@ func TestView_HistoryTabRenders(t *testing.T) {
 	assert.NotEmpty(t, out)
 }
 
+func TestView_InputSectionRenders(t *testing.T) {
+	snap := newTestSnap(server.StateSnapshot{
+		InputRequired: []server.InputRequiredRow{
+			{Identifier: "WAIT-1", State: "input_required"},
+			{Identifier: "RESUME-1", State: "pending_input_resume"},
+		},
+	})
+	m := readyModel(snap)
+
+	out := m.View()
+	assert.Contains(t, out, "INPUT")
+	assert.Contains(t, out, "WAIT-1")
+	assert.Contains(t, out, "RESUME-1")
+	assert.Contains(t, out, "reply in tracker/dashboard")
+	assert.Contains(t, out, "waiting for reply")
+	assert.Contains(t, out, "reply received")
+}
+
+func TestView_PRInfoRowUsesCopyLabel(t *testing.T) {
+	buf := logbuffer.New()
+	line, err := json.Marshal(domain.BufLogEntry{
+		Msg: "worker: pr_opened",
+		URL: "https://github.com/org/repo/pull/42",
+	})
+	require.NoError(t, err)
+	buf.Add("RUN-1", string(line))
+
+	snap := newTestSnap(server.StateSnapshot{
+		Running: []server.RunningRow{{Identifier: "RUN-1", State: "In Progress"}},
+	})
+	m := readyModel(snap)
+	m.buf = buf
+
+	out := m.View()
+	assert.Contains(t, out, "o:copy")
+	assert.NotContains(t, out, "o:open")
+}
+
 func TestView_SplitModeRenders(t *testing.T) {
 	snap := newTestSnap(server.StateSnapshot{
 		Running: []server.RunningRow{{Identifier: "A"}},
@@ -1589,6 +1728,17 @@ func TestUpdate_QuitReturnsQuitCmd(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	// The cmd should be tea.Quit.
 	assert.NotNil(t, cmd)
+}
+
+func TestUpdate_QuitInvokesQuitApp(t *testing.T) {
+	m := readyModel(nil)
+	called := false
+	m.cfg.QuitApp = func() { called = true }
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+
+	assert.NotNil(t, cmd)
+	assert.True(t, called)
 }
 
 // ---------------------------------------------------------------------------

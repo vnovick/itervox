@@ -2,6 +2,7 @@
   "name": "itervox-site",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.9.0",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",

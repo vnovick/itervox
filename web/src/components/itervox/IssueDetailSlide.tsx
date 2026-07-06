@@ -1,17 +1,11 @@
-import React, { Suspense, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-
-const LazyMarkdown = React.lazy(() =>
-  Promise.all([import('react-markdown'), import('remark-gfm')]).then(
-    ([{ default: ReactMarkdown }, { default: remarkGfm }]) => ({
-      default: (props: { children: string }) => (
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.children}</ReactMarkdown>
-      ),
-    }),
-  ),
-);
+import MarkdownPanel from './MarkdownPanel';
+import IssueDetailHeader from './IssueDetailHeader';
+import { IssueBlockerDetails } from './IssueBlockerDetails';
+import { IssueReviewThread } from './IssueReviewThread';
+import { IssueStatusChanges } from './IssueStatusChanges';
 import { useItervoxStore } from '../../store/itervoxStore';
-import Badge from '../ui/badge/Badge';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import {
   useIssues,
@@ -24,13 +18,9 @@ import {
   useDismissInput,
   useTriggerAIReview,
   ISSUES_KEY,
+  ISSUE_KEY,
 } from '../../queries/issues';
-import {
-  stateBadgeColor,
-  EMPTY_PROFILE_LABEL,
-  EMPTY_PROFILES,
-  proseClass,
-} from '../../utils/format';
+import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
 
 export default function IssueDetailSlide() {
   const selectedIdentifier = useItervoxStore((s) => s.selectedIdentifier);
@@ -53,6 +43,8 @@ export default function IssueDetailSlide() {
   const defaultBackend = useItervoxStore((s) => s.snapshot?.defaultBackend ?? 'claude');
   const profileDefs = useItervoxStore((s) => s.snapshot?.profileDefs);
   const runningRows = useItervoxStore((s) => s.snapshot?.running);
+  const historyRows = useItervoxStore((s) => s.snapshot?.history);
+  const automations = useItervoxStore((s) => s.snapshot?.automations);
   const [replyText, setReplyText] = useState('');
 
   const close = useCallback(() => {
@@ -63,6 +55,7 @@ export default function IssueDetailSlide() {
   useEffect(() => {
     if (selectedIdentifier) {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ISSUE_KEY(selectedIdentifier) });
     }
   }, [selectedIdentifier, queryClient]);
 
@@ -73,53 +66,15 @@ export default function IssueDetailSlide() {
 
   return (
     <SlidePanel isOpen direction="right" title={issue.identifier} onClose={close}>
-      {/* Sub-header: badges + title */}
-      <div className="border-theme-line flex-shrink-0 space-y-1 border-b px-5 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge color={stateBadgeColor(issue.state)} size="sm">
-            {issue.state}
-          </Badge>
-          <Badge
-            color={
-              issue.orchestratorState === 'running'
-                ? 'success'
-                : issue.orchestratorState === 'retrying'
-                  ? 'warning'
-                  : 'light'
-            }
-            size="sm"
-          >
-            {issue.orchestratorState}
-          </Badge>
-          {/* Backend badge (read-only — backend is determined by profile) */}
-          {(() => {
-            const runningBackend = runningRows?.find(
-              (r) => r.identifier === issue.identifier,
-            )?.backend;
-            const profileHint =
-              issue.agentProfile && profileDefs?.[issue.agentProfile]
-                ? profileDefs[issue.agentProfile].backend ||
-                  profileDefs[issue.agentProfile].command ||
-                  ''
-                : '';
-            const backend =
-              runningBackend ||
-              (profileHint &&
-                (/codex/i.test(profileHint)
-                  ? 'codex'
-                  : /claude/i.test(profileHint)
-                    ? 'claude'
-                    : '')) ||
-              defaultBackend;
-            return (
-              <span className="bg-theme-bg-soft text-theme-text-secondary ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium">
-                {backend}
-              </span>
-            );
-          })()}
-        </div>
-        <p className="text-theme-text text-xl leading-tight font-semibold">{issue.title}</p>
-      </div>
+      {/* Sub-header: badges + title (extracted to IssueDetailHeader, T-20) */}
+      <IssueDetailHeader
+        issue={issue}
+        runningRows={runningRows}
+        history={historyRows}
+        profileDefs={profileDefs}
+        defaultBackend={defaultBackend}
+        automations={automations}
+      />
 
       {/* Scrollable body */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
@@ -152,6 +107,8 @@ export default function IssueDetailSlide() {
             </button>
           )}
         </div>
+
+        <IssueStatusChanges changes={issue.statusChanges} />
 
         {/* Priority + Labels */}
         {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
@@ -235,79 +192,98 @@ export default function IssueDetailSlide() {
           </div>
         )}
 
-        {/* Blocked by */}
-        {issue.blockedBy && issue.blockedBy.length > 0 && (
-          <div>
-            <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Blocked by</h4>
-            <div className="flex flex-wrap gap-1.5">
-              {issue.blockedBy.map((id) => (
-                <span
-                  key={id}
-                  className="bg-theme-danger-soft text-theme-danger inline-flex items-center rounded px-2 py-0.5 font-mono text-xs"
-                >
-                  {id}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+        <IssueBlockerDetails issue={issue} />
 
         {/* Description */}
         <div>
           <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">Description</h4>
           {issue.description ? (
-            <div className={proseClass}>
-              <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
-                <LazyMarkdown>{issue.description}</LazyMarkdown>
-              </Suspense>
-            </div>
+            <MarkdownPanel>{issue.description}</MarkdownPanel>
           ) : (
             <p className="text-theme-muted text-sm italic">No description</p>
           )}
         </div>
 
-        {/* Comments */}
+        {/* Review thread (T-7) — agent-marked thread sits between description
+            and the heavier "Comments" block so an operator can scan agent
+            review activity without scrolling through every human comment. */}
         {issue.comments && issue.comments.length > 0 && (
-          <div>
-            <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">
-              Comments ({issue.comments.length})
-            </h4>
-            <div className="space-y-4">
-              {issue.comments.map((c, i) => (
-                <div
-                  key={`${c.author}-${c.createdAt ?? String(i)}`}
-                  className="border-theme-line bg-theme-bg-soft space-y-2 rounded-lg border p-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                      style={{ background: 'var(--gradient-accent)' }}
-                    >
-                      {(c.author || '?').charAt(0).toUpperCase()}
-                    </span>
-                    <span className="text-theme-text text-sm font-medium">
-                      {c.author || 'Unknown'}
-                    </span>
-                    {c.createdAt && (
-                      <span className="text-theme-muted ml-auto text-xs">
-                        {new Date(c.createdAt).toLocaleDateString(undefined, {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
-                      </span>
-                    )}
-                  </div>
-                  <div className={proseClass}>
-                    <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
-                      <LazyMarkdown>{c.body}</LazyMarkdown>
-                    </Suspense>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <IssueReviewThread comments={issue.comments} />
         )}
+
+        {/* Comments — always rendered oldest-first so the thread reads in
+            chronological order and matching tracker UI conventions. The
+            backend contract (domain.Issue.Comments) guarantees ascending
+            CreatedAt but tracker adapters occasionally disagree; sort
+            defensively in the UI so the UX is stable regardless. */}
+        {issue.comments &&
+          issue.comments.length > 0 &&
+          (() => {
+            const sortedComments = [...issue.comments].sort((a, b) => {
+              const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+              const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+              return at - bt;
+            });
+            // Identify the Itervox bot's latest question comment so the UI
+            // can mark it inline with a small "agent question" pill when the
+            // issue is in input_required or pending_input_resume state —
+            // answering the "which comment triggered the banner?" question.
+            const isBotAuthor = (author?: string) =>
+              !!author && author.trim().toLowerCase() === 'itervox';
+            const latestBotCommentIdx = (() => {
+              for (let i = sortedComments.length - 1; i >= 0; i--) {
+                if (isBotAuthor(sortedComments[i].author)) return i;
+              }
+              return -1;
+            })();
+            const showQuestionMarker =
+              issue.orchestratorState === 'input_required' ||
+              issue.orchestratorState === 'pending_input_resume';
+            return (
+              <div>
+                <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">
+                  Comments ({sortedComments.length})
+                </h4>
+                <div className="space-y-4">
+                  {sortedComments.map((c, i) => (
+                    <div
+                      key={`${c.author}-${c.createdAt ?? String(i)}`}
+                      className="border-theme-line bg-theme-bg-soft space-y-2 rounded-lg border p-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                          style={{ background: 'var(--gradient-accent)' }}
+                        >
+                          {(c.author || '?').charAt(0).toUpperCase()}
+                        </span>
+                        <span className="text-theme-text text-sm font-medium">
+                          {c.author || 'Unknown'}
+                        </span>
+                        {showQuestionMarker && i === latestBotCommentIdx && (
+                          <span className="rounded-full bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
+                            {issue.orchestratorState === 'input_required'
+                              ? 'agent question'
+                              : 'reply received'}
+                          </span>
+                        )}
+                        {c.createdAt && (
+                          <span className="text-theme-muted ml-auto text-xs">
+                            {new Date(c.createdAt).toLocaleDateString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })}
+                          </span>
+                        )}
+                      </div>
+                      <MarkdownPanel>{c.body}</MarkdownPanel>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
         {/* Input Required — reply UI */}
         {issue.orchestratorState === 'input_required' && (
@@ -316,13 +292,7 @@ export default function IssueDetailSlide() {
               <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
               <h4 className="text-sm font-semibold text-orange-400">Agent needs your input</h4>
             </div>
-            {issue.error && (
-              <div className={proseClass}>
-                <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
-                  <LazyMarkdown>{issue.error}</LazyMarkdown>
-                </Suspense>
-              </div>
-            )}
+            {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
             <textarea
               value={replyText}
               onChange={(e) => {
@@ -360,6 +330,19 @@ export default function IssueDetailSlide() {
                 {dismissInputMutation.isPending ? 'Dismissing…' : 'Dismiss'}
               </button>
             </div>
+          </div>
+        )}
+
+        {issue.orchestratorState === 'pending_input_resume' && (
+          <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
+              <h4 className="text-sm font-semibold text-orange-400">Reply received</h4>
+            </div>
+            <p className="text-theme-text-secondary text-sm">
+              Itervox has your reply and is waiting to resume the agent.
+            </p>
+            {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
           </div>
         )}
       </div>

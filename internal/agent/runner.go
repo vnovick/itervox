@@ -53,9 +53,10 @@ type Runner interface {
 //
 // The project's WORKFLOW.md instructs agents to emit the
 // <!-- itervox:needs-input --> sentinel on its own line when they need
-// human input before continuing. This is a contract between the prompt
-// template and the orchestrator — no LLM classifiers, no heuristic pattern
-// matching, no API keys. The agent tells us when it's blocked.
+// human input before continuing. This is the deterministic fast path shared by
+// all backend parsers. The orchestrator may run an additional deterministic
+// fallback for successful turns that did not emit an explicit signal, but
+// FinalizeResult itself stays literal and backend-agnostic.
 //
 // Detection order:
 //  1. Parser already set InputRequired (e.g. codex turn.failed "human turn") — keep it

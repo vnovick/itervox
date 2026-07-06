@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,6 +167,11 @@ func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
 	}
 }
 
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
 // FetchCandidateIssues returns paginated active-state issues respecting the
 // current runtime project filter. If no runtime filter is set, it falls back
 // to the WORKFLOW.md project_slug value (or all issues if that is also empty).
@@ -273,7 +280,14 @@ query ItervoxResolveStateId($issueId: String!, $stateName: String!) {
 	if len(nodes) == 0 {
 		return fmt.Errorf("linear_update_state: state %q not found for issue %q", stateName, issueID)
 	}
-	stateID, _ := nodes[0].(map[string]any)["id"].(string)
+	// G-19 (gaps_280426_2): comma-ok the chained type assertion. Previously a
+	// single-value `nodes[0].(map[string]any)["id"].(string)` would panic if
+	// Linear ever returned a non-map element here.
+	firstNode, ok := nodes[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("linear_update_state: unexpected node[0] shape for state %q", stateName)
+	}
+	stateID, _ := firstNode["id"].(string)
 	if stateID == "" {
 		return fmt.Errorf("linear_update_state: empty state id for %q", stateName)
 	}
@@ -303,26 +317,139 @@ mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
 }
 
 // CreateComment posts a comment body on the given Linear issue ID.
-func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
+func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
 	const mutation = `
 mutation ItervoxCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {
+    comment {
+      id
+      body
+      createdAt
+      user { id name }
+    }
     success
   }
 }`
 	vars := map[string]any{"issueId": issueID, "body": body}
 	resp, err := c.graphql(ctx, mutation, vars)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if data, ok := resp["data"].(map[string]any); ok {
 		if cc, ok := data["commentCreate"].(map[string]any); ok {
 			if success, _ := cc["success"].(bool); success {
-				return nil
+				comment := &domain.Comment{Body: body}
+				if rawComment, ok := cc["comment"].(map[string]any); ok {
+					comment.ID, _ = rawComment["id"].(string)
+					comment.Body, _ = rawComment["body"].(string)
+					comment.CreatedAt = tracker.ParseTime(rawComment["createdAt"])
+					if user, ok := rawComment["user"].(map[string]any); ok {
+						comment.AuthorID, _ = user["id"].(string)
+						comment.AuthorName, _ = user["name"].(string)
+					}
+				}
+				return comment, nil
 			}
 		}
 	}
-	return fmt.Errorf("linear_create_comment: unexpected response: %v", resp)
+	return nil, fmt.Errorf("linear_create_comment: unexpected response: %v", resp)
+}
+
+// CreateIssue creates a follow-up issue in the same team/project context as
+// sourceIssueID and assigns it to the configured state/column.
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
+	contextResp, err := c.graphql(ctx, QueryCreateIssueContext, map[string]any{"id": sourceIssueID})
+	if err != nil {
+		return nil, fmt.Errorf("linear_create_issue: resolve context: %w", err)
+	}
+	data, ok := contextResp["data"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_create_issue: missing data")
+	}
+	sourceIssue, ok := data["issue"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_create_issue: missing issue context")
+	}
+	team, ok := sourceIssue["team"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_create_issue: missing team context")
+	}
+	teamID, _ := team["id"].(string)
+	if teamID == "" {
+		return nil, fmt.Errorf("linear_create_issue: empty team id")
+	}
+	states, _ := team["states"].(map[string]any)
+	nodes, _ := states["nodes"].([]any)
+	stateID := ""
+	for _, rawNode := range nodes {
+		node, ok := rawNode.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(stringValue(node["name"])), stateName) {
+			stateID = stringValue(node["id"])
+			break
+		}
+	}
+	if stateID == "" {
+		return nil, fmt.Errorf("linear_create_issue: state %q not found in source issue team", stateName)
+	}
+
+	input := map[string]any{
+		"teamId":      teamID,
+		"title":       title,
+		"description": body,
+		"stateId":     stateID,
+	}
+	if project, ok := sourceIssue["project"].(map[string]any); ok {
+		if projectID, _ := project["id"].(string); projectID != "" {
+			input["projectId"] = projectID
+		}
+	}
+
+	const mutation = `
+mutation ItervoxCreateIssue($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    issue {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      inverseRelations(first: 50) {
+        nodes {
+          type
+          issue { id identifier url state { name } }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+    success
+  }
+}`
+
+	resp, err := c.graphql(ctx, mutation, map[string]any{"input": input})
+	if err != nil {
+		return nil, fmt.Errorf("linear_create_issue: issueCreate: %w", err)
+	}
+	if data, ok := resp["data"].(map[string]any); ok {
+		if created, ok := data["issueCreate"].(map[string]any); ok {
+			if success, _ := created["success"].(bool); success {
+				if issueNode, ok := created["issue"].(map[string]any); ok {
+					issue := normalizeIssue(issueNode)
+					if issue != nil {
+						return issue, nil
+					}
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("linear_create_issue: unexpected response: %v", resp)
 }
 
 // SetIssueBranch updates the branchName field on the Linear issue so retried
@@ -381,8 +508,13 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				if b == "" {
 					continue
 				}
-				c := domain.Comment{Body: b, CreatedAt: tracker.ParseTime(node["createdAt"])}
+				c := domain.Comment{
+					ID:        stringValue(node["id"]),
+					Body:      b,
+					CreatedAt: tracker.ParseTime(node["createdAt"]),
+				}
 				if user, ok := node["user"].(map[string]any); ok {
+					c.AuthorID = stringValue(user["id"])
 					c.AuthorName, _ = user["name"].(string)
 				}
 				issue.Comments = append(issue.Comments, c)
@@ -571,6 +703,21 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Surface the GraphQL error body in daemon logs so a 400 from a bad
+		// filter shape (or any other vendor-side validation) is debuggable
+		// without HTTP capture. Body may be empty; we just truncate to keep
+		// the log line bounded. The returned error wraps the status code so
+		// callers can still classify it with errors.As(*APIStatusError).
+		body, _ := io.ReadAll(resp.Body)
+		if snippet := strings.TrimSpace(string(body)); snippet != "" {
+			const maxLen = 512
+			if len(snippet) > maxLen {
+				snippet = snippet[:maxLen] + "…"
+			}
+			slog.Warn("linear: graphql error response",
+				"status", resp.StatusCode,
+				"body", snippet)
+		}
 		return nil, &tracker.APIStatusError{Adapter: "linear", Status: resp.StatusCode}
 	}
 

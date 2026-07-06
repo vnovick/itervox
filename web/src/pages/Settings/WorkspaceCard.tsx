@@ -1,16 +1,29 @@
 import { useState } from 'react';
 
+const AUTO_REVIEW_CONFLICT_ERROR =
+  'Auto-clear cannot be enabled while auto-review is enabled. Disable auto-review first.';
+
 interface WorkspaceCardProps {
   autoClearWorkspace: boolean;
+  autoReviewEnabled: boolean;
   onToggle: (enabled: boolean) => Promise<boolean>;
 }
 
-export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardProps) {
+export function WorkspaceCard({
+  autoClearWorkspace,
+  autoReviewEnabled,
+  onToggle,
+}: WorkspaceCardProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const visibleError = !autoReviewEnabled && error === AUTO_REVIEW_CONFLICT_ERROR ? '' : error;
 
   const handleChange = async (enabled: boolean) => {
     if (saving) return;
+    if (enabled && autoReviewEnabled) {
+      setError(AUTO_REVIEW_CONFLICT_ERROR);
+      return;
+    }
     setSaving(true);
     setError('');
     const ok = await onToggle(enabled);
@@ -55,9 +68,9 @@ export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardPro
               When a task completes successfully (reaches the completion state), automatically
               delete the cloned workspace directory. Logs are always kept for visibility.
             </span>
-            {error && (
+            {visibleError && (
               <span role="alert" className="text-theme-danger mt-1 block text-xs">
-                {error}
+                {visibleError}
               </span>
             )}
           </div>

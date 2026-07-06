@@ -128,4 +128,38 @@ describe('AuthGate', () => {
     const headers = (stateCall[1].headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer my-token');
   });
+
+  // Pins the URL-capture-vs-probe ordering contract (T-06): when AuthGate
+  // mounts with BOTH a stale token in tokenStore AND a fresh ?token= in the
+  // URL, the URL-capture useEffect must run before the probe so /state is
+  // probed with the FRESH token, not the stale one. Without this, a user
+  // would silently authenticate with a token they thought they were
+  // replacing.
+  it('uses URL token over stale stored token on initial mount', async () => {
+    useTokenStore.getState().setToken('stale-token', false);
+    window.history.replaceState(null, '', '/?token=fresh-token');
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 200 })) // /health
+      .mockResolvedValueOnce(new Response('{}', { status: 200 })); // /state
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    render(
+      <AuthGate>
+        <div data-testid="app">app</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app')).toBeInTheDocument();
+    });
+
+    const stateCall = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(stateCall[0]).toBe('/api/v1/state');
+    const headers = (stateCall[1].headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer fresh-token');
+    expect(useTokenStore.getState().token).toBe('fresh-token');
+    expect(window.location.search).toBe('');
+  });
 });

@@ -1,0 +1,691 @@
+---
+title: Manual Testing Guide
+description: Step-by-step scenarios contributors can run to validate Itervox features end-to-end without relying on CI.
+sidebar:
+  order: 20
+---
+
+This guide walks through scenarios that automated tests cannot fully cover — anything involving a real agent CLI, real tracker behavior, real dashboard UI, or the interplay between the orchestrator and an actual filesystem. Use it when:
+
+- Validating a feature before tagging a release
+- Reproducing a bug report from an issue
+- Onboarding to a part of the codebase you have not touched before
+- Sanity-checking a change that touched multiple subsystems
+
+Each scenario is independent. Pick the ones relevant to what you changed. Scenarios marked **(memory)** use the in-memory tracker and need no external credentials. Scenarios marked **(LLM)** require a real `claude` or `codex` CLI; if you do not have one installed, skip them.
+
+## Prerequisites
+
+```bash
+# Build a fresh binary (embeds the dashboard)
+make build
+
+# Confirm the binary works
+./itervox --help
+
+# Optional but recommended: dashboard at http://localhost:8090
+# requires a clean WORKFLOW.md to bind successfully
+```
+
+You will create throwaway project directories under `/tmp/itervox-test-*` for each scenario. Clean them up afterwards with `rm -rf /tmp/itervox-test-*`.
+
+For LLM scenarios you also need either `claude` (with `claude login` completed) or `codex` (with `codex login`) on your `PATH`.
+
+---
+
+## Smoke test (5 minutes, memory)
+
+The fastest path to confirming a build is healthy.
+
+**Setup:**
+
+```bash
+mkdir /tmp/itervox-test-smoke && cd /tmp/itervox-test-smoke
+git init -q
+../itervox-source/itervox init --tracker memory --runner claude
+```
+
+> If you cloned the repo at `/path/to/itervox`, the built binary is at `/path/to/itervox/itervox` after `make build`. Replace `../itervox-source/itervox` accordingly.
+
+**Run:**
+
+```bash
+./itervox
+```
+
+**Expect:**
+
+- The TUI starts and shows a status row with `● LIVE` and capacity `0/3` (or whatever `max_concurrent_agents` defaults to)
+- The dashboard URL is printed (`http://localhost:8090`)
+- `.itervox/HEARTBEAT.md` exists and refreshes every ~15s
+- `.itervox/agents/implementer/SOUL.md`, `INSTRUCTIONS.md`, and the same for `reviewer` and `input-responder` are present
+- Root `.gitignore` (if present) was either created or has carve-outs `!.itervox/agents/**` and `!.itervox/handoff/**`
+
+**Verify:**
+
+```bash
+cat .itervox/HEARTBEAT.md          # last line shows recent timestamp
+ls .itervox/agents/                # implementer, reviewer, input-responder
+cat .gitignore                     # carve-outs present if .itervox/ is broadly ignored
+curl http://localhost:8090/api/v1/health   # may require ?token=... see auth section
+```
+
+Quit with `Ctrl+C` or `q`. Daemon shuts down cleanly within ~2 seconds.
+
+---
+
+## Schema 2 validation (memory)
+
+**Goal:** verify the daemon hard-fails on legacy schemas and prints actionable guidance.
+
+```bash
+mkdir /tmp/itervox-test-schema && cd /tmp/itervox-test-schema
+
+cat > WORKFLOW.md <<'EOF'
+---
+tracker:
+  kind: memory
+agent:
+  profiles:
+    implementer:
+      prompt: "You are an implementer."
+---
+Just a body.
+EOF
+
+./itervox -workflow WORKFLOW.md
+```
+
+**Expect:** the daemon exits with a non-zero code and the stderr message contains:
+
+```
+WORKFLOW.md is missing itervox_schema_version.
+Run:
+  itervox init --update --workflow WORKFLOW.md
+```
+
+**Then:** run the migration and verify:
+
+```bash
+./itervox init --update --workflow WORKFLOW.md
+```
+
+- `WORKFLOW.md.bak` is created
+- `WORKFLOW.md` now starts with `itervox_schema_version: 2`
+- Inline `prompt:` is gone from `agent.profiles.implementer`
+- `.itervox/agents/implementer/SOUL.md` exists
+- `.itervox/agents/implementer/INSTRUCTIONS.md` contains the migrated prompt text under a "Migrated Instructions" heading
+
+Re-running the daemon now succeeds.
+
+---
+
+## Migration warning for `workspace.auto_clear` (memory)
+
+**Goal:** verify the v0.2.0 semantic-change notice fires for existing users.
+
+```bash
+mkdir /tmp/itervox-test-autoclear && cd /tmp/itervox-test-autoclear
+
+cat > WORKFLOW.md <<'EOF'
+---
+itervox_schema_version: 2
+tracker:
+  kind: memory
+workspace:
+  auto_clear: true
+agent:
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+---
+EOF
+
+mkdir -p .itervox/agents/implementer
+touch .itervox/agents/implementer/SOUL.md .itervox/agents/implementer/INSTRUCTIONS.md
+
+./itervox init --update --workflow WORKFLOW.md 2>&1
+```
+
+**Expect:** stderr contains the warning line:
+
+```
+itervox init --update: warning: workspace.auto_clear: true semantics changed in v0.2.0 — workspace is now cleared only when the issue reaches a terminal tracker state ...
+```
+
+The warning fires on every `--update` run, even when no schema migration is needed.
+
+---
+
+## Agent handoff chain (memory + LLM)
+
+**Goal:** end-to-end validation of the v0.2.0 handoff convention. This is the load-bearing v0.2.0 scenario.
+
+**Setup:** create a project with two profiles (researcher, implementer) and dispatch the same issue through both in sequence.
+
+```bash
+mkdir /tmp/itervox-test-handoff && cd /tmp/itervox-test-handoff
+git init -q
+../itervox-source/itervox init --tracker memory --runner claude
+
+# Add a researcher profile alongside the default implementer
+cat > .itervox/agents/researcher/SOUL.md <<'EOF'
+You are a researcher. You map relevant code and flag risks.
+EOF
+mkdir -p .itervox/agents/researcher
+cat > .itervox/agents/researcher/INSTRUCTIONS.md <<'EOF'
+# Researcher INSTRUCTIONS
+## Workflow
+- Inspect the issue.
+- Write findings to `run.handoff_path` (see Run Context block).
+- Do NOT edit code.
+
+## Handoff Protocol
+- Read the prior handoffs above (if any).
+- Write your deliverable to `run.handoff_path` before exiting.
+EOF
+```
+
+Edit `WORKFLOW.md` to register the researcher profile under `agent.profiles`. Then start the daemon:
+
+```bash
+./itervox
+```
+
+**Step 1 — researcher run:**
+
+In the dashboard, set the issue's profile to `researcher` (Settings → Profiles → assign per-issue, or via the API). Watch the worker complete.
+
+**Verify after researcher exits:**
+
+```bash
+ls .itervox/handoff/
+# Expect: 2026-XX-XXTHH-MM-SS.SSSZ_researcher.md
+cat .itervox/handoff/*_researcher.md
+# Expect: agent's written deliverable, references the issue
+```
+
+**Step 2 — implementer run:**
+
+Switch the issue's profile to `implementer` (default), move the issue back to "In Progress" so the orchestrator re-dispatches.
+
+**Verify the implementer's prompt:**
+
+Check the per-issue log buffer in the dashboard (or the daemon stdout). The rendered prompt should contain a `## Prior Agent Handoffs` block with the researcher's deliverable as a sub-heading.
+
+After the implementer completes:
+
+```bash
+ls .itervox/handoff/
+# Expect both:
+# 2026-XX-XXTHH-MM-SS.SSSZ_researcher.md
+# 2026-XX-XXTHH-MM-SS.SSSZ_implementer.md
+```
+
+Both files are committable; `git status` should show them as new files, not gitignored.
+
+---
+
+## Partial handoff rename on failure (memory + LLM)
+
+**Goal:** verify a worker that fails mid-deliverable has its handoff renamed to `.partial.md`.
+
+**Setup:** as above, but configure `agent.max_retries: 0` and use a profile whose INSTRUCTIONS deliberately ask the agent to fail (or kill the daemon mid-run for a stall).
+
+**Steps:**
+
+1. Start a worker that will fail (e.g. INSTRUCTIONS that direct the agent to exit with `exit 1` via Bash, or break the agent's command).
+2. Watch the worker exit `TerminalFailed`.
+
+**Verify:**
+
+```bash
+ls .itervox/handoff/
+# If the agent wrote ANY file before failing:
+# 2026-XX-XXTHH-MM-SS.SSSZ_<profile>.partial.md
+# (note .partial.md suffix)
+```
+
+If the agent never wrote anything, the dir is empty — that is also correct behavior (no file to mark partial).
+
+**Negative case (regression guard):** retry the same scenario after creating a stale handoff from a different run. The G2 fix should ensure the predecessor file is NOT renamed:
+
+```bash
+# Plant a predecessor handoff
+echo "predecessor work" > .itervox/handoff/2020-01-01T00-00-00.000Z_implementer.md
+
+# Run a worker that fails without writing its own handoff (e.g. broken agent.command)
+# After failure:
+ls .itervox/handoff/
+# Expect: 2020-01-01T00-00-00.000Z_implementer.md (NOT renamed)
+```
+
+---
+
+## AutoClear semantics: success path (memory + LLM)
+
+**Goal:** verify `workspace.auto_clear` fires when the issue reaches `completion_state`.
+
+**Setup:**
+
+```yaml
+# WORKFLOW.md additions
+workspace:
+  root: "/tmp/itervox-autoclear-ws"
+  auto_clear: true
+agent:
+  auto_review: false   # for this scenario
+```
+
+**Steps:**
+
+1. Dispatch a worker that succeeds.
+2. Watch the orchestrator log: `worker succeeded` → `workspace auto-cleared`.
+
+**Verify:**
+
+```bash
+ls /tmp/itervox-autoclear-ws/
+# Expect: the issue's workspace directory is GONE
+# Logs are preserved separately under <log_dir>/<identifier>/
+```
+
+---
+
+## AutoClear semantics: deferred behind reviewer (memory + LLM)
+
+**Goal:** verify the v0.2.0 change that lets `auto_clear` coexist with `auto_review`.
+
+**Setup:**
+
+```yaml
+workspace:
+  auto_clear: true
+agent:
+  reviewer_profile: reviewer
+  auto_review: true
+```
+
+**Steps:**
+
+1. Dispatch a worker (non-reviewer profile). It succeeds.
+2. Watch the orchestrator log — `dispatching reviewer` should fire AFTER the main worker but BEFORE workspace clear.
+3. The reviewer runs. It succeeds.
+4. Workspace clear fires now.
+
+**Verify:**
+
+- The reviewer's prompt logs show it could read the workspace (not empty)
+- After reviewer terminal-success, the workspace dir is removed
+- No `skipping auto-review because workspace auto-clear is enabled` log line — that line was removed in v0.2.0
+
+---
+
+## AutoClear semantics: failure path (memory + LLM)
+
+**Goal:** verify `auto_clear` also fires when an issue moves to `failed_state` after max retries.
+
+**Setup:**
+
+```yaml
+agent:
+  max_retries: 1
+tracker:
+  failed_state: "Failed"
+workspace:
+  auto_clear: true
+```
+
+**Steps:**
+
+1. Dispatch a worker that always fails (broken `agent.command`).
+2. After retry exhausts, the issue moves to "Failed" state.
+
+**Verify:**
+
+- Orchestrator log: `worker: max retries exhausted` → `workspace auto-cleared`
+- Workspace dir removed
+- Tracker state is "Failed"
+
+**Negative case (regression guard):** with `max_retries: 5`, verify the workspace persists between failed retries — only cleared on final terminal transition.
+
+---
+
+## Automation: `cron` trigger (memory)
+
+**Goal:** verify cron-driven dispatch fires on schedule.
+
+```yaml
+automations:
+  - id: every-minute
+    enabled: true
+    trigger:
+      type: cron
+      schedule: "* * * * *"
+      timezone: "UTC"
+    profile: implementer
+    instructions: |
+      A cron-driven test fired. No-op.
+```
+
+**Verify after ~1 minute:**
+
+- Dashboard's Live Ops strip shows "Automations" counter incrementing
+- An automation worker dispatched with `Kind: automation` (visible in Running Sessions or `RunHistory`)
+- The orchestrator log line `orchestrator: dispatch complete` includes this dispatch
+
+---
+
+## Automation: `input_required` trigger (memory + LLM)
+
+**Goal:** verify input-required automations dispatch a helper.
+
+**Setup:** a profile whose agent asks a question that triggers `input_required` (e.g. "Which option?\n1. ..."). Configure an input_responder automation:
+
+```yaml
+automations:
+  - id: input-responder
+    enabled: true
+    trigger:
+      type: input_required
+      input_context_regex: "Which option"
+    profile: input-responder
+    policy:
+      auto_resume: true
+```
+
+**Steps:**
+
+1. Dispatch the main worker. It asks a question.
+2. The orchestrator queues the input-required event.
+3. The input-responder automation matches and dispatches.
+4. The responder produces a reply.
+5. With `auto_resume: true`, the daemon resumes the main worker with the response.
+
+**Verify:**
+
+- Dashboard's Live Ops strip shows the input-required → resuming → running progression
+- Per-issue log shows the responder's reply text
+- Main worker eventually transitions to "Done" (or asks another question)
+
+---
+
+## Automation: `pr_opened` trigger (memory + LLM)
+
+**Goal:** verify PR-detection in-process dispatch.
+
+**Setup:** a profile whose agent creates a PR URL (in commit message, in tracker comment, in stdout). Configure:
+
+```yaml
+automations:
+  - id: pr-followup
+    enabled: true
+    trigger:
+      type: pr_opened
+    profile: reviewer
+    instructions: |
+      A PR was opened. Run a quick review pass.
+```
+
+**Steps:**
+
+1. Dispatch a worker.
+2. The worker (or you) writes something like `https://github.com/foo/bar/pull/123` to its output.
+3. The orchestrator detects the PR URL via `prdetector`.
+4. The pr_opened automation fires.
+
+**Verify:**
+
+- Orchestrator log: `automation: dispatching ... trigger=pr_opened`
+- The reviewer's prompt includes the detected PR URL
+
+---
+
+## Automation: `rate_limited` trigger and profile fallback (memory + LLM)
+
+**Goal:** verify the rate-limit auto-switch path.
+
+**Setup:** configure a custom error pattern that the test agent will print:
+
+```yaml
+agent:
+  rate_limit_error_patterns:
+    - "test_rate_limit_marker"
+automations:
+  - id: rl-fallback
+    enabled: true
+    trigger:
+      type: rate_limited
+    policy:
+      switch_to_profile: implementer-fallback
+      switch_to_backend: codex
+```
+
+Create a profile `implementer-fallback`. Make the primary profile's agent print `test_rate_limit_marker` to stderr.
+
+**Steps:**
+
+1. Primary worker dispatches and fails with the magic stderr.
+2. Retries exhaust.
+3. The orchestrator classifies the failure as rate-limit-driven.
+4. The rate_limited automation fires; profile switches to fallback.
+
+**Verify:**
+
+- Snapshot's `IssueProfiles["ENG-1"]` is now `implementer-fallback`
+- Snapshot's `IssueBackends["ENG-1"]` is now `codex`
+- Snapshot's `AutoSwitchedIdentifiers["ENG-1"]` is `true`
+- The next dispatch uses the fallback profile
+
+---
+
+## Automation: `issue_entered_state` chain (memory + LLM)
+
+**Goal:** verify state-transition-driven chaining (the foundation of the handoff factory pattern).
+
+**Setup:** define three automations that move an issue through `Todo → Researching → Implementing → Done`:
+
+```yaml
+automations:
+  - id: kick-research
+    trigger:
+      type: issue_entered_state
+      states: ["Todo"]
+    profile: researcher
+    policy:
+      move_to_state: "Researching"
+  - id: kick-implement
+    trigger:
+      type: issue_entered_state
+      states: ["Researching"]
+    profile: implementer
+    policy:
+      move_to_state: "Implementing"
+```
+
+**Steps:**
+
+1. Create an issue in "Todo" state.
+2. Watch the orchestrator log dispatches as each automation fires.
+
+**Verify:**
+
+- Researcher runs first; writes a handoff to `.itervox/handoff/<ts>_researcher.md`
+- Issue moves to "Researching"
+- Implementer runs; its prompt contains the researcher's handoff
+- Issue moves to "Implementing"
+- (etc.)
+
+---
+
+## Automation: `blockers_resolved` trigger (memory)
+
+**Goal:** verify dependency-driven dispatch.
+
+**Setup:** create two issues — A blocks B — and configure:
+
+```yaml
+automations:
+  - id: unblock-handler
+    enabled: true
+    trigger:
+      type: blockers_resolved
+    profile: implementer
+    policy:
+      move_to_state: "Todo"
+```
+
+**Steps:**
+
+1. Move issue A to "Done".
+2. The dependency audit detects B's blocker resolved.
+3. The blockers_resolved automation fires.
+
+**Verify:**
+
+- Snapshot's `DependencyAudit` shows B as unblocked
+- The automation dispatches a worker for B
+- B moves to "Todo"
+
+---
+
+## Daemon-backed agent actions (memory + LLM)
+
+**Goal:** verify the `/api/v1/agent-actions/*` permission gate.
+
+For each action (`comment`, `comment_pr`, `move_state`, `create_issue`, `provide_input`):
+
+**Positive case:** create a profile with the action in `allowed_actions`. Have the agent invoke it via `itervox action ...`. Verify the action succeeded (tracker comment posted, issue moved, etc.).
+
+**Negative case:** remove the action from `allowed_actions`. Verify the daemon's HTTP layer rejects the request with 403 and the agent's stdout/stderr contains the denial.
+
+**Token isolation check:** `cat .itervox/runtime/*` — bearer grants should be ephemeral, scoped to a single run. They should NOT contain `ITERVOX_API_TOKEN` (the main dashboard token).
+
+---
+
+## Dashboard surfaces (memory + LLM)
+
+Walk through each dashboard view and confirm visual coverage.
+
+**Live Ops strip** (top of dashboard):
+- Counters for Running, Paused, Retrying, Input Required, Automations, Capacity
+- Red warning when automation queue saturated (force by dispatching > `max_automation_queue_length` automations)
+
+**Automation Queue panel:**
+- Queued entries show profile, backend, trigger, queued age
+- Detail drawer (click an entry) shows trigger metadata, policy, profile permissions, dependency audit state, worker capacity
+- Local search filters by issue identifier or trigger type
+
+**Deps tab:**
+- React Flow graph renders blocker → blocked relationships
+- Badges: running, queued, terminal, blocked, unblocked, unknown
+- Clicking a node opens the existing issue detail panel
+- Graph does NOT edit dependencies (read-only)
+
+**Issue detail timeline:**
+- "Status changes" section shows recent transitions
+- Source chips: tracker observation, dashboard action, worker lifecycle, automation move, system cleanup
+- Automation-sourced rows include profile/backend/worker metadata
+
+**Settings:**
+- Automation editor: all 9 trigger types selectable, IANA timezone typeahead works
+- Profile editor: SOUL/INSTRUCTIONS files visible, daemon actions checkboxes mutable
+- Skills Inventory: scan shows skills/plugins/hooks/MCP/instructions counts; re-scan button works
+
+**Auth flow:**
+- Stop the daemon, restart binding to `0.0.0.0:8090` (non-loopback)
+- Without `ITERVOX_API_TOKEN`, daemon auto-generates one and prints it
+- Visit `http://localhost:8090/?token=<token>` — should auto-capture and proceed
+- Visit `http://localhost:8090/` without token — should show the login screen
+- Set `server.allow_unauthenticated_lan: true` and confirm token is no longer required
+
+---
+
+## TUI surfaces (memory + LLM)
+
+```bash
+./itervox    # default TUI mode
+```
+
+**Header:**
+- `● LIVE` / `○ OFFLINE` status
+- Capacity counter
+- Schema version
+- No `◈ SUB-AGENTS` / `◈ TEAMS` badge (removed in v0.2.0)
+- `⚠ CONFIG INVALID` line appears if WORKFLOW.md fails reload
+
+**Body:**
+- Issue list with current state, profile, backend, last log preview
+- Press `enter` to drill into an issue; live log stream renders
+- Press `q` to quit; terminal restored to cooked mode (no garbled prompt)
+
+**Hot reload:**
+- Edit WORKFLOW.md while daemon is running (change an automation's instructions)
+- Save the file
+- TUI/dashboard reflects the change on the next automation tick without restart
+
+**Config-invalid backoff:**
+- Introduce a YAML syntax error in WORKFLOW.md
+- Save; daemon continues on the previously-valid config
+- TUI header shows `⚠ CONFIG INVALID`
+- Fix the YAML; banner clears within ~30s
+
+---
+
+## Tracker integration (Linear / GitHub, optional)
+
+These require credentials. Use the memory tracker first for everything above; come back to these when validating cross-tracker behavior.
+
+**Linear:**
+
+```bash
+export LINEAR_API_KEY=lin_api_...
+./itervox init --tracker linear --runner claude --project YOUR_PROJECT_KEY
+./itervox
+```
+
+- Issues from the project appear in the dashboard
+- Comments posted via daemon actions appear in Linear within ~30s
+- State moves via `move_state` action transition the issue in Linear
+- Blockers come from native Linear issue relations
+
+**GitHub:**
+
+```bash
+export GITHUB_TOKEN=ghp_...
+./itervox init --tracker github --runner claude --owner foo --repo bar
+./itervox
+```
+
+- Issues from the repo appear
+- Blockers come from `blocked by #123` references in the issue body
+- PR-opened automation fires when an agent opens a PR
+
+---
+
+## Common failure modes and diagnostics
+
+| Symptom | Most likely cause | Where to look |
+|---|---|---|
+| Daemon panics with "no embedded web/dist" | Built with `go build` instead of `make build` | Re-run `make build` |
+| TUI looks garbled after exit | Code path skipped `fatalExit` | `cmd/itervox/exit.go` — ensure `os.Exit` is not called directly |
+| Dashboard 401 on every request | Auth token missing or wrong | Restart with `?token=<token>` URL; `ITERVOX_API_TOKEN` env |
+| Issue stays in "Todo" forever | Automation filter does not match | Check `automation: registered count=N matched=0` log lines |
+| Handoff file not visible to next agent | Branch checkout cleared untracked files | Commit handoff files to git so they survive branch switches |
+| `make verify` fails on `lint-go` | Missing golangci-lint or new lint rule | `golangci-lint run` directly for the full report |
+| Race condition reported by `go test -race` | Probably a real race | Stress with `-race -count=10`; see `orchestrator-invariants` skill |
+
+---
+
+## When to update this guide
+
+Add a scenario here when:
+
+- You ship a new feature that has a non-trivial end-to-end behavior
+- A regression escapes `make verify` and reaches a release
+- Onboarding feedback names a behavior that was hard to discover
+- A bug report could have been caught earlier by a specific manual check
+
+Remove a scenario when the behavior is fully covered by automated tests AND the manual check no longer provides additional confidence.

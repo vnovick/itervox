@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,10 +9,22 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
 )
 
+// profiles_Lookup is a thin wrapper that lets parseAgentProfiles call the
+// built-in profile registry without colliding with the local profiles map
+// variable name elsewhere in this file.
+func profiles_Lookup(name string) *profiles.Builtin {
+	return profiles.Lookup(name)
+}
+
 var envVarRe = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
+
+// LatestWorkflowSchemaVersion is the newest WORKFLOW.md front-matter shape
+// accepted for daemon startup.
+const LatestWorkflowSchemaVersion = 2
 
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
@@ -82,22 +95,82 @@ Be concise in your review comments. Focus on real problems, not style nits.`
 type AgentProfile struct {
 	// Command overrides the default agent CLI command (e.g. "claude --model ...").
 	Command string
-	// Prompt is a role description for this sub-agent, appended to the main
-	// WORKFLOW.md prompt as context when agent teams are enabled.
+	// Prompt is the legacy inline role description for this sub-agent.
+	// Schema 2 rejects this field; it remains for legacy migration and tests.
 	Prompt string
+	// SoulFile is the configured path to this profile's SOUL.md file, relative
+	// to WORKFLOW.md when not absolute.
+	SoulFile string
+	// InstructionsFile is the configured path to this profile's INSTRUCTIONS.md
+	// file, relative to WORKFLOW.md when not absolute.
+	InstructionsFile string
+	// Soul is the loaded SOUL.md template content for this profile.
+	Soul string
+	// Instructions is the loaded INSTRUCTIONS.md template content for this profile.
+	Instructions string
 	// Backend optionally overrides runner selection when it cannot be inferred
 	// from the command binary alone (for example, a wrapper script around codex).
 	Backend string
+	// Enabled controls whether the profile is selectable and dispatchable.
+	// Nil means true for backward compatibility with older tests/config literals.
+	Enabled *bool
+	// AllowedActions grants the profile access to daemon-backed actions such as
+	// tracker comments or provide-input. Empty = no extra actions.
+	AllowedActions []string
+	// CreateIssueState is the tracker state/column used when the create_issue
+	// action is allowed for this profile.
+	CreateIssueState string
 }
 
 // AgentConfig holds agent runner settings.
 type AgentConfig struct {
 	MaxConcurrentAgents        int
 	MaxConcurrentAgentsByState map[string]int
+	// PauseDispatchWhenAnyInState lists tracker states (case-insensitive); when
+	// ANY tracked issue is in one of these states, no new dispatch may begin
+	// regardless of available slots. Use case: pause Todo dispatch while any
+	// issue is "In Review" so PRs queue and merge before the next start. Empty
+	// disables the guard. Snapshotted into State at tick boundary.
+	PauseDispatchWhenAnyInState []string
+	// MergeStrategy controls how the daemon-backed `merge_pr` agent action
+	// finalizes a pull request: "squash" (default), "rebase", or "merge".
+	// Read at request time by the merge_pr handler; misconfigured values
+	// fall back to "squash".
+	MergeStrategy string
+	// MergeBlockLabels lists case-insensitive PR labels that, when present,
+	// cause the `merge_pr` action to refuse the merge with reason
+	// "blocked_label:<label>". Empty list disables the guard. Default at
+	// load time:
+	//   ["needs-human", "migration", "auth", "feature-flag", "breaking"]
+	MergeBlockLabels []string
+	// AllowUncheckedMerge controls the SRV-1 unarmed-gate refusal in the
+	// merge_pr agent action. gh's `pr checks --required` exits non-zero with
+	// "no required checks reported" on a repo with no branch-protection
+	// required checks configured — that is an unarmed gate (spec F3: "a gate
+	// that can never fail is not a gate"), so the default (false) refuses the
+	// merge with reason "unarmed_gate:...". Set true to proceed anyway,
+	// logging a loud warning instead of refusing. Read-only after startup.
+	AllowUncheckedMerge bool
+	// PreferHighOutdegreeSort, when true, inserts a tiebreaker between
+	// priority and createdAt that ranks issues which block more dependent
+	// siblings first (P2). Default false to preserve existing behaviour.
+	PreferHighOutdegreeSort bool
+	// TransportErrorPatterns lists case-insensitive substrings that, when
+	// matched against an agent-runner error message, classify the failure
+	// as a transient transport error (codex "stream disconnected", network
+	// hiccups, etc.) so the orchestrator pauses dispatch with reason
+	// "transport_error" instead of marking the issue failed. todolist4 A.4.
+	TransportErrorPatterns []string
+	// MaxAutomationQueueLength caps durable automation dispatch entries waiting
+	// for worker capacity or dependency resolution. Values <= 0 use the default
+	// of 100; the queue is never unlimited.
+	MaxAutomationQueueLength int
 	// MaxRetryBackoffMs caps the exponential back-off between agent retries.
 	// The progression is 10 s × 2^(attempt-1): 10 s, 20 s, 40 s, 80 s, 160 s,
 	// then capped at MaxRetryBackoffMs for all subsequent attempts.
-	// Default: 300 000 ms (5 min). Set to 0 to disable retries entirely.
+	// Values <= 0 fall back to the default. Retry count is controlled by
+	// MaxRetries.
+	// Default: 300 000 ms (5 min).
 	MaxRetryBackoffMs int
 	MaxTurns          int
 	Command           string
@@ -126,6 +199,22 @@ type AgentConfig struct {
 	// When set, agent turns are executed on these hosts via SSH in order,
 	// falling back to the next host on failure. Empty = run locally.
 	SSHHosts []string
+	// SSHHostDescriptions maps SSH host address -> optional human-readable label.
+	// Keys must match entries in SSHHosts. The dashboard shows these descriptions
+	// alongside the host list, and runtime edits persist them back to WORKFLOW.md.
+	SSHHostDescriptions map[string]string
+	// SSHStrictHostChecking is the default StrictHostKeyChecking mode applied
+	// to every SSH-hosted runner command, unless overridden per-host via
+	// SSHStrictHostByHost. Defaults to "accept-new" (TOFU — pin on first
+	// contact, reject on mismatch). Other valid values: "yes", "no", "ask",
+	// "off". Read at startup and applied via agent.SetSSHStrictHostDefault.
+	// T-32.
+	SSHStrictHostChecking string
+	// SSHStrictHostByHost maps SSH host address -> StrictHostKeyChecking mode
+	// (overrides SSHStrictHostChecking for the specific host). Useful for
+	// per-host hardening (e.g. "yes" on production, "no" on a sandbox VM).
+	// Applied via agent.SetSSHStrictHostOverrides. T-32.
+	SSHStrictHostByHost map[string]string
 	// DispatchStrategy controls how issues are routed to SSH hosts when
 	// multiple are configured. Valid values: "round-robin" (default),
 	// "least-loaded". Ignored when SSHHosts is empty.
@@ -147,12 +236,11 @@ type AgentConfig struct {
 	// override the default agent Command. Profiles can be selected per-issue
 	// from the web UI.
 	Profiles map[string]AgentProfile
-	// AgentMode controls the agent collaboration model.
-	// "" (solo):      agent runs alone with no profile context injected.
-	// "subagents":    agent may use its native helper/subagent tool.
-	// "teams":        profile role context injected into the prompt so the agent
-	//                 knows which specialised sub-agents it can call.
-	AgentMode string
+	// DepsAnalyzerProfile is the name of the agent profile used to populate
+	// the inferred dependency layer for the Deps tab. When empty, the
+	// dashboard's "Analyze dependencies" button is disabled and the Deps tab
+	// shows tracker-declared edges only.
+	DepsAnalyzerProfile string
 	// InlineInput controls whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	// When true, the issue moves to the completion state with a question comment;
@@ -161,6 +249,28 @@ type AgentConfig struct {
 	// response as a tracker comment before resuming the agent.
 	// Default: false.
 	InlineInput bool
+	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
+	// automation can swap an issue to a different profile / backend within
+	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
+	// Gap E.
+	MaxSwitchesPerIssuePerWindow int
+	// SwitchWindowHours is the rolling window over which
+	// MaxSwitchesPerIssuePerWindow is counted. Default 6. Gap E.
+	SwitchWindowHours int
+	// SwitchRevertHours, when > 0, triggers a periodic check that reverts
+	// rate_limited auto-switched profile/backend overrides whose age has
+	// exceeded the TTL. 0 (default) keeps the prior behaviour: overrides
+	// only clear on the next successful worker exit. Gap §6.2.
+	SwitchRevertHours int
+	// RateLimitErrorPatterns are case-insensitive substrings the
+	// orchestrator's terminal-failure classifier matches against the
+	// worker's last-error text to decide if a failure was rate-limit
+	// driven (and so should fire `rate_limited` automations rather than
+	// just `run_failed`). Empty → uses the built-in default list
+	// (rate_limit_exceeded / rate limit / 429 / quota / too many requests).
+	// Operators can extend or override the list when a vendor surfaces
+	// new throttle wording. Gap §5.1.
+	RateLimitErrorPatterns []string
 	// MaxRetries is the maximum number of retry attempts before an issue is
 	// moved to the failed state. 0 means unlimited retries (legacy behavior).
 	// Default: 5.
@@ -171,9 +281,9 @@ type AgentConfig struct {
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
 	// AvailableModels maps backend names ("claude", "codex") to model options
-	// discovered at init time or via the refresh-models command. The dashboard
-	// profile editor uses these for the model dropdown. When empty, the frontend
-	// falls back to a built-in default list.
+	// discovered at init time. The dashboard profile editor uses these for the
+	// model dropdown. When empty, the frontend falls back to a built-in default
+	// list.
 	AvailableModels map[string][]ModelOption
 }
 
@@ -190,7 +300,12 @@ type HooksConfig struct {
 	BeforeRun    string
 	AfterRun     string
 	BeforeRemove string
-	TimeoutMs    int
+	// AfterRunRequired makes the after_run hook a per-unit gate (spec F3):
+	// when true, a worker whose final after_run hook exits non-zero fails the
+	// unit instead of reaching TerminalSucceeded. Default false preserves the
+	// historical best-effort behavior (hook failures logged and ignored).
+	AfterRunRequired bool
+	TimeoutMs        int
 }
 
 // ServerConfig holds HTTP server settings.
@@ -207,12 +322,20 @@ type ServerConfig struct {
 
 // Config is the fully-parsed, defaulted, and resolved Itervox configuration.
 type Config struct {
+	// SchemaVersion is the WORKFLOW.md schema version declared by
+	// itervox_schema_version. Missing versions parse as 0 and are rejected
+	// by ValidateDispatch before daemon startup.
+	SchemaVersion int
+	// WorkflowPath is the path passed to Load, used for actionable validation
+	// and migration errors.
+	WorkflowPath   string
 	Tracker        TrackerConfig
 	Polling        PollingConfig
 	Workspace      WorkspaceConfig
 	Agent          AgentConfig
 	Hooks          HooksConfig
 	Server         ServerConfig
+	Automations    []AutomationConfig
 	PromptTemplate string
 }
 
@@ -225,15 +348,37 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return fromWorkflow(wf), nil
+	// Reject removed fields loudly so operators see a clear migration error
+	// instead of silently-changed behavior. (`agent_mode` + `enable_agent_teams`
+	// were removed in favor of always-on profile prompt + subagent roster
+	// injection — see CHANGELOG.)
+	if intField(wf.Config, "itervox_schema_version", 0) == LatestWorkflowSchemaVersion {
+		agent := nestedMap(wf.Config, "agent")
+		if _, has := agent["agent_mode"]; has {
+			return nil, fmt.Errorf("config: agent.agent_mode has been removed; delete this field from WORKFLOW.md (see CHANGELOG)")
+		}
+		if _, has := agent["enable_agent_teams"]; has {
+			return nil, fmt.Errorf("config: agent.enable_agent_teams has been removed; delete this field from WORKFLOW.md (see CHANGELOG)")
+		}
+	}
+	cfg, err := fromWorkflow(wf, path)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // fromWorkflow builds a Config from a parsed Workflow, applying all defaults.
-func fromWorkflow(wf *workflow.Workflow) *Config {
+func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	raw := wf.Config
 
 	cfg := &Config{
+		SchemaVersion:  intField(raw, "itervox_schema_version", 0),
+		WorkflowPath:   workflowPath,
 		PromptTemplate: wf.PromptTemplate,
+	}
+	if cfg.SchemaVersion > LatestWorkflowSchemaVersion {
+		return nil, fmt.Errorf("unsupported itervox_schema_version %d: latest supported version is %d", cfg.SchemaVersion, LatestWorkflowSchemaVersion)
 	}
 
 	// Tracker
@@ -276,6 +421,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	// Agent
 	agent := nestedMap(raw, "agent")
 	cfg.Agent.MaxConcurrentAgents = positiveIntField(agent, "max_concurrent_agents", 10)
+	cfg.Agent.MaxAutomationQueueLength = positiveIntField(agent, "max_automation_queue_length", 100)
 	cfg.Agent.MaxRetryBackoffMs = positiveIntField(agent, "max_retry_backoff_ms", 300000)
 	cfg.Agent.MaxTurns = positiveIntField(agent, "max_turns", 20)
 	cfg.Agent.Command = strField(agent, "command", "claude")
@@ -284,22 +430,41 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
 	cfg.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(mapField(agent, "max_concurrent_agents_by_state"))
+	cfg.Agent.PauseDispatchWhenAnyInState = strSliceField(agent, "pause_dispatch_when_any_in_state", nil)
+	cfg.Agent.MergeStrategy = strField(agent, "merge_strategy", "squash")
+	cfg.Agent.MergeBlockLabels = strSliceField(agent, "merge_block_labels", []string{"needs-human", "migration", "auth", "feature-flag", "breaking"})
+	cfg.Agent.AllowUncheckedMerge = boolField(agent, "allow_unchecked_merge", false)
+	cfg.Agent.TransportErrorPatterns = strSliceField(agent, "transport_error_patterns", []string{"stream disconnected", "connection reset", "i/o timeout"})
+	sortMap := mapField(agent, "sort")
+	cfg.Agent.PreferHighOutdegreeSort = boolField(sortMap, "prefer_high_outdegree", false)
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)
+	cfg.Agent.SSHHostDescriptions = stringMapField(agent, "ssh_host_descriptions", nil)
+	// T-32: optional StrictHostKeyChecking config. Default "accept-new" (TOFU)
+	// is enforced at the agent package level even if the field is omitted from
+	// WORKFLOW.md, so this just lets users override the default.
+	cfg.Agent.SSHStrictHostChecking = strField(agent, "ssh_strict_host_checking", "")
+	cfg.Agent.SSHStrictHostByHost = stringMapField(agent, "ssh_strict_host_by_host", nil)
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
+	cfg.Agent.DepsAnalyzerProfile = strField(agent, "deps_analyzer_profile", "")
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
+	// Gap E — per-issue switch cap defaults: 2 switches per 6h window.
+	cfg.Agent.MaxSwitchesPerIssuePerWindow = intField(agent, "max_switches_per_issue_per_window", 2)
+	// Gap §6.2 — operator-configurable TTL for auto-switched overrides.
+	cfg.Agent.SwitchRevertHours = intField(agent, "switch_revert_hours", 0)
+	// Gap §5.1 — operator-configurable rate-limit error-message patterns.
+	cfg.Agent.RateLimitErrorPatterns = strSliceField(agent, "rate_limit_error_patterns", nil)
+	cfg.Agent.SwitchWindowHours = intField(agent, "switch_window_hours", 6)
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
-	cfg.Agent.Profiles = parseAgentProfiles(mapField(agent, "profiles"))
-	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
-	agentMode := strField(agent, "agent_mode", "")
-	if agentMode == "" && boolField(agent, "enable_agent_teams", false) {
-		// Backward compat: enable_agent_teams: true → "teams"
-		agentMode = "teams"
+	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
+	if err != nil {
+		return nil, err
 	}
-	cfg.Agent.AgentMode = agentMode
+	cfg.Agent.Profiles = profiles
+	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
 
 	// Hooks
 	hooks := nestedMap(raw, "hooks")
@@ -307,6 +472,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Hooks.BeforeRun = strField(hooks, "before_run", "")
 	cfg.Hooks.AfterRun = strField(hooks, "after_run", "")
 	cfg.Hooks.BeforeRemove = strField(hooks, "before_remove", "")
+	cfg.Hooks.AfterRunRequired = boolField(hooks, "after_run_required", false)
 	hooksTimeout := intField(hooks, "timeout_ms", 0)
 	if hooksTimeout <= 0 {
 		hooksTimeout = 60000
@@ -322,8 +488,16 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 		}
 	}
 	cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+	cfg.Automations = parseAutomations(raw["automations"])
+	if len(cfg.Automations) == 0 {
+		legacy := legacySchedulesToAutomations(parseSchedules(raw["schedules"]))
+		if len(legacy) > 0 {
+			slog.Warn("config: schedules: is deprecated; migrate to automations:", "count", len(legacy))
+		}
+		cfg.Automations = legacy
+	}
 
-	return cfg
+	return cfg, nil
 }
 
 // resolveSecret resolves $VAR_NAME references for secret fields.
@@ -395,28 +569,125 @@ func normalizeStateLimits(raw map[string]any) map[string]int {
 }
 
 // parseAgentProfiles parses the agent.profiles map from YAML into a
-// map[string]AgentProfile. Unknown or invalid entries are silently skipped.
-func parseAgentProfiles(raw map[string]any) map[string]AgentProfile {
+// map[string]AgentProfile. Unknown or invalid legacy entries are silently skipped.
+func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath string) (map[string]AgentProfile, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	profiles := make(map[string]AgentProfile, len(raw))
 	for name, v := range raw {
 		m := nestedMap(map[string]any{name: v}, name)
+		if schemaVersion == LatestWorkflowSchemaVersion {
+			if _, hasPrompt := m["prompt"]; hasPrompt {
+				return nil, fmt.Errorf("%s", LegacyInlineProfilePromptMessage(workflowPath))
+			}
+			soulFile := strField(m, "soul_file", "")
+			instructionsFile := strField(m, "instructions_file", "")
+			builtin := profiles_Lookup(name)
+			var soul, instructions string
+			if soulFile == "" && instructionsFile == "" && builtin != nil {
+				soul = builtin.Soul
+				instructions = builtin.Instructions
+				soulFile = builtin.SoulFilePath
+				instructionsFile = builtin.InstructionsPath
+			} else {
+				if soulFile == "" || instructionsFile == "" {
+					return nil, fmt.Errorf("config: agent.profiles.%s requires soul_file and instructions_file in schema %d", name, LatestWorkflowSchemaVersion)
+				}
+				readSoul, err := readProfileTemplateFile(workflowPath, soulFile)
+				if err != nil {
+					if builtin != nil && os.IsNotExist(errors.Unwrap(err)) {
+						soul = builtin.Soul
+					} else {
+						return nil, fmt.Errorf("config: agent.profiles.%s.soul_file: %w", name, err)
+					}
+				} else {
+					soul = readSoul
+				}
+				readInstructions, err := readProfileTemplateFile(workflowPath, instructionsFile)
+				if err != nil {
+					if builtin != nil && os.IsNotExist(errors.Unwrap(err)) {
+						instructions = builtin.Instructions
+					} else {
+						return nil, fmt.Errorf("config: agent.profiles.%s.instructions_file: %w", name, err)
+					}
+				} else {
+					instructions = readInstructions
+				}
+			}
+			cmd := strField(m, "command", "")
+			if cmd == "" && builtin != nil {
+				cmd = builtin.DefaultCommand
+			}
+			if cmd == "" {
+				return nil, fmt.Errorf("config: agent.profiles.%s.command is required in schema %d", name, LatestWorkflowSchemaVersion)
+			}
+			backend := strField(m, "backend", "")
+			if backend == "" && builtin != nil {
+				backend = builtin.DefaultBackend
+			}
+			allowed := NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil))
+			if len(allowed) == 0 && builtin != nil {
+				allowed = NormalizeAllowedActions(builtin.DefaultActions)
+			}
+			profiles[name] = AgentProfile{
+				Command:          cmd,
+				SoulFile:         soulFile,
+				InstructionsFile: instructionsFile,
+				Soul:             soul,
+				Instructions:     instructions,
+				Backend:          backend,
+				Enabled:          boolPtr(boolField(m, "enabled", true)),
+				AllowedActions:   allowed,
+				CreateIssueState: strField(m, "create_issue_state", ""),
+			}
+			continue
+		}
 		cmd := strField(m, "command", "")
 		if cmd == "" {
 			continue
 		}
 		profiles[name] = AgentProfile{
-			Command: cmd,
-			Prompt:  strField(m, "prompt", ""),
-			Backend: strField(m, "backend", ""),
+			Command:          cmd,
+			Prompt:           strField(m, "prompt", ""),
+			Backend:          strField(m, "backend", ""),
+			Enabled:          boolPtr(boolField(m, "enabled", true)),
+			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
+			CreateIssueState: strField(m, "create_issue_state", ""),
 		}
 	}
 	if len(profiles) == 0 {
-		return nil
+		return nil, nil
 	}
-	return profiles
+	return profiles, nil
+}
+
+func readProfileTemplateFile(workflowPath, configuredPath string) (string, error) {
+	resolved := resolveWorkflowRelativeFile(workflowPath, configuredPath)
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", resolved, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func resolveWorkflowRelativeFile(workflowPath, configuredPath string) string {
+	if filepath.IsAbs(configuredPath) {
+		return filepath.Clean(configuredPath)
+	}
+	base := "."
+	if workflowPath != "" {
+		base = filepath.Dir(workflowPath)
+	}
+	return filepath.Clean(filepath.Join(base, configuredPath))
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func ProfileEnabled(profile AgentProfile) bool {
+	return profile.Enabled == nil || *profile.Enabled
 }
 
 // parseAvailableModels parses the agent.available_models YAML field.
@@ -488,6 +759,29 @@ func nestedMap(m map[string]any, key string) map[string]any {
 
 func mapField(m map[string]any, key string) map[string]any {
 	return nestedMap(m, key)
+}
+
+func stringMapField(m map[string]any, key string, defaultVal map[string]string) map[string]string {
+	if m == nil {
+		return defaultVal
+	}
+	raw := mapField(m, key)
+	if len(raw) == 0 {
+		return defaultVal
+	}
+	out := make(map[string]string, len(raw))
+	for mapKey, value := range raw {
+		if value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			out[mapKey] = typed
+		default:
+			out[mapKey] = fmt.Sprintf("%v", typed)
+		}
+	}
+	return out
 }
 
 func strField(m map[string]any, key, defaultVal string) string {

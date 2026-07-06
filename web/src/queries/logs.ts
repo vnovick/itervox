@@ -6,9 +6,18 @@ import { z } from 'zod';
 import { authedFetch } from '../auth/authedFetch';
 import { openAuthedEventStream } from '../auth/authedEventStream';
 
+export const LIVE_LOG_ENTRY_CAP = 500;
+
 export const logsKey = (identifier: string) => ['logs', identifier] as const;
 export const sublogsKey = (identifier: string) => ['sublogs', identifier] as const;
 export const logIdentifiersKey = () => ['log-identifiers'] as const;
+
+function appendCappedLogEntry(prev: IssueLogEntry[], entry: IssueLogEntry): IssueLogEntry[] {
+  if (prev.length >= LIVE_LOG_ENTRY_CAP) {
+    return [...prev.slice(prev.length - LIVE_LOG_ENTRY_CAP + 1), entry];
+  }
+  return [...prev, entry];
+}
 
 async function fetchLogIdentifiers(): Promise<string[]> {
   const res = await authedFetch('/api/v1/logs/identifiers');
@@ -68,7 +77,7 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
           if (msg.event !== 'log') return;
           try {
             const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
-            setSseData((prev) => [...prev, entry]);
+            setSseData((prev) => appendCappedLogEntry(prev, entry));
           } catch {
             // malformed event — skip
           }
@@ -106,16 +115,57 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
 /**
  * Fetches full session logs written by Claude Code to CLAUDE_CODE_LOG_DIR.
  * Covers all subagents, not just the top-level orchestrator log buffer.
- * For live sessions this is polled every 5s; for completed sessions fetched once.
+ *
+ * - isLive=true: uses SSE (/api/v1/issues/{id}/sublog-stream) — push-based.
+ * - isLive=false: one-shot TanStack Query fetch with infinite stale time.
  */
 export function useSubagentLogs(identifier: string, isLive: boolean) {
+  const [sseData, setSseData] = useState<IssueLogEntry[]>([]);
+  const [sseLoading, setSseLoading] = useState(false);
+  const [sseError, setSseError] = useState(false);
+
+  useEffect(() => {
+    if (!isLive || !identifier) return;
+
+    const close = openAuthedEventStream(
+      `/api/v1/issues/${encodeURIComponent(identifier)}/sublog-stream`,
+      {
+        onOpen: () => {
+          setSseData([]);
+          setSseLoading(false);
+          setSseError(false);
+        },
+        onMessage: (msg) => {
+          if (msg.event !== 'sublog') return;
+          try {
+            const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
+            setSseData((prev) => appendCappedLogEntry(prev, entry));
+          } catch {
+            // malformed event — skip
+          }
+        },
+        onDisconnect: () => {
+          setSseError(true);
+          setSseLoading(false);
+        },
+      },
+    );
+
+    return () => {
+      close();
+    };
+  }, [identifier, isLive]);
+
   const { data, isLoading, isError } = useQuery({
     queryKey: sublogsKey(identifier),
     queryFn: () => fetchSubLogs(identifier),
-    enabled: !!identifier,
-    refetchInterval: isLive ? 5000 : false,
-    staleTime: isLive ? 3000 : Infinity,
+    enabled: !!identifier && !isLive,
+    staleTime: Infinity,
   });
+
+  if (isLive) {
+    return { data: sseData, isLoading: sseLoading, isError: sseError };
+  }
   return { data, isLoading, isError };
 }
 

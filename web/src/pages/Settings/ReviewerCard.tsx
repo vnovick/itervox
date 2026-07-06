@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 interface ReviewerCardProps {
   reviewerProfile: string;
   autoReview: boolean;
+  autoClearWorkspace: boolean;
   availableProfiles: string[];
   onSave: (profile: string, autoReview: boolean) => Promise<boolean>;
 }
@@ -16,11 +17,13 @@ interface PendingEdits {
 export function ReviewerCard({
   reviewerProfile,
   autoReview,
+  autoClearWorkspace,
   availableProfiles,
   onSave,
 }: ReviewerCardProps) {
   const [pending, setPending] = useState<PendingEdits | null>(null);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
   // Derive display values: pending edits win over props.
   const profile = pending ? pending.profile : reviewerProfile;
@@ -28,6 +31,7 @@ export function ReviewerCard({
   const dirty = pending !== null;
 
   const updatePending = (patch: Partial<PendingEdits>) => {
+    setError('');
     const base: PendingEdits = pending ?? { profile: reviewerProfile, auto: autoReview };
     const next = { ...base, ...patch };
     // If the edited values match props again, clear pending state.
@@ -38,12 +42,28 @@ export function ReviewerCard({
     }
   };
 
+  useEffect(() => {
+    if (!autoClearWorkspace) {
+      setError('');
+    }
+  }, [autoClearWorkspace]);
+
   const handleSave = async () => {
     setSaving(true);
-    await onSave(profile, auto);
-    // After save, props will update via refreshSnapshot; clear local edits.
-    setPending(null);
-    setSaving(false);
+    try {
+      const ok = await onSave(profile, auto);
+      if (ok) {
+        // After save, props will update via refreshSnapshot; clear local edits.
+        setPending(null);
+        setError('');
+      } else {
+        setError('Failed to save reviewer settings. Please try again.');
+      }
+    } catch {
+      setError('Failed to save reviewer settings. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -55,7 +75,8 @@ export function ReviewerCard({
         <select
           value={profile}
           onChange={(e) => {
-            updatePending({ profile: e.target.value });
+            const nextProfile = e.target.value;
+            updatePending({ profile: nextProfile, ...(nextProfile === '' ? { auto: false } : {}) });
           }}
           className="w-full cursor-pointer rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-[13px] text-[var(--text)] focus:outline-none"
         >
@@ -77,6 +98,12 @@ export function ReviewerCard({
           type="checkbox"
           checked={auto}
           onChange={(e) => {
+            if (e.target.checked && autoClearWorkspace) {
+              setError(
+                'Auto-review cannot be enabled while auto-clear workspace is enabled. Disable auto-clear first.',
+              );
+              return;
+            }
             updatePending({ auto: e.target.checked });
           }}
           disabled={!profile}
@@ -86,6 +113,11 @@ export function ReviewerCard({
           Auto-review after agent succeeds
         </span>
       </label>
+      {error && (
+        <p role="alert" className="text-theme-danger pl-6 text-[10px]">
+          {error}
+        </p>
+      )}
       {auto && profile && (
         <p className="text-theme-muted pl-6 text-[10px]">
           A reviewer worker will be automatically dispatched using the <strong>{profile}</strong>{' '}

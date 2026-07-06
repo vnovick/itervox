@@ -4,12 +4,33 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
+
+// assertValidWorkflowYAML extracts the YAML front matter from a workflow
+// file's contents and confirms it parses cleanly. The original indent-patching
+// bug symptom was a mid-block indent mismatch that produced "mapping values
+// are not allowed in this context" at parse time.
+func assertValidWorkflowYAML(t *testing.T, contents string) {
+	t.Helper()
+	body := strings.TrimPrefix(contents, "---\n")
+	end := strings.Index(body, "\n---\n")
+	if end < 0 {
+		t.Fatalf("expected closing front-matter delimiter, got:\n%s", contents)
+	}
+	front := body[:end]
+	var into map[string]any
+	if err := yaml.Unmarshal([]byte(front), &into); err != nil {
+		t.Fatalf("front matter must be valid YAML after Patch*; got error %v\n--- front matter ---\n%s", err, front)
+	}
+}
 
 func TestLoadBasicWorkflow(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "workflows", "basic.md")
@@ -123,6 +144,50 @@ func TestPatchIntFieldPreservesComments(t *testing.T) {
 	assert.Contains(t, string(data), "max_concurrent_agents: 10 # set at runtime")
 }
 
+// TestPatchIntFieldConcurrent verifies T-46 (gaps_280426 06.G-01): concurrent
+// PatchIntField calls on the same path serialize via editMu, so the final
+// file always contains exactly one of the requested values rather than a
+// torn / partially-overwritten line. Pre-fix, this test would race the
+// read-modify-write on a busy filesystem and could produce an unexpected
+// final value or a corrupt file.
+func TestPatchIntFieldConcurrent(t *testing.T) {
+	content := "---\nagent:\n  max_concurrent_agents: 0\n---\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	const concurrency = 10
+	values := make([]int, concurrency)
+	for i := range values {
+		values[i] = i + 1
+	}
+
+	var wg sync.WaitGroup
+	for _, v := range values {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			require.NoError(t, workflow.PatchIntField(f, "max_concurrent_agents", n))
+		}(v)
+	}
+	wg.Wait()
+
+	// Final file content must contain exactly one of the written values
+	// (whichever goroutine ran last under the lock) — not a malformed line.
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	matched := false
+	for _, v := range values {
+		expected := fmt.Sprintf("max_concurrent_agents: %d", v)
+		if strings.Contains(got, expected) {
+			matched = true
+			break
+		}
+	}
+	assert.True(t, matched, "expected file to contain one of the written values, got:\n%s", got)
+}
+
 func TestPatchProfilesBlock_Create(t *testing.T) {
 	// File with no profiles block — adds one under agent:
 	content := "---\nagent:\n  max_concurrent_agents: 3\n  command: claude\n---\n\nPrompt body.\n"
@@ -130,10 +195,12 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 	f := filepath.Join(tmp, "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 
+	disabled := false
 	profiles := map[string]workflow.ProfileEntry{
-		"fast":     {Command: "claude --model claude-haiku-4-5-20251001"},
+		"fast":     {Command: "claude --model claude-haiku-4-5-20251001", AllowedActions: []string{"comment", "provide_input"}},
 		"thorough": {Command: "claude --model claude-opus-4-6"},
-		"codex":    {Command: "run-codex-wrapper", Backend: "codex"},
+		"codex":    {Command: "run-codex-wrapper", Backend: "codex", Enabled: &disabled},
+		"triage":   {Command: "claude --model claude-sonnet-4-6", AllowedActions: []string{"create_issue"}, CreateIssueState: "Todo"},
 	}
 	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
 
@@ -143,11 +210,18 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 	assert.Contains(t, got, "  profiles:")
 	assert.Contains(t, got, "    fast:")
 	assert.Contains(t, got, "      command: claude --model claude-haiku-4-5-20251001")
+	assert.Contains(t, got, "      allowed_actions:")
+	assert.Contains(t, got, "        - comment")
+	assert.Contains(t, got, "        - provide_input")
 	assert.Contains(t, got, "    codex:")
 	assert.Contains(t, got, "      command: run-codex-wrapper")
 	assert.Contains(t, got, "      backend: codex")
+	assert.Contains(t, got, "      enabled: false")
+	assert.Contains(t, got, "    triage:")
+	assert.Contains(t, got, "      create_issue_state: \"Todo\"")
 	assert.Contains(t, got, "    thorough:")
 	assert.Contains(t, got, "      command: claude --model claude-opus-4-6")
+	assert.NotContains(t, got, "    fast:\n      enabled: false")
 	// Other fields preserved
 	assert.Contains(t, got, "max_concurrent_agents: 3")
 	assert.Contains(t, got, "command: claude")
@@ -162,8 +236,15 @@ func TestPatchProfilesBlock_Replace(t *testing.T) {
 	f := filepath.Join(tmp, "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 
+	disabled := false
 	profiles := map[string]workflow.ProfileEntry{
-		"fast": {Command: "run-codex-wrapper", Backend: "codex"},
+		"fast": {
+			Command:          "run-codex-wrapper",
+			Backend:          "codex",
+			Enabled:          &disabled,
+			AllowedActions:   []string{"move_state", "create_issue"},
+			CreateIssueState: "Todo",
+		},
 	}
 	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
 
@@ -173,11 +254,94 @@ func TestPatchProfilesBlock_Replace(t *testing.T) {
 	assert.Contains(t, got, "    fast:")
 	assert.Contains(t, got, "      command: run-codex-wrapper")
 	assert.Contains(t, got, "      backend: codex")
+	assert.Contains(t, got, "      enabled: false")
+	assert.Contains(t, got, "      allowed_actions:")
+	assert.Contains(t, got, "        - create_issue")
+	assert.Contains(t, got, "        - move_state")
+	assert.Contains(t, got, "      create_issue_state: \"Todo\"")
 	// Old profile gone
 	assert.NotContains(t, got, "old:")
 	// Other fields preserved
 	assert.Contains(t, got, "max_concurrent_agents: 5")
 	assert.Contains(t, got, "Body.")
+}
+
+// TestPatchProfilesBlock_Replace4SpaceNoDuplicate is the regression test for the
+// dashboard "add profile" corruption. A 4-space-indented agent block has an
+// existing profiles: block. The pre-fix MutateProfilesBlock matched only the
+// literal "  profiles:" (2-space), so on a 4-space file it failed to find the
+// block and INSERTED a second one at 2-space — a duplicate `profiles:` key at
+// inconsistent indent that breaks YAML parsing and freezes the daemon on reload
+// (see cmd/itervox/adapter_profiles.go::UpsertProfile).
+func TestPatchProfilesBlock_Replace4SpaceNoDuplicate(t *testing.T) {
+	content := "---\n" +
+		"agent:\n" +
+		"    command: claude\n" +
+		"    max_concurrent_agents: 3\n" +
+		"    profiles:\n" +
+		"        old:\n" +
+		"            command: claude --model old\n" +
+		"            soul_file: .itervox/agents/old/SOUL.md\n" +
+		"server:\n" +
+		"    port: 8090\n" +
+		"---\n\nBody.\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	profiles := map[string]workflow.ProfileEntry{
+		"reviewer": {Command: "claude", SoulFile: ".itervox/agents/reviewer/SOUL.md"},
+		"qa":       {Command: "claude", AllowedActions: []string{"comment"}},
+	}
+	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+
+	// Must stay valid YAML (the bug produced a duplicate key / bad indent).
+	assertValidWorkflowYAML(t, got)
+	// Exactly one profiles: block — no duplicate.
+	assert.Equal(t, 1, strings.Count(got, "profiles:"), "exactly one profiles block, got:\n%s", got)
+	// Replacement emitted at the file's own 4-space indentation.
+	assert.Contains(t, got, "    profiles:")
+	assert.Contains(t, got, "        qa:")
+	assert.Contains(t, got, "            command: claude")
+	assert.Contains(t, got, "            allowed_actions:")
+	assert.Contains(t, got, "                - comment")
+	// Old profile replaced; sibling top-level keys preserved.
+	assert.NotContains(t, got, "old:")
+	assert.Contains(t, got, "    port: 8090")
+	// And it loads cleanly with the new profiles present.
+	wf, err := workflow.Load(f)
+	require.NoError(t, err)
+	agent, ok := wf.Config["agent"].(map[string]any)
+	require.True(t, ok, "agent should be a map")
+	profs, ok := agent["profiles"].(map[string]any)
+	require.True(t, ok, "agent.profiles should be a map")
+	assert.Contains(t, profs, "qa")
+	assert.Contains(t, profs, "reviewer")
+	assert.NotContains(t, profs, "old")
+}
+
+func TestPatchProfilesBlock_QuotesCreateIssueState(t *testing.T) {
+	content := "---\nagent:\n  command: claude\n---\n\nBody.\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	profiles := map[string]workflow.ProfileEntry{
+		"triage": {
+			Command:          "claude --model claude-sonnet-4-6",
+			AllowedActions:   []string{"create_issue"},
+			CreateIssueState: "Todo: needs clarification #1",
+		},
+	}
+	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "      create_issue_state: \"Todo: needs clarification #1\"")
 }
 
 func TestPatchProfilesBlock_Delete(t *testing.T) {
@@ -199,56 +363,100 @@ func TestPatchProfilesBlock_Delete(t *testing.T) {
 	assert.Contains(t, got, "Body.")
 }
 
-func TestPatchStringSliceField_Replace(t *testing.T) {
-	content := "---\ntracker:\n  active_states: [\"a\", \"b\"]\n  terminal_states: [\"Done\"]\n---\n\nBody.\n"
+func TestPatchAutomationsBlock_Create(t *testing.T) {
+	content := "---\nagent:\n  command: claude\n---\n\nPrompt body.\n"
 	tmp := t.TempDir()
 	f := filepath.Join(tmp, "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 
-	require.NoError(t, workflow.PatchStringSliceField(f, "active_states", []string{"x", "y", "z"}))
+	automations := []workflow.AutomationEntry{
+		{
+			ID:           "weekday-review",
+			Enabled:      true,
+			Profile:      "reviewer",
+			Instructions: "Review backlog issues and comment with missing details.",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type:     "cron",
+				Cron:     "0 9 * * 1-5",
+				Timezone: "Asia/Jerusalem",
+			},
+			Filter: workflow.AutomationFilterEntry{
+				MatchMode:       "any",
+				States:          []string{"Backlog", "Todo"},
+				LabelsAny:       []string{"bug"},
+				IdentifierRegex: "^ENG-",
+				Limit:           2,
+			},
+		},
+		{
+			ID:           "qa-state-entry",
+			Enabled:      true,
+			Profile:      "qa",
+			Instructions: "Run QA when the issue enters Ready for QA.",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type:  "issue_entered_state",
+				State: "Ready for QA",
+			},
+		},
+		{
+			ID:           "input-responder",
+			Enabled:      true,
+			Profile:      "input-responder",
+			Instructions: "Answer narrow blocked-run questions.",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type: "input_required",
+			},
+			Filter: workflow.AutomationFilterEntry{
+				InputContextRegex: "continue|branch",
+				MaxAgeMinutes:     30,
+			},
+			Policy: workflow.AutomationPolicyEntry{
+				AutoResume: true,
+			},
+		},
+		{
+			ID:      "rate-limit-switch",
+			Enabled: true,
+			Profile: "fallback-codex",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type: "rate_limited",
+			},
+			Policy: workflow.AutomationPolicyEntry{
+				AutoResume:      true,
+				SwitchToProfile: "fallback-codex",
+				SwitchToBackend: "codex",
+				CooldownMinutes: 45,
+			},
+		},
+	}
+	require.NoError(t, workflow.PatchAutomationsBlock(f, automations))
 
 	data, err := os.ReadFile(f)
 	require.NoError(t, err)
 	got := string(data)
-	assert.Contains(t, got, `active_states: ["x","y","z"]`)
-	assert.Contains(t, got, `terminal_states: ["Done"]`) // unchanged
-	assert.Contains(t, got, "Body.")                     // body preserved
-}
-
-func TestPatchStringSliceField_KeyNotFound(t *testing.T) {
-	content := "---\ntracker:\n  active_states: [\"Todo\"]\n---\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	err := workflow.PatchStringSliceField(f, "nonexistent_key", []string{"a"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
-}
-
-func TestPatchStringField_Replace(t *testing.T) {
-	content := "---\ntracker:\n  completion_state: \"In Review\"\n---\n\nBody.\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	require.NoError(t, workflow.PatchStringField(f, "completion_state", "Done"))
-
-	data, err := os.ReadFile(f)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), `completion_state: "Done"`)
-	assert.Contains(t, string(data), "Body.")
-}
-
-func TestPatchStringField_KeyNotFound(t *testing.T) {
-	content := "---\ntracker:\n  kind: linear\n---\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	err := workflow.PatchStringField(f, "nonexistent_key", "value")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.Contains(t, got, "automations:")
+	assert.Contains(t, got, `type: cron`)
+	assert.Contains(t, got, `cron: "0 9 * * 1-5"`)
+	assert.Contains(t, got, `timezone: "Asia/Jerusalem"`)
+	assert.Contains(t, got, "profile: reviewer")
+	assert.Contains(t, got, `instructions: "Review backlog issues and comment with missing details."`)
+	assert.Contains(t, got, `match_mode: "any"`)
+	assert.Contains(t, got, `states: ["Backlog","Todo"]`)
+	assert.Contains(t, got, `labels_any: ["bug"]`)
+	assert.Contains(t, got, `identifier_regex: "^ENG-"`)
+	assert.Contains(t, got, "limit: 2")
+	assert.Contains(t, got, `type: issue_entered_state`)
+	assert.Contains(t, got, `state: "Ready for QA"`)
+	assert.Contains(t, got, `type: input_required`)
+	assert.Contains(t, got, `input_context_regex: "continue|branch"`)
+	assert.Contains(t, got, `max_age_minutes: 30`)
+	assert.Contains(t, got, `auto_resume: true`)
+	assert.Contains(t, got, `type: rate_limited`)
+	assert.Contains(t, got, `auto_switch: true`)
+	assert.Contains(t, got, `switch_to_profile: "fallback-codex"`)
+	assert.Contains(t, got, `switch_to_backend: "codex"`)
+	assert.Contains(t, got, `cooldown_minutes: 45`)
+	assert.Contains(t, got, "Prompt body.")
 }
 
 func TestPatchProfilesBlock_PreservesOtherKeys(t *testing.T) {
@@ -345,6 +553,42 @@ func TestPatchAgentBoolFieldInsertWhenMissing(t *testing.T) {
 	assert.Contains(t, string(data), "  auto_resume: true")
 }
 
+// Toggling a bool field in a workflow whose `agent:`
+// block uses 4-space indent (the default produced by yaml.v3 serialisation
+// on many Go encoders) MUST preserve that indent. Before the fix, the
+// patcher hardcoded 2-space indent and produced "  inline_input: true\n
+// auto_review: false" — invalid YAML at line 3.
+func TestPatchAgentBoolFieldPreserves4SpaceIndent(t *testing.T) {
+	source := "---\nagent:\n    auto_review: false\n    max_turns: 50\n---\n\nBody.\n"
+	f := writeTmp(t, source)
+	require.NoError(t, workflow.PatchAgentBoolField(f, "inline_input", true))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "    inline_input: true", "new key must adopt the 4-space indent the block already uses")
+	// The file must still parse as valid YAML — the actual symptom on
+	// inhabited workflows was a parse error at the mismatch line. This
+	// catches both an outright indent mismatch and any subtle prefix-overlap
+	// regression that might survive the textual contains check.
+	assertValidWorkflowYAML(t, got)
+}
+
+// Toggling off (delete) on a 4-space file must also
+// preserve the file's indent for siblings.
+func TestPatchAgentBoolFieldSetFalsePreserves4SpaceIndent(t *testing.T) {
+	source := "---\nagent:\n    inline_input: true\n    auto_review: false\n---\n\nBody.\n"
+	f := writeTmp(t, source)
+	require.NoError(t, workflow.PatchAgentBoolField(f, "inline_input", false))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.NotContains(t, got, "inline_input")
+	assert.Contains(t, got, "    auto_review: false", "remaining sibling must keep its original 4-space indent")
+	assertValidWorkflowYAML(t, got)
+}
+
 func TestPatchAgentBoolFieldNoFrontMatterErrors(t *testing.T) {
 	f := writeTmp(t, "No front matter here.\n")
 	err := workflow.PatchAgentBoolField(f, "verbose", true)
@@ -394,4 +638,107 @@ func TestPatchAgentStringFieldNoFrontMatterErrors(t *testing.T) {
 func TestPatchAgentStringFieldMissingFileErrors(t *testing.T) {
 	err := workflow.PatchAgentStringField("/no/such/file.md", "backend", "codex")
 	require.Error(t, err)
+}
+
+func TestPatchAgentStringSliceFieldInsertWhenMissing(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  command: claude\n---\n\nBody.\n")
+	require.NoError(t, workflow.PatchAgentStringSliceField(f, "ssh_hosts", []string{"worker-1", "worker-2"}))
+
+	data, _ := os.ReadFile(f)
+	assert.Contains(t, string(data), `ssh_hosts: ["worker-1","worker-2"]`)
+}
+
+func TestPatchAgentStringMapFieldSetAndRemove(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  command: claude\n---\n\nBody.\n")
+	require.NoError(t, workflow.PatchAgentStringMapField(f, "ssh_host_descriptions", map[string]string{
+		"worker-1":      "fast box",
+		"worker-2:2222": "gpu box",
+	}))
+
+	data, _ := os.ReadFile(f)
+	assert.Contains(t, string(data), `ssh_host_descriptions:`)
+	assert.Contains(t, string(data), `"worker-1": "fast box"`)
+	assert.Contains(t, string(data), `"worker-2:2222": "gpu box"`)
+
+	require.NoError(t, workflow.PatchAgentStringMapField(f, "ssh_host_descriptions", nil))
+	data, _ = os.ReadFile(f)
+	assert.NotContains(t, string(data), "ssh_host_descriptions:")
+}
+
+func TestPatchReviewerConfig_SetAndClear(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\ntracker:\n  kind: linear\nagent:\n  command: claude\n---\n\nBody.\n"), 0o644))
+
+	require.NoError(t, workflow.PatchReviewerConfig(f, "reviewer", true))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, `reviewer_profile: "reviewer"`)
+	assert.Contains(t, got, `auto_review: true`)
+
+	require.NoError(t, workflow.PatchReviewerConfig(f, "", false))
+
+	data, err = os.ReadFile(f)
+	require.NoError(t, err)
+	got = string(data)
+	assert.NotContains(t, got, "reviewer_profile:")
+	assert.NotContains(t, got, "auto_review:")
+	assert.Contains(t, got, "  command: claude")
+}
+
+func TestPatchTrackerStates_InsertsMissingKeysInsideTrackerBlock(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\ntracker:\n  kind: linear\nagent:\n  command: claude\n---\n\nBody.\n"), 0o644))
+
+	require.NoError(t, workflow.PatchTrackerStates(f, []string{"Todo"}, []string{"Done"}, "In Review"))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "tracker:\n  kind: linear\n  active_states: [\"Todo\"]\n  terminal_states: [\"Done\"]\n  completion_state: \"In Review\"")
+	assert.Contains(t, got, "agent:\n  command: claude")
+}
+
+func TestPatchAgentMaxRetries_ReplaceAndInsert(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Existing key — replace in place.
+	f1 := filepath.Join(tmp, "with.md")
+	require.NoError(t, os.WriteFile(f1, []byte("---\nagent:\n  command: claude\n  max_retries: 3\n---\nBody.\n"), 0o644))
+	require.NoError(t, workflow.PatchAgentMaxRetries(f1, 7))
+	data, err := os.ReadFile(f1)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "max_retries: 7")
+	assert.NotContains(t, string(data), "max_retries: 3")
+
+	// Missing key — insert inside agent block. Operator might not have set
+	// it before; the UI should still be able to write a value.
+	f2 := filepath.Join(tmp, "without.md")
+	require.NoError(t, os.WriteFile(f2, []byte("---\nagent:\n  command: claude\n---\nBody.\n"), 0o644))
+	require.NoError(t, workflow.PatchAgentMaxRetries(f2, 5))
+	data, err = os.ReadFile(f2)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "max_retries: 5")
+}
+
+func TestPatchTrackerFailedState_SetAndClear(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\ntracker:\n  kind: linear\nagent:\n  command: claude\n---\nBody.\n"), 0o644))
+
+	require.NoError(t, workflow.PatchTrackerFailedState(f, "Backlog"))
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `failed_state: "Backlog"`)
+
+	// Empty string — operator picked "Pause (do not move)" — must remove
+	// the key entirely so config.Load() reads back empty default.
+	require.NoError(t, workflow.PatchTrackerFailedState(f, ""))
+	data, err = os.ReadFile(f)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "failed_state:")
+	assert.Contains(t, string(data), "  kind: linear") // sibling preserved
 }

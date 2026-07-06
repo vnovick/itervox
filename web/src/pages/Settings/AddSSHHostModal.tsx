@@ -1,4 +1,4 @@
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Modal } from '../../components/ui/modal';
@@ -32,7 +32,7 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
   const {
     register,
     handleSubmit,
-    watch,
+    control,
     reset,
     formState: { errors, isSubmitting },
   } = useForm<SSHHostFormValues>({
@@ -40,7 +40,10 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
     defaultValues: { host: '', description: '' },
   });
 
-  const hostValue = watch('host');
+  // useWatch subscribes without the `watch()` function wrapper so the
+  // component is compatible with React Compiler memoization (the `watch()`
+  // form trips the react-hooks/incompatible-library lint rule).
+  const hostValue = useWatch({ control, name: 'host' });
 
   const onSubmit = handleSubmit(async (values) => {
     const ok = await onAdd(values.host.trim(), values.description.trim());

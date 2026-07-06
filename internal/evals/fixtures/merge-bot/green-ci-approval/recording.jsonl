@@ -1,0 +1,2 @@
+{"event":"action","action":"merge_pr","args":{"pr":42}}
+{"event":"comment","body":"merge-bot: merged PR-42 at abc1234 via squash."}

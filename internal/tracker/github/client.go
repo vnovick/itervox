@@ -150,7 +150,7 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 		}
 	}
 
-	return all, nil
+	return c.populateBlockerStates(ctx, all), nil
 }
 
 // maxConcurrentFetches caps concurrent goroutines in boundedDo.
@@ -260,8 +260,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				continue
 			}
 			// Extract branch name from hidden itervox marker; skip adding to Comments.
-			if strings.HasPrefix(body, itervoxBranchPrefix) {
-				branch := strings.TrimPrefix(body, itervoxBranchPrefix)
+			if branch, ok := strings.CutPrefix(body, itervoxBranchPrefix); ok {
 				branch = strings.TrimSuffix(strings.TrimSpace(branch), "-->")
 				branch = strings.TrimSpace(branch)
 				if branch != "" {
@@ -271,12 +270,22 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				continue
 			}
 			var authorName string
+			var authorID string
 			if user, ok := cm["user"].(map[string]any); ok {
 				authorName, _ = user["login"].(string)
+				if id, ok := tracker.ToIntVal(user["id"]); ok {
+					authorID = strconv.Itoa(id)
+				}
+			}
+			commentID := ""
+			if id, ok := tracker.ToIntVal(cm["id"]); ok {
+				commentID = strconv.Itoa(id)
 			}
 			comment := domain.Comment{
+				ID:         commentID,
 				Body:       body,
 				CreatedAt:  tracker.ParseTime(cm["created_at"]),
+				AuthorID:   authorID,
 				AuthorName: authorName,
 			}
 			issue.Comments = append(issue.Comments, comment)
@@ -288,7 +297,12 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		commentsURL = next
 	}
 
-	return issue, nil //nolint:nilerr // comment-fetch errors are non-fatal; we break and return the issue without comments
+	// TRK-2: this is a dependency-audit refresh path — blocker states must be
+	// populated here too, not just in FetchCandidateIssues, or
+	// blockers_resolved can never fire for non-active watched issues.
+	// populateBlockerStates no-ops cheaply when issue.BlockedBy has no IDs.
+	populated := c.populateBlockerStates(ctx, []domain.Issue{*issue})
+	return &populated[0], nil //nolint:nilerr // comment-fetch errors are non-fatal; we break and return the issue without comments
 }
 
 // fetchSingleIssue fetches one GitHub issue by its number (as string ID).
@@ -438,7 +452,8 @@ const itervoxBranchPrefix = "<!-- itervox:branch:"
 // on subsequent fetches, enabling retried workers to resume the correct branch.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
 	body := itervoxBranchPrefix + branchName + " -->"
-	return c.CreateComment(ctx, issueID, body)
+	_, err := c.CreateComment(ctx, issueID, body)
+	return err
 }
 
 // FetchIssueByIdentifier returns a single issue by its human-readable identifier
@@ -450,15 +465,15 @@ func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) 
 
 // CreateComment posts a comment on the GitHub issue identified by issueID.
 // issueID is expected to be the numeric issue number (as a string, e.g. "42").
-func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
+func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
 	u := fmt.Sprintf("%s/repos/%s/%s/issues/%s/comments", c.cfg.Endpoint, c.owner, c.repo, issueID)
 	payload, err := json.Marshal(map[string]string{"body": body})
 	if err != nil {
-		return fmt.Errorf("github_create_comment: marshal: %w", err)
+		return nil, fmt.Errorf("github_create_comment: marshal: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("github_create_comment: %w", err)
+		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -466,13 +481,77 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) error 
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("github_create_comment: %w", err)
+		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("github_create_comment: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("github_create_comment: status %d", resp.StatusCode)
 	}
-	return nil
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("github_create_comment: decode body: %w", err)
+	}
+	comment := &domain.Comment{Body: body}
+	if id, ok := tracker.ToIntVal(raw["id"]); ok {
+		comment.ID = strconv.Itoa(id)
+	}
+	comment.CreatedAt = tracker.ParseTime(raw["created_at"])
+	if user, ok := raw["user"].(map[string]any); ok {
+		if id, ok := tracker.ToIntVal(user["id"]); ok {
+			comment.AuthorID = strconv.Itoa(id)
+		}
+		comment.AuthorName, _ = user["login"].(string)
+	}
+	if postedBody, ok := raw["body"].(string); ok && postedBody != "" {
+		comment.Body = postedBody
+	}
+	return comment, nil
+}
+
+// CreateIssue creates a new GitHub issue in the configured repository. The
+// sourceIssueID is accepted for tracker interface parity but not otherwise used.
+func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+	u := fmt.Sprintf("%s/repos/%s/%s/issues", c.cfg.Endpoint, c.owner, c.repo)
+	payloadBody := map[string]any{
+		"title": title,
+		"body":  body,
+	}
+	if stateName = strings.TrimSpace(stateName); stateName != "" {
+		payloadBody["labels"] = []string{stateName}
+	}
+	payload, err := json.Marshal(payloadBody)
+	if err != nil {
+		return nil, fmt.Errorf("github_create_issue: marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("github_create_issue: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github_create_issue: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("github_create_issue: status %d", resp.StatusCode)
+	}
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("github_create_issue: decode body: %w", err)
+	}
+	derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+	if derived == "" {
+		derived = stateName
+	}
+	issue := normalizeIssue(raw, derived)
+	if issue == nil {
+		return nil, fmt.Errorf("github_create_issue: missing issue fields in response")
+	}
+	return issue, nil
 }
 
 func (c *Client) get(ctx context.Context, url string) (any, string, error) {
@@ -559,8 +638,13 @@ func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
 }
 
 // populateBlockerStates fetches the current state for each blocker referenced in issues
-// and backfills BlockerRef.State. On fetch error (including 404), the blocker is treated
-// as "closed" so it never silently blocks dispatch.
+// and backfills BlockerRef.State. Error handling is fail-safe (spec D4: unknown or
+// ambiguous prerequisite state MUST be treated as unmet): ANY fetch error — including
+// 404, which GitHub also returns for permission loss and transferred issues, not just
+// deletion — leaves State nil so the orchestrator classifies the dependency as unknown
+// and keeps dependents blocked. A genuinely deleted blocker surfaces as a permanent
+// "unknown" row in the Deps dashboard; the operator resolves it by removing the
+// dangling reference from the issue body.
 func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issue) []domain.Issue {
 	seen := make(map[string]struct{})
 	var ids []string
@@ -581,29 +665,54 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 	type result struct {
 		id    string
 		state string
+		url   string
 	}
 	ch := make(chan result, len(ids))
 	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
 		issue, err := c.fetchSingleIssue(ctx, id)
-		if err != nil || issue == nil {
-			ch <- result{id: id, state: "closed"}
+		if err != nil {
+			// D4 fail-safe: ALL fetch errors — including 404, which GitHub returns
+			// for permission loss and transferred issues, not just deletion — leave
+			// State nil so the orchestrator treats the dependency as unmet. A
+			// genuinely deleted blocker surfaces as a permanent "unknown" row in the
+			// Deps dashboard; the operator resolves it by removing the reference.
+			slog.Error("github: blocker state fetch failed — dependents stay blocked until resolved",
+				"blocker_id", id, "error", err)
+			ch <- result{id: id}
 			return
 		}
-		ch <- result{id: id, state: issue.State}
+		if issue == nil {
+			ch <- result{id: id}
+			return
+		}
+		url := ""
+		if issue.URL != nil {
+			url = *issue.URL
+		}
+		ch <- result{id: id, state: issue.State, url: url}
 	})
 	close(ch)
 
-	stateMap := make(map[string]string, len(ids))
+	resultMap := make(map[string]result, len(ids))
 	for r := range ch {
-		stateMap[r.id] = r.state
+		resultMap[r.id] = r
 	}
 
 	for i := range issues {
 		for j := range issues[i].BlockedBy {
 			if issues[i].BlockedBy[j].ID != nil {
-				if s, ok := stateMap[*issues[i].BlockedBy[j].ID]; ok {
-					state := s
-					issues[i].BlockedBy[j].State = &state
+				if r, ok := resultMap[*issues[i].BlockedBy[j].ID]; ok {
+					// Empty state means the fetch failed transiently — leave
+					// State nil so the orchestrator's unknown→blocked
+					// fail-safe applies (D4).
+					if r.state != "" {
+						state := r.state
+						issues[i].BlockedBy[j].State = &state
+					}
+					if r.url != "" {
+						url := r.url
+						issues[i].BlockedBy[j].URL = &url
+					}
 				}
 			}
 		}

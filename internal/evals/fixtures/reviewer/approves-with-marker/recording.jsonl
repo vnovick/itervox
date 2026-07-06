@@ -1,0 +1,3 @@
+{"event":"comment","body":"/ai-approved"}
+{"event":"action","action":"comment","args":{"issue":"ENG-61"}}
+{"event":"comment","body":"AI review passed — ready for merge. Hard checks green: scope matches ENG-61, tests cover the new path, no security findings."}

@@ -8,7 +8,7 @@ Thank you for your interest in contributing. This document covers how to get the
 
 ### Prerequisites
 
-- Go 1.25.8 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.8`)
+- Go 1.25.11 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.11`)
 - Node.js 20+ and `pnpm` (for the web dashboard)
 - `git`
 - [Lefthook](https://github.com/evilmartians/lefthook) (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`)
@@ -23,7 +23,7 @@ git clone https://github.com/vnovick/itervox
 cd itervox
 lefthook install        # wires pre-commit and pre-push hooks
 make build              # builds web/dist then compiles the Go binary
-go test -race ./...
+go test -race ./cmd/... ./internal/...
 ```
 
 > **Always use `make build`** rather than `go build ./cmd/itervox` directly. The binary embeds `internal/server/web/dist` via `//go:embed`; if it is missing, the binary compiles but panics at runtime.
@@ -37,11 +37,11 @@ The web dashboard is a Vite app that proxies API calls to a running `itervox` da
 **Terminal 1 — build and run the Go binary from a project that has a `WORKFLOW.md`:**
 
 ```bash
-# In the itervox repo — build the binary
-go build -o itervox ./cmd/itervox
+# In the itervox repo — build the binary with embedded web assets
+make build
 
 # In your project repo (must contain a WORKFLOW.md)
-/path/to/itervox   # picks up WORKFLOW.md in the current directory
+/path/to/itervox/itervox   # picks up WORKFLOW.md in the current directory
 ```
 
 If you don't have a project lying around, scaffold a throwaway one:
@@ -81,21 +81,38 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-test` + `web-spelling` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
+| `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
-| `make test` | `go test -race ./... -count=1` |
-| `make coverage` | Run tests with coverage; output `coverage.html` |
-| `make benchmark` | `go test -bench=. -benchmem ./...` |
+| `make test` | `go test -race ./cmd/... ./internal/... -count=1` |
+| `make coverage` | Run tests with coverage over `./cmd/... ./internal/...`; output `coverage.html` |
+| `make benchmark` | `go test -bench=. -benchmem ./cmd/... ./internal/...` |
 | `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
-| `make fmt` | `gofmt -l -w .` |
-| `make vet` | `go vet ./...` |
-| `make lint-go` | `golangci-lint run ./...` |
-| `make web-build` | `pnpm install --frozen-lockfile && pnpm build` in `web/` |
-| `make web-test` | `pnpm install --frozen-lockfile && pnpm test` in `web/` |
+| `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
+| `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
+| `make fmt` | `gofmt -l -w cmd internal` |
+| `make vet` | `go vet ./cmd/... ./internal/...` |
+| `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
+| `make web-build` | `pnpm build` in `web/` |
+| `make web-test` | `pnpm test` in `web/` |
+| `make web-coverage` | `pnpm test:coverage` in `web/` |
 | `make web-spelling` | Guard against the legacy `Symphony` brand name leaking into user-visible TS/TSX strings |
+| `make e2e` | Build the binary, then run the real-daemon Playwright smoke suite |
+| `make qa-current-ui` | Run the route-mocked Playwright regression lane for the current UI |
+| `make qa-daemon` | Alias for the real-daemon Playwright lane |
+| `make qa-current` | `verify` + `qa-current-ui` + `qa-daemon` — full current-functionality baseline |
 | `make clean` | Remove `itervox` binary and coverage files |
 
 > **Note:** `make web-spelling` (also part of `make verify`) rejects any TypeScript/TSX string literal containing `Symphony` (the legacy project name). If your editor autocompletes the old name, the rule will fail your `pre-push` hook — search and replace before pushing.
+
+> **QA baseline:** `make verify` remains the zero-extra-dependency contributor gate and includes the frontend coverage threshold used by Web CI. The browser QA lanes (`make qa-current-ui`, `make qa-daemon`, `make qa-current`) require a one-time Playwright browser install: `cd web && pnpm exec playwright install chromium`.
+
+> **Release preflight:** `make release-check` is intentionally stricter than `make verify`. It requires `govulncheck` and GoReleaser to be installed, reruns the release hooks (`go mod tidy` and web build), then fails if tracked files or the index are dirty. Use it after the release-prep diff is committed, not as the everyday edit loop.
+
+> **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
+
+> **Manual testing scenarios:** for end-to-end behaviour that automated tests cannot fully cover (real agent CLIs, dashboard UI, hot-reload, daemon-backed actions, full automation chains), follow the [Manual Testing Guide](https://itervox.dev/guides/manual-testing/) (source: `site/src/content/docs/guides/manual-testing.mdx`). Add a scenario there whenever you ship a feature with a non-trivial E2E behaviour or fix a regression that escaped `make verify`.
 
 ---
 
@@ -194,7 +211,7 @@ Worker goroutines (one per running issue) send results back via a buffered `chan
                   └────────────────────────────────┘
 ```
 
-A small `cfgMu` mutex guards exactly the runtime-mutable subset of `Orchestrator.cfg` (agent mode, max concurrency, profiles, SSH hosts, dispatch strategy, inline-input flag, tracker active/terminal/completion states, and `auto_clear_workspace`). Every other `cfg` field is read-only after startup. The authoritative list lives in `CLAUDE.md`.
+A small `cfgMu` mutex guards exactly the runtime-mutable subset of `Orchestrator.cfg`: agent concurrency/retry/rate-limit knobs, profiles, SSH hosts, dispatch strategy, reviewer settings, inline-input flag, tracker active/terminal/completion/failed states, automations, and `auto_clear_workspace`. Every other `cfg` field is read-only after startup. The authoritative allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields` and is mirrored in `CLAUDE.md`.
 
 ### State is a value type
 
@@ -214,7 +231,7 @@ When an agent needs human clarification, it emits a sentinel token in its output
   const InputRequiredSentinel = "<!-- itervox:needs-input -->"
   ```
 
-- Detection lives in `agent.IsSentinelInputRequired(text string) bool` (substring match, whitespace-tolerant). This is the function `agent.FinalizeResult` calls in `internal/agent/runner.go`. A 1-line wrapper `agent.IsContentInputRequired` is kept as an alias for callers that don't go through `FinalizeResult`.
+- Detection lives in `agent.IsSentinelInputRequired(text string) bool` (substring match, whitespace-tolerant). This is the function `agent.FinalizeResult` calls in `internal/agent/runner.go`.
 - The bundled prompt template at `internal/templates/human_input.md` instructs agents how and when to emit it.
 
 If you change the sentinel value, you **must** update both the constant and the template, and re-run `go test -race ./internal/agent/...` to refresh the parser tests.
@@ -226,9 +243,9 @@ If you change the sentinel value, you **must** update both the constant and the 
 ### Running tests
 
 ```bash
-go test ./...                                    # all unit tests
+go test ./cmd/... ./internal/...                 # all repo-owned unit tests
 go test ./internal/orchestrator/...              # a single package
-go test -race ./...                              # with race detector (required pre-PR)
+go test -race ./cmd/... ./internal/...           # with race detector (required pre-PR)
 go test -v ./internal/orchestrator/...           # verbose
 ```
 
@@ -297,7 +314,7 @@ These are skipped (not silently passed) in CI without credentials.
 
 ### Linting
 
-**Go:** `golangci-lint run ./...`
+**Go:** `golangci-lint run ./cmd/... ./internal/...`
 
 **Frontend:**
 
@@ -396,6 +413,39 @@ Add a doc comment to every exported type and function. A wrong comment is worse 
 
 - Open an issue to discuss significant changes before writing code.
 - For bug fixes, a short description in the PR is sufficient.
+- Before opening a feature PR, check the open GitHub Issues for prior discussion of the same area, and look at `CHANGELOG.md` to confirm the change has not already landed in a recent release.
+
+### Maintainer map
+
+Use this map to route questions and reviews. Maintainers can overlap; pick the primary area when opening an issue or asking for review.
+
+| Area | Primary reviewer |
+|---|---|
+| Orchestrator, worker lifecycle, retry/input-required flows | Core maintainer |
+| Tracker integrations, prompt rendering, workflow parsing | Core maintainer |
+| Web dashboard, Settings UI, frontend tests | Web maintainer |
+| Release engineering, CI, Go toolchain, GoReleaser | Release maintainer |
+| Documentation, examples, planning index | Docs maintainer |
+
+When an issue crosses areas, name the highest-risk owner first and list the secondary area in the issue body.
+
+### Label taxonomy
+
+Use labels to make work pick-up and automation filters predictable:
+
+| Label | Use for |
+|---|---|
+| `bug` | Reproducible incorrect behavior |
+| `enhancement` | New user-facing capability |
+| `docs` | README, site docs, examples, or planning text |
+| `frontend` | React/Vite dashboard work |
+| `backend` | Go daemon, server, orchestrator, tracker, or workspace work |
+| `automation` | Automation triggers, filters, profiles, or dispatch behavior |
+| `release` | Release-check, changelog, CI, versioning, GoReleaser |
+| `security` | Auth, tokens, SSH, secret handling, permission boundaries |
+| `good first issue` | Small, low-risk, well-scoped contribution |
+| `needs-plan` | Requires an implementation plan before coding |
+| `blocked` | Waiting on another issue, decision, upstream fix, or credential |
 
 ### Branching
 
@@ -420,7 +470,6 @@ chore: rename binary to itervox
 ### Pull request checklist
 
 - [ ] `make verify` passes locally
-- [ ] `go test -race ./...` passes
 - [ ] New behaviour is covered by tests
 - [ ] No API tokens or secrets in the diff
 - [ ] Exported symbols have doc comments

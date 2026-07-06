@@ -39,6 +39,29 @@ var DefaultCodexModels = []ModelOption{
 	{ID: "codex-mini-latest", Label: "codex-mini-latest - Deprecated compatibility alias"},
 }
 
+// API endpoint overrides — production code uses the real Anthropic / OpenAI
+// URLs; tests override via env vars to point at httptest.Server. This is the
+// single seam that lets `itervox models refresh` be exercised end-to-end
+// without hitting the real APIs.
+const (
+	defaultAnthropicAPIBase = "https://api.anthropic.com"
+	defaultOpenAIAPIBase    = "https://api.openai.com"
+)
+
+func anthropicAPIBase() string {
+	if override := os.Getenv("ITERVOX_ANTHROPIC_API_BASE"); override != "" {
+		return override
+	}
+	return defaultAnthropicAPIBase
+}
+
+func openAIAPIBase() string {
+	if override := os.Getenv("ITERVOX_OPENAI_API_BASE"); override != "" {
+		return override
+	}
+	return defaultOpenAIAPIBase
+}
+
 // ListClaudeModels queries the Anthropic API for available models.
 // Falls back to DefaultClaudeModels if ANTHROPIC_API_KEY is not set or the API fails.
 func ListClaudeModels() []ModelOption {
@@ -50,7 +73,7 @@ func ListClaudeModels() []ModelOption {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicAPIBase()+"/v1/models", nil)
 	if err != nil {
 		return DefaultClaudeModels
 	}
@@ -106,7 +129,7 @@ func ListCodexModels() []ModelOption {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.openai.com/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIAPIBase()+"/v1/models", nil)
 	if err != nil {
 		return DefaultCodexModels
 	}

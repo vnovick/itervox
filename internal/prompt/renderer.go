@@ -53,6 +53,13 @@ func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
 // it passes through unchanged. Returns the input as-is on parse/render errors
 // so a plain-text prompt still works.
 func RenderProfilePrompt(promptText string, issue domain.Issue, attempt *int) string {
+	return RenderPromptOverlay(promptText, issue, attempt, nil)
+}
+
+// RenderPromptOverlay renders a plain-text or Liquid prompt fragment using the
+// standard issue/attempt bindings plus optional extra bindings, returning the
+// original text on parse/render errors for backward compatibility.
+func RenderPromptOverlay(promptText string, issue domain.Issue, attempt *int, extra map[string]any) string {
 	if strings.TrimSpace(promptText) == "" {
 		return ""
 	}
@@ -66,6 +73,9 @@ func RenderProfilePrompt(promptText string, issue domain.Issue, attempt *int) st
 	bindings := map[string]any{
 		"issue":   issueToMap(issue),
 		"attempt": attemptValue(attempt),
+	}
+	for key, value := range extra {
+		bindings[key] = value
 	}
 
 	out, err := tpl.Render(bindings)

@@ -2,7 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useUpdateIssueState, useCancelIssue, ISSUES_KEY } from '../issues';
+import {
+  ISSUE_KEY,
+  ISSUES_KEY,
+  useCancelIssue,
+  useClearAllWorkspaces,
+  useClearIssueLogs,
+  useProvideInput,
+  useTriggerAIReview,
+  useUpdateIssueState,
+} from '../issues';
+import { logIdentifiersKey, logsKey } from '../logs';
 import type { TrackerIssue, StateSnapshot } from '../../types/schemas';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { useToastStore } from '../../store/toastStore';
@@ -64,6 +74,7 @@ describe('useUpdateIssueState', () => {
   it('applies optimistic update to the query cache immediately', async () => {
     const qc = freshClient();
     qc.setQueryData(ISSUES_KEY, [makeIssue('ABC-1', 'Todo')]);
+    qc.setQueryData(ISSUE_KEY('ABC-1'), makeIssue('ABC-1', 'Todo'));
 
     // Mutation fn hangs so we can inspect optimistic state before it resolves
     global.fetch = vi.fn().mockReturnValue(new Promise<Response>(() => {}));
@@ -81,6 +92,7 @@ describe('useUpdateIssueState', () => {
 
     const cached = qc.getQueryData<TrackerIssue[]>(ISSUES_KEY);
     expect(cached?.[0].state).toBe('In Progress');
+    expect(qc.getQueryData<TrackerIssue>(ISSUE_KEY('ABC-1'))?.state).toBe('In Progress');
   });
 
   it('rolls back the cache when the API call fails', async () => {
@@ -129,11 +141,96 @@ describe('useUpdateIssueState', () => {
   });
 });
 
+describe('mutation refresh behavior', () => {
+  it('refreshes snapshot and invalidates issue caches after provideInput succeeds', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+    const { result } = renderHook(() => useProvideInput(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ identifier: 'ABC-9', message: 'continue' });
+    });
+
+    expect(refreshSpy).toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ISSUES_KEY });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ISSUE_KEY('ABC-9') });
+  });
+
+  it('refreshes snapshot and invalidates issue caches after AI review trigger succeeds', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+    const { result } = renderHook(() => useTriggerAIReview(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync('ABC-11');
+    });
+
+    expect(refreshSpy).toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ISSUES_KEY });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ISSUE_KEY('ABC-11') });
+  });
+
+  it('invalidates log queries after clearing issue logs', async () => {
+    const qc = freshClient();
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+    const { result } = renderHook(() => useClearIssueLogs(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync('ABC-10');
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: logsKey('ABC-10') });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: logIdentifiersKey() });
+  });
+
+  it('refreshes snapshot and invalidates global log queries after clearing all workspaces', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+    const { result } = renderHook(() => useClearAllWorkspaces(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    expect(refreshSpy).toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['logs'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sublogs'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: logIdentifiersKey() });
+  });
+});
+
 // ─── useCancelIssue ───────────────────────────────────────────────────────────
 
 describe('useCancelIssue', () => {
   it('applies optimistic patch to the snapshot on mutate', async () => {
     const qc = freshClient();
+    qc.setQueryData(ISSUES_KEY, [makeIssue('ABC-2', 'In Progress')]);
+    qc.setQueryData(ISSUE_KEY('ABC-2'), makeIssue('ABC-2', 'In Progress'));
 
     const baseSnapshot = {
       generatedAt: new Date().toISOString(),
@@ -178,6 +275,7 @@ describe('useCancelIssue', () => {
     expect(patchSpy).toHaveBeenCalled();
     const patchArg = patchSpy.mock.calls[0][0];
     expect(patchArg.paused).toContain('ABC-2');
+    expect(qc.getQueryData<TrackerIssue>(ISSUE_KEY('ABC-2'))?.orchestratorState).toBe('paused');
   });
 
   it('rolls back both cache and snapshot on API error', async () => {
@@ -227,6 +325,7 @@ describe('useCancelIssue', () => {
     // Cache should be restored
     const cached = qc.getQueryData<TrackerIssue[]>(ISSUES_KEY);
     expect(cached?.[0].orchestratorState).toBe('idle');
+    expect(useItervoxStore.getState().snapshot).toEqual(baseSnapshot);
 
     // A toast should have been shown
     const toasts = useToastStore.getState().toasts;

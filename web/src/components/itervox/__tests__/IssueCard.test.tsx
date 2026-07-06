@@ -16,6 +16,8 @@ const baseIssue: TrackerIssue = {
   elapsedMs: 90000,
   lastMessage: '',
   error: '',
+  blockedBy: [],
+  blockedByDetails: [],
 };
 
 describe('IssueCard', () => {
@@ -46,6 +48,43 @@ describe('IssueCard', () => {
     render(<IssueCard issue={baseIssue} onSelect={vi.fn()} />);
     const link = screen.getByRole('link');
     expect(link).toHaveAttribute('href', 'https://example.com/ABC-1');
+  });
+
+  it('shows a blocked badge when blockers exist', () => {
+    render(
+      <IssueCard
+        issue={{
+          ...baseIssue,
+          blockedBy: ['ABC-0', 'ABC-2'],
+          blockedByDetails: [
+            { identifier: 'ABC-0', state: 'In Progress' },
+            { identifier: 'ABC-2', state: 'Done' },
+          ],
+        }}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    const badge = screen.getByTestId('issue-card-blocked-badge');
+    expect(badge).toHaveTextContent('Blocked 2');
+    expect(badge).toHaveAttribute('title', 'Blocked by 2 issues');
+  });
+
+  it('falls back to blockedBy when blocker details are absent', () => {
+    render(
+      <IssueCard
+        issue={{
+          ...baseIssue,
+          blockedBy: ['ABC-0'],
+          blockedByDetails: [],
+        }}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    const badge = screen.getByTestId('issue-card-blocked-badge');
+    expect(badge).toHaveTextContent('Blocked 1');
+    expect(badge).toHaveAttribute('title', 'Blocked by 1 issue');
   });
 
   it('renders identifier as plain text when no url', () => {
@@ -82,6 +121,13 @@ describe('IssueCard', () => {
   it('shows orange status dot for input_required issue', () => {
     const inputIssue = { ...baseIssue, orchestratorState: 'input_required' as const };
     const { container } = render(<IssueCard issue={inputIssue} onSelect={vi.fn()} />);
+    const dot = container.querySelector('.bg-orange-400');
+    expect(dot).toBeInTheDocument();
+  });
+
+  it('shows orange status dot for pending_input_resume issue', () => {
+    const pendingIssue = { ...baseIssue, orchestratorState: 'pending_input_resume' as const };
+    const { container } = render(<IssueCard issue={pendingIssue} onSelect={vi.fn()} />);
     const dot = container.querySelector('.bg-orange-400');
     expect(dot).toBeInTheDocument();
   });
@@ -147,6 +193,12 @@ describe('IssueCard', () => {
     const inputIssue = { ...baseIssue, orchestratorState: 'input_required' as const };
     render(<IssueCard issue={inputIssue} onSelect={vi.fn()} />);
     expect(screen.getByText('Needs Input')).toBeInTheDocument();
+  });
+
+  it('shows "Resuming" badge for pending_input_resume issue', () => {
+    const pendingIssue = { ...baseIssue, orchestratorState: 'pending_input_resume' as const };
+    render(<IssueCard issue={pendingIssue} onSelect={vi.fn()} />);
+    expect(screen.getByText('Resuming')).toBeInTheDocument();
   });
 
   it('does not show state badge for idle issue', () => {
@@ -226,5 +278,82 @@ describe('IssueCard', () => {
       <IssueCard issue={baseIssue} onSelect={vi.fn()} isDragging={false} />,
     );
     expect(container.firstChild).not.toHaveClass('rotate-1');
+  });
+
+  describe('T-6: review-comment badge', () => {
+    it('renders the badge when latest run is reviewer with commentCount > 0', () => {
+      render(
+        <IssueCard issue={baseIssue} onSelect={vi.fn()} runningKind="reviewer" commentCount={3} />,
+      );
+      const badge = screen.getByTestId('issue-card-review-badge');
+      expect(badge).toBeInTheDocument();
+      expect(badge.textContent).toContain('3');
+      expect(badge.textContent.toLowerCase()).toContain('review');
+    });
+
+    it('uses the singular "review" form when commentCount equals 1', () => {
+      render(
+        <IssueCard issue={baseIssue} onSelect={vi.fn()} runningKind="reviewer" commentCount={1} />,
+      );
+      const badge = screen.getByTestId('issue-card-review-badge');
+      expect(badge.textContent).toMatch(/1 review\b/);
+    });
+
+    it('hides the badge for non-reviewer runs', () => {
+      render(
+        <IssueCard issue={baseIssue} onSelect={vi.fn()} runningKind="worker" commentCount={5} />,
+      );
+      expect(screen.queryByTestId('issue-card-review-badge')).not.toBeInTheDocument();
+    });
+
+    it('hides the badge when commentCount is zero', () => {
+      render(
+        <IssueCard issue={baseIssue} onSelect={vi.fn()} runningKind="reviewer" commentCount={0} />,
+      );
+      expect(screen.queryByTestId('issue-card-review-badge')).not.toBeInTheDocument();
+    });
+
+    it('opens the issue detail slide when the badge is clicked', async () => {
+      const onSelect = vi.fn();
+      render(
+        <IssueCard issue={baseIssue} onSelect={onSelect} runningKind="reviewer" commentCount={2} />,
+      );
+      await userEvent.click(screen.getByTestId('issue-card-review-badge'));
+      expect(onSelect).toHaveBeenCalledWith('ABC-1');
+    });
+  });
+
+  describe('G: retry-in-flight badge', () => {
+    const retryingIssue: TrackerIssue = {
+      ...baseIssue,
+      orchestratorState: 'retrying',
+    };
+
+    it('renders "↻ retry N/M" with the configured max_retries denominator', () => {
+      render(
+        <IssueCard issue={retryingIssue} onSelect={vi.fn()} retryAttempt={2} maxRetries={5} />,
+      );
+      expect(screen.getByTestId('issue-card-retry-badge')).toHaveTextContent('↻ retry 2/5');
+    });
+
+    it('omits the denominator when max_retries=0 (unlimited)', () => {
+      render(
+        <IssueCard issue={retryingIssue} onSelect={vi.fn()} retryAttempt={3} maxRetries={0} />,
+      );
+      const badge = screen.getByTestId('issue-card-retry-badge');
+      expect(badge).toHaveTextContent('↻ retry 3');
+      expect(badge).not.toHaveTextContent('/');
+      expect(badge).toHaveAttribute('title', expect.stringContaining('unlimited'));
+    });
+
+    it('does not render the badge when the issue is not retrying', () => {
+      render(<IssueCard issue={baseIssue} onSelect={vi.fn()} retryAttempt={2} maxRetries={5} />);
+      expect(screen.queryByTestId('issue-card-retry-badge')).not.toBeInTheDocument();
+    });
+
+    it('does not render the badge when retryAttempt is undefined', () => {
+      render(<IssueCard issue={retryingIssue} onSelect={vi.fn()} maxRetries={5} />);
+      expect(screen.queryByTestId('issue-card-retry-badge')).not.toBeInTheDocument();
+    });
   });
 });

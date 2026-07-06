@@ -5,17 +5,13 @@ package agent
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/vnovick/itervox/internal/domain"
 )
 
 // --- shellQuote ---
@@ -50,13 +46,46 @@ func TestBuildShellCmdNewSession(t *testing.T) {
 	assert.NotContains(t, cmd, "--resume")
 }
 
-func TestBuildShellCmdResume(t *testing.T) {
+func TestBuildShellCmdResumeWithoutPrompt(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "ignored prompt")
+	cmd := buildShellCmd("claude", &id, "")
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
-	// When resuming, the new-session flag ` -p ` should not appear (note spaces).
+	// Resume without a prompt should not include -p.
 	assert.NotContains(t, cmd, " -p ")
+}
+
+func TestBuildShellCmdResumeWithPrompt(t *testing.T) {
+	id := "sess-abc"
+	cmd := buildShellCmd("claude", &id, "the user reply")
+	assert.Contains(t, cmd, "--resume")
+	assert.Contains(t, cmd, "sess-abc")
+	// Resume WITH a prompt (input-required flow) should include both flags.
+	assert.Contains(t, cmd, " -p ")
+	assert.Contains(t, cmd, "the user reply")
+}
+
+func TestBuildDirectArgsResumeWithoutPrompt(t *testing.T) {
+	id := "sess-abc"
+	args := buildDirectArgs(&id, "")
+	assert.Equal(t, []string{
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+		"--resume", "sess-abc",
+	}, args)
+}
+
+func TestBuildDirectArgsResumeWithPrompt(t *testing.T) {
+	id := "sess-abc"
+	args := buildDirectArgs(&id, "the user reply")
+	assert.Equal(t, []string{
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+		"--resume", "sess-abc",
+		"-p", "the user reply",
+	}, args)
 }
 
 // Regression: an empty command must not produce a shell line that starts with
@@ -202,24 +231,65 @@ func TestSSHFetchClaudeViaInMemoryTar(t *testing.T) {
 	}
 	_ = tw.Close()
 
-	// Replay the sshFetchClaude tar-reading loop.
-	var entries []domain.IssueLogEntry
-	tr := tar.NewReader(&buf)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		assert.NoError(t, err)
-		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
-		scanner := bufio.NewScanner(tr)
-		scanner.Buffer(make([]byte, 1<<20), 1<<20)
-		for scanner.Scan() {
-			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseLine, sessionID)...)
-		}
-	}
+	entries := parseRemoteJSONLTar(&buf, ParseLine, "test-host", "claude")
 
 	assert.Len(t, entries, 2)
 	assert.Equal(t, "sess-001", entries[0].SessionID)
 	assert.Equal(t, "sess-002", entries[1].SessionID)
+}
+
+func TestParseRemoteJSONLTarSupportsCodexParser(t *testing.T) {
+	codexLine := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"hello from codex"}}`
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := codexLine + "\n"
+	_ = tw.WriteHeader(&tar.Header{Name: "codex-abc.jsonl", Size: int64(len(body)), Mode: 0o644})
+	_, _ = tw.Write([]byte(body))
+	_ = tw.Close()
+
+	entries := parseRemoteJSONLTar(&buf, ParseCodexLine, "test-host", "codex")
+
+	assert.Len(t, entries, 1)
+	assert.Equal(t, "codex-abc", entries[0].SessionID)
+	assert.Contains(t, entries[0].Message, "hello from codex")
+}
+
+// TestSafePromptArg guards against the argv hazard that surfaced in
+// production: a rendered prompt beginning with '-' (markdown list, YAML, or
+// accidental paste) was interpreted by Claude's CLI parser as an unknown
+// flag. The fix prepends a single space so the parser sees a non-flag value
+// token. Claude trims leading prompt whitespace, so the agent behavior is
+// unchanged.
+func TestSafePromptArg(t *testing.T) {
+	t.Run("prompts starting with '-' get a leading space", func(t *testing.T) {
+		assert.Equal(t, " - Step 1\n- Step 2", safePromptArg("- Step 1\n- Step 2"))
+		assert.Equal(t, " -help", safePromptArg("-help"))
+		assert.Equal(t, " --foo", safePromptArg("--foo"))
+		assert.Equal(t, " - id: input-responder\n  enabled: true",
+			safePromptArg("- id: input-responder\n  enabled: true"))
+	})
+	t.Run("prompts not starting with '-' are returned verbatim", func(t *testing.T) {
+		assert.Equal(t, "Continue the work.", safePromptArg("Continue the work."))
+		assert.Equal(t, "", safePromptArg(""))
+		assert.Equal(t, "  - leading whitespace is fine", safePromptArg("  - leading whitespace is fine"))
+		assert.Equal(t, "## Heading then - dash", safePromptArg("## Heading then - dash"))
+	})
+}
+
+// TestBuildDirectArgs_SafeForLeadingDashPrompt verifies the integration
+// between buildDirectArgs and safePromptArg — the slice passed to
+// exec.CommandContext must never contain a raw token starting with '-' as
+// the value slot after '-p'.
+func TestBuildDirectArgs_SafeForLeadingDashPrompt(t *testing.T) {
+	sid := "sess-123"
+	args := buildDirectArgs(&sid, "- id: x")
+	// Expect: [...sharedFlags, "--resume", "sess-123", "-p", " - id: x"]
+	require := func(cond bool, msg string) {
+		if !cond {
+			t.Fatalf("%s: args=%v", msg, args)
+		}
+	}
+	require(len(args) >= 2 && args[len(args)-2] == "-p", "expected -p flag before prompt")
+	require(args[len(args)-1] == " - id: x", "expected prompt to be prefixed with a space to neutralise leading dash")
 }

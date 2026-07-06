@@ -38,7 +38,7 @@ func TestReconcileStallsKillsStalled(t *testing.T) {
 	state.Running["id1"] = runningEntry("id1", "In Progress", &old)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 	_, still := state.Running["id1"]
 	assert.False(t, still, "stalled session should be removed from running")
 }
@@ -50,7 +50,7 @@ func TestReconcileStallsDisabledWhenZero(t *testing.T) {
 	state.Running["id1"] = runningEntry("id1", "In Progress", &old)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 	_, still := state.Running["id1"]
 	assert.True(t, still, "stall detection disabled when stall_timeout_ms=0")
 }
@@ -67,7 +67,7 @@ func TestReconcileTrackerStatesTerminalCleansup(t *testing.T) {
 	)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events)
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 	_, still := state.Running["id1"]
 	assert.False(t, still, "terminal state should remove from running")
 }
@@ -84,7 +84,7 @@ func TestReconcileTrackerStatesActiveUpdatesSnapshot(t *testing.T) {
 	)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events)
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 	entry, ok := state.Running["id1"]
 	assert.True(t, ok)
 	assert.Equal(t, "In Progress", entry.Issue.State)
@@ -103,7 +103,7 @@ func TestReconcileTrackerStatesNonActiveStopsWithoutCleanup(t *testing.T) {
 	)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events)
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 	_, still := state.Running["id1"]
 	assert.False(t, still, "non-active state should stop worker")
 }
@@ -117,7 +117,7 @@ func TestReconcileTrackerStatesRefreshFailureKeepsWorkers(t *testing.T) {
 	mt.InjectError(errors.New("network error"))
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events)
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 	_, still := state.Running["id1"]
 	assert.True(t, still, "refresh failure must keep workers running")
 }

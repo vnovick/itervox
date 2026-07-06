@@ -1,0 +1,2 @@
+{"event":"action","action":"merge_pr","args":{"pr":55}}
+{"event":"comment","body":"merge-bot: merged PR-55 (head feat/eng-55-exact) at def5678 via squash. PR-54 (feat/eng-55-exact-extra) left untouched."}

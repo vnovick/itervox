@@ -12,3 +12,12 @@ import _ "embed"
 //
 //go:embed human_input.md
 var HumanInput []byte
+
+// Quickstart is a complete WORKFLOW.md suitable for a no-API-key, no-tracker
+// trial of itervox. Tracker is in-memory (synthetic issues populated by
+// tracker.GenerateDemoIssues), agent is a no-op echo, server binds to
+// loopback. Replaces the formerly-builtin `--demo` flag — copy it next to
+// the daemon and run `itervox -workflow quickstart-WORKFLOW.md`.
+//
+//go:embed quickstart.md
+var Quickstart []byte

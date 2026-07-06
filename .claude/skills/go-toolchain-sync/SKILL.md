@@ -9,8 +9,8 @@ itervox pins the Go toolchain in **two** places. They MUST match byte-for-byte.
 
 | File | Line | Current |
 |---|---|---|
-| `/Users/vladimirnovick/dev/oss/itervox/go.mod` | 3 | `go 1.25.9` |
-| `/Users/vladimirnovick/dev/oss/itervox/Makefile` | 6 | `export GOTOOLCHAIN := go1.25.9` |
+| `go.mod` | 3 | `go 1.25.9` |
+| `Makefile` | 6 | `export GOTOOLCHAIN := go1.25.9` |
 
 CI is the single-source-of-truth pattern: `.github/workflows/ci-go.yml` and `release.yml` use `actions/setup-go@v6` with `go-version-file: go.mod`. **Never** hardcode `go-version:` in workflow YAML.
 

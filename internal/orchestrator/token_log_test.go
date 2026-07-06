@@ -70,7 +70,11 @@ func runWorkerToCompletion(t *testing.T, identifier string, events []agent.Strea
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	orchDone := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(orchDone)
+	}()
 
 	select {
 	case <-done:
@@ -81,6 +85,12 @@ func runWorkerToCompletion(t *testing.T, identifier string, events []agent.Strea
 	// Allow the event loop to process the exit event and log.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
+	// Wait for orch.Run to fully exit BEFORE returning. Otherwise the
+	// orchestrator goroutine outlives this test and the next call to
+	// runWorkerToCompletion replaces slog.Default — the still-draining
+	// goroutine then writes "worker: completed" with this test's totals
+	// into the next test's logBuf, breaking the next test's assertions.
+	<-orchDone
 
 	return logBuf.String()
 }

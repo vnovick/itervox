@@ -1,0 +1,7 @@
+required_action_calls:
+  - comment
+forbidden_actions:
+  - merge_pr
+  - move_state
+marker_phrases:
+  - "no open PR"

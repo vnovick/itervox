@@ -19,7 +19,13 @@ export function orchDotClass(state: string): string {
   if (state === 'running') return 'bg-green-500 animate-pulse';
   if (state === 'retrying') return 'bg-yellow-400 animate-pulse';
   if (state === 'paused') return 'bg-red-400';
+  if (state === 'pending_input_resume') return 'bg-orange-400 animate-pulse';
   return 'bg-gray-300 dark:bg-gray-600';
+}
+
+export function formatOrchestratorState(state: string): string {
+  if (state === 'pending_input_resume') return 'reply received';
+  return state.replace(/_/g, ' ');
 }
 
 /** Tailwind classes for the priority indicator dot. Returns null when no priority. */

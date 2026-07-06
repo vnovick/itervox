@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/server"
 )
@@ -47,6 +49,23 @@ func TestStateEndpointReturnsJSON(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Contains(t, body, "generatedAt")
+}
+
+func TestStateEndpointIncludesSupportedAgentActions(t *testing.T) {
+	snap := baseSnap()
+	snap.SupportedAgentActions = config.SupportedAgentActions()
+	srv := server.New(makeTestConfig(snap))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		SupportedAgentActions []string `json:"supportedAgentActions"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, config.SupportedAgentActions(), body.SupportedAgentActions)
 }
 
 func TestUnknownRouteReturns404(t *testing.T) {
@@ -169,8 +188,8 @@ func TestSetWorkers(t *testing.T) {
 			snap.MaxConcurrentAgents = tc.currentWorkers
 			cfg := makeTestConfig(snap)
 			cfg.Client = &server.FuncClient{
-				SetWorkersFn: func(n int) { called = n },
-				BumpWorkersFn: func(delta int) int {
+				SetWorkersFn: func(n int) error { called = n; return nil },
+				BumpWorkersFn: func(delta int) (int, error) {
 					next := snap.MaxConcurrentAgents + delta
 					if next < 1 {
 						next = 1
@@ -179,7 +198,7 @@ func TestSetWorkers(t *testing.T) {
 						next = 50
 					}
 					called = next
-					return next
+					return next, nil
 				},
 			}
 			srv := server.New(cfg)
@@ -197,6 +216,41 @@ func TestSetWorkers(t *testing.T) {
 			}
 		})
 	}
+
+	// Persist failure must surface as 500 — the frontend toast plumbing
+	// keys off non-2xx to show an error. T-05 added the error return so
+	// SetWorkers can no longer silently revert at the next reload.
+	t.Run("persist failure returns 500", func(t *testing.T) {
+		snap := baseSnap()
+		snap.MaxConcurrentAgents = 3
+		cfg := makeTestConfig(snap)
+		cfg.Client = &server.FuncClient{
+			SetWorkersFn: func(int) error {
+				return errors.New("disk full")
+			},
+		}
+		srv := server.New(cfg)
+
+		w := postJSON(t, srv, "/api/v1/settings/workers", `{"workers":5}`)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "disk full")
+	})
+
+	t.Run("bump persist failure returns 500", func(t *testing.T) {
+		snap := baseSnap()
+		snap.MaxConcurrentAgents = 3
+		cfg := makeTestConfig(snap)
+		cfg.Client = &server.FuncClient{
+			BumpWorkersFn: func(int) (int, error) {
+				return 0, errors.New("disk full")
+			},
+		}
+		srv := server.New(cfg)
+
+		w := postJSON(t, srv, "/api/v1/settings/workers", `{"delta":1}`)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "disk full")
+	})
 }
 
 func TestSetIssueProfile(t *testing.T) {
@@ -266,17 +320,19 @@ func TestSetIssueProfile(t *testing.T) {
 func TestUpsertProfileIncludesBackend(t *testing.T) {
 	var gotName string
 	var gotDef server.ProfileDef
+	var gotOriginalName string
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		UpsertProfileFn: func(name string, def server.ProfileDef) error {
+		UpsertProfileFn: func(name string, def server.ProfileDef, originalName string) error {
 			gotName = name
 			gotDef = def
+			gotOriginalName = originalName
 			return nil
 		},
 	}
 	srv := server.New(cfg)
 
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/codex-fast", bytes.NewBufferString(`{"command":"run-codex-wrapper","prompt":"fast path","backend":"codex"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/codex-fast", bytes.NewBufferString(`{"command":"run-codex-wrapper","prompt":"fast path","soul":"Soul body","instructions":"Instructions body","soulFile":".itervox/agents/codex-fast/SOUL.md","instructionsFile":".itervox/agents/codex-fast/INSTRUCTIONS.md","backend":"codex","enabled":false,"allowedActions":["comment","provide_input"],"originalName":"legacy-fast"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -285,7 +341,39 @@ func TestUpsertProfileIncludesBackend(t *testing.T) {
 	assert.Equal(t, "codex-fast", gotName)
 	assert.Equal(t, "run-codex-wrapper", gotDef.Command)
 	assert.Equal(t, "fast path", gotDef.Prompt)
+	assert.Equal(t, "Soul body", gotDef.Soul)
+	assert.Equal(t, "Instructions body", gotDef.Instructions)
+	assert.True(t, gotDef.SoulSet)
+	assert.True(t, gotDef.InstructionsSet)
+	assert.Equal(t, ".itervox/agents/codex-fast/SOUL.md", gotDef.SoulFile)
+	assert.Equal(t, ".itervox/agents/codex-fast/INSTRUCTIONS.md", gotDef.InstructionsFile)
 	assert.Equal(t, "codex", gotDef.Backend)
+	assert.False(t, gotDef.Enabled)
+	assert.Equal(t, []string{"comment", "provide_input"}, gotDef.AllowedActions)
+	assert.Equal(t, "legacy-fast", gotOriginalName)
+}
+
+func TestUpsertProfilePreservesSubmittedEmptyProfileFileFields(t *testing.T) {
+	var gotDef server.ProfileDef
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpsertProfileFn: func(_ string, def server.ProfileDef, _ string) error {
+			gotDef = def
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/qa", bytes.NewBufferString(`{"command":"claude","soul":"","instructions":"","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, gotDef.Soul)
+	assert.Empty(t, gotDef.Instructions)
+	assert.True(t, gotDef.SoulSet)
+	assert.True(t, gotDef.InstructionsSet)
 }
 
 func TestUpdateIssueState(t *testing.T) {
@@ -328,9 +416,11 @@ func TestUpdateIssueState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			var gotSource string
 			cfg := makeTestConfig(baseSnap())
 			cfg.Client = &server.FuncClient{
 				UpdateIssueStateFn: func(ctx context.Context, identifier, stateName string) error {
+					gotSource = server.IssueStatusSource(ctx)
 					return tc.updaterErr
 				},
 			}
@@ -344,11 +434,35 @@ func TestUpdateIssueState(t *testing.T) {
 				var resp map[string]any
 				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 				assert.Equal(t, true, resp["ok"])
+				assert.Equal(t, server.IssueStatusSourceDashboard, gotSource)
 			} else {
 				assert.Contains(t, w.Body.String(), "error")
 			}
 		})
 	}
+}
+
+func TestTrackerIssueIncludesStatusChangesJSON(t *testing.T) {
+	issue := server.TrackerIssue{
+		Identifier:        "ENG-1",
+		Title:             "Track status",
+		State:             "Done",
+		OrchestratorState: "idle",
+		StatusChanges: []server.IssueStatusChangeRow{{
+			FromState:    "Todo",
+			ToState:      "Done",
+			Source:       "dashboard",
+			AutomationID: "auto-1",
+			At:           time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	data, err := json.Marshal(issue)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"statusChanges"`)
+	assert.Contains(t, string(data), `"fromState":"Todo"`)
+	assert.Contains(t, string(data), `"source":"dashboard"`)
+	assert.Contains(t, string(data), `"automationId":"auto-1"`)
 }
 
 // ─── handleIssues ─────────────────────────────────────────────────────────────
@@ -501,60 +615,6 @@ func TestHandleResumeIssue_NotPaused_Returns404(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "not_paused")
 }
 
-// ─── handleSetAgentMode ───────────────────────────────────────────────────────
-
-func testServerWithAgentMode(t *testing.T, fn func(string) error) *server.Server {
-	t.Helper()
-	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{SetAgentModeFn: fn}
-	return server.New(cfg)
-}
-
-func TestHandleSetAgentMode_ValidMode_Returns200(t *testing.T) {
-	tests := []struct {
-		name string
-		mode string
-	}{
-		{"empty mode (off)", ""},
-		{"subagents mode", "subagents"},
-		{"teams mode", "teams"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var gotMode string
-			srv := testServerWithAgentMode(t, func(mode string) error {
-				gotMode = mode
-				return nil
-			})
-
-			body := `{"mode":"` + tc.mode + `"}`
-			w := postJSON(t, srv, "/api/v1/settings/agent-mode", body)
-
-			assert.Equal(t, http.StatusOK, w.Code)
-			var resp map[string]any
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-			assert.Equal(t, true, resp["ok"])
-			assert.Equal(t, tc.mode, resp["agentMode"])
-			assert.Equal(t, tc.mode, gotMode)
-		})
-	}
-}
-
-func TestHandleSetAgentMode_InvalidJSON_Returns400(t *testing.T) {
-	srv := testServerWithAgentMode(t, func(mode string) error { return nil })
-	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `not-json`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
-}
-
-func TestHandleSetAgentMode_InvalidMode_Returns400(t *testing.T) {
-	srv := testServerWithAgentMode(t, func(mode string) error { return nil })
-	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `{"mode":"invalid-mode"}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid_mode")
-}
-
 // ─── handleTerminateIssue ─────────────────────────────────────────────────────
 
 func testServerWithTerminate(t *testing.T, fn func(string) bool) *server.Server {
@@ -616,7 +676,9 @@ func TestHandleReanalyzeIssue_NotPaused(t *testing.T) {
 
 func testServerWithProfiles(t *testing.T) (*server.Server, *map[string]server.ProfileDef) {
 	t.Helper()
-	defs := map[string]server.ProfileDef{"fast": {Command: "codex", Backend: "codex"}}
+	defs := map[string]server.ProfileDef{
+		"fast": {Command: "codex", Backend: "codex", AllowedActions: []string{"comment"}},
+	}
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
 		ProfileDefsFn:   func() map[string]server.ProfileDef { return defs },
@@ -632,6 +694,7 @@ func TestHandleListProfiles_ReturnsProfiles(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "fast")
+	assert.Contains(t, w.Body.String(), "allowedActions")
 }
 
 func TestHandleDeleteProfile_Success(t *testing.T) {
@@ -730,6 +793,46 @@ func TestHandleSetReviewer_DisableReviewer(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "", savedProfile)
+}
+
+func TestHandleSetReviewer_InvalidAutoClearCombinationReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(string, bool) error {
+			return config.ErrAutoClearAutoReviewConflict
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/reviewer", `{"profile":"reviewer","auto_review":true}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "auto_clear")
+}
+
+func TestHandleSetReviewer_MissingReviewerProfileReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(string, bool) error {
+			return config.ErrAutoReviewRequiresReviewerProfile
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/reviewer", `{"profile":"","auto_review":true}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "reviewer_profile")
+}
+
+func TestHandleSetReviewer_InvalidProfileReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(string, bool) error {
+			return config.ErrReviewerProfileNotFound
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/reviewer", `{"profile":"missing","auto_review":false}`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid_profile")
 }
 
 // ─── handleListProjects / handleGetProjectFilter / handleSetProjectFilter ─────
@@ -1085,6 +1188,22 @@ func TestHandleSetInlineInput_NoopClient_Returns500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestHandleSetInlineInput_Success(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	called := false
+	cfg.Client = &server.FuncClient{
+		SetInlineInputFn: func(enabled bool) error {
+			called = true
+			assert.True(t, enabled)
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/inline-input", `{"enabled":true}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
 // ─── handleSetDispatchStrategy ───────────────────────────────────────────────
 
 func TestHandleSetDispatchStrategy_ValidStrategies(t *testing.T) {
@@ -1197,6 +1316,17 @@ func TestHandleSetAutoClearWorkspace_ServerError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestHandleSetAutoClearWorkspace_InvalidReviewerCombinationReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(bool) error { return config.ErrAutoClearAutoReviewConflict },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{"enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "auto_review")
+}
+
 // ─── handleClearAllWorkspaces ────────────────────────────────────────────────
 
 func TestHandleClearAllWorkspaces_Returns202(t *testing.T) {
@@ -1298,7 +1428,7 @@ func TestHandleRemoveSSHHost_ServerError(t *testing.T) {
 func TestHandleSubLogs_ReturnsEntries(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(id string) ([]domain.IssueLogEntry, error) {
+		FetchSubLogsFn: func(_ context.Context, id string) ([]domain.IssueLogEntry, error) {
 			return []domain.IssueLogEntry{{Event: "text", Message: "hello"}}, nil
 		},
 	}
@@ -1313,7 +1443,7 @@ func TestHandleSubLogs_ReturnsEntries(t *testing.T) {
 func TestHandleSubLogs_EmptyReturnsEmptyArray(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) { return nil, nil },
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) { return nil, nil },
 	}
 	srv := server.New(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
@@ -1326,13 +1456,116 @@ func TestHandleSubLogs_EmptyReturnsEmptyArray(t *testing.T) {
 func TestHandleSubLogs_Error_Returns500(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) { return nil, errors.New("io error") },
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) { return nil, errors.New("io error") },
 	}
 	srv := server.New(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleSubLogs_UsesRequestContext(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(ctx context.Context, _ string) ([]domain.IssueLogEntry, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+				t.Fatal("FetchSubLogs did not receive the request context")
+				return nil, nil
+			}
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil).WithContext(reqCtx)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// TestHandleSubLogStream_ResumesFromLastEventID pins the T-18 contract: a
+// reconnect carrying Last-Event-ID: N causes the server to skip the first
+// N entries and stream only events N+1..end. Without this, every reconnect
+// re-delivers the entire buffer (duplicate-line spam in the dashboard).
+func TestHandleSubLogStream_ResumesFromLastEventID(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	ctx, cancel := context.WithCancel(context.Background())
+	entries := []domain.IssueLogEntry{
+		{Event: "text", Message: "one"},
+		{Event: "text", Message: "two"},
+		{Event: "text", Message: "three"},
+		{Event: "text", Message: "four"},
+		{Event: "text", Message: "five"},
+	}
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
+			defer cancel()
+			return entries, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
+	req.Header.Set("Last-Event-ID", "3")
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	assert.NotContains(t, body, `"message":"one"`, "events 1-3 must be skipped after Last-Event-ID: 3")
+	assert.NotContains(t, body, `"message":"two"`)
+	assert.NotContains(t, body, `"message":"three"`)
+	assert.Contains(t, body, `"message":"four"`)
+	assert.Contains(t, body, `"message":"five"`)
+	// Server stamps each emitted event with id: <cursor>.
+	assert.Contains(t, body, "id: 4")
+	assert.Contains(t, body, "id: 5")
+}
+
+// TestHandleSubLogStream_StaleLastEventIDReplaysFromStart guards against a
+// stale cursor pointing past the current buffer (e.g. server restart): the
+// server must reset to 0 and replay everything, not silently drop events.
+func TestHandleSubLogStream_StaleLastEventIDReplaysFromStart(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
+			defer cancel()
+			return []domain.IssueLogEntry{{Event: "text", Message: "first"}}, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
+	req.Header.Set("Last-Event-ID", "999")
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	assert.Contains(t, w.Body.String(), `"message":"first"`)
+}
+
+func TestHandleSubLogStream_StreamsInitialEntries(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
+			defer cancel()
+			return []domain.IssueLogEntry{{Event: "text", Message: "hello"}}, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Body.String(), "event: sublog")
+	assert.Contains(t, w.Body.String(), "hello")
 }
 
 // ─── handleClearAllLogs ──────────────────────────────────────────────────────
@@ -1512,11 +1745,347 @@ func TestHandleDismissInput_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+func TestHandleAgentComment_Success(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionComment}, "", time.Minute)
+	require.NoError(t, err)
+
+	var gotIdentifier, gotBody string
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(_ context.Context, identifier, body string) error {
+			gotIdentifier = identifier
+			gotBody = body
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment", bytes.NewBufferString(`{"body":"hello from agent"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	// Agent comments are wrapped with the managed marker so they don't trigger
+	// tracker_comment_added automations (prevents infinite comment-chain loops).
+	assert.Contains(t, gotBody, "hello from agent")
+	assert.Contains(t, gotBody, "<!-- itervox:managed -->", "agent comments must be marked managed to prevent automation loops")
+}
+
+// Gap D — happy path: a profile granted AgentActionCommentPR can post
+// structured findings; the rendered Markdown is what reaches CommentOnIssue.
+func TestHandleAgentCommentPR_Success(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionCommentPR}, "", time.Minute)
+	require.NoError(t, err)
+
+	var gotIdentifier, gotBody string
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(_ context.Context, identifier, body string) error {
+			gotIdentifier = identifier
+			gotBody = body
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	body := `{
+		"summary": "PR review: 1 issue found.",
+		"findings": [
+			{"path": "internal/foo.go", "line": 42, "severity": "error", "body": "potential nil deref"}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment_pr", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Contains(t, gotBody, "🤖 Itervox review")
+	assert.Contains(t, gotBody, "internal/foo.go:42")
+	assert.Contains(t, gotBody, "potential nil deref")
+	assert.Contains(t, gotBody, "<!-- itervox:managed -->", "comment_pr must be marked managed to prevent automation loops")
+}
+
+// Gap D — comment_pr with no summary AND no findings must reject as 400
+// before the tracker call so an agent that produced an empty review gets a
+// clear "you sent nothing" error rather than a silent no-op comment.
+func TestHandleAgentCommentPR_EmptySubmissionRejected(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionCommentPR}, "", time.Minute)
+	require.NoError(t, err)
+
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(context.Context, string, string) error {
+			t.Fatal("CommentOnIssue must not be called for an empty submission")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment_pr", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "summary or at least one finding")
+}
+
+// Gap D — a profile granted only AgentActionComment must NOT be allowed to
+// call comment_pr. The two scopes are separate so reviewer profiles can be
+// authorised for structured findings without granting freeform comment.
+func TestHandleAgentCommentPR_ForbiddenWithoutCommentPRScope(t *testing.T) {
+	store := agentactions.NewStore()
+	// Note: only AgentActionComment, not AgentActionCommentPR.
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionComment}, "", time.Minute)
+	require.NoError(t, err)
+
+	var called bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(context.Context, string, string) error {
+			called = true
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	body := `{"findings":[{"path":"a.go","line":1,"severity":"info","body":"x"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment_pr", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called)
+}
+
+func TestHandleAgentProvideInput_ForbiddenWithoutPermission(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionComment}, "", time.Minute)
+	require.NoError(t, err)
+
+	var called bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		ProvideInputFn: func(string, string) bool {
+			called = true
+			return true
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/provide-input", bytes.NewBufferString(`{"message":"continue"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called)
+	assert.Contains(t, w.Body.String(), "agent_action_denied")
+}
+
+func TestHandleAgentMoveState_MissingTokenReturns401(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = agentactions.NewStore()
+	cfg.Client = &server.FuncClient{
+		UpdateIssueStateFn: func(context.Context, string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/move-state", bytes.NewBufferString(`{"state":"Done"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "unauthorized")
+}
+
+func TestHandleAgentMoveState_QueuesRefresh(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionMoveState}, "", time.Minute)
+	require.NoError(t, err)
+
+	refresh := make(chan struct{}, 1)
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.RefreshChan = refresh
+	cfg.Client = &server.FuncClient{
+		UpdateIssueStateFn: func(context.Context, string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/move-state", bytes.NewBufferString(`{"state":"Done"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	select {
+	case <-refresh:
+	default:
+		t.Fatal("expected agent move-state to queue refresh")
+	}
+}
+
+func TestHandleAgentMoveState_RejectsStateOutsideGrant(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.IssueScoped("ENG-1", "run-1", []string{config.AgentActionMoveState}, "", "Todo", time.Minute)
+	require.NoError(t, err)
+
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		UpdateIssueStateFn: func(context.Context, string, string) error {
+			called = true
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/move-state", bytes.NewBufferString(`{"state":"Done"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called)
+	assert.Contains(t, w.Body.String(), "agent_action_denied")
+}
+
+func TestStateSnapshotIncludesAutomationQueueAndDependencyRowsJSON(t *testing.T) {
+	snap := server.StateSnapshot{
+		GeneratedAt:         time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC),
+		Counts:              server.Counts{},
+		Running:             []server.RunningRow{},
+		Retrying:            []server.RetryRow{},
+		Paused:              []string{},
+		MaxConcurrentAgents: 1,
+		MaxRetries:          5,
+		AutomationQueue: []server.AutomationQueueRow{{
+			ID:           "automation:nightly:cron:ENG-1",
+			AutomationID: "nightly",
+			TriggerType:  "cron",
+			Identifier:   "ENG-1",
+			Profile:      "pm",
+			Status:       "queued",
+			Reason:       "no_slots",
+			QueuedAt:     time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC),
+			FiredAt:      time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC),
+			AttemptCount: 1,
+		}},
+		DependencyAudit: []server.DependencyAuditRow{{
+			Identifier: "ENG-2",
+			IssueState: "Backlog",
+			Status:     "blocked",
+			BlockedBy:  []server.BlockerRefRow{{Identifier: "ENG-1", State: "Todo"}},
+			WasBlocked: true,
+		}},
+		DependencyGraphNodes: []server.DependencyGraphNodeRow{{
+			ID:         "ENG-1",
+			Identifier: "ENG-1",
+			Running:    false,
+			Queued:     true,
+			Terminal:   false,
+		}},
+		DependencyGraphEdges: []server.DependencyGraphEdgeRow{{
+			ID:               "ENG-1->ENG-2",
+			SourceIdentifier: "ENG-1",
+			TargetIdentifier: "ENG-2",
+			Resolved:         false,
+			SourceKnown:      true,
+		}},
+	}
+
+	data, err := json.Marshal(snap)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"automationQueue"`)
+	assert.Contains(t, string(data), `"dependencyAudit"`)
+	assert.Contains(t, string(data), `"dependencyGraphNodes"`)
+	assert.Contains(t, string(data), `"dependencyGraphEdges"`)
+}
+
+func TestHandleAgentCreateIssue_Success(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionCreateIssue}, "Todo", time.Minute)
+	require.NoError(t, err)
+
+	var gotIdentifier string
+	var gotTitle string
+	var gotBody string
+	var gotState string
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CreateIssueFn: func(_ context.Context, identifier, title, body, state string) (*domain.Issue, error) {
+			gotIdentifier = identifier
+			gotTitle = title
+			gotBody = body
+			gotState = state
+			return &domain.Issue{Identifier: "ENG-2", Title: title, State: state}, nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/create-issue", bytes.NewBufferString(`{"title":"Follow-up","body":"Add regression coverage","state":"Todo"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Equal(t, "Follow-up", gotTitle)
+	assert.Equal(t, "Add regression coverage", gotBody)
+	assert.Equal(t, "Todo", gotState)
+	assert.Contains(t, w.Body.String(), "ENG-2")
+}
+
+func TestHandleAgentCreateIssue_MissingConfiguredStateReturns400(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionCreateIssue}, "", time.Minute)
+	require.NoError(t, err)
+
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/create-issue", bytes.NewBufferString(`{"title":"Follow-up"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "create issue state is not configured")
+}
+
 // ─── handleUpsertProfile edge cases ──────────────────────────────────────────
 
 func TestHandleUpsertProfile_MissingCommand_Returns400(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef) error { return nil }}
+	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef, string) error { return nil }}
 	srv := server.New(cfg)
 	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `{"prompt":"hi"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -1525,20 +2094,204 @@ func TestHandleUpsertProfile_MissingCommand_Returns400(t *testing.T) {
 
 func TestHandleUpsertProfile_InvalidJSON_Returns400(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef) error { return nil }}
+	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef, string) error { return nil }}
 	srv := server.New(cfg)
 	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `not-json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestHandleUpsertProfile_InvalidAllowedActions_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef, string) error { return nil }}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `{"command":"claude","allowedActions":["comment","hack_the_daemon"]}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid_allowed_actions")
+}
+
+func TestHandleUpsertProfile_CreateIssueRequiresState(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef, string) error { return nil }}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `{"command":"claude","allowedActions":["create_issue"]}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "createIssueState")
+}
+
 func TestHandleUpsertProfile_ServerError(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{
-		UpsertProfileFn: func(string, server.ProfileDef) error { return errors.New("disk full") },
+		UpsertProfileFn: func(string, server.ProfileDef, string) error { return errors.New("disk full") },
 	}
 	srv := server.New(cfg)
 	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `{"command":"claude"}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleUpsertProfile_ConflictReturns409(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpsertProfileFn: func(string, server.ProfileDef, string) error {
+			return errors.New(`profile "pm" already exists`)
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/profiles/pm", `{"command":"claude","originalName":"qa"}`)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "already exists")
+}
+
+func TestHandleSetAutomations_InvalidCronReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn: func() map[string]server.ProfileDef {
+			return map[string]server.ProfileDef{
+				"reviewer": {Command: "claude", Enabled: true},
+			}
+		},
+		SetAutomationsFn: func([]server.AutomationDef) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[{"id":"nightly","enabled":true,"profile":"reviewer","trigger":{"type":"cron","cron":"not-a-cron"},"filter":{}}]}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid_cron")
+}
+
+func TestHandleSetAutomations_InputRequiredAcceptsNoCron(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	called := false
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn: func() map[string]server.ProfileDef {
+			return map[string]server.ProfileDef{
+				"input-responder": {Command: "claude", Enabled: true},
+			}
+		},
+		SetAutomationsFn: func(entries []server.AutomationDef) error {
+			called = true
+			require.Len(t, entries, 1)
+			assert.Equal(t, "input_required", entries[0].Trigger.Type)
+			assert.Equal(t, "input-responder", entries[0].Profile)
+			assert.Equal(t, "continue|branch", entries[0].Filter.InputContextRegex)
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[{"id":"input-responder","enabled":true,"profile":"input-responder","instructions":"Answer blocked-run questions.","trigger":{"type":"input_required"},"filter":{"inputContextRegex":"continue|branch"}}]}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+func TestHandleSetAutomations_IssueEnteredStateRequiresTriggerState(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn: func() map[string]server.ProfileDef {
+			return map[string]server.ProfileDef{
+				"qa": {Command: "claude", Enabled: true},
+			}
+		},
+		SetAutomationsFn: func([]server.AutomationDef) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[{"id":"qa-entry","enabled":true,"profile":"qa","trigger":{"type":"issue_entered_state"}}]}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "trigger.state")
+}
+
+func TestHandleSetAutomations_AcceptsExpandedTriggersAndMatchMode(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	called := false
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn: func() map[string]server.ProfileDef {
+			return map[string]server.ProfileDef{
+				"pm":       {Command: "claude", Enabled: true},
+				"qa":       {Command: "claude", Enabled: true},
+				"reviewer": {Command: "claude", Enabled: true},
+			}
+		},
+		SetAutomationsFn: func(entries []server.AutomationDef) error {
+			called = true
+			require.Len(t, entries, 4)
+			assert.Equal(t, "tracker_comment_added", entries[0].Trigger.Type)
+			assert.Equal(t, "any", entries[0].Filter.MatchMode)
+			assert.Equal(t, "issue_entered_state", entries[1].Trigger.Type)
+			assert.Equal(t, "Ready for QA", entries[1].Trigger.State)
+			assert.Equal(t, "issue_moved_to_backlog", entries[2].Trigger.Type)
+			assert.Equal(t, "run_failed", entries[3].Trigger.Type)
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[
+		{"id":"comment-watch","enabled":true,"profile":"pm","trigger":{"type":"tracker_comment_added"},"filter":{"matchMode":"any","labelsAny":["triage"]}},
+		{"id":"qa-entry","enabled":true,"profile":"qa","trigger":{"type":"issue_entered_state","state":"Ready for QA"}},
+		{"id":"backlog-watch","enabled":true,"profile":"pm","trigger":{"type":"issue_moved_to_backlog"}},
+		{"id":"failed-run","enabled":true,"profile":"reviewer","trigger":{"type":"run_failed"}}
+	]}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+func TestHandleSetAutomations_RejectsDuplicateIDs(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutomationsFn: func([]server.AutomationDef) error {
+			t.Fatal("SetAutomations should not be called when duplicate IDs are submitted")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[
+		{"id":"duplicate","enabled":true,"profile":"pm","trigger":{"type":"tracker_comment_added"}},
+		{"id":"duplicate","enabled":true,"profile":"qa","trigger":{"type":"run_failed"}}
+	]}`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "duplicate automation id")
+}
+
+func TestHandleSetAutomations_RejectsInvalidRegex(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn: func() map[string]server.ProfileDef {
+			return map[string]server.ProfileDef{
+				"pm": {Command: "claude", Enabled: true},
+			}
+		},
+		SetAutomationsFn: func([]server.AutomationDef) error {
+			t.Fatal("SetAutomations should not be called for invalid regex")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[
+		{"id":"comment-watch","enabled":true,"profile":"pm","trigger":{"type":"tracker_comment_added"},"filter":{"identifierRegex":"["}}
+	]}`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid_regex")
+}
+
+func TestHandleSetAutomations_RejectsDisabledProfile(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn: func() map[string]server.ProfileDef {
+			return map[string]server.ProfileDef{
+				"pm": {Command: "claude", Enabled: false},
+			}
+		},
+		SetAutomationsFn: func([]server.AutomationDef) error {
+			t.Fatal("SetAutomations should not be called for disabled profiles")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/automations", `{"automations":[
+		{"id":"comment-watch","enabled":true,"profile":"pm","trigger":{"type":"tracker_comment_added"}}
+	]}`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled profile")
 }
 
 // ─── handleUpdateTrackerStates edge cases ────────────────────────────────────
@@ -1561,14 +2314,6 @@ func TestHandleUpdateTrackerStates_ServerError(t *testing.T) {
 	srv := server.New(cfg)
 	w := putJSON(t, srv, "/api/v1/settings/tracker/states",
 		`{"activeStates":["Todo"],"terminalStates":["Done"],"completionState":"Done"}`)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-}
-
-// ─── handleSetAgentMode server error ─────────────────────────────────────────
-
-func TestHandleSetAgentMode_ServerError(t *testing.T) {
-	srv := testServerWithAgentMode(t, func(string) error { return errors.New("write failed") })
-	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `{"mode":"teams"}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
@@ -1671,4 +2416,212 @@ func TestHandleCancelIssue_PostAlias(t *testing.T) {
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/cancel", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "cancelled")
+}
+
+// ─── POST /api/v1/automations/{id}/test (T-10) ───────────────────────────────
+
+func TestHandleTestAutomation_Success(t *testing.T) {
+	var gotAutomationID, gotIdentifier string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(_ context.Context, automationID, identifier string) error {
+			gotAutomationID = automationID
+			gotIdentifier = identifier
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/cron-nightly/test", `{"identifier":"ENG-1"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "cron-nightly", gotAutomationID)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Contains(t, w.Body.String(), "ok")
+}
+
+func TestHandleTestAutomation_MissingIdentifier_400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(context.Context, string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/cron/test", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "identifier")
+}
+
+func TestHandleTestAutomation_BlankIdentifier_400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(context.Context, string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/cron/test", `{"identifier":"   "}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleTestAutomation_BackendError_500(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(context.Context, string, string) error {
+			return errors.New("rule not found")
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/missing/test", `{"identifier":"ENG-1"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "rule not found")
+}
+
+// PUT /settings/agent/max-retries — happy path round-trips the integer to the
+// orchestrator client and surfaces it in the JSON response.
+func TestHandleSetMaxRetries_OK(t *testing.T) {
+	var captured int
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxRetriesFn: func(n int) error { captured = n; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-retries", `{"maxRetries":7}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 7, captured)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, float64(7), resp["maxRetries"])
+}
+
+// Negative max_retries is meaningless — the handler must reject it BEFORE
+// hitting the persist layer to avoid a misleading 500 from the WORKFLOW.md
+// patcher.
+func TestHandleSetMaxRetries_NegativeRejected(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxRetriesFn: func(int) error {
+			t.Fatal("setter should not have been called for negative input")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-retries", `{"maxRetries":-1}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// Missing maxRetries field is a malformed body — must 400, not silently
+// default to 0 (which would clobber the operator's previous value).
+func TestHandleSetMaxRetries_MissingField(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxRetriesFn: func(int) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-retries", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// PUT /settings/tracker/failed-state — happy path with a non-empty state.
+func TestHandleSetFailedState_OK(t *testing.T) {
+	var captured string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetFailedStateFn: func(s string) error { captured = s; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":"Backlog"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "Backlog", captured)
+}
+
+// Empty string round-trip — operator picks "Pause (do not move)" — must
+// reach the setter as "" so the orchestrator clears the field.
+func TestHandleSetFailedState_EmptyMeansPause(t *testing.T) {
+	captured := "untouched"
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetFailedStateFn: func(s string) error { captured = s; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":""}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "", captured, "empty string must reach the setter, not be rejected as bad_request")
+}
+
+// Gap E §4.7 — switch-cap settings handlers.
+//
+// PUT /settings/agent/max-switches-per-issue-per-window — happy path round-trips.
+func TestHandleSetMaxSwitches_OK(t *testing.T) {
+	var captured int
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxSwitchesPerIssuePerWindowFn: func(n int) error { captured = n; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-switches-per-issue-per-window",
+		`{"maxSwitchesPerIssuePerWindow":3}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 3, captured)
+	assert.Contains(t, w.Body.String(), `"maxSwitchesPerIssuePerWindow":3`)
+}
+
+func TestHandleSetMaxSwitches_NegativeRejected(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxSwitchesPerIssuePerWindowFn: func(int) error {
+			t.Fatal("setter should not be called for negative input")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-switches-per-issue-per-window",
+		`{"maxSwitchesPerIssuePerWindow":-1}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleSetMaxSwitches_MissingField(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxSwitchesPerIssuePerWindowFn: func(int) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-switches-per-issue-per-window", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// PUT /settings/agent/switch-window-hours — happy path round-trips.
+func TestHandleSetSwitchWindowHours_OK(t *testing.T) {
+	var captured int
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetSwitchWindowHoursFn: func(h int) error { captured = h; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/switch-window-hours",
+		`{"switchWindowHours":12}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 12, captured)
+	assert.Contains(t, w.Body.String(), `"switchWindowHours":12`)
+}
+
+func TestHandleSetSwitchWindowHours_MissingField(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetSwitchWindowHoursFn: func(int) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/switch-window-hours", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// Setter validation failure (e.g. unknown state) must surface as 400, not
+// 500 — it's user error.
+func TestHandleSetFailedState_UnknownStateRejected(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetFailedStateFn: func(string) error {
+			return errors.New(`failed_state "Garbage" is not in tracker.active_states / terminal_states / backlog_states`)
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":"Garbage"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "Garbage")
 }

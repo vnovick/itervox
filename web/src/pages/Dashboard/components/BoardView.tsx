@@ -15,8 +15,15 @@ import { useShallow } from 'zustand/react/shallow';
 import IssueCard from '../../../components/itervox/IssueCard';
 import BoardColumn from '../../../components/itervox/BoardColumn';
 import { useItervoxStore } from '../../../store/itervoxStore';
-import type { TrackerIssue } from '../../../types/schemas';
-import { EMPTY_RUNNING, EMPTY_HISTORY, EMPTY_STATES } from '../../../utils/constants';
+import type { TrackerIssue, InputRequiredEntry } from '../../../types/schemas';
+import {
+  EMPTY_RUNNING,
+  EMPTY_HISTORY,
+  EMPTY_STATES,
+  EMPTY_RETRYING,
+} from '../../../utils/constants';
+
+const EMPTY_INPUT_REQUIRED: InputRequiredEntry[] = [];
 
 interface BoardViewProps {
   issues: TrackerIssue[];
@@ -43,6 +50,9 @@ export function BoardView({
     activeStates,
     completionState,
     terminalStates,
+    inputRequired,
+    retrying,
+    maxRetries,
   } = useItervoxStore(
     useShallow((s) => ({
       snapshotLoaded: s.snapshot !== null,
@@ -54,6 +64,9 @@ export function BoardView({
       activeStates: s.snapshot?.activeStates ?? EMPTY_STATES,
       completionState: s.snapshot?.completionState ?? '',
       terminalStates: s.snapshot?.terminalStates ?? EMPTY_STATES,
+      inputRequired: s.snapshot?.inputRequired ?? EMPTY_INPUT_REQUIRED,
+      retrying: s.snapshot?.retrying ?? EMPTY_RETRYING,
+      maxRetries: s.snapshot?.maxRetries ?? 5,
     })),
   );
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
@@ -77,6 +90,58 @@ export function BoardView({
     }
     return map;
   }, [running, runHistory, issues, backlogStateSet]);
+
+  // T-6: latest run kind + accumulated comment count per identifier.
+  const runningKindByIdentifier = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const h of runHistory) {
+      if (h.kind) map[h.identifier] = h.kind;
+    }
+    for (const r of running) {
+      if (r.kind) map[r.identifier] = r.kind;
+    }
+    return map;
+  }, [running, runHistory]);
+  const commentCountByIdentifier = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const r of running) {
+      if (r.commentCount && r.commentCount > 0) {
+        map[r.identifier] = (map[r.identifier] ?? 0) + r.commentCount;
+      }
+    }
+    for (const h of runHistory) {
+      if (h.commentCount && h.commentCount > 0) {
+        map[h.identifier] = (map[h.identifier] ?? 0) + h.commentCount;
+      }
+    }
+    return map;
+  }, [running, runHistory]);
+
+  // Gap A — surface stale flag + age on cards. Only entries currently in
+  // input_required state are eligible (pending_input_resume rows have a
+  // human reply queued, so they're not "abandoned").
+  const inputRequiredStaleByIdentifier = useMemo(() => {
+    const map: Record<string, { stale: boolean; ageMinutes?: number }> = {};
+    for (const entry of inputRequired) {
+      if (entry.state !== 'input_required') continue;
+      map[entry.identifier] = {
+        stale: entry.stale === true,
+        ageMinutes: entry.ageMinutes,
+      };
+    }
+    return map;
+  }, [inputRequired]);
+
+  // G — surface "↻ retry N/M" pill on cards mid-retry. Snapshot's `retrying`
+  // is the authoritative source: it disappears the moment a retry succeeds
+  // or the issue is paused/moved-to-failed.
+  const retryAttemptByIdentifier = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const r of retrying) {
+      if (r.attempt > 0) map[r.identifier] = r.attempt;
+    }
+    return map;
+  }, [retrying]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -162,9 +227,14 @@ export function BoardView({
             availableProfiles={availableProfiles}
             profileDefs={profileDefs}
             runningBackendByIdentifier={runningBackendByIdentifier}
+            runningKindByIdentifier={runningKindByIdentifier}
             defaultBackend={defaultBackend}
             onProfileChange={onProfileChange}
             onDispatch={backlogStateSet.has(state) ? handleDispatch : undefined}
+            commentCountByIdentifier={commentCountByIdentifier}
+            inputRequiredStaleByIdentifier={inputRequiredStaleByIdentifier}
+            retryAttemptByIdentifier={retryAttemptByIdentifier}
+            maxRetries={maxRetries}
           />
         ))}
       </div>

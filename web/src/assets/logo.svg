@@ -1,0 +1,15 @@
+<svg width="140" height="28" viewBox="0 0 140 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="iter-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#14b8a6"/>
+    </linearGradient>
+    <linearGradient id="slash-grad" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#9678e3"/>
+      <stop offset="100%" stop-color="#b8a5eb"/>
+    </linearGradient>
+  </defs>
+  <text x="0" y="21" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="20" font-weight="800" letter-spacing="-0.5">
+    <tspan fill="url(#iter-grad)">ITER</tspan><tspan fill="url(#slash-grad)">//</tspan><tspan fill="#c9cde0">VOX</tspan>
+  </text>
+</svg>

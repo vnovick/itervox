@@ -24,6 +24,7 @@ interface AgentQueueViewProps {
   availableProfiles: string[];
   profileDefs?: Record<string, ProfileDef>;
   availableModels?: Record<string, { id: string; label: string }[]>;
+  supportedAgentActions?: readonly string[];
   onProfileChange: (identifier: string, profile: string) => void;
   onSelect: (id: string) => void;
   onEditProfile?: (name: string, def: ProfileDef) => Promise<void>;
@@ -35,6 +36,7 @@ export default function AgentQueueView({
   availableProfiles,
   profileDefs,
   availableModels,
+  supportedAgentActions,
   onProfileChange,
   onSelect,
   onEditProfile,
@@ -161,6 +163,7 @@ export default function AgentQueueView({
         }}
         onSave={onEditProfile}
         availableModels={availableModels}
+        supportedAgentActions={supportedAgentActions}
       />
     </>
   );

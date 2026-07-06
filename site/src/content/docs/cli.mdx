@@ -28,8 +28,12 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-workflow` | string | `WORKFLOW.md` | Path to your `WORKFLOW.md` configuration file |
 | `-logs-dir` | string | `~/.itervox/logs/<kind>/<project>` | Directory for rotating log files |
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
-| `-demo` | bool | `false` | Run in demo mode with synthetic issues and a fake agent runner. No API key, WORKFLOW.md, or agent CLI needed. Useful for testing the dashboard and exploring the UI. |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
+
+> **Note (post-v0.2):** the `-demo` flag was removed in favour of an embedded
+> quickstart template. To explore itervox without a real tracker, drop a
+> `WORKFLOW.md` with `tracker.kind: memory` in your project (the template
+> ships in `internal/templates/quickstart.md`) and run the daemon as usual.
 
 ### Examples
 
@@ -60,8 +64,10 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 | `--tracker` | string | _(required)_ | Issue tracker: `linear` or `github` |
 | `--runner` | string | `claude` | Agent runner backend: `claude` or `codex` |
 | `--output` | string | `WORKFLOW.md` | Output file path |
+| `--workflow` | string | `WORKFLOW.md` | Workflow path to migrate when `--update` is set |
 | `--dir` | string | `.` | Directory to scan for repo metadata |
 | `--force` | bool | `false` | Overwrite output file if it already exists |
+| `--update` | bool | `false` | Migrate an existing workflow to the latest schema without requiring `--tracker` |
 
 ### Auto-detection
 
@@ -70,11 +76,11 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 - **Git remote** — reads `origin` remote URL to derive the GitHub owner/repo slug and SSH clone URL
 - **Default branch** — detects `main` or `master` from the local git configuration
 - **Tech stacks** — detects Go, Node.js, Rust, Python, Elixir, and Ruby by the presence of language-specific manifest files (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml` / `requirements.txt`, `mix.exs`, `Gemfile`)
-- **Package managers** — inferred from lock files alongside stack detection (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, etc.)
+- **Package manager** — Node.js commands are generated with `pnpm`
 - **CLAUDE.md** — if a `CLAUDE.md` file is present in the scanned directory, the generated prompt template references it automatically
 - **Available models** — queries the selected runner CLI (e.g. `claude --list-models`) to discover available models and writes them to `agent.available_models` in the generated file. Falls back to a built-in default list if the CLI does not support model listing.
 
-After writing `WORKFLOW.md`, `itervox init` also creates `.itervox/.env` (with a placeholder API key for the chosen tracker) and `.itervox/.gitignore` if they do not already exist.
+After writing `WORKFLOW.md`, `itervox init` also creates `.itervox/agents/<profile>/SOUL.md`, `.itervox/agents/<profile>/INSTRUCTIONS.md`, `.itervox/.env` (with a placeholder API key for the chosen tracker), and `.itervox/.gitignore` if they do not already exist. Commit `.itervox/agents/**`; keep `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, and runtime queue files ignored.
 
 ### Example output
 
@@ -84,8 +90,9 @@ itervox init: scanning .
   branch     : main
   runner     : claude
   CLAUDE.md  : found — prompt will reference it
-  stack      : Go (go test -race ./..., golangci-lint run)
+  stack      : Go (go test -race ./cmd/... ./internal/..., golangci-lint run)
 itervox init: wrote WORKFLOW.md
+itervox init: wrote .itervox/agents profiles
 itervox init: wrote .itervox/.env
 ```
 
@@ -103,7 +110,12 @@ itervox init --tracker github --dir ./myrepo --output myrepo/WORKFLOW.md
 
 # Overwrite an existing WORKFLOW.md
 itervox init --tracker github --force
+
+# Migrate an existing inline-profile workflow to schema 2 profile files
+itervox init --update --workflow WORKFLOW.md
 ```
+
+`itervox init --update` creates `WORKFLOW.md.bak`, extracts each legacy inline `agent.profiles.<name>.prompt` into `.itervox/agents/<name>/INSTRUCTIONS.md`, creates compact `SOUL.md` files, rewrites the profile to `soul_file` and `instructions_file`, and sets `itervox_schema_version: 2`. It also patches broad root `.gitignore` rules so `.itervox/agents/**` remains committable.
 
 ---
 
@@ -188,6 +200,10 @@ Itervox loads environment variables automatically at startup from the first file
 2. `.env`
 
 Existing process environment variables are **never overwritten** by these files. Both files are optional; if neither exists the process environment is used as-is.
+
+## Heartbeat
+
+When the daemon starts, it writes `.itervox/HEARTBEAT.md` beside the active `WORKFLOW.md`. The file is generated atomically and refreshed at a bounded interval after state changes. It contains the workflow path, schema version, dashboard URL, tracker/project, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. It is runtime state and should stay ignored.
 
 ---
 

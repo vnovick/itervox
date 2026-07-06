@@ -5,6 +5,7 @@ package agent
 // black-box tests in events_test.go, codex_test.go, and runner_test.go.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -1185,4 +1186,11 @@ func TestLoginShellFromEnv(t *testing.T) {
 	defer func() { _ = os.Setenv("SHELL", orig) }()
 	_ = os.Setenv("SHELL", "/bin/zsh")
 	assert.Equal(t, "/bin/zsh", loginShell())
+}
+
+func TestBuildValidationShellCommand_DetachesFromTTY(t *testing.T) {
+	cmd := buildValidationShellCommand(context.Background(), "/bin/zsh", "claude --version")
+	require.Equal(t, []string{"/bin/zsh", "-ilc", "claude --version"}, cmd.Args)
+	require.NotNil(t, cmd.SysProcAttr)
+	assert.True(t, cmd.SysProcAttr.Setsid)
 }

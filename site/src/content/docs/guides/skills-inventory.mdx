@@ -1,0 +1,153 @@
+---
+title: Skills Inventory & Capability Analytics
+description: How Itervox scans your project's skills, plugins, MCP servers, hooks, and instructions, and how runtime analytics use recent session logs.
+sidebar:
+  order: 8
+---
+
+Itervox v0.2.0 introduces a skills inventory dashboard that scans every layer your agents see — Claude skills, Codex skills, shared skills, plugins, MCP servers, hooks, and instruction files — then surfaces severity-graded recommendations for trimming, deduplicating, and right-sizing your fleet.
+
+The system has two complementary halves:
+
+- **Phase 1 — Static analyzer.** Scans the file system on demand. Catches duplicates, unused profiles, bloated profiles, large contexts, instruction shadowing, and orphaned MCP registrations.
+- **Phase 2 — Runtime analytics.** Reads JSONL session logs the daemon already writes for every dispatch. Catches what's *actually* used at runtime versus what's merely configured.
+
+The two halves combine into a single dashboard surface. Understanding the difference matters because Phase 2 recommendations require real recent-session evidence.
+
+---
+
+## What gets scanned
+
+| Source | Path | Provider |
+|---|---|---|
+| Claude skills (project) | `<project>/.claude/skills/<name>/SKILL.md` | claude |
+| Claude skills (user) | `~/.claude/skills/<name>/SKILL.md` | claude |
+| Codex skills | `~/.codex/skills/`, `~/.codex/skills/.system/`, `~/.codex/superpowers/skills/`, `~/.agents/skills/` | codex |
+| Plugins | `<project>/.claude/plugins/`, `~/.claude/plugins/` | claude |
+| MCP servers | `<project>/.claude/settings.json`, `~/.claude/settings.json`, `<project>/.mcp.json` | claude |
+| Hooks | `<project>/.claude/settings.json::hooks`, `~/.claude/settings.json::hooks` (flat or nested form) | claude |
+| Instructions | `<project>/CLAUDE.md`, nested `<project>/**/CLAUDE.md`, `~/.claude/CLAUDE.md`, `<project>/AGENTS.md` | shared |
+
+Each source is projected into a common inventory snapshot so cross-cutting checks (e.g. "this skill exists in both project and user scopes") work uniformly. The normalized capability graph shape is reserved for a later release; v0.2.0 exposes direct inventory and recommendation data.
+
+---
+
+## Static analyzer rules (Phase 1)
+
+Seven production rules ship today in `internal/skills/analyze.go`. They run synchronously against the inventory the moment a scan completes.
+
+| Rule | Severity | What it flags |
+|---|---|---|
+| `DUPLICATE_SKILL` | info | Same skill name in multiple scopes (e.g. project AND user) |
+| `DUPLICATE_MCP` | warn | Same MCP server `command` or `url` registered in multiple settings files |
+| `UNUSED_PROFILE` | info | Profile defined in `WORKFLOW.md` but absent from recent dispatch history |
+| `BLOATED_PROFILE` | warn | Inventory carries more than 20 MCP servers or more than 15 skills, and every profile inherits that surface |
+| `LARGE_CONTEXT` | warn | Estimated profile context cost exceeds the default 50K-token threshold |
+| `INSTRUCTION_SHADOWING` | info | Same instruction filename in multiple scopes |
+| `ORPHAN_MCP` | info | Configured MCP server name never referenced in any skill name, description, or body |
+
+`STALE_SCHEDULE` remains in code as a reserved analyzer for future schedule inventory sources, but v0.2.0 does not populate schedules from the validated `WORKFLOW.md` automations config.
+
+Seven additional rules from the original design draft (cross-runtime Jaccard similarity, Levenshtein hook similarity, model mismatch, teams-mode capability overlap, missing-action, instruction-shadowing-via-similarity, missing-skill-ref) are deferred to a follow-up release — each needs more validation against real operator inventories before shipping a non-advisory recommendation.
+
+---
+
+## Runtime analytics (Phase 2)
+
+Every Claude Code dispatch writes a JSONL session log under `~/.itervox/logs/<issue>/<session>.jsonl`. Codex writes equivalent evidence to `~/.codex/history.jsonl` and `~/.codex/sessions/**`. The runtime analyzer walks the most recent 25 sessions across both sources and aggregates:
+
+- **Skill stats** — `RuntimeLoads` count + `LastSeenAt` per configured skill.
+- **Hook stats** — execution count per `(event, command)` tuple.
+- **Profile costs** — per-profile token breakdown (instructions / skills / hooks / MCP / workflow).
+
+These feed five evidence-based recommendations:
+
+| Recommendation | Severity | Trigger |
+|---|---|---|
+| `HIGH_COST_LOW_USAGE` | warn | Skill > 2K tokens but loaded fewer than 2 times in the lookback window |
+| `HOOK_STORM` | warn | Hook fired ≥ 50 times in the lookback window (high overhead, possible duplicate execution) |
+| `CONFIGURED_NOT_LOADED` | info | Static inventory skill never observed in runtime evidence |
+| `LOADED_NOT_CONFIGURED` | info | Skill the model used implicitly but isn't in the static inventory |
+| (analytics surface) | — | Per-profile cost projections used by the dashboard's per-provider bar chart |
+
+### Recommendations need representative runtime evidence
+
+Runtime analytics are **evidence-based**, not prescriptive. Every Phase-2 recommendation is derived from real session history, not from your config. This has three consequences operators should plan around:
+
+1. **A fresh install gives static-analyzer output only.** With zero sessions in `~/.itervox/logs/` or Codex history, the analytics response has `HasRuntimeEvidence: false` and runtime recommendations are empty. Phase-2 signals like `HIGH_COST_LOW_USAGE` need real runs to fire.
+2. **The lookback window is 25 sessions by default.** Sessions older than that age out of the analysis. As your daemon runs more issues, the window slides forward and stale evidence is discarded — so a skill that was heavy six months ago but trimmed last week will correctly fall off the warn list once enough new sessions accumulate.
+3. **The signal sharpens as variety grows.** Multi-profile, multi-issue-type evidence catches `LOADED_NOT_CONFIGURED` (a capability observed in runtime logs but absent from static inventory) and `CONFIGURED_NOT_LOADED` (a static inventory skill not observed in runtime evidence). Run a representative cross-section of profiles before treating the recommendation list as final.
+
+**Operationally:** leave the daemon running, accumulate evidence, then come back and act on the warnings once the recent-session lookback represents real work. v0.2.0 does not include a long-term learning store beyond the recent log lookback.
+
+---
+
+## Dashboard surface
+
+The Settings → Skills card hydrates from the skills endpoints:
+
+- `GET /api/v1/skills/inventory` — cached static inventory (returns `503` before the first scan).
+- `GET /api/v1/skills/issues` — static analyzer output.
+- `GET /api/v1/skills/analytics` — runtime evidence + per-profile cost projection.
+- `GET /api/v1/skills/analytics/recommendations` — runtime-side recommendation list.
+
+The card also exposes:
+
+- **Re-scan** button — forces a fresh file-system walk. Wired to `POST /api/v1/skills/scan`.
+- **Per-issue Fix button** — appears when a recommendation attaches a `Fix` descriptor. Calls `POST /api/v1/skills/fix`.
+
+All routes use the standard bearer-token auth (`Authorization: Bearer <ITERVOX_API_TOKEN>`).
+
+Scanner failures are best-effort. If one source fails but another succeeds, Itervox returns the partial inventory with warning fields and the Settings UI keeps showing the successfully collected data.
+
+### Scan freshness
+
+The Settings card shows the last scan timestamp plus a status badge next to **Re-scan**. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since the last scan; click **Re-scan** to refresh the inventory and recommendations.
+
+Automatic stale detection covers only the files the scanner tracks from known roots. Newly-created files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred to avoid a noisy watcher in the launch release.
+
+---
+
+## One-click fixes
+
+The dashboard's Recommendations panel renders a "Fix" button per issue when the analyzer attaches a `Fix` descriptor. The infrastructure is wired end-to-end (Zod schema, mutation hook, REST endpoint, server handler, dispatch in `cmd/itervox/skills_adapter.go::ApplyFix`), but **as of v0.2.0 only one rule populates a Fix descriptor that actually works** — every other recommendation is advisory.
+
+| Rule | Fix label | Status |
+|---|---|---|
+| `UNUSED_PROFILE` | **Disable profile** | ✅ **Working.** Non-destructive — calls `UpsertProfile` with `Enabled: false` in `WORKFLOW.md` and queues a re-scan. Covered by backend and UI mutation tests. |
+| `DUPLICATE_MCP` | — | Advisory only. The analyzer does not emit a Fix descriptor because the backend intentionally rejects `remove-mcp` until four safety guards exist (flock + backup + structured-edit + per-call confirm). Editing a user's `~/.claude/settings.json` from a long-running daemon is high-risk; deferred per planning's `deferred_290426.md::T-95`. |
+| `DUPLICATE_SKILL`, `BLOATED_PROFILE`, `LARGE_CONTEXT`, `INSTRUCTION_SHADOWING`, `ORPHAN_MCP` | — | Advisory only — no Fix descriptor populated. The recommendation explains the issue and points at the file; the edit is yours. |
+| All Phase-2 (runtime) recommendations | — | Advisory only — `HIGH_COST_LOW_USAGE`, `HOOK_STORM`, `CONFIGURED_NOT_LOADED`, `LOADED_NOT_CONFIGURED` ship without Fix descriptors. The analytics section in `SkillsCard` passes a no-op `onApplyFix` stub regardless. |
+
+Destructive fixes still trigger `window.confirm` before the API call when a future backend rule marks a Fix as destructive.
+
+**Why this skew is intentional in v0.2.0:** the file edits the remaining rules would need (rewriting `~/.claude/settings.json`, deleting skill directories, mass-disabling profiles) all involve user-owned files where automated mutation is risky without significant safety scaffolding. The v0.2.0 cut ships the single safest fix — toggling a profile's `enabled` flag in our own `WORKFLOW.md` — and surfaces every other recommendation as guidance. Future releases will add fixes once their safety guards land.
+
+---
+
+## When to use the inventory
+
+The skills inventory dashboard answers four operator questions:
+
+1. **"Why is my agent slow?"** — Check the per-profile token estimate. `BLOATED_PROFILE` and `LARGE_CONTEXT` warnings often correlate with slow first-token latency.
+2. **"Did I configure that profile correctly?"** — `UNUSED_PROFILE` (Phase 1) catches profiles defined but never selected. `LOADED_NOT_CONFIGURED` (Phase 2) catches the inverse: skills the model uses but aren't in YAML.
+3. **"Which skills are pulling their weight?"** — `HIGH_COST_LOW_USAGE` highlights skills that pay their token cost but rarely fire. `CONFIGURED_NOT_LOADED` is the strongest signal for trimming.
+4. **"Are my hooks healthy?"** — `HOOK_STORM` flags hooks that fire 50+ times in 25 sessions, almost always indicating a misconfiguration or accidental loop.
+
+---
+
+## Trade-offs and limitations
+
+- **Token estimates are approximate.** The estimator counts characters and divides by 4. Actual tokenization differs per model. Estimates are stable across runs (same source = same number) but treat the absolute values as ballpark.
+- **Phase 2 needs sessions.** Brand-new installs get Phase-1 output only. Plan to revisit after the daemon has handled real work.
+- **The `DUPLICATE_MCP` fix is manual today.** Editing user-owned JSON files from a long-running daemon is not yet safe enough to automate; the recommendation surfaces without a Fix button, and the edit is yours to apply.
+- **Codex evidence is best-effort.** Codex JSONL is less structured than Claude Code's; some hook events and tool calls may be missing from the runtime view.
+
+---
+
+## Cross-references
+
+- **HTTP API** — see [API Reference § Skills](/api-reference/) for endpoint shapes.
+- **Configuration** — `agent.profiles` in [Configuration reference](/configuration/) determines what gets scanned per profile.
+- **Architecture deep-dive** — `docs/skills-inventory.md` in the repo has the full implementation walkthrough.
+- **What's New** — see [What's New in v0.2.0](/guides/whats-new-v020/) for the dashboard tour and screenshots.

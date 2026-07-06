@@ -48,6 +48,50 @@ describe('fromRunning', () => {
     expect(result.identifier).toBe('ENG-1');
     expect(result.sessionId).toBe('sess-1');
   });
+
+  it('propagates the F-1 automation context fields when present (T-5)', () => {
+    const row = {
+      identifier: 'ENG-AUTO',
+      state: 'In Progress',
+      startedAt: '2026-01-01T00:00:00Z',
+      elapsedMs: 1000,
+      turnCount: 1,
+      tokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      lastEvent: '',
+      lastEventAt: null,
+      sessionId: 'sess-auto',
+      workerHost: 'local',
+      backend: 'claude',
+      automationId: 'pr-on-input',
+      triggerType: 'input_required',
+    };
+    const result = fromRunning(row);
+    expect(result.automationId).toBe('pr-on-input');
+    expect(result.triggerType).toBe('input_required');
+  });
+
+  it('leaves automationId / triggerType undefined for manual runs', () => {
+    const row = {
+      identifier: 'ENG-MANUAL',
+      state: 'In Progress',
+      startedAt: '2026-01-01T00:00:00Z',
+      elapsedMs: 1000,
+      turnCount: 1,
+      tokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      lastEvent: '',
+      lastEventAt: null,
+      sessionId: 'sess-manual',
+      workerHost: 'local',
+      backend: 'claude',
+    };
+    const result = fromRunning(row);
+    expect(result.automationId).toBeUndefined();
+    expect(result.triggerType).toBeUndefined();
+  });
 });
 
 describe('fromHistory', () => {

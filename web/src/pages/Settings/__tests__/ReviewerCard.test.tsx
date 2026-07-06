@@ -15,6 +15,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile=""
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -29,6 +30,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile="reviewer"
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -42,6 +44,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile=""
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -58,6 +61,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile="reviewer"
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -74,6 +78,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile=""
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -86,6 +91,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile=""
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -104,6 +110,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile="reviewer"
         autoReview={true}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={onSave}
       />,
@@ -125,6 +132,7 @@ describe('ReviewerCard', () => {
       <ReviewerCard
         reviewerProfile=""
         autoReview={false}
+        autoClearWorkspace={false}
         availableProfiles={profiles}
         onSave={slowSave}
       />,
@@ -140,6 +148,47 @@ describe('ReviewerCard', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('Saving…')).toBeNull();
+    });
+  });
+
+  it('blocks enabling auto-review while auto-clear is enabled', () => {
+    render(
+      <ReviewerCard
+        reviewerProfile="reviewer"
+        autoReview={false}
+        autoClearWorkspace={true}
+        availableProfiles={profiles}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('checkbox'));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/auto-clear/i);
+    expect(screen.queryByRole('button', { name: /save/i })).toBeNull();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('keeps pending edits and shows an error when save returns false', async () => {
+    const failedSave = vi.fn().mockResolvedValue(false);
+
+    render(
+      <ReviewerCard
+        reviewerProfile=""
+        autoReview={false}
+        autoClearWorkspace={false}
+        availableProfiles={profiles}
+        onSave={failedSave}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'reviewer' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(failedSave).toHaveBeenCalledWith('reviewer', false);
+      expect(screen.getByRole('alert')).toHaveTextContent(/failed to save reviewer settings/i);
+      expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
     });
   });
 });

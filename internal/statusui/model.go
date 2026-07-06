@@ -17,8 +17,10 @@
 package statusui
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -35,6 +37,12 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/server"
+)
+
+const (
+	copyKeyHint      = "copy"
+	copyPRHelpLabel  = "copy PR URL"
+	copyWebHelpLabel = "copy web URL"
 )
 
 // Config holds optional display configuration passed from main.
@@ -84,6 +92,9 @@ type Config struct {
 	// priority, comments) for the split details pane. If nil, the issue
 	// details section is not shown.
 	FetchIssueDetail func(identifier string) (*BacklogIssueItem, error)
+	// QuitApp shuts down the outer itervox process when the user presses q.
+	// If nil, q only exits Bubble Tea.
+	QuitApp func()
 }
 
 // ProjectItem is one entry in the TUI project picker.
@@ -122,150 +133,6 @@ func tickCmd() tea.Cmd {
 type backlogLoadedMsg struct {
 	items []BacklogIssueItem
 	err   error
-}
-
-// keyMap defines keyboard shortcuts.
-type keyMap struct {
-	ListUp        key.Binding
-	ListDown      key.Binding
-	Toggle        key.Binding
-	LogUp         key.Binding
-	LogDown       key.Binding
-	Kill          key.Binding
-	Quit          key.Binding
-	OpenPicker    key.Binding
-	PickerSel     key.Binding
-	PickerApply   key.Binding
-	PickerClose   key.Binding
-	WorkersUp     key.Binding
-	WorkersDown   key.Binding
-	BacklogToggle key.Binding
-	Dispatch      key.Binding
-	Resume        key.Binding
-	Terminate     key.Binding
-	PanelNext     key.Binding
-	EscKey        key.Binding
-	DrillDown     key.Binding
-	OpenURL       key.Binding
-	OpenWebUI     key.Binding
-	HistoryTab    key.Binding
-	AssignProfile key.Binding
-	SplitToggle   key.Binding
-}
-
-func defaultKeys() keyMap {
-	return keyMap{
-		ListUp: key.NewBinding(
-			key.WithKeys("up"),
-			key.WithHelp("↑", "prev"),
-		),
-		ListDown: key.NewBinding(
-			key.WithKeys("down"),
-			key.WithHelp("↓", "next"),
-		),
-		Toggle: key.NewBinding(
-			key.WithKeys(" "),
-			key.WithHelp("spc", "expand/collapse"),
-		),
-		LogUp: key.NewBinding(
-			key.WithKeys("k"),
-			key.WithHelp("k", "log page up"),
-		),
-		LogDown: key.NewBinding(
-			key.WithKeys("j"),
-			key.WithHelp("j", "log page dn"),
-		),
-		Kill: key.NewBinding(
-			key.WithKeys("x"),
-			key.WithHelp("x", "pause"),
-		),
-		Quit: key.NewBinding(
-			key.WithKeys("q", "ctrl+c"),
-			key.WithHelp("q", "quit"),
-		),
-		OpenPicker: key.NewBinding(
-			key.WithKeys("p"),
-			key.WithHelp("p", "project filter"),
-		),
-		PickerSel: key.NewBinding(
-			key.WithKeys(" "),
-			key.WithHelp("space", "toggle"),
-		),
-		PickerApply: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "apply"),
-		),
-		PickerClose: key.NewBinding(
-			key.WithKeys("esc"),
-			key.WithHelp("esc", "close"),
-		),
-		PanelNext: key.NewBinding(
-			key.WithKeys("tab"),
-			key.WithHelp("tab", "focus panel"),
-		),
-		EscKey: key.NewBinding(
-			key.WithKeys("esc"),
-			key.WithHelp("esc", "back"),
-		),
-		DrillDown: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "drill down"),
-		),
-		WorkersUp: key.NewBinding(
-			key.WithKeys("+", "="), // '=' is same physical key as '+' without shift on some setups
-			key.WithHelp("+", "more workers"),
-		),
-		WorkersDown: key.NewBinding(
-			key.WithKeys("-", "_"),
-			key.WithHelp("-", "fewer workers"),
-		),
-		BacklogToggle: key.NewBinding(
-			key.WithKeys("b"),
-			key.WithHelp("b", "backlog"),
-		),
-		Dispatch: key.NewBinding(
-			key.WithKeys("d", "enter"),
-			key.WithHelp("d/enter", "dispatch/details"),
-		),
-		Resume: key.NewBinding(
-			key.WithKeys("r"),
-			key.WithHelp("r", "resume paused"),
-		),
-		Terminate: key.NewBinding(
-			key.WithKeys("D"),
-			key.WithHelp("D", "discard paused"),
-		),
-		OpenURL: key.NewBinding(
-			key.WithKeys("o"),
-			key.WithHelp("o", "open PR in browser"),
-		),
-		OpenWebUI: key.NewBinding(
-			key.WithKeys("w"),
-			key.WithHelp("w", "open web UI"),
-		),
-		HistoryTab: key.NewBinding(
-			key.WithKeys("h"),
-			key.WithHelp("h", "history"),
-		),
-		AssignProfile: key.NewBinding(
-			key.WithKeys("a"),
-			key.WithHelp("a", "assign profile"),
-		),
-		SplitToggle: key.NewBinding(
-			key.WithKeys("s"),
-			key.WithHelp("s", "split details"),
-		),
-	}
-}
-
-// ShortHelp implements key.Map and returns the compact help binding list.
-func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.EscKey, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.OpenURL, k.OpenWebUI, k.AssignProfile, k.SplitToggle, k.Quit}
-}
-
-// FullHelp implements key.Map and returns the full help binding list.
-func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.ListUp, k.ListDown, k.Toggle, k.PanelNext, k.EscKey, k.DrillDown, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.AssignProfile, k.SplitToggle, k.Quit}}
 }
 
 // pickerLoadedMsg carries async-loaded project list into the TUI update loop.
@@ -357,6 +224,7 @@ type Model struct {
 	history     []server.HistoryRow
 	retrying    []server.RetryRow
 	paused      []string
+	inputRows   []server.InputRequiredRow
 	navItems    []leftItem                // flat navigation list (issues + their subagents)
 	selectedNav int                       // cursor into navItems
 	subagents   map[string][]subagentInfo // per-identifier subagent segments
@@ -499,6 +367,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.history = s.History
 		m.retrying = s.Retrying
 		m.paused = s.Paused
+		m.inputRows = s.InputRequired
 		// Keep paused cursor in bounds after list changes.
 		if m.inPausedSection {
 			if len(m.paused) == 0 {
@@ -564,10 +433,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the time they'd normally take, without exceeding the rate budget the
 		// user chose via interval_ms (minimum 10 s to avoid hammering the API).
 		if m.cfg.TriggerPoll != nil {
-			triggerInterval := time.Duration(s.PollIntervalMs/2) * time.Millisecond
-			if triggerInterval < 10*time.Second {
-				triggerInterval = 10 * time.Second
-			}
+			triggerInterval := max(time.Duration(s.PollIntervalMs/2)*time.Millisecond, 10*time.Second)
 			if time.Since(m.lastPollTrigger) > triggerInterval {
 				m.cfg.TriggerPoll()
 				m.lastPollTrigger = time.Now()
@@ -915,15 +781,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if id, _ := m.selectedSessionID(); id != "" {
 					url := extractPRLink(m.buf.Get(id))
 					if url != "" {
-						go openURL(url)
-						m.killMsg = "↗ Opening PR: " + url
+						copyURLToClipboardFn(url)
+						m.killMsg = "📋 PR URL copied to clipboard — " + url
 					}
 				}
 			}
 		case key.Matches(msg, m.keys.OpenWebUI):
 			if m.cfg.DashboardURL != "" {
-				go openURL(m.cfg.DashboardURL)
-				m.killMsg = "↗ Opening web UI: " + m.cfg.DashboardURL
+				copyURLToClipboardFn(m.cfg.DashboardURL)
+				m.killMsg = "📋 Web UI URL copied to clipboard — " + m.cfg.DashboardURL
+			} else {
+				m.killMsg = "⚠ web UI URL not available — set server.port in WORKFLOW.md"
 			}
 		case key.Matches(msg, m.keys.Kill):
 			if m.inPausedSection {
@@ -1055,6 +923,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 			}
 		case key.Matches(msg, m.keys.Quit):
+			if m.cfg.QuitApp != nil {
+				m.cfg.QuitApp()
+			}
 			return m, tea.Quit
 		}
 	}
@@ -1220,6 +1091,9 @@ func (m *Model) headerLineCount() int {
 	if m.killMsg != "" || m.dispatchMsg != "" {
 		n++
 	}
+	if len(s.InputRequired) > 0 {
+		n++
+	}
 	return n
 }
 
@@ -1267,10 +1141,7 @@ func (m *Model) refreshViewport() {
 // renderViewportLines fills the log viewport with rendered+wrapped lines.
 // identifier is used for the empty-state message. emptyMsg overrides the default.
 func (m *Model) renderViewportLines(viewLines []string, identifier, emptyMsg string) {
-	wrapW := m.logVP.Width
-	if wrapW < 10 {
-		wrapW = 10
-	}
+	wrapW := max(m.logVP.Width, 10)
 
 	var sb strings.Builder
 	for _, line := range viewLines {
@@ -1321,15 +1192,6 @@ func (m Model) View() string {
 		styleCyan.Bold(true).Render(title) +
 		styleGray.Render(strings.Repeat("═", ruleLen)+"╗")
 
-	// Agent mode badge
-	modePart := ""
-	switch s.AgentMode {
-	case "subagents":
-		modePart = stylePurple.Render("  ◈ SUB-AGENTS")
-	case "teams":
-		modePart = stylePurple.Bold(true).Render("  ◈ TEAMS")
-	}
-
 	// Backend display: collect unique backends from running sessions
 	backendSet := make(map[string]bool)
 	for _, r := range s.Running {
@@ -1367,17 +1229,31 @@ func (m Model) View() string {
 		styleLabel.Render("TOKENS") + styleGray.Render(" ▸ ") + tokenVal +
 		styleGray.Render("   ") +
 		styleLabel.Render("RETRY") + styleGray.Render(" ▸ ") + retryVal +
-		modePart + backendPart
+		backendPart
 
 	var hdr strings.Builder
 	hdr.WriteString(hdrTop + "\n")
 	hdr.WriteString(row1 + "\n")
 
+	if waiting, pending := inputStateCounts(s.InputRequired); waiting > 0 || pending > 0 {
+		var parts []string
+		if waiting > 0 {
+			parts = append(parts, styleYellow.Render(fmt.Sprintf("%d waiting", waiting)))
+		}
+		if pending > 0 {
+			parts = append(parts, styleCyan.Render(fmt.Sprintf("%d resuming", pending)))
+		}
+		hdr.WriteString(styleGray.Render("║ ") +
+			styleLabel.Render("INPUT ") + styleGray.Render(" ▸ ") +
+			strings.Join(parts, styleGray.Render("   ")) +
+			styleMuted.Render("  reply in tracker/dashboard") + "\n")
+	}
+
 	if m.cfg.DashboardURL != "" {
 		hdr.WriteString(styleGray.Render("║ ") +
 			styleLabel.Render("WEB   ") + styleGray.Render(" ▸ ") +
 			styleCyan.Render(osc8Link(m.cfg.DashboardURL, m.cfg.DashboardURL)) +
-			styleMuted.Render("  w:open") + "\n")
+			styleMuted.Render("  w:"+copyKeyHint) + "\n")
 	}
 
 	// GitHub tracker info: states are mapped to issue labels
@@ -1392,6 +1268,20 @@ func (m Model) View() string {
 	}
 	if statusMsg != "" {
 		hdr.WriteString(styleGray.Render("║ ") + styleYellow.Render("⚡ "+statusMsg) + "\n")
+	}
+
+	// Config-invalid banner (T-26 piece 4) — surface a stale-config state to
+	// the operator so they know their last WORKFLOW.md edit didn't take and
+	// the daemon is running on the previously-valid config. Mirrors the web
+	// dashboard banner behavior.
+	if s.ConfigInvalid != nil {
+		ci := s.ConfigInvalid
+		hdr.WriteString(styleGray.Render("║ ") +
+			styleRed.Bold(true).Render("⚠ CONFIG INVALID") +
+			styleGray.Render(" ▸ ") +
+			styleYellow.Render(ci.Error) +
+			styleMuted.Render(fmt.Sprintf("  (retry %d, daemon on last valid config)", ci.RetryAttempt)) +
+			"\n")
 	}
 
 	// ── Split body ──────────────────────────────────────────
@@ -1420,7 +1310,7 @@ func (m Model) View() string {
 	return hdr.String() + body + "\n" + gantt + footer + "\n"
 }
 
-// renderLeft builds the left pane (issue list with subagents, retry queue, paused).
+// renderLeft builds the left pane (issue list with subagents, retry queue, paused, input).
 // It always produces exactly bodyHeight lines, each leftPaneWidth chars wide.
 func (m *Model) renderLeft() string {
 	if m.profilePickerOpen {
@@ -1673,6 +1563,26 @@ func (m *Model) renderLeft() string {
 		}
 	}
 
+	if len(m.inputRows) > 0 && len(lines) < bh {
+		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+		add(styleYellow.Render("◆─[ INPUT ]") + styleMuted.Render("  reply in tracker/dashboard"))
+		for _, row := range m.inputRows {
+			if len(lines) >= bh {
+				break
+			}
+			glyph := "?"
+			status := "waiting for reply"
+			rowStyle := styleYellow.Faint(true)
+			if row.State == "pending_input_resume" {
+				glyph = "↺"
+				status = "reply received"
+				rowStyle = styleCyan.Faint(true)
+			}
+			rendered := fmt.Sprintf("  %s %-12s %s", glyph, truncate(row.Identifier, 12), status)
+			add(rowStyle.Render(rendered))
+		}
+	}
+
 	for len(lines) < bh {
 		lines = append(lines, leftStyle.Render(""))
 	}
@@ -1802,7 +1712,7 @@ func (m *Model) renderRight() string {
 			parts = append(parts, stateRender)
 		}
 		if prURL != "" {
-			parts = append(parts, styleCyan.Render("PR ↗ "+osc8Link(prURL, prURL))+styleMuted.Render("  o:open"))
+			parts = append(parts, styleCyan.Render("PR ↗ "+osc8Link(prURL, prURL))+styleMuted.Render("  o:"+copyKeyHint))
 		}
 		if len(parts) > 0 {
 			infoRow = rightStyle.Render(styleGray.Render("  ")+strings.Join(parts, styleMuted.Render("  "))) + "\n"
@@ -1814,6 +1724,17 @@ func (m *Model) renderRight() string {
 		infoRow = "\n"
 	}
 	return title + "\n" + infoRow + sep + "\n" + m.logVP.View()
+}
+
+func inputStateCounts(rows []server.InputRequiredRow) (waiting, pending int) {
+	for _, row := range rows {
+		if row.State == "pending_input_resume" {
+			pending++
+			continue
+		}
+		waiting++
+	}
+	return waiting, pending
 }
 
 // prefix renders a coloured terminal-style prefix symbol followed by the message.
@@ -2667,20 +2588,14 @@ func (m *Model) renderGantt() string {
 	if m.leftTab == "history" && totalEntries > maxGanttBars {
 		// Scroll only when panel 2 is focused and cursor has moved past the window.
 		if m.activePanel == 2 {
-			ganttOffset = m.timelineCursor - maxGanttBars + 1
-			if ganttOffset < 0 {
-				ganttOffset = 0
-			}
+			ganttOffset = max(m.timelineCursor-maxGanttBars+1, 0)
 			if ganttOffset+maxGanttBars > totalEntries {
 				ganttOffset = totalEntries - maxGanttBars
 			}
 		}
 	}
 	if len(entries) > maxGanttBars {
-		end := ganttOffset + maxGanttBars
-		if end > totalEntries {
-			end = totalEntries
-		}
+		end := min(ganttOffset+maxGanttBars, totalEntries)
 		entries = entries[ganttOffset:end]
 	}
 
@@ -2768,13 +2683,7 @@ func (m *Model) renderGantt() string {
 
 		// All bars start at the left edge; width is proportional to elapsed time.
 		startPos := 0
-		endPos := int(int64(barW) * e.elapsedMs / maxElapsedMs)
-		if endPos > barW {
-			endPos = barW
-		}
-		if endPos < 1 {
-			endPos = 1
-		}
+		endPos := max(min(int(int64(barW)*e.elapsedMs/maxElapsedMs), barW), 1)
 		sessionWidth := endPos - startPos
 
 		// Build bar as rune slice.
@@ -2907,17 +2816,12 @@ func (m *Model) renderGantt() string {
 
 					// Compute active region in bar coordinates.
 					subStartPos := int(int64(barW) * int64(sub.startLine) / int64(totalLines))
-					subEnd := sub.endLine
-					if subEnd > totalLines {
-						subEnd = totalLines
-					}
+					subEnd := min(sub.endLine, totalLines)
 					subEndPos := int(int64(barW) * int64(subEnd) / int64(totalLines))
 					if subEndPos <= subStartPos {
 						subEndPos = subStartPos + 1
 					}
-					if subEndPos > barW {
-						subEndPos = barW
-					}
+					subEndPos = min(subEndPos, barW)
 
 					// Build bar: ░ before active region, █ during, ░ after.
 					phaseRunes := make([]rune, barW)
@@ -3033,16 +2937,33 @@ func extractPRLink(lines []string) string {
 	return ""
 }
 
-// openURL opens a URL in the system default browser (macOS / Linux).
-func openURL(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
+var copyURLToClipboardFn = copyURLToClipboard
+var clipboardGOOS = runtime.GOOS
+var copyURLToNativeClipboardFn = copyURLToNativeClipboard
+var writeOSC52ClipboardFn = writeOSC52Clipboard
+
+// copyURLToClipboard copies a URL to the system clipboard.
+//
+// On macOS we prefer `pbcopy`, which talks to the OS clipboard directly and
+// works in terminals that ignore OSC 52. Other platforms fall back to OSC 52.
+func copyURLToClipboard(url string) {
+	if clipboardGOOS == "darwin" {
+		if err := copyURLToNativeClipboardFn(url); err == nil {
+			return
+		}
 	}
-	_ = cmd.Start()
+	writeOSC52ClipboardFn(url)
+}
+
+func copyURLToNativeClipboard(url string) error {
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = strings.NewReader(url)
+	return cmd.Run()
+}
+
+func writeOSC52Clipboard(url string) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(url))
+	// OSC 52 format: ESC ] 52 ; c ; <base64> ST
+	// Using BEL (\x07) as the string terminator for broadest compat.
+	_, _ = os.Stderr.WriteString("\x1b]52;c;" + encoded + "\x07")
 }

@@ -151,6 +151,7 @@ func TestCodexRunnerResumeTurn(t *testing.T) {
 	assert.Contains(t, string(argsData), "-C")
 	assert.Contains(t, string(argsData), "resume")
 	assert.Contains(t, string(argsData), "tid-1")
+	assert.Contains(t, string(argsData), "continue")
 }
 
 func TestMultiRunnerDispatchesToCodex(t *testing.T) {

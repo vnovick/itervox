@@ -26,7 +26,7 @@ TEA WINDOW SIZE: {160 30}
 ► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
                 0s                                                                 1281023h53m38s                                                     2562047h47m1␤
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • a assign profile • s split details • q quit␤
+↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o copy PR URL • w copy web URL • a assign profile • s split details • q quit␤
 
 run key:s
 ----
@@ -55,7 +55,7 @@ run key:s
 ► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
                 0s                                                                 1281023h53m38s                                                     2562047h47m1␤
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • a assign profile • s split details • q quit␤
+↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o copy PR URL • w copy web URL • a assign profile • s split details • q quit␤
 
 run key:s
 ----
@@ -84,4 +84,4 @@ run key:s
 ► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
                 0s                                                                 1281023h53m38s                                                     2562047h47m1␤
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • a assign profile • s split details • q quit␤
+↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o copy PR URL • w copy web URL • a assign profile • s split details • q quit␤

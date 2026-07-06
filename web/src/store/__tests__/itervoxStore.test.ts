@@ -8,6 +8,12 @@ const EMPTY_SNAP = {
   counts: { running: 0, retrying: 0, paused: 0 },
   generatedAt: '',
   maxConcurrentAgents: 3,
+  // G: matches Zod default — refreshSnapshot path parses through the schema
+  // and the parsed result carries this field even when the server omitted it.
+  maxRetries: 5,
+  // E: matches Zod defaults for switch caps.
+  maxSwitchesPerIssuePerWindow: 2,
+  switchWindowHours: 6,
   rateLimits: null,
 };
 

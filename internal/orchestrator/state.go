@@ -44,6 +44,17 @@ const (
 	// dispatch a reviewer worker through the event loop so state mutations
 	// happen in the single event-loop goroutine.
 	EventDispatchReviewer EventType = "DispatchReviewer"
+	// EventInputRequiredCommentRecorded is sent after the tracker successfully
+	// creates the input-required question comment so the event loop can persist
+	// the exact tracker comment ID and author identity locally.
+	EventInputRequiredCommentRecorded EventType = "InputRequiredCommentRecorded"
+	// EventDispatchAutomation is sent by cron automations to dispatch a helper
+	// worker through the event loop using a selected profile plus extra
+	// automation instructions.
+	EventDispatchAutomation EventType = "DispatchAutomation"
+	// EventIssueStatusChanged records a tracker state transition observed from
+	// a goroutine or HTTP handler. The event loop owns the status ledger.
+	EventIssueStatusChanged EventType = "IssueStatusChanged"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -57,6 +68,10 @@ type OrchestratorEvent struct { //nolint:revive
 	Message            string              // user-provided text for EventProvideInput
 	ReviewerProfile    string              // profile name for EventDispatchReviewer
 	InputRequiredEntry *InputRequiredEntry // used by TerminalInputRequired
+	Comment            *domain.Comment     // used by EventInputRequiredCommentRecorded
+	Issue              *domain.Issue       // used by EventDispatchAutomation
+	Automation         *AutomationDispatch // used by EventDispatchAutomation
+	StatusChange       *IssueStatusChange  // used by EventIssueStatusChanged
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -77,19 +92,62 @@ const (
 	TerminalInputRequired TerminalReason = "input_required"
 )
 
+// ResumeContext, when non-nil, configures a worker to continue an existing
+// agent session via --resume instead of starting a fresh one. It unifies two
+// resume flows that used to be handled separately:
+//
+//   - Pause/resume: SessionID set, UserMessage empty. The worker re-renders
+//     the WORKFLOW.md prompt normally; the agent picks up where it left off.
+//   - Input-required resume: SessionID set, UserMessage set to the user's
+//     reply. The worker substitutes UserMessage for the rendered prompt, caps
+//     the run at a single turn, and skips PR detection (the worktree and
+//     branch already exist from the original dispatch).
+//
+// When nil, the worker performs a normal fresh dispatch.
+type ResumeContext struct {
+	SessionID    string // agent session ID for --resume <id>
+	UserMessage  string // latest human reply
+	InputContext string // the agent question/request that prompted the reply
+}
+
 // InputRequiredEntry holds context for an issue whose agent is blocked waiting
 // for human input. Stored in State.InputRequiredIssues until the user provides
 // input (via ProvideInput) or dismisses it (via DismissInput).
 type InputRequiredEntry struct {
-	IssueID     string
-	Identifier  string
-	SessionID   string // for --resume
-	Context     string // what the agent was waiting for (from FailureText/ResultText)
-	Backend     string // which runner was used
-	Command     string // agent command (for resume on same runner)
-	WorkerHost  string // SSH host (for resume on same host)
-	ProfileName string // active profile
-	QueuedAt    time.Time
+	IssueID            string
+	Identifier         string
+	SessionID          string // for --resume
+	Context            string // what the agent was waiting for (from FailureText/ResultText)
+	BranchName         string // actual branch/worktree checkout to reuse on resume
+	Backend            string // which runner was used
+	Command            string // agent command (for resume on same runner)
+	WorkerHost         string // SSH host (for resume on same host)
+	ProfileName        string // active profile
+	QuestionCommentID  string // exact tracker comment ID for the agent question
+	QuestionAuthorID   string // exact tracker author ID for the agent question
+	QuestionAuthorName string // display author for the agent question
+	QueuedAt           time.Time
+}
+
+// PendingInputResumeEntry holds a user reply that has been accepted but not
+// yet durably consumed by a resumed worker turn. This state is persisted so a
+// daemon restart between "reply accepted" and "resumed worker produced output"
+// can continue the same agent session and host/backend selection.
+type PendingInputResumeEntry struct {
+	IssueID            string
+	Identifier         string
+	SessionID          string
+	Context            string
+	UserMessage        string
+	BranchName         string
+	Backend            string
+	Command            string
+	WorkerHost         string
+	ProfileName        string
+	QuestionCommentID  string
+	QuestionAuthorID   string
+	QuestionAuthorName string
+	QueuedAt           time.Time
 }
 
 // RunEntry tracks a live agent worker goroutine.
@@ -106,19 +164,34 @@ type RunEntry struct {
 	AgentSessionID string
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
-	Kind           string // "worker" (default) | "reviewer"
-	BranchName     string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
-	PRURL          string // URL of the PR created or continued during this run (empty if none)
-	TerminalReason TerminalReason
-	LastEventAt    *time.Time // when last EventWorkerUpdate was received
-	LastMessage    string
-	InputTokens    int
-	OutputTokens   int
-	TotalTokens    int
-	TurnCount      int
-	RetryAttempt   *int
-	StartedAt      time.Time
-	WorkerCancel   context.CancelFunc
+	ProfileName    string // resolved agent profile name, empty = default
+	Kind           string // "worker" (default) | "reviewer" | "automation"
+	// AutomationID is the rule ID that dispatched this run; empty for
+	// manually dispatched runs. Set once at dispatch and never mutated.
+	AutomationID string
+	// TriggerType is the automation trigger ("cron", "input_required",
+	// "run_failed", "test"). Empty for manual runs.
+	TriggerType string
+	// CommentCount counts comment-action invocations recorded for this
+	// run; surfaced on the issue card (T-6).
+	CommentCount int
+	// PendingInputResume is true while this run is consuming a locally
+	// persisted human reply from PendingInputResumes. The event loop uses it to
+	// clear the pending-resume record only after the resumed run has actually
+	// started producing output or has exited.
+	PendingInputResume bool
+	BranchName         string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
+	PRURL              string // URL of the PR created or continued during this run (empty if none)
+	TerminalReason     TerminalReason
+	LastEventAt        *time.Time // when last EventWorkerUpdate was received
+	LastMessage        string
+	InputTokens        int
+	OutputTokens       int
+	TotalTokens        int
+	TurnCount          int
+	RetryAttempt       *int
+	StartedAt          time.Time
+	WorkerCancel       context.CancelFunc
 }
 
 // CompletedRun is a snapshot of a finished worker session, kept in the history ring buffer.
@@ -135,14 +208,22 @@ type CompletedRun struct {
 	Status       string // "succeeded" | "failed" | "cancelled" | "stalled" | "input_required"
 	WorkerHost   string
 	Backend      string
+	ProfileName  string `json:"profileName,omitempty"`
 	SessionID    string
 	// ProjectKey scopes this run to a specific project so that a shared
 	// history file does not leak runs across projects. Format: "<kind>:<slug>".
 	// Empty string means "unscoped" (legacy entries written before this field
 	// was added); these are retained so existing history is not silently dropped.
-	Kind         string // "worker" (default) | "reviewer"
+	Kind         string // "worker" (default) | "reviewer" | "automation"
 	ProjectKey   string
 	AppSessionID string // daemon-invocation grouping key; empty for legacy entries
+	// AutomationID / TriggerType propagate the automation context onto
+	// completed runs so dashboards can attribute history to a specific
+	// rule. Empty for manual runs.
+	AutomationID string `json:"automationID,omitempty"`
+	TriggerType  string `json:"triggerType,omitempty"`
+	// CommentCount captures how many comment actions the run posted.
+	CommentCount int `json:"commentCount,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -178,9 +259,13 @@ type State struct {
 	// throughout a tick. These are the cfg fields governed by cfgMu.
 	ActiveStates   []string
 	TerminalStates []string
-	Running        map[string]*RunEntry
-	Claimed        map[string]struct{}
-	RetryAttempts  map[string]*RetryEntry
+	// PauseDispatchWhenAnyInState snapshots Agent.PauseDispatchWhenAnyInState
+	// at the tick boundary so dispatch guards can read it lock-free. Lowercase,
+	// case-folded copies. Empty disables the guard.
+	PauseDispatchWhenAnyInState []string
+	Running                     map[string]*RunEntry
+	Claimed                     map[string]struct{}
+	RetryAttempts               map[string]*RetryEntry
 	// PausedIdentifiers tracks issues paused by user kill.
 	// Key: identifier (e.g. "TIPRD-25"), Value: issue UUID (empty when loaded
 	// from an old disk snapshot that predates UUID persistence).
@@ -208,9 +293,19 @@ type State struct {
 	// IssueBackends maps issue identifier to a backend override ("claude" or "codex").
 	// When set, overrides the profile and config backend for dispatch.
 	IssueBackends map[string]string
-	// PausedOpenPRs tracks issues that were auto-paused because an open PR was detected.
-	// Key: issue identifier, Value: open PR URL.
-	PausedOpenPRs map[string]string
+	// AutoSwitchedIdentifiers tracks issues whose IssueProfiles / IssueBackends
+	// override was set by a `rate_limited` automation auto-switch (gap E)
+	// rather than by an explicit operator action via SetIssueProfile /
+	// SetIssueBackend. On a successful worker exit the override is cleared so
+	// subsequent runs revert to the natural profile — but operator-set
+	// overrides survive. Gap §1.3.
+	AutoSwitchedIdentifiers map[string]struct{}
+	// AutoSwitchedAt records the wall-clock time of each auto-switch fire.
+	// Used by the time-based revert path: when `cfg.Agent.SwitchRevertHours`
+	// > 0 the orchestrator's onTick reverts overrides whose age has
+	// exceeded the TTL, even if no successful exit cleared them. Gap §6.2.
+	// Keys mirror AutoSwitchedIdentifiers; the two maps stay in sync.
+	AutoSwitchedAt map[string]time.Time
 	// ForceReanalyze holds identifiers queued for forced PR re-analysis.
 	// These bypass the "existing open PR = skip" guard on next dispatch.
 	ForceReanalyze map[string]struct{}
@@ -220,6 +315,10 @@ type State struct {
 	// auto-resume) from "issue was already active when user paused it"
 	// (must not auto-resume — wait until it leaves active and returns).
 	PrevActiveIdentifiers map[string]struct{}
+	// PrevIssueStates stores the last tracker state observed for each issue.
+	PrevIssueStates map[string]string
+	// IssueStatusHistory stores a bounded status-change ledger per issue.
+	IssueStatusHistory map[string][]IssueStatusChange
 	// DiscardingIdentifiers holds identifiers of issues whose EventTerminatePaused
 	// has been processed but whose UpdateIssueState goroutine has not yet
 	// completed. Issues in this set are ineligible for dispatch, preventing the
@@ -230,45 +329,93 @@ type State struct {
 	// human input to continue. Key: identifier. These issues are not dispatched
 	// until the user provides input or dismisses.
 	InputRequiredIssues map[string]*InputRequiredEntry
-	// InlineInputIssues is deprecated but kept for snapshot copy compatibility.
-	// All input-required handling now uses InputRequiredIssues.
-	InlineInputIssues map[string]*InlineInputEntry
-}
+	// PendingInputResumes tracks replies that were accepted locally or detected
+	// in the tracker, but have not yet been durably consumed by a resumed
+	// worker. Key: identifier.
+	PendingInputResumes map[string]*PendingInputResumeEntry
+	// AutomationQueue tracks automation triggers that could not start immediately.
+	// Key: stable queue key from automationQueueKey.
+	AutomationQueue map[string]*AutomationQueueEntry
+	// AutomationQueueOrder preserves FIFO order for AutomationQueue keys.
+	AutomationQueueOrder []string
+	// AutomationQueueBackpressure tracks queue-cap saturation and rejected triggers.
+	AutomationQueueBackpressure AutomationQueueBackpressure
+	// DependencyAudit tracks normalized blocker state by issue identifier.
+	DependencyAudit map[string]*DependencyAuditEntry
+	// DependencyTransitionSeq increments when dependency audit emits a transition.
+	DependencyTransitionSeq int64
+	// LastBlockersResolvedAuditSeq snapshots DependencyTransitionSeq at the
+	// end of the most recent auditBlockersResolvedAutomationSources pass.
+	// When DependencyTransitionSeq has not advanced since the previous tick
+	// there is nothing for the audit pass to do, so the tick-scoped
+	// FetchIssuesByStates call can be skipped. v0.2.0 audit P1-2.
+	LastBlockersResolvedAuditSeq int64
+	// PROpenedDispatched dedups `pr_opened` automation dispatches so a resumed
+	// worker, a retry, or a secondary run on the same issue does not re-fire
+	// the same `(issue, prURL, automationID)` triple. Lifetime is event-loop
+	// owned; pruned by pruneTerminalRuntimeLedgers when the issue reaches a
+	// terminal tracker state.
+	//
+	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
+	PROpenedDispatched map[string]struct{}
 
-// InlineInputEntry holds context for an input-required issue that was
-// delegated to the tracker via a comment (inlineInput mode).
-type InlineInputEntry struct {
-	IssueID          string
-	Identifier       string
-	SessionID        string
-	Context          string // agent's question
-	Backend          string
-	Command          string
-	WorkerHost       string
-	ProfileName      string
-	PostedAt         time.Time
-	LastCommentCount int // comment count at time of posting, to detect new ones
+	// PRMergedDispatched is the pr_merged sibling of PROpenedDispatched.
+	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
+	PRMergedDispatched map[string]struct{}
+
+	// AutomationDropsSelfReentryTotal is a monotonic counter incremented every
+	// time an `input_required` automation dispatch is suppressed because the
+	// previous worker on this issue was itself an automation-driven run
+	// (codex-B1). Surfaced on the snapshot for the dashboard's live-ops strip
+	// so operators can distinguish "guarded loop" from "automation never
+	// fired".
+	AutomationDropsSelfReentryTotal uint64
+
+	// AutomationDispatchesPROpenedTotal / AutomationDroppedPROpenedDedupTotal
+	// surface pr_opened automation telemetry for the dashboard. codex-B4.
+	AutomationDispatchesPROpenedTotal   uint64
+	AutomationDroppedPROpenedDedupTotal uint64
+	AutomationDispatchesPRMergedTotal   uint64
+	AutomationDroppedPRMergedDedupTotal uint64
+
+	// TransportFailureCount counts agent-runner errors classified as
+	// transport-level (codex stream disconnected, network resets) so the
+	// dashboard's LiveOpsStrip can surface a paused_transport tile.
+	// todolist4 A.4.
+	TransportFailureCount uint64
 }
 
 // NewState initialises a State from a config snapshot.
 func NewState(cfg *config.Config) State {
 	return State{
-		PollIntervalMs:        cfg.Polling.IntervalMs,
-		MaxConcurrentAgents:   cfg.Agent.MaxConcurrentAgents,
-		ActiveStates:          append([]string{}, cfg.Tracker.ActiveStates...),
-		TerminalStates:        append([]string{}, cfg.Tracker.TerminalStates...),
-		Running:               make(map[string]*RunEntry),
-		Claimed:               make(map[string]struct{}),
-		RetryAttempts:         make(map[string]*RetryEntry),
-		PausedIdentifiers:     make(map[string]string),
-		PausedSessions:        make(map[string]*PausedSessionInfo),
-		IssueProfiles:         make(map[string]string),
-		IssueBackends:         make(map[string]string),
-		PausedOpenPRs:         make(map[string]string),
-		ForceReanalyze:        make(map[string]struct{}),
-		PrevActiveIdentifiers: make(map[string]struct{}),
-		DiscardingIdentifiers: make(map[string]struct{}),
-		InputRequiredIssues:   make(map[string]*InputRequiredEntry),
-		InlineInputIssues:     make(map[string]*InlineInputEntry),
+		PollIntervalMs:              cfg.Polling.IntervalMs,
+		MaxConcurrentAgents:         cfg.Agent.MaxConcurrentAgents,
+		ActiveStates:                append([]string{}, cfg.Tracker.ActiveStates...),
+		TerminalStates:              append([]string{}, cfg.Tracker.TerminalStates...),
+		PauseDispatchWhenAnyInState: normalizePauseStates(cfg.Agent.PauseDispatchWhenAnyInState),
+		Running:                     make(map[string]*RunEntry),
+		Claimed:                     make(map[string]struct{}),
+		RetryAttempts:               make(map[string]*RetryEntry),
+		PausedIdentifiers:           make(map[string]string),
+		PausedSessions:              make(map[string]*PausedSessionInfo),
+		IssueProfiles:               make(map[string]string),
+		IssueBackends:               make(map[string]string),
+		AutoSwitchedIdentifiers:     make(map[string]struct{}),
+		AutoSwitchedAt:              make(map[string]time.Time),
+		ForceReanalyze:              make(map[string]struct{}),
+		PrevActiveIdentifiers:       make(map[string]struct{}),
+		PrevIssueStates:             make(map[string]string),
+		IssueStatusHistory:          make(map[string][]IssueStatusChange),
+		DiscardingIdentifiers:       make(map[string]struct{}),
+		InputRequiredIssues:         make(map[string]*InputRequiredEntry),
+		PendingInputResumes:         make(map[string]*PendingInputResumeEntry),
+		AutomationQueue:             make(map[string]*AutomationQueueEntry),
+		AutomationQueueOrder:        []string{},
+		AutomationQueueBackpressure: AutomationQueueBackpressure{
+			MaxLength: cfg.Agent.MaxAutomationQueueLength,
+		},
+		DependencyAudit:    make(map[string]*DependencyAuditEntry),
+		PROpenedDispatched: make(map[string]struct{}),
+		PRMergedDispatched: make(map[string]struct{}),
 	}
 }

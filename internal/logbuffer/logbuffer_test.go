@@ -127,6 +127,37 @@ func TestClearWithoutLogDirOnlyClearsMemory(t *testing.T) {
 	assert.Nil(t, buf.Get("ENG-6"))
 }
 
+// TestAdd_TruncatesOversizedLine pins the per-line cap added by T-11. A
+// pathological agent emitting one giant line must not pin huge memory in
+// the ring buffer. Truncation is observable: the stored line ends with
+// "[truncated N bytes]" and is at most the cap in length.
+func TestAdd_TruncatesOversizedLine(t *testing.T) {
+	buf := logbuffer.New()
+	const oneMB = 1024 * 1024
+	big := strings.Repeat("A", oneMB)
+	buf.Add("ENG-7", big)
+
+	got := buf.Get("ENG-7")
+	require.Len(t, got, 1)
+	stored := got[0]
+	// Cap is 64 KiB — well below 1 MiB.
+	assert.LessOrEqual(t, len(stored), 64*1024,
+		"truncation cap must hold; got %d bytes", len(stored))
+	assert.Contains(t, stored, "[truncated", "truncation suffix must be present")
+}
+
+// TestAdd_SmallLinePassesThroughUnchanged guards the cap from accidentally
+// truncating ordinary lines.
+func TestAdd_SmallLinePassesThroughUnchanged(t *testing.T) {
+	buf := logbuffer.New()
+	const small = "this is a perfectly reasonable log line"
+	buf.Add("ENG-8", small)
+
+	got := buf.Get("ENG-8")
+	require.Len(t, got, 1)
+	assert.Equal(t, small, got[0], "small line must be byte-identical")
+}
+
 func TestEviction(t *testing.T) {
 	buf := logbuffer.New()
 	// Add more than maxLinesPerIssue (500) lines.

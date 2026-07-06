@@ -5,6 +5,8 @@ sidebar:
   order: 2
 ---
 
+import { Image } from 'astro:assets';
+
 Itervox is configured entirely through a single `WORKFLOW.md` file in your project directory. The file has two parts: a YAML front matter block (between `---` delimiters) that controls all runtime behaviour, and a Liquid template body that becomes the prompt sent to the agent for each issue.
 
 Run `itervox init` in your project directory to generate a starter file for Linear or GitHub.
@@ -15,6 +17,8 @@ Run `itervox init` in your project directory to generate a starter file for Line
 
 ```markdown
 ---
+itervox_schema_version: 2
+
 tracker:
   kind: github
   api_key: $GITHUB_TOKEN
@@ -140,7 +144,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `root` | string | `~/.itervox/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
-| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted after an issue reaches `completion_state`, reclaiming disk space. Logs are retained. |
+| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
 | `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. |
@@ -154,11 +158,36 @@ workspace:
   base_branch: main
 ```
 
+### Agent handoff (`.itervox/handoff/`)
+
+When multiple profiles run on the same issue — for example a research profile followed by an implementer followed by a reviewer — they can share structured deliverables via the per-issue workspace's `.itervox/handoff/` directory.
+
+**How it works:**
+
+1. The orchestrator stamps each worker run with an ISO8601 timestamp and computes a canonical handoff path: `.itervox/handoff/<timestamp>_<profile-name>.md`. These two values are appended to the worker's prompt as a `## Run Context` block (fields `run.timestamp` and `run.handoff_path`).
+2. Before dispatching any worker, the orchestrator reads every existing `.md` file in that directory (including `.partial.md` files), sorts them by filename (chronological because of the ISO8601 prefix), and inlines them into the prompt as a `## Prior Agent Handoffs` block. A 30 KB token budget caps the section; if exceeded, the oldest files are dropped with a `[earlier handoffs truncated]` marker.
+3. The agent's INSTRUCTIONS.md "Handoff Protocol" section tells it to read the prerendered prior-handoffs block and write its own deliverable to `run.handoff_path` before exiting. The orchestrator does not call out to the agent — it relies on the agent following INSTRUCTIONS.md.
+4. If the worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the most recent matching `<timestamp>_<profile>.md` to `<timestamp>_<profile>.partial.md`. Subsequent agents see partials in their handoff context and can distinguish them from clean deliverables. `TerminalInputRequired` does not mark partial — the agent intentionally paused and may resume.
+
+**Git policy:** `.itervox/handoff/**` is committable. `itervox init` and `itervox init --update` patch the root `.gitignore` to whitelist it alongside `.itervox/agents/**`. Commit the pipeline trail into PRs so reviewers can read the chain.
+
+**Filenames are deterministic from `run.timestamp` and the profile name:**
+
+```text
+.itervox/handoff/2026-05-26T14-30-45Z_researcher.md
+.itervox/handoff/2026-05-26T14-42-12Z_implementer.md
+.itervox/handoff/2026-05-26T14-58-30Z_reviewer.md
+```
+
+Profile names with spaces are slugified (`"story writer"` → `story-writer`). An empty profile name falls back to `agent`.
+
+See the [Agent Handoff guide](/guides/agent-handoff/) for a worked example chaining three profiles end-to-end.
+
 ---
 
 ## agent
 
-Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, retry behaviour, and advanced features like SSH dispatch and agent teams.
+Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, retry behaviour, and advanced features like SSH dispatch and named profiles.
 
 ### Core fields
 
@@ -168,9 +197,14 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | `backend` | string | `""` | Explicitly sets the runner backend (`"claude"` or `"codex"`). Only needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name. |
 | `max_concurrent_agents` | int | `10` | Maximum number of agent workers running simultaneously across all issues. |
 | `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits that override `max_concurrent_agents`. Keys are lowercase state names. See example below. |
+| `max_automation_queue_length` | int | `100` | Maximum durable automation dispatch entries waiting for capacity or dependency resolution. `0`/negative values fall back to the default; the queue is never unlimited. |
 | `max_retries` | int | `5` | Maximum retry attempts before an issue is moved to `tracker.failed_state` (or paused if `failed_state` is empty). `0` means unlimited retries. |
-| `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. |
+| `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. `0`/negative values fall back to the default; use `max_retries` to control retry count. |
 | `max_turns` | int | `20` | Maximum number of agent turns per session. |
+
+These retry and rate-limit settings are also editable from the Settings dashboard:
+
+<Image src="/screenshots/v0.2.0/retries settings.png" alt="Retries settings showing max retries per issue, on-exhausted-retries behavior, and rate-limit switch cap" width={900} height={380} />
 
 ### Timeout fields
 
@@ -184,12 +218,16 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `agent_mode` | string | `""` | Agent collaboration model. In all modes, if an issue has a profile assigned, that profile's prompt is appended. `""` (solo): agent runs alone. `"subagents"`: agent may use its native helper/subagent tool. `"teams"`: additionally injects a sub-agent roster so the agent knows which specialists it can delegate to by name. |
 | `inline_input` | bool | `false` | When `true`, agent input-required signals are posted as tracker comments; the user replies in the tracker and moves the issue back to an active state to continue. When `false` (default), the dashboard shows a reply UI that posts the response as a tracker comment before resuming. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
-| `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and prompt. Enables the AI Review button in the dashboard. |
-| `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. |
+| `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
+| `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. As of v0.2.0, this safely coexists with `workspace.auto_clear` — the clear is deferred until the reviewer also completes. |
+| `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. This cap limits switching; it is not the trigger condition. |
+| `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. |
+| `switch_revert_hours` | int | `0` | TTL (in hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` (default) disables the revert. Operator-set overrides survive — only auto-switches with a recorded `AutoSwitchedAt` timestamp are eligible. |
+| `rate_limit_error_patterns` | string[] | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). |
+| `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning. |
 
 ```yaml
 agent:
@@ -198,13 +236,13 @@ agent:
   profiles:
     code-reviewer:
       command: claude --model claude-opus-4-6
-      prompt: >
-        You are a code reviewer for issue {{ issue.identifier }}.
-        Run `gh pr diff` to read the PR changes, then review for correctness,
-        test coverage, and security issues. Fix problems directly and push.
+      soul_file: .itervox/agents/code-reviewer/SOUL.md
+      instructions_file: .itervox/agents/code-reviewer/INSTRUCTIONS.md
 ```
 
-> **Backwards compatibility:** `enable_agent_teams: true` is still accepted and automatically converts to `agent_mode: teams`.
+:::caution[Removed field]
+`agent_mode` was removed in v0.2.0. The daemon rejects configs containing it. Profile files now always inject when a profile is selected — no mode flag needed. Delete `agent_mode` (and the legacy alias `enable_agent_teams`) from your `WORKFLOW.md`.
+:::
 
 ### SSH dispatch
 
@@ -213,6 +251,9 @@ Itervox can distribute agent work across multiple remote hosts via SSH. Each hos
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `ssh_hosts` | string[] | `[]` | List of SSH hosts in `"host"` or `"host:port"` format. When empty, agents run locally. |
+| `ssh_host_descriptions` | object | `{}` | Optional display labels for `ssh_hosts`. Keys are host strings, values are user-facing descriptions shown in the dashboard and TUI. |
+| `ssh_strict_host_checking` | string | `"accept-new"` | Default `StrictHostKeyChecking` mode applied to every SSH worker connection. Valid values: `accept-new` (TOFU — pin on first contact, reject on mismatch), `yes` (strict — reject any unknown or changed key), `no` / `off` (permissive — accept any key, **insecure**), `ask` (prompt — incompatible with `BatchMode=yes`). Defaults to `accept-new` so a brand-new host's key is recorded in `~/.ssh/known_hosts` on first contact and any subsequent mismatch is rejected. |
+| `ssh_strict_host_by_host` | object | `{}` | Per-host override for `StrictHostKeyChecking`, taking precedence over `ssh_strict_host_checking`. Keys are host addresses (matching entries in `ssh_hosts`), values use the same set as the default. Use to harden production hosts to `yes` or temporarily relax a sandbox VM to `no`. |
 | `dispatch_strategy` | string | `"round-robin"` | How issues are routed to SSH hosts. `"round-robin"` cycles through hosts in order. `"least-loaded"` sends each new issue to the host with the fewest active workers. Ignored when `ssh_hosts` is empty. |
 
 ```yaml
@@ -221,6 +262,10 @@ agent:
     - build-host-1.example.com
     - build-host-2.example.com:2222
   dispatch_strategy: least-loaded
+  # Default to TOFU for all hosts; harden production specifically.
+  ssh_strict_host_checking: accept-new
+  ssh_strict_host_by_host:
+    "build-host-1.example.com": yes
 ```
 
 ### Available models
@@ -243,25 +288,32 @@ agent:
       - { id: "gpt-5.2-codex", label: "GPT-5.2-Codex - Long-horizon agentic coding" }
 ```
 
-To refresh the model list after new models become available, run:
-
-```bash
-itervox refresh-models --workflow WORKFLOW.md
-```
-
 If `available_models` is empty or missing, the dashboard falls back to a built-in default list.
 
 ---
 
 ### Agent profiles
 
-Named profiles let you configure alternative agent commands selectable per-issue from the web dashboard. Each profile must specify a `command`.
+Named profiles let you configure alternative agent commands selectable per-issue from the web dashboard. Each profile must specify a `command`. In schema `2`, profile text lives in files under `.itervox/agents/<profile>/`; `WORKFLOW.md` stores references to those files.
 
 | Field | Type | Description |
 |---|---|---|
 | `command` | string | CLI command for this profile (e.g. `"claude --model claude-haiku-4-5-20251001"`). |
-| `prompt` | string | Role description rendered through the Liquid template engine (supports `{{ issue.* }}` variables) and appended to the workflow prompt. Works in all agent modes — not just teams. See [Agent Profiles guide](/guides/agent-profiles/#liquid-variables-in-profile-prompts) for available variables. |
+| `soul_file` | string | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute. Holds identity, purpose, boundaries, and collaboration style. |
+| `instructions_file` | string | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds operational rules, checklists, and done criteria. |
 | `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field). |
+| `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
+| `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
+| `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
+
+`SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
+
+The dashboard profile editor edits `SOUL.md` and `INSTRUCTIONS.md` separately
+and writes those files before refreshing the snapshot.
+
+`allowed_actions` do not grant shell or tracker access by themselves. They only
+allow the daemon to mint short-lived per-run bearer grants for the corresponding
+`/api/v1/agent-actions/*` routes.
 
 ```yaml
 agent:
@@ -279,11 +331,140 @@ agent:
   profiles:
     fast:
       command: claude --model claude-haiku-4-5-20251001
-      prompt: You are a fast triage agent. Focus on quick, minimal fixes.
+      soul_file: .itervox/agents/fast/SOUL.md
+      instructions_file: .itervox/agents/fast/INSTRUCTIONS.md
     thorough:
       command: claude --model claude-opus-4-6
-      prompt: You are a thorough senior engineer. Prioritise correctness and test coverage.
+      soul_file: .itervox/agents/thorough/SOUL.md
+      instructions_file: .itervox/agents/thorough/INSTRUCTIONS.md
+      allowed_actions: [comment, move_state]
+    input-responder:
+      command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/input-responder/SOUL.md
+      instructions_file: .itervox/agents/input-responder/INSTRUCTIONS.md
+      allowed_actions: [comment, provide_input]
+    qa:
+      command: claude --model claude-sonnet-4-6
+      soul_file: .itervox/agents/qa/SOUL.md
+      instructions_file: .itervox/agents/qa/INSTRUCTIONS.md
+      allowed_actions: [comment, create_issue, move_state]
+      create_issue_state: Todo
 ```
+
+---
+
+## automations
+
+Automations dispatch a selected profile when a trigger fires, then layer a small instruction block on top of that profile.
+
+Supported triggers:
+
+- `cron`
+- `input_required`
+- `tracker_comment_added`
+- `issue_entered_state`
+- `issue_moved_to_backlog`
+- `run_failed`
+- `pr_opened` — fires when a worker's PR is detected
+- `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. The switch cap limits automated switching; it is not the trigger condition.
+- `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
+
+Tracker event triggers are poll-derived, not webhook-derived. The automation
+loop runs every 15 seconds. `tracker_comment_added` compares only the latest
+observed comment, so multiple comments between polls collapse to the latest
+comment for trigger purposes.
+
+When a trigger cannot start immediately for a retryable runtime reason such as
+`no_slots`, `per_state_limit`, `already_running`, `input_required`,
+`pending_input_resume`, or `blocked_by`, Itervox records a durable automation
+queue entry instead of dropping the attempt. The queue is capped by
+`agent.max_automation_queue_length`. Saturation pauses recurring/cron/polled
+producer intake; one-shot and internal dispatch attempts are rejected and
+counted for audit rather than paused. Existing queue entries continue draining
+until the queue falls below the low-water mark.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Stable automation identifier. |
+| `enabled` | bool | Whether the automation is active. |
+| `profile` | string | Name of the agent profile to dispatch. |
+| `instructions` | string | Small Markdown/Liquid instruction overlay appended after the selected profile files. |
+| `trigger.type` | string | Trigger type. |
+| `trigger.cron` | string | Five-field cron expression for `cron` triggers. |
+| `trigger.timezone` | string | Optional timezone for `cron` triggers. |
+| `trigger.state` | string | Required for `issue_entered_state`; the tracker state that must be entered. |
+| `filter.match_mode` | string | How populated filters combine: `all` or `any`. |
+| `filter.states` | string[] | Issue-state filter. For cron automations, leave empty to use backlog and active states. |
+| `filter.states_any` | string[] | Alias for `filter.states`; recommended for `blockers_resolved` examples to make the source-state policy explicit. |
+| `filter.labels_any` | string[] | Match issues with at least one of the listed labels. |
+| `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42`. |
+| `filter.limit` | int | Maximum number of issues to queue from one cron tick or event poll batch. |
+| `filter.input_context_regex` | string | Only meaningful for `input_required`; matched against the blocked-agent question text. |
+| `filter.max_age_minutes` | int | Only meaningful for `input_required`; skips blocked entries older than this many minutes. |
+| `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted but prefer `policy.auto_switch`. |
+| `policy.auto_switch` | bool | Alias for `policy.auto_resume` on `rate_limited`; allows immediate profile/backend switching without a human approval step. |
+| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. |
+| `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs. |
+| `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset. |
+| `policy.move_to_state` | string | Optional for `blockers_resolved`; allows the helper profile to move matching unblocked issues to this state when the profile includes `move_state`. |
+
+When `switch_to_backend` is set, the target profile command must be compatible with that backend. Prefer a dedicated Codex profile such as `command: codex` / `backend: codex`, or a backend-aware wrapper command.
+
+### Dependency readiness and blockers
+
+Itervox exposes tracker blockers to the prompt and dashboard, and normal issue dispatch skips `Todo` issues whose blockers are still non-terminal. That is the deterministic blocker behavior shipped in v0.2.0.
+
+Automation rules can opt into a deterministic `blockers_resolved` trigger. Core dependency audit detects when a previously blocked issue has no unresolved blockers left; tracker mutation still happens only through an enabled automation whose selected profile is allowed to use `move_state`.
+
+```yaml
+automations:
+  - id: qa-ready
+    enabled: true
+    trigger:
+      type: issue_entered_state
+      state: "Ready for QA"
+    profile: qa
+    instructions: |
+      Run the QA routine for this issue.
+      Comment the results.
+      If any required check fails, move the issue to Todo.
+
+  - id: pm-backlog-review
+    enabled: true
+    trigger:
+      type: cron
+      cron: "0 9 * * 1-5"
+      timezone: "Asia/Jerusalem"
+    profile: pm
+    instructions: |
+      Review backlog issues for missing clarity and acceptance criteria.
+      Leave one concise comment summarising what is unclear.
+    filter:
+      states: ["Backlog"]
+      limit: 20
+
+  - id: unblock-backlog-to-todo
+    enabled: true
+    trigger:
+      type: blockers_resolved
+    profile: pm
+    instructions: |
+      All tracked blockers for this backlog issue are terminal.
+      Move only backlog/Backlog issues to Todo.
+      Do not move review, in-review, PR-open, or merged issues.
+    filter:
+      states_any: ["backlog", "Backlog"]
+    policy:
+      move_to_state: "Todo"
+```
+
+For the full mental model, trigger semantics, and examples, see the [Automations guide](/guides/automations/). For runtime behavior, see the [Automation Queue guide](/guides/automation-queue/) and [Dependency Management guide](/guides/dependency-management/).
+
+### Migrating from `schedules:` (deprecated)
+
+The legacy `schedules:` block is still parsed and silently upgraded to equivalent `cron` automations at startup — **but this fallback is deprecated and will be removed in a future release**. Itervox logs a warning on startup when a `schedules:` block is found, with the count of upgraded entries.
+
+To migrate: rewrite each `schedules:` entry as an `automations:` entry with `trigger.type: cron` plus the same cron expression, timezone, profile, and state filter. The legacy format has no `instructions:` block, so migrated entries start with an empty prompt overlay and can optionally add instructions at migration time.
 
 ---
 
@@ -294,10 +475,15 @@ Shell commands run at lifecycle points in each issue's workspace. All hooks run 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `after_create` | string | `""` | Shell command run after the workspace directory is created, before any agent runs. Typically used to clone the repository. |
-| `before_run` | string | `""` | Shell command run before each agent session starts. Typically used to sync the branch (`git fetch`, `git reset`). |
-| `after_run` | string | `""` | Shell command run after each agent session completes (success or failure). |
+| `before_run` | string | `""` | Shell command run once per worker invocation, before the first agent turn of that attempt. Typically used to sync the branch (`git fetch`, `git reset`). |
+| `after_run` | string | `""` | Shell command run after each completed agent turn. |
+| `after_run_required` | bool | `false` | When `true`, a worker whose final `after_run` hook exits non-zero fails the unit instead of completing it — the hook becomes a per-unit completion gate. |
 | `before_remove` | string | `""` | Shell command run before the workspace directory is deleted (when `workspace.auto_clear: true` or on manual removal). |
 | `timeout_ms` | int | `60000` | Maximum time allowed for any single hook to complete (60 seconds). |
+
+All hooks run via `bash -lc` in the issue workspace. Itervox does not inject any per-issue environment variables into hook processes; hooks inherit the daemon's environment as-is. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
+
+By default `after_run` failures are logged and ignored. Set `hooks.after_run_required: true` to turn `after_run` into a per-unit completion gate: a unit whose final `after_run` hook fails does not complete, regardless of the agent's own clean exit. Use it to run `make test` (or any operator-owned verification) as part of the definition of done, complementing the CI-governed merge gate.
 
 Multi-line shell scripts are supported using YAML block scalars:
 
@@ -305,11 +491,15 @@ Multi-line shell scripts are supported using YAML block scalars:
 hooks:
   after_create: |
     git clone git@github.com:owner/repo.git .
-    npm install
+    pnpm install --frozen-lockfile
   before_run: |
     git fetch origin main
     git checkout main
     git reset --hard origin/main
+  after_run: |
+    git status --short
+  before_remove: |
+    tar -czf ../workspace-backup.tgz .
   timeout_ms: 120000
 ```
 
@@ -323,12 +513,19 @@ Controls the built-in HTTP server that serves the web dashboard and REST API.
 |---|---|---|---|
 | `host` | string | `"127.0.0.1"` | Interface the server listens on. Change to `"0.0.0.0"` to expose on all interfaces. |
 | `port` | int | auto-assigned | TCP port. When omitted, Itervox picks an available port and prints it at startup. |
+| `allow_unauthenticated_lan` | bool | `false` | When binding to a non-loopback address, Itervox requires bearer-token auth on every request and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted-LAN deployments where the daemon is physically unreachable from the public internet. No effect on loopback binds. |
 
 ```yaml
 server:
   host: 127.0.0.1
   port: 8090
 ```
+
+### Authentication
+
+Any non-loopback bind requires `Authorization: Bearer <token>` on every HTTP request and SSE stream. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup and logs it once. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /health` probe is auth-exempt so load balancers and uptime monitors can check liveness without a token.
+
+See the [Remote access guide](/guides/remote-access/) for setting up persistent tokens and reverse-proxy TLS.
 
 ---
 
@@ -356,6 +553,12 @@ A typical `.itervox/.env` looks like:
 LINEAR_API_KEY=lin_api_xxxxxxxxxxxx
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 ```
+
+## `.itervox` project files
+
+`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter profile files. Commit `.itervox/agents/**`: those files are project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
+
+On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
 
 ---
 
@@ -415,3 +618,25 @@ Issue URL: {{ issue.url }}
 Create a branch named `{{ issue.branch_name | default: issue.identifier | downcase }}`,
 implement the change, run tests, then open a PR that closes {{ issue.url }}.
 ```
+
+### Asking for human input
+
+When the agent genuinely cannot continue without a human answer, the preferred
+contract is to end its final message with the literal marker
+`<!-- itervox:needs-input -->` on its own line, followed by the actual
+question or confirmation prompt. That marker is deterministic and lets Itervox
+pause the issue immediately without any ambiguity.
+
+Itervox also has a deterministic fallback for successful turns that end in a real
+blocking question, such as a choice between two options or a confirmation
+request. That means plain-English messages like "Which option should I take?"
+or "Type discard to confirm" can still move the issue into `input_required`.
+
+The fallback is backup behavior, not the recommended path:
+
+- The explicit marker is more reliable.
+- The fallback is heuristic and tuned for common English phrasing.
+- The explicit marker makes prompt and skill behavior easier to reason about.
+
+When the user replies from the dashboard or tracker, Itervox resumes the same
+agent session with that reply as the next user message.

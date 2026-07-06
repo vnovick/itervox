@@ -1,0 +1,95 @@
+---
+title: Migrating v0.1 → v0.2
+description: Upgrade an existing WORKFLOW.md to schema 2 with itervox init --update — file-backed profiles, the schema marker, backup semantics, and what to commit.
+sidebar:
+  order: 2
+---
+
+Itervox v0.2.0 introduces **workflow schema 2**: agent prompt content moves out of
+`WORKFLOW.md` into per-profile files on disk. This guide walks an operator through
+upgrading an existing v0.1.x workflow.
+
+## Why schema 2
+
+In v0.1.x each profile carried its full prompt inline in `WORKFLOW.md`
+(`agent.profiles.<name>.prompt`). That made workflows hard to review, impossible to
+diff per-agent, and pushed identity and operating rules into one undifferentiated blob.
+
+Schema 2 replaces the inline prompt with two file references per profile:
+
+- `soul_file` — typically `.itervox/agents/<name>/SOUL.md`: the compact identity ("who you are").
+- `instructions_file` — typically `.itervox/agents/<name>/INSTRUCTIONS.md`: the operational and behavioural rules.
+
+At dispatch time the daemon assembles the prompt as **SOUL.md → INSTRUCTIONS.md →
+per-issue Liquid template** and passes it to the agent subprocess.
+
+## The mandatory schema marker
+
+Every `WORKFLOW.md` must now start its front matter with:
+
+```yaml
+itervox_schema_version: 2
+```
+
+The daemon **hard-fails at startup** if the marker is absent or set to a different
+version. Inline `agent.profiles.<name>.prompt` is rejected by schema 2 validation.
+
+## Running the migration
+
+```bash
+itervox init --update --workflow WORKFLOW.md
+```
+
+This single command:
+
+1. **Writes a backup** of the original file to `WORKFLOW.md.bak` before touching anything.
+2. **Extracts each profile's inline `prompt:`** into `.itervox/agents/<name>/INSTRUCTIONS.md`.
+3. **Generates a starter `SOUL.md`** per profile (seeded from the prompt's "You are …" sentence when one exists).
+4. **Rewrites each profile** to reference `soul_file` and `instructions_file` instead of `prompt:`.
+5. **Scaffolds the `deps-analyzer` profile** and sets `agent.deps_analyzer_profile` if the workflow predates dependency analysis.
+6. **Patches `.gitignore`**: adds carve-outs so `.itervox/agents/**` and `.itervox/handoff/**` stay committable under a broad `.itervox/` ignore, and ignores `WORKFLOW.md.bak`.
+7. **Stamps `itervox_schema_version: 2`** in the front matter.
+
+The command is idempotent — re-running it on an already-migrated workflow reports
+"already uses schema 2" and changes nothing.
+
+## `--force` semantics
+
+Without `--force`, the migration refuses to proceed when it would overwrite existing state:
+
+- **A stale `WORKFLOW.md.bak` already exists** — from an earlier migration run. Review and move/delete it, or re-run with `--force` to overwrite the backup with the current workflow.
+- **`.itervox/agents/<name>/SOUL.md` or `INSTRUCTIONS.md` already exists** for a profile that still has an inline `prompt:` — move the file aside, or re-run with `--force` to overwrite the generated agent files.
+- **Legacy `agent.reviewer_prompt`** is detected but only migrated (appended to the reviewer profile's `INSTRUCTIONS.md`, then removed from `WORKFLOW.md`) with `--force`, because it changes the reviewer's effective prompt envelope.
+
+Profiles that have **no** inline prompt are treated as already migrated: their
+`SOUL.md`/`INSTRUCTIONS.md` are operator-owned and are never overwritten, even with `--force`.
+
+## Verifying the migration
+
+```bash
+# Validate YAML, schema 2, and agent-file existence without starting the daemon
+itervox doctor
+
+# Confirm the marker and file references landed
+grep itervox_schema_version WORKFLOW.md
+ls .itervox/agents/*/SOUL.md .itervox/agents/*/INSTRUCTIONS.md
+```
+
+Read each generated `SOUL.md` and `INSTRUCTIONS.md` — the starter SOUL content in
+particular is a scaffold meant to be edited. Then start the daemon as usual. Once
+you have confirmed a healthy run, **remove `WORKFLOW.md.bak`** (the CLI reminds you
+of this after migrating; the file is gitignored so it cannot be committed by accident).
+
+## What to commit
+
+Commit:
+
+- `WORKFLOW.md` (now schema 2)
+- `.itervox/agents/**` — SOUL and INSTRUCTIONS files are part of your project's agent configuration
+
+Keep ignored (the migration's `.gitignore` patching handles these):
+
+- `WORKFLOW.md.bak` — disposable migration backup
+- `.itervox/HEARTBEAT.md` — daemon liveness file, transient runtime state
+- `.itervox/.env` — secrets, loaded by the daemon at startup
+- Runtime queue files and daemon logs under `.itervox/`

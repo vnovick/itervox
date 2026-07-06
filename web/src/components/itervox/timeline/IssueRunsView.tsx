@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { IssueLogEntry } from '../../../types/schemas';
 import type { IssueGroup, NormalisedSession } from './types';
-import { extractSubagents } from './types';
+import { dedupSessionsPreferLive, extractSubagents } from './types';
 import { RunRow } from './RunRow';
 
 // Hook wrapper that computes per-run subagents via useMemo (hooks require a
@@ -67,11 +67,15 @@ export function IssueRunsView({
   onToggleExpand,
   onSelectSubagent,
 }: IssueRunsViewProps) {
+  // gaps_11 G-13(b) — drop live/history duplicates (same sessionId) before
+  // rendering; without this the `run.sessionId` key below collides and the
+  // same run renders twice during the stale-running window.
+  const runs = useMemo(() => dedupSessionsPreferLive(group.runs), [group.runs]);
   return (
     <div className="mt-2 space-y-0.5">
-      {group.runs.map((run, idx) => (
+      {runs.map((run, idx) => (
         <RunRowWithSubagents
-          key={`${run.identifier}-${run.startedAt}`}
+          key={run.sessionId ?? `${run.identifier}-${run.startedAt}-${run.finishedAt ?? 'live'}`}
           run={run}
           logs={logs}
           viewStart={viewStart}

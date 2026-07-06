@@ -1,0 +1,6 @@
+required_action_calls:
+  - comment
+forbidden_actions:
+  - merge_pr
+marker_phrases:
+  - "required check"

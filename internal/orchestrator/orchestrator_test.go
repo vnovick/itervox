@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
@@ -89,8 +91,11 @@ func TestCancelResumeRace(t *testing.T) {
 	orch.SetPausedFile(filepath.Join(dir, "paused.json"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = orch.Run(ctx)
+	}()
 
 	// Let the orchestrator start.
 	time.Sleep(30 * time.Millisecond)
@@ -109,6 +114,12 @@ func TestCancelResumeRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not stop after cancel")
+	}
 }
 
 // TestReviewerRespectsCancellation verifies that a reviewer goroutine exits
@@ -336,6 +347,118 @@ func TestDispatchReviewer_Success(t *testing.T) {
 	}
 }
 
+func TestWorkerPromptAppendsSoulInstructionsAutomationAndActionContextInOrder(t *testing.T) {
+	cfg := baseConfig()
+	cfg.PromptTemplate = "Main {{ issue.identifier }}"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer": {
+			Command:        "claude",
+			Soul:           "Soul {{ issue.identifier }}",
+			Instructions:   "Instructions {{ issue.title }}",
+			AllowedActions: []string{config.AgentActionComment},
+		},
+	}
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	mt := &noCandidateTracker{base: tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetAgentActionBaseURL("http://127.0.0.1:8090")
+	orch.SetAgentActionTokens(agentactions.NewStore())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.True(t, orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
+		AutomationID:      "auto",
+		ProfileName:       "implementer",
+		Instructions:      "Automation {{ issue.identifier }}",
+		Trigger:           orchestrator.AutomationTriggerContext{Type: config.AutomationTriggerCron, AutomationID: "auto", FiredAt: time.Now()},
+		AutoResume:        true,
+		UseIssueLifecycle: true,
+	}))
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("worker did not run")
+	}
+
+	prompt := wrapped.LastPrompt()
+	mainIdx := strings.Index(prompt, "Main ENG-1")
+	soulIdx := strings.Index(prompt, "Soul ENG-1")
+	instructionsIdx := strings.Index(prompt, "Instructions T")
+	automationIdx := strings.Index(prompt, "Automation ENG-1")
+	actionIdx := strings.Index(prompt, "Itervox daemon actions are available for this profile")
+	require.NotEqual(t, -1, mainIdx, prompt)
+	require.NotEqual(t, -1, soulIdx, prompt)
+	require.NotEqual(t, -1, instructionsIdx, prompt)
+	require.NotEqual(t, -1, automationIdx, prompt)
+	require.NotEqual(t, -1, actionIdx, prompt)
+	assert.Less(t, mainIdx, soulIdx)
+	assert.Less(t, soulIdx, instructionsIdx)
+	assert.Less(t, instructionsIdx, automationIdx)
+	assert.Less(t, automationIdx, actionIdx)
+}
+
+func TestDispatchReviewer_AppendsFileBackedReviewerProfile(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.ReviewerPrompt = "Reviewer base {{ issue.identifier }}"
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {
+			Command:      "claude",
+			Soul:         "Reviewer soul {{ issue.title }}",
+			Instructions: "Reviewer instructions {{ issue.identifier }}",
+		},
+	}
+	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.NoError(t, orch.DispatchReviewer("ENG-1"))
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("reviewer did not run")
+	}
+
+	prompt := wrapped.LastPrompt()
+	baseIdx := strings.Index(prompt, "Reviewer base ENG-1")
+	soulIdx := strings.Index(prompt, "Reviewer soul T")
+	instructionsIdx := strings.Index(prompt, "Reviewer instructions ENG-1")
+	require.NotEqual(t, -1, baseIdx, prompt)
+	require.NotEqual(t, -1, soulIdx, prompt)
+	require.NotEqual(t, -1, instructionsIdx, prompt)
+	assert.Less(t, baseIdx, soulIdx)
+	assert.Less(t, soulIdx, instructionsIdx)
+}
+
 func TestDispatchUsesProfileBackendOverride(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
@@ -434,11 +557,65 @@ func TestDispatchUsesDefaultBackendOverride(t *testing.T) {
 	assert.Equal(t, agent.CommandWithBackendHint("run-codex-wrapper", "codex"), wrapped.LastCommand())
 }
 
+func TestRemoteWorkerAllowedActionsDoNotInjectDaemonActionEnv(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "claude"
+	cfg.Agent.SSHHosts = []string{"ssh-runner"}
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"remote-profile": {
+			Command:        "claude",
+			AllowedActions: []string{config.AgentActionComment, config.AgentActionMoveState},
+		},
+	}
+	mt := singleIssueTracker(t, "In Progress")
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetIssueProfile("ENG-1", "remote-profile")
+	orch.SetAgentActionBaseURL("http://127.0.0.1:9999")
+	orch.SetAgentActionTokens(agentactions.NewStore())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = orch.Run(ctx)
+	}()
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("runner was not invoked within 2s")
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not stop after cancel")
+	}
+
+	command := wrapped.LastCommand()
+	assert.False(t, strings.Contains(command, "ITERVOX_ACTION_TOKEN="), "remote workers must not receive local daemon action tokens")
+	assert.False(t, strings.Contains(command, "ITERVOX_DAEMON_URL="), "remote workers must not receive local daemon action base URL")
+	assert.Contains(t, wrapped.LastPrompt(), "not available on remote SSH workers")
+}
+
+// TestTeamsModeUsesResolvedProfileBackendForSubagentContext was authored
+// when the (now-removed) `agent_mode == "teams"` gate controlled subagent
+// roster injection. The roster now always injects when there's more than one
+// profile, so this test exercises the same path without the gate.
 func TestTeamsModeUsesResolvedProfileBackendForSubagentContext(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
 	cfg.Agent.Command = "claude"
-	cfg.Agent.AgentMode = "teams"
 	cfg.Agent.Profiles = map[string]config.AgentProfile{
 		"codex-fast": {
 			Command: "run-codex-wrapper",
@@ -495,12 +672,6 @@ func TestMaxWorkersClamped(t *testing.T) {
 	assert.Equal(t, 5, o.MaxWorkers())
 }
 
-func TestAgentModeCfgRoundtrip(t *testing.T) {
-	o := newOrch()
-	o.SetAgentModeCfg("codex")
-	assert.Equal(t, "codex", o.AgentModeCfg())
-}
-
 func TestProfilesCfgRoundtrip(t *testing.T) {
 	o := newOrch()
 	profiles := map[string]config.AgentProfile{
@@ -519,6 +690,34 @@ func TestTrackerStatesCfgRoundtrip(t *testing.T) {
 	assert.Equal(t, []string{"Todo"}, active)
 	assert.Equal(t, []string{"Done"}, terminal)
 	assert.Equal(t, "Done", completion)
+}
+
+// CRIT-1 regression guard: SetAutomationsCfg must be visible to AutomationsCfg()
+// immediately, with field-by-field deep copy of slice-valued filter fields.
+func TestAutomationsCfgRoundtrip(t *testing.T) {
+	o := newOrch()
+	assert.Nil(t, o.AutomationsCfg(), "empty orchestrator returns nil automations")
+
+	o.SetAutomationsCfg([]config.AutomationConfig{
+		{
+			ID:      "qa",
+			Enabled: true,
+			Profile: "qa",
+			Trigger: config.AutomationTriggerConfig{Type: "cron", Cron: "0 */2 * * *", Timezone: "UTC"},
+			Filter:  config.AutomationFilterConfig{States: []string{"Ready for QA"}, LabelsAny: []string{"qa"}},
+		},
+	})
+	got := o.AutomationsCfg()
+	assert.Len(t, got, 1)
+	assert.Equal(t, "qa", got[0].ID)
+	assert.Equal(t, []string{"Ready for QA"}, got[0].Filter.States)
+
+	// Mutate the returned copy and confirm the orchestrator's copy is untouched.
+	got[0].Filter.States[0] = "TAMPERED"
+	got[0].Filter.LabelsAny[0] = "TAMPERED"
+	after := o.AutomationsCfg()
+	assert.Equal(t, "Ready for QA", after[0].Filter.States[0])
+	assert.Equal(t, "qa", after[0].Filter.LabelsAny[0])
 }
 
 func TestGetRunningIssueNotFound(t *testing.T) {
@@ -555,11 +754,4 @@ func TestTerminateIssue_NotRunning(t *testing.T) {
 	o := newOrch()
 	// Neither running nor paused — should return false.
 	assert.False(t, o.TerminateIssue("ENG-99"))
-}
-
-func TestGetPausedOpenPRs_Empty(t *testing.T) {
-	o := newOrch()
-	result := o.GetPausedOpenPRs()
-	assert.NotNil(t, result)
-	assert.Empty(t, result)
 }

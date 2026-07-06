@@ -1,0 +1,3 @@
+{"event":"action","action":"comment","args":{"issue":"ENG-62"}}
+{"event":"comment","body":"AI review failed — 2 blocking findings:\n1. Unrelated schema migration bundled into the diff — split it out.\n2. New error path in storyExport has no test coverage."}
+{"event":"action","action":"move_state","args":{"issue":"ENG-62","state":"In Progress"}}

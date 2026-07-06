@@ -1,6 +1,14 @@
-import type { ProfileDef } from '../../types/schemas';
+import type { z } from 'zod';
+import type { AllowedAgentActionSchema, ProfileDef } from '../../types/schemas';
 
 export type SupportedBackend = 'claude' | 'codex';
+export type AllowedAgentAction = z.infer<typeof AllowedAgentActionSchema>;
+
+export interface AllowedAgentActionOption {
+  id: AllowedAgentAction;
+  label: string;
+  description: string;
+}
 
 export interface ModelOption {
   id: string;
@@ -12,6 +20,63 @@ export interface ProfileCommandDraft {
   model: string;
   command: string;
   prompt: string;
+  soul: string;
+  instructions: string;
+  soulFile: string;
+  instructionsFile: string;
+  enabled: boolean;
+  allowedActions: AllowedAgentAction[];
+  createIssueState: string;
+}
+
+export const AGENT_ACTION_OPTIONS = [
+  {
+    id: 'comment',
+    label: 'Comment on current issue',
+    description: 'Post a tracker comment on the issue this agent is already handling.',
+  },
+  {
+    id: 'comment_pr',
+    label: 'Post structured review',
+    description:
+      'Post a structured review comment with file/line/severity findings on the issue. (v1: comments land on the tracker issue, not the GitHub PR — true PR-API integration is deferred.) Distinct scope from "Comment" so reviewer profiles can be granted only this without freeform-comment access.',
+  },
+  {
+    id: 'create_issue',
+    label: 'Create follow-up issue',
+    description: 'Open a new issue in the profile’s configured tracker column/state.',
+  },
+  {
+    id: 'merge_pr',
+    label: 'Merge PR',
+    description:
+      'Merge a pull request through the daemon-guarded gate (required checks + block labels).',
+  },
+  {
+    id: 'move_state',
+    label: 'Move current issue state',
+    description: 'Transition the current issue to another tracker state through the daemon.',
+  },
+  {
+    id: 'provide_input',
+    label: 'Provide input to blocked run',
+    description: 'Answer an input-required prompt and resume the blocked run through the daemon.',
+  },
+] satisfies AllowedAgentActionOption[];
+
+function supportedActionIds(supportedActions?: readonly string[] | null): AllowedAgentAction[] {
+  if (!supportedActions?.length) return AGENT_ACTION_OPTIONS.map((option) => option.id);
+  const requested = new Set(supportedActions.map((action) => action.trim()).filter(Boolean));
+  return AGENT_ACTION_OPTIONS.filter((option) => requested.has(option.id)).map(
+    (option) => option.id,
+  );
+}
+
+export function agentActionOptionsFor(
+  supportedActions?: readonly string[] | null,
+): AllowedAgentActionOption[] {
+  const supported = new Set(supportedActionIds(supportedActions));
+  return AGENT_ACTION_OPTIONS.filter((option) => supported.has(option.id));
 }
 
 export const CLAUDE_MODELS = [
@@ -34,6 +99,18 @@ export const CODEX_MODELS = [
 
 export function normalizeBackend(backend: string | undefined | null): SupportedBackend {
   return backend === 'codex' ? 'codex' : 'claude';
+}
+
+export function normalizeAllowedActions(
+  actions: string[] | undefined | null,
+  supportedActions?: readonly string[] | null,
+): AllowedAgentAction[] {
+  if (!actions?.length) return [];
+  const requested = new Set(actions.map((action) => action.trim()).filter(Boolean));
+  const supported = new Set(supportedActionIds(supportedActions));
+  return AGENT_ACTION_OPTIONS.filter(
+    (option) => supported.has(option.id) && requested.has(option.id),
+  ).map((option) => option.id);
 }
 
 export function inferBackendFromCommand(cmd: string | undefined | null): SupportedBackend | null {
@@ -135,11 +212,19 @@ export function modelLabel(backend: SupportedBackend, modelId: string): string {
 
 export function draftFromProfileDef(def: ProfileDef): ProfileCommandDraft {
   const backend = commandToBackend(def.command, def.backend);
+  const instructions = def.instructions ?? def.prompt ?? '';
   return {
     backend,
     model: commandToModel(def.command),
     command: normalizeCommandForSave(def.command, backend),
-    prompt: def.prompt ?? '',
+    prompt: instructions,
+    soul: def.soul ?? '',
+    instructions,
+    soulFile: def.soulFile ?? '',
+    instructionsFile: def.instructionsFile ?? '',
+    enabled: def.enabled ?? true,
+    allowedActions: normalizeAllowedActions(def.allowedActions),
+    createIssueState: def.createIssueState ?? '',
   };
 }
 

@@ -17,11 +17,12 @@ query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: 
       state { name }
       branchName
       url
+      trashed
       labels { nodes { name } }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier state { name } }
+          issue { id identifier url state { name } }
         }
       }
       createdAt
@@ -43,22 +44,44 @@ query ItervoxIssueDetail($id: String!) {
     state { name }
     branchName
     url
+    trashed
     labels { nodes { name } }
     inverseRelations(first: 50) {
       nodes {
         type
-        issue { id identifier state { name } }
+        issue { id identifier url state { name } }
       }
     }
     comments(first: 50, orderBy: createdAt) {
       nodes {
+        id
         body
         createdAt
-        user { name }
+        user { id name }
       }
     }
     createdAt
     updatedAt
+  }
+}`
+
+// QueryCreateIssueContext fetches the source issue's team and project so a
+// follow-up issue can be created in the same workspace context.
+const QueryCreateIssueContext = `
+query ItervoxResolveCreateIssueContext($id: String!) {
+  issue(id: $id) {
+    team {
+      id
+      states {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+    project {
+      id
+    }
   }
 }`
 
@@ -76,11 +99,12 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
       state { name }
       branchName
       url
+      trashed
       labels { nodes { name } }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier state { name } }
+          issue { id identifier url state { name } }
         }
       }
       createdAt
@@ -104,11 +128,12 @@ query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relatio
       state { name }
       branchName
       url
+      trashed
       labels { nodes { name } }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier state { name } }
+          issue { id identifier url state { name } }
         }
       }
       createdAt
@@ -144,11 +169,12 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
       state { name }
       branchName
       url
+      trashed
       labels { nodes { name } }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier state { name } }
+          issue { id identifier url state { name } }
         }
       }
       createdAt

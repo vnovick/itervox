@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { fmtMs, orchDotClass, priorityDotClass, stateBadgeColor } from '../format';
+import {
+  fmtMs,
+  orchDotClass,
+  priorityDotClass,
+  stateBadgeColor,
+  formatOrchestratorState,
+} from '../format';
 
 describe('fmtMs', () => {
   it('renders seconds when under 60s', () => {
@@ -31,6 +37,10 @@ describe('orchDotClass', () => {
     expect(orchDotClass('paused')).toBe('bg-red-400');
   });
 
+  it('returns orange pulse for pending input resume', () => {
+    expect(orchDotClass('pending_input_resume')).toBe('bg-orange-400 animate-pulse');
+  });
+
   it('returns gray for idle and unknown states', () => {
     expect(orchDotClass('idle')).toBe('bg-gray-300 dark:bg-gray-600');
     expect(orchDotClass('anything')).toBe('bg-gray-300 dark:bg-gray-600');
@@ -59,6 +69,16 @@ describe('priorityDotClass', () => {
   it('returns gray for P4+', () => {
     expect(priorityDotClass(4)).toBe('bg-gray-400');
     expect(priorityDotClass(99)).toBe('bg-gray-400');
+  });
+});
+
+describe('formatOrchestratorState', () => {
+  it('formats pending input resume for display', () => {
+    expect(formatOrchestratorState('pending_input_resume')).toBe('reply received');
+  });
+
+  it('formats underscore states generically', () => {
+    expect(formatOrchestratorState('input_required')).toBe('input required');
   });
 });
 

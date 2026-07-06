@@ -115,6 +115,24 @@ func TestModel_TickUpdatesPaused(t *testing.T) {
 	assert.Equal(t, []string{"PROJ-3", "PROJ-4"}, final.paused)
 }
 
+func TestModel_TickUpdatesInputRows(t *testing.T) {
+	snap := server.StateSnapshot{
+		InputRequired: []server.InputRequiredRow{
+			{Identifier: "PROJ-5", State: "input_required"},
+			{Identifier: "PROJ-6", State: "pending_input_resume"},
+		},
+	}
+	m := newMinimalModel(newTestSnap(snap))
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
+	tm.Send(tickMsg(time.Now()))
+	_ = tm.Quit()
+
+	final := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second)).(Model)
+	require.Len(t, final.inputRows, 2, "tick must sync input-related rows from snapshot")
+	assert.Equal(t, "PROJ-5", final.inputRows[0].Identifier)
+	assert.Equal(t, "pending_input_resume", final.inputRows[1].State)
+}
+
 func TestModel_TickSyncsMaxAgentsFromSnapshot(t *testing.T) {
 	snap := server.StateSnapshot{
 		MaxConcurrentAgents: 12,

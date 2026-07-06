@@ -1477,6 +1477,27 @@ const githubUrl = 'https://github.com/vnovick/itervox';
         <h4>API Authentication</h4>
         <p>Set <code style="font-size:10px; background:var(--bg-elevated); padding:0 3px; border-radius:2px;">ITERVOX_API_TOKEN</code> to enable Bearer token auth on all API routes. Essential for production deployments.</p>
       </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--purple);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h12M3 8h8M7 12h8"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/></svg>
+        </div>
+        <h4>Automations</h4>
+        <p>Event-driven dispatch rules with nine trigger types: cron, input-required, dependency readiness, state transitions, tracker comments, run failures, and more. Visual editor with starter templates.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--teal);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="9" r="7"/><path d="M9 5v4h3"/></svg>
+        </div>
+        <h4>Capabilities Analysis</h4>
+        <p>Scans skills, MCP servers, plugins, and hooks across all agent profiles. Surfaces duplicate skills, bloated context budgets, and optimization recommendations.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--warning);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="10" y="3" width="5" height="5" rx="1"/><rect x="3" y="10" width="5" height="5" rx="1"/><rect x="10" y="10" width="5" height="5" rx="1"/></svg>
+        </div>
+        <h4>Daemon Actions</h4>
+        <p>Profiles opt into scoped actions: comment, review, create issue, move state, provide input. Each action is a short-lived per-run bearer grant &mdash; not blanket access.</p>
+      </div>
     </div>
 
     <!-- YOLO mode callout -->
@@ -1518,7 +1539,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code><span class="t-muted">  CLAUDE.md  :</span> <span class="t-success">found</span> <span class="t-muted">&mdash; prompt will reference it</span></code>
             <code><span class="t-muted">  AGENTS.md  :</span> <span class="t-success">found</span> <span class="t-muted">&mdash; prompt will reference it</span></code>
             <code><span class="t-muted">  stack      :</span> <span class="t-teal">Go</span> <span class="t-muted">(go test -race ./..., golangci-lint run)</span></code>
-            <code><span class="t-muted">  stack      :</span> <span class="t-teal">React 19 + TypeScript</span> <span class="t-muted">(pnpm test, pnpm run lint)</span></code>
+            <code><span class="t-muted">  stack      :</span> <span class="t-teal">React 19 + TypeScript</span> <span class="t-muted">(pnpm test, pnpm lint)</span></code>
             <code><span class="t-secondary">itervox init: wrote WORKFLOW.md</span></code>
             <code><span class="t-secondary">itervox init: wrote .itervox/.env</span></code>
           </div>
@@ -1588,21 +1609,38 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       <p class="section-sub">A real-time web dashboard with everything you need.</p>
     </div>
 
-    <!-- Row 0: Dashboard Overview (mockup LEFT, text RIGHT) -->
+    <!-- Row 0: Dashboard Overview (v0.2 screenshot LEFT, text RIGHT) -->
     <div class="feature-row">
       <div>
-        <Screenshot src="dashboard-overview.png" alt="Itervox dashboard overview: running agents, host pool, and live sessions" />
+        <img src="/screenshots/v0.2.0/dashboard-kanban.png" alt="Itervox dashboard: hero stats (Running, Paused, Retrying, Input Required, Automations, Capacity), host pool, and Kanban board with state filters" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
       </div>
       <div class="split-text">
         <div class="section-label">Overview</div>
         <h3>Live dashboard at a glance</h3>
-        <p>The dashboard opens with hero stats showing running, paused, retrying, and capacity counts. Below, the running sessions table shows every active agent with turn count, elapsed time, and expandable inline logs.</p>
+        <p>The dashboard opens with hero stats showing running, paused, retrying, input-required, automations fired, and capacity utilization. Below, the host pool shows per-host agent load, and the Kanban board adapts columns to your tracker states.</p>
         <ul>
-          <li>Hero stats tiles with color-coded counts</li>
-          <li>Running sessions with expandable log accordion</li>
-          <li>Retry queue with attempt number and due time</li>
-          <li>Narrative feed showing recent agent events</li>
+          <li>Hero stats with automations count and capacity percentage</li>
+          <li>Host pool with local and SSH worker utilization</li>
+          <li>View switcher: Board, List, Agents, Notifications</li>
+          <li>State filter tabs: All Issues, Active, Backlog, In Review, Done</li>
         </ul>
+      </div>
+    </div>
+
+    <!-- Row 0b: Running Sessions (text LEFT, v0.2 screenshot RIGHT) -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Running sessions with live logs</h3>
+        <p>Every active agent session is visible with its issue, state, turn count, last output, and elapsed time. Expand any row to see the full live log stream with color-coded tool calls &mdash; Bash, Grep, Read, Write &mdash; and subagent labels. Pause or cancel any session directly.</p>
+        <ul>
+          <li>Inline log expansion without navigation</li>
+          <li>Color-coded tool calls and subagent badges</li>
+          <li>Session ID and worker host visible per run</li>
+          <li>Pause and Cancel buttons per session</li>
+        </ul>
+      </div>
+      <div>
+        <img src="/screenshots/v0.2.0/running-sessions.png" alt="Running sessions panel with one agent expanded showing live Bash/Grep/Read tool calls, session ID, and Pause/Cancel buttons" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
       </div>
     </div>
 
@@ -1716,6 +1754,146 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       </div>
     </div>
 
+    <!-- Row 6b: Agent Profiles v0.2 (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div>
+        <img src="/screenshots/v0.2.0/agents.png" alt="Agents page with profile cards, context budget, and suggested templates" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+      <div class="split-text">
+        <h3>Agent Profiles</h3>
+        <p>Each profile now shows its backend, model, estimated context budget (skills + MCP tools + instructions), and active state. Templates for Code Reviewer, QA Engineer, and Input Responder let you bootstrap profiles instantly.</p>
+        <ul>
+          <li>Context budget estimate per profile (tokens from skills, MCP, instructions)</li>
+          <li>Active / Inactive toggle &mdash; deactivated profiles are hidden from dispatch</li>
+          <li>One-click templates for common roles</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ===== Daemon Actions section (top-level, v0.2.0 marquee) ===== -->
+    <div style="margin-top:64px; margin-bottom:24px; text-align:center;">
+      <h2 style="font-size:32px; font-weight:600; margin-bottom:12px;">Daemon Actions</h2>
+      <p style="max-width:720px; margin:0 auto; color:var(--text-secondary); font-size:15px; line-height:1.7;">
+        A new permission model for letting agents touch the outside world. Profiles opt into specific
+        daemon-backed actions; each one is a short-lived, per-run bearer grant scoped to a single issue.
+        No persistent API tokens in agent context, no blanket access, no leaked credentials.
+      </p>
+    </div>
+
+    <!-- Row 6c: Daemon Actions overview (text LEFT, mockup RIGHT) -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Five scoped actions, opt-in per profile</h3>
+        <p>Add an <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">allowed_actions</code> list to any profile in <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">WORKFLOW.md</code> &mdash; or check the boxes in the profile editor &mdash; and the daemon will inject a per-run action token into the agent's environment. The agent calls back through <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">/api/v1/agent-actions/&lcub;identifier&rcub;/...</code>; the daemon validates every request against the profile's allow-list and the grant's TTL.</p>
+        <ul>
+          <li><strong>comment</strong> &mdash; post a tracker comment on the current issue</li>
+          <li><strong>comment_pr</strong> &mdash; post a structured review with file/line/severity findings</li>
+          <li><strong>create_issue</strong> &mdash; open a follow-up issue in the configured tracker state</li>
+          <li><strong>move_state</strong> &mdash; transition the issue to another tracker column</li>
+          <li><strong>provide_input</strong> &mdash; resume a blocked run by answering its input-required prompt</li>
+        </ul>
+      </div>
+      <div>
+        <img src="/screenshots/v0.2.0/v0.2agent-permissions.png" alt="Profile editor with daemon actions checkboxes" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+    </div>
+
+    <!-- Row 6c2: Daemon Actions security model (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div class="split-text" style="grid-column: 1 / -1;">
+        <h3>Why this is different from "give the agent an API key"</h3>
+        <p>Most agent platforms either ship a long-lived API key in the prompt (recoverable from logs forever) or grant blanket tracker access. Itervox does neither.</p>
+        <ul>
+          <li><strong>Per-run grants</strong> &mdash; the daemon mints a fresh action token for each dispatch and revokes it the moment the worker exits. A grant for issue ENG-42 cannot post on ENG-43.</li>
+          <li><strong>Action-scoped</strong> &mdash; a grant for <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">comment</code> cannot create issues. The daemon checks the action against the profile's allow-list on every request.</li>
+          <li><strong>Logged + redacted</strong> &mdash; every action call is recorded to the per-issue log buffer; the action token itself is scrubbed from log files by the redacting handler.</li>
+          <li><strong>No tracker secrets in agent context</strong> &mdash; agents never see <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">LINEAR_API_KEY</code> or <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">GITHUB_TOKEN</code>. The daemon holds those; agents only see <code style="font-size:13px; background:var(--bg-elevated); padding:1px 6px; border-radius:3px;">ITERVOX_ACTION_TOKEN</code>, scoped to one run.</li>
+        </ul>
+        <p style="margin-top:16px;">Result: <em>"can write to the tracker"</em> stops being a yes/no decision and becomes a per-action, per-run, time-bounded grant &mdash; auditable from the daemon, revocable mid-flight, and never reusable.</p>
+      </div>
+    </div>
+
+    <!-- Row 6d: Automations (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div>
+        <img src="/screenshots/v0.2.0/automations.png" alt="Automations card with suggested templates" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+      <div class="split-text">
+        <h3>Automations</h3>
+        <p>Event-driven dispatch rules that layer instructions on top of a profile. Trigger on cron schedules, input-required events, state transitions, tracker comments, run failures, or PR opens. Three starter templates included.</p>
+        <ul>
+          <li>Nine trigger types with per-trigger filters</li>
+          <li>Cron picker with IANA timezone typeahead</li>
+          <li>Starter templates: Input Responder, QA Validation, PM Backlog Review</li>
+          <li>Persisted to <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">WORKFLOW.md</code> &mdash; hot-reloaded on save</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Row 6e: Automation Editor (text LEFT, mockup RIGHT) -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Automation Editor</h3>
+        <p>Full visual editor for each automation rule. The trigger dropdown exposes all nine types, the cron picker and raw expression stay in sync, and filters narrow which issues match. Changes take effect on the next automations tick &mdash; no daemon restart.</p>
+        <ul>
+          <li>Visual cron picker synced with raw expression</li>
+          <li>Filter by state, labels, identifier regex, input context</li>
+          <li>Prompt instructions overlay the profile&apos;s base prompt</li>
+        </ul>
+      </div>
+      <div>
+        <img src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor with trigger type dropdown showing all nine types" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+    </div>
+
+    <!-- Row 6f: Capabilities + Skills Inventory (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div>
+        <img src="/screenshots/v0.2.0/capabilities.png" alt="Capabilities dashboard with skill counts, provider cost split, and runtime analytics" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+      <div class="split-text">
+        <h3>Capabilities Dashboard</h3>
+        <p>See exactly what your agent fleet can do. The capabilities panel aggregates skills, plugins, MCP servers, hooks, and instructions with token cost estimates. A per-provider bar chart shows how skill tokens are split across Claude, Codex, and shared scopes.</p>
+        <ul>
+          <li>Aggregate counts with token cost estimates</li>
+          <li>Per-provider skill cost breakdown</li>
+          <li>Runtime analytics: skills loaded vs. configured, hook events observed</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Row 6g: Skills Inventory (text LEFT, mockup RIGHT) -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Skills Inventory &amp; Recommendations</h3>
+        <p>On-demand file-system scan that surfaces duplicate skills, bloated profiles, and optimization opportunities. Severity-graded recommendations with expandable guidance.</p>
+        <ul>
+          <li>WARN: profiles carrying a heavy capability surface</li>
+          <li>INFO: same skill name in multiple scopes (duplicate token cost)</li>
+          <li>Re-scan button for fresh results</li>
+        </ul>
+      </div>
+      <div>
+        <img src="/screenshots/v0.2.0/skills-scanning.png" alt="Skills inventory with 9 recommendations including duplicate skills across scopes" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+    </div>
+
+    <!-- Row 6h: Retries (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div>
+        <img src="/screenshots/v0.2.0/retries settings.png" alt="Retry settings with max retries, exhausted-retries behavior, and rate-limit switch cap" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+      <div class="split-text">
+        <h3>Retry &amp; Rate-Limit Controls</h3>
+        <p>Tune retry behavior and rate-limit switching from the dashboard. Previously YAML-only, these controls are now first-class UI citizens.</p>
+        <ul>
+          <li>Max retries per issue with exponential backoff</li>
+          <li>On-exhausted behavior: pause or move to failure state</li>
+          <li>Rate-limit switch cap to prevent automation ping-pong</li>
+        </ul>
+      </div>
+    </div>
+
     <!-- Row 7: Issue Detail Slide (mockup LEFT, text RIGHT) -->
     <div class="feature-row">
       <div>
@@ -1778,6 +1956,22 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       </div>
       <div>
         <Screenshot src="narrative-feed.png" alt="Recent Events panel showing the last 20 orchestrator log lines" />
+      </div>
+    </div>
+
+    <!-- Row 10b: Notifications tab -->
+    <div class="feature-row">
+      <div>
+        <img src="/screenshots/v0.2.0/notifications.png" alt="Notifications tab showing Ready for Review queue with 39 issues" class="screenshot-img js-zoomable" loading="lazy" decoding="async" style="width:100%; border-radius:var(--radius-md); border:1px solid var(--line);" />
+      </div>
+      <div class="split-text">
+        <h3>Notifications</h3>
+        <p>A dedicated tab that surfaces issues needing human attention &mdash; PRs ready for review, input-required items, and completed work needing sign-off. The badge count is visible from any view so you always know how many items are waiting.</p>
+        <ul>
+          <li>Ready for Review queue with issue identifier, state, and title</li>
+          <li>Badge count visible from Board, List, and Agents views</li>
+          <li>Click any item to open the issue inspector</li>
+        </ul>
       </div>
     </div>
 
@@ -2378,9 +2572,9 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code><span class="t-muted"># WORKFLOW.md (hooks section)</span></code>
             <code><span class="t-accent-s">hooks:</span></code>
             <code>  <span class="t-accent-s">after_create:</span> <span class="t-muted">|</span></code>
-            <code>    <span class="t-text">cd {'{{workspace}}'} && npm install</span></code>
+            <code>    <span class="t-text">cd {'{{workspace}}'} && pnpm install --frozen-lockfile</span></code>
             <code>  <span class="t-accent-s">before_run:</span> <span class="t-muted">|</span></code>
-            <code>    <span class="t-text">golangci-lint run ./...</span></code>
+            <code>    <span class="t-text">golangci-lint run ./cmd/... ./internal/...</span></code>
             <code>  <span class="t-accent-s">after_run:</span> <span class="t-muted">|</span></code>
             <code>    <span class="t-text">go test -race ./...</span></code>
             <code>  <span class="t-accent-s">timeout_ms:</span> <span class="t-teal">60000</span></code>

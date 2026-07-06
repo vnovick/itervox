@@ -22,6 +22,16 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 Itervox is a long-running Go daemon that polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
+## Spec conformance
+
+Itervox is the reference implementation of the
+[Orchestrated Coding spec](https://github.com/vnovick/orchestrated-coding) and
+conforms at **L3** — every L1–L3 MUST verified against code with named
+regression tests run under `-race`. Evidence: the audited conformance map in
+[IMPLEMENTATIONS.md](https://github.com/vnovick/orchestrated-coding/blob/main/IMPLEMENTATIONS.md)
+and the closed-gaps ledger in [`v0.2.0/gaps_must.md`](./v0.2.0/gaps_must.md).
+Itervox is also a conforming [OpenAI Symphony](https://github.com/openai/symphony) runtime.
+
 ## Install
 
 ```bash
@@ -68,7 +78,9 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Concurrent agents** — run up to N agents in parallel with per-state concurrency limits. Scale from 1 to 50+ without config changes.
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
-- **Input required** — agents can request human input. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
+- **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
+- **Automations** — trigger helper runs from ten event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
+- **Built-in `merge-bot` profile** — ships embedded in the binary; reference it from `WORKFLOW.md` with `agent.profiles.merge-bot: {}` and the daemon resolves SOUL/INSTRUCTIONS from the embedded registry. The new `merge_pr` agent action runs `gh pr view` / `gh pr checks --required` / `gh pr merge` with required-check + block-label guards.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
 - **Stall detection** — no output inside the stall window? Worker is killed and retried automatically.
@@ -215,9 +227,31 @@ A full-featured Bubbletea TUI with the same real-time data as the web dashboard.
 
 ## Agent profiles
 
-Define named agent profiles with their own command, backend, and Liquid-templated role prompt. Reference issue data like `{{ issue.identifier }}` and `{{ issue.title }}` directly in the role description. Different issue types get different profiles — a senior reviewer for security work, a fast haiku model for typo fixes, a Codex long-horizon runner for research.
+Define named agent profiles with their own command, backend, and operating instructions. Different issue types get different profiles — a senior reviewer for security work, a fast haiku model for typo fixes, a Codex long-horizon runner for research.
+
+Since v0.2.0, profile content lives in **file-backed agents** under `.itervox/agents/<name>/`:
+
+```text
+.itervox/agents/
+  implementer/
+    SOUL.md          # compact identity — who this agent is, what it values
+    INSTRUCTIONS.md  # full operating rules, checklists, Liquid template
+  reviewer/
+    SOUL.md
+    INSTRUCTIONS.md
+```
+
+`WORKFLOW.md` (`itervox_schema_version: 2`) references these via `agent.profiles.<name>.soul_file` and `instructions_file`. Reference issue data with `{{ issue.identifier }}`, `{{ issue.title }}`, etc. directly in `INSTRUCTIONS.md`. `.itervox/agents/**` is checked into git (the patched root `.gitignore` allows it); `.itervox/HEARTBEAT.md`, logs, and `.env` stay ignored.
+
+**Migrating from v0.1.x:** inline `agent.profiles.<name>.prompt` is rejected by schema 2. Run `itervox init --update --workflow WORKFLOW.md` once to extract inline prompts into `INSTRUCTIONS.md`, generate starter `SOUL.md` files, patch `.gitignore`, and stamp `itervox_schema_version: 2`. The migrator writes `WORKFLOW.md.bak` next to your workflow; review the result and delete the backup when satisfied. See the [Agent Profiles guide](https://itervox.dev/guides/agent-profiles/) for full configuration.
 
 **Rate-limit reassignment use case:** when a provider rate-limits one profile mid-run, Itervox retries the issue on a different profile — your fleet keeps moving instead of grinding to a halt.
+
+---
+
+## Operational files
+
+On startup Itervox writes `.itervox/HEARTBEAT.md` and refreshes it on state changes at a bounded interval. It is a human-readable view of daemon liveness — workflow path, schema version, dashboard URL, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Useful for ops dashboards and "is the daemon stuck?" diagnostics. The file is gitignored as transient runtime state.
 
 ---
 
@@ -225,8 +259,9 @@ Define named agent profiles with their own command, backend, and Liquid-template
 
 Autonomous, not unsupervised. Agents do the work. You stay in control at every checkpoint.
 
-- **AI Code Review.** Configure a `reviewer_prompt` and trigger a second agent to review the PR on the correct branch. The reviewer uses the same runner and profile as the original worker.
-- **Agent asks for help.** When an agent needs input it pauses and posts a comment directly on the Linear or GitHub issue. Reply from the dashboard or from your tracker — the agent picks up your response and resumes automatically.
+- **AI Code Review.** Configure a `reviewer_profile` and optionally `auto_review` to dispatch a second worker for PR review. As of v0.2.0, `agent.auto_review` and `workspace.auto_clear` safely coexist — `auto_clear` now fires only on terminal tracker states, so the reviewer gets the implementer's workspace and the clear is deferred until after the reviewer also completes.
+- **Agent asks for help.** When an agent needs input it pauses and posts a comment directly on the Linear or GitHub issue. Explicit `<!-- itervox:needs-input -->` remains the recommended way for prompts and skills to signal this. Itervox also catches common plain-English blocking questions like final choice or confirmation requests with a deterministic fallback detector, but that fallback is heuristic and English-oriented. If your prompts or skills use non-English wording or unusual phrasing, emit the explicit marker. Reply from the dashboard or from your tracker — the agent picks up your response and resumes automatically in the same session.
+- **Automation helpers stay sandboxed by profile permissions.** If an automation should comment, move state, create follow-up issues, or auto-resume a blocked run, enable only the required `allowed_actions` on that profile. The daemon issues short-lived action grants per run instead of handing the agent your dashboard API token.
 - **You merge the PR.** Agents submit PRs and post a session summary as a comment — they never merge. PR links are auto-commented on the tracker issue.
 
 ---
@@ -239,6 +274,14 @@ Autonomous, not unsupervised. Agents do the work. You stay in control at every c
 | **GitHub Issues** | Issues + PRs with label-based routing, auto PR detection, PR link comments |
 
 Full setup guides: **[Linear](https://itervox.dev/guides/linear-setup/)** · **[GitHub Issues](https://itervox.dev/guides/github-issues/)**.
+
+---
+
+## Remote access & bearer-token auth
+
+When Itervox binds to any non-loopback address (`0.0.0.0`, a LAN IP), the dashboard and REST API require an `Authorization: Bearer <token>` header on every request. Set `ITERVOX_API_TOKEN` in the environment, or Itervox generates an ephemeral token at startup and logs it once. The dashboard captures the token from the URL query (`?token=…`) on first load and persists it via `sessionStorage` (or `localStorage` with the Remember checkbox). `GET /health` is auth-exempt for load-balancer probes. For trusted-LAN air-gapped setups, set `server.allow_unauthenticated_lan: true` to bypass auth entirely.
+
+Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
 
 ---
 
@@ -268,16 +311,26 @@ Shell scripts run at lifecycle events inside each workspace, via `bash -lc`.
 | Hook | Runs | On failure |
 |---|---|---|
 | `after_create` | Once, right after the workspace directory is created | Fatal — aborts the run attempt |
-| `before_run` | Before every agent turn | Fatal — aborts the run attempt |
-| `after_run` | After every agent turn | Logged and ignored |
-| `before_remove` | Before the workspace is removed (auto-clear) | Logged and ignored |
+| `before_run` | Once per worker invocation, before the first agent turn of that attempt | Fatal — aborts the run attempt |
+| `after_run` | After each completed agent turn | Logged and ignored |
+| `before_remove` | Before the workspace is removed (`auto_clear` or manual clear/remove) | Logged and ignored |
+
+`before_run` is intentionally per-attempt, not per-turn, so setup hooks like `git reset --hard` do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
 
 ```yaml
 hooks:
   after_create: |
     git clone git@github.com:org/repo.git .
+    pnpm install --frozen-lockfile
   before_run: |
-    git fetch origin && git reset --hard origin/main
+    git fetch origin
+    git checkout main
+    git reset --hard origin/main
+  after_run: |
+    git status --short
+  before_remove: |
+    tar -czf ../workspace-backup.tgz .
+  timeout_ms: 120000
 ```
 
 ---
@@ -314,6 +367,12 @@ open http://127.0.0.1:8090
 |---|---|
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
+| `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
+| `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
+| `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md` |
+| `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |
+| `itervox stop` | Gracefully stop a running daemon |
+| `itervox action <subcommand>` | Daemon-backed agent actions: `comment`, `comment-pr`, `merge-pr`, `create-issue`, `move-state`, `provide-input` |
 | `itervox clear [IDENTIFIER…]` | Remove workspace directories (all, or specific issues) |
 | `itervox --version` | Print version, commit, and build date |
 | `itervox help` | Show all commands and run-mode flags |
@@ -328,6 +387,8 @@ One file per project. YAML front matter plus a Liquid prompt template.
 
 ```markdown
 ---
+itervox_schema_version: 2
+
 tracker:
   kind: linear                     # or: github
   api_key: $LINEAR_API_KEY
@@ -342,7 +403,8 @@ agent:
   profiles:
     code-reviewer:
       command: claude --model claude-opus-4-6
-      prompt: "You are a senior code reviewer. Focus on correctness and test coverage."
+      soul_file: .itervox/agents/code-reviewer/SOUL.md
+      instructions_file: .itervox/agents/code-reviewer/INSTRUCTIONS.md
 
 workspace:
   root: ~/.itervox/workspaces
@@ -359,9 +421,28 @@ You are working on {{ issue.identifier }} — {{ issue.title }}.
 Implement the change, run tests, and open a PR.
 ```
 
+Profile content lives in companion files. For the `code-reviewer` profile above:
+
+```markdown
+# .itervox/agents/code-reviewer/SOUL.md
+You are a senior code reviewer.
+```
+
+```markdown
+# .itervox/agents/code-reviewer/INSTRUCTIONS.md
+## Workflow
+- Focus on correctness and test coverage.
+- Flag race conditions, missing error handling, and security issues.
+- Group findings by severity (Critical / Important / Minor).
+```
+
+`itervox init` scaffolds these files automatically. `.itervox/agents/**` is committable to git; runtime files like `.itervox/.env` and `.itervox/HEARTBEAT.md` stay ignored.
+
 The prompt template has access to `issue.*` fields (`identifier`, `title`, `description`, `state`, `priority`, `labels`, `blocked_by`, …) and the `attempt` counter on retries.
 
 Full field reference: **[itervox.dev/configuration/](https://itervox.dev/configuration/)**.
+
+`workspace.auto_clear: true` was redefined in v0.2.0 to fire only when the issue reaches a terminal tracker state (`completion_state` after success, or `failed_state` after retries are exhausted). The workspace persists across retries, input-required pauses, and pipeline mid-states — so chained profiles can share `.itervox/handoff/` files on the same branch, and `auto_clear` now safely coexists with `agent.auto_review` (the clear is deferred until the reviewer also completes).
 
 ---
 
@@ -413,7 +494,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, and the pre-commit hook policy. The project uses `make verify` as the single entry point that mirrors CI (fmt, vet, lint, Go tests with `-race`, and web tests).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
 
 Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 

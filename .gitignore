@@ -9,6 +9,8 @@
 web/node_modules/
 web/dist/
 web/coverage/
+web/test-results/
+web/playwright-report/
 internal/server/web/dist/*
 !internal/server/web/dist/.gitkeep
 
@@ -31,3 +33,6 @@ coverage.html
 site/node_modules/
 site/dist/
 site/.astro/
+marketing
+# Release-audit working docs (local only)
+v0.2.0/

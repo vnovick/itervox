@@ -1,0 +1,8 @@
+required_action_calls:
+  - comment
+  - move_state
+forbidden_actions:
+  - merge_pr
+marker_phrases:
+  - "1."
+  - "review failed"

@@ -1,0 +1,31 @@
+/*
+ * Layout-only adjustments for the react-js-cron picker. Visual theming
+ * (colors, borders, hover states) flows through antd's ConfigProvider in
+ * CronPicker.tsx — keep it there, not here.
+ *
+ * The default react-js-cron stylesheet renders the picker inline; the
+ * itervox automation editor needs it to wrap on narrow screens and play
+ * nicely with the surrounding form spacing.
+ */
+
+.cron-picker-wrapper .react-js-cron {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  background-color: var(--bg-elevated);
+}
+
+.cron-picker-wrapper .react-js-cron span,
+.cron-picker-wrapper .react-js-cron strong {
+  color: var(--text);
+}
+
+/* Make sure the antd Select dropdowns inside the picker pick up the right
+ * z-index when the editor is rendered inside a SlidePanel / Modal. */
+.cron-picker-wrapper .ant-select-dropdown {
+  z-index: 1100;
+}

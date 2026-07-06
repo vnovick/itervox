@@ -1,0 +1,2 @@
+{"event":"action","action":"comment","args":{"issue":"ENG-52"}}
+{"event":"comment","body":"merge-bot: refusing to merge PR-52 — label needs-human is on the merge-bot block-list. Remove the label or merge manually."}

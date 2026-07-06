@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import { AllowedAgentActionSchema } from '../../../types/schemas';
 import {
+  AGENT_ACTION_OPTIONS,
   applyBackendSelection,
   applyModelSelection,
   commandToBackend,
   draftFromProfileDef,
   isSimpleBackendCommand,
+  normalizeAllowedActions,
   normalizeCommandForSave,
 } from '../profileCommands';
 
@@ -54,11 +57,45 @@ describe('profileCommands', () => {
         command: 'run-codex-wrapper --json',
         backend: 'codex',
         prompt: 'Investigate failures.',
+        allowedActions: ['comment', 'provide_input'],
       }),
     ).toMatchObject({
       backend: 'codex',
       command: 'run-codex-wrapper --json',
       prompt: 'Investigate failures.',
+      allowedActions: ['comment', 'provide_input'],
     });
+  });
+
+  it('hydrates file-backed profile text from soul and instructions', () => {
+    expect(
+      draftFromProfileDef({
+        command: 'claude',
+        soul: '# QA SOUL',
+        instructions: '# QA INSTRUCTIONS',
+        prompt: 'legacy fallback',
+        soulFile: '.itervox/agents/qa/SOUL.md',
+        instructionsFile: '.itervox/agents/qa/INSTRUCTIONS.md',
+      }),
+    ).toMatchObject({
+      soul: '# QA SOUL',
+      instructions: '# QA INSTRUCTIONS',
+      prompt: '# QA INSTRUCTIONS',
+      soulFile: '.itervox/agents/qa/SOUL.md',
+      instructionsFile: '.itervox/agents/qa/INSTRUCTIONS.md',
+    });
+  });
+});
+
+describe('FE-3: agent-action options track the canonical schema', () => {
+  it('AGENT_ACTION_OPTIONS covers every canonical action (incl. merge_pr)', () => {
+    const canonical = AllowedAgentActionSchema.options as readonly string[];
+    const optionIds = AGENT_ACTION_OPTIONS.map((o) => o.id);
+    for (const action of canonical) expect(optionIds).toContain(action);
+  });
+
+  it('normalizeAllowedActions preserves merge_pr on save', () => {
+    const result = normalizeAllowedActions(['comment', 'merge_pr'], ['comment', 'merge_pr']);
+    expect(result).toContain('merge_pr');
   });
 });

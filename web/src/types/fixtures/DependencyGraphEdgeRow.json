@@ -1,0 +1,9 @@
+{
+  "id": "edge-1",
+  "sourceIdentifier": "ENG-5",
+  "targetIdentifier": "ENG-1",
+  "sourceState": "In Progress",
+  "targetState": "Todo",
+  "resolved": false,
+  "sourceKnown": true
+}

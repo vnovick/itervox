@@ -1,0 +1,37 @@
+{
+  "identifier": "ENG-9",
+  "issueState": "Backlog",
+  "status": "blocked",
+  "sources": [
+    "tracker_relation",
+    "issue_text"
+  ],
+  "blockedBy": [
+    {
+      "id": "blocker-1",
+      "identifier": "ENG-5",
+      "state": "In Progress",
+      "url": "https://linear.app/x/issue/ENG-5"
+    }
+  ],
+  "unresolvedBlockers": [
+    {
+      "id": "blocker-1",
+      "identifier": "ENG-5",
+      "state": "In Progress"
+    }
+  ],
+  "resolvedBlockers": [
+    {
+      "id": "blocker-2",
+      "identifier": "ENG-3",
+      "state": "Done"
+    }
+  ],
+  "wasBlocked": true,
+  "firstBlockedAt": "2026-05-25T10:00:00Z",
+  "unblockedAt": "2026-05-25T11:00:00Z",
+  "lastAuditedAt": "2026-05-25T12:00:00Z",
+  "lastTransitionVersion": 7,
+  "lastTransitionReason": "blockers_resolved"
+}

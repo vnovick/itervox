@@ -74,7 +74,7 @@ func validateCLI(name, hint string) error {
 	// ~/.bashrc PATH additions and shell aliases/functions are picked up.
 	shell := loginShell()
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, shell, "-ilc", name+" --version")
+	cmd := buildValidationShellCommand(ctx, shell, name+" --version")
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -87,6 +87,15 @@ func validateCLI(name, hint string) error {
 		return fmt.Errorf("%s CLI not available: %s (%s)", name, err, hint)
 	}
 	return nil
+}
+
+func buildValidationShellCommand(ctx context.Context, shell, invocation string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, shell, "-ilc", invocation)
+	// Detach the fallback login shell from the caller's controlling TTY so an
+	// interactive rc file cannot steal or leave behind the foreground process
+	// group just before Bubble Tea starts.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd
 }
 
 // ValidateClaudeCLI checks if the claude CLI is available and returns an error
@@ -139,13 +148,10 @@ func (c *ClaudeRunner) RunTurn(
 		if workspacePath != "" {
 			shellCmd = "cd " + shellQuote(workspacePath) + " && " + shellCmd
 		}
-		cmd = exec.CommandContext(turnCtx, "ssh",
-			"-t",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "BatchMode=yes",
-			workerHost,
-			"bash", "-lc", shellCmd,
-		)
+		sshArgs := []string{"-t"}
+		sshArgs = append(sshArgs, sshStrictHostOption(workerHost)...)
+		sshArgs = append(sshArgs, "-o", "BatchMode=yes", workerHost, "bash", "-lc", shellCmd)
+		cmd = exec.CommandContext(turnCtx, "ssh", sshArgs...)
 	} else if filepath.IsAbs(command) && !strings.Contains(command, " ") {
 		// Clean absolute path with no flags — run the binary directly, no shell needed.
 		cmd = exec.CommandContext(turnCtx, command, buildDirectArgs(sessionID, prompt)...)
@@ -183,22 +189,9 @@ func (c *ClaudeRunner) RunTurn(
 		result.Failed = true
 	}
 
-	// Attach stderr and/or wait error to FailureText so the user sees why the CLI failed.
-	stderr := strings.TrimSpace(stderrBuf.String())
+	// T-53: shared FailureText assembly across Claude and Codex runners.
 	if result.Failed {
-		parts := make([]string, 0, 3)
-		if result.FailureText != "" {
-			parts = append(parts, result.FailureText)
-		}
-		if stderr != "" {
-			parts = append(parts, "stderr: "+stderr)
-		}
-		if waitErr != nil && result.FailureText == "" && stderr == "" {
-			parts = append(parts, "exit: "+waitErr.Error())
-		}
-		if len(parts) > 0 {
-			result.FailureText = strings.Join(parts, " | ")
-		}
+		result.FailureText = formatFailureText(result.FailureText, stderrBuf.String(), waitErr)
 	}
 
 	if readErr != nil {
@@ -217,13 +210,31 @@ const sharedFlagsStr = " --output-format stream-json --verbose --dangerously-ski
 
 var sharedFlagsSlice = []string{"--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 
+// safePromptArg prevents Claude's CLI argparse from interpreting a prompt
+// that starts with '-' as another flag. The parser treats `-<anything>` as a
+// flag even when it appears in the value slot of a preceding flag like `-p`.
+// Any prompt that opens with '-' (e.g. a markdown list — "- Step 1…", or
+// YAML — "- id: foo") would otherwise surface as `error: unknown option`.
+// Claude trims leading whitespace in prompt content, so prepending a single
+// space is observably a no-op for the agent.
+func safePromptArg(prompt string) string {
+	if strings.HasPrefix(prompt, "-") {
+		return " " + prompt
+	}
+	return prompt
+}
+
 // buildDirectArgs returns CLI args for direct (non-shell) invocation.
 func buildDirectArgs(sessionID *string, prompt string) []string {
 	base := append([]string{}, sharedFlagsSlice...)
 	if sessionID != nil && *sessionID != "" {
-		return append(base, "--resume", *sessionID)
+		args := append(base, "--resume", *sessionID)
+		if prompt != "" {
+			args = append(args, "-p", safePromptArg(prompt))
+		}
+		return args
 	}
-	return append(base, "-p", prompt)
+	return append(base, "-p", safePromptArg(prompt))
 }
 
 // buildShellCmd returns the full shell command string for bash/zsh -lc.
@@ -242,9 +253,18 @@ func buildShellCmd(command string, sessionID *string, prompt string) string {
 	}
 	base := command + sharedFlagsStr
 	if sessionID != nil && *sessionID != "" {
-		return base + " --resume " + shellQuote(*sessionID)
+		// Resume an existing session. When a prompt is also provided (e.g.,
+		// the user's reply to an input-required question), append it with -p
+		// so Claude receives the message. Without -p, Claude expects a
+		// deferred-tool marker in the session and errors with "No deferred
+		// tool marker found" if it's not there.
+		resumed := base + " --resume " + shellQuote(*sessionID)
+		if prompt != "" {
+			resumed += " -p " + shellQuote(safePromptArg(prompt))
+		}
+		return resumed
 	}
-	return base + " -p " + shellQuote(prompt)
+	return base + " -p " + shellQuote(safePromptArg(prompt))
 }
 
 // todoItems parses a TodoWrite input and returns the content of each todo.

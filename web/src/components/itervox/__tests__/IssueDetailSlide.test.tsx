@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router';
 import IssueDetailSlide from '../IssueDetailSlide';
 
 vi.mock('../../../store/itervoxStore', () => ({ useItervoxStore: vi.fn() }));
@@ -18,6 +19,7 @@ vi.mock('../../../queries/issues', () => ({
   useProvideInput: vi.fn(),
   useDismissInput: vi.fn(),
   ISSUES_KEY: ['issues'],
+  ISSUE_KEY: (identifier: string) => ['issue', identifier],
 }));
 
 import { useItervoxStore } from '../../../store/itervoxStore';
@@ -54,9 +56,11 @@ const baseIssue = {
   priority: null as number | null,
   branchName: null as string | null,
   blockedBy: [] as string[],
+  blockedByDetails: [] as { identifier: string; state?: string; url?: string }[],
   url: null as string | null,
   agentProfile: null as string | null,
   error: undefined as string | undefined,
+  ineligibleReason: undefined as string | undefined,
 };
 
 function makeWrapper() {
@@ -64,7 +68,9 @@ function makeWrapper() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    </MemoryRouter>
   );
 }
 
@@ -157,6 +163,38 @@ describe('IssueDetailSlide', () => {
     expect(await screen.findByText('A detailed description')).toBeInTheDocument();
   });
 
+  it('shows status changes before the issue description', async () => {
+    setupDefaultMocks('ENG-10', {
+      statusChanges: [
+        {
+          fromState: 'Todo',
+          toState: 'In Progress',
+          source: 'worker_lifecycle',
+          profileName: 'default',
+          backend: 'codex',
+          workerHost: 'ssh-build-1',
+          at: '2026-05-20T09:31:00Z',
+        },
+        {
+          fromState: 'In Progress',
+          toState: 'In Review',
+          source: 'automation',
+          automationId: 'dispatch-reviewer-on-pr',
+          triggerType: 'pr_opened',
+          at: '2026-05-20T10:04:00Z',
+        },
+      ],
+    } as unknown as Partial<typeof baseIssue>);
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    const statusHeading = await screen.findByRole('heading', { name: /status changes/i });
+    const descriptionHeading = screen.getByRole('heading', { name: /description/i });
+    expect(statusHeading.compareDocumentPosition(descriptionHeading)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(screen.getByText('dispatch-reviewer-on-pr')).toBeInTheDocument();
+  });
+
   it('calls setSelectedIdentifier(null) when close button clicked', async () => {
     const setSelectedIdentifier = setupDefaultMocks('ENG-10');
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
@@ -240,6 +278,34 @@ describe('IssueDetailSlide', () => {
     expect(screen.getByText('Blocked by')).toBeInTheDocument();
     expect(screen.getByText('ENG-5')).toBeInTheDocument();
     expect(screen.getByText('ENG-6')).toBeInTheDocument();
+  });
+
+  it('shows blocker details with state and links when available', () => {
+    setupDefaultMocks('ENG-10', {
+      blockedBy: ['ENG-5'],
+      blockedByDetails: [
+        {
+          identifier: 'ENG-5',
+          state: 'In Progress',
+          url: 'https://linear.app/issue/ENG-5',
+        },
+      ],
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    const blockerLink = screen.getByRole('link', { name: 'ENG-5' });
+    expect(blockerLink).toHaveAttribute('href', 'https://linear.app/issue/ENG-5');
+    expect(screen.getAllByText('In Progress')).toHaveLength(2);
+  });
+
+  it('shows ineligible reason when present', () => {
+    setupDefaultMocks('ENG-10', {
+      ineligibleReason: 'blocked_by:ENG-5',
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    expect(screen.getByText('Not dispatchable')).toBeInTheDocument();
+    expect(screen.getByText('blocked_by:ENG-5')).toBeInTheDocument();
   });
 
   it('shows "No description" when description is empty', () => {
@@ -418,6 +484,18 @@ describe('IssueDetailSlide', () => {
     });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+  });
+
+  it('shows pending resume UI without reply form when orchestratorState is pending_input_resume', async () => {
+    setupDefaultMocks('ENG-10', {
+      orchestratorState: 'pending_input_resume',
+      error: 'Reply received, waiting to resume.',
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByText('Reply received')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Type your reply/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Reply & Resume Agent')).not.toBeInTheDocument();
+    expect(await screen.findByText('Reply received, waiting to resume.')).toBeInTheDocument();
   });
 
   it('shows comment date when createdAt is present', async () => {

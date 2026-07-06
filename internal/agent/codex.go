@@ -76,13 +76,10 @@ func (c *CodexRunner) RunTurn(
 		if logDir != "" {
 			shellCmd = "mkdir -p " + shellQuote(logDir) + "; " + shellCmd
 		}
-		cmd = exec.CommandContext(turnCtx, "ssh",
-			"-t",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "BatchMode=yes",
-			workerHost,
-			"bash", "-lc", shellCmd,
-		)
+		sshArgs := []string{"-t"}
+		sshArgs = append(sshArgs, sshStrictHostOption(workerHost)...)
+		sshArgs = append(sshArgs, "-o", "BatchMode=yes", workerHost, "bash", "-lc", shellCmd)
+		cmd = exec.CommandContext(turnCtx, "ssh", sshArgs...)
 	} else if filepath.IsAbs(command) && !strings.Contains(command, " ") {
 		cmd = exec.CommandContext(turnCtx, command, buildCodexDirectArgs(sessionID, prompt, workspacePath)...)
 	} else {
@@ -136,21 +133,9 @@ func (c *CodexRunner) RunTurn(
 		result.Failed = true
 	}
 
-	stderr := strings.TrimSpace(stderrBuf.String())
+	// T-53: shared FailureText assembly across Claude and Codex runners.
 	if result.Failed {
-		parts := make([]string, 0, 3)
-		if result.FailureText != "" {
-			parts = append(parts, result.FailureText)
-		}
-		if stderr != "" {
-			parts = append(parts, "stderr: "+stderr)
-		}
-		if waitErr != nil && result.FailureText == "" && stderr == "" {
-			parts = append(parts, "exit: "+waitErr.Error())
-		}
-		if len(parts) > 0 {
-			result.FailureText = strings.Join(parts, " | ")
-		}
+		result.FailureText = formatFailureText(result.FailureText, stderrBuf.String(), waitErr)
 	}
 
 	if readErr != nil {
@@ -163,20 +148,25 @@ func (c *CodexRunner) RunTurn(
 }
 
 func buildCodexDirectArgs(sessionID *string, prompt, workspacePath string) []string {
+	// Same argv hazard as Claude: if the prompt begins with '-' the CLI
+	// parser interprets it as an unexpected flag. safePromptArg prepends a
+	// single space that Codex silently trims.
+	safePrompt := safePromptArg(prompt)
 	args := make([]string, 0, 8)
 	if workspacePath != "" {
 		args = append(args, "-C", workspacePath)
 	}
 	args = append(args, "exec")
 	if sessionID != nil && *sessionID != "" {
-		args = append(args, "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", *sessionID, prompt)
+		args = append(args, "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", *sessionID, safePrompt)
 		return args
 	}
-	args = append(args, "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt)
+	args = append(args, "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", safePrompt)
 	return args
 }
 
 func buildCodexShellCmd(command string, sessionID *string, prompt, workspacePath string) string {
+	safePrompt := safePromptArg(prompt)
 	var b strings.Builder
 	b.WriteString(command)
 	if workspacePath != "" {
@@ -188,10 +178,10 @@ func buildCodexShellCmd(command string, sessionID *string, prompt, workspacePath
 		b.WriteString(" resume --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ")
 		b.WriteString(shellQuote(*sessionID))
 		b.WriteString(" ")
-		b.WriteString(shellQuote(prompt))
+		b.WriteString(shellQuote(safePrompt))
 		return b.String()
 	}
 	b.WriteString(" --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ")
-	b.WriteString(shellQuote(prompt))
+	b.WriteString(shellQuote(safePrompt))
 	return b.String()
 }

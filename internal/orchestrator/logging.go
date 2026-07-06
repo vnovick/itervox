@@ -119,6 +119,46 @@ func makeBufLineWithSession(level, msg, sessionID string) string {
 	return formatBufLine(level, msg, []any{"session_id", sessionID})
 }
 
+// silentOutputPrefix is the V2-3 no-op convention: an agent whose FINAL text
+// block begins with this marker is saying "nothing worth reporting" — the
+// session summary is not delivered as a tracker/PR comment. The per-issue log
+// buffer is unaffected (it is fed by the streaming path), so the run remains
+// fully auditable from the dashboard. Match is case-sensitive and applies only
+// to the start of the final block (after leading-whitespace trim); mid-message
+// occurrences do not suppress. Primary use case: cron automations that scan and
+// find nothing, which would otherwise spam the tracker every interval.
+const silentOutputPrefix = "[SILENT]"
+
+// sessionCommentForRun is the single seam deciding what (if anything) a
+// finished run delivers as a session comment: the formatted summary, or ""
+// when there is nothing worth posting OR the agent opted out via [SILENT].
+// runWorker uses the returned string for BOTH the PR comment and the tracker
+// comment, so suppression here covers every delivery surface while leaving
+// the per-issue log buffer (fed by the streaming path) untouched.
+func sessionCommentForRun(allText []string, identifier string) string {
+	comment := formatSessionComment(allText, identifier)
+	if comment != "" && silentSessionOutput(allText) {
+		slog.Info("worker: final output begins with [SILENT]; suppressing session comment",
+			"issue_identifier", identifier)
+		return ""
+	}
+	return comment
+}
+
+// silentSessionOutput reports whether the agent's final non-empty text block
+// opts out of comment delivery via the [SILENT] convention. Trailing empty
+// blocks are skipped so a stray blank turn cannot defeat the marker.
+func silentSessionOutput(allText []string) bool {
+	for i := len(allText) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(allText[i])
+		if t == "" {
+			continue
+		}
+		return strings.HasPrefix(t, silentOutputPrefix)
+	}
+	return false
+}
+
 // formatSessionComment builds a Markdown comment summarising the full agent session.
 // allText is every assistant text block emitted across all turns.
 // Returns empty string if there is nothing worth posting.

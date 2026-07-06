@@ -38,8 +38,10 @@ type IssueLogEntry struct {
 
 // Comment — a comment on a tracker issue.
 type Comment struct {
+	ID         string
 	Body       string
 	CreatedAt  *time.Time
+	AuthorID   string
 	AuthorName string
 }
 
@@ -55,9 +57,15 @@ type Issue struct {
 	URL         *string
 	Labels      []string
 	BlockedBy   []BlockerRef
-	Comments    []Comment
-	CreatedAt   *time.Time
-	UpdatedAt   *time.Time
+	// Comments MUST be returned by tracker adapters in ascending CreatedAt order
+	// (oldest first). Downstream consumers — notably latestAutomationComment in
+	// cmd/itervox — take the last element as the newest. Linear enforces this via
+	// its GraphQL `orderBy: createdAt` parameter; GitHub's comment pagination
+	// defaults to ascending order. If a new tracker adapter cannot guarantee this,
+	// it must sort before returning.
+	Comments  []Comment
+	CreatedAt *time.Time
+	UpdatedAt *time.Time
 }
 
 // BlockerRef — a lightweight reference to a blocking issue.
@@ -65,6 +73,7 @@ type BlockerRef struct {
 	ID         *string
 	Identifier *string
 	State      *string
+	URL        *string
 }
 
 // Project is a generic project/team/repository grouping returned by trackers

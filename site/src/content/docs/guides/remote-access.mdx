@@ -10,10 +10,12 @@ from the same machine that runs the daemon. To view the dashboard from your
 phone or another computer, you have five options.
 
 :::caution
-**Always set `ITERVOX_API_TOKEN` before exposing the dashboard outside loopback.**
-The dashboard has no built-in authentication on `127.0.0.1`. As soon as the
-server binds to anything reachable from another device, you must enable bearer
-token auth. Put the value in `.itervox/.env` (loaded automatically) or export it:
+**Prefer setting `ITERVOX_API_TOKEN` before exposing the dashboard outside loopback.**
+On non-loopback binds, Itervox requires bearer-token auth by default. If you do
+not set `ITERVOX_API_TOKEN` yourself, the daemon auto-generates an ephemeral
+token at startup, prints a one-time dashboard URL with `?token=...`, and
+requires that bearer token on every request. For stable remote access, put a
+fixed token in `.itervox/.env` (loaded automatically) or export it:
 
 ```bash
 # .itervox/.env
@@ -21,12 +23,12 @@ ITERVOX_API_TOKEN=$(openssl rand -hex 32)
 ```
 
 All API requests — including the web dashboard's fetch calls and SSE streams —
-then require an `Authorization: Bearer <token>` header. The dashboard handles
-this for you:
+require an `Authorization: Bearer <token>` header. The dashboard handles this
+for you:
 
-1. When the daemon starts with `ITERVOX_API_TOKEN` set, it prints a dashboard
-   URL with `?token=<token>` appended (look for the `dashboard URL (carries
-   token — copy/paste once)` log line).
+1. When the daemon starts with either an explicit or auto-generated token, it
+   prints a dashboard URL with `?token=<token>` appended (look for the
+   `dashboard URL (carries token — copy/paste once)` log line).
 2. Open that URL once from your phone or other device. The dashboard captures
    the token, stores it in `sessionStorage`, and strips it from the URL bar.
 3. After that, every request and SSE connection sends the bearer header

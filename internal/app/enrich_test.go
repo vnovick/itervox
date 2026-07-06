@@ -31,10 +31,12 @@ func emptyState() orchestrator.State {
 		PausedIdentifiers:     make(map[string]string),
 		PausedSessions:        make(map[string]*orchestrator.PausedSessionInfo),
 		IssueProfiles:         make(map[string]string),
-		PausedOpenPRs:         make(map[string]string),
+		IssueBackends:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),
 		PrevActiveIdentifiers: make(map[string]struct{}),
 		DiscardingIdentifiers: make(map[string]struct{}),
+		InputRequiredIssues:   make(map[string]*orchestrator.InputRequiredEntry),
+		PendingInputResumes:   make(map[string]*orchestrator.PendingInputResumeEntry),
 		ActiveStates:          []string{"In Progress"},
 		TerminalStates:        []string{"Done"},
 		MaxConcurrentAgents:   5,
@@ -159,6 +161,29 @@ func TestEnrichIssue(t *testing.T) {
 			},
 		},
 		{
+			name:  "pending input resume shows dedicated non-idle state",
+			issue: baseIssue(),
+			snap: func() orchestrator.State {
+				s := emptyState()
+				s.PendingInputResumes["ENG-42"] = &orchestrator.PendingInputResumeEntry{
+					IssueID:     "uuid-1",
+					Identifier:  "ENG-42",
+					Context:     "Need approval",
+					UserMessage: "Approved.",
+				}
+				return s
+			}(),
+			cfg: baseCfg(),
+			check: func(t *testing.T, ti server.TrackerIssue) {
+				if ti.OrchestratorState != "pending_input_resume" {
+					t.Fatalf("expected pending_input_resume, got %s", ti.OrchestratorState)
+				}
+				if ti.Error == "" {
+					t.Fatalf("expected pending resume message, got empty error")
+				}
+			},
+		},
+		{
 			name:  "idle issue",
 			issue: baseIssue(),
 			snap:  emptyState(),
@@ -269,10 +294,10 @@ func TestEnrichIssue(t *testing.T) {
 			issue: func() domain.Issue {
 				i := baseIssue()
 				i.BlockedBy = []domain.BlockerRef{
-					{Identifier: ptr("ENG-10")},
+					{Identifier: ptr("ENG-10"), State: ptr("In Progress"), URL: ptr("https://linear.app/issue/ENG-10")},
 					{Identifier: ptr("")}, // empty identifier is skipped
 					{Identifier: nil},     // nil identifier is skipped
-					{Identifier: ptr("ENG-11")},
+					{Identifier: ptr("ENG-11"), State: ptr("Done")},
 				}
 				return i
 			}(),
@@ -284,6 +309,27 @@ func TestEnrichIssue(t *testing.T) {
 				}
 				if ti.BlockedBy[0] != "ENG-10" || ti.BlockedBy[1] != "ENG-11" {
 					t.Fatalf("unexpected blockedBy: %v", ti.BlockedBy)
+				}
+				if len(ti.BlockedByDetails) != 2 {
+					t.Fatalf("expected 2 blocker details, got %d: %v", len(ti.BlockedByDetails), ti.BlockedByDetails)
+				}
+				if ti.BlockedByDetails[0].Identifier != "ENG-10" {
+					t.Fatalf("expected first blocker identifier ENG-10, got %q", ti.BlockedByDetails[0].Identifier)
+				}
+				if ti.BlockedByDetails[0].State != "In Progress" {
+					t.Fatalf("expected first blocker state In Progress, got %q", ti.BlockedByDetails[0].State)
+				}
+				if ti.BlockedByDetails[0].URL != "https://linear.app/issue/ENG-10" {
+					t.Fatalf("expected first blocker URL, got %q", ti.BlockedByDetails[0].URL)
+				}
+				if ti.BlockedByDetails[1].Identifier != "ENG-11" {
+					t.Fatalf("expected second blocker identifier ENG-11, got %q", ti.BlockedByDetails[1].Identifier)
+				}
+				if ti.BlockedByDetails[1].State != "Done" {
+					t.Fatalf("expected second blocker state Done, got %q", ti.BlockedByDetails[1].State)
+				}
+				if ti.BlockedByDetails[1].URL != "" {
+					t.Fatalf("expected second blocker URL to be empty, got %q", ti.BlockedByDetails[1].URL)
 				}
 			},
 		},

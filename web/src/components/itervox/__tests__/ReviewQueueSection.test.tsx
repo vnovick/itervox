@@ -87,6 +87,7 @@ describe('ReviewQueueSection', () => {
   it('shows empty state when no items in queue', () => {
     setupStore({ reviewerProfile: 'code-reviewer' });
     render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
     expect(screen.getByText('No issues in review queue')).toBeInTheDocument();
   });
 
@@ -102,6 +103,7 @@ describe('ReviewQueueSection', () => {
     });
 
     render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
 
     // ENG-1 is in Done state (matches completionState) and not being reviewed
     expect(screen.getByText('ENG-1')).toBeInTheDocument();
@@ -118,6 +120,7 @@ describe('ReviewQueueSection', () => {
     });
 
     render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
 
     const reviewBtn = screen.getByRole('button', { name: /Review/ });
     fireEvent.click(reviewBtn);
@@ -145,6 +148,7 @@ describe('ReviewQueueSection', () => {
     });
 
     render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
 
     expect(screen.getByText('ENG-3')).toBeInTheDocument();
     expect(screen.getByText(/Reviewing/)).toBeInTheDocument();
@@ -172,6 +176,7 @@ describe('ReviewQueueSection', () => {
     });
 
     render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
 
     // ENG-1 should appear in the reviewing section, not awaiting
     expect(screen.getByText('ENG-1')).toBeInTheDocument();
@@ -202,6 +207,7 @@ describe('ReviewQueueSection', () => {
     });
 
     render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
 
     expect(screen.getByText('ENG-5')).toBeInTheDocument();
     expect(screen.getByText(/Review succeeded/)).toBeInTheDocument();
@@ -246,5 +252,59 @@ describe('ReviewQueueSection', () => {
 
     // 1 awaiting + 1 reviewing + 1 history = 3
     expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders collapsed by default and expands without dispatching review', () => {
+    mockIssues = [{ identifier: 'ENG-1', title: 'Bug fix', state: 'Done' }];
+    setupStore({
+      reviewerProfile: 'code-reviewer',
+      completionState: 'Done',
+    });
+
+    render(<ReviewQueueSection />);
+
+    expect(screen.getByText('Review Queue')).toBeInTheDocument();
+    expect(screen.getByText('code-reviewer')).toBeInTheDocument();
+    expect(screen.queryByText('ENG-1')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
+
+    expect(screen.getByRole('searchbox', { name: /search review queue/i })).toBeInTheDocument();
+    expect(screen.getByText('ENG-1')).toBeInTheDocument();
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it('filters review queue locally and keeps rows in a scroll-capped area', () => {
+    mockIssues = Array.from({ length: 6 }, (_, i) => ({
+      identifier: `ENG-${String(i + 1)}`,
+      title: i === 5 ? 'Need mobile polish' : `Review item ${String(i + 1)}`,
+      state: 'Done',
+    }));
+    setupStore({
+      reviewerProfile: 'code-reviewer',
+      completionState: 'Done',
+    });
+
+    render(<ReviewQueueSection />);
+    fireEvent.click(screen.getByRole('button', { name: /expand review queue/i }));
+
+    const scroll = screen.getByTestId('review-queue-scroll');
+    expect(scroll.className).toContain('overflow-y-auto');
+    expect(scroll.className).toContain('max-h-[260px]');
+    for (const row of screen.getAllByTestId('review-queue-row')) {
+      expect(row.className).toContain('min-h-[52px]');
+    }
+    expect(screen.getByText('ENG-6')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('searchbox', { name: /search review queue/i }), {
+      target: { value: 'mobile' },
+    });
+
+    expect(screen.getByText('1/6')).toBeInTheDocument();
+    expect(screen.getByText('ENG-6')).toBeInTheDocument();
+    expect(screen.queryByText('ENG-1')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear queue search/i }));
+    expect(screen.getByText('ENG-1')).toBeInTheDocument();
   });
 });

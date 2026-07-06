@@ -1,10 +1,9 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
-import { useEffect, useMemo, useRef, useState, useCallback, startTransition } from 'react';
+import { useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { LOG_STABLE_DELAY_MS } from '../../utils/timings';
+import { useStableRunning } from '../../hooks/useStableRunning';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { useUIStore } from '../../store/uiStore';
-import type { RunningRow } from '../../types/schemas';
 import {
   useCancelIssue,
   useTerminateIssue,
@@ -18,36 +17,6 @@ import { EMPTY_RUNNING, EMPTY_PAUSED, EMPTY_PROFILES } from '../../utils/constan
 import { SessionAccordion } from './SessionAccordion';
 import { AgentProfileSelector } from './selectors';
 const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
-
-function useStableRunning(running: RunningRow[]): RunningRow[] {
-  const [stable, setStable] = useState<RunningRow[]>(running);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (running.length > 0) {
-      startTransition(() => {
-        setStable(running);
-      });
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    } else if (timerRef.current === null) {
-      timerRef.current = setTimeout(() => {
-        setStable([]);
-        timerRef.current = null;
-      }, LOG_STABLE_DELAY_MS);
-    }
-    return () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [running]);
-
-  return running.length > 0 ? running : stable;
-}
 
 export default function RunningSessionsTable() {
   const { rawRunning, paused, pausedWithPR, availableProfiles } = useItervoxStore(

@@ -23,6 +23,9 @@ vi.mock('../../../pages/Settings/profiles/ProfileEditorFields', () => ({
       <span data-testid="editor-prompt">{prompt}</span>
     </div>
   ),
+}));
+
+vi.mock('../../../pages/Settings/profiles/profileBadges', () => ({
   backendLabel: (b: string) => (b === 'codex' ? 'Codex' : 'Claude'),
   backendBadgeClass: () => 'badge-class',
 }));
@@ -60,7 +63,7 @@ describe('AgentInfoModal', () => {
     expect(screen.getByText('You are a code reviewer.')).toBeInTheDocument();
   });
 
-  it('shows fallback message when no prompt', () => {
+  it('shows fallback message when no profile files are configured', () => {
     render(
       <AgentInfoModal
         profileName="reviewer"
@@ -68,7 +71,7 @@ describe('AgentInfoModal', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText(/No prompt configured/)).toBeInTheDocument();
+    expect(screen.getByText(/No profile files configured/)).toBeInTheDocument();
   });
 
   describe('edit mode', () => {
@@ -161,6 +164,32 @@ describe('AgentInfoModal', () => {
       const savedDef = onSave.mock.calls[0][1];
       expect(savedDef).toHaveProperty('command');
       expect(savedDef).toHaveProperty('backend');
+    });
+
+    it('does not preserve createIssueState when create_issue is not allowed', async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      render(
+        <AgentInfoModal
+          profileName="reviewer"
+          profileDef={{
+            command: 'claude',
+            backend: 'claude',
+            prompt: 'Review code carefully.',
+            createIssueState: 'Todo',
+          }}
+          onClose={vi.fn()}
+          onSave={onSave}
+        />,
+      );
+
+      fireEvent.click(screen.getByText('Edit Profile'));
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(onSave).toHaveBeenCalledTimes(1);
+      });
+
+      expect(onSave.mock.calls[0][1].createIssueState).toBeUndefined();
     });
 
     it('exits edit mode after successful save', async () => {

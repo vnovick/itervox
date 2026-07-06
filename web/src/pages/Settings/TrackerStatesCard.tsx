@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { SAVE_OK_BANNER_MS } from '../../utils/timings';
@@ -42,7 +42,7 @@ export function TrackerStatesCard({
   const {
     register,
     handleSubmit,
-    watch,
+    control,
     setValue,
     reset,
     formState: { errors, isSubmitting },
@@ -64,8 +64,10 @@ export function TrackerStatesCard({
     });
   }, [initialActiveStates, initialTerminalStates, initialCompletionState, reset]);
 
-  const activeStates = watch('activeStates');
-  const terminalStates = watch('terminalStates');
+  // useWatch subscribes without the `watch()` function wrapper so the
+  // component is compatible with React Compiler memoization.
+  const activeStates = useWatch({ control, name: 'activeStates' });
+  const terminalStates = useWatch({ control, name: 'terminalStates' });
 
   const [saveOk, setSaveOk] = useState(false);
   const [saveError, setSaveError] = useState('');

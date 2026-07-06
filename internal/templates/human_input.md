@@ -10,10 +10,12 @@ detects this token, pauses the issue, and surfaces the question in the
 dashboard and tracker so a human can reply. The token is an HTML comment so
 it stays invisible in rendered Linear/GitHub markdown.
 
-**This is a hard contract.** Without the sentinel token, Itervox cannot detect
-that you are blocked — the issue will be marked as completed and moved to the
-next state, which is incorrect. Asking a question in plain English without
-the token is not enough.
+**This is the preferred contract.** Itervox also has a deterministic fallback for
+successful final messages that clearly block on a human decision or
+confirmation request, but the sentinel is still better because it is
+deterministic, cheaper, and less ambiguous. That fallback is heuristic and
+tuned for common English phrasing. If you know you need input, emit the
+sentinel instead of relying on plain-English phrasing to be inferred.
 
 ### Example — correct usage
 
@@ -41,3 +43,13 @@ Which approach should I take: rotation (1) or extended TTL (2)?
 - Rhetorical questions in your reasoning
 - Questions that you can answer yourself by exploring the code
 - Minor style or naming decisions (make a reasonable choice and move on)
+
+### Plain-English fallback
+
+If you forget the sentinel but end your final message with a real blocking
+question such as "Which option should I take?" or "Type discard to confirm",
+Itervox will usually still pause the issue and wait for a reply. Treat this as
+backup behavior, not the primary contract.
+
+- The explicit marker is more reliable.
+- The fallback is English-oriented; non-English or unusual phrasing may not be detected.
