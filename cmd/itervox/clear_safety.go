@@ -55,12 +55,11 @@ func unsafeWorkspaceRoot(root string) string {
 		"/tmp", "/var", "/etc", "/usr", "/opt",
 		"/bin", "/sbin", "/lib",
 		"/private", "/System", "/Library", "/Volumes",
-		// Common Linux/Unix parents of user home directories. On macOS the
-		// $HOME ancestor check above catches /Users; this list covers
-		// platforms where the runtime's current $HOME ancestor isn't /home
-		// (e.g. running as a non-root user in a container, or root with
-		// HOME=/root which is itself listed here).
-		"/home", "/root",
+		// Common parents of user home directories, listed statically so the
+		// refusal does not depend on the platform the process runs on: the
+		// $HOME ancestor check above only covers the *current* user's home,
+		// so /Users must be refused even on Linux (and /home even on macOS).
+		"/Users", "/home", "/root",
 	}
 	for _, sys := range systemRoots {
 		if abs == sys {
