@@ -361,7 +361,7 @@ func (o *Orchestrator) commentRateLimitedSwitch(
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(body)); err != nil {
+	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
 		slog.Warn("orchestrator: failed to post rate-limit switch comment",
 			"issue_id", issue.ID, "automation", rule.ID, "error", err)
 	}
@@ -388,7 +388,7 @@ func (o *Orchestrator) commentRateLimitCapExhausted(issue domain.Issue, failedPr
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(body)); err != nil {
+	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
 		slog.Warn("orchestrator: failed to post cap-exhausted comment",
 			"issue_id", issue.ID, "error", err)
 	}

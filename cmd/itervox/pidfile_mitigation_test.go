@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,25 +22,6 @@ func TestListenStrictKernelPickOnPortZero(t *testing.T) {
 	}
 	if actualAddr != ln.Addr().String() {
 		t.Errorf("returned addr %q != listener addr %q", actualAddr, ln.Addr().String())
-	}
-}
-
-// TestFatalStartupErrorIsRecognised — wrapping an error in fatalStartupError
-// is the signal the outer restart loop uses to bail instead of retrying. The
-// helper must detect it both directly and through one Unwrap layer (the
-// loop sees it after fmt.Errorf("...%w...", err) wrapping).
-func TestFatalStartupErrorIsRecognised(t *testing.T) {
-	inner := os.ErrPermission
-	fatal := fatalStartupError{inner: inner}
-	if !isFatalStartupError(fatal) {
-		t.Error("direct fatalStartupError must be recognised")
-	}
-	wrapped := fmt.Errorf("wrapper: %w", fatal)
-	if !isFatalStartupError(wrapped) {
-		t.Error("wrapped fatalStartupError must be recognised")
-	}
-	if isFatalStartupError(inner) {
-		t.Error("plain error must NOT be recognised as fatal")
 	}
 }
 

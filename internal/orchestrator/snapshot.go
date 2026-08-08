@@ -58,6 +58,12 @@ func (o *Orchestrator) Snapshot() State {
 	snap.DependencyAudit = copyDependencyAuditMap(snap.DependencyAudit)
 	snap.PROpenedDispatched = maps.Clone(snap.PROpenedDispatched)
 	snap.PRMergedDispatched = maps.Clone(snap.PRMergedDispatched)
+	snap.InferredDeps = copyInferredDepsMap(snap.InferredDeps)
+	snap.DepsOverrides = maps.Clone(snap.DepsOverrides)
+	snap.DependencyCycles = copyDependencyCycles(snap.DependencyCycles)
+	snap.DependencyAttention = copyDependencyAttention(snap.DependencyAttention)
+	snap.CandidateSeen = append([]CandidateSeenRow(nil), snap.CandidateSeen...)
+	snap.OutboxSyncing = maps.Clone(snap.OutboxSyncing)
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -644,15 +650,17 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 	// nothing. Old payloads simply lack these keys → nil ledger + zero seq,
 	// which is today's behavior.
 	if len(disk.DependencyAudit) > 0 {
-		state.DependencyAudit = copyDependencyAuditMap(disk.DependencyAudit)
+		state.DependencyAudit = copyDependencyAuditMapForRestore(disk.DependencyAudit)
 	}
 	state.DependencyTransitionSeq = disk.DependencyTransitionSeq
-	// AUTO-4 aggravator — auditBlockersResolvedAutomationSources early-returns
-	// when DependencyTransitionSeq == LastBlockersResolvedAuditSeq (both 0 after
-	// a fresh restart), which would skip the one scan needed to notice blockers
-	// that closed while the daemon was down. Seed the watermark one behind the
-	// restored seq so the next pass runs exactly once, then re-converges (the
-	// pass sets LastBlockersResolvedAuditSeq = DependencyTransitionSeq).
+	// AUTO-4 aggravator — pendingBlockersResolvedStates (consulted by
+	// reconcileDependencyRefresh) treats DependencyTransitionSeq ==
+	// LastBlockersResolvedAuditSeq as "nothing pending" and skips the batch
+	// (both are 0 after a fresh restart), which would skip the one scan
+	// needed to notice blockers that closed while the daemon was down. Seed
+	// the watermark one behind the restored seq so the next pass runs
+	// exactly once, then re-converges (the apply handler sets
+	// LastBlockersResolvedAuditSeq = the launch-time seq it was given).
 	if len(state.DependencyAudit) > 0 {
 		state.LastBlockersResolvedAuditSeq = state.DependencyTransitionSeq - 1
 	}
@@ -720,10 +728,64 @@ func copyDependencyAuditMap(m map[string]*DependencyAuditEntry) map[string]*Depe
 	return cp
 }
 
+// copyDependencyAuditMapForRestore deep-copies the persisted dependency-audit
+// ledger and clears the transient in-flight latch. Used only on the envelope
+// restore path — a daemon that crashed mid-refresh must not come back up with
+// rows marked in-flight, because nothing would ever clear them.
+func copyDependencyAuditMapForRestore(m map[string]*DependencyAuditEntry) map[string]*DependencyAuditEntry {
+	cp := copyDependencyAuditMap(m)
+	for _, entry := range cp {
+		if entry == nil {
+			continue
+		}
+		entry.InFlight = false
+	}
+	return cp
+}
+
 func copyIssueStatusHistoryMap(m map[string][]IssueStatusChange) map[string][]IssueStatusChange {
 	cp := make(map[string][]IssueStatusChange, len(m))
 	for k, v := range m {
 		cp[k] = append([]IssueStatusChange(nil), v...)
+	}
+	return cp
+}
+
+// copyInferredDepsMap deep-copies State.InferredDeps. Entries are plain
+// values (InferredDepEntry has no pointer/map fields), so copying the map and
+// each per-target slice is sufficient — mirrors copyIssueStatusHistoryMap.
+func copyInferredDepsMap(m map[string][]InferredDepEntry) map[string][]InferredDepEntry {
+	cp := make(map[string][]InferredDepEntry, len(m))
+	for k, v := range m {
+		cp[k] = append([]InferredDepEntry(nil), v...)
+	}
+	return cp
+}
+
+// copyDependencyCycles deep-copies State.DependencyCycles. Each
+// DependencyCycle's Members slice is independently copied so a mutation on
+// the live event-loop slice cannot leak into an already-published snapshot.
+// A nil input returns an empty, non-nil slice — matching the map-copy
+// siblings above (copyRunningMap, copyAutomationQueueMap, ...), which all
+// `make(..., len(m))` regardless of whether the source was nil, so JSON
+// marshaling of a snapshot with no cycles emits `[]` rather than `null`.
+func copyDependencyCycles(cycles []DependencyCycle) []DependencyCycle {
+	cp := make([]DependencyCycle, len(cycles))
+	for i, c := range cycles {
+		cp[i] = c
+		cp[i].Members = append([]string(nil), c.Members...)
+	}
+	return cp
+}
+
+// copyDependencyAttention deep-copies State.DependencyAttention. Each
+// entry's Blockers slice is independently copied, mirroring
+// copyDependencyCycles — including the nil-in/empty-out behavior.
+func copyDependencyAttention(entries []DependencyAttentionEntry) []DependencyAttentionEntry {
+	cp := make([]DependencyAttentionEntry, len(entries))
+	for i, e := range entries {
+		cp[i] = e
+		cp[i].Blockers = append([]string(nil), e.Blockers...)
 	}
 	return cp
 }
@@ -900,6 +962,12 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
 	snap.PROpenedDispatched = maps.Clone(s.PROpenedDispatched)
 	snap.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
+	snap.InferredDeps = copyInferredDepsMap(s.InferredDeps)
+	snap.DepsOverrides = maps.Clone(s.DepsOverrides)
+	snap.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
+	snap.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
+	snap.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
+	snap.OutboxSyncing = maps.Clone(s.OutboxSyncing)
 
 	o.snapMu.Lock()
 	o.lastSnap = snap

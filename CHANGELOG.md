@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- **Bearer-token auth is now on by default on every bind, including loopback (#48).** Previously the daemon only auto-generated `ITERVOX_API_TOKEN` and installed bearer-token middleware when `server.host` was a non-loopback address. That gate was the wrong signal: a loopback bind (`127.0.0.1`) sitting behind a reverse proxy, ngrok, Piko, or another tunnel is exactly as reachable from outside as a non-loopback bind, and the daemon has no way to detect that from inside the process. As of this release, the API requires a bearer token by default on **all** binds; unauthenticated local scripting must either read the token (from stderr, `.itervox/dashboard_url`'s sibling startup log line, or a pinned `ITERVOX_API_TOKEN` in `.itervox/.env`) or explicitly opt out via `server.allow_unauthenticated: true`.
+- **`server.allow_unauthenticated_lan` renamed to `server.allow_unauthenticated`.** The flag is no longer LAN/non-loopback-scoped — setting it to `true` disables auth entirely on every bind. The old key still parses as a deprecated alias (with a startup `slog.Warn`); the new key wins if both are set in the same `WORKFLOW.md`. Update `WORKFLOW.md` and any templates/examples to use the new key.
+- `GET /api/v1/health` remains the only auth-exempt route — unchanged behavior, but corrected in docs (README, `docs/configuration.md`) which previously and incorrectly described it as `GET /health`.
+
+### Added
+
+- **Durable, async tracker writes via a write-ahead outbox.** Tracker state transitions and comments are now enqueued to `.itervox/outbox.json` and flushed by an independent worker instead of being written synchronously (with inline retries) from the orchestrator's completion/failed-state paths — a crash between "agent finished" and "tracker updated" no longer loses the transition, and a slow/rate-limited tracker call no longer blocks the event loop. Pending writes are overlaid onto the dashboard's issue state so a completed-but-unflushed issue is never re-dispatched, and are visible via a "Syncing" badge on the affected issue card, a LiveOps tile (pending/degraded counts), and a new Outbox panel with per-entry **Retry** and **Discard** controls (`POST /api/v1/outbox/{id}/retry`, `DELETE /api/v1/outbox/{id}`). Set `tracker.outbox: false` as a kill switch to restore the previous synchronous write behavior — see `docs/configuration.md`'s `tracker.outbox` row. **Known limitation:** an issue a human moves out of `active_states` in the tracker while a write is still pending cannot auto-reconcile against that change (reconciliation only runs over this tick's polled candidates); use the Outbox panel's Discard to clear a stuck entry in that case.
+
+---
+
 ## [0.2.0] — 2026-07-06
 
 ### Migration from v0.1.x

@@ -59,6 +59,61 @@ type Client struct {
 	// non-nil with slugs = filter to those projects.
 	projectFilterMu sync.RWMutex
 	projectFilter   *[]string
+
+	// stateCacheMu guards teamOfIssue and statesOfTeam, the workflow-state
+	// resolution cache used by UpdateIssueState.
+	//
+	// Every transition used to cost two requests: one to resolve the state
+	// name to a UUID, one to apply it. The resolution is team-scoped and the
+	// name -> UUID mapping is effectively static, so it is cached for the
+	// life of the process: the first transition on an issue costs two
+	// requests, every subsequent one costs a single mutation.
+	//
+	// Both maps grow with the number of distinct issues transitioned, which
+	// is bounded by the tracker backlog the daemon polls — small strings,
+	// no eviction needed.
+	//
+	// The cache is self-healing rather than merely long-lived. A lookup miss
+	// on the state NAME refetches (so a state added or renamed in Linear is
+	// picked up), and a failed issueUpdate drops the team's map (so a stale
+	// UUID cannot be replayed by the retry path, which retries a completion
+	// transition up to 4 times).
+	stateCacheMu sync.RWMutex
+	teamOfIssue  map[string]string            // issue ID -> team ID
+	statesOfTeam map[string]map[string]string // team ID -> state name -> state UUID
+}
+
+// lookupStateID returns the cached workflow-state UUID for stateName on the
+// team owning issueID. ok is false when either mapping is absent.
+func (c *Client) lookupStateID(issueID, stateName string) (string, bool) {
+	c.stateCacheMu.RLock()
+	defer c.stateCacheMu.RUnlock()
+	teamID, ok := c.teamOfIssue[issueID]
+	if !ok {
+		return "", false
+	}
+	// Indexing a missing (nil) inner map yields the zero value and false.
+	id, ok := c.statesOfTeam[teamID][stateName]
+	return id, ok
+}
+
+// storeTeamStates records the issue's team and that team's full state map.
+func (c *Client) storeTeamStates(issueID, teamID string, states map[string]string) {
+	c.stateCacheMu.Lock()
+	defer c.stateCacheMu.Unlock()
+	c.teamOfIssue[issueID] = teamID
+	c.statesOfTeam[teamID] = states
+}
+
+// invalidateStateCache drops the cached mapping for the issue's team, forcing
+// the next transition on any issue in that team to re-resolve from Linear.
+func (c *Client) invalidateStateCache(issueID string) {
+	c.stateCacheMu.Lock()
+	defer c.stateCacheMu.Unlock()
+	if teamID, ok := c.teamOfIssue[issueID]; ok {
+		delete(c.statesOfTeam, teamID)
+	}
+	delete(c.teamOfIssue, issueID)
 }
 
 // NewClient creates a new Linear Client.
@@ -67,8 +122,10 @@ func NewClient(cfg ClientConfig) *Client {
 		cfg.Endpoint = defaultEndpoint
 	}
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: httpTimeout},
+		cfg:          cfg,
+		httpClient:   &http.Client{Timeout: httpTimeout},
+		teamOfIssue:  make(map[string]string),
+		statesOfTeam: make(map[string]map[string]string),
 	}
 }
 
@@ -176,15 +233,53 @@ func stringValue(v any) string {
 // current runtime project filter. If no runtime filter is set, it falls back
 // to the WORKFLOW.md project_slug value (or all issues if that is also empty).
 func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
+	return c.fetchWithProjectFilter(ctx, c.cfg.ActiveStates)
+}
+
+// FetchIssuesByStates returns issues for the given state names, honoring the
+// current runtime project filter the same way FetchCandidateIssues does. If
+// no runtime filter is set, it falls back to the WORKFLOW.md project_slug
+// value (or all issues if that is also empty). Empty stateNames returns
+// empty slice without any API call.
+//
+// Fix round (analyzer-autonomy Task 4b, "project-filter amplifier"): before
+// this fix, FetchIssuesByStates ignored the runtime filter entirely and used
+// only the static ProjectSlug. The deps-analyzer's UNION fetch (active +
+// terminal + backlog states — depsanalysis.FetchIssues, used to rebuild
+// sidecar.Analyzed) called this method, so with a runtime filter narrower
+// than "all projects" set, it would still scan every OTHER project's ACTIVE
+// issues and record them in Analyzed. Combined with the CandidateSeen
+// active-state scope fix above (rule 2 of autoAnalyzeSignalIdentifiers),
+// those other-project issues would be permanent auto-analyze signals: rule 2
+// treats a blank/active-state Analyzed entry absent from CandidateSeen as a
+// signal, and FetchCandidateIssues DOES honor the runtime filter, so those
+// issues never appear there. Mirroring FetchCandidateIssues' filter
+// mechanism here closes that gap.
+func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]domain.Issue, error) {
+	if len(stateNames) == 0 {
+		return []domain.Issue{}, nil
+	}
+	return c.fetchWithProjectFilter(ctx, stateNames)
+}
+
+// fetchWithProjectFilter is the shared implementation behind
+// FetchCandidateIssues and FetchIssuesByStates (#52): both need to fetch
+// `states` while honoring the current runtime project filter the same way —
+// nil filter falls back to the WORKFLOW.md project_slug default, an empty
+// filter fetches all projects, and a populated filter fetches each
+// slug/no-project bucket and merges, deduplicating by issue ID. Extracted so
+// the merge semantics live in exactly one place instead of two near-identical
+// copies that could silently drift apart.
+func (c *Client) fetchWithProjectFilter(ctx context.Context, states []string) ([]domain.Issue, error) {
 	filter := c.GetProjectFilter()
 
 	// nil = runtime filter not set; fall back to WORKFLOW.md project_slug.
 	if filter == nil {
 		if c.cfg.ProjectSlug != "" {
-			return c.fetchByProjectSlug(ctx, c.cfg.ActiveStates, c.cfg.ProjectSlug, nil, nil)
+			return c.fetchByProjectSlug(ctx, states, c.cfg.ProjectSlug, nil, nil)
 		}
 		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    c.cfg.ActiveStates,
+			"stateNames":    states,
 			"relationFirst": pageSize,
 		}, nil, nil)
 	}
@@ -192,7 +287,7 @@ func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, erro
 	// Empty filter = all issues regardless of project.
 	if len(filter) == 0 {
 		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    c.cfg.ActiveStates,
+			"stateNames":    states,
 			"relationFirst": pageSize,
 		}, nil, nil)
 	}
@@ -205,11 +300,11 @@ func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, erro
 		var err error
 		if slug == noProjectSentinel {
 			issues, err = c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, map[string]any{
-				"stateNames":    c.cfg.ActiveStates,
+				"stateNames":    states,
 				"relationFirst": pageSize,
 			}, nil, nil)
 		} else {
-			issues, err = c.fetchByProjectSlug(ctx, c.cfg.ActiveStates, slug, nil, nil)
+			issues, err = c.fetchByProjectSlug(ctx, states, slug, nil, nil)
 		}
 		if err != nil {
 			return nil, err
@@ -224,22 +319,6 @@ func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, erro
 	return all, nil
 }
 
-// FetchIssuesByStates returns issues for the given state names.
-// Empty stateNames returns empty slice without any API call.
-// Uses the WORKFLOW.md project_slug if set; otherwise fetches all issues by state.
-func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]domain.Issue, error) {
-	if len(stateNames) == 0 {
-		return []domain.Issue{}, nil
-	}
-	if c.cfg.ProjectSlug != "" {
-		return c.fetchByProjectSlug(ctx, stateNames, c.cfg.ProjectSlug, nil, nil)
-	}
-	return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-		"stateNames":    stateNames,
-		"relationFirst": pageSize,
-	}, nil, nil)
-}
-
 // FetchIssueStatesByIDs returns current state for the given issue IDs.
 // Empty issueIDs returns empty slice without any API call.
 func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
@@ -250,46 +329,19 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 }
 
 // UpdateIssueState transitions the issue to the named workflow state.
-// It resolves the state name to a Linear workflow-state UUID by querying the
-// issue's own team states (matching the Elixir implementation), then calls issueUpdate.
+// It resolves the state name to a Linear workflow-state UUID via the issue's
+// own team states (matching the Elixir implementation), then calls issueUpdate.
+//
+// The resolution is served from a process-lifetime cache where possible, so a
+// warm transition costs one request rather than two. See stateCacheMu.
 func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string) error {
 	// Step 1: resolve state name → UUID via the issue's team.
-	// Linear workflow states are team-scoped, so we query via issue → team → states.
-	const stateQuery = `
-query ItervoxResolveStateId($issueId: String!, $stateName: String!) {
-  issue(id: $issueId) {
-    team {
-      states(filter: { name: { eq: $stateName } }, first: 1) {
-        nodes { id }
-      }
-    }
-  }
-}`
-	body, err := c.graphql(ctx, stateQuery, map[string]any{
-		"issueId":   issueID,
-		"stateName": stateName,
-	})
-	if err != nil {
-		return fmt.Errorf("linear_update_state: fetch state id: %w", err)
-	}
-	data, _ := body["data"].(map[string]any)
-	issue, _ := data["issue"].(map[string]any)
-	team, _ := issue["team"].(map[string]any)
-	states, _ := team["states"].(map[string]any)
-	nodes, _ := states["nodes"].([]any)
-	if len(nodes) == 0 {
-		return fmt.Errorf("linear_update_state: state %q not found for issue %q", stateName, issueID)
-	}
-	// G-19 (gaps_280426_2): comma-ok the chained type assertion. Previously a
-	// single-value `nodes[0].(map[string]any)["id"].(string)` would panic if
-	// Linear ever returned a non-map element here.
-	firstNode, ok := nodes[0].(map[string]any)
-	if !ok {
-		return fmt.Errorf("linear_update_state: unexpected node[0] shape for state %q", stateName)
-	}
-	stateID, _ := firstNode["id"].(string)
-	if stateID == "" {
-		return fmt.Errorf("linear_update_state: empty state id for %q", stateName)
+	stateID, cached := c.lookupStateID(issueID, stateName)
+	if !cached {
+		var err error
+		if stateID, err = c.resolveStateID(ctx, issueID, stateName); err != nil {
+			return err
+		}
 	}
 
 	// Step 2: update the issue.
@@ -304,6 +356,12 @@ mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
 		"stateId": stateID,
 	})
 	if err != nil {
+		// The UUID came from cache and Linear rejected the write: it may have
+		// been deleted or recreated on the Linear side. Drop it so the retry
+		// path re-resolves instead of replaying a dead ID.
+		if cached {
+			c.invalidateStateCache(issueID)
+		}
 		return fmt.Errorf("linear_update_state: issueUpdate: %w", err)
 	}
 	if d, ok := resp["data"].(map[string]any); ok {
@@ -313,7 +371,66 @@ mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
 			}
 		}
 	}
+	if cached {
+		c.invalidateStateCache(issueID)
+	}
 	return fmt.Errorf("linear_update_state: issueUpdate returned non-success: %v", resp)
+}
+
+// resolveStateID fetches the issue's team and that team's full workflow-state
+// list, caches the mapping, and returns the UUID for stateName.
+//
+// The whole state list is fetched rather than filtering server-side by name:
+// one request then serves every state the daemon transitions through, and a
+// team has a handful of states.
+func (c *Client) resolveStateID(ctx context.Context, issueID, stateName string) (string, error) {
+	const stateQuery = `
+query ItervoxResolveStateId($issueId: String!) {
+  issue(id: $issueId) {
+    team {
+      id
+      states(first: 100) {
+        nodes { id name }
+      }
+    }
+  }
+}`
+	body, err := c.graphql(ctx, stateQuery, map[string]any{"issueId": issueID})
+	if err != nil {
+		return "", fmt.Errorf("linear_update_state: fetch state id: %w", err)
+	}
+	data, _ := body["data"].(map[string]any)
+	issue, _ := data["issue"].(map[string]any)
+	team, _ := issue["team"].(map[string]any)
+	teamID, _ := team["id"].(string)
+	states, _ := team["states"].(map[string]any)
+	nodes, _ := states["nodes"].([]any)
+
+	byName := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		// G-19 (gaps_280426_2): comma-ok the chained type assertion so a
+		// non-map element from Linear cannot panic the daemon.
+		node, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := node["id"].(string)
+		name, _ := node["name"].(string)
+		if id != "" && name != "" {
+			byName[name] = id
+		}
+	}
+
+	stateID := byName[stateName]
+	if stateID == "" {
+		return "", fmt.Errorf("linear_update_state: state %q not found for issue %q", stateName, issueID)
+	}
+	// Without a team key there is nothing to key the cache on; resolving
+	// uncached still works, it just costs a request per transition.
+	if teamID != "" {
+		c.storeTeamStates(issueID, teamID, byName)
+	}
+	return stateID, nil
 }
 
 // CreateComment posts a comment body on the given Linear issue ID.

@@ -557,9 +557,10 @@ func TestUpdateIssueState(t *testing.T) {
 		"data": map[string]interface{}{
 			"issue": map[string]interface{}{
 				"team": map[string]interface{}{
+					"id": "team-1",
 					"states": map[string]interface{}{
 						"nodes": []interface{}{
-							map[string]interface{}{"id": "state-uuid-done"},
+							map[string]interface{}{"id": "state-uuid-done", "name": "Done"},
 						},
 					},
 				},
@@ -620,9 +621,10 @@ func TestUpdateIssueStateMutationFails(t *testing.T) {
 		"data": map[string]interface{}{
 			"issue": map[string]interface{}{
 				"team": map[string]interface{}{
+					"id": "team-1",
 					"states": map[string]interface{}{
 						"nodes": []interface{}{
-							map[string]interface{}{"id": "state-uuid"},
+							map[string]interface{}{"id": "state-uuid", "name": "Done"},
 						},
 					},
 				},
@@ -873,6 +875,80 @@ func TestFetchIssuesByStatesNoProjectSlug(t *testing.T) {
 	issues, err := client.FetchIssuesByStates(context.Background(), []string{"Done"})
 	require.NoError(t, err)
 	assert.Len(t, issues, 1)
+}
+
+// TestFetchIssuesByStatesHonorsRuntimeProjectFilter is the fix-round
+// regression test for the "project-filter amplifier" gap: before this fix,
+// FetchIssuesByStates ignored the runtime project filter entirely and always
+// used the static WORKFLOW.md ProjectSlug, even when a runtime filter (set
+// via SetProjectFilter, the same mechanism FetchCandidateIssues already
+// honors) restricted the deps-analyzer's UNION fetch to a different project.
+// This mirrors TestFetchCandidateIssuesSpecificProjectFilter.
+func TestFetchIssuesByStatesHonorsRuntimeProjectFilter(t *testing.T) {
+	resp := singlePageResponse([]map[string]interface{}{
+		linearIssueNode("id-1", "ENG-1", "Done"),
+	})
+	srv := serveJSON(t, []map[string]interface{}{resp})
+	defer srv.Close()
+
+	client := linear.NewClient(linear.ClientConfig{
+		APIKey:      "test-key",
+		ProjectSlug: "static-project", // would normally be used if the filter were ignored
+		Endpoint:    srv.URL,
+	})
+	client.SetProjectFilter([]string{"runtime-project"})
+
+	issues, err := client.FetchIssuesByStates(context.Background(), []string{"Done"})
+	require.NoError(t, err)
+	assert.Len(t, issues, 1)
+}
+
+// TestFetchIssuesByStatesEmptyFilterFetchesAll mirrors
+// TestFetchCandidateIssuesEmptyFilterFetchesAll: an explicit empty runtime
+// filter overrides the static ProjectSlug and fetches all projects.
+func TestFetchIssuesByStatesEmptyFilterFetchesAll(t *testing.T) {
+	resp := singlePageResponse([]map[string]interface{}{
+		linearIssueNode("id-1", "ENG-1", "Done"),
+		linearIssueNode("id-2", "ENG-2", "Cancelled"),
+	})
+	srv := serveJSON(t, []map[string]interface{}{resp})
+	defer srv.Close()
+
+	client := linear.NewClient(linear.ClientConfig{
+		APIKey:      "test-key",
+		ProjectSlug: "my-project", // would normally filter by project
+		Endpoint:    srv.URL,
+	})
+	client.SetProjectFilter([]string{})
+
+	issues, err := client.FetchIssuesByStates(context.Background(), []string{"Done", "Cancelled"})
+	require.NoError(t, err)
+	assert.Len(t, issues, 2)
+}
+
+// TestFetchIssuesByStatesMixedFilterDeduplicates mirrors
+// TestFetchCandidateIssuesMixedFilterDeduplicates: multiple filter slugs
+// (including the no-project sentinel) are fetched and merged, deduplicating
+// on issue ID.
+func TestFetchIssuesByStatesMixedFilterDeduplicates(t *testing.T) {
+	resp1 := singlePageResponse([]map[string]interface{}{
+		linearIssueNode("id-1", "ENG-1", "Done"),
+	})
+	resp2 := singlePageResponse([]map[string]interface{}{
+		linearIssueNode("id-1", "ENG-1", "Done"),
+	})
+	srv := serveJSON(t, []map[string]interface{}{resp1, resp2})
+	defer srv.Close()
+
+	client := linear.NewClient(linear.ClientConfig{
+		APIKey:   "test-key",
+		Endpoint: srv.URL,
+	})
+	client.SetProjectFilter([]string{"proj-a", "proj-b"})
+
+	issues, err := client.FetchIssuesByStates(context.Background(), []string{"Done"})
+	require.NoError(t, err)
+	assert.Len(t, issues, 1, "duplicate issues should be deduplicated")
 }
 
 // ---------------------------------------------------------------------------
@@ -1242,6 +1318,44 @@ func TestNormalizeBlockersFromInverseRelations(t *testing.T) {
 	assert.Equal(t, "In Progress", *issues[0].BlockedBy[0].State)
 	require.NotNil(t, issues[0].BlockedBy[0].URL)
 	assert.Equal(t, "https://linear.app/issue/ENG-0", *issues[0].BlockedBy[0].URL)
+}
+
+// TestFetchCandidateIssuesBlockedByChildSubIssue proves the query/normalize
+// chain end-to-end at the client level: a fetched issue whose raw node
+// carries a `children` selection surfaces the child as a BlockedBy entry,
+// per the Linear sub-issues gating design.
+func TestFetchCandidateIssuesBlockedByChildSubIssue(t *testing.T) {
+	node := linearIssueNode("id-1", "ENG-1", "Todo")
+	node["children"] = map[string]interface{}{
+		"nodes": []interface{}{
+			map[string]interface{}{
+				"id":         "child-id",
+				"identifier": "ENG-2",
+				"url":        "https://linear.app/issue/ENG-2",
+				"state":      map[string]interface{}{"name": "Todo"},
+			},
+		},
+	}
+	resp := singlePageResponse([]map[string]interface{}{node})
+	srv := serveJSON(t, []map[string]interface{}{resp})
+	defer srv.Close()
+
+	client := linear.NewClient(linear.ClientConfig{
+		APIKey:       "test-key",
+		ProjectSlug:  "my-project",
+		ActiveStates: []string{"Todo"},
+		Endpoint:     srv.URL,
+	})
+	issues, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.Len(t, issues[0].BlockedBy, 1)
+	assert.Equal(t, "child-id", *issues[0].BlockedBy[0].ID)
+	assert.Equal(t, "ENG-2", *issues[0].BlockedBy[0].Identifier)
+	require.NotNil(t, issues[0].BlockedBy[0].URL)
+	assert.Equal(t, "https://linear.app/issue/ENG-2", *issues[0].BlockedBy[0].URL)
+	require.NotNil(t, issues[0].BlockedBy[0].State)
+	assert.Equal(t, "Todo", *issues[0].BlockedBy[0].State)
 }
 
 func TestNormalizeSkipsInvalidNodes(t *testing.T) {

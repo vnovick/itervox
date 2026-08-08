@@ -91,6 +91,11 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 	if blocker, blocked := firstUnresolvedBlocker(issue, state); blocked {
 		return "blocked_by:" + blockerIdentifier(blocker)
 	}
+	for _, entry := range state.InferredDeps[issue.Identifier] {
+		if entry.Gating {
+			return "inferred_blocked_by:" + entry.Source
+		}
+	}
 	return ""
 }
 

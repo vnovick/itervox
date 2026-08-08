@@ -10,12 +10,16 @@ from the same machine that runs the daemon. To view the dashboard from your
 phone or another computer, you have five options.
 
 :::caution
-**Prefer setting `ITERVOX_API_TOKEN` before exposing the dashboard outside loopback.**
-On non-loopback binds, Itervox requires bearer-token auth by default. If you do
-not set `ITERVOX_API_TOKEN` yourself, the daemon auto-generates an ephemeral
-token at startup, prints a one-time dashboard URL with `?token=...`, and
-requires that bearer token on every request. For stable remote access, put a
-fixed token in `.itervox/.env` (loaded automatically) or export it:
+**Bearer-token auth is on by default, on every bind — including `127.0.0.1`.**
+Itervox does not try to infer whether a bind address is "safe"; a loopback
+daemon sitting behind a tunnel or reverse proxy (exactly what most of the
+options below set up) is just as internet-exposed as one bound to `0.0.0.0`.
+So unless you set `server.allow_unauthenticated: true`, the daemon always
+auto-generates an ephemeral token at startup, prints a one-time dashboard URL
+with `?token=...`, and requires that bearer token on every request. Pinning a
+fixed token in `.itervox/.env` (loaded automatically) is recommended so the
+token — and any bookmark or shortcut that carries it — stays stable across
+restarts, rather than needing to be re-copied every time:
 
 ```bash
 # .itervox/.env
@@ -126,7 +130,10 @@ command and you get a public HTTPS URL that proxies to your local dashboard.
 
 1. Install ngrok and authenticate (`ngrok config add-authtoken <token>`).
 2. Start the Itervox daemon as usual (default `127.0.0.1:8090` is fine — ngrok
-   talks to localhost).
+   talks to localhost). Watch stderr for the `dashboard URL (carries token —
+   copy/paste once)` line and copy the token — the daemon auto-generates one
+   regardless of the loopback bind, since ngrok is about to make this
+   loopback address reachable from the public internet.
 3. In a separate terminal:
 
    ```bash
@@ -134,9 +141,9 @@ command and you get a public HTTPS URL that proxies to your local dashboard.
    ```
 
    ngrok prints a public URL like `https://abcd-1234.ngrok-free.app`.
-4. On your phone, open
-   `https://abcd-1234.ngrok-free.app/?token=<your-token>` on first visit —
-   the dashboard will capture the token and strip it from the URL.
+4. On your phone, open `https://abcd-1234.ngrok-free.app/?token=<token-you-copied-from-step-2>`
+   on first visit — the dashboard will capture the token and strip it from
+   the URL.
 
 ### Lock down the public URL
 
@@ -147,8 +154,12 @@ basic auth or OAuth to keep random visitors out:
 ngrok http 8090 --basic-auth="you:strongpassword"
 ```
 
-Or restrict by IP / Google email on a paid plan. Always set
-`ITERVOX_API_TOKEN` as well — defence in depth.
+Or restrict by IP / Google email on a paid plan. The Itervox bearer token is
+already required on every request by default — ngrok's auth options add a
+second layer in front of it, not a substitute for it. Pinning
+`ITERVOX_API_TOKEN` in `.itervox/.env` is recommended so the token stays
+stable across daemon restarts instead of rotating (and needing to be
+re-copied) every time.
 
 **Pros:** the fastest path to a public URL, automatic HTTPS, works through any
 NAT or firewall, ships with built-in auth options.
@@ -178,8 +189,11 @@ without depending on any vendor.
    piko server --proxy.bind-addr :8000 --upstream.bind-addr :8001
    ```
 
-2. **On your laptop**, run the Piko agent pointing at your local Itervox
-   dashboard:
+2. **On your laptop**, start Itervox as usual and copy the token from the
+   `dashboard URL (carries token — copy/paste once)` line on stderr — the
+   daemon auto-generates one by default even on a loopback bind, since Piko
+   is about to expose it publicly. Then run the Piko agent pointing at your
+   local Itervox dashboard:
 
    ```bash
    piko agent http itervox-dashboard 8090 \
@@ -193,10 +207,14 @@ without depending on any vendor.
    subdomain you choose) points to the Piko server's proxy port.
 
 4. **On your phone**, browse to
-   `http://itervox-dashboard.your-domain.com/?token=<your-token>` on first
-   visit. The dashboard captures the token, and subsequent visits work
-   without the query parameter. The Piko server routes the request through
-   the outbound tunnel to your laptop's Itervox dashboard.
+   `http://itervox-dashboard.your-domain.com/?token=<token-you-copied-in-step-2>`
+   on first visit. The dashboard captures the token, and subsequent visits
+   work without the query parameter. The Piko server routes the request
+   through the outbound tunnel to your laptop's Itervox dashboard.
+
+   For a token that survives daemon restarts (so you don't have to re-copy it
+   every time), pin `ITERVOX_API_TOKEN` in `.itervox/.env` — recommended for
+   any Piko setup you'll use repeatedly.
 
 ### Why Piko fits Itervox
 
@@ -216,6 +234,24 @@ setup is more involved than Tailscale.
 
 ---
 
+## Reverse proxy / TLS termination
+
+If you put nginx, Caddy, or any other reverse proxy in front of the daemon —
+for example to terminate TLS on a cloud VM before forwarding to a loopback
+`itervox` process — the proxy rides on top of the **same** bearer auth
+described above. The proxy does not replace it, and it cannot see or check
+the token on your behalf unless you specifically configure it to.
+
+**Never set `server.allow_unauthenticated: true` on a proxied deployment.**
+The daemon has no way to tell that a request arriving on `127.0.0.1` came
+through your TLS-terminating proxy rather than from an arbitrary local
+process — from the daemon's point of view a proxied deployment and a bare
+loopback bind look identical. Leave auth on and pass the `Authorization:
+Bearer` header (and the `?token=` query param on first load) through the
+proxy unmodified.
+
+---
+
 ## Comparison
 
 | Option | Same WiFi | Remote | Self-hosted | Setup | Best for |
@@ -230,23 +266,28 @@ setup is more involved than Tailscale.
 
 ## The API token
 
-Itervox is **secure by default** when exposed beyond loopback: if you bind
-the server to any non-loopback address (`0.0.0.0`, a LAN IP, a Tailscale IP,
-etc.) and you haven't set `ITERVOX_API_TOKEN`, Itervox will auto-generate a
-random 32-byte token on startup and install bearer-token authentication.
-The token is printed once in the startup log alongside a dashboard URL that
-embeds it:
+Itervox is **secure by default on every bind, including loopback**: unless
+you've set `ITERVOX_API_TOKEN` yourself, the daemon auto-generates a random
+32-byte token on startup and installs bearer-token authentication —
+regardless of `server.host`. This is deliberate: bind address is not a
+reliable signal for exposure. A daemon bound to `127.0.0.1` behind ngrok,
+Piko, Tailscale, or a reverse proxy is exactly as reachable from outside as
+one bound to `0.0.0.0`, and the daemon has no way to detect that from inside
+the process — so it always generates a token rather than guessing. The token
+is printed once in the startup log alongside a dashboard URL that embeds it:
 
 ```
-INFO server: auto-generated ephemeral API token for non-loopback bind host=0.0.0.0
-INFO dashboard URL (carries token — copy/paste once) url=http://0.0.0.0:8090/?token=<long-hex-token>
+INFO server: auto-generated ephemeral API token host=127.0.0.1 hint="set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated: true to opt out"
+INFO dashboard URL (carries token — copy/paste once) url=http://127.0.0.1:8090/?token=<long-hex-token>
 ```
 
-Auto-generated tokens are **ephemeral** — they change on every restart. For a
-stable token (so your phone's bookmark keeps working across restarts), pin
-one yourself in `.itervox/.env`, which Itervox loads automatically on startup
-and which survives shell restarts and launcher scripts that wouldn't inherit
-an exported variable:
+Auto-generated tokens are **ephemeral** — they change on every restart, which
+means the URL above changes too. Pinning a stable token in `.itervox/.env` is
+**recommended so the token survives restarts** — a bookmark or shortcut on
+your phone keeps working instead of needing the `?token=` value re-copied
+from stderr every time you restart the daemon. `.itervox/.env` is loaded
+automatically on startup and survives shell restarts and launcher scripts
+that wouldn't inherit an exported variable:
 
 ```bash
 # .itervox/.env
@@ -256,22 +297,29 @@ ITERVOX_API_TOKEN=$(openssl rand -hex 32)
 An `export ITERVOX_API_TOKEN=…` in your shell also works, but only if you
 launch `itervox` from that same shell session.
 
-### Opting out of bearer auth on LAN
+### Opting out of bearer auth
 
-If you really want an unauthenticated non-loopback bind — for example, a
-daemon running on an air-gapped LAN or behind a strict firewall where you
-accept the risk — set the explicit opt-out in `WORKFLOW.md`:
+If you really want an unauthenticated daemon — for example, on an air-gapped
+LAN or behind a strict firewall where you accept the risk — set the explicit
+opt-out in `WORKFLOW.md`:
 
 ```yaml
 server:
   host: 0.0.0.0
   port: 8090
-  allow_unauthenticated_lan: true
+  allow_unauthenticated: true
 ```
 
-Itervox will then bind non-loopback with no auth middleware installed, and
-log a warning at startup. This flag does nothing when `ITERVOX_API_TOKEN` is
-set — an explicit token always wins.
+`allow_unauthenticated` was previously named `allow_unauthenticated_lan`; the
+old key still parses (with a deprecation warning logged at startup) but new
+configs should use `allow_unauthenticated`. Setting it to `true` disables
+auth entirely — no auth middleware is installed on **any** bind, not just
+non-loopback ones — and Itervox logs a warning at startup naming the risk.
+This flag does nothing when `ITERVOX_API_TOKEN` is set — an explicit token
+always wins, and auth stays on. Do not combine this flag with any of the
+options above except Option 1/2/3 on a fully trusted network — see the
+reverse-proxy/TLS-termination note above for why it must never be set on a
+tunneled or proxied deployment.
 
 When `ITERVOX_API_TOKEN` is set, the daemon startup log includes a dashboard
 URL that embeds the token (`http://host:8090/?token=…`) — copy/paste that

@@ -28,6 +28,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadAutoSwitchedFromDisk(state)
 	state = o.loadInputRequiredFromDisk(state)
 	state = o.loadAutomationQueueFromDisk(state)
+	state = o.loadDepsOverridesFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	tick := time.NewTimer(0)
 	defer tick.Stop()
@@ -69,6 +70,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
 	o.commentWg.Wait()
+	o.depsRefreshWg.Wait()
 	return loopErr
 }
 
@@ -83,6 +85,15 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state.ActiveStates = append([]string{}, o.cfg.Tracker.ActiveStates...)
 	state.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
 	o.cfgMu.RUnlock()
+
+	// Gap D (Task 6 review): run the dependency-refresh watchdog before the
+	// candidate fetch, not just inside reconcileDependencyRefresh further
+	// down. onTick returns early below when FetchCandidateIssues errors,
+	// which would otherwise skip reconcileDependencyRefresh — and with it the
+	// watchdog — for exactly the tracker-outage scenario the watchdog exists
+	// to recover from. Safe to also run again inside reconcileDependencyRefresh
+	// on the success path below; it is idempotent.
+	o.reclaimStuckDependencyRefresh(&state, now)
 
 	// 1. Revert expired auto-switch overrides before retries or fresh
 	// dispatch can reuse a stale fallback profile/backend.
@@ -104,11 +115,66 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		slog.Warn("orchestrator: fetch candidates failed", "error", err)
 		return state
 	}
+
+	// outbox Task 3 — reconcile pending write-ahead-outbox entries against
+	// this tick's freshly polled issues, then overlay each surviving
+	// pending update_state entry's TargetState onto its issue in `issues`.
+	// Must run BEFORE ReconcileInferredDeps/CandidateSeen/BuildTickGraph
+	// and the dispatch-eligibility loop below, all of which read `issues`:
+	// this is what keeps a completed-but-unflushed issue out of the ready
+	// set (never re-dispatched) and lets its dependents' blockers resolve
+	// optimistically. See outbox_overlay.go for the full rationale
+	// (including why reconciliation runs before the overlay) and
+	// docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md's
+	// "Overlay"/"Reconciliation" sections. Nil-safe: o.outbox is nil
+	// whenever cfg.Tracker.Outbox is false (the kill switch), in which
+	// case this returns an empty set and mutates nothing.
+	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
+
+	// unified-dependency-graph Task 4 — recompute the inferred-dependency
+	// gating layer against this tick's candidate set before the audit/dispatch
+	// loop below reads it. Pure function; the sidecar read is a local mtime
+	// stat via o.sidecarEdges(), nil-safe when no sidecar path is configured.
+	// state.DepsOverrides (Task 6) carries operator dismissals through so
+	// overridden targets report Overridden=true / Gating=false here too —
+	// this is a superset recompute of the same-tick patch the
+	// EventSetDepsOverride handler applies, so the two never disagree once a
+	// tick has run.
+	state.InferredDeps = ReconcileInferredDeps(o.sidecarEdges(), issues, state.DepsOverrides, o.cfg, state, now)
+
+	// analyzer-autonomy Task 4 fix round — snapshot "what tracker polling saw
+	// this tick" right where issues is in hand, alongside InferredDeps/
+	// BuildTickGraph. Pure function, no state read; see candidate_seen.go.
+	state.CandidateSeen = candidateSeenRows(issues)
+
+	// critical-path-ordering Task 3 — build the tick graph once, right after
+	// InferredDeps is reconciled, so both dispatch ordering (below) and Task
+	// 4's cycle/attention alerting reuse the same graph value instead of
+	// recomputing it. tickGraph itself is not consumed yet outside this tick;
+	// Task 4 wires ExtractCycles / attention surfacing off of it here.
+	tickGraph := BuildTickGraph(issues, state.InferredDeps, state)
+
+	// critical-path-ordering Task 4 — cycles and attention items are
+	// event-loop-owned derived state: recomputed every tick from the graph
+	// just built above, never persisted, no events raised. prev = the
+	// previous tick's state.DependencyCycles, which is how ExtractCycles
+	// carries DetectedAt forward for a repeating member set.
+	//
+	// wave-2 polish Task 4 — ComputeGraphMetrics and ExtractCycles each ran
+	// their own Tarjan SCC pass over the identical tickGraph; they're fused
+	// here into one ComputeTickGraphAnalysis call that computes the SCC
+	// decomposition once and feeds both consumers from it. See
+	// ComputeTickGraphAnalysis's doc comment.
+	tickGraphMetrics, cycles := ComputeTickGraphAnalysis(tickGraph, state.DependencyCycles, now)
+	state.DependencyCycles = cycles
+	state.DependencyAttention = DeriveDependencyAttention(tickGraph, state.DependencyCycles, state, o.cfg, now)
+
 	for i := range issues {
 		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issues[i], now)
 	}
-	o.auditBlockersResolvedAutomationSources(ctx, &state, now)
-	o.refreshKnownDependencyAudits(ctx, &state, now)
+	// Dependency-audit tracker fetches run off-loop. This call selects a batch
+	// and returns immediately; results arrive as EventDependencyAuditRefreshed.
+	o.reconcileDependencyRefresh(ctx, &state, now)
 
 	// v0.2.0 audit P1-1 — build a lookup table over the candidate fetch so
 	// drainAutomationQueue can reuse the snapshots instead of issuing a
@@ -185,12 +251,17 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	)
 
 	dispatched := 0
-	// P2 — when prefer_high_outdegree is enabled, sort with the outdegree
-	// tiebreaker so foundation issues that unblock siblings dispatch first.
-	o.cfgMu.RLock()
-	preferOutdegree := o.cfg.Agent.PreferHighOutdegreeSort
-	o.cfgMu.RUnlock()
-	sorted := SortForDispatchWithOutdegree(issues, preferOutdegree)
+	// critical-path-ordering Task 3 — dependencies.ordering is read-only
+	// config (validated/defaulted at load time in internal/config), so no
+	// cfgMu is needed here: "simple" keeps legacy priority/created_at/
+	// identifier order; anything else (including the "critical_path"
+	// default) sorts by fan-out/chain-length via the tick graph built above.
+	var sorted []domain.Issue
+	if o.cfg.Dependencies.Ordering == config.DependenciesOrderingSimple {
+		sorted = SortForDispatch(issues)
+	} else {
+		sorted = SortForDispatchCriticalPath(issues, tickGraphMetrics)
+	}
 	for _, issue := range sorted {
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("orchestrator: no slots available, stopping dispatch",
@@ -1155,6 +1226,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			appendIssueStatusChange(&state, *ev.StatusChange)
 		}
 
+	case EventDependencyAuditRefreshed:
+		o.applyDependencyRefreshResult(ctx, &state, ev.DependencyRefresh, time.Now())
+
+	case EventSetDepsOverride:
+		state = o.applyDepsOverrideEvent(state, ev)
+
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
@@ -1310,7 +1387,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			if ev.RunEntry != nil && ev.RunEntry.PRURL != "" {
 				successArgs = append(successArgs, "pr_url", ev.RunEntry.PRURL)
 			}
-			slog.Info("orchestrator: worker succeeded, claim released", successArgs...)
+			o.logger().Info("orchestrator: worker succeeded, claim released", successArgs...)
 			// Gap §1.3 — clear the rate_limited auto-switch override on
 			// successful exit so the next dispatch reverts to the
 			// natural profile. Operator-set overrides (not marked in
@@ -1601,7 +1678,7 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 		attempts, lastErr)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(comment)); err != nil {
+	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(comment)); err != nil {
 		slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
 	}
 }
@@ -1610,9 +1687,18 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 // the issue to a caller-specified target state instead of computing backlog/active.
 // Returns the (potentially mutated) state. No-op when issueID or targetState is empty.
 //
-// Uses context.Background() intentionally: the tracker state transition must
-// complete even during graceful shutdown to avoid leaving issues in an
-// inconsistent state. The timeout ensures the goroutine is bounded.
+// Uses a bounded (15s) context, not context.Background(), for the
+// o.writeSink().UpdateIssueState call: directWriteSink's between-attempt
+// backoff wait watches this ctx (see write_sink.go), and the daemon's
+// default shutdown grace is 30s — an unbounded ctx combined with the
+// direct sink's up-to-4-attempt/2s+4s+8s-backoff retry loop could run
+// ~74s worst case (see fix-round §1 in task-2-report.md), well past that
+// grace period, risking a force-exit mid-retry that loses this
+// transition + the RecordIssueStatusChange/EventDiscardComplete below.
+// Restoring the original 15s bound keeps this goroutine's worst case
+// bounded regardless of which sink is active — the outbox sink ignores
+// ctx entirely (Enqueue is synchronous, in-process), so the bound is a
+// no-op there and only matters for the direct sink.
 func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identifier, targetState string) State {
 	if issueID == "" || targetState == "" {
 		return state
@@ -1622,7 +1708,9 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 	go func() {
 		defer o.discardWg.Done()
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
+		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState)
+		updateCancel()
+		if err != nil {
 			slog.Warn("orchestrator: failed to transition issue to failed state",
 				"identifier", identifier, "target_state", targetState, "error", err)
 		} else {
@@ -1634,7 +1722,6 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 				Source:     StatusSourceWorkerLifecycle,
 			})
 		}
-		updateCancel()
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer sendCancel()
 		select {

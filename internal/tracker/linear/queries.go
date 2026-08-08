@@ -25,6 +25,9 @@ query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: 
           issue { id identifier url state { name } }
         }
       }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
       createdAt
       updatedAt
     }
@@ -51,6 +54,9 @@ query ItervoxIssueDetail($id: String!) {
         type
         issue { id identifier url state { name } }
       }
+    }
+    children(first: 50) {
+      nodes { id identifier url state { name } }
     }
     comments(first: 50, orderBy: createdAt) {
       nodes {
@@ -107,6 +113,9 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
           issue { id identifier url state { name } }
         }
       }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
       createdAt
       updatedAt
     }
@@ -135,6 +144,9 @@ query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relatio
           type
           issue { id identifier url state { name } }
         }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
       }
       createdAt
       updatedAt
@@ -176,6 +188,9 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
           type
           issue { id identifier url state { name } }
         }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
       }
       createdAt
       updatedAt

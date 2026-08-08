@@ -18,8 +18,15 @@ Add the field to the relevant struct in `internal/config/config.go` (`ServerConf
 Pick a sensible default. Empty string, `false`, or `0` is usually wrong — prefer an explicit safe value. Pattern to mirror (see `internal/config/config.go` around line 324):
 
 ```go
-cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated", false)
 ```
+
+(The Go field name `AllowUnauthenticatedLAN` predates a #48 rename of the
+YAML key to `allow_unauthenticated`; the field name itself was kept to
+minimize blast radius. The real parse site also accepts the old
+`allow_unauthenticated_lan` key as a deprecated alias with a `slog.Warn` —
+see `internal/config/config.go` around the `server` block for the full
+alias-handling pattern if your new field needs the same treatment.)
 
 A struct field without a corresponding parse line silently stays at its zero value forever — the Go compiler will not warn you.
 

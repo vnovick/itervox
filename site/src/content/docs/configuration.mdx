@@ -513,7 +513,7 @@ Controls the built-in HTTP server that serves the web dashboard and REST API.
 |---|---|---|---|
 | `host` | string | `"127.0.0.1"` | Interface the server listens on. Change to `"0.0.0.0"` to expose on all interfaces. |
 | `port` | int | auto-assigned | TCP port. When omitted, Itervox picks an available port and prints it at startup. |
-| `allow_unauthenticated_lan` | bool | `false` | When binding to a non-loopback address, Itervox requires bearer-token auth on every request and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted-LAN deployments where the daemon is physically unreachable from the public internet. No effect on loopback binds. |
+| `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted, fully local deployments where the daemon is physically unreachable from anyone else — this has an effect on every bind, including loopback, since a loopback daemon behind a tunnel or reverse proxy is exactly as reachable as one bound to `0.0.0.0`. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically but logs a deprecation warning at startup. |
 
 ```yaml
 server:
@@ -523,7 +523,7 @@ server:
 
 ### Authentication
 
-Any non-loopback bind requires `Authorization: Bearer <token>` on every HTTP request and SSE stream. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup and logs it once. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /health` probe is auth-exempt so load balancers and uptime monitors can check liveness without a token.
+Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /api/v1/health` probe is auth-exempt so load balancers and uptime monitors can check liveness without a token — it is the only auth-exempt route.
 
 See the [Remote access guide](/guides/remote-access/) for setting up persistent tokens and reverse-proxy TLS.
 

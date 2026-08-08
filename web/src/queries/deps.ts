@@ -23,11 +23,30 @@ import {
   type DepsAnalyzeJob,
 } from '../types/schemas';
 
-interface AnalyzeDepsInput {
-  profile?: string;
+// Surfaced to the caller as soon as the job ID is known (right after
+// enqueue) and again on every poll tick, so a component (DepsGraph's
+// toolbar) can show a Cancel control and live chunk progress without
+// running a second, independent polling loop against the same endpoint.
+// `status`/`chunksTotal`/`chunksDone` are absent on the enqueue-time call —
+// only `jobId` is known at that point.
+export interface DepsJobUpdate {
+  jobId: string;
+  status?: DepsAnalyzeJob['status'];
+  chunksTotal?: number;
+  chunksDone?: number;
+  lastActivityAt?: string;
+  // analyzer-autonomy Task 5 — 'manual' (operator click/API/CLI) vs 'auto'
+  // (scheduler-initiated, Task 4). Absent on the enqueue-time onJobUpdate
+  // call (only jobId is known then); populated from the first poll tick.
+  trigger?: DepsAnalyzeJob['trigger'];
 }
 
-const TERMINAL_STATUSES = new Set<DepsAnalyzeJob['status']>(['succeeded', 'failed']);
+interface AnalyzeDepsInput {
+  profile?: string;
+  onJobUpdate?: (update: DepsJobUpdate) => void;
+}
+
+const TERMINAL_STATUSES = new Set<DepsAnalyzeJob['status']>(['succeeded', 'failed', 'cancelled']);
 
 // Poll cadence: start at 1s, double until 5s, cap there. Chosen because the
 // analyzer pass is typically 10–60s and we want to surface failure quickly
@@ -35,7 +54,11 @@ const TERMINAL_STATUSES = new Set<DepsAnalyzeJob['status']>(['succeeded', 'faile
 const POLL_INTERVAL_START_MS = 1_000;
 const POLL_INTERVAL_MAX_MS = 5_000;
 
-async function pollUntilTerminal(jobId: string, signal: AbortSignal): Promise<DepsAnalyzeJob> {
+async function pollUntilTerminal(
+  jobId: string,
+  signal: AbortSignal,
+  onJobUpdate?: (update: DepsJobUpdate) => void,
+): Promise<DepsAnalyzeJob> {
   let delay = POLL_INTERVAL_START_MS;
   // Cap total polling at 10 minutes — analyzer is bounded by the daemon's
   // turn_timeout_ms, but we add a fallback so a stuck client doesn't poll
@@ -54,6 +77,14 @@ async function pollUntilTerminal(jobId: string, signal: AbortSignal): Promise<De
     }
     const json: unknown = await res.json();
     const job = DepsAnalyzeJobSchema.parse(json);
+    onJobUpdate?.({
+      jobId: job.jobId,
+      status: job.status,
+      chunksTotal: job.chunksTotal,
+      chunksDone: job.chunksDone,
+      lastActivityAt: job.lastActivityAt,
+      trigger: job.trigger,
+    });
     if (TERMINAL_STATUSES.has(job.status)) {
       return job;
     }
@@ -63,7 +94,7 @@ async function pollUntilTerminal(jobId: string, signal: AbortSignal): Promise<De
 
 export function useAnalyzeDeps() {
   return useMutation<DepsAnalyzeJob, Error, AnalyzeDepsInput>({
-    mutationFn: async ({ profile }) => {
+    mutationFn: async ({ profile, onJobUpdate }) => {
       const res = await authedFetch('/api/v1/deps/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -75,14 +106,19 @@ export function useAnalyzeDeps() {
       }
       const json: unknown = await res.json();
       const enq = DepsAnalyzeEnqueueResponseSchema.parse(json);
+      onJobUpdate?.({ jobId: enq.jobId });
       const controller = new AbortController();
-      const job = await pollUntilTerminal(enq.jobId, controller.signal);
+      const job = await pollUntilTerminal(enq.jobId, controller.signal, onJobUpdate);
       if (job.status === 'failed') {
         throw new Error(job.error || 'analyzer pass failed');
       }
       return job;
     },
     onSuccess: (job) => {
+      if (job.status === 'cancelled') {
+        useToastStore.getState().addToast('Dependency analysis cancelled.', 'info');
+        return;
+      }
       useToastStore
         .getState()
         .addToast(
@@ -94,6 +130,75 @@ export function useAnalyzeDeps() {
     onError: (err) => {
       const message = err instanceof Error ? err.message : 'Unknown error';
       useToastStore.getState().addToast(`Analyze dependencies failed: ${message}`, 'error');
+    },
+  });
+}
+
+export function useCancelAnalyzeDeps() {
+  return useMutation<undefined, Error, { jobId: string }>({
+    mutationFn: async ({ jobId }) => {
+      const res = await authedFetch(`/api/v1/deps/analyze/${encodeURIComponent(jobId)}`, {
+        method: 'DELETE',
+      });
+      // 404 means the job already finished between the click and the request
+      // landing — a normal race, not an error worth surfacing.
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`cancel failed (${String(res.status)})`);
+      }
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      useToastStore.getState().addToast(`Cancel failed: ${message}`, 'error');
+    },
+  });
+}
+
+export interface SetDepsOverrideInput {
+  identifier: string;
+  // true dismisses the issue's inferred blockers (POST), false restores them
+  // (DELETE). Both requests are queued through the orchestrator's event loop
+  // and answer 202 Accepted — the resulting InferredDeps/edge state lands on
+  // the next snapshot, which is why the mutation always calls
+  // refreshSnapshot() on success rather than trusting the 202 body.
+  enabled: boolean;
+}
+
+/**
+ * unified-dependency-graph Task 8 — dismiss/restore the LLM-inferred
+ * dependency gating layer for one issue via
+ * POST/DELETE /api/v1/issues/{identifier}/deps-override (Task 6 backend).
+ * Mirrors the useAnalyzeDeps/useCancelAnalyzeDeps shape in this file:
+ * authedFetch for transport, refreshSnapshot() on success (never
+ * patchSnapshot — the override changes server-computed gating state that
+ * only the daemon can recompute), toast on failure.
+ */
+export function useSetDepsOverride() {
+  return useMutation<SetDepsOverrideInput, Error, SetDepsOverrideInput>({
+    mutationFn: async ({ identifier, enabled }) => {
+      const res = await authedFetch(
+        `/api/v1/issues/${encodeURIComponent(identifier)}/deps-override`,
+        { method: enabled ? 'POST' : 'DELETE' },
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `dependency override failed (${String(res.status)})`);
+      }
+      return { identifier, enabled };
+    },
+    onSuccess: ({ identifier, enabled }) => {
+      useToastStore
+        .getState()
+        .addToast(
+          enabled
+            ? `Dismissed inferred blockers for ${identifier}.`
+            : `Restored inferred blockers for ${identifier}.`,
+          'success',
+        );
+      void useItervoxStore.getState().refreshSnapshot();
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      useToastStore.getState().addToast(`Dependency override failed: ${message}`, 'error');
     },
   });
 }

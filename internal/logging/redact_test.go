@@ -2,8 +2,10 @@ package logging
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -49,6 +51,24 @@ func TestRedactString_Patterns(t *testing.T) {
 			in:     "ordinary log message about issue ENG-42",
 			wanted: "ENG-42",
 			leaked: secretMask, // mask must NOT appear; we have no secret to redact
+		},
+		{
+			name:   "dashboard URL token query param (?token=)",
+			in:     "url: http://localhost:8090/?token=abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567 done",
+			wanted: "?token=" + secretMask,
+			leaked: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+		},
+		{
+			name:   "dashboard URL token query param (&token=)",
+			in:     "callback?foo=bar&token=abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567&rest=1",
+			wanted: "&token=" + secretMask,
+			leaked: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+		},
+		{
+			name:   "short hex token value is NOT matched (below 32-char floor)",
+			in:     "url: http://localhost:8090/?token=deadbeef0123 rest",
+			wanted: "?token=deadbeef0123",
+			leaked: secretMask,
 		},
 	}
 	for _, tc := range cases {
@@ -121,4 +141,77 @@ func TestRedactingHandler_PassesThroughCleanLogs(t *testing.T) {
 	if strings.Contains(out, secretMask) {
 		t.Errorf("clean log incorrectly emitted mask: %s", out)
 	}
+}
+
+func TestRegisterSecret_RedactsExactValueInMsgAndAttrs(t *testing.T) {
+	value := "not-a-pattern-match-but-a-registered-raw-token-9f3c7a1e"
+	RegisterSecret(value)
+
+	if got := redactString("env dump: ITERVOX_API_TOKEN=" + value); strings.Contains(got, value) {
+		t.Errorf("redactString leaked registered value in msg-shaped string: %s", got)
+	}
+
+	var buf bytes.Buffer
+	h := NewRedactingHandler(slog.NewTextHandler(&buf, nil))
+	log := slog.New(h)
+	log.Info("subprocess env", "raw_env_dump", "ITERVOX_API_TOKEN="+value)
+
+	out := buf.String()
+	if strings.Contains(out, value) {
+		t.Errorf("RedactingHandler leaked registered secret value in attr: %s", out)
+	}
+	if !strings.Contains(out, secretMask) {
+		t.Errorf("expected registered value to be replaced with mask; got: %s", out)
+	}
+}
+
+func TestRegisterSecret_EmptyAndShortValuesNoOp(t *testing.T) {
+	// Neither call should register — both are no-ops per the <8-char /
+	// empty-value guard. If either registered, the literal substrings below
+	// would be redacted to secretMask; assert they are NOT.
+	RegisterSecret("")
+	RegisterSecret("short12") // 7 chars — below the 8-char floor
+
+	msg := "value seen: short12 and nothing else"
+	if got := redactString(msg); got != msg {
+		t.Errorf("redactString(%q) = %q; short/empty RegisterSecret call was not a no-op", msg, got)
+	}
+}
+
+func TestRegisterSecret_ConcurrentWithLogging(t *testing.T) {
+	// The daemon logs from many goroutines (worker subprocesses, HTTP
+	// handlers, the orchestrator event loop) while RegisterSecret may be
+	// called concurrently at startup. Exercise both under -race.
+	var buf syncBuffer
+	h := NewRedactingHandler(slog.NewTextHandler(&buf, nil))
+	log := slog.New(h)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			RegisterSecret(fmt.Sprintf("concurrent-secret-value-%d-abcdefgh", i))
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			log.Info("worker tick", "n", i, "msg", fmt.Sprintf("iteration %d ordinary text", i))
+		}(i)
+	}
+	wg.Wait()
+}
+
+// syncBuffer wraps bytes.Buffer with a mutex so concurrent slog.Handler
+// writes in TestRegisterSecret_ConcurrentWithLogging don't themselves race
+// on the io.Writer — that would be a race in the test fixture, not in the
+// code under test.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
 }

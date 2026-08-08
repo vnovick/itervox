@@ -38,7 +38,15 @@ const (
 	AutomationQueueReasonInputRequired      AutomationQueueReason = "input_required"
 	AutomationQueueReasonPendingInputResume AutomationQueueReason = "pending_input_resume"
 	AutomationQueueReasonBlockedBy          AutomationQueueReason = "blocked_by"
-	AutomationQueueReasonPausedByState      AutomationQueueReason = "paused_by_state"
+	// AutomationQueueReasonInferredBlockedBy mirrors AutomationQueueReasonBlockedBy
+	// for the soft (LLM-inferred) dependency gate added by the
+	// unified-dependency-graph work (dispatch.go's "inferred_blocked_by:<source>"
+	// guard). The soft gate must never be harsher than the hard tracker-blocker
+	// gate, so it gets the same queueable/Blocked-status treatment — only the
+	// reason tag differs, so the dashboard and logs can still tell inferred
+	// blockers apart from tracker blockers.
+	AutomationQueueReasonInferredBlockedBy AutomationQueueReason = "inferred_blocked_by"
+	AutomationQueueReasonPausedByState     AutomationQueueReason = "paused_by_state"
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -98,6 +106,12 @@ const (
 	DependencySourceTrackerRelation DependencyAuditSource = "tracker_relation"
 	DependencySourceIssueText       DependencyAuditSource = "issue_text"
 	DependencySourceIssueComment    DependencyAuditSource = "issue_comment"
+	// DependencySourceSubIssue marks a blocker derived from a Linear parent's
+	// child (sub-)issue, as opposed to an explicit "blocks" tracker relation.
+	// Distinguished at internal/tracker/linear/normalize.go child-append time
+	// via domain.BlockerRef.Origin == "sub_issue"; dependencySourceForBlocker
+	// in dependency_audit.go maps that marker to this source.
+	DependencySourceSubIssue DependencyAuditSource = DependencyAuditSource(domain.BlockerOriginSubIssue)
 )
 
 // DependencyAuditEntry is the event-loop-owned dependency state for one issue.
@@ -116,6 +130,19 @@ type DependencyAuditEntry struct {
 	LastAuditedAt         time.Time
 	LastTransitionVersion int64
 	LastTransitionReason  string
+	// InFlight is true while an off-loop refresh batch holds this row. It
+	// excludes the row from re-selection until the result lands or the
+	// watchdog fires. NOT durable — cleared unconditionally on envelope
+	// restore, since a crash mid-refresh would otherwise wedge the row.
+	InFlight bool
+	// ConsecutiveFailures counts back-to-back transient refresh failures.
+	// Reset to 0 on any successful refresh. Drives the degraded marker.
+	ConsecutiveFailures int
+	// LastRefreshAttemptAt is when a refresh was last *attempted* for this
+	// row. Distinct from LastAuditedAt, which means "recomputed" and ticks
+	// for every candidate issue every tick regardless of whether a fetch
+	// occurred — making it the wrong signal for a refresh interval.
+	LastRefreshAttemptAt time.Time
 }
 
 func automationQueueKey(issue domain.Issue, dispatch AutomationDispatch) string {
@@ -348,10 +375,16 @@ func automationQueueLowWater(maxLength int) int {
 }
 
 func automationQueueReasonFromString(reason string) (AutomationQueueReason, string) {
-	if before, after, ok := strings.Cut(reason, ":"); ok && before == string(AutomationQueueReasonBlockedBy) {
-		return AutomationQueueReasonBlockedBy, after
+	before, after, ok := strings.Cut(reason, ":")
+	if !ok {
+		return AutomationQueueReason(reason), ""
 	}
-	return AutomationQueueReason(reason), ""
+	switch AutomationQueueReason(before) {
+	case AutomationQueueReasonBlockedBy, AutomationQueueReasonInferredBlockedBy:
+		return AutomationQueueReason(before), after
+	default:
+		return AutomationQueueReason(reason), ""
+	}
 }
 
 func automationQueueableReason(reason string) (bool, AutomationQueueReason, string) {
@@ -366,7 +399,8 @@ func automationQueueableReason(reason string) (bool, AutomationQueueReason, stri
 		AutomationQueueReasonClaimed,
 		AutomationQueueReasonInputRequired,
 		AutomationQueueReasonPendingInputResume,
-		AutomationQueueReasonBlockedBy:
+		AutomationQueueReasonBlockedBy,
+		AutomationQueueReasonInferredBlockedBy:
 		return true, queueReason, detail
 	default:
 		return false, "", ""
@@ -382,7 +416,7 @@ func IsQueueableAutomationReason(reason string) bool {
 }
 
 func automationQueueStatusForReason(reason AutomationQueueReason) AutomationQueueStatus {
-	if reason == AutomationQueueReasonBlockedBy {
+	if reason == AutomationQueueReasonBlockedBy || reason == AutomationQueueReasonInferredBlockedBy {
 		return AutomationQueueBlocked
 	}
 	return AutomationQueueQueued

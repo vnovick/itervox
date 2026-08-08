@@ -92,8 +92,19 @@ only the event loop mutates them.
   `blockers_resolved` automation trigger when blockers transition to terminal,
   but tracker state moves require explicit automation policy plus a profile with
   `move_state`.
-- The dashboard Deps tab is display-only in v0.2.0 and must derive from
-  snapshot dependency graph rows, not a parallel frontend dependency store.
+- Inferred (LLM-detected) edges soft-gate dispatch: a confidence threshold,
+  a staleness window, and a per-issue operator override (`State.DepsOverrides`)
+  all factor into `InferredDepEntry.Gating`; tracker-declared blockers
+  (`DependencyAudit`) stay hard blocks regardless. The dependency graph is
+  derived solely from `orchestrator.State.InferredDeps` (event-loop
+  reconciled) plus `DependencyAudit` — `cmd/itervox` no longer reads the
+  deps-analyzer sidecar for the dashboard graph.
+- The dashboard Deps tab derives from snapshot dependency graph rows, not a
+  parallel frontend dependency store. Its only mutation surface is the
+  per-issue inferred-blockers override, which goes through the documented
+  `POST`/`DELETE /api/v1/issues/{identifier}/deps-override` endpoints →
+  `SetDepsOverride` → `EventSetDepsOverride` in the event loop; the tab never
+  mutates dependency state directly.
 - Issue status history is bounded runtime-session history unless future work
   explicitly adds restart durability.
 
@@ -220,7 +231,7 @@ cmd/itervox (wires everything)
 - **State**: Zustand (`itervoxStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters, `tokenStore`/`authStore` for auth)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
 - **Real-time**: SSE via `@microsoft/fetch-event-source` (NOT native `EventSource`) — needed so the connection can carry an `Authorization: Bearer` header. Single seam is `web/src/auth/authedEventStream.ts`, consumed by `useItervoxSSE`, `useLogStream`, and the per-issue log-stream in `queries/logs.ts`.
-- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on non-loopback bind unless `server.allow_unauthenticated_lan: true`. All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
+- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results

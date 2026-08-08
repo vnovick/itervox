@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -31,12 +30,12 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/app"
 	"github.com/vnovick/itervox/internal/atomicfs"
-	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -205,6 +204,21 @@ func generateAPIToken() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// shouldGenerateToken decides whether the daemon should auto-generate an
+// ephemeral API token before binding. It is deliberately host-independent
+// (see #48): bind address is not a security boundary — a loopback daemon
+// sitting behind a tunnel or reverse proxy is exactly as exposed to the
+// public internet as one bound to a non-loopback address, and the daemon
+// has no way to detect that from inside the process. So generation is now
+// gated purely on "is there already a token" and "did the operator
+// explicitly opt out", regardless of what cfg.Server.Host is.
+func shouldGenerateToken(allowUnauthenticated bool, envToken string) bool {
+	if envToken != "" {
+		return false
+	}
+	return !allowUnauthenticated
+}
+
 // secretEnvKeys names environment variables whose presence is interesting
 // from a security/auth posture standpoint. When loadDotEnv populates one of
 // these, an additional INFO line is emitted naming the keys (NEVER values)
@@ -277,6 +291,14 @@ func main() {
 	}()
 
 	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
+	// Register a pre-set ITERVOX_API_TOKEN (from the real environment or
+	// loaded above via .itervox/.env) for exact-value log redaction. See
+	// logging.RegisterSecret's doc comment: agent subprocesses inherit this
+	// env var, and its bare-hex shape doesn't match any pattern-based
+	// redaction rule. No-ops when unset (loadDotEnv leaves it empty in that
+	// case) — the auto-generated-token path below registers separately once
+	// a value actually exists.
+	logging.RegisterSecret(os.Getenv("ITERVOX_API_TOKEN"))
 	setItervoxBinEnv()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -318,11 +340,30 @@ func main() {
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: ~/.itervox/logs/<kind>/<project>)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "grace period for active workers on SIGINT/SIGTERM before force exit")
+	logFormatFlag := flag.String("log-format", "", "log format for the rotating file sink: text|json (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
 	if *verbose {
 		logLevel = slog.LevelDebug
+	}
+
+	// Resolve the file-sink log format. requestedLogFormat mirrors the
+	// picked-before-validation value so we can warn exactly once when it
+	// falls back to text because of an unrecognized value — resolveLogFormat
+	// itself is pure and silently normalizes, so the warn lives here instead.
+	// envLogFormat is captured once (wave-1 polish nit) rather than calling
+	// os.Getenv("ITERVOX_LOG_FORMAT") twice for what must be the same value
+	// within a single process invocation.
+	envLogFormat := os.Getenv("ITERVOX_LOG_FORMAT")
+	requestedLogFormat := *logFormatFlag
+	if requestedLogFormat == "" {
+		requestedLogFormat = envLogFormat
+	}
+	logFormat := resolveLogFormat(*logFormatFlag, envLogFormat)
+	if requestedLogFormat != "" && requestedLogFormat != logFormat {
+		slog.Warn("invalid --log-format/ITERVOX_LOG_FORMAT value, falling back to text",
+			"value", requestedLogFormat, "valid_values", "text, json")
 	}
 
 	// Resolve the logs directory.  When --logs-dir is not set we derive a
@@ -356,10 +397,9 @@ func main() {
 		TimeFormat:      time.TimeOnly,
 		Level:           charmLevel,
 	})
-	// Plain text handler for the rotating log file (no colors).
-	fileHandler := slog.NewTextHandler(rotatingFile, &slog.HandlerOptions{
-		Level: logLevel,
-	})
+	// Handler for the rotating log file (no colors): logfmt by default, or
+	// JSON when --log-format/ITERVOX_LOG_FORMAT selects it.
+	fileHandler := newFileLogHandler(rotatingFile, logLevel, logFormat)
 	// Wrap the fanout in a RedactingHandler so any string attr or msg that
 	// matches a known secret pattern (Bearer tokens, lin_api_*, ghp_*, etc.)
 	// is rewritten to "***" before reaching either sink. Pairs with the
@@ -422,6 +462,12 @@ func main() {
 	// resets to 0 on every successful load so transient errors don't compound.
 	firstIter := true
 	reloadAttempt := 0
+	// The HTTP socket outlives run(): it is bound once here and handed to each
+	// run() as a per-generation view, so a config reload keeps the port and
+	// never races EADDRINUSE against the previous server's shutdown. Rebinding
+	// happens only when a reload actually changes server.host/server.port.
+	var srvPersist *persistentListener
+	var srvAddr, srvBoundKey string
 	for {
 		loaded, err := config.Load(*workflowPath)
 		if err == nil {
@@ -470,6 +516,36 @@ func main() {
 			slog.Info("models auto-discovered", "claude", len(claudeModels), "codex", len(codexModels))
 		}
 
+		// Bind — or rebind, when a reload changed server.host/server.port —
+		// the shared HTTP socket. A bind failure is fatal on the first
+		// iteration and on reload alike: the operator must free the port or
+		// change `server.port`; retrying every second would just spam.
+		host := cfg.Server.Host
+		port := 0
+		if cfg.Server.Port != nil {
+			port = *cfg.Server.Port
+		}
+		if bindKey := fmt.Sprintf("%s:%d", host, port); srvPersist == nil || bindKey != srvBoundKey {
+			raw, addr, err := listenStrict(host, port)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err.Error())
+				fmt.Fprintln(os.Stderr,
+					"hint: to run two itervox daemons in parallel, set a distinct `server.port` per repo in WORKFLOW.md, or `server.port: 0` to let the OS pick a free port.")
+				writeStartupErrorMarker(*workflowPath, err)
+				fatalExit(1)
+			}
+			// New socket first, old one closed after — the keys differ, so
+			// they cannot collide, and a failed rebind must not leave the
+			// daemon with no listener at all.
+			if srvPersist != nil {
+				_ = srvPersist.Close()
+			}
+			srvPersist = newPersistentListener(raw)
+			srvAddr = addr
+			srvBoundKey = bindKey
+			slog.Info("HTTP server listening", "addr", addr)
+		}
+
 		runCtx, runCancel := context.WithCancel(ctx)
 
 		// Watch WORKFLOW.md; cancel runCtx to trigger reload on change.
@@ -481,7 +557,7 @@ func main() {
 
 		runDone := make(chan error, 1)
 		go func() {
-			runDone <- run(runCtx, cancel, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, stderrOnly)
+			runDone <- run(runCtx, cancel, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, logFormat, stderrOnly, srvPersist.generation(), srvAddr)
 		}()
 
 		var runErr error
@@ -516,15 +592,11 @@ func main() {
 			return // top-level shutdown
 		}
 
-		// Fatal startup errors (e.g. configured port already in use) MUST
-		// NOT be retried — the operator needs to change WORKFLOW.md or stop
-		// the conflicting process. Looping every 1s spams the log and gives
-		// no signal that intervention is required.
-		if isFatalStartupError(runErr) {
-			slog.Error("run aborted with fatal startup error — fix the cause and restart", "error", runErr)
-			fatalExit(1)
-		}
-
+		// Bind failures — the one class of error the retry loop must never
+		// spin on — are handled fatally at bind time above, before run() is
+		// even started. Everything run() can return is either a clean reload
+		// or something the loop can patiently re-attempt: the loop re-reads
+		// WORKFLOW.md each iteration, so operator fixes take effect.
 		reloadMsg, reloadDelay := reloadPlanForRunExit(runErr)
 		// Real run errors WARN; a clean reload (nil or wrapped context.Canceled)
 		// is Debug-level — matches internal/workflow/watcher.go's "file changed"
@@ -540,9 +612,17 @@ func main() {
 
 // run starts the orchestrator (and optionally the HTTP server) and blocks until
 // runCtx is cancelled. logFile is passed to the HTTP server for the /api/v1/logs endpoint.
-// fileWriter is the rotating log file writer; logLevel is the configured log level.
-// Both are used to redirect slog away from stderr once the TUI takes the terminal.
-func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, stderrOnly *slog.Logger) error {
+// fileWriter is the rotating log file writer; logLevel is the configured log level;
+// logFormat ("text" or "json", see resolveLogFormat) selects the file sink's
+// slog.Handler via newFileLogHandler. All three are used to redirect slog away
+// from stderr once the TUI takes the terminal.
+//
+// srvListener is a per-run view of the daemon's shared HTTP socket (see
+// persistentListener) and actualAddr its bound host:port. run() does not bind:
+// the socket outlives it, so reloads keep the port. run() must not return
+// while its HTTP server could still accept — the next run() serves on the
+// same socket.
+func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrOnly *slog.Logger, srvListener net.Listener, actualAddr string) error {
 	tr, err := buildTracker(cfg)
 	if err != nil {
 		return fmt.Errorf("build tracker: %w", err)
@@ -601,6 +681,35 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
+	// unified-dependency-graph Task 6 — operator deps-override dismissals live
+	// under the project's .itervox/ dir (not logDir) so they persist alongside
+	// the sidecar they dismiss edges from, independent of --log placement.
+	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
+
+	// outbox Task 3 — write-ahead outbox for tracker state transitions and
+	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
+	// outbox.New never fails the daemon: a missing or corrupt outbox.json
+	// starts an empty in-memory outbox and logs a Warn (see its doc
+	// comment) rather than blocking startup, same posture as
+	// deps_overrides.json above. cfg.Tracker.Outbox (default true,
+	// load-time only, not cfgMu-guarded) is the kill switch: when false,
+	// the orchestrator keeps its New()-constructed directWriteSink and no
+	// flusher goroutine starts, so behavior is byte-identical to
+	// pre-outbox itervox — the outbox handle is still constructed (cheap,
+	// and lets an operator flip the flag on a later reload without a
+	// restart... though today the flag is load-time-only, so a reload
+	// still requires a restart to take effect) but never wired in.
+	ob, err := outbox.New(filepath.Join(filepath.Dir(workflowPath), ".itervox", "outbox.json"))
+	if err != nil {
+		return fmt.Errorf("build outbox: %w", err)
+	}
+	if cfg.Tracker.Outbox {
+		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
+		orch.SetOutbox(ob)
+	}
+
+	var agentSessionsDir string
 	if logFile != "" {
 		logDir := filepath.Dir(logFile)
 		orch.SetHistoryFile(filepath.Join(logDir, "history.json"))
@@ -611,7 +720,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		// crash mid-flight doesn't lose them and re-dispatch under the
 		// original (rate-limited) profile.
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
-		orch.SetAgentLogDir(filepath.Join(logDir, "sessions"))
+		agentSessionsDir = filepath.Join(logDir, "sessions")
+		orch.SetAgentLogDir(agentSessionsDir)
 	}
 	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
 		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
@@ -627,67 +737,62 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// from the shell) closes the gap.
 	advertiseMissingDepsSidecar(cfg, workflowPath)
 
-	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath)
+	// depsSvc is constructed here — before buildSnapFunc, not after — because
+	// runner/orch/agentSessionsDir are all already available (set above) and
+	// newDepsAnalyzerService starts no goroutines of its own (work begins
+	// lazily on EnqueueAnalysis); there is no real construction-order
+	// problem to solve, so depsSvc is passed to buildSnapFunc as a plain,
+	// always-non-nil parameter rather than threaded in via a second-phase
+	// bind. bindDepsNotify is the one piece that genuinely needs two-phase
+	// wiring — srv.Notify doesn't exist until `server.New` runs inside the
+	// `srvListener != nil` block below — so it stays called from there.
+	depsSvc, bindDepsNotify := wireDepsAnalyzerService(ctx, orch, cfg, tr, runner, workflowPath, agentSessionsDir)
 
-	// HTTP server — bind listener early so we know the actual port before
-	// starting the TUI (the TUI needs the correct dashboard URL for 'w' key).
-	//
-	// Default behaviour (server.port unset in WORKFLOW.md): bind port 0 so
-	// the OS picks a free port. This makes "two daemons in different repos"
-	// work out of the box. The actual port is written to
-	// .itervox/dashboard_url (read by Vite's dev proxy) and HEARTBEAT.md.
+	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob)
+
+	// HTTP server setup. The listener was bound by main's reload loop —
+	// which owns the socket across reloads — before the TUI starts, so the
+	// dashboard URL for the 'w' key is already accurate.
 	//
 	// Explicit port from WORKFLOW.md: NEVER auto-shift on EADDRINUSE. Silent
 	// shifting is the canonical "Vite proxies to 8090 but the daemon is on
 	// 8091" trap — operators trust WORKFLOW.md to be the source of truth
 	// for the port. If the explicit port is taken, the operator must change
-	// WORKFLOW.md OR stop the conflicting process.
+	// WORKFLOW.md OR stop the conflicting process. That failure is handled
+	// (loudly, fatally) at bind time in main.
 	var srvDone <-chan error
-	var srvListener net.Listener
-	var actualAddr string
 	var actionTokenStore *agentactions.Store
-	port := 0
-	if cfg.Server.Port != nil {
-		port = *cfg.Server.Port
-	}
 	{
-		var err error
-		srvListener, actualAddr, err = listenStrict(cfg.Server.Host, port)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			fmt.Fprintln(os.Stderr,
-				"hint: to run two itervox daemons in parallel, set `server.port: 0` in WORKFLOW.md to let the OS pick a free port, or set a distinct explicit port per repo.")
-			writeStartupErrorMarker(workflowPath, err)
-			return fatalStartupError{err}
-		}
-		slog.Info("HTTP server listening", "addr", actualAddr)
 		// Persist the bound URL for Vite's dev proxy and for `itervox doctor`.
 		dashboardURL := "http://" + actualAddr + "/"
 		if err := writeDashboardURLFile(workflowPath, dashboardURL); err != nil {
 			slog.Warn("itervox: failed to write dashboard URL file", "error", err)
 		}
-		// Secure-by-default for non-loopback binds: if no token is set and the
-		// user hasn't explicitly opted into unauthenticated LAN access, we
-		// auto-generate an ephemeral token and install the bearer middleware.
-		// Regenerated on every restart unless the user pins one via env var.
-		if host := cfg.Server.Host; host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "" {
-			if os.Getenv("ITERVOX_API_TOKEN") == "" {
-				if cfg.Server.AllowUnauthenticatedLAN {
-					slog.Warn("server: binding to non-loopback address with no authentication (allow_unauthenticated_lan: true)",
-						"host", host)
-				} else {
-					generated, err := generateAPIToken()
-					if err != nil {
-						return fmt.Errorf("server: auto-generating API token: %w", err)
-					}
-					if err := os.Setenv("ITERVOX_API_TOKEN", generated); err != nil {
-						return fmt.Errorf("server: setting ITERVOX_API_TOKEN: %w", err)
-					}
-					slog.Info("server: auto-generated ephemeral API token for non-loopback bind",
-						"host", host,
-						"hint", "set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated_lan: true to opt out")
-				}
+		// Secure-by-default, regardless of bind address (#48): if no token is
+		// set and the user hasn't explicitly opted out via
+		// server.allow_unauthenticated, auto-generate an ephemeral token and
+		// install the bearer middleware. Bind address is NOT a signal here —
+		// a loopback bind behind a tunnel/reverse proxy is exactly as
+		// internet-exposed as a non-loopback bind, and the daemon can't tell
+		// the difference from inside the process. Regenerated on every
+		// restart unless the user pins one via env var.
+		if shouldGenerateToken(cfg.Server.AllowUnauthenticatedLAN, os.Getenv("ITERVOX_API_TOKEN")) {
+			generated, err := generateAPIToken()
+			if err != nil {
+				return fmt.Errorf("server: auto-generating API token: %w", err)
 			}
+			if err := os.Setenv("ITERVOX_API_TOKEN", generated); err != nil {
+				return fmt.Errorf("server: setting ITERVOX_API_TOKEN: %w", err)
+			}
+			// Register the freshly generated token for exact-value log
+			// redaction — see logging.RegisterSecret's doc comment.
+			logging.RegisterSecret(generated)
+			slog.Info("server: auto-generated ephemeral API token",
+				"host", cfg.Server.Host,
+				"hint", "set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated: true to opt out")
+		} else if cfg.Server.AllowUnauthenticatedLAN && os.Getenv("ITERVOX_API_TOKEN") == "" {
+			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access",
+				"host", cfg.Server.Host)
 		}
 		// When a token is set (user-provided OR auto-generated above), print a
 		// dashboard URL that carries it as a query parameter. AuthGate captures
@@ -733,12 +838,26 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		}()
 	}
 
-	// Redirect slog to file-only before the TUI takes the alt-screen.
-	// Without this, concurrent slog writes to stderr corrupt the bubbletea display.
-	// The TUI log pane reads directly from logBuf instead of stderr.
-	// Wrapped in RedactingHandler so secrets-in-msg/attrs are scrubbed before
-	// hitting ~/.itervox/logs/ even after the TUI takes over (T-29 / F-NEW-A).
-	slog.SetDefault(slog.New(logging.NewRedactingHandler(slog.NewTextHandler(fileWriter, &slog.HandlerOptions{Level: logLevel}))))
+	// Redirect slog to file-only before the TUI takes the alt-screen — but
+	// only when the TUI is actually about to start. Without this redirect,
+	// concurrent slog writes to stderr corrupt the bubbletea display; the TUI
+	// log pane reads directly from logBuf instead of stderr, so nothing is
+	// lost by going file-only. But statusui.Run refuses to start the TUI at
+	// all when there is no controlling terminal (systemd, container, CI,
+	// detached stdio — issue #49-2), and an unconditional redirect paid the
+	// cost (stderr goes dark) for none of the benefit in that case. TTY
+	// availability is decided here, before the redirect, via the same
+	// TTY-ownership check statusui.Run performs internally (TerminalAvailable
+	// wraps checkForegroundTTYOwnership with no retry/sleep so the two checks
+	// cannot drift). Headless keeps the pre-TUI stderr+file fanout so
+	// journalctl et al. keep working.
+	// Wrapped in RedactingHandler (both branches, via postStartupHandler) so
+	// secrets-in-msg/attrs are scrubbed before hitting ~/.itervox/logs/ and,
+	// in headless mode, stderr too (T-29 / F-NEW-A).
+	// newFileLogHandler keeps this in sync with the pre-TUI file handler above
+	// so --log-format=json survives the redirect instead of silently reverting
+	// to text once the TUI starts.
+	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler(), statusui.TerminalAvailable())))
 	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath, quitApp)
 	if actualAddr != "" {
 		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
@@ -775,6 +894,17 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	go heartbeat.Run(ctx)
 
 	// Start serving on the already-bound listener.
+	//
+	// #52 deferral — startDepsAutoAnalyze (below) is wired inside this
+	// `srvListener != nil` block purely because that's where depsSvc,
+	// adapter, and the other server-only wiring already live, not because
+	// auto-analysis has any actual dependency on the HTTP server being up.
+	// srvListener is always non-nil on every code path today, so the
+	// scheduler always starts — but a future headless mode (no dashboard/API
+	// listener) would silently disable auto-analysis as a side effect of
+	// this placement. Hoisting it out is deliberately NOT done here (v0.2.0
+	// scope); this comment exists so the coupling is visible instead of
+	// silently assumed.
 	if srvListener != nil {
 		fetchIssue := func(ctx context.Context, identifier string) (*server.TrackerIssue, error) {
 			issue, err := tr.FetchIssueByIdentifier(ctx, identifier)
@@ -801,9 +931,28 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			cfg:          cfg,
 			tr:           tr,
 			workflowPath: workflowPath,
+			ob:           ob,
 		}
 		adapter.initSkillsCache()
-		depsSvc, bindDepsNotify := wireDepsAnalyzerService(ctx, orch, cfg, tr, runner, workflowPath)
+		// analyzer-autonomy Task 4 — periodic unattended dependency analysis.
+		// depsSvc satisfies depsAutoAnalyzeEnqueuer; a second SidecarCache
+		// instance is created here (mtime-cached, so a second instance is
+		// cheap) rather than reusing buildSnapFunc's — that cache is private
+		// to buildSnapFunc's closure and not returned/exported.
+		// wave-2 polish Task 4 / #52 — resolveProfile used to read
+		// DepsAnalyzerProfileCfg() and AgentProfileCfg(name) as two separate
+		// cfgMu critical sections, which could observe a torn read across a
+		// concurrent profile change (self-heals next tick, but produces a
+		// spurious "no profile configured" warning in the interim). Now a
+		// single atomic accessor.
+		startDepsAutoAnalyze(ctx, depsSvc, func() (string, bool) {
+			name, p, ok := orch.ResolveDepsAnalyzerProfileCfg()
+			return name, ok && config.ProfileEnabled(p)
+		}, snap, depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath))), cfg,
+			func() []string {
+				active, _, _ := orch.TrackerStatesCfg()
+				return active
+			})
 		srv := server.New(server.Config{
 			Snapshot:         snap,
 			RefreshChan:      refreshChan,
@@ -848,280 +997,45 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	startAutomations(ctx, cfg, tr, orch)
 
+	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
+	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
+	// cfg.Tracker.Outbox check as the SetWriteSink/SetOutbox wiring above —
+	// with the kill switch off, ob has nothing enqueued into it (the
+	// orchestrator kept its direct sink) so starting the goroutine would be
+	// harmless but pointless; skipping it entirely keeps "outbox off" free
+	// of any extra background goroutine.
+	if cfg.Tracker.Outbox {
+		startOutboxFlusher(ctx, ob, tr, orch)
+	}
+
 	orchDone := make(chan error, 1)
 	go func() { orchDone <- orch.Run(ctx) }()
 
-	if srvDone != nil {
+	if srvDone == nil {
+		return <-orchDone
+	}
+	select {
+	case err := <-orchDone:
+		// Detach this run's server from the shared socket before returning:
+		// the next run() serves on the same socket, and two generations
+		// accepting at once would split requests between the dying server and
+		// the new one. The explicit Close matters when run() exits for a
+		// reason other than ctx cancellation (orchestrator error) — the
+		// ctx-driven Shutdown in serveOnListener never fires on that path.
+		_ = srvListener.Close()
 		select {
-		case err := <-orchDone:
-			return err
-		case err := <-srvDone:
-			return err
+		case <-srvDone:
+		case <-time.After(6 * time.Second):
+			slog.Warn("run: http server did not stop within 6s of orchestrator exit")
 		}
-	}
-	return <-orchDone
-}
-
-// resolveAgentCommand resolves a bare command name (e.g. "claude") to its full
-// absolute path using the user's interactive login shell, which sources .zshrc
-// and therefore picks up PATH additions from nvm, volta, homebrew, etc.
-// If the command is already absolute, or resolution fails, the original value
-// is returned unchanged.
-// buildSnapFunc returns the StateSnapshot function wired to the live orchestrator,
-// tracker, and config. Extracted from run() to keep that function scannable.
-func sortedRetryRows(retries map[string]*orchestrator.RetryEntry) []server.RetryRow {
-	rows := make([]server.RetryRow, 0, len(retries))
-	for _, r := range retries {
-		row := server.RetryRow{
-			Identifier: r.Identifier,
-			Attempt:    r.Attempt,
-			DueAt:      r.DueAt,
-		}
-		if r.Error != nil {
-			row.Error = *r.Error
-		}
-		rows = append(rows, row)
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].Identifier < rows[j].Identifier
-	})
-	return rows
-}
-
-func sortedPausedIdentifiers(paused map[string]string) []string {
-	identifiers := make([]string, 0, len(paused))
-	for identifier := range paused {
-		identifiers = append(identifiers, identifier)
-	}
-	sort.Strings(identifiers)
-	return identifiers
-}
-
-// resolveProjectName returns a short, human-readable label for the project
-// this daemon is serving. Preference order:
-//  1. `tracker.project_slug` from WORKFLOW.md (when the user has declared
-//     one — most Linear/GitHub setups do).
-//  2. The basename of the WORKFLOW.md directory (e.g. `/Users/me/acme/WORKFLOW.md`
-//     → "acme"), which works for unslugged local scaffolds.
-//  3. "itervox" as a last-resort fallback so the header never renders empty.
-func resolveProjectName(cfg *config.Config, workflowPath string) string {
-	if cfg != nil && strings.TrimSpace(cfg.Tracker.ProjectSlug) != "" {
-		return cfg.Tracker.ProjectSlug
-	}
-	if abs, err := filepath.Abs(workflowPath); err == nil {
-		if base := filepath.Base(filepath.Dir(abs)); base != "." && base != "/" && base != "" {
-			return base
-		}
-	}
-	return "itervox"
-}
-
-func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *config.Config, appSessionID string, logBuf *logbuffer.Buffer, workflowPath string) func() server.StateSnapshot {
-	// projectName is computed once at construction time (not per snapshot) —
-	// neither the tracker slug nor the workflow path change within a daemon
-	// run (config reload restarts the process, so this closure is recreated).
-	projectName := resolveProjectName(cfg, workflowPath)
-	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
-	// file has changed since the last successful load. v0.2.0 todolist6.
-	depsSidecar := newDepsSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
-	return func() server.StateSnapshot {
-		s := orch.Snapshot()
-		now := time.Now()
-
-		running := make([]server.RunningRow, 0, len(s.Running))
-		for _, r := range s.Running {
-			msg := r.LastMessage
-			if len(msg) > 120 {
-				msg = msg[:120] + "…"
-			}
-			var lastEvAt string
-			if r.LastEventAt != nil {
-				lastEvAt = r.LastEventAt.Format(time.RFC3339)
-			}
-			// Count subagent markers in the log buffer for this issue.
-			var subCount int
-			if logBuf != nil {
-				for _, line := range logBuf.Get(r.Issue.Identifier) {
-					if strings.Contains(line, `"claude: subagent"`) || strings.Contains(line, `"codex: subagent"`) {
-						subCount++
-					}
-				}
-			}
-			// T-6: prefer the live counter (incremented from the HTTP handler
-			// goroutine) over RunEntry.CommentCount because the latter is only
-			// updated when the run terminates. If both are zero we omit the
-			// field via omitempty.
-			liveComments := r.CommentCount
-			if c := orch.CommentCountFor(r.Issue.Identifier); c > liveComments {
-				liveComments = c
-			}
-			running = append(running, server.RunningRow{
-				Identifier:    r.Issue.Identifier,
-				State:         r.Issue.State,
-				TurnCount:     r.TurnCount,
-				Tokens:        r.TotalTokens,
-				InputTokens:   r.InputTokens,
-				OutputTokens:  r.OutputTokens,
-				LastEvent:     msg,
-				LastEventAt:   lastEvAt,
-				SessionID:     r.SessionID,
-				WorkerHost:    r.WorkerHost,
-				Backend:       r.Backend,
-				Kind:          r.Kind,
-				AutomationID:  r.AutomationID,
-				TriggerType:   r.TriggerType,
-				CommentCount:  liveComments,
-				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
-				StartedAt:     r.StartedAt,
-				SubagentCount: subCount,
-			})
-		}
-		sort.Slice(running, func(i, j int) bool {
-			return running[i].StartedAt.Before(running[j].StartedAt)
-		})
-
-		retrying := sortedRetryRows(s.RetryAttempts)
-		paused := sortedPausedIdentifiers(s.PausedIdentifiers)
-
-		var rateLimits *server.RateLimitInfo
-		var activeProjectFilter []string
-		if rl, ok := tr.(tracker.RateLimiter); ok {
-			if snap := rl.RateLimitSnapshot(); snap != nil {
-				rateLimits = &server.RateLimitInfo{
-					RequestsLimit:       snap.RequestsLimit,
-					RequestsRemaining:   snap.RequestsRemaining,
-					RequestsReset:       snap.Reset,
-					ComplexityLimit:     snap.ComplexityLimit,
-					ComplexityRemaining: snap.ComplexityRemaining,
-				}
-			}
-		}
-		if tpm, ok := tr.(tracker.ProjectManager); ok {
-			activeProjectFilter = tpm.GetProjectFilter()
-		}
-		// When no runtime filter is set but WORKFLOW.md has project_slug,
-		// surface it so the TUI picker shows it as checked.
-		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
-			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
-		}
-		profiles := orch.ProfilesCfg()
-		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
-		activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
-
-		var availableProfiles []string
-		for name, profile := range profiles {
-			if config.ProfileEnabled(profile) {
-				availableProfiles = append(availableProfiles, name)
-			}
-		}
-		sort.Strings(availableProfiles)
-
-		var profileDefs map[string]server.ProfileDef
-		if len(profiles) > 0 {
-			profileDefs = make(map[string]server.ProfileDef, len(profiles))
-			for n, p := range profiles {
-				profileDefs[n] = profileDefFromConfig(p)
-			}
-		}
-
-		completedRuns := orch.RunHistory()
-		history := make([]server.HistoryRow, 0, len(completedRuns))
-		for _, r := range completedRuns {
-			history = append(history, server.HistoryRow{
-				Identifier:   r.Identifier,
-				Title:        r.Title,
-				StartedAt:    r.StartedAt,
-				FinishedAt:   r.FinishedAt,
-				ElapsedMs:    r.ElapsedMs,
-				TurnCount:    r.TurnCount,
-				TotalTokens:  r.TotalTokens,
-				InputTokens:  r.InputTokens,
-				OutputTokens: r.OutputTokens,
-				Status:       r.Status,
-				WorkerHost:   r.WorkerHost,
-				Backend:      r.Backend,
-				Kind:         r.Kind,
-				SessionID:    r.SessionID,
-				AppSessionID: r.AppSessionID,
-				AutomationID: r.AutomationID,
-				TriggerType:  r.TriggerType,
-				CommentCount: r.CommentCount,
-			})
-		}
-
-		sshHostAddrs, sshHostDescs := orch.SSHHostsCfg()
-		sshHostInfos := make([]server.SSHHostInfo, 0, len(sshHostAddrs))
-		for _, h := range sshHostAddrs {
-			sshHostInfos = append(sshHostInfos, server.SSHHostInfo{
-				Host:        h,
-				Description: sshHostDescs[h],
-			})
-		}
-
-		sidecar := depsSidecar.Latest()
-		dependencyGraphNodes, dependencyGraphEdges := dependencyGraphRows(s, sidecar)
-		var depsLastAnalyzedAt *time.Time
-		if sidecar != nil && !sidecar.GeneratedAt.IsZero() {
-			t := sidecar.GeneratedAt
-			depsLastAnalyzedAt = &t
-		}
-		snap := server.StateSnapshot{
-			GeneratedAt:                  now,
-			Counts:                       server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
-			Running:                      running,
-			History:                      history,
-			Retrying:                     retrying,
-			Paused:                       paused,
-			MaxConcurrentAgents:          orch.MaxWorkers(),
-			MaxRetries:                   orch.MaxRetriesCfg(),
-			FailedState:                  orch.FailedStateCfg(),
-			MaxSwitchesPerIssuePerWindow: orch.MaxSwitchesPerIssuePerWindowCfg(),
-			SwitchWindowHours:            orch.SwitchWindowHoursCfg(),
-			RateLimits:                   rateLimits,
-			TrackerKind:                  cfg.Tracker.Kind,
-			ProjectName:                  projectName,
-			ActiveProjectFilter:          activeProjectFilter,
-			AvailableProfiles:            availableProfiles,
-			ProfileDefs:                  profileDefs,
-			ActiveStates:                 activeStates,
-			TerminalStates:               terminalStates,
-			CompletionState:              completionState,
-			BacklogStates:                cfg.Tracker.BacklogStates,
-			PollIntervalMs:               cfg.Polling.IntervalMs,
-			AutoClearWorkspace:           autoClearWorkspace,
-			CurrentAppSessionID:          appSessionID,
-			SSHHosts:                     sshHostInfos,
-			DispatchStrategy:             orch.DispatchStrategyCfg(),
-			DefaultBackend:               configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
-			InlineInput:                  orch.InlineInputCfg(),
-			Automations:                  automationconfig.DefinitionsFromConfigs(orch.AutomationsCfg()),
-			AutomationQueue:              automationQueueRows(s),
-			AutomationQueueBackpressure:  automationQueueBackpressureRow(s.AutomationQueueBackpressure),
-			// gaps_11 G-11 — the snapshot value is a struct-copy of the
-			// event-loop counter (State is copied by value in storeSnap), so
-			// reading it here never touches live State.
-			AutomationDropsSelfReentryTotal: s.AutomationDropsSelfReentryTotal,
-			DependencyAudit:                 dependencyAuditRows(s.DependencyAudit),
-			DependencyGraphNodes:            dependencyGraphNodes,
-			DependencyGraphEdges:            dependencyGraphEdges,
-			DepsAnalyzerProfile:             orch.DepsAnalyzerProfileCfg(),
-			DepsLastAnalyzedAt:              depsLastAnalyzedAt,
-			AvailableModels:                 convertModelsForSnapshot(cfg.Agent.AvailableModels),
-			SupportedAgentActions:           config.SupportedAgentActions(),
-			ReviewerProfile:                 func() string { p, _ := orch.ReviewerCfg(); return p }(),
-			AutoReview:                      func() bool { _, a := orch.ReviewerCfg(); return a }(),
-		}
-		// Stale threshold for the dashboard badge: pick the longest
-		// MaxAgeMinutes across all enabled input_required automations. If no
-		// rule configures one, fall back to 24h so abandoned entries still
-		// surface visually even when no automation guards against them.
-		staleAfter := longestInputRequiredMaxAge(orch.AutomationsCfg(), 24*time.Hour)
-		snap.InputRequired = sortedInputRequiredRows(s.InputRequiredIssues, s.PendingInputResumes, staleAfter, now)
-		// Surface in-flight WORKFLOW.md reload failures (T-26). nil when valid.
-		snap.ConfigInvalid = loadConfigInvalid()
-		return snap
+		return err
+	case err := <-srvDone:
+		return err
 	}
 }
+
+// buildSnapFunc (the StateSnapshot wiring that used to live here) moved to
+// snapshot_build.go — outbox Task 4 size-budget extraction.
 
 // buildTUIConfig wires the terminal status-UI config and returns the cancel
 // function (used as the 'x' key handler in statusui.Run). Extracted from run().
@@ -1441,6 +1355,11 @@ func isShellEnvAssignmentToken(token string) bool {
 	return true
 }
 
+// resolveAgentCommand resolves a bare command name (e.g. "claude") to its full
+// absolute path using the user's interactive login shell, which sources .zshrc
+// and therefore picks up PATH additions from nvm, volta, homebrew, etc.
+// If the command is already absolute, or resolution fails, the original value
+// is returned unchanged.
 func resolveAgentCommand(command string) string {
 	if filepath.IsAbs(command) {
 		return command
@@ -1844,119 +1763,4 @@ func agentActionBaseURL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
-}
-
-// listenStrict tries to listen on the given host:port exactly. On
-// EADDRINUSE it returns an operator-friendly diagnostic instead of silently
-// shifting to the next port. Use this when the operator explicitly
-// configured a port in WORKFLOW.md — silent shifting would mismatch the
-// Vite dev proxy / `.itervox/dashboard_url` / HEARTBEAT contract.
-//
-// Special case `port == 0`: pass through to net.Listen, which makes the
-// kernel pick any free port. The returned addr reflects the actual bound
-// port so the dashboard URL and dashboard_url file are accurate. This is
-// the recommended setting in WORKFLOW.md for "two repos in parallel"
-// workflows.
-func listenStrict(host string, port int) (net.Listener, string, error) {
-	requested := fmt.Sprintf("%s:%d", host, port)
-	ln, err := net.Listen("tcp", requested)
-	if err == nil {
-		// When port == 0 the actual bound addr differs from requested. Always
-		// return the actual addr — callers use it for the dashboard URL.
-		return ln, ln.Addr().String(), nil
-	}
-	if !isAddrInUse(err) {
-		return nil, "", fmt.Errorf("http listen %s: %w", requested, err)
-	}
-	holder := describePortHolder(port)
-	return nil, "", fmt.Errorf(
-		"itervox: port %d already in use%s. Stop the conflicting process, change `server.port` in WORKFLOW.md, or set `server.port: 0` to let the OS pick a free port",
-		port, holder)
-}
-
-// describePortHolder runs `lsof -nP -iTCP:<port> -sTCP:LISTEN` so the
-// startup error names the process holding the port. Returns "" when lsof is
-// absent or returned nothing useful — best-effort. Operators on Linux
-// without lsof installed still get the actionable port-in-use message.
-func describePortHolder(port int) string {
-	cmd := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) < 2 {
-		return ""
-	}
-	// Skip header; first data line is good enough for the operator.
-	return " (held by " + strings.Join(strings.Fields(lines[1]), " ") + ")"
-}
-
-// listenWithFallback tries to listen on the given host:port. If the port is
-// already in use, it tries up to maxPortRetries successive ports. Returns the
-// listener and the actual address it bound to.
-func listenWithFallback(host string, port, maxPortRetries int) (net.Listener, string, error) {
-	for i := 0; i <= maxPortRetries; i++ {
-		tryPort := port + i
-		addr := fmt.Sprintf("%s:%d", host, tryPort)
-		ln, err := net.Listen("tcp", addr)
-		if err == nil {
-			if i > 0 {
-				slog.Warn("server: configured port in use, using next available",
-					"configured_port", port, "actual_port", tryPort)
-			}
-			return ln, addr, nil
-		}
-		if !isAddrInUse(err) {
-			return nil, "", fmt.Errorf("http listen %s: %w", addr, err)
-		}
-	}
-	return nil, "", fmt.Errorf("ports %d–%d all in use — is another itervox instance running?",
-		port, port+maxPortRetries)
-}
-
-// serveOnListener starts an HTTP server on an already-bound listener and
-// returns a channel that receives its exit error.
-func serveOnListener(ctx context.Context, ln net.Listener, addr string, handler http.Handler) <-chan error {
-	errCh := make(chan error, 1)
-
-	srv := &http.Server{
-		Addr:        addr,
-		Handler:     handler,
-		ReadTimeout: 5 * time.Second,
-		// WriteTimeout is intentionally 0 (no deadline) so the SSE /api/v1/events
-		// endpoint can stream indefinitely. Per-route write timeouts should use
-		// http.TimeoutHandler for non-SSE handlers if needed in future.
-		WriteTimeout: 0,
-		IdleTimeout:  120 * time.Second,
-	}
-
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
-
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		} else {
-			errCh <- nil
-		}
-	}()
-
-	return errCh
-}
-
-// isAddrInUse reports whether err indicates the address is already in use.
-func isAddrInUse(err error) bool {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		var sysErr *os.SyscallError
-		if errors.As(opErr.Err, &sysErr) {
-			return sysErr.Err == syscall.EADDRINUSE
-		}
-	}
-	return false
 }

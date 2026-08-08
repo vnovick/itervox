@@ -55,6 +55,18 @@ const (
 	// EventIssueStatusChanged records a tracker state transition observed from
 	// a goroutine or HTTP handler. The event loop owns the status ledger.
 	EventIssueStatusChanged EventType = "IssueStatusChanged"
+	// EventDependencyAuditRefreshed carries the result of one off-loop
+	// dependency-refresh batch. The worker performs tracker I/O only; every
+	// State mutation happens in the event loop when this event is handled.
+	EventDependencyAuditRefreshed EventType = "DependencyAuditRefreshed"
+	// EventSetDepsOverride is sent by SetDepsOverride when an operator
+	// dismisses (or restores) an LLM-inferred dependency edge's gating effect
+	// on a target identifier. The event loop mutates state.DepsOverrides and
+	// recomputes that identifier's InferredDeps entries in place so the
+	// dispatch guard sees the effect on the very next snapshot, without
+	// waiting for the next tick's ReconcileInferredDeps pass.
+	// unified-dependency-graph Task 6.
+	EventSetDepsOverride EventType = "SetDepsOverride"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -65,13 +77,15 @@ type OrchestratorEvent struct { //nolint:revive
 	RunEntry           *RunEntry
 	RetryEntry         *RetryEntry
 	Error              error
-	Message            string              // user-provided text for EventProvideInput
-	ReviewerProfile    string              // profile name for EventDispatchReviewer
-	InputRequiredEntry *InputRequiredEntry // used by TerminalInputRequired
-	Comment            *domain.Comment     // used by EventInputRequiredCommentRecorded
-	Issue              *domain.Issue       // used by EventDispatchAutomation
-	Automation         *AutomationDispatch // used by EventDispatchAutomation
-	StatusChange       *IssueStatusChange  // used by EventIssueStatusChanged
+	Message            string                   // user-provided text for EventProvideInput
+	ReviewerProfile    string                   // profile name for EventDispatchReviewer
+	InputRequiredEntry *InputRequiredEntry      // used by TerminalInputRequired
+	Comment            *domain.Comment          // used by EventInputRequiredCommentRecorded
+	Issue              *domain.Issue            // used by EventDispatchAutomation
+	Automation         *AutomationDispatch      // used by EventDispatchAutomation
+	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
+	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
+	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -344,12 +358,36 @@ type State struct {
 	DependencyAudit map[string]*DependencyAuditEntry
 	// DependencyTransitionSeq increments when dependency audit emits a transition.
 	DependencyTransitionSeq int64
-	// LastBlockersResolvedAuditSeq snapshots DependencyTransitionSeq at the
-	// end of the most recent auditBlockersResolvedAutomationSources pass.
-	// When DependencyTransitionSeq has not advanced since the previous tick
-	// there is nothing for the audit pass to do, so the tick-scoped
-	// FetchIssuesByStates call can be skipped. v0.2.0 audit P1-2.
+	// LastBlockersResolvedAuditSeq snapshots DependencyTransitionSeq as
+	// observed at the launch of the most recent blockers_resolved refresh
+	// batch (see DependencyRefreshResult.SeqAtLaunch). When
+	// DependencyTransitionSeq has not advanced since then there is nothing
+	// for the next batch to do, so pendingBlockersResolvedStates skips the
+	// FetchIssuesByStates call entirely. v0.2.0 audit P1-2.
 	LastBlockersResolvedAuditSeq int64
+	// DepsRefreshInFlight is the single-flight latch for the off-loop
+	// dependency-refresh worker. At most one batch is tracked as live: after
+	// a watchdog fire (reclaimStuckDependencyRefresh) the abandoned batch's
+	// goroutine is still running and may still be calling the tracker — the
+	// watchdog only stops the event loop from TRACKING it, it cannot cancel
+	// the goroutine itself. DepsRefreshGeneration is what makes that
+	// abandoned goroutine's eventual result safe to discard.
+	DepsRefreshInFlight bool
+	// DepsRefreshStartedAt is when the in-flight batch began. The event loop
+	// uses it as a watchdog: if a result never arrives (dropped event send,
+	// panicked worker, hung tracker), the latch is force-cleared and the rows
+	// are released for reselection.
+	DepsRefreshStartedAt time.Time
+	// DepsRefreshBatchSize is how many rows the in-flight batch holds.
+	// Surfaced on the snapshot as the "refreshing N" operator signal.
+	DepsRefreshBatchSize int
+	// DepsRefreshLastDurationMs is the wall-clock of the last completed batch.
+	DepsRefreshLastDurationMs int64
+	// DepsRefreshGeneration increments on every batch launch and every
+	// watchdog fire. A result whose Generation no longer matches belongs to an
+	// abandoned batch: it must be dropped without touching the latch or any
+	// row, because the current generation owns those rows now.
+	DepsRefreshGeneration int64
 	// PROpenedDispatched dedups `pr_opened` automation dispatches so a resumed
 	// worker, a retry, or a secondary run on the same issue does not re-fire
 	// the same `(issue, prURL, automationID)` triple. Lifetime is event-loop
@@ -383,6 +421,65 @@ type State struct {
 	// dashboard's LiveOpsStrip can surface a paused_transport tile.
 	// todolist4 A.4.
 	TransportFailureCount uint64
+
+	// InferredDeps holds the per-tick reconciliation of LLM-inferred
+	// dependency edges (from the depsanalysis sidecar) against the current
+	// candidate-issue set and the dependencies gating policy. Key: target
+	// (blocked) issue identifier. Recomputed every tick by
+	// ReconcileInferredDeps in onTick; unified-dependency-graph Task 4.
+	InferredDeps map[string][]InferredDepEntry
+
+	// DepsOverrides holds operator-issued dismissals of the inferred-dependency
+	// gating layer, keyed by the target (blocked) issue identifier, valued by
+	// the time the override was set. Consulted by ReconcileInferredDeps (via
+	// the overrides map argument) so an overridden target's InferredDeps
+	// entries report Overridden=true and Gating=false. Mutated only by the
+	// EventSetDepsOverride case in the event loop; SetDepsOverride (any
+	// goroutine) only sends the event. unified-dependency-graph Task 6.
+	DepsOverrides map[string]time.Time
+
+	// DependencyCycles holds this tick's strongly-connected-component cycle
+	// alerts over the tick graph (sorted by first member). Recomputed every
+	// tick by ExtractCycles from the tick graph built in onTick; DetectedAt
+	// is carried forward from the previous tick's slice when the exact
+	// member set repeats. Derived, event-loop-owned state — no persistence,
+	// no events. critical-path-ordering Task 4.
+	DependencyCycles []DependencyCycle
+
+	// DependencyAttention holds this tick's operator-attention entries
+	// (cycle members plus issues blocked past the escalation window),
+	// sorted by Identifier. Recomputed every tick by
+	// DeriveDependencyAttention. Derived, event-loop-owned state — no
+	// persistence, no events. critical-path-ordering Task 4.
+	DependencyAttention []DependencyAttentionEntry
+
+	// CandidateSeen is a snapshot of "what tracker polling saw this tick" —
+	// one row per candidate-issue identifier (plus tracker UpdatedAt when
+	// known), sorted by Identifier. Recomputed every tick by
+	// candidateSeenRows in onTick, right where the freshly fetched `issues`
+	// slice is in hand. Derived, event-loop-owned state — no persistence, no
+	// events, and nothing else in the orchestrator consumes it; it exists
+	// solely so the snapshot carries a real backlog signal for cmd/itervox's
+	// deps auto-analyze scheduler. analyzer-autonomy Task 4 fix round.
+	CandidateSeen []CandidateSeenRow
+
+	// OutboxSyncing is the set of issue identifiers whose tracker State was
+	// overlaid this tick by a pending write-ahead-outbox update_state entry
+	// (see internal/orchestrator/outbox_overlay.go and
+	// docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md,
+	// "Overlay"). Recomputed every tick from scratch — membership does not
+	// persist across ticks beyond what the outbox itself still has pending.
+	// Derived, event-loop-owned state — no persistence, no events.
+	//
+	// This is the seam Task 4 (surfaces) reads to set `Syncing: true` on
+	// issue rows: /api/v1/issues (server.go's handleIssues) builds its rows
+	// from a direct client-side tracker fetch, NOT from this snapshot, so
+	// Task 4 must join TrackerIssue rows against Snapshot().OutboxSyncing by
+	// Identifier rather than finding a Syncing field already sitting on a
+	// server-side issue-row type. Keyed by Identifier (not the tracker's
+	// opaque ID) because that is the join key every issue-row surface
+	// (TrackerIssue, RunEntry, snapshot maps) already uses.
+	OutboxSyncing map[string]struct{}
 }
 
 // NewState initialises a State from a config snapshot.
@@ -417,5 +514,8 @@ func NewState(cfg *config.Config) State {
 		DependencyAudit:    make(map[string]*DependencyAuditEntry),
 		PROpenedDispatched: make(map[string]struct{}),
 		PRMergedDispatched: make(map[string]struct{}),
+		InferredDeps:       make(map[string][]InferredDepEntry),
+		DepsOverrides:      make(map[string]time.Time),
+		OutboxSyncing:      make(map[string]struct{}),
 	}
 }

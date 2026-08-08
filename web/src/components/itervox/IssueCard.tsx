@@ -28,6 +28,13 @@ interface CardProps {
   // the global cfg.Agent.MaxRetries (0 → ∞).
   retryAttempt?: number;
   maxRetries?: number;
+  // outbox Task 4: true when this issue's identifier is a member of
+  // snapshot.outboxSyncing — a write-ahead-outbox update_state entry is
+  // pending for it (queued durably, not yet flushed to the tracker). The
+  // card badge is the operator-visible half of the overlay: the dashboard
+  // is showing the about-to-be-true state, not necessarily what the
+  // tracker itself currently reports.
+  syncing?: boolean;
 }
 
 function resolveBackend(
@@ -81,6 +88,7 @@ export default memo(function IssueCard({
   inputRequiredAgeMinutes,
   retryAttempt,
   maxRetries,
+  syncing,
 }: CardProps) {
   const isRunning = issue.orchestratorState === 'running';
   const isInputRequired = issue.orchestratorState === 'input_required';
@@ -224,6 +232,21 @@ export default memo(function IssueCard({
             >
               📝 {commentCount} {commentCount === 1 ? 'review' : 'reviews'}
             </button>
+          )}
+
+          {/* outbox Task 4: a pending write-ahead-outbox transition for
+              this issue. Distinct from the retry/stale badges above — this
+              isn't an agent-side condition, it's "the daemon has a durable
+              write queued for this issue that hasn't reached the tracker
+              yet". */}
+          {syncing && (
+            <span
+              data-testid="issue-card-syncing-badge"
+              title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+              className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+            >
+              ⟳ Syncing
+            </span>
           )}
 
           {blockerCount > 0 && (

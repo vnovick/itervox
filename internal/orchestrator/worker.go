@@ -26,15 +26,14 @@ import (
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
-// Worker-level timeout and retry constants.
+// Worker-level timeout constants. maxTransitionAttempts (the completion-state
+// transition retry count) lives in write_sink.go alongside directWriteSink,
+// the only place that retry loop runs.
 const (
 	// hookFallbackTimeout is used when no explicit hook timeout is configured.
 	hookFallbackTimeout = 30 * time.Second
 	// postRunTimeout bounds post-run actions: branch push, PR comment, state transition.
 	postRunTimeout = 60 * time.Second
-	// maxTransitionAttempts is how many times the worker retries moving the issue
-	// to the completion state before giving up.
-	maxTransitionAttempts = 4
 )
 
 // operatorReplyEnvelope is the orchestrator-controlled prompt block that tells
@@ -784,7 +783,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if alreadyPosted {
 				slog.Info("worker: PR comment already posted, skipping",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "pr_url", prURL)
-			} else if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(prComment)); err != nil {
+			} else if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(prComment)); err != nil {
 				slog.Warn("worker: create PR comment failed (ignored)",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			} else {
@@ -902,7 +901,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Skip when there is an open PR: the summary was already posted as a PR comment
 	// above, so posting it again on the tracker issue would create a duplicate (GO-R10-3).
 	if sessionComment != "" && prCtx == nil && !automationRun {
-		if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(sessionComment)); err != nil {
+		if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(sessionComment)); err != nil {
 			slog.Warn("worker: create session comment failed (ignored)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 		}
@@ -924,32 +923,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if o.logBuf != nil {
 			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: moving issue to %q in tracker", completionState), runLogID))
 		}
-		// Use a fresh context for the tracker API calls so that a cancelled worker
-		// context (user paused/terminated mid-retry) does not immediately fail the
-		// request — the individual API call should complete or time out on its own.
-		// The retry select still watches ctx.Done() to stop between attempts if the
-		// user terminates while we're waiting for the next backoff window.
-		transCtx, cancelTrans := context.WithTimeout(context.Background(), postRunTimeout)
-		defer cancelTrans()
-		var transitionErr error
-	transitionLoop:
-		for i := range maxTransitionAttempts {
-			if i > 0 {
-				delay := time.Duration(1<<uint(i-1)) * 2 * time.Second // 2s, 4s, 8s
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					transitionErr = ctx.Err()
-					break transitionLoop
-				}
-			}
-			if transitionErr = o.tracker.UpdateIssueState(transCtx, issue.ID, completionState); transitionErr == nil {
-				break transitionLoop
-			}
-			slog.Warn("worker: completion state transition attempt failed, retrying",
-				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
-				"target_state", completionState, "attempt", i+1, "error", transitionErr)
-		}
+		// Routed through o.writeSink(): under the default directWriteSink this
+		// is the exact retry loop that used to live inline here (fresh
+		// context.Background()-derived context per attempt, so a cancelled
+		// worker ctx does not abort an in-flight API call; ctx.Done() is only
+		// watched between attempts) — see write_sink.go. Under an
+		// outbox-backed sink this is a single durable enqueue; the flusher
+		// owns retries.
+		transitionErr := o.writeSink().UpdateIssueState(ctx, issue.ID, issue.Identifier, completionState)
 		if transitionErr != nil {
 			slog.Error("worker: completion state transition failed after retries",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
@@ -996,7 +977,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if detectedPRURL != "" {
 		completionArgs = append(completionArgs, "pr_url", detectedPRURL)
 	}
-	slog.Info("worker: completed", completionArgs...)
+	o.logger().Info("worker: completed", completionArgs...)
 
 	// Release the log buffer for this issue to free memory (after the completion
 	// state transition so any transition errors are visible in the TUI log pane).

@@ -43,13 +43,26 @@ func (s *syncBuffer) Reset() {
 
 // runWorkerToCompletion sets up an orchestrator with a fake runner, waits for
 // the runner to complete, then returns captured slog output.
+//
+// Log capture is wired through orchestrator.Orchestrator.Logger — an
+// injected *slog.Logger scoped to THIS orchestrator instance — rather than
+// the previous approach of globally swapping slog.Default() for the
+// duration of the test. The worker goroutine that logs "worker: completed"
+// (worker.go) is not joined by orch.Run() returning: Run() only awaits the
+// single event-loop goroutine, so a worker goroutine can still be mid-flight
+// when Run() sees ctx.Done() and returns. With a global slog.SetDefault +
+// restore, that still-running goroutine could write into the NEXT test's
+// freshly-swapped default logger after this test returned — the flake
+// TestWorkerCompletedLogHasCorrectTokenValues hit under a loaded
+// `make verify` (#50). Scoping the logger to this orchestrator instance
+// means a stray late write lands in this test's own (already-read, harmless)
+// logBuf instead of bleeding into another test's assertions, regardless of
+// exact goroutine timing.
 func runWorkerToCompletion(t *testing.T, identifier string, events []agent.StreamEvent) string {
 	t.Helper()
 
 	logBuf := &syncBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(prev)
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 50
@@ -67,6 +80,7 @@ func runWorkerToCompletion(t *testing.T, identifier string, events []agent.Strea
 	}
 
 	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.Logger = logger
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -85,11 +99,11 @@ func runWorkerToCompletion(t *testing.T, identifier string, events []agent.Strea
 	// Allow the event loop to process the exit event and log.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
-	// Wait for orch.Run to fully exit BEFORE returning. Otherwise the
-	// orchestrator goroutine outlives this test and the next call to
-	// runWorkerToCompletion replaces slog.Default — the still-draining
-	// goroutine then writes "worker: completed" with this test's totals
-	// into the next test's logBuf, breaking the next test's assertions.
+	// Wait for orch.Run to fully exit before returning — not required for
+	// log-capture correctness anymore (logBuf is instance-scoped, so a
+	// straggling worker goroutine can only write into this test's own
+	// buffer), but still good hygiene: it keeps the orchestrator goroutine
+	// from outliving the test.
 	<-orchDone
 
 	return logBuf.String()

@@ -125,6 +125,94 @@ describe('liveOpsStripModel', () => {
       liveOpsStripModel(makeSnapshot({ automationDropsSelfReentryTotal: 3 })).selfReentryDrops,
     ).toBe(3);
   });
+
+  // Task 7 — the off-loop dependency refresher (Task 6) was previously
+  // invisible to operators. These fields make it visible.
+  it('surfaces in-flight dependency refreshes', () => {
+    const model = liveOpsStripModel(makeSnapshot({ depsRefreshInFlight: 8 }));
+    expect(model.depsRefreshingCount).toBe(8);
+  });
+
+  it('surfaces degraded dependency rows', () => {
+    const model = liveOpsStripModel(makeSnapshot({ depsRefreshDegradedCount: 2 }));
+    expect(model.depsDegradedCount).toBe(2);
+  });
+
+  // A states-only refresh batch (blockers_resolved scan with no row targets)
+  // legitimately reports batch size 0 while the daemon is mid-refresh. Both
+  // fields must default cleanly to 0 rather than throwing or going
+  // undefined.
+  it('defaults deps-refresh fields to zero when absent from the wire', () => {
+    const model = liveOpsStripModel(makeSnapshot());
+    expect(model.depsRefreshingCount).toBe(0);
+    expect(model.depsDegradedCount).toBe(0);
+  });
+
+  // critical-path-ordering Task 4/5/6 — cycles and attention entries were
+  // previously invisible to operators. Both fields are omitempty on the
+  // wire; absent must default cleanly to zero.
+  it('reads dependency cycle and attention counts, defaulting to zero when absent', () => {
+    expect(liveOpsStripModel(makeSnapshot()).cycleCount).toBe(0);
+    expect(liveOpsStripModel(makeSnapshot()).attentionCount).toBe(0);
+
+    const model = liveOpsStripModel(
+      makeSnapshot({
+        dependencyCycles: [
+          { members: ['ENG-1', 'ENG-2'], kind: 'tracker', detectedAt: '2026-05-25T12:00:00Z' },
+        ],
+        dependencyAttention: [
+          {
+            identifier: 'ENG-1',
+            blockers: ['ENG-2'],
+            blockedSince: '2026-05-25T09:00:00Z',
+            kind: 'cycle',
+          },
+          {
+            identifier: 'ENG-3',
+            blockers: ['ENG-4'],
+            blockedSince: '2026-05-20T09:00:00Z',
+            kind: 'stale_blocker',
+          },
+        ],
+      }),
+    );
+    expect(model.cycleCount).toBe(1);
+    expect(model.attentionCount).toBe(2);
+  });
+
+  // outbox Task 4 — pending/degraded write-ahead-outbox counts. Both fields
+  // are omitempty on the wire; absent must default cleanly to zero.
+  it('reads outbox pending/degraded counts, defaulting to zero when absent', () => {
+    const empty = liveOpsStripModel(makeSnapshot());
+    expect(empty.outboxPendingCount).toBe(0);
+    expect(empty.outboxDegradedCount).toBe(0);
+
+    const model = liveOpsStripModel(
+      makeSnapshot({
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'update_state',
+            identifier: 'ENG-1',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T12:00:00Z',
+            nextAttemptAt: '2026-05-25T12:00:00Z',
+          },
+          {
+            id: 'e2',
+            kind: 'update_state',
+            identifier: 'ENG-2',
+            attempts: 6,
+            degraded: true,
+            enqueuedAt: '2026-05-25T12:00:00Z',
+            nextAttemptAt: '2026-05-25T12:00:00Z',
+          },
+        ],
+      }),
+    );
+    expect(model.outboxPendingCount).toBe(2);
+    expect(model.outboxDegradedCount).toBe(1);
+  });
 });
 
 describe('LiveOpsStrip', () => {
@@ -306,5 +394,161 @@ describe('LiveOpsStrip', () => {
     });
     render(<LiveOpsStrip />);
     expect(screen.getByText('Deps 1 blocked')).toBeInTheDocument();
+  });
+
+  // Task 7 — the off-loop dependency refresher (Task 6) was previously
+  // invisible to operators: the deps chip never distinguished "working" from
+  // "stuck". These render-level tests cover the new suffix.
+  it('renders the refreshing suffix on the deps chip', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ depsRefreshInFlight: 8 }) });
+    render(<LiveOpsStrip />);
+    expect(screen.getByText(/refreshing 8/)).toBeInTheDocument();
+  });
+
+  it('renders the stale suffix when rows are degraded', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ depsRefreshDegradedCount: 2 }) });
+    render(<LiveOpsStrip />);
+    expect(screen.getByText(/2 stale/)).toBeInTheDocument();
+  });
+
+  it('marks the deps chip danger when rows are degraded', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ depsRefreshDegradedCount: 1 }) });
+    render(<LiveOpsStrip />);
+    const chip = screen.getByText(/1 stale/);
+    expect(chip.className).toContain('text-theme-danger');
+  });
+
+  // The known "refreshing 0" trap: a states-only batch (blockers_resolved
+  // scan with no row targets) can be in-flight with batch size 0. The chip
+  // must render the plain base label with no "refreshing" suffix at all —
+  // never "refreshing 0".
+  it('does not render a "refreshing 0" suffix for a zero-size in-flight batch', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        depsRefreshInFlight: 0,
+        dependencyAudit: [
+          { identifier: 'A', issueState: 'Backlog', status: 'blocked', wasBlocked: true },
+        ],
+      }),
+    });
+    render(<LiveOpsStrip />);
+    expect(screen.queryByText(/refreshing/)).not.toBeInTheDocument();
+    expect(screen.getByText('Deps 1 blocked')).toBeInTheDocument();
+  });
+
+  // critical-path-ordering Task 4/5/6 — the cycles/attention tile stays
+  // hidden on a healthy daemon (both counts zero) and appears once either
+  // count is non-zero, mirroring the self-reentry-drops chip's convention.
+  it('hides the dependency cycles/attention tile when both counts are zero', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot() });
+    render(<LiveOpsStrip />);
+    expect(screen.queryByText(/dependency cycle/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/need attention/)).not.toBeInTheDocument();
+  });
+
+  it('renders the dependency cycles/attention tile once cycles are present', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        dependencyCycles: [
+          { members: ['ENG-1', 'ENG-2'], kind: 'tracker', detectedAt: '2026-05-25T12:00:00Z' },
+        ],
+      }),
+    });
+    render(<LiveOpsStrip />);
+    const chip = screen.getByText('1 dependency cycle');
+    expect(chip.className).toContain('text-theme-danger');
+  });
+
+  it('renders the dependency attention count with warning severity when there are no cycles', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        dependencyAttention: [
+          {
+            identifier: 'ENG-3',
+            blockers: ['ENG-4'],
+            blockedSince: '2026-05-20T09:00:00Z',
+            kind: 'stale_blocker',
+          },
+        ],
+      }),
+    });
+    render(<LiveOpsStrip />);
+    const chip = screen.getByText('1 need attention');
+    expect(chip.className).toContain('text-theme-warning');
+  });
+
+  it('combines cycle and attention counts into a single tile', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        dependencyCycles: [
+          { members: ['ENG-1', 'ENG-2'], kind: 'tracker', detectedAt: '2026-05-25T12:00:00Z' },
+        ],
+        dependencyAttention: [
+          {
+            identifier: 'ENG-1',
+            blockers: ['ENG-2'],
+            blockedSince: '2026-05-25T09:00:00Z',
+            kind: 'cycle',
+          },
+          {
+            identifier: 'ENG-3',
+            blockers: ['ENG-4'],
+            blockedSince: '2026-05-20T09:00:00Z',
+            kind: 'stale_blocker',
+          },
+        ],
+      }),
+    });
+    render(<LiveOpsStrip />);
+    expect(screen.getByText('1 dependency cycle · 2 need attention')).toBeInTheDocument();
+  });
+
+  // outbox Task 4 — LiveOps tile: hidden at zero, info-tone with no
+  // degraded entries, danger-tone once any entry is degraded.
+  it('hides the outbox tile when there are no pending entries', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot() });
+    render(<LiveOpsStrip />);
+    expect(screen.queryByText(/^Outbox /)).not.toBeInTheDocument();
+  });
+
+  it('renders the outbox tile with a non-danger tone when nothing is degraded', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'update_state',
+            identifier: 'ENG-1',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T12:00:00Z',
+            nextAttemptAt: '2026-05-25T12:00:00Z',
+          },
+        ],
+      }),
+    });
+    render(<LiveOpsStrip />);
+    const chip = screen.getByText('Outbox 1 pending');
+    expect(chip.className).not.toContain('text-theme-danger');
+  });
+
+  it('renders the outbox tile with danger tone and the degraded suffix once any entry is degraded', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'update_state',
+            identifier: 'ENG-1',
+            attempts: 6,
+            degraded: true,
+            enqueuedAt: '2026-05-25T12:00:00Z',
+            nextAttemptAt: '2026-05-25T12:00:00Z',
+          },
+        ],
+      }),
+    });
+    render(<LiveOpsStrip />);
+    const chip = screen.getByText('Outbox 1 pending · 1 degraded');
+    expect(chip.className).toContain('text-theme-danger');
   });
 });

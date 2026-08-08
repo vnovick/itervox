@@ -279,7 +279,7 @@ Full setup guides: **[Linear](https://itervox.dev/guides/linear-setup/)** · **[
 
 ## Remote access & bearer-token auth
 
-When Itervox binds to any non-loopback address (`0.0.0.0`, a LAN IP), the dashboard and REST API require an `Authorization: Bearer <token>` header on every request. Set `ITERVOX_API_TOKEN` in the environment, or Itervox generates an ephemeral token at startup and logs it once. The dashboard captures the token from the URL query (`?token=…`) on first load and persists it via `sessionStorage` (or `localStorage` with the Remember checkbox). `GET /health` is auth-exempt for load-balancer probes. For trusted-LAN air-gapped setups, set `server.allow_unauthenticated_lan: true` to bypass auth entirely.
+By default, on every bind — including loopback (`127.0.0.1`) — the dashboard and REST API require an `Authorization: Bearer <token>` header on every request. Set `ITERVOX_API_TOKEN` in the environment, or Itervox auto-generates an ephemeral token at startup and prints a dashboard URL carrying it (`?token=…`) to stderr once. The dashboard captures the token from the URL query on first load and persists it via `sessionStorage` (or `localStorage` with the Remember checkbox). `GET /api/v1/health` is auth-exempt for load-balancer probes. For trusted, fully local setups where you accept the risk, set `server.allow_unauthenticated: true` (renamed from `allow_unauthenticated_lan`, which still parses as a deprecated alias) to bypass auth entirely — never do this on a deployment behind a reverse proxy or tunnel, since it rides on the same bearer auth.
 
 Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
 

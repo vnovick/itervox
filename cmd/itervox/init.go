@@ -524,11 +524,20 @@ func runInit(args []string) {
 		// Load the freshly-written .env so the analysis pass sees the same
 		// secrets the daemon will see on first launch.
 		loadDotEnv()
-		issueCount, edgeCount, sidecarPath, err := runInitDepsAnalysis(*output)
-		if err != nil {
+		issueCount, analyzedCount, edgeCount, sidecarPath, guarded, err := runInitDepsAnalysis(*output, "auto")
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "itervox init: WARNING: dependency analysis pass skipped (%v); run \"itervox deps analyze\" or click \"Analyze dependencies\" from the dashboard once credentials are configured.\n", err)
-		} else {
-			fmt.Printf("itervox init: analyzed %d issue(s); inferred %d edge(s) (wrote %s)\n", issueCount, edgeCount, sidecarPath)
+		case guarded:
+			// First-run init against an empty fetch with a pre-existing
+			// sidecar (e.g. --update re-running init) — nothing was
+			// written; see the empty-fetch guard in runInitDepsAnalysis.
+			fmt.Printf("itervox init: fetch returned no issues; refusing to overwrite %d inferred edge(s) already in %s (sidecar left unchanged)\n", edgeCount, sidecarPath)
+		default:
+			// #52 IssuesScanned honesty — see deps.go's runDepsAnalyze for
+			// the same phrasing.
+			fmt.Printf("itervox init: scanned %d issue(s) (%d analyzed, %d revalidated); inferred %d edge(s) (wrote %s)\n",
+				issueCount, analyzedCount, issueCount-analyzedCount, edgeCount, sidecarPath)
 		}
 	}
 

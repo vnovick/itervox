@@ -6,10 +6,10 @@ Itervox v0.2.0 treats issue dependencies as dispatch eligibility and audit data.
 
 Itervox normalizes tracker blocker data into `issue.BlockedBy`.
 
-- Linear blockers come from native Linear issue relations: inverse relations of type `blocks`.
-- GitHub blockers are text-derived from the issue body using `blocked by #123` references. Comments are not parsed for blocker relationships in v0.2.0.
+- Linear blockers come from native Linear issue relations (inverse relations of type `blocks`) **and from sub-issues**: a parent issue is blocked by each of its children until they reach a terminal state.
+- GitHub blockers are text-derived from the issue body. Matched phrases: `blocked by`, `blocked on`, `depends on`, `depends upon`, `requires`, `waiting on`, `waiting for` — each followed by one or more `#123` references (comma/`and`/`&` lists supported, e.g. `depends on #3, #4 and #5` or `depends on #3 & #4`). The phrase may optionally be followed by a colon (`Depends on: #3`), and the reference list may continue across newlines onto bullet-shaped lines (`- #3`, `* #3`, optionally indented) — a blank line, or a non-bullet non-reference line, ends the list. A cross-repo reference (`owner/repo#N`) mid-list is skipped rather than ending the list, e.g. `depends on #3, foo/bar#4, #5` yields `#3` and `#5`. Only same-repo `#N` references ever become blocker edges — cross-repo references are recognized and skipped, never matched as blockers themselves. Casual phrasing such as "requires #5 to be reviewed" also matches — this is deliberate. Comments are not parsed for blocker relationships.
 
-The dependency audit exposes source labels such as `tracker_relation` and `issue_text` so operators can see where blocker data came from.
+The dependency audit exposes source labels so operators can see where blocker data came from: `tracker_relation` (an explicit Linear "blocks" relation), `issue_text` (a GitHub `#N` body reference), and `sub_issue` (a Linear parent blocked by an incomplete child/sub-issue).
 
 ## Dispatch Eligibility
 

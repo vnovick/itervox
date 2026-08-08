@@ -13,14 +13,18 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
 // maxWorkersCap is the absolute upper bound on MaxConcurrentAgents.
-// Time-based worker constants (hookFallbackTimeout, postRunTimeout,
-// maxTransitionAttempts) are defined in worker.go alongside their call sites.
+// Time-based worker constants (hookFallbackTimeout, postRunTimeout) are
+// defined in worker.go alongside their call sites; maxTransitionAttempts is
+// defined in write_sink.go alongside directWriteSink, the only place that
+// retry loop runs.
 const maxWorkersCap = 50
 
 // Orchestrator is the single-goroutine state machine that owns all dispatch state.
@@ -33,9 +37,30 @@ type Orchestrator struct {
 	tracker   tracker.Tracker
 	runner    agent.Runner
 	workspace workspace.Provider // nil is safe — workspace ops skipped (useful in tests)
-	logBuf    *logbuffer.Buffer  // nil is safe — log buffering disabled
-	events    chan OrchestratorEvent
-	refresh   chan struct{} // signals an immediate re-poll (e.g. from the web dashboard)
+	// sink is the write path for completion/failed-state transitions and
+	// worker-exit outcome comments (see write_sink.go's WriteSink doc
+	// comment for the full call-site list). New() defaults it to a
+	// directWriteSink wrapping tr, preserving old behavior; cmd/itervox
+	// (Task 3) calls SetWriteSink to swap in an outbox-backed sink when
+	// cfg.Tracker.Outbox is true. Nil-safe via writeSink() — tests across
+	// this package construct &Orchestrator{...} directly (bypassing New),
+	// same convention as Logger/logger().
+	sink WriteSink
+	// outbox is the write-ahead outbox handle used for the tick-top overlay
+	// and reconciliation (see outbox_overlay.go). It is read-only from the
+	// event loop's perspective — the loop calls PendingFor (read) and Drop
+	// (reconciliation's own internally-mutex-guarded mutation; Drop is not
+	// an orchestrator.State mutation, it mutates outbox.Outbox's own state
+	// under its own mutex, same as MarkFlushed/MarkFailed do for the
+	// flusher goroutine). Nil is the default and fully safe: cfg.Tracker.Outbox
+	// = false (the kill switch) means cmd/itervox never calls SetOutbox, so
+	// every outbox_overlay.go read/reconcile call no-ops. Set once via
+	// SetOutbox before Run() — same "must be set before Run" convention as
+	// SetWriteSink (see its doc comment for why that's safe without a lock).
+	outbox  *outbox.Outbox
+	logBuf  *logbuffer.Buffer // nil is safe — log buffering disabled
+	events  chan OrchestratorEvent
+	refresh chan struct{} // signals an immediate re-poll (e.g. from the web dashboard)
 	// OnDispatch is an optional hook called (in-goroutine) when an issue is dispatched.
 	OnDispatch func(issueID string)
 	// OnStateChange is called after every state snapshot update (see storeSnap).
@@ -43,6 +68,28 @@ type Orchestrator struct {
 	// read them, so the Go memory model's happens-before guarantee (set before
 	// goroutine start) ensures visibility without any additional synchronisation.
 	OnStateChange func()
+	// Logger, when set, is used in place of the global slog.Default() for the
+	// worker-completion / dispatch-success log lines (see logger(), and its
+	// two call sites: worker.go's "worker: completed" and event_loop.go's
+	// "orchestrator: worker succeeded, claim released"). Nil-safe: unset
+	// falls back to slog.Default(), matching pre-existing behavior. Must be
+	// set before calling Run() (same visibility rule as OnDispatch/
+	// OnStateChange above — worker goroutines read it, so Go's happens-before
+	// guarantee for "set before goroutine start" covers it).
+	//
+	// wave-2 polish Task 4 / #50 — exists specifically so tests can capture
+	// this log output through a logger instance scoped to their own
+	// Orchestrator, instead of mutating the process-global slog.Default().
+	// runWorker's completion log runs in a worker goroutine that Run() does
+	// not join on ctx cancellation (only the event-loop goroutine is
+	// awaited), so a test that used slog.SetDefault + restore could have a
+	// still-running worker goroutine from test N write into test N+1's
+	// freshly-swapped default logger after N returns —
+	// TestWorkerCompletedLogHasCorrectTokenValues's documented flake. An
+	// injected per-Orchestrator Logger closes over its own buffer, so a
+	// stray late write lands in the SAME test's (already-read, harmless)
+	// buffer rather than a different test's.
+	Logger *slog.Logger
 
 	snapMu     sync.RWMutex
 	lastSnap   State
@@ -94,6 +141,12 @@ type Orchestrator struct {
 	// owned by the single event-loop State.
 	automationQueueMu   sync.RWMutex
 	automationQueueFile string // optional path for persisting AutomationQueue across restarts
+
+	// depsOverridesMu guards depsOverridesFile only. State.DepsOverrides
+	// itself remains owned by the single event-loop State.
+	// unified-dependency-graph Task 6.
+	depsOverridesMu   sync.RWMutex
+	depsOverridesFile string // optional path for persisting DepsOverrides across restarts
 	// daemonInstanceID stamps the queue persistence envelope so a reader can
 	// distinguish state written by this daemon from state inherited from
 	// another (todolist4 A.2). Set once at construction; reads are lock-free.
@@ -203,6 +256,14 @@ type Orchestrator struct {
 	// Set via SetAgentLogDir before calling Run.
 	agentLogDir string
 
+	// depsSidecarCache is the mtime-cached reader over
+	// `.itervox/dependencies.json`, read once per tick by onTick to feed
+	// ReconcileInferredDeps. nil is safe (no sidecar path configured — e.g.
+	// tests, or a daemon with no deps_analyzer_profile) and yields no
+	// inferred edges. Set via SetDepsSidecarPath before calling Run; only
+	// read from the event-loop goroutine. unified-dependency-graph Task 4.
+	depsSidecarCache *depsanalysis.SidecarCache
+
 	// agentActionBaseURL is the daemon base URL exposed to local worker actions.
 	// Set via SetAgentActionBaseURL before Run.
 	agentActionBaseURL string
@@ -231,6 +292,10 @@ type Orchestrator struct {
 	// expected persisted. T-44 (gaps_280426 02.G-01).
 	commentWg sync.WaitGroup
 
+	// depsRefreshWg tracks the in-flight dependency-refresh goroutine so Run
+	// can wait for it before returning.
+	depsRefreshWg sync.WaitGroup
+
 	// runCtx is the context passed to Run. Stored atomically so DispatchReviewer
 	// can read it safely from any goroutine without a mutex.
 	runCtx atomic.Pointer[context.Context]
@@ -253,6 +318,7 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		tracker:                  tr,
 		runner:                   runner,
 		workspace:                wm,
+		sink:                     NewDirectWriteSink(tr),
 		events:                   make(chan OrchestratorEvent, 64),
 		refresh:                  make(chan struct{}, 1),
 		workerCancels:            make(map[string]context.CancelFunc),
@@ -265,6 +331,55 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		sshHostDescs:             sshHostDescs,
 		daemonInstanceID:         newDaemonInstanceID(),
 	}
+}
+
+// logger returns o.Logger when set, otherwise slog.Default() — see Logger's
+// doc comment for why worker-goroutine completion logging goes through this
+// instead of calling the slog package functions directly.
+func (o *Orchestrator) logger() *slog.Logger {
+	if o.Logger != nil {
+		return o.Logger
+	}
+	return slog.Default()
+}
+
+// writeSink returns o.sink when set (New's default, or an override from
+// SetWriteSink), otherwise falls back to a directWriteSink wrapping
+// o.tracker — the same nil-safe fallback convention as logger() above,
+// needed because many tests in this package construct &Orchestrator{...}
+// directly rather than via New().
+func (o *Orchestrator) writeSink() WriteSink {
+	if o.sink != nil {
+		return o.sink
+	}
+	return NewDirectWriteSink(o.tracker)
+}
+
+// SetWriteSink overrides the orchestrator's write path for completion/
+// failed-state transitions and worker-exit outcome comments (see
+// write_sink.go's WriteSink doc comment). cmd/itervox calls this to route
+// through an outbox-backed sink when cfg.Tracker.Outbox is true (Task 3);
+// tests call it to inject a fake sink. Must be set before calling Run()
+// (same visibility rule as OnDispatch/OnStateChange/Logger — see Logger's
+// doc comment for why: Run spawns goroutines that read it, and Go's
+// happens-before guarantee for "set before goroutine start" is what makes
+// that safe without extra synchronization).
+func (o *Orchestrator) SetWriteSink(sink WriteSink) {
+	o.sink = sink
+}
+
+// SetOutbox gives the orchestrator the write-ahead outbox handle used for
+// the tick-top overlay and reconciliation (outbox_overlay.go). cmd/itervox
+// calls this whenever cfg.Tracker.Outbox is true, right alongside
+// SetWriteSink(NewOutboxWriteSink(ob)) — same handle, two different reasons
+// the event loop needs it (writing new entries goes through the sink;
+// reading/reconciling pending entries goes through this accessor). Must be
+// set before calling Run() (same visibility rule as SetWriteSink — see its
+// doc comment). Leaving it unset (nil) is the kill-switch-off default and is
+// fully safe: every read site in outbox_overlay.go treats a nil o.outbox as
+// "nothing pending".
+func (o *Orchestrator) SetOutbox(ob *outbox.Outbox) {
+	o.outbox = ob
 }
 
 // newDaemonInstanceID returns a process-unique tag for the queue persistence
@@ -589,6 +704,29 @@ func (o *Orchestrator) AgentProfileCfg(name string) (config.AgentProfile, bool) 
 	return p, ok
 }
 
+// ResolveDepsAnalyzerProfileCfg atomically reads the configured
+// deps-analyzer profile name AND resolves it against cfg.Agent.Profiles
+// under a single cfgMu critical section. Equivalent to calling
+// DepsAnalyzerProfileCfg() followed by AgentProfileCfg(name), except those
+// two separate cfgMu acquisitions can observe a torn read: a
+// SetDepsAnalyzerProfileCfg (or a profiles.* PUT) landing between the two
+// calls can pair an old profile name with a newer/absent profile map entry
+// (or vice versa), which self-heals on the next tick but produces a
+// spurious "profile does not resolve" warning in the interim (#52 deferral —
+// "resolveProfile reads two cfgMu sections non-atomically"). Callers that
+// need both values together (deps_auto_analyze.go's startDepsAutoAnalyze)
+// should use this instead of the two single-field accessors.
+func (o *Orchestrator) ResolveDepsAnalyzerProfileCfg() (name string, profile config.AgentProfile, ok bool) {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	name = o.cfg.Agent.DepsAnalyzerProfile
+	if name == "" {
+		return "", config.AgentProfile{}, false
+	}
+	profile, ok = o.cfg.Agent.Profiles[name]
+	return name, profile, ok
+}
+
 // SetDepsAnalyzerProfileCfg updates the deps-analyzer profile name at runtime
 // under cfgMu. Settings UI surface; Phase 2.3. v0.2.0 todolist6.
 func (o *Orchestrator) SetDepsAnalyzerProfileCfg(profile string) error {
@@ -768,4 +906,26 @@ func (o *Orchestrator) SetDispatchStrategyCfg(strategy string) {
 // for display in the interactive TUI.
 func (o *Orchestrator) SetLogBuffer(buf *logbuffer.Buffer) {
 	o.logBuf = buf
+}
+
+// SetDepsSidecarPath installs the mtime-cached sidecar reader the event loop
+// consults every tick to reconcile inferred dependency edges. Call before Run;
+// not calling it leaves depsSidecarCache nil, which sidecarEdges() treats as
+// "no inferred edges" rather than panicking. unified-dependency-graph Task 4.
+func (o *Orchestrator) SetDepsSidecarPath(path string) {
+	o.depsSidecarCache = depsanalysis.NewSidecarCache(path)
+}
+
+// sidecarEdges returns the current inferred-edge set from the sidecar cache.
+// nil-safe: a nil depsSidecarCache (no path configured) or a missing/invalid
+// sidecar file both yield an empty slice rather than a panic or nil map read.
+func (o *Orchestrator) sidecarEdges() []depsanalysis.InferredEdge {
+	if o.depsSidecarCache == nil {
+		return nil
+	}
+	sc := o.depsSidecarCache.Latest()
+	if sc == nil {
+		return nil
+	}
+	return sc.Edges
 }

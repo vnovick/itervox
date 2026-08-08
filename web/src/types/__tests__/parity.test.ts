@@ -5,10 +5,13 @@ import { fileURLToPath } from 'node:url';
 import {
   AutomationQueueRowSchema,
   AutomationQueueBackpressureSchema,
+  DependencyAttentionRowSchema,
   DependencyAuditRowSchema,
+  DependencyCycleRowSchema,
   DependencyGraphNodeSchema,
   DependencyGraphEdgeSchema,
   IssueStatusChangeSchema,
+  OutboxEntryRowSchema,
   StateSnapshotSchema,
 } from '../schemas';
 
@@ -39,10 +42,13 @@ interface SchemaLike {
 const schemas: Record<string, SchemaLike> = {
   'AutomationQueueRow.json': AutomationQueueRowSchema,
   'AutomationQueueBackpressureRow.json': AutomationQueueBackpressureSchema,
+  'DependencyAttentionRow.json': DependencyAttentionRowSchema,
   'DependencyAuditRow.json': DependencyAuditRowSchema,
+  'DependencyCycleRow.json': DependencyCycleRowSchema,
   'DependencyGraphNodeRow.json': DependencyGraphNodeSchema,
   'DependencyGraphEdgeRow.json': DependencyGraphEdgeSchema,
   'IssueStatusChangeRow.json': IssueStatusChangeSchema,
+  'OutboxEntryRow.json': OutboxEntryRowSchema,
 };
 
 describe('Go DTO ↔ Zod schema parity (v0.2.0 audit P1-14)', () => {
@@ -99,5 +105,53 @@ describe('StateSnapshot automationDropsSelfReentryTotal parity (gaps_11 G-11)', 
   it('parses snapshots that omit the counter (omitempty / older daemon)', () => {
     const parsed = StateSnapshotSchema.parse(minimalSnapshot);
     expect(parsed.automationDropsSelfReentryTotal).toBeUndefined();
+  });
+});
+
+// critical-path-ordering Task 6 — dependencyCycles/dependencyAttention ride
+// the top-level StateSnapshot DTO like automationDropsSelfReentryTotal above:
+// both omitempty on the wire, absent from snapshots emitted by daemons
+// predating this feature. Assert both directions so a future field rename
+// fails loudly here instead of silently dropping the LiveOps tile / cycle
+// highlight / attention badge.
+describe('StateSnapshot dependencyCycles/dependencyAttention parity (critical-path-ordering Task 6)', () => {
+  const minimalSnapshot = {
+    generatedAt: '2026-05-25T12:00:00Z',
+    counts: { running: 0, retrying: 0, paused: 0 },
+    running: [],
+    retrying: [],
+    paused: [],
+    maxConcurrentAgents: 3,
+    maxRetries: 5,
+    maxSwitchesPerIssuePerWindow: 2,
+    switchWindowHours: 6,
+    rateLimits: null,
+  };
+
+  it('parses snapshots that include cycles and attention entries', () => {
+    const parsed = StateSnapshotSchema.parse({
+      ...minimalSnapshot,
+      dependencyCycles: [
+        { members: ['ENG-1', 'ENG-2'], kind: 'tracker', detectedAt: '2026-05-25T12:00:00Z' },
+      ],
+      dependencyAttention: [
+        {
+          identifier: 'ENG-1',
+          blockers: ['ENG-2'],
+          blockedSince: '2026-05-25T09:00:00Z',
+          kind: 'cycle',
+        },
+      ],
+    });
+    expect(parsed.dependencyCycles).toHaveLength(1);
+    expect(parsed.dependencyCycles?.[0].kind).toBe('tracker');
+    expect(parsed.dependencyAttention).toHaveLength(1);
+    expect(parsed.dependencyAttention?.[0].kind).toBe('cycle');
+  });
+
+  it('parses snapshots that omit both fields (omitempty / older daemon)', () => {
+    const parsed = StateSnapshotSchema.parse(minimalSnapshot);
+    expect(parsed.dependencyCycles).toBeUndefined();
+    expect(parsed.dependencyAttention).toBeUndefined();
   });
 });

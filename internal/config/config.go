@@ -26,6 +26,91 @@ var envVarRe = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
 // accepted for daemon startup.
 const LatestWorkflowSchemaVersion = 2
 
+// DefaultDependencyAuditRefreshIntervalMs / TimeoutMs / BatchSize are the
+// config-loader defaults for the off-loop dependency-audit refresh (see
+// AgentConfig.DependencyAuditRefresh* below). Exported so
+// internal/orchestrator can fall back to the same values when clamping a
+// non-positive runtime value (Task 6 review Gap F): positiveIntField already
+// floors these at load time for anything reachable from WORKFLOW.md, so a
+// non-positive value can only originate from a hand-constructed
+// config.Config (tests). If it ever reached production unclamped,
+// batchSize<=0 would silently disable the refresh and
+// context.WithTimeout(ctx, 0<=timeout) would make every batch fetch nothing
+// while still arming the throttle. Sharing these constants keeps the
+// load-time default and the runtime clamp from drifting apart.
+// The interval default is 10 minutes, NOT a poll-interval-scale value, and that
+// is deliberate. This throttle is the only thing bounding how often a given
+// audit row costs a tracker request, and the dependency audit is one of the
+// largest consumers of the tracker's request budget (see issue #42: it was
+// ~28% of Linear traffic on a real deployment that sat at zero remaining
+// budget for 35 minutes of every hour).
+//
+// An interval SHORTER than polling.interval_ms never binds — every row is
+// eligible on every tick — so the batch cap alone governs, and at
+// BatchSize=100 against a 60s poll that is 6000 requests/hour from this path
+// alone, roughly 2.4x Linear's documented 2500/hour ceiling. At 10 minutes a
+// 59-row audit set costs ~354/hour instead. Raise it if you want fresher
+// dependency state and have the budget; do not lower it below
+// polling.interval_ms without checking the rate-limit headroom the dashboard
+// already reports.
+const (
+	DefaultDependencyAuditRefreshIntervalMs = 600000
+	DefaultDependencyAuditRefreshTimeoutMs  = 30000
+	DefaultDependencyAuditRefreshBatchSize  = 100
+)
+
+// DefaultDepsAnalyzerTimeoutMs / DefaultDepsAnalyzerChunkSize are exported so
+// the analyzer service clamps to the SAME values the loader defaults to. A
+// second copy in the service would drift.
+const (
+	DefaultDepsAnalyzerTimeoutMs = 600000 // 10 min — matches the dashboard's poll deadline
+	DefaultDepsAnalyzerChunkSize = 75
+)
+
+// DefaultServerPort is the HTTP port bound when `server.port` is absent from
+// WORKFLOW.md. A fixed default — not ephemeral — so the dashboard URL survives
+// daemon restarts and config reloads; 8090 matches the Vite dev proxy target
+// and the scaffolded WORKFLOW.md. An explicit `server.port: 0` still asks the
+// OS for a free port, which is the knob for running several daemons at once.
+const DefaultServerPort = 8090
+
+// DefaultDependenciesConfidenceThreshold / DefaultDependenciesStalenessHours
+// are the config-loader defaults for DependenciesConfig. Exported so callers
+// that need to fall back to the same values (e.g. clamping a
+// hand-constructed config.Config in tests) do not drift from the load-time
+// default.
+const (
+	DefaultDependenciesConfidenceThreshold = 0.7
+	DefaultDependenciesStalenessHours      = 168
+)
+
+// DefaultDependenciesAutoAnalyzeMinIntervalMinutes /
+// DefaultDependenciesAutoAnalyzeDebounceMinutes are the config-loader
+// defaults for auto-analyzer triggering. These values parse via positiveIntField
+// so <=0 in YAML becomes the default; unlike escalate_blocked_after_hours,
+// there is no meaningful zero here (analyzer must not run every tick).
+const (
+	DefaultDependenciesAutoAnalyzeMinIntervalMinutes = 60
+	DefaultDependenciesAutoAnalyzeDebounceMinutes    = 5
+)
+
+// DependenciesOrderingCriticalPath / DependenciesOrderingSimple are the
+// accepted values for dependencies.ordering. DefaultDependenciesOrdering is
+// the config-loader default (critical-path-aware dispatch ordering).
+// DefaultDependenciesEscalateHours is the config-loader default for
+// dependencies.escalate_blocked_after_hours: how long an issue may sit
+// blocked before automation escalation triggers. An explicit `0` disables
+// escalation (a meaningful, deliberately-chosen value) and must NOT be
+// treated as "absent" — see the parse site in LoadFromFrontMatter, which
+// uses a plain intField + explicit sign check instead of positiveIntField
+// specifically to preserve that distinction.
+const (
+	DependenciesOrderingCriticalPath = "critical_path"
+	DependenciesOrderingSimple       = "simple"
+	DefaultDependenciesOrdering      = DependenciesOrderingCriticalPath
+	DefaultDependenciesEscalateHours = 48
+)
+
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
 	Kind           string
@@ -47,6 +132,12 @@ type TrackerConfig struct {
 	// FailedState is the state to move issues to when max retries are exhausted.
 	// When empty, issues are paused instead of transitioned.
 	FailedState string
+	// Outbox enables the write-ahead outbox for tracker state transitions and
+	// comments: writes are persisted durably and flushed by an independent
+	// worker instead of being made synchronously (with inline retries) from
+	// the orchestrator's completion/failed-state paths. Default true; set
+	// false as a kill switch to restore the old synchronous behavior.
+	Outbox bool
 }
 
 // PollingConfig holds polling settings.
@@ -195,6 +286,20 @@ type AgentConfig struct {
 	// looping without making progress). Default: 300 000 ms (5 min).
 	// Set to ≤ 0 to disable stall detection entirely.
 	StallTimeoutMs int
+	// DependencyAuditRefreshIntervalMs is the minimum gap between refreshes of
+	// the same dependency-audit row. Startup-only: there is no HTTP setter, so
+	// it needs no cfgMu guard (same reasoning as StallTimeoutMs — see
+	// CLAUDE.md, section "`cfgMu` guards exactly these fields (and nothing
+	// else)").
+	DependencyAuditRefreshIntervalMs int
+	// DependencyAuditRefreshTimeoutMs bounds one off-loop refresh batch.
+	// Startup-only; see DependencyAuditRefreshIntervalMs.
+	DependencyAuditRefreshTimeoutMs int
+	// DependencyAuditRefreshBatchSize caps how many rows one batch may fetch.
+	// Replaces the former dependencyAuditRefreshPerTickBudget constant, whose
+	// value of 20 existed only because the fetches blocked the event loop.
+	// Startup-only; see DependencyAuditRefreshIntervalMs.
+	DependencyAuditRefreshBatchSize int
 	// SSHHosts is an optional list of "host" or "host:port" addresses.
 	// When set, agent turns are executed on these hosts via SSH in order,
 	// falling back to the next host on failure. Empty = run locally.
@@ -241,6 +346,14 @@ type AgentConfig struct {
 	// dashboard's "Analyze dependencies" button is disabled and the Deps tab
 	// shows tracker-declared edges only.
 	DepsAnalyzerProfile string
+	// DepsAnalyzerTimeoutMs bounds one analyzer job end to end, all chunks
+	// included. Independent of TurnTimeoutMs, whose 1-hour default is far too
+	// long for this job. Startup-only: no HTTP setter, so no cfgMu guard is
+	// needed (same precedent as StallTimeoutMs).
+	DepsAnalyzerTimeoutMs int
+	// DepsAnalyzerChunkSize caps how many issues go into one analyzer turn.
+	// Startup-only; see DepsAnalyzerTimeoutMs.
+	DepsAnalyzerChunkSize int
 	// InlineInput controls whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	// When true, the issue moves to the completion state with a question comment;
@@ -312,12 +425,61 @@ type HooksConfig struct {
 type ServerConfig struct {
 	Port *int
 	Host string
-	// AllowUnauthenticatedLAN, when true, lets the daemon bind to a
-	// non-loopback address without requiring ITERVOX_API_TOKEN. Explicit
-	// opt-in for trusted networks (air-gapped LAN, behind a firewall).
-	// Default false: a random token is auto-generated when binding
-	// non-loopback without one.
+	// AllowUnauthenticatedLAN, when true, lets the daemon start (on ANY
+	// bind address, loopback included) without requiring ITERVOX_API_TOKEN.
+	// Explicit opt-in for trusted environments. Default false: a random
+	// token is always auto-generated when no token is set, regardless of
+	// bind address — see #48. Bind address is not a security boundary (a
+	// loopback daemon behind a tunnel or reverse proxy is exactly as
+	// exposed as a non-loopback one), so this is no longer LAN-specific.
+	//
+	// YAML key: `server.allow_unauthenticated` (preferred). The legacy key
+	// `server.allow_unauthenticated_lan` still parses as a deprecated alias
+	// (one-time slog.Warn); the new key wins if both are present.
 	AllowUnauthenticatedLAN bool
+}
+
+// DependenciesConfig holds settings for the unified dependency graph:
+// whether inferred (non-tracker) dependency edges gate automation dispatch,
+// and the confidence/staleness thresholds inferred edges are held to.
+type DependenciesConfig struct {
+	// InferredGating, when true, lets inferred dependency edges (not just
+	// tracker-declared blockers) hold automation dispatch until resolved.
+	// Default true.
+	InferredGating bool
+	// ConfidenceThreshold is the minimum confidence score (0.0-1.0) an
+	// inferred dependency edge must meet to be treated as gating. Values
+	// outside [0,1] fall back to DefaultDependenciesConfidenceThreshold.
+	ConfidenceThreshold float64
+	// StalenessHours is how long an inferred dependency edge is trusted
+	// before it is considered stale and re-evaluated. Non-positive values
+	// fall back to DefaultDependenciesStalenessHours.
+	StalenessHours int
+	// Ordering selects the dispatch ordering strategy: "critical_path"
+	// (default) ranks issues by how many dependents they unblock, "simple"
+	// uses the legacy priority/createdAt sort. An unrecognized value falls
+	// back to DefaultDependenciesOrdering with a slog.Warn. See also the
+	// deprecated agent.sort.prefer_high_outdegree alias, handled at the
+	// parse site.
+	Ordering string
+	// EscalateBlockedAfterHours is how long an issue may remain blocked
+	// before automation escalation fires. Default 48. An explicit `0` is
+	// meaningful — it disables escalation — and is preserved as-is. A
+	// negative value falls back to DefaultDependenciesEscalateHours with a
+	// slog.Warn.
+	EscalateBlockedAfterHours int
+	// AutoAnalyze, when true, enables periodic dependency analysis.
+	// Default true.
+	AutoAnalyze bool
+	// AutoAnalyzeMinIntervalMinutes is the minimum gap between consecutive
+	// dependency analyses on the same issue. Parsed via positiveIntField;
+	// <=0 becomes the default. There is no meaningful zero here (unlike
+	// escalate_blocked_after_hours) — analyzer must not run every tick.
+	AutoAnalyzeMinIntervalMinutes int
+	// AutoAnalyzeDebounceMinutes delays analysis start after a dispatch to
+	// avoid analyzing while state is still settling. Parsed via positiveIntField;
+	// <=0 becomes the default. No meaningful zero — debounce must delay.
+	AutoAnalyzeDebounceMinutes int
 }
 
 // Config is the fully-parsed, defaulted, and resolved Itervox configuration.
@@ -335,6 +497,7 @@ type Config struct {
 	Agent          AgentConfig
 	Hooks          HooksConfig
 	Server         ServerConfig
+	Dependencies   DependenciesConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
 }
@@ -404,6 +567,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
+	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
 
 	// Polling
 	polling := nestedMap(raw, "polling")
@@ -429,6 +593,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.TurnTimeoutMs = intField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
+	cfg.Agent.DependencyAuditRefreshIntervalMs = positiveIntField(agent, "dependency_audit_refresh_interval_ms", DefaultDependencyAuditRefreshIntervalMs)
+	cfg.Agent.DependencyAuditRefreshTimeoutMs = positiveIntField(agent, "dependency_audit_refresh_timeout_ms", DefaultDependencyAuditRefreshTimeoutMs)
+	cfg.Agent.DependencyAuditRefreshBatchSize = positiveIntField(agent, "dependency_audit_refresh_batch_size", DefaultDependencyAuditRefreshBatchSize)
 	cfg.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(mapField(agent, "max_concurrent_agents_by_state"))
 	cfg.Agent.PauseDispatchWhenAnyInState = strSliceField(agent, "pause_dispatch_when_any_in_state", nil)
 	cfg.Agent.MergeStrategy = strField(agent, "merge_strategy", "squash")
@@ -448,6 +615,8 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
 	cfg.Agent.DepsAnalyzerProfile = strField(agent, "deps_analyzer_profile", "")
+	cfg.Agent.DepsAnalyzerTimeoutMs = positiveIntField(agent, "deps_analyzer_timeout_ms", DefaultDepsAnalyzerTimeoutMs)
+	cfg.Agent.DepsAnalyzerChunkSize = positiveIntField(agent, "deps_analyzer_chunk_size", DefaultDepsAnalyzerChunkSize)
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
@@ -487,7 +656,90 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			cfg.Server.Port = &pInt
 		}
 	}
-	cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+	// Absent (or unparseable) port → fixed default. Port stays a *int only so
+	// an explicit `0` (OS picks a free port, for multi-daemon setups) remains
+	// distinguishable in the YAML; after load it is always non-nil.
+	if cfg.Server.Port == nil {
+		defaultPort := DefaultServerPort
+		cfg.Server.Port = &defaultPort
+	}
+	// Alias: server.allow_unauthenticated_lan is deprecated in favor of
+	// server.allow_unauthenticated (#48 — the flag is no longer LAN-scoped,
+	// it opts out of auth entirely regardless of bind address). The new key
+	// wins if both are present in the same WORKFLOW.md.
+	_, newAllowUnauthKeySet := srv["allow_unauthenticated"]
+	_, oldAllowUnauthKeySet := srv["allow_unauthenticated_lan"]
+	switch {
+	case newAllowUnauthKeySet:
+		cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated", false)
+		if oldAllowUnauthKeySet {
+			slog.Warn("config: both server.allow_unauthenticated and deprecated server.allow_unauthenticated_lan are set; using server.allow_unauthenticated")
+		}
+	case oldAllowUnauthKeySet:
+		slog.Warn("config: server.allow_unauthenticated_lan is deprecated, use server.allow_unauthenticated instead")
+		cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+	default:
+		cfg.Server.AllowUnauthenticatedLAN = false
+	}
+
+	// Dependencies
+	deps := nestedMap(raw, "dependencies")
+	cfg.Dependencies.InferredGating = boolField(deps, "inferred_gating", true)
+	confidenceThreshold := floatField(deps, "confidence_threshold", DefaultDependenciesConfidenceThreshold)
+	if confidenceThreshold < 0 || confidenceThreshold > 1 {
+		slog.Warn("config: dependencies.confidence_threshold out of range [0,1], using default",
+			"value", confidenceThreshold, "default", DefaultDependenciesConfidenceThreshold)
+		confidenceThreshold = DefaultDependenciesConfidenceThreshold
+	}
+	cfg.Dependencies.ConfidenceThreshold = confidenceThreshold
+	cfg.Dependencies.StalenessHours = positiveIntField(deps, "staleness_hours", DefaultDependenciesStalenessHours)
+
+	_, orderingExplicit := deps["ordering"]
+	cfg.Dependencies.Ordering = strField(deps, "ordering", DefaultDependenciesOrdering)
+	if cfg.Dependencies.Ordering != DependenciesOrderingCriticalPath && cfg.Dependencies.Ordering != DependenciesOrderingSimple {
+		slog.Warn("config: dependencies.ordering unrecognized, using default",
+			"value", cfg.Dependencies.Ordering, "default", DefaultDependenciesOrdering)
+		cfg.Dependencies.Ordering = DefaultDependenciesOrdering
+	}
+
+	// escalate_blocked_after_hours: absent -> default (48); explicit 0 is a
+	// meaningful "disabled" value and must be preserved; negative -> default
+	// with a warning. Deliberately NOT positiveIntField, which would treat
+	// an explicit 0 the same as absent and destroy the "disabled" signal —
+	// the exact footgun documented for timeout fields in CLAUDE.md.
+	if _, ok := deps["escalate_blocked_after_hours"]; ok {
+		escalateHours := intField(deps, "escalate_blocked_after_hours", DefaultDependenciesEscalateHours)
+		if escalateHours < 0 {
+			slog.Warn("config: dependencies.escalate_blocked_after_hours negative, using default",
+				"value", escalateHours, "default", DefaultDependenciesEscalateHours)
+			escalateHours = DefaultDependenciesEscalateHours
+		}
+		cfg.Dependencies.EscalateBlockedAfterHours = escalateHours
+	} else {
+		cfg.Dependencies.EscalateBlockedAfterHours = DefaultDependenciesEscalateHours
+	}
+
+	// auto_analyze: enable/disable periodic dependency analysis. Default true.
+	cfg.Dependencies.AutoAnalyze = boolField(deps, "auto_analyze", true)
+	// auto_analyze_min_interval_minutes and auto_analyze_debounce_minutes:
+	// both parsed via positiveIntField (<=0 -> default). No meaningful zero
+	// here — analyzer must not run every tick, and debounce must delay.
+	cfg.Dependencies.AutoAnalyzeMinIntervalMinutes = positiveIntField(deps, "auto_analyze_min_interval_minutes", DefaultDependenciesAutoAnalyzeMinIntervalMinutes)
+	cfg.Dependencies.AutoAnalyzeDebounceMinutes = positiveIntField(deps, "auto_analyze_debounce_minutes", DefaultDependenciesAutoAnalyzeDebounceMinutes)
+
+	// Alias: agent.sort.prefer_high_outdegree is deprecated in favor of
+	// dependencies.ordering. If set, log a one-time deprecation warning. If
+	// dependencies.ordering was absent from the YAML, the alias leaves the
+	// default critical_path in place (net effect: same behavior, better
+	// tiebreaking). If dependencies.ordering was explicitly present
+	// (including explicit "simple"), it wins outright.
+	if cfg.Agent.PreferHighOutdegreeSort {
+		slog.Warn("config: agent.sort.prefer_high_outdegree is deprecated, use dependencies.ordering: critical_path instead")
+		if !orderingExplicit {
+			cfg.Dependencies.Ordering = DependenciesOrderingCriticalPath
+		}
+	}
+
 	cfg.Automations = parseAutomations(raw["automations"])
 	if len(cfg.Automations) == 0 {
 		legacy := legacySchedulesToAutomations(parseSchedules(raw["schedules"]))
@@ -814,6 +1066,21 @@ func intField(m map[string]any, key string, defaultVal int) int {
 	return n
 }
 
+func floatField(m map[string]any, key string, defaultVal float64) float64 {
+	if m == nil {
+		return defaultVal
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return defaultVal
+	}
+	f, ok := toFloat(v)
+	if !ok {
+		return defaultVal
+	}
+	return f
+}
+
 func boolField(m map[string]any, key string, defaultVal bool) bool {
 	if m == nil {
 		return defaultVal
@@ -869,6 +1136,23 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	case float64:
 		return int(n), true
+	}
+	return 0, false
+}
+
+// toFloat coerces a YAML-decoded numeric value to float64. YAML numbers
+// arrive as int or float64 in a map[string]any, depending on whether the
+// literal contained a decimal point — yaml.v3 never produces a float32, so
+// there is no float32 case here (#50: it was dead defensive code, removed as
+// pure churn).
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
 	}
 	return 0, false
 }

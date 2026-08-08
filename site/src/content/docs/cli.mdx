@@ -190,7 +190,7 @@ itervox -h
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ITERVOX_DRY_RUN` | `""` | Set to `"1"` to enable dry-run mode. The orchestrator logs dispatch decisions but does **not** start agent workers. Useful for verifying configuration and dispatch logic without consuming API tokens. |
-| `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/health`). Requests must include `Authorization: Bearer <token>`. When unset and `server.host` is non-loopback, Itervox auto-generates an ephemeral token at startup (printed in the log) unless `server.allow_unauthenticated_lan: true`. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
+| `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The auto-generated token, and the dashboard URL that carries it, are printed to stderr once. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
 
 ### Auto-loading
 
