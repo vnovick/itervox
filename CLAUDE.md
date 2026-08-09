@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.11) that implements the
+**Itervox** is a long-running daemon (Go 1.25.12) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
