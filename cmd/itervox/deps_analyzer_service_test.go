@@ -35,15 +35,17 @@ type stubRunner struct {
 
 	mu      sync.Mutex
 	prompts []string
+	logDirs []string
 }
 
 func (s *stubRunner) RunTurn(
 	ctx context.Context, _ agent.Logger, onProgress func(agent.TurnResult),
-	_ *string, prompt, _, _, _, _ string, _, _ int,
+	_ *string, prompt, _, _, _, logDir string, _, _ int,
 ) (agent.TurnResult, error) {
 	n := s.calls.Add(1)
 	s.mu.Lock()
 	s.prompts = append(s.prompts, prompt)
+	s.logDirs = append(s.logDirs, logDir)
 	s.mu.Unlock()
 	if onProgress != nil {
 		onProgress(agent.TurnResult{})
@@ -62,6 +64,17 @@ func (s *stubRunner) capturedPrompts() []string {
 	defer s.mu.Unlock()
 	out := make([]string, len(s.prompts))
 	copy(out, s.prompts)
+	return out
+}
+
+// capturedLogDirs returns the logDir argument seen by each RunTurn call, in
+// call order. Pairs with capturedPrompts for the same sequential-chunk
+// reasoning.
+func (s *stubRunner) capturedLogDirs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.logDirs))
+	copy(out, s.logDirs)
 	return out
 }
 
@@ -732,6 +745,67 @@ func TestCurrentJob_ReflectsRunningJob(t *testing.T) {
 // but stale until the next unrelated SSE tick or poll — a refreshed page
 // would show a job that finished seconds ago as still running, or miss a
 // job that started and finished between polls. internal/depsanalysis's
+// The analyzer namespaces its per-run log directory under the agent session
+// dir so analyzer output lands beside worker output instead of in its root.
+//
+// #46 item 4: every test constructor passed agentLogDir "", so the
+// `if s.agentLogDir != ""` branch in run() executed in no test at all —
+// deleting it, or joining the wrong subdirectory, left the suite green and
+// the "analyzer output is written to disk" deliverable verifiable only by
+// inspection. These two tests pin both sides of that branch.
+func TestServiceRunNamespacesLogDirUnderAgentLogDir(t *testing.T) {
+	agentLogDir := t.TempDir()
+
+	issues := []domain.Issue{
+		{ID: "ENG-001", Identifier: "ENG-001", Title: "issue ENG-001", State: "Todo"},
+	}
+	tr := tracker.NewMemoryTracker(issues, []string{"Todo"}, nil)
+
+	enabled := true
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			DepsAnalyzerChunkSize: 8,
+			Profiles: map[string]config.AgentProfile{
+				"deps-analyzer": {Command: "stub-analyzer", Enabled: &enabled},
+			},
+		},
+		Tracker: config.TrackerConfig{ActiveStates: []string{"Todo"}},
+	}
+
+	runner := &stubRunner{response: `{"edges":[]}`}
+	orch := orchestrator.New(cfg, tr, runner, nil)
+	svc := newDepsAnalyzerService(
+		context.Background(), orch, cfg, tr, runner,
+		filepath.Join(t.TempDir(), "deps-sidecar.json"), agentLogDir, func() {},
+	)
+
+	_, err := svc.run(context.Background(), "deps-analyzer")
+	require.NoError(t, err)
+
+	dirs := runner.capturedLogDirs()
+	require.NotEmpty(t, dirs, "runner must have been invoked at least once")
+	want := filepath.Join(agentLogDir, "deps-analyzer")
+	for i, got := range dirs {
+		assert.Equal(t, want, got,
+			"chunk %d must log under the deps-analyzer namespace", i+1)
+	}
+}
+
+func TestServiceRunLeavesLogDirEmptyWhenAgentLogDirUnset(t *testing.T) {
+	runner := &stubRunner{response: `{"edges":[]}`}
+	svc, _ := newTestAnalyzerService(t, runner, 1, 8)
+
+	_, err := svc.run(context.Background(), "deps-analyzer")
+	require.NoError(t, err)
+
+	dirs := runner.capturedLogDirs()
+	require.NotEmpty(t, dirs, "runner must have been invoked at least once")
+	for i, got := range dirs {
+		assert.Equal(t, "", got,
+			"chunk %d must not synthesize a log dir when agentLogDir is unset", i+1)
+	}
+}
+
 // TestJobManager_OnTransitionFiresOnRunningAndTerminal already pins the
 // JobManager half of this; this test pins that depsAnalyzerService actually
 // wires its own notify callback into JobManager.SetOnTransition (rather
@@ -768,6 +842,20 @@ func TestNewDepsAnalyzerService_NotifiesOnJobStartAndFinish(t *testing.T) {
 	id, err := svc.jobs.Enqueue(context.Background(), "deps-analyzer")
 	require.NoError(t, err)
 	require.NotEmpty(t, id)
+
+	// Gate on the terminal status itself, NOT on the notify count. notify
+	// fires from two independent places: JobManager's transition callback
+	// (job.go — running, then terminal) and run()'s own post-sidecar call
+	// (deps_analyzer_service.go). The in-run call lands while the job is
+	// still JobRunning, because JobManager writes job.Status only after
+	// m.run returns. So notifyCalls >= 2 is reachable pre-terminal, and
+	// asserting terminal off the back of it is a race that widens under a
+	// loaded `make verify`.
+	require.Eventually(t, func() bool {
+		j, ok := svc.jobs.Status(id)
+		return ok && j.Status != depsanalysis.JobRunning
+	}, 5*time.Second, 10*time.Millisecond,
+		"job must have reached a terminal state")
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
