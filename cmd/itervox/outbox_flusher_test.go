@@ -34,6 +34,12 @@ type recordingFlusherTracker struct {
 	fetchStatesErr   error
 	fetchStatesCalls int
 	lastFetchIDs     []string
+
+	// fetchStatesDelay, when non-zero, is slept (honoring ctx cancellation)
+	// before FetchIssueStatesByIDs returns — used to reproduce a slow-but-
+	// succeeding tracker call and prove it no longer blocks the flusher's
+	// own delivery ticker (Task 5 fix round, Important #1).
+	fetchStatesDelay time.Duration
 }
 
 func newRecordingFlusherTracker(issues []domain.Issue) *recordingFlusherTracker {
@@ -85,12 +91,30 @@ func (r *recordingFlusherTracker) injectFetchStatesErr(err error) {
 	r.fetchStatesErr = err
 }
 
+// setFetchStatesDelay causes every subsequent FetchIssueStatesByIDs call to
+// sleep d (honoring ctx cancellation) before proceeding. Pass 0 to clear.
+func (r *recordingFlusherTracker) setFetchStatesDelay(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fetchStatesDelay = d
+}
+
 func (r *recordingFlusherTracker) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	r.mu.Lock()
 	r.fetchStatesCalls++
 	r.lastFetchIDs = append([]string(nil), issueIDs...)
 	err := r.fetchStatesErr
+	delay := r.fetchStatesDelay
 	r.mu.Unlock()
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -464,22 +488,116 @@ func TestAbsentIssueReconcileBatchesDistinctIssueIDs(t *testing.T) {
 	assert.ElementsMatch(t, []string{"id-a", "id-b"}, tr.LastFetchIDs())
 }
 
-// --- absentIssueReconciler.due: interval pacing ----------------------------
+// TestOutboxFlusherAbsentReconcileDoesNotBlockDelivery reproduces the review
+// finding from Task 5's fix round (Important #1): runAbsentIssueReconcileTick
+// used to run INLINE on the flusher's own ticker goroutine, so a slow-but-
+// succeeding FetchIssueStatesByIDs (up to outboxFlushCallTimeout) blocked
+// the flusher from returning to its select loop in time for the NEXT
+// delivery tick — the reviewer's probe found an entry due within 10ms
+// wasn't delivered until a 250ms fetch returned. That is a read stalling
+// the write path, the exact failure mode the outbox exists to prevent.
+//
+// This test reproduces that shape directly against the real goroutine
+// (startOutboxFlusher, not runOutboxFlusherTick called directly): a
+// perpetually-pending entry keeps the absent-reconcile batch non-empty, its
+// FetchIssueStatesByIDs is slowed to 250ms, and — while that slow fetch is
+// still in flight — a second entry is enqueued and must be delivered on the
+// flusher's normal (much shorter) tick cadence, not after the slow fetch
+// returns.
+func TestOutboxFlusherAbsentReconcileDoesNotBlockDelivery(t *testing.T) {
+	prevInterval := outboxFlushInterval
+	outboxFlushInterval = 15 * time.Millisecond
+	t.Cleanup(func() { outboxFlushInterval = prevInterval })
 
-// TestAbsentIssueReconcilerDueRespectsInterval proves the pacer fires
+	ob := newTestOutbox(t)
+	tr := newRecordingFlusherTracker([]domain.Issue{
+		{ID: "stale-1", Identifier: "ENG-STALE", State: "Backlog"},
+		{ID: "target-1", Identifier: "ENG-TARGET", State: "Backlog"},
+	})
+	// stale-1 never succeeds during this test's window, so it stays pending
+	// and pendingUpdateStateIssueIDs is never empty — the absent-reconcile
+	// pass always has something to fetch.
+	tr.failNextUpdate("stale-1", 1000)
+	tr.setFetchStatesDelay(250 * time.Millisecond)
+	refresher := &fakeRefresher{}
+
+	require.NoError(t, ob.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "stale-1", Identifier: "ENG-STALE", TargetState: "Done"}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startOutboxFlusher(ctx, ob, tr, refresher)
+
+	// Let the first tick fire: stale-1's delivery attempt fails (expected),
+	// and the absent-issue reconciler's first-ever call fires immediately
+	// (tryRun's zero-value fast path), kicking off the slow 250ms fetch on
+	// its own goroutine.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) && tr.FetchStatesCalls() == 0 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, tr.FetchStatesCalls(), 1, "the slow reconcile fetch must have started")
+
+	// While that fetch is still in flight (well under its 250ms delay),
+	// enqueue an entry that becomes due immediately.
+	require.NoError(t, ob.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "target-1", Identifier: "ENG-TARGET", TargetState: "Done"}))
+
+	// Poll for delivery well before the slow fetch could possibly have
+	// returned (250ms) — under the old inline design this only succeeded
+	// after the fetch completed.
+	deliverDeadline := time.Now().Add(150 * time.Millisecond)
+	delivered := false
+	for time.Now().Before(deliverDeadline) {
+		if len(ob.PendingFor("target-1")) == 0 {
+			delivered = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	assert.True(t, delivered, "target-1 must be delivered on the flusher's normal tick cadence, not blocked behind the in-flight absent-reconcile fetch")
+}
+
+// --- absentIssueReconciler.tryRun/finish: interval pacing + overlap guard --
+
+// TestAbsentIssueReconcilerTryRunRespectsInterval proves the pacer fires
 // immediately on first use, then withholds until absentReconcileInterval
 // has elapsed (per the injected `now`, never a real sleep), then fires
-// again once it has.
-func TestAbsentIssueReconcilerDueRespectsInterval(t *testing.T) {
+// again once it has — each successful tryRun is immediately finish()ed so
+// only the interval (not the in-flight guard) is under test here.
+func TestAbsentIssueReconcilerTryRunRespectsInterval(t *testing.T) {
 	r := &absentIssueReconciler{}
 	base := time.Now()
 
-	assert.True(t, r.due(base), "first call always fires")
-	assert.False(t, r.due(base.Add(1*time.Second)), "well within the interval")
-	assert.False(t, r.due(base.Add(absentReconcileInterval-time.Second)), "just under the interval")
-	assert.True(t, r.due(base.Add(absentReconcileInterval)), "exactly at the interval")
+	require.True(t, r.tryRun(base), "first call always fires")
+	r.finish()
+
+	assert.False(t, r.tryRun(base.Add(1*time.Second)), "well within the interval")
+	assert.False(t, r.tryRun(base.Add(absentReconcileInterval-time.Second)), "just under the interval")
+
+	require.True(t, r.tryRun(base.Add(absentReconcileInterval)), "exactly at the interval")
+	r.finish()
 
 	// After firing again, the clock resets from that point.
-	assert.False(t, r.due(base.Add(absentReconcileInterval+time.Second)), "just after the most recent fire")
-	assert.True(t, r.due(base.Add(2*absentReconcileInterval)), "a full interval after the most recent fire")
+	assert.False(t, r.tryRun(base.Add(absentReconcileInterval+time.Second)), "just after the most recent fire")
+	require.True(t, r.tryRun(base.Add(2*absentReconcileInterval)), "a full interval after the most recent fire")
+	r.finish()
+}
+
+// TestAbsentIssueReconcilerTryRunGuardsAgainstOverlap proves a round in
+// flight can never be double-started, even once the interval has long
+// since elapsed — the guard this fix round added when
+// runAbsentIssueReconcileTick moved to its own goroutine (a slow round no
+// longer blocks the flusher's delivery ticker, but without this guard a
+// second round could now start concurrently with a still-running one).
+func TestAbsentIssueReconcilerTryRunGuardsAgainstOverlap(t *testing.T) {
+	r := &absentIssueReconciler{}
+	base := time.Now()
+
+	require.True(t, r.tryRun(base), "starts the first round")
+	assert.False(t, r.tryRun(base.Add(absentReconcileInterval+time.Minute)),
+		"must not start a second round while the first is still in flight, even long past the interval")
+
+	r.finish()
+	assert.True(t, r.tryRun(base.Add(absentReconcileInterval+time.Minute)),
+		"may start again once the previous round finished")
 }

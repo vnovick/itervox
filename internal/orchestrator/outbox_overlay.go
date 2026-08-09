@@ -65,16 +65,11 @@ func (o *Orchestrator) reconcileAndOverlayOutbox(issues []domain.Issue, now time
 
 // reconcilePendingOutboxEntries drops update_state entries for issue that
 // the tracker's own polled data (this tick's fetch — no extra reads) has
-// already resolved, per the spec's two reconciliation rules:
-//
-//   - polled state == TargetState → already applied; the write landed
-//     (possibly via a path other than the flusher, or the flusher's
-//     success raced this tick's poll) — drop it.
-//   - polled UpdatedAt is after the entry's EnqueuedAt AND polled state !=
-//     TargetState → a human (or something else) changed the tracker state
-//     after this write was queued, to a DIFFERENT state — the human wins
-//     (decision 1) — drop it.
-//   - otherwise: keep. The flusher keeps trying.
+// already resolved, per outbox.ReconcileVerdict's two reconciliation rules
+// (already_applied / superseded_by_tracker — see that function's doc for
+// the full rule text; it is the single shared implementation, also used by
+// cmd/itervox's flusher-owned absent-issue batch pass, issue #54's
+// fast-follow).
 //
 // now is accepted for symmetry with the rest of the tick's reconcile-style
 // helpers (ReconcileStalls, ReconcileTrackerStates) but unused here — both
@@ -91,11 +86,8 @@ func (o *Orchestrator) reconcilePendingOutboxEntries(issue domain.Issue, _ time.
 		if entry.Kind != outbox.KindUpdateState {
 			continue
 		}
-		switch {
-		case issue.State == entry.TargetState:
-			o.outbox.Drop(entry.ID, "already_applied")
-		case issue.UpdatedAt != nil && issue.UpdatedAt.After(entry.EnqueuedAt) && issue.State != entry.TargetState:
-			o.outbox.Drop(entry.ID, "superseded_by_tracker")
+		if drop, reason := outbox.ReconcileVerdict(entry, issue.State, issue.UpdatedAt); drop {
+			o.outbox.Drop(entry.ID, reason)
 		}
 	}
 }

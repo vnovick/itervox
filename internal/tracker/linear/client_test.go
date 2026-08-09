@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -978,6 +979,12 @@ func TestFetchIssueStatesByIDs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result, 1)
 	assert.Equal(t, "In Progress", result[0].State)
+	// outbox #54 fast-follow's superseded_by_tracker reconciliation rule
+	// (outbox.ReconcileVerdict) depends on UpdatedAt being populated on
+	// every issue this method returns — pin it so a future query/normalize
+	// change can't silently drop the field.
+	require.NotNil(t, result[0].UpdatedAt)
+	assert.Equal(t, "2024-01-01T00:00:00Z", result[0].UpdatedAt.UTC().Format(time.RFC3339))
 }
 
 func TestFetchIssueStatesByIDsEmptyReturnsEmpty(t *testing.T) {

@@ -53,34 +53,70 @@ const outboxFlushCallTimeout = 30 * time.Second
 // and applies the SAME two reconciliation rules
 // reconcilePendingOutboxEntries applies, closing the gap.
 //
-// Gated via absentIssueReconciler.due(now), not a second time.Ticker, so
+// Gated via absentIssueReconciler.tryRun(now), not a second time.Ticker, so
 // tests can drive the pacing with controlled `now` values instead of
 // sleeping through real 60s waits.
+//
+// runAbsentIssueReconcileTick itself always runs in its OWN goroutine (see
+// startOutboxFlusher), never inline on the flusher's ticker callback. It
+// used to run inline; a review of this fast-follow caught the resulting
+// latency coupling empirically — a slow-but-succeeding
+// FetchIssueStatesByIDs (up to outboxFlushCallTimeout, 30s) blocked the
+// flusher's own goroutine from returning to its select loop, so the NEXT
+// outboxFlushInterval tick's delivery was delayed by however long the fetch
+// took. That is exactly the "a read stalls the write path" failure mode the
+// write-ahead outbox exists to prevent (see the design spec's "Problem"
+// section, #42-E) — reintroduced by this fast-follow's own read. Running it
+// async fixes that; absentIssueReconciler.tryRun's in-flight guard prevents
+// two rounds from ever overlapping (a second round is skipped, not queued,
+// if the previous one is still running when it would otherwise become due).
 const absentReconcileInterval = 60 * time.Second
 
 // absentIssueReconciler paces runAbsentIssueReconcileTick to roughly once
 // per absentReconcileInterval even though it is checked on every (much more
-// frequent, 5s default) outboxFlushInterval tick. Owned by the flusher
-// goroutine; safe for the single caller startOutboxFlusher has, and mutex-
-// guarded so tests can also drive it directly and concurrently-safely.
+// frequent, 5s default) outboxFlushInterval tick, AND guards against two
+// rounds running concurrently (the round itself now runs in its own
+// goroutine — see startOutboxFlusher — so without this guard a slow round
+// could still overlap a later one once enough ticks had elapsed). Owned by
+// the flusher goroutine; mutex-guarded so tests can also drive it directly
+// and concurrency-safely.
 type absentIssueReconciler struct {
 	mu      sync.Mutex
 	lastRun time.Time // zero value: never run yet.
+	running bool
 }
 
-// due reports whether at least absentReconcileInterval has elapsed since the
-// last call that returned true, and if so records now as the new lastRun.
+// tryRun reports whether a new absent-issue reconcile round should start
+// now: at least absentReconcileInterval must have elapsed since the last
+// round STARTED, and no round may currently be in flight. On a true return,
+// it atomically marks the reconciler as running and records now as the new
+// lastRun — the caller MUST call finish() exactly once when the round
+// completes (typically via defer in the spawned goroutine).
+//
 // The first call on a fresh absentIssueReconciler always returns true
 // (lastRun starts zero) — the pass runs promptly once at startup rather
 // than waiting a full interval before ever reconciling anything.
-func (r *absentIssueReconciler) due(now time.Time) bool {
+func (r *absentIssueReconciler) tryRun(now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.running {
+		return false
+	}
 	if !r.lastRun.IsZero() && now.Sub(r.lastRun) < absentReconcileInterval {
 		return false
 	}
+	r.running = true
 	r.lastRun = now
 	return true
+}
+
+// finish marks the in-flight round as complete, allowing a future tryRun to
+// start a new one. Must be called exactly once per tryRun that returned
+// true.
+func (r *absentIssueReconciler) finish() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.running = false
 }
 
 // startOutboxFlusher runs the write-ahead-outbox delivery goroutine: every
@@ -113,8 +149,19 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 			case <-ticker.C:
 				now := time.Now()
 				runOutboxFlusherTick(ctx, ob, tr, orch, now)
-				if absentReconciler.due(now) {
-					runAbsentIssueReconcileTick(ctx, ob, tr)
+				// Fire-and-forget, on its own goroutine — never inline here.
+				// See absentReconcileInterval's doc for why: an inline call
+				// would let a slow-but-succeeding FetchIssueStatesByIDs (up
+				// to outboxFlushCallTimeout) block this select loop from
+				// returning in time for the NEXT delivery tick, exactly the
+				// read-stalls-write failure mode the outbox exists to
+				// prevent. tryRun's in-flight guard means a slow round is
+				// skipped over (not queued behind) by later due checks.
+				if absentReconciler.tryRun(now) {
+					go func() {
+						defer absentReconciler.finish()
+						runAbsentIssueReconcileTick(ctx, ob, tr)
+					}()
 				}
 			}
 		}
@@ -186,23 +233,13 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 
 // runAbsentIssueReconcileTick batch-fetches current tracker state for every
 // distinct issue with a pending update_state outbox entry (via
-// tr.FetchIssueStatesByIDs) and applies the same two reconciliation rules
-// internal/orchestrator/outbox_overlay.go's reconcilePendingOutboxEntries
-// applies per-tick over the active-states candidate fetch:
-//
-//   - polled state == TargetState -> already applied (the write landed via
-//     some other path, or a race with the flusher's own success) -> drop.
-//   - polled UpdatedAt is after the entry's EnqueuedAt AND polled state !=
-//     TargetState -> the tracker moved to a DIFFERENT state after this
-//     write was queued (most likely a human) -> the human wins -> drop.
-//   - otherwise: keep, unchanged.
-//
-// A nil UpdatedAt on a returned issue (not expected from Linear or GitHub
-// today — both populate it — but not guaranteed by the Tracker interface)
-// means only the already_applied rule can safely apply to it: the
-// superseded rule needs a real UpdatedAt to compare against EnqueuedAt, and
-// the `issue.UpdatedAt != nil` guard below is what enforces that safe
-// subset.
+// tr.FetchIssueStatesByIDs) and applies outbox.ReconcileVerdict — the SAME
+// shared rule implementation internal/orchestrator/outbox_overlay.go's
+// reconcilePendingOutboxEntries applies per-tick over the active-states
+// candidate fetch (already_applied / superseded_by_tracker — see that
+// function's doc for the full rule text and the nil-UpdatedAt safe-subset
+// note; both call sites now ride the one implementation instead of hand-
+// duplicated switch statements).
 //
 // Soft-fail: a FetchIssueStatesByIDs error is logged at Debug and this tick
 // is skipped entirely — reads must never block writes, the flusher's
@@ -216,6 +253,11 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 // reconcilePendingOutboxEntries skips them: there is no reliable dedupe
 // signal for "was this comment already posted" to read back off a polled
 // issue.
+//
+// Called from its own fire-and-forget goroutine (see startOutboxFlusher and
+// absentIssueReconciler), never inline on the flusher's delivery ticker —
+// see absentIssueReconciler's doc for why (a slow-but-succeeding fetch must
+// never delay the next delivery tick).
 func runAbsentIssueReconcileTick(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker) {
 	ids := pendingUpdateStateIssueIDs(ob)
 	if len(ids) == 0 {
@@ -245,11 +287,8 @@ func runAbsentIssueReconcileTick(ctx context.Context, ob *outbox.Outbox, tr trac
 		if !found {
 			continue // absent from the tracker's response — leave pending.
 		}
-		switch {
-		case issue.State == entry.TargetState:
-			ob.Drop(entry.ID, "already_applied")
-		case issue.UpdatedAt != nil && issue.UpdatedAt.After(entry.EnqueuedAt) && issue.State != entry.TargetState:
-			ob.Drop(entry.ID, "superseded_by_tracker")
+		if drop, reason := outbox.ReconcileVerdict(entry, issue.State, issue.UpdatedAt); drop {
+			ob.Drop(entry.ID, reason)
 		}
 	}
 }
