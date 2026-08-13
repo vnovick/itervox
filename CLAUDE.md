@@ -80,8 +80,8 @@ No mutex is needed for `State` fields — only the event loop writes them.
 ### Queue, dependency audit, and status ledgers are event-loop state
 
 `AutomationQueue`, `AutomationQueueOrder`, `AutomationQueueBackpressure`,
-`DependencyAudit`, and `IssueStatusHistory` are normal `orchestrator.State`
-fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
+`DependencyAudit`, `DispatchPressure`, and `IssueStatusHistory` are normal
+`orchestrator.State` fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
 only the event loop mutates them.
 
 - Automation producers send `EventDispatchAutomation`; the event loop decides
@@ -107,6 +107,16 @@ only the event loop mutates them.
   mutates dependency state directly.
 - Issue status history is bounded runtime-session history unless future work
   explicitly adds restart durability.
+- `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
+  (no free slots with eligible work waiting) or *dependency-bound* (free
+  slots that went unused because remaining candidates were blocked). It is
+  observed once per tick after the dispatch loop via `observeDispatchPressure`
+  and is session-scoped — deliberately not persisted, since it describes the
+  running fleet's current configuration. Classification runs against a probe
+  copy of `State` with the slot gate neutralized, because
+  `ineligibleReasonShared` checks `AvailableSlots` *before* the blocker gates
+  and would otherwise mask every dependency reason as `no_slots` on exactly
+  the saturated ticks the metric exists to explain.
 
 ### `cfgMu` guards exactly these fields (and nothing else)
 

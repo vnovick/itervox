@@ -224,6 +224,25 @@ export const AutomationQueueBackpressureSchema = z.object({
   lastRejectedReason: z.string().optional(),
 });
 
+// DispatchPressureSchema mirrors server.DispatchPressureRow. It answers
+// "would raising max_concurrent_agents help?": slotBoundTicks means yes
+// (work was ready and every slot was busy), dependencyBoundTicks means no
+// (slots sat idle because the remaining work was blocked).
+//
+// The two tick counters are mutually exclusive per tick and do NOT sum to
+// observedTicks — idle ticks are charged to neither.
+export const DispatchPressureSchema = z.object({
+  observedTicks: z.number(),
+  slotBoundTicks: z.number(),
+  dependencyBoundTicks: z.number(),
+  utilizationPercent: z.number(),
+  // Most-recent-tick counts, unlike the cumulative counters above.
+  blockedByDependency: z.number(),
+  eligibleWaiting: z.number(),
+});
+
+export type DispatchPressure = z.infer<typeof DispatchPressureSchema>;
+
 export const BlockerRefSchema = z.object({
   id: z.string().optional(),
   identifier: z.string().optional(),
@@ -437,6 +456,9 @@ export const StateSnapshotSchema = z.object({
   inputRequired: z.array(InputRequiredEntrySchema).optional(),
   automationQueue: z.array(AutomationQueueRowSchema).optional(),
   automationQueueBackpressure: AutomationQueueBackpressureSchema.optional(),
+  // Go-side omitempty: absent (not a zero row) until the daemon completes
+  // its first tick, and absent from snapshots emitted by older daemons.
+  dispatchPressure: DispatchPressureSchema.optional(),
   // gaps_11 G-11 — monotonic count of input_required automation dispatches
   // suppressed by the self-reentry guard. Go-side omitempty: absent (not 0)
   // until the first drop, and absent from snapshots emitted by older daemons.

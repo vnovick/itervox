@@ -354,6 +354,21 @@ type State struct {
 	AutomationQueueOrder []string
 	// AutomationQueueBackpressure tracks queue-cap saturation and rejected triggers.
 	AutomationQueueBackpressure AutomationQueueBackpressure
+	// ReviewVerdicts holds the per-issue reviewer verdicts collected so far in
+	// a multi-reviewer chain (#58). Key: issue identifier. Event-loop owned;
+	// session-scoped and not persisted.
+	ReviewVerdicts map[string][]ReviewVerdict
+	// ReviewChainIndex is the position in ReviewerProfileChain of the NEXT
+	// reviewer to dispatch for an issue. Absent means no chain is in flight.
+	ReviewChainIndex map[string]int
+	// ReviewOutcomes is the quorum result once every reviewer in the chain
+	// has reported. Key: issue identifier.
+	ReviewOutcomes map[string]ReviewOutcome
+	// DispatchPressure records whether each tick was slot-bound or
+	// dependency-bound, so the operator can tell whether raising
+	// agent.max_concurrent_agents would actually buy throughput. Session-
+	// scoped and not persisted; see dispatch_pressure.go.
+	DispatchPressure DispatchPressure
 	// DependencyAudit tracks normalized blocker state by issue identifier.
 	DependencyAudit map[string]*DependencyAuditEntry
 	// DependencyTransitionSeq increments when dependency audit emits a transition.
@@ -512,6 +527,9 @@ func NewState(cfg *config.Config) State {
 			MaxLength: cfg.Agent.MaxAutomationQueueLength,
 		},
 		DependencyAudit:    make(map[string]*DependencyAuditEntry),
+		ReviewVerdicts:     make(map[string][]ReviewVerdict),
+		ReviewChainIndex:   make(map[string]int),
+		ReviewOutcomes:     make(map[string]ReviewOutcome),
 		PROpenedDispatched: make(map[string]struct{}),
 		PRMergedDispatched: make(map[string]struct{}),
 		InferredDeps:       make(map[string][]InferredDepEntry),

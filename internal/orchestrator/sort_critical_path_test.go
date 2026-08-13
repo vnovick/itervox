@@ -138,6 +138,136 @@ func TestEventLoopOrdersByCriticalPath(t *testing.T) {
 	require.NotContains(t, out.Running, "issue-l")
 }
 
+// TestCriticalPathStrictGraphBeatsPriorityBand is the exact inverse of
+// TestCriticalPathPriorityBandDominates on identical input: under strict
+// ordering the P2 foundation with 50 dependents must sort ahead of the P1
+// leaf that unblocks nothing. The two tests together are the definition of
+// what the strict mode changes.
+func TestCriticalPathStrictGraphBeatsPriorityBand(t *testing.T) {
+	p1, p2 := 1, 2
+	foundation := domain.Issue{Identifier: "ENG-FOUNDATION", Priority: &p2}
+	leaf := domain.Issue{Identifier: "ENG-LEAF", Priority: &p1}
+	m := GraphMetrics{
+		TransitiveDependents: map[string]int{"ENG-FOUNDATION": 50, "ENG-LEAF": 0},
+	}
+	issues := []domain.Issue{leaf, foundation}
+
+	got := SortForDispatchCriticalPathStrict(issues, m)
+
+	require.Equal(t, "ENG-FOUNDATION", got[0].Identifier, "strict ordering must sort the high-fan-out issue first even though its priority band is lower")
+	require.Equal(t, "ENG-LEAF", got[1].Identifier)
+
+	// Same input, non-strict mode: priority wins. Asserted here so the two
+	// modes' disagreement is pinned in one place — if either comparator
+	// drifts, this fails rather than silently converging.
+	nonStrict := SortForDispatchCriticalPath(issues, m)
+	require.Equal(t, "ENG-LEAF", nonStrict[0].Identifier, "non-strict ordering must still let the priority band dominate")
+}
+
+// TestCriticalPathStrictPriorityBreaksGraphTie: strict ordering demotes
+// priority to a tiebreaker rather than discarding it. With equal fan-out and
+// equal chain length, the higher-priority band must still win.
+func TestCriticalPathStrictPriorityBreaksGraphTie(t *testing.T) {
+	p1, p2 := 1, 2
+	low := domain.Issue{Identifier: "ENG-LOW", Priority: &p2}
+	high := domain.Issue{Identifier: "ENG-HIGH", Priority: &p1}
+	m := GraphMetrics{
+		TransitiveDependents: map[string]int{"ENG-LOW": 4, "ENG-HIGH": 4},
+		LongestChain:         map[string]int{"ENG-LOW": 2, "ENG-HIGH": 2},
+	}
+	issues := []domain.Issue{low, high}
+
+	got := SortForDispatchCriticalPathStrict(issues, m)
+
+	require.Equal(t, "ENG-HIGH", got[0].Identifier, "priority must still break ties between issues of equal graph leverage")
+	require.Equal(t, "ENG-LOW", got[1].Identifier)
+}
+
+// TestCriticalPathStrictFallsBackToLegacy: with an empty GraphMetrics every
+// pair ties on graph leverage, so strict ordering must degrade to exactly
+// SortForDispatch's priority -> createdAt -> identifier order. This is the
+// same superset property TestCriticalPathFallsBackToCreatedAtAndIdentifier
+// asserts for the non-strict mode, and it is what makes the strict mode safe
+// to enable on a project with no dependency edges at all.
+func TestCriticalPathStrictFallsBackToLegacy(t *testing.T) {
+	p1, p2 := 1, 2
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	issues := []domain.Issue{
+		{Identifier: "ENG-Z", Priority: &p2, CreatedAt: &t1},
+		{Identifier: "ENG-B", Priority: &p1, CreatedAt: &t2},
+		{Identifier: "ENG-A", Priority: &p1, CreatedAt: &t2},
+		{Identifier: "ENG-NOPRIO"},
+		{Identifier: "ENG-NODATE", Priority: &p1},
+	}
+
+	require.Equal(t,
+		identifiersOf(SortForDispatch(issues)),
+		identifiersOf(SortForDispatchCriticalPathStrict(issues, GraphMetrics{})),
+	)
+}
+
+// TestEventLoopOrdersByCriticalPathStrict is the integration counterpart,
+// and the one that proves the config value is actually wired through onTick
+// rather than merely parsed. Fixture: urgent (P1) unrelated leaf L vs
+// low-priority (P3) foundation X that unblocks P/Q/R, MaxConcurrentAgents=1.
+//
+// Both ordering modes are driven over the SAME fixture so the assertion is a
+// genuine behavioral difference and not two independently-tuned fixtures that
+// happen to produce different winners.
+func TestEventLoopOrdersByCriticalPathStrict(t *testing.T) {
+	t.Run("strict dispatches the blocker", func(t *testing.T) {
+		cfg, mt := prioritizedFanoutFixture(t, config.DependenciesOrderingCriticalPathStrict)
+		o := New(cfg, mt, &agenttest.FakeRunner{Stall: true}, nil)
+
+		out := o.onTick(t.Context(), NewState(cfg))
+
+		require.Contains(t, out.Running, "issue-x", "strict ordering should dispatch the high-fan-out blocker ahead of the urgent leaf")
+		require.NotContains(t, out.Running, "issue-l")
+	})
+
+	t.Run("non-strict dispatches the urgent leaf", func(t *testing.T) {
+		cfg, mt := prioritizedFanoutFixture(t, config.DependenciesOrderingCriticalPath)
+		o := New(cfg, mt, &agenttest.FakeRunner{Stall: true}, nil)
+
+		out := o.onTick(t.Context(), NewState(cfg))
+
+		require.Contains(t, out.Running, "issue-l", "non-strict ordering should still honor the urgent priority band")
+		require.NotContains(t, out.Running, "issue-x")
+	})
+}
+
+// prioritizedFanoutFixture is fanoutFixture with the priority field set so
+// the two critical-path modes disagree: X is the low-priority (P3) foundation
+// blocking P/Q/R, L is an urgent (P1) unrelated leaf. Under critical_path the
+// priority band puts L first; under critical_path_strict X's fan-out wins.
+// createdAt is deliberately left unset on both so the priority/graph
+// interaction is the only thing under test.
+func prioritizedFanoutFixture(t *testing.T, ordering string) (*config.Config, *tracker.MemoryTracker) {
+	t.Helper()
+
+	cfg := &config.Config{}
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	cfg.Agent.Command = "codex"
+	cfg.Agent.MaxConcurrentAgents = 1
+	cfg.Dependencies.Ordering = ordering
+
+	urgent, low := 1, 3
+
+	x := domain.Issue{ID: "issue-x", Identifier: "ENG-X", Title: "Foundation", State: "Todo", Priority: &low}
+	p := domain.Issue{ID: "issue-p", Identifier: "ENG-P", Title: "P", State: "Todo",
+		BlockedBy: []domain.BlockerRef{{Identifier: strPtr("ENG-X")}}}
+	q := domain.Issue{ID: "issue-q", Identifier: "ENG-Q", Title: "Q", State: "Todo",
+		BlockedBy: []domain.BlockerRef{{Identifier: strPtr("ENG-X")}}}
+	r := domain.Issue{ID: "issue-r", Identifier: "ENG-R", Title: "R", State: "Todo",
+		BlockedBy: []domain.BlockerRef{{Identifier: strPtr("ENG-X")}}}
+	l := domain.Issue{ID: "issue-l", Identifier: "ENG-L", Title: "Urgent unrelated leaf", State: "Todo", Priority: &urgent}
+
+	mt := tracker.NewMemoryTracker([]domain.Issue{x, p, q, r, l}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	return cfg, mt
+}
+
 // fanoutFixture builds the shared fixture for the ordering-mode integration
 // tests: X (unblocked, blocks P/Q/R) and unrelated leaf L, both priority-less
 // (equal band), with L created strictly before X so legacy ordering and

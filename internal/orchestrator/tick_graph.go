@@ -44,6 +44,24 @@ type TickGraph struct {
 // Edges with either endpoint outside the candidate set are dropped for
 // ordering/cycle purposes (sub-1's unknown-source rule). Out-lists are
 // sorted for determinism.
+//
+// Scope consequence (verified, #59): because the node set is exactly
+// FetchCandidateIssues' output (active states only), a blocker parked in a
+// non-active, non-terminal state — "In Review", "Blocked" — is not a node and
+// its edge is dropped. This does NOT affect the ordering of any dispatchable
+// issue: the dropped edge points blocker -> blocked, and the metrics count
+// only DOWNSTREAM nodes, so removing an inbound edge leaves the blocked
+// candidate's TransitiveDependents/LongestChain unchanged. The only metrics
+// that change belong to the parked issue itself, which is not in the
+// candidate set and is therefore never sorted for dispatch.
+//
+// The real limitation is narrower and deeper: a parked issue sitting in the
+// MIDDLE of a chain (X -> parked Y -> Z) severs transitive reachability, so X
+// under-counts Z. That case is not fixable by widening the node set, because
+// the parked issue's own BlockedBy list is never fetched — the graph only
+// ever learns edges from candidates' BlockedBy plus inferred edges. Closing
+// it would require fetching non-candidate blockers, which is a tracker-cost
+// tradeoff, not a local change here.
 func BuildTickGraph(candidates []domain.Issue, inferred map[string][]InferredDepEntry, state State) TickGraph {
 	g := TickGraph{
 		Nodes:     make(map[string]struct{}, len(candidates)),

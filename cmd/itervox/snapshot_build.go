@@ -219,6 +219,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			Automations:                  automationconfig.DefinitionsFromConfigs(orch.AutomationsCfg()),
 			AutomationQueue:              automationQueueRows(s),
 			AutomationQueueBackpressure:  automationQueueBackpressureRow(s.AutomationQueueBackpressure),
+			DispatchPressure:             dispatchPressureRow(s.DispatchPressure),
 			// gaps_11 G-11 — the snapshot value is a struct-copy of the
 			// event-loop counter (State is copied by value in storeSnap), so
 			// reading it here never touches live State.

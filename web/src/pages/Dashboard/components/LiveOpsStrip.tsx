@@ -6,6 +6,8 @@ import {
 } from '../../../components/ui/LiveIndicator/LiveIndicator';
 import type { StateSnapshot } from '../../../types/schemas';
 import { automationsFiredToday } from './dashboardMetrics';
+import { OpsChip } from './OpsChip';
+import { DispatchPressureChip } from './DispatchPressureChip';
 
 type LiveOpsStatus = 'live' | 'waiting' | 'offline';
 
@@ -209,6 +211,12 @@ export function LiveOpsStrip() {
           <LiveIndicator status={indicatorStatus} size="sm" label={statusLabel} />
         </span>
         <OpsChip label={`Capacity ${model.capacityLabel}`} />
+        {/* Capacity above is the instantaneous gauge (running/max). This tile
+            is the cumulative counterpart: whether that capacity has actually
+            been the binding constraint, which is what tells the operator if
+            raising max_concurrent_agents would buy anything. Hidden until the
+            daemon completes a tick. */}
+        <DispatchPressureChip pressure={snapshot?.dispatchPressure} />
         <OpsChip label={`Queue ${model.queueLabel}`} danger={model.queueSaturated} />
         <OpsChip label={`Blocked ${String(model.blockedQueueCount)}`} />
         <OpsChip label={depsChipLabel(model)} danger={model.depsDegradedCount > 0} />
@@ -257,29 +265,7 @@ function outboxChipLabel(model: LiveOpsStripModel): string {
     : base;
 }
 
-function OpsChip({
-  label,
-  danger = false,
-  warning = false,
-}: {
-  label: string;
-  danger?: boolean;
-  // critical-path-ordering Task 6 — second severity tone alongside `danger`,
-  // for conditions that warrant operator attention but are less severe than
-  // a hard blocker (e.g. stale-blocked issues vs. dependency cycles).
-  warning?: boolean;
-}) {
-  return (
-    <span
-      className={`inline-flex min-h-9 flex-shrink-0 items-center rounded-[var(--radius-sm)] px-2.5 py-1 text-[12px] font-medium whitespace-nowrap ${
-        danger
-          ? 'bg-theme-danger-soft text-theme-danger'
-          : warning
-            ? 'bg-theme-warning-soft text-theme-warning'
-            : 'bg-theme-bg-soft text-theme-text-secondary'
-      }`}
-    >
-      {label}
-    </span>
-  );
-}
+// OpsChip now lives in ./OpsChip so DispatchPressureChip can render the same
+// tile without importing from this module (which would create a cycle, since
+// this module imports that one).
+export { OpsChip } from './OpsChip';

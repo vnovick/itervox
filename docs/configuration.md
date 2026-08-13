@@ -91,6 +91,8 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `ssh_strict_host_by_host` | map[string]string | `{}` | Per-host override for `StrictHostKeyChecking`. Keys are host addresses, values use the same set as `ssh_strict_host_checking`. Useful for hardening production hosts (`yes`) or temporarily relaxing sandbox VMs (`no`) |
 | `dispatch_strategy` | string | `"round-robin"` | Routing for SSH hosts. One of `round-robin`, `least-loaded`. Runtime-editable |
 | `reviewer_profile` | string | `""` | Name of the profile used for AI code review. Required if `auto_review: true` |
+| `reviewer_profiles` | []string | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. When it has more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict; the combined result is decided by `review_quorum`. Empty falls back to `reviewer_profile`, so existing single-reviewer configs are unaffected. Sequential rather than concurrent because `State.Running` is keyed by issue — fan-out buys independence of judgement, not wall-clock |
+| `review_quorum` | string | `"any_block"` | How multiple reviewer verdicts combine. One of `any_block` (default — a single blocking verdict blocks), `majority` (strictly more than half), or `unanimous` (every reviewer must block). The default is the strictest on purpose: adding a reviewer must never make it *easier* to ship. A reviewer that runs but records no parseable verdict counts as a **block**, so a crashing reviewer cannot shrink the quorum until the gate passes |
 | `auto_review` | bool | `false` | When `true`, dispatches a reviewer worker after every successful worker completion |
 | `reviewer_prompt` | string | Built-in default | **Deprecated** — prefer `reviewer_profile`. Liquid template used when no reviewer profile is set |
 | `profiles` | map | `{}` | Named agent profiles — see below. Runtime-editable |
@@ -324,7 +326,7 @@ edges factor into automation dispatch gating. See the deps-analyzer agent pass
 | `inferred_gating` | bool | `true` | Soft-gate kill-switch: when `true`, inferred (non-tracker) dependency edges can hold automation dispatch for their target issue, same as tracker-declared blockers. Set `false` to make inferred edges display-only |
 | `confidence_threshold` | float | `0.7` | Minimum analyzer confidence score (`0.0`-`1.0`) an inferred edge must meet to gate dispatch; edges below the threshold are surfaced on the dashboard but never gate. Out-of-range values fall back to the default |
 | `staleness_hours` | int | `168` | How long an inferred edge is trusted before it is considered stale and stops gating; non-positive values fall back to the default |
-| `ordering` | string | `"critical_path"` | Dispatch ordering strategy for eligible issues. One of `critical_path` (default — ranks issues by how many dependent siblings they unblock, so the highest-leverage blockers dispatch first) or `simple` (priority/createdAt only, no critical-path awareness). An unrecognized value falls back to the default with a `slog.Warn` |
+| `ordering` | string | `"critical_path"` | Dispatch ordering strategy for eligible issues. One of `critical_path` (default), `critical_path_strict`, or `simple`. See [Ordering modes](#ordering-modes) below. An unrecognized value falls back to the default with a `slog.Warn` |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it becomes eligible for the `blockers_resolved`/attention automation surface (`state.DependencyAttention`, kind `stale_blocker`). **`0` is a meaningful, explicit value that disables the escalation** — it is not treated as "absent"; only a negative value falls back to the default (with a `slog.Warn`) |
 | `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. When `true`, the daemon periodically re-runs the deps-analyzer pass in the background (fingerprint-scoped to changed issues) without an operator clicking "Analyze dependencies". Set `false` to make analysis strictly manual (dashboard button, API, or CLI) |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between consecutive scheduled analysis passes. Parsed via `positiveIntField`; non-positive values fall back to the default — there is no meaningful zero here (the analyzer must not run every tick) |
@@ -341,6 +343,40 @@ dependencies:
   auto_analyze_min_interval_minutes: 60
   auto_analyze_debounce_minutes: 5
 ```
+
+### Ordering modes
+
+All three modes share the same final tiebreakers (`created_at` ascending with
+nil last, then identifier ascending). They differ only in what they consider
+before reaching them:
+
+| Mode | Comparison order | Use when |
+|---|---|---|
+| `critical_path` (default) | priority band → fan-out → chain length | You want operator-set priority to stay authoritative. |
+| `critical_path_strict` | fan-out → chain length → priority band | You want throughput across the dependency graph to outrank the priority field. |
+| `simple` | priority band only (no graph awareness) | You want the legacy pre-graph behavior. |
+
+"Fan-out" is `TransitiveDependents`: how many issues are transitively unblocked
+by finishing this one. "Chain length" is `LongestChain`, the longest downstream
+path in edges. Both are computed per tick over the SCC condensation of the
+dependency graph, so a cycle collapses to one node and cannot skew the counts.
+
+The distinction that matters between the two critical-path modes is that
+**`critical_path` only applies graph leverage as a tiebreaker within a single
+priority band.** If your issues carry consistently distinct priorities, the
+graph metrics never get consulted and the mode behaves like `simple`. Choose
+`critical_path_strict` if you want a blocker that gates a dozen issues to
+dispatch ahead of an unrelated urgent leaf.
+
+The tradeoff is real and runs the other way too: `critical_path_strict`
+deliberately overrides an explicit operator signal. An issue marked urgent for
+a reason outside the graph — a customer escalation, a deadline — will wait
+behind a high-fan-out lower-priority blocker. Prefer the default unless you are
+specifically optimizing fleet throughput.
+
+Both graph-aware modes degrade to exactly `simple`'s ordering when the issue
+set has no dependency edges, so enabling either on a project without blockers
+changes nothing.
 
 ---
 

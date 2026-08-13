@@ -1429,6 +1429,59 @@ func TestDependenciesOrderingParsed(t *testing.T) {
 	assert.Equal(t, 0, cfg.Dependencies.EscalateBlockedAfterHours)
 }
 
+// TestReviewerProfilesAndQuorumParsed asserts the multi-reviewer fan-out
+// fields round-trip, and that review_quorum defaults to the strictest rule
+// when absent (adding reviewers must never weaken the gate).
+func TestReviewerProfilesAndQuorumParsed(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  reviewer_profiles:\n"+
+			"    - security\n"+
+			"    - correctness\n"+
+			"  review_quorum: majority\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"security", "correctness"}, cfg.Agent.ReviewerProfiles)
+	assert.Equal(t, config.ReviewQuorumMajority, cfg.Agent.ReviewQuorum)
+}
+
+func TestReviewQuorumDefaultsToAnyBlock(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, config.ReviewQuorumAnyBlock, cfg.Agent.ReviewQuorum)
+	assert.Equal(t, config.DefaultReviewQuorum, cfg.Agent.ReviewQuorum)
+	assert.Empty(t, cfg.Agent.ReviewerProfiles, "absent reviewer_profiles must stay empty so ReviewerProfileChain falls back")
+}
+
+func TestReviewQuorumInvalidFallsBack(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  review_quorum: sometimes\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, config.DefaultReviewQuorum, cfg.Agent.ReviewQuorum,
+		"an unrecognized quorum must fall back to the strictest rule, not the loosest")
+}
+
+// TestDependenciesOrderingStrictParsed asserts the `critical_path_strict`
+// value survives the loader as itself rather than being swallowed by the
+// unrecognized-value fallback. This is the test that would catch a typo in
+// the YAML key or a missed arm in the validation switch — both of which fail
+// silently by resetting the field to "critical_path", which is exactly the
+// mode the operator was trying to opt out of.
+func TestDependenciesOrderingStrictParsed(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  ordering: critical_path_strict\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.DependenciesOrderingCriticalPathStrict, cfg.Dependencies.Ordering)
+	assert.NotEqual(t, config.DefaultDependenciesOrdering, cfg.Dependencies.Ordering,
+		"critical_path_strict must not silently fall back to the default")
+}
+
 // TestDependenciesOrderingInvalidFallsBack asserts an unknown ordering value
 // falls back to the default "critical_path", and a negative
 // escalate_blocked_after_hours falls back to the default 48 (unlike an

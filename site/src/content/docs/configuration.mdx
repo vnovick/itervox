@@ -222,6 +222,8 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
+| `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. |
+| `review_quorum` | string | `"any_block"` | How reviewer verdicts combine: `any_block` (one block blocks), `majority` (strictly more than half), or `unanimous` (all must block). A reviewer that records no parseable verdict counts as a block. |
 | `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. As of v0.2.0, this safely coexists with `workspace.auto_clear` — the clear is deferred until the reviewer also completes. |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. This cap limits switching; it is not the trigger condition. |
 | `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. |
@@ -465,6 +467,57 @@ For the full mental model, trigger semantics, and examples, see the [Automations
 The legacy `schedules:` block is still parsed and silently upgraded to equivalent `cron` automations at startup — **but this fallback is deprecated and will be removed in a future release**. Itervox logs a warning on startup when a `schedules:` block is found, with the count of upgraded entries.
 
 To migrate: rewrite each `schedules:` entry as an `automations:` entry with `trigger.type: cron` plus the same cron expression, timezone, profile, and state filter. The legacy format has no `instructions:` block, so migrated entries start with an empty prompt overlay and can optionally add instructions at migration time.
+
+---
+
+## dependencies
+
+Controls the dependency graph: which inferred (LLM-detected) edges are trusted enough to hold dispatch, how eligible issues are ordered, and when a long-blocked issue escalates for attention.
+
+Tracker-declared blockers (`issue.BlockedBy`) always hard-block dispatch and are not configurable here. This block governs the *inferred* layer plus ordering.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `inferred_gating` | bool | `true` | Kill switch for the soft gate. When `true`, inferred edges can hold dispatch just like tracker blockers. Set `false` to make inferred edges display-only. |
+| `confidence_threshold` | float | `0.7` | Minimum analyzer confidence (`0.0`–`1.0`) an inferred edge needs to gate. Lower-confidence edges still appear on the dashboard but never block. Out-of-range values fall back to the default. |
+| `staleness_hours` | int | `168` | How long an inferred edge is trusted before it stops gating. Non-positive values fall back to the default. |
+| `ordering` | string | `"critical_path"` | Dispatch ordering strategy. One of `critical_path`, `critical_path_strict`, or `simple` — see [Ordering modes](#ordering-modes). An unrecognized value falls back to the default with a warning. |
+| `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it surfaces as needing attention. **An explicit `0` disables escalation** and is preserved as a meaningful value; only a negative value falls back to the default. |
+| `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. Set `false` to make analysis strictly manual (dashboard, API, or CLI). |
+| `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between scheduled analysis passes. Non-positive values fall back to the default — the analyzer must not run every tick. |
+| `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before analysis starts, so it waits for state to settle rather than racing an in-flight dispatch. |
+
+```yaml
+dependencies:
+  inferred_gating: true
+  confidence_threshold: 0.7
+  staleness_hours: 168
+  ordering: critical_path
+  escalate_blocked_after_hours: 48
+  auto_analyze: true
+  auto_analyze_min_interval_minutes: 60
+  auto_analyze_debounce_minutes: 5
+```
+
+### Ordering modes
+
+All three modes share the same final tiebreakers (`created_at` oldest first, then identifier). They differ only in what they weigh before reaching them:
+
+| Mode | Comparison order | Use when |
+|---|---|---|
+| `critical_path` (default) | priority band → fan-out → chain length | You want operator-set priority to stay authoritative. |
+| `critical_path_strict` | fan-out → chain length → priority band | You want throughput across the dependency graph to outrank the priority field. |
+| `simple` | priority band only (no graph awareness) | You want the legacy pre-graph behaviour. |
+
+"Fan-out" is how many issues are transitively unblocked by finishing this one; "chain length" is the longest downstream path. Both are computed per tick over the dependency graph, with cycles collapsed so they cannot skew the counts.
+
+The distinction that matters: **`critical_path` applies graph leverage only as a tiebreaker within a single priority band.** If your issues carry consistently distinct priorities, the graph metrics are never consulted and the mode behaves like `simple`. Choose `critical_path_strict` when you want a blocker that gates a dozen issues to dispatch ahead of an unrelated urgent leaf.
+
+The tradeoff runs both ways. `critical_path_strict` deliberately overrides an explicit operator signal — an issue marked urgent for a reason outside the graph (a customer escalation, a deadline) will wait behind a high-fan-out lower-priority blocker. Prefer the default unless you are specifically optimising fleet throughput.
+
+Both graph-aware modes degrade to exactly `simple`'s ordering when the issue set has no dependency edges, so enabling either on a project without blockers changes nothing.
+
+For the full mental model, see the [Dependency Management guide](/guides/dependency-management/).
 
 ---
 

@@ -410,6 +410,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + priorHandoffs
 		}
 		renderedPrompt += "\n\n" + buildRunContextBlock(runTimestamp, runHandoffRelPath)
+		// #58 — when this run is one profile of a multi-reviewer chain, tell
+		// the agent where to record its verdict. Empty (and therefore a
+		// no-op) for normal workers and single-reviewer setups.
+		if verdictPath := reviewVerdictRelPathFor(o.cfg, issue.Identifier, profileName); verdictPath != "" {
+			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
+		}
 
 		// Append the active profile's prompt (role context) whenever a named
 		// profile is selected. The pre-removal `agent_mode == "teams"` gate

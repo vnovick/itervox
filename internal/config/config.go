@@ -94,9 +94,17 @@ const (
 	DefaultDependenciesAutoAnalyzeDebounceMinutes    = 5
 )
 
-// DependenciesOrderingCriticalPath / DependenciesOrderingSimple are the
-// accepted values for dependencies.ordering. DefaultDependenciesOrdering is
-// the config-loader default (critical-path-aware dispatch ordering).
+// DependenciesOrderingCriticalPath / DependenciesOrderingCriticalPathStrict /
+// DependenciesOrderingSimple are the accepted values for
+// dependencies.ordering. DefaultDependenciesOrdering is the config-loader
+// default (critical-path-aware dispatch ordering).
+//
+// critical_path and critical_path_strict differ ONLY in whether the priority
+// band outranks graph leverage. critical_path compares priority first, so
+// fan-out/chain-length only break ties within one band; critical_path_strict
+// compares fan-out first, so a high-leverage blocker dispatches ahead of an
+// unrelated urgent leaf. See SortForDispatchCriticalPath and
+// SortForDispatchCriticalPathStrict in internal/orchestrator.
 // DefaultDependenciesEscalateHours is the config-loader default for
 // dependencies.escalate_blocked_after_hours: how long an issue may sit
 // blocked before automation escalation triggers. An explicit `0` disables
@@ -104,11 +112,27 @@ const (
 // treated as "absent" — see the parse site in LoadFromFrontMatter, which
 // uses a plain intField + explicit sign check instead of positiveIntField
 // specifically to preserve that distinction.
+// ReviewQuorumAnyBlock / ReviewQuorumMajority / ReviewQuorumUnanimous are the
+// accepted values for agent.review_quorum, deciding how multiple reviewer
+// verdicts combine into one outcome (#58).
+//
+// The default is deliberately the STRICTEST of the three: with any_block, a
+// single reviewer raising a concern blocks. A review gate that gets weaker as
+// you add reviewers would be a strange default — adding a second opinion
+// should never make it easier to ship.
 const (
-	DependenciesOrderingCriticalPath = "critical_path"
-	DependenciesOrderingSimple       = "simple"
-	DefaultDependenciesOrdering      = DependenciesOrderingCriticalPath
-	DefaultDependenciesEscalateHours = 48
+	ReviewQuorumAnyBlock  = "any_block"
+	ReviewQuorumMajority  = "majority"
+	ReviewQuorumUnanimous = "unanimous"
+	DefaultReviewQuorum   = ReviewQuorumAnyBlock
+)
+
+const (
+	DependenciesOrderingCriticalPath       = "critical_path"
+	DependenciesOrderingCriticalPathStrict = "critical_path_strict"
+	DependenciesOrderingSimple             = "simple"
+	DefaultDependenciesOrdering            = DependenciesOrderingCriticalPath
+	DefaultDependenciesEscalateHours       = 48
 )
 
 // TrackerConfig holds tracker-related configuration.
@@ -333,6 +357,24 @@ type AgentConfig struct {
 	// instead of the legacy ReviewerPrompt field. The reviewer runs as a
 	// regular worker in the queue with Kind="reviewer".
 	ReviewerProfile string
+	// ReviewerProfiles is the ordered list of profiles used for multi-reviewer
+	// fan-out (#58). When it has more than one entry, each reviewer runs
+	// SEQUENTIALLY and independently over the same issue and emits a verdict;
+	// the combined outcome is decided by ReviewQuorum.
+	//
+	// Sequential rather than concurrent is deliberate: `State.Running` is keyed
+	// by issue.ID (one agent per issue), an invariant dispatch, the janitor,
+	// retry, automation, and worktree isolation all depend on. Fan-out here
+	// buys independence of judgement, not wall-clock.
+	//
+	// Empty means "fall back to ReviewerProfile", so existing single-reviewer
+	// configs are unaffected.
+	ReviewerProfiles []string
+	// ReviewQuorum decides how multiple reviewer verdicts combine. One of
+	// ReviewQuorumAnyBlock (default — any single blocking verdict blocks),
+	// ReviewQuorumMajority, or ReviewQuorumUnanimous (every reviewer must
+	// block before the review is treated as blocked).
+	ReviewQuorum string
 	// AutoReview, when true, automatically dispatches a reviewer worker
 	// using ReviewerProfile after each successful worker completion.
 	// Requires ReviewerProfile to be set. Default: false.
@@ -456,11 +498,13 @@ type DependenciesConfig struct {
 	// fall back to DefaultDependenciesStalenessHours.
 	StalenessHours int
 	// Ordering selects the dispatch ordering strategy: "critical_path"
-	// (default) ranks issues by how many dependents they unblock, "simple"
-	// uses the legacy priority/createdAt sort. An unrecognized value falls
-	// back to DefaultDependenciesOrdering with a slog.Warn. See also the
-	// deprecated agent.sort.prefer_high_outdegree alias, handled at the
-	// parse site.
+	// (default) ranks issues by how many dependents they unblock but only
+	// within a priority band, "critical_path_strict" ranks by that same
+	// graph leverage ahead of the priority band, and "simple" uses the
+	// legacy priority/createdAt sort with no graph awareness. An
+	// unrecognized value falls back to DefaultDependenciesOrdering with a
+	// slog.Warn. See also the deprecated agent.sort.prefer_high_outdegree
+	// alias, handled at the parse site.
 	Ordering string
 	// EscalateBlockedAfterHours is how long an issue may remain blocked
 	// before automation escalation fires. Default 48. An explicit `0` is
@@ -614,6 +658,16 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
+	cfg.Agent.ReviewerProfiles = strSliceField(agent, "reviewer_profiles", nil)
+	cfg.Agent.ReviewQuorum = strField(agent, "review_quorum", DefaultReviewQuorum)
+	switch cfg.Agent.ReviewQuorum {
+	case ReviewQuorumAnyBlock, ReviewQuorumMajority, ReviewQuorumUnanimous:
+		// recognized
+	default:
+		slog.Warn("config: agent.review_quorum unrecognized, using default",
+			"value", cfg.Agent.ReviewQuorum, "default", DefaultReviewQuorum)
+		cfg.Agent.ReviewQuorum = DefaultReviewQuorum
+	}
 	cfg.Agent.DepsAnalyzerProfile = strField(agent, "deps_analyzer_profile", "")
 	cfg.Agent.DepsAnalyzerTimeoutMs = positiveIntField(agent, "deps_analyzer_timeout_ms", DefaultDepsAnalyzerTimeoutMs)
 	cfg.Agent.DepsAnalyzerChunkSize = positiveIntField(agent, "deps_analyzer_chunk_size", DefaultDepsAnalyzerChunkSize)
@@ -696,7 +750,10 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	_, orderingExplicit := deps["ordering"]
 	cfg.Dependencies.Ordering = strField(deps, "ordering", DefaultDependenciesOrdering)
-	if cfg.Dependencies.Ordering != DependenciesOrderingCriticalPath && cfg.Dependencies.Ordering != DependenciesOrderingSimple {
+	switch cfg.Dependencies.Ordering {
+	case DependenciesOrderingCriticalPath, DependenciesOrderingCriticalPathStrict, DependenciesOrderingSimple:
+		// recognized
+	default:
 		slog.Warn("config: dependencies.ordering unrecognized, using default",
 			"value", cfg.Dependencies.Ordering, "default", DefaultDependenciesOrdering)
 		cfg.Dependencies.Ordering = DefaultDependenciesOrdering

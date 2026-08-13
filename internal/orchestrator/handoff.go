@@ -5,9 +5,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/config"
 )
 
 // HandoffDirRelPath is the path (relative to the workspace root) where
@@ -61,6 +64,49 @@ func buildRunContextBlock(runTimestamp, handoffPath string) string {
 		"Write your deliverable Markdown to `run.handoff_path` before exiting.",
 		"It will be visible to every subsequent agent on this branch as a prior handoff.",
 	}, "\n")
+}
+
+// buildReviewVerdictBlock renders the instruction telling a fan-out reviewer
+// where to record its machine-readable verdict (#58).
+//
+// This block is REQUIRED for multi-reviewer setups to work: a reviewer that
+// exits without writing this file is recorded as a BLOCK (fail-closed, see
+// AdvanceReviewChain). Injecting the instruction automatically — rather than
+// relying on every operator to document the path in their own
+// INSTRUCTIONS.md — is what keeps enabling `reviewer_profiles` from silently
+// blocking every issue.
+func buildReviewVerdictBlock(verdictRelPath string) string {
+	return strings.Join([]string{
+		"## Review Verdict (required)",
+		"",
+		fmt.Sprintf("- run.review_verdict_path: `%s`", verdictRelPath),
+		"",
+		"You are one of several independent reviewers on this issue. Judge it on",
+		"its own merits — do not assume a previous reviewer was right.",
+		"",
+		"Before exiting you MUST write JSON to `run.review_verdict_path`:",
+		"",
+		"```json",
+		`{"verdict": "approve", "reasons": ["why you approved"]}`,
+		"```",
+		"",
+		"`verdict` is `approve` or `block`. Anything else — including not writing",
+		"the file at all — is recorded as `block`.",
+	}, "\n")
+}
+
+// reviewVerdictRelPathFor returns the workspace-relative path a reviewer
+// writes its verdict to, or "" when this run is not part of a multi-reviewer
+// chain (single-reviewer and normal worker runs are unaffected).
+func reviewVerdictRelPathFor(cfg *config.Config, identifier, profileName string) string {
+	chain := ReviewerProfileChain(cfg)
+	if len(chain) <= 1 || profileName == "" {
+		return ""
+	}
+	if !slices.Contains(chain, profileName) {
+		return ""
+	}
+	return filepath.Join(".itervox", "review", identifier, profileName, ReviewVerdictFileName)
 }
 
 // buildHandoffContextBlock reads every `.md` file in

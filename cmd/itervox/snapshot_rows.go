@@ -55,6 +55,25 @@ func automationQueueBackpressureRow(bp orchestrator.AutomationQueueBackpressure)
 	}
 }
 
+// dispatchPressureRow converts the event-loop dispatch-pressure counters to
+// their wire shape, returning nil before the first tick completes so the
+// snapshot omits the field entirely rather than publishing an all-zero row
+// (which the dashboard would otherwise render as a confident "0% utilized"
+// on a daemon that has simply not measured anything yet).
+func dispatchPressureRow(p orchestrator.DispatchPressure) *server.DispatchPressureRow {
+	if p.TicksObserved == 0 {
+		return nil
+	}
+	return &server.DispatchPressureRow{
+		ObservedTicks:        p.TicksObserved,
+		SlotBoundTicks:       p.TicksSlotBound,
+		DependencyBoundTicks: p.TicksDependencyBound,
+		UtilizationPercent:   p.UtilizationPercent(),
+		BlockedByDependency:  p.BlockedByDependency,
+		EligibleWaiting:      p.EligibleWaiting,
+	}
+}
+
 func automationQueueRows(s orchestrator.State) []server.AutomationQueueRow {
 	if len(s.AutomationQueue) == 0 {
 		return nil

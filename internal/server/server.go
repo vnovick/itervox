@@ -110,6 +110,27 @@ type AutomationQueueBackpressureRow struct {
 	LastRejectedReason string     `json:"lastRejectedReason,omitempty"`
 }
 
+// DispatchPressureRow reports which resource constrained the agent fleet, so
+// the dashboard can answer "would raising max_concurrent_agents help?"
+// without the operator having to infer it from an instantaneous gauge.
+//
+// SlotBoundTicks and DependencyBoundTicks are mutually exclusive per tick and
+// need not sum to ObservedTicks — ticks where the fleet had nothing to do are
+// charged to neither.
+type DispatchPressureRow struct {
+	ObservedTicks        int64 `json:"observedTicks"`
+	SlotBoundTicks       int64 `json:"slotBoundTicks"`
+	DependencyBoundTicks int64 `json:"dependencyBoundTicks"`
+	// UtilizationPercent is mean fleet utilization across the session
+	// (0-100), capacity-weighted so a mid-session capacity change is
+	// accounted for correctly.
+	UtilizationPercent int `json:"utilizationPercent"`
+	// BlockedByDependency and EligibleWaiting describe the MOST RECENT tick
+	// only, unlike the cumulative counters above.
+	BlockedByDependency int `json:"blockedByDependency"`
+	EligibleWaiting     int `json:"eligibleWaiting"`
+}
+
 type BlockerRefRow struct {
 	ID         string `json:"id,omitempty"`
 	Identifier string `json:"identifier,omitempty"`
@@ -859,6 +880,11 @@ type StateSnapshot struct {
 	// AutomationQueueBackpressure reports queue saturation so the dashboard can
 	// warn when automation producers are paused by the bounded durable queue.
 	AutomationQueueBackpressure *AutomationQueueBackpressureRow `json:"automationQueueBackpressure,omitempty"`
+	// DispatchPressure reports whether the fleet is slot-bound or
+	// dependency-bound. Pointer + omitempty so a daemon that has not
+	// completed a tick omits the field entirely rather than publishing an
+	// all-zero row the dashboard would render as "0% utilized".
+	DispatchPressure *DispatchPressureRow `json:"dispatchPressure,omitempty"`
 	// AutomationDropsSelfReentryTotal is the monotonic count of input_required
 	// automation dispatches suppressed by the self-reentry guard (the previous
 	// worker on the issue was itself automation-launched). Surfaced on the

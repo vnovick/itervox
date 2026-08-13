@@ -253,13 +253,22 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	dispatched := 0
 	// critical-path-ordering Task 3 — dependencies.ordering is read-only
 	// config (validated/defaulted at load time in internal/config), so no
-	// cfgMu is needed here: "simple" keeps legacy priority/created_at/
-	// identifier order; anything else (including the "critical_path"
-	// default) sorts by fan-out/chain-length via the tick graph built above.
+	// cfgMu is needed here. "simple" keeps legacy priority/created_at/
+	// identifier order; "critical_path" (the default) and
+	// "critical_path_strict" both sort by fan-out/chain-length via the tick
+	// graph built above, differing only in whether the priority band
+	// outranks that graph leverage (critical_path) or is outranked by it
+	// (critical_path_strict).
 	var sorted []domain.Issue
-	if o.cfg.Dependencies.Ordering == config.DependenciesOrderingSimple {
+	switch o.cfg.Dependencies.Ordering {
+	case config.DependenciesOrderingSimple:
 		sorted = SortForDispatch(issues)
-	} else {
+	case config.DependenciesOrderingCriticalPathStrict:
+		sorted = SortForDispatchCriticalPathStrict(issues, tickGraphMetrics)
+	default:
+		// Includes the "critical_path" default. Config validation already
+		// normalizes unrecognized values, so this arm is only reachable for
+		// critical_path itself or a State assembled outside the loader.
 		sorted = SortForDispatchCriticalPath(issues, tickGraphMetrics)
 	}
 	for _, issue := range sorted {
@@ -307,6 +316,12 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			"slots_remaining", AvailableSlots(state),
 		)
 	}
+
+	// Record which constraint was binding on this tick. Must run AFTER the
+	// dispatch loop so issues started above count as running rather than as
+	// waiting on capacity. Pure function; the only mutation is this
+	// assignment, on the event-loop goroutine.
+	state.DispatchPressure = observeDispatchPressure(state.DispatchPressure, state, issues, o.cfg)
 	// Gap §1.1 + §1.2 — opportunistic janitor for the rate-limit
 	// switch-history + cooldown maps. Cheap: one pass per tick over
 	// typically <100 entries, and short-circuits when the cap is 0.
@@ -1362,6 +1377,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					delete(o.reviewerInjectedProfiles, issue.Identifier)
 				}
 				o.issueProfilesMu.Unlock()
+				// #58 — collect this reviewer's verdict and either dispatch
+				// the next reviewer in the chain or close the quorum. Must
+				// run AFTER the profile-override cleanup above so the next
+				// reviewer's dispatch installs its own override cleanly.
+				state = o.advanceReviewChainForIssue(ctx, state, issue, liveEntry.ProfileName, now)
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -1439,6 +1459,16 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Only trigger when the completed worker was NOT itself a reviewer
 			// (prevents infinite review loops).
 			if reviewerWillRun {
+				// #58 — start a fresh chain. ResetReviewChain clears any
+				// verdicts from a previous review of this issue so a re-review
+				// is judged on its own evidence, and seeds the index so
+				// advanceReviewChainForIssue knows a chain is in flight. When
+				// the chain has a single entry this is inert bookkeeping and
+				// the reviewer behaves exactly as before.
+				if chain := ReviewerProfileChain(o.cfg); len(chain) > 1 {
+					ResetReviewChain(&state, issue.Identifier)
+					reviewerProfile = chain[0]
+				}
 				o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
 			}
 
