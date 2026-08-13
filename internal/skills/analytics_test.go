@@ -14,6 +14,7 @@ func TestBuildAnalytics_FallsBackWithoutRuntime(t *testing.T) {
 	snap := BuildAnalytics(inv, nil, []string{"default"})
 	if snap == nil {
 		t.Fatal("expected non-nil snapshot")
+		return
 	}
 	if len(snap.SkillStats) != 1 {
 		t.Fatalf("expected 1 skill stat, got %d", len(snap.SkillStats))
@@ -58,6 +59,7 @@ func TestBuildAnalytics_PopulatesRuntimeFields(t *testing.T) {
 	snap := BuildAnalytics(inv, runtime, []string{"p1"})
 	if snap == nil {
 		t.Fatal("expected non-nil snapshot")
+		return
 	}
 	if !snap.HasRuntimeEvidence {
 		t.Errorf("expected HasRuntimeEvidence=true with runtime evidence")
@@ -101,6 +103,7 @@ func TestBuildAnalytics_NoProfilesNoCosts(t *testing.T) {
 	snap := BuildAnalytics(&Inventory{}, nil, nil)
 	if snap == nil {
 		t.Fatal("expected non-nil snapshot")
+		return
 	}
 	if len(snap.ProfileCosts) != 0 {
 		t.Errorf("expected no profile costs without profileNames, got %d", len(snap.ProfileCosts))

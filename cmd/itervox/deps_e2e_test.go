@@ -121,7 +121,11 @@ func TestE2E_RunDepsAnalyzeWritesSidecarWithInferredEdges(t *testing.T) {
 		t.Fatalf("LoadSidecar: %v", err)
 	}
 	if sc == nil {
+		// Explicit return: staticcheck's SA5011 does not model t.Fatal as
+		// terminating, so without it every sc.* dereference below is flagged
+		// as a possible nil deref.
 		t.Fatal("sidecar was nil — schema-mismatch or missing file")
+		return
 	}
 	if sc.Version != depsanalysis.SidecarSchemaVersion {
 		t.Errorf("schema version = %d; want %d", sc.Version, depsanalysis.SidecarSchemaVersion)

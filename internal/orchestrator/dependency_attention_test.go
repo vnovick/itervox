@@ -241,7 +241,11 @@ func TestEventLoopDerivesCyclesAndAttention(t *testing.T) {
 
 	tmp := t.TempDir()
 	sidecarPath := depsanalysis.SidecarPath(tmp)
-	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	// MUST be relative to time.Now() — see the identical note in
+	// TestEventLoopPopulatesInferredDeps. onTick measures staleness against
+	// the wall clock, so a fixed date fuses this test once StalenessHours
+	// elapses from it.
+	now := time.Now()
 	sc := &depsanalysis.Sidecar{
 		Version:     depsanalysis.SidecarSchemaVersion,
 		GeneratedAt: now,

@@ -247,7 +247,12 @@ func TestEventLoopPopulatesInferredDeps(t *testing.T) {
 
 	tmp := t.TempDir()
 	sidecarPath := depsanalysis.SidecarPath(tmp)
-	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	// MUST be relative to time.Now(): onTick evaluates edge staleness against
+	// the wall clock, so a hardcoded calendar date makes this test a time
+	// bomb — it passes until StalenessHours elapses from that fixed date and
+	// then fails forever after. Matches depsOverrideSidecarFixture, which
+	// already builds its sidecar this way.
+	now := time.Now()
 	sc := &depsanalysis.Sidecar{
 		Version:     depsanalysis.SidecarSchemaVersion,
 		GeneratedAt: now,
