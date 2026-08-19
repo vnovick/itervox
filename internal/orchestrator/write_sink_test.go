@@ -64,7 +64,7 @@ func TestDirectWriteSinkUpdateIssueStateSucceedsFirstAttempt(t *testing.T) {
 	tr := newFailNTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1", State: "In Progress"}})
 	sink := NewDirectWriteSink(tr)
 
-	err := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done")
+	err := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done", "In Progress")
 
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, tr.updateCalls.Load(), "no failure injected — exactly one tracker call")
@@ -84,7 +84,7 @@ func TestDirectWriteSinkUpdateIssueStateRetriesUntilSuccess(t *testing.T) {
 	tr.failFirstNUpdate = 2 // fails attempts 1-2, succeeds on attempt 3
 	sink := NewDirectWriteSink(tr)
 
-	err := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done")
+	err := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done", "In Progress")
 
 	require.NoError(t, err)
 	assert.EqualValues(t, 3, tr.updateCalls.Load(), "must retry past the first two failures")
@@ -99,7 +99,7 @@ func TestDirectWriteSinkUpdateIssueStateExhaustsRetries(t *testing.T) {
 	tr.failFirstNUpdate = 1000 // always fails
 	sink := NewDirectWriteSink(tr)
 
-	err := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done")
+	err := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done", "In Progress")
 
 	require.Error(t, err)
 	assert.EqualValues(t, maxTransitionAttempts, tr.updateCalls.Load())
@@ -125,7 +125,7 @@ func TestDirectWriteSinkUpdateIssueStateStopsOnCtxCancel(t *testing.T) {
 		cancel()
 	}()
 
-	err := sink.UpdateIssueState(ctx, "id1", "ENG-1", "Done")
+	err := sink.UpdateIssueState(ctx, "id1", "ENG-1", "Done", "In Progress")
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
@@ -150,7 +150,7 @@ func TestDirectWriteSinkUpdateIssueStateReturnsWithinShortCtxBound(t *testing.T)
 	defer cancel()
 
 	start := time.Now()
-	err := sink.UpdateIssueState(ctx, "id1", "ENG-1", "Done")
+	err := sink.UpdateIssueState(ctx, "id1", "ENG-1", "Done", "In Progress")
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -179,7 +179,7 @@ func TestDirectWriteSinkUpdateIssueStateSkipsAttemptWhenCtxAlreadyExpired(t *tes
 	defer cancel()
 
 	start := time.Now()
-	err := sink.UpdateIssueState(ctx, "id1", "ENG-1", "Done")
+	err := sink.UpdateIssueState(ctx, "id1", "ENG-1", "Done", "In Progress")
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -220,7 +220,7 @@ func TestOutboxWriteSinkUpdateIssueStateEnqueuesOnceNoTrackerCalls(t *testing.T)
 	require.NoError(t, err)
 	sink := NewOutboxWriteSink(ob)
 
-	sinkErr := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done")
+	sinkErr := sink.UpdateIssueState(context.Background(), "id1", "ENG-1", "Done", "In Progress")
 
 	require.NoError(t, sinkErr)
 	assert.EqualValues(t, 0, tr.updateCalls.Load(), "outbox sink must never call the tracker directly")
@@ -265,7 +265,7 @@ func TestOutboxWriteSinkUpdateIssueStateEnqueueErrorPropagates(t *testing.T) {
 	sink := NewOutboxWriteSink(ob)
 
 	// Empty identifier is rejected by outbox.Enqueue's validation.
-	sinkErr := sink.UpdateIssueState(context.Background(), "id1", "", "Done")
+	sinkErr := sink.UpdateIssueState(context.Background(), "id1", "", "Done", "In Progress")
 
 	require.Error(t, sinkErr)
 	assert.Empty(t, ob.Snapshot(), "a validation failure must never persist an entry")
@@ -295,7 +295,7 @@ func TestOrchestratorDefaultWriteSinkIsDirect(t *testing.T) {
 	tr := newFailNTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1", State: "In Progress"}})
 	o := &Orchestrator{tracker: tr}
 
-	err := o.writeSink().UpdateIssueState(context.Background(), "id1", "ENG-1", "Done")
+	err := o.writeSink().UpdateIssueState(context.Background(), "id1", "ENG-1", "Done", "In Progress")
 
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, tr.updateCalls.Load(), "default sink (nil o.sink fallback) must call the tracker directly")
@@ -311,7 +311,7 @@ func TestOrchestratorSetWriteSinkOverridesDefault(t *testing.T) {
 	o := &Orchestrator{tracker: tr}
 	o.SetWriteSink(NewOutboxWriteSink(ob))
 
-	sinkErr := o.writeSink().UpdateIssueState(context.Background(), "id1", "ENG-1", "Done")
+	sinkErr := o.writeSink().UpdateIssueState(context.Background(), "id1", "ENG-1", "Done", "In Progress")
 
 	require.NoError(t, sinkErr)
 	assert.EqualValues(t, 0, tr.updateCalls.Load())

@@ -70,15 +70,76 @@ func partitionIncremental(issues []AnalyzerIssue, prev *Sidecar) IncrementalPlan
 		Mode:      IncrementalModeIncremental,
 		Unchanged: map[string]struct{}{},
 	}
+	present := make(map[string]AnalyzerIssue, len(issues))
+	changed := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
+		present[issue.Identifier] = issue
 		fp := IssueFingerprint(issue.Title, issue.Description)
 		if entry, ok := prev.Analyzed[issue.Identifier]; ok && entry.Fingerprint == fp {
 			plan.Unchanged[issue.Identifier] = struct{}{}
 			continue
 		}
 		plan.ToAnalyze = append(plan.ToAnalyze, issue)
+		changed[issue.Identifier] = struct{}{}
 	}
+	plan.ToAnalyze = append(plan.ToAnalyze, priorEdgePeers(prev, changed, present)...)
 	return plan
+}
+
+// priorEdgePeers returns the unchanged issues that sit on the far side of a
+// prior edge whose other endpoint changed this pass, so the analyzer can see
+// both ends of every edge it is being asked to re-derive.
+//
+// MergeIncremental carries a prior edge forward only when BOTH endpoints are
+// unchanged, so a boundary-spanning edge is dropped and must come back from
+// the fresh agent pass. The pass only ever receives plan.ToAnalyze — so
+// without the peer in that set the analyzer cannot emit the edge even when
+// it still holds, and it is gone for good. Auto-analysis is on by default,
+// incremental is the default mode, and nothing schedules a periodic full
+// pass, so repeated runs eroded the graph toward changed-to-changed edges
+// only, silently un-gating dispatch as they went.
+//
+// Peers stay in plan.Unchanged: their own both-endpoints-unchanged edges
+// must still revalidate. Being in ToAnalyze as well only means "visible to
+// the analyzer this pass", which is exactly the context that makes a drop a
+// real judgement rather than an artifact of the prompt's contents.
+//
+// The expansion is deliberately one hop and edge-driven, not transitive: it
+// adds only the far endpoints of edges that actually touch a changed issue.
+// A transitive closure would collapse into a full pass on any well-connected
+// backlog, and incremental mode would stop paying for itself.
+func priorEdgePeers(prev *Sidecar, changed map[string]struct{}, present map[string]AnalyzerIssue) []AnalyzerIssue {
+	if prev == nil || len(changed) == 0 {
+		return nil
+	}
+	var peers []AnalyzerIssue
+	seen := make(map[string]struct{})
+	consider := func(peer string) {
+		if _, isChanged := changed[peer]; isChanged {
+			return // already in ToAnalyze in its own right
+		}
+		if _, added := seen[peer]; added {
+			return
+		}
+		issue, ok := present[peer]
+		if !ok {
+			return // absent from this fetch; nothing to show the analyzer
+		}
+		seen[peer] = struct{}{}
+		peers = append(peers, issue)
+	}
+	// Iterated in sidecar order so the resulting ToAnalyze is deterministic.
+	for _, e := range prev.Edges {
+		_, srcChanged := changed[e.Source]
+		_, tgtChanged := changed[e.Target]
+		switch {
+		case srcChanged && !tgtChanged:
+			consider(e.Target)
+		case tgtChanged && !srcChanged:
+			consider(e.Source)
+		}
+	}
+	return peers
 }
 
 // MergeIncremental builds the next sidecar to persist from a completed pass.

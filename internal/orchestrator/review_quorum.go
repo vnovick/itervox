@@ -131,6 +131,40 @@ func ReviewerProfileChain(cfg *config.Config) []string {
 			out = append(out, p)
 		}
 	}
+	// Reviewer fan-out is DISABLED for the v0.2.1 release: the chain is
+	// truncated to its first entry, so a multi-entry reviewer_profiles
+	// behaves exactly like the long-standing single-reviewer path.
+	//
+	// Measured with the truncation removed, on a config setting
+	// reviewer_profiles: [sec, corr] plus tracker.completion_state and a
+	// workspace provider: chain=[sec corr] but only 2 RunTurn calls — the
+	// worker and reviewer "sec". Reviewer "corr" never ran, and the log shows
+	// "dispatching reviewer profile=sec" immediately followed by "workspace
+	// auto-cleared". Two distinct defects produce that:
+	//
+	//  1. The chain never advances. advanceReviewChainForIssue is reached
+	//     only from the TerminalSucceeded branch guarded by
+	//     `liveEntry != nil && liveEntry.Kind == "reviewer"`. Setting
+	//     completion_state makes the worker move the issue terminal, so
+	//     ReconcileTrackerStates deletes the run from state.Running before
+	//     the reviewer's own exit event arrives — liveEntry is nil by then,
+	//     the guard never fires, and the quorum never closes.
+	//  2. The workspace is auto-cleared while a reviewer is still live: the
+	//     clear decision keys off runEligibleForAutoReview, which answers
+	//     "would a FRESH review start?", not "is a review in progress?".
+	//
+	// Both are lifecycle problems between the review chain, terminal-state
+	// reconciliation, and workspace clearing — not local bugs — so the chain
+	// machinery is left intact and gated here rather than redesigned under
+	// release pressure. Deleting this truncation re-enables the whole path.
+	//
+	// A reviewer_profiles-only config no longer fails to boot: the loader
+	// promotes the first entry into reviewer_profile and warns
+	// (config.normalizeReviewerProfiles), so such a config runs that one
+	// reviewer instead of hard-failing startup.
+	if len(out) > 1 {
+		out = out[:1]
+	}
 	return out
 }
 

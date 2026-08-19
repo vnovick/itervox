@@ -357,3 +357,83 @@ func TestMergeIncrementalDedupeInteraction(t *testing.T) {
 	assert.Equal(t, "fresh", result.Edges[0].Evidence, "the higher-confidence new edge must win over the revalidated old copy")
 	assert.Equal(t, 0.9, result.Edges[0].Confidence)
 }
+
+// TestPlanIncrementalIncludesPriorEdgePeersOfChangedIssues pins the fix for
+// the incremental pass eroding its own graph.
+//
+// MergeIncremental carries a prior edge forward only when BOTH endpoints are
+// unchanged, so an edge spanning a changed and an unchanged issue is dropped
+// and must be re-derived by the fresh agent pass. But the pass only ever
+// sees plan.ToAnalyze — so if the unchanged endpoint is not in that set, the
+// analyzer cannot emit the edge even when it still holds, and it is lost
+// permanently. Auto-analysis is on by default, incremental is the default
+// mode, and nothing schedules a periodic full pass, so repeated runs erode
+// the graph toward changed-to-changed edges only. Silently dropped edges
+// stop gating dispatch.
+//
+// The fix keeps the unchanged peer in Unchanged (so its OWN both-unchanged
+// edges still revalidate) while also handing it to the analyzer as context,
+// so a dropped edge is a real analyzer judgement rather than an artifact of
+// what the prompt happened to contain.
+func TestPlanIncrementalIncludesPriorEdgePeersOfChangedIssues(t *testing.T) {
+	prev := &Sidecar{
+		Profile: "deps-analyzer",
+		Edges: []InferredEdge{
+			{Source: "CHANGED", Target: "PEER", Evidence: "spans the boundary"},
+			{Source: "SAME", Target: "OTHER", Evidence: "wholly unchanged"},
+		},
+		Analyzed: map[string]AnalyzedIssue{
+			"CHANGED": {Fingerprint: IssueFingerprint("old title", "desc")},
+			"PEER":    {Fingerprint: IssueFingerprint("peer title", "peer desc")},
+			"SAME":    {Fingerprint: IssueFingerprint("same title", "same desc")},
+			"OTHER":   {Fingerprint: IssueFingerprint("other title", "other desc")},
+		},
+	}
+	issues := []AnalyzerIssue{
+		{Identifier: "CHANGED", Title: "new title", Description: "desc"},
+		{Identifier: "PEER", Title: "peer title", Description: "peer desc"},
+		{Identifier: "SAME", Title: "same title", Description: "same desc"},
+		{Identifier: "OTHER", Title: "other title", Description: "other desc"},
+	}
+
+	plan := PlanIncremental(issues, prev, "deps-analyzer", "incremental")
+
+	require.Equal(t, IncrementalModeIncremental, plan.Mode)
+	assert.ElementsMatch(t, []string{"CHANGED", "PEER"}, identifiers(plan.ToAnalyze),
+		"the unchanged peer of a boundary-spanning prior edge must reach the analyzer")
+
+	// The peer stays in Unchanged so MergeIncremental still revalidates any
+	// edge of its own whose endpoints both went untouched.
+	assert.Contains(t, plan.Unchanged, "PEER")
+	assert.Contains(t, plan.Unchanged, "SAME")
+	assert.Contains(t, plan.Unchanged, "OTHER")
+	assert.NotContains(t, plan.Unchanged, "CHANGED")
+}
+
+// TestPlanIncrementalDoesNotPullInUnrelatedUnchangedIssues bounds the
+// expansion above: only the peers of prior edges that actually touch a
+// changed issue are added. Without this, "include context" degrades into a
+// full pass on every run and the incremental mode stops paying for itself.
+func TestPlanIncrementalDoesNotPullInUnrelatedUnchangedIssues(t *testing.T) {
+	prev := &Sidecar{
+		Profile: "deps-analyzer",
+		Edges: []InferredEdge{
+			{Source: "SAME", Target: "OTHER", Evidence: "nowhere near the change"},
+		},
+		Analyzed: map[string]AnalyzedIssue{
+			"CHANGED": {Fingerprint: IssueFingerprint("old title", "desc")},
+			"SAME":    {Fingerprint: IssueFingerprint("same title", "same desc")},
+			"OTHER":   {Fingerprint: IssueFingerprint("other title", "other desc")},
+		},
+	}
+	issues := []AnalyzerIssue{
+		{Identifier: "CHANGED", Title: "new title", Description: "desc"},
+		{Identifier: "SAME", Title: "same title", Description: "same desc"},
+		{Identifier: "OTHER", Title: "other title", Description: "other desc"},
+	}
+
+	plan := PlanIncremental(issues, prev, "deps-analyzer", "incremental")
+
+	assert.ElementsMatch(t, []string{"CHANGED"}, identifiers(plan.ToAnalyze),
+		"an unchanged pair with no edge to the changed issue must stay out of the pass")
+}

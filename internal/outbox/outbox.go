@@ -61,6 +61,15 @@ type Entry struct {
 
 	// TargetState is set for KindUpdateState entries.
 	TargetState string `json:"target_state,omitempty"`
+	// FromState is the tracker state the issue was observed in when this
+	// KindUpdateState entry was enqueued. It is the baseline reconciliation
+	// compares against to tell an actual state change (a human moved the
+	// issue) apart from a bare UpdatedAt bump that the outbox itself caused
+	// — posting a comment bumps UpdatedAt without changing State, and the
+	// completion path enqueues a comment ahead of the transition for the
+	// same issue. Empty means "not observed": ReconcileVerdict then declines
+	// to supersede at all rather than guess. See ReconcileVerdict.
+	FromState string `json:"from_state,omitempty"`
 	// Body is set for KindCreateComment entries.
 	Body string `json:"body,omitempty"`
 
@@ -113,7 +122,27 @@ func New(path string) (*Outbox, error) {
 		slog.Warn("outbox: failed to parse outbox file, starting empty", "path", path, "error", err)
 		return o, nil
 	}
-	o.entries = entries
+	// Enforce the same invariants Enqueue does. Enqueue is not the only door
+	// into o.entries — this is the second one, and an entry that parses as
+	// JSON can still be semantically invalid (an unknown Kind from a hand
+	// edit, a rolled-back schema, or a downgrade from a build that added a
+	// kind this one does not know). Such an entry is undeliverable, and
+	// because Due is per-issue-FIFO head-only it would pin its issue's whole
+	// write queue forever while reporting Attempts=0 and Degraded()=false.
+	// Dropping it with a loud log is strictly better than a silent wedge:
+	// the entry could never have been delivered by this build anyway.
+	for _, e := range entries {
+		if e.ID == "" {
+			slog.Warn("outbox: dropping persisted entry with no ID", "path", path, "issue_id", e.IssueID)
+			continue
+		}
+		if err := validateEntry(e); err != nil {
+			slog.Warn("outbox: dropping invalid persisted entry",
+				"path", path, "id", e.ID, "identifier", e.Identifier, "kind", e.Kind, "error", err)
+			continue
+		}
+		o.entries = append(o.entries, e)
+	}
 	return o, nil
 }
 

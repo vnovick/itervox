@@ -141,6 +141,12 @@ type InputRequiredEntry struct {
 	QuestionAuthorID   string // exact tracker author ID for the agent question
 	QuestionAuthorName string // display author for the agent question
 	QueuedAt           time.Time
+	// LastReplyCheckAt is when checkTrackerReplies last spent a
+	// FetchIssueDetail on this entry. It orders the per-tick budget
+	// least-recently-checked first, so every entry is still reached in
+	// bounded time no matter how large the backlog grows. Zero means never
+	// checked, which sorts first.
+	LastReplyCheckAt time.Time
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not

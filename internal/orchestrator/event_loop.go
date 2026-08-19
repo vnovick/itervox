@@ -642,7 +642,20 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 	if len(state.InputRequiredIssues) == 0 {
 		return state
 	}
-	for identifier, entry := range state.InputRequiredIssues {
+	// Bounded, least-recently-checked-first. Ranging over the whole map cost
+	// one tracker request per input-required issue per tick, so this loop's
+	// request rate scaled with the backlog it exists to clear (issue #42).
+	for _, identifier := range selectTrackerReplyCheckBatch(state.InputRequiredIssues, trackerReplyCheckPerTickBudget) {
+		entry := state.InputRequiredIssues[identifier]
+		if entry == nil {
+			continue
+		}
+		// Stamp before the fetch, not after: a failing fetch must still
+		// advance this entry's place in the queue, or a permanently
+		// unreachable issue would monopolise the budget every tick and
+		// starve every other entry — the exact starvation the ordering is
+		// here to prevent.
+		entry.LastReplyCheckAt = time.Now()
 		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
 		if err != nil {
 			slog.Warn("orchestrator: tracker-reply check failed",
@@ -683,6 +696,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	}
 	slices.Sort(identifiers)
 
+	fetches := 0
 	for _, identifier := range identifiers {
 		if AvailableSlots(state) <= 0 {
 			break
@@ -711,6 +725,17 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			continue
 		}
 
+		// Bound the tracker requests this loop can spend per tick. The
+		// AvailableSlots check above already caps the SUCCESS path, but a
+		// fetch that fails costs a request without consuming a slot — so
+		// when the tracker is the thing that is failing, every pending entry
+		// was retried every tick. That is the self-sustaining half of issue
+		// #42: the resume path needs a successful read to drain the backlog,
+		// and its own retries were consuming the budget that read needed.
+		if fetches >= trackerReplyCheckPerTickBudget {
+			break
+		}
+		fetches++
 		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
 		if err != nil {
 			slog.Warn("orchestrator: pending input resume detail fetch failed",
@@ -1738,7 +1763,12 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 	go func() {
 		defer o.discardWg.Done()
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState)
+		// No fromState: this path receives only issueID/identifier/target,
+		// with no observation of the issue's current tracker state. Passing
+		// "" makes reconciliation decline to supersede this entry at all,
+		// which fails safe — the transition is retried rather than silently
+		// dropped. See outbox.ReconcileVerdict.
+		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, "")
 		updateCancel()
 		if err != nil {
 			slog.Warn("orchestrator: failed to transition issue to failed state",
@@ -1871,8 +1901,26 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 }
 
 func runEligibleForAutoReview(liveEntry *RunEntry) bool {
+	// A nil liveEntry means state.Running no longer holds this run, so we
+	// cannot establish that what just finished was a reviewable worker. It
+	// must fail CLOSED.
+	//
+	// It used to return true, and that was an unbounded agent-spawn loop.
+	// ReconcileTrackerStates deletes the Running entry when an issue reaches
+	// a terminal state — which is exactly what tracker.completion_state makes
+	// the worker do on success — and the stopped run's own goroutine then
+	// delivers its real EventWorkerExited a moment later, by which point the
+	// entry is gone. Failing open told the handler "a plain worker
+	// succeeded", so it dispatched a reviewer; reconciliation stopped that
+	// reviewer for the same reason; its exit arrived nil too; repeat. The
+	// issue sits terminal, so nothing ever breaks the cycle.
+	//
+	// Measured on a 50ms poll: 30 RunTurn calls in 1.5s against an expected
+	// 2. On a real tracker each iteration is a billed agent run plus tracker
+	// writes. Failing closed costs at most one skipped review on a run we
+	// have no record of; failing open costs the fleet.
 	if liveEntry == nil {
-		return true
+		return false
 	}
 	return liveEntry.Kind == "" || liveEntry.Kind == "worker"
 }

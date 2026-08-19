@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -207,14 +208,21 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 	case outbox.KindCreateComment:
 		_, flushErr = tr.CreateComment(callCtx, entry.IssueID, entry.Body)
 	default:
-		// validateEntry (internal/outbox) rejects unknown kinds at Enqueue
-		// time, so this is unreachable in practice — guarded defensively so
-		// a future EntryKind addition fails loudly (a stuck entry logged
-		// every tick) instead of silently retrying forever with no tracker
-		// call ever attempted.
+		// validateEntry (internal/outbox) rejects unknown kinds at BOTH
+		// doors into the outbox — Enqueue and New's load path — so this is
+		// unreachable in practice. It stays as defence in depth for a
+		// future EntryKind addition reaching a build that predates it.
+		//
+		// Routed through MarkFailed rather than a bare return: returning
+		// left Attempts at 0, so NextAttemptAt never advanced (the entry was
+		// re-selected at full tick rate forever) and Degraded() never
+		// tripped (no operator badge). Since Due is per-issue-FIFO
+		// head-only, that pinned the issue's entire write queue while
+		// presenting as healthy. Failing it properly makes it back off and
+		// surface.
+		flushErr = fmt.Errorf("outbox flusher: entry has unknown kind %q, cannot deliver", entry.Kind)
 		slog.Error("outbox flusher: entry has unknown kind, cannot deliver",
 			"id", entry.ID, "issue_id", entry.IssueID, "kind", entry.Kind)
-		return
 	}
 
 	if flushErr != nil {

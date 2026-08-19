@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"log/slog"
 	"net"
 	"sync"
+	"time"
 )
 
 // persistentListener owns a bound TCP socket for the daemon's lifetime and
@@ -44,14 +47,48 @@ func newPersistentListener(raw net.Listener) *persistentListener {
 // never disturbs the accept loop.
 func (p *persistentListener) pump() {
 	defer close(p.pumpDone)
+	var tempDelay time.Duration
 	for {
 		conn, err := p.raw.Accept()
 		if err != nil {
+			// Retry transient accept failures instead of exiting. This loop
+			// replaced http.Server.Serve's accept loop, which backs off and
+			// retries temporary errors — dropping that meant one fd-exhaustion
+			// blip (EMFILE/ENFILE both report Temporary() == true) ended
+			// accepts for the life of the process while the socket stayed
+			// bound: the port still shows LISTEN, clients just hang, and a
+			// config reload cannot recover it because the resolved bind
+			// address is unchanged so no rebind is attempted.
+			//
+			// Same 5ms-doubling-to-1s schedule as net/http, and Temporary() is
+			// deprecated there too — net/http still relies on it for exactly
+			// this case, and there is no replacement that covers EMFILE.
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Temporary() { //nolint:staticcheck // see above
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				tempDelay = min(tempDelay, time.Second)
+				slog.Warn("http listener: temporary accept error, retrying",
+					"error", err, "retry_in", tempDelay)
+				select {
+				case <-time.After(tempDelay):
+					continue
+				case <-p.closed:
+					p.mu.Lock()
+					p.acceptErr = err
+					p.mu.Unlock()
+					return
+				}
+			}
 			p.mu.Lock()
 			p.acceptErr = err
 			p.mu.Unlock()
 			return
 		}
+		tempDelay = 0
 		select {
 		case p.conns <- conn:
 		case <-p.closed:

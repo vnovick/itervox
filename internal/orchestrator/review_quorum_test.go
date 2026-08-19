@@ -82,8 +82,8 @@ func TestReviewerProfileChainFallsBackToSingleProfile(t *testing.T) {
 		"an existing single-reviewer config must keep working unchanged")
 
 	cfg.Agent.ReviewerProfiles = []string{"security", "correctness"}
-	require.Equal(t, []string{"security", "correctness"}, ReviewerProfileChain(cfg),
-		"the list form must win when set")
+	require.Equal(t, []string{"security"}, ReviewerProfileChain(cfg),
+		"the list form wins when set, but fan-out is gated for this release: only the first entry runs")
 }
 
 func TestReviewerProfileChainDropsBlanksAndHandlesNil(t *testing.T) {
@@ -91,8 +91,9 @@ func TestReviewerProfileChainDropsBlanksAndHandlesNil(t *testing.T) {
 	require.Empty(t, ReviewerProfileChain(&config.Config{}))
 
 	cfg := &config.Config{}
-	cfg.Agent.ReviewerProfiles = []string{"a", "  ", "", "b"}
-	require.Equal(t, []string{"a", "b"}, ReviewerProfileChain(cfg))
+	cfg.Agent.ReviewerProfiles = []string{"  ", "", "a", "b"}
+	require.Equal(t, []string{"a"}, ReviewerProfileChain(cfg),
+		"blanks are dropped BEFORE the fan-out truncation, so a leading blank never becomes the reviewer")
 }
 
 func TestUpsertReviewVerdictReplacesSameProfile(t *testing.T) {

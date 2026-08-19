@@ -936,7 +936,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// watched between attempts) — see write_sink.go. Under an
 		// outbox-backed sink this is a single durable enqueue; the flusher
 		// owns retries.
-		transitionErr := o.writeSink().UpdateIssueState(ctx, issue.ID, issue.Identifier, completionState)
+		// issue.State is the baseline reconciliation compares against. It
+		// matters most on exactly this path: the session comment above is
+		// enqueued for the same issue and is therefore the per-issue FIFO
+		// head, so it always flushes first and bumps the tracker's UpdatedAt
+		// without changing State. Without the baseline, reconciliation read
+		// that as a human edit and dropped this transition — leaving the
+		// issue in its active state and re-dispatching finished work.
+		transitionErr := o.writeSink().UpdateIssueState(ctx, issue.ID, issue.Identifier, completionState, issue.State)
 		if transitionErr != nil {
 			slog.Error("worker: completion state transition failed after retries",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier,

@@ -7,15 +7,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.1] — 2026-08-19
+
+Dependency autonomy, a write-ahead outbox for tracker writes, and the security and ops fixes that accumulated alongside them. Itervox now only picks up issues that are not blocked, orders work by what unblocks the most downstream effort, detects dependency cycles, keeps its dependency analysis fresh on its own, and captures far more real dependencies from both trackers — while making roughly 10x fewer tracker requests on the hot paths.
+
+### Upgrade notes
+
+> **Read these five before upgrading — each can change which issues get worked on.**
+>
+> 1. **Issues that used to dispatch may now be held.** Parents with open sub-issues, and issues whose bodies match the widened blocker phrases, are now blocked. Every hold is explained in the dashboard.
+> 2. **A Linear parent carrying a `blocks` relation on its own child now forms a visible 2-cycle** — both issues are held and an alert is raised. Remove the relation to resolve it.
+> 3. **Blocker-unblock detection lags up to ~15 minutes** worst case (5-minute state cache plus the 10-minute refresh interval). Stale data always fails safe, i.e. still-blocked.
+> 4. **The runtime project filter now narrows automations, the dashboard, and the TUI**, not just dispatch.
+> 5. **`server.port` now defaults to a fixed 8090** instead of an ephemeral port. Running several daemons at once needs a distinct explicit `server.port` per repo, or `server.port: 0` to keep asking the OS for a free port.
+
+### Added
+
+- **Durable, async tracker writes via a write-ahead outbox.** Tracker state transitions and comments are now enqueued to `.itervox/outbox.json` and flushed by an independent worker instead of being written synchronously (with inline retries) from the orchestrator's completion/failed-state paths — a crash between "agent finished" and "tracker updated" no longer loses the transition, and a slow/rate-limited tracker call no longer blocks the event loop. Pending writes are overlaid onto the dashboard's issue state so a completed-but-unflushed issue is never re-dispatched, and are visible via a "Syncing" badge on the affected issue card, a LiveOps tile (pending/degraded counts), and a new Outbox panel with per-entry **Retry** and **Discard** controls (`POST /api/v1/outbox/{id}/retry`, `DELETE /api/v1/outbox/{id}`). Set `tracker.outbox: false` as a kill switch to restore the previous synchronous write behavior — see `docs/configuration.md`'s `tracker.outbox` row. **Known limitation:** an issue a human moves out of `active_states` in the tracker while a write is still pending cannot auto-reconcile against that change (reconciliation only runs over this tick's polled candidates); use the Outbox panel's Discard to clear a stuck entry in that case.
+- **Critical-path dispatch ordering** (default on): priority band, then transitive dependents, then longest chain, via Tarjan SCC condensation. `dependencies.ordering: critical_path_strict` compares graph leverage ahead of the priority band; `dependencies.ordering: simple` restores the legacy order.
+- **Inferred (LLM-detected) dependency edges soft-gate dispatch** — confidence >= 0.7, fresher than 168h, no per-issue operator override, and a known non-terminal source. Tracker-declared blockers remain hard blocks. Kill switch: `dependencies.inferred_gating: false`.
+- **Dependency cycles are first-class alerts** (LiveOps tile, Deps-tab banner and red edges, heartbeat). Members stay blocked and are never auto-released. **Escalation** surfaces issues blocked longer than `dependencies.escalate_blocked_after_hours` (default 48).
+- **The dependency analyzer is cancellable, timeout-bounded, chunked, and autonomous.** `DELETE /api/v1/deps/analyze/{jobId}` cancels a run; `agent.deps_analyzer_timeout_ms` (default 10 min) bounds it; `agent.deps_analyzer_chunk_size` (default 75) bounds the prompt. Change-driven incremental passes run on a 5-minute debounce with a 60-minute floor (`dependencies.auto_analyze`, default true).
+- **Widened tracker dependency parsing.** GitHub now recognises `blocked by/on`, `depends on/upon`, `requires`, and `waiting on/for` plus `#N` lists as hard edges. Linear sub-issues gate their parent.
+- **Per-issue inferred-blocker overrides** via `POST`/`DELETE /api/v1/issues/{identifier}/deps-override`, surfaced in the dashboard Deps tab.
+- **Dispatch-pressure telemetry**: each tick records whether dispatch was slot-bound or dependency-bound, surfaced in the dashboard status strip.
+- **JSON structured logging** via `--log-format=json`; stderr logging is no longer lost when the TUI does not start.
+
 ### Changed (breaking)
 
 - **Bearer-token auth is now on by default on every bind, including loopback (#48).** Previously the daemon only auto-generated `ITERVOX_API_TOKEN` and installed bearer-token middleware when `server.host` was a non-loopback address. That gate was the wrong signal: a loopback bind (`127.0.0.1`) sitting behind a reverse proxy, ngrok, Piko, or another tunnel is exactly as reachable from outside as a non-loopback bind, and the daemon has no way to detect that from inside the process. As of this release, the API requires a bearer token by default on **all** binds; unauthenticated local scripting must either read the token (from stderr, `.itervox/dashboard_url`'s sibling startup log line, or a pinned `ITERVOX_API_TOKEN` in `.itervox/.env`) or explicitly opt out via `server.allow_unauthenticated: true`.
 - **`server.allow_unauthenticated_lan` renamed to `server.allow_unauthenticated`.** The flag is no longer LAN/non-loopback-scoped — setting it to `true` disables auth entirely on every bind. The old key still parses as a deprecated alias (with a startup `slog.Warn`); the new key wins if both are set in the same `WORKFLOW.md`. Update `WORKFLOW.md` and any templates/examples to use the new key.
 - `GET /api/v1/health` remains the only auth-exempt route — unchanged behavior, but corrected in docs (README, `docs/configuration.md`) which previously and incorrectly described it as `GET /health`.
+- **`server.port` defaults to a fixed 8090** instead of an ephemeral port — see upgrade note 5.
 
-### Added
+### Changed
 
-- **Durable, async tracker writes via a write-ahead outbox.** Tracker state transitions and comments are now enqueued to `.itervox/outbox.json` and flushed by an independent worker instead of being written synchronously (with inline retries) from the orchestrator's completion/failed-state paths — a crash between "agent finished" and "tracker updated" no longer loses the transition, and a slow/rate-limited tracker call no longer blocks the event loop. Pending writes are overlaid onto the dashboard's issue state so a completed-but-unflushed issue is never re-dispatched, and are visible via a "Syncing" badge on the affected issue card, a LiveOps tile (pending/degraded counts), and a new Outbox panel with per-entry **Retry** and **Discard** controls (`POST /api/v1/outbox/{id}/retry`, `DELETE /api/v1/outbox/{id}`). Set `tracker.outbox: false` as a kill switch to restore the previous synchronous write behavior — see `docs/configuration.md`'s `tracker.outbox` row. **Known limitation:** an issue a human moves out of `active_states` in the tracker while a write is still pending cannot auto-reconcile against that change (reconciliation only runs over this tick's polled candidates); use the Outbox panel's Discard to clear a stuck entry in that case.
+- **The HTTP socket survives config reloads.** The listener binds once, above the reload loop, and is rebound only when the resolved address actually changes — so editing an unrelated setting no longer drops in-flight requests and SSE streams, and the dashboard URL stays stable. WORKFLOW.md edits debounce into a single reload.
+- **Linear workflow-state UUIDs are cached**, so a state transition costs one request instead of two; `FetchIssuesByStates` honors the runtime project filter.
+- **GitHub blocker states are cached for 5 minutes** — probe-measured at ~480 requests/hour against ~4,800 uncached at 40 refs.
+- **The dependency audit's synchronous tracker fetches moved off the event loop** (batched, throttled, watchdogged) and gained a staleness TTL (`agent.dependency_audit_refresh_interval_ms`, default 10 min).
+- **The input-required replay cache survives across ticks**, removing a per-entry re-fetch every 15 seconds.
+
+### Fixed
+
+- **Auto-review could spawn agents without bound.** With `tracker.completion_state` set, a successful worker moves its issue terminal; reconciliation then stops the run and removes it from the live set, so the run's own exit event arrived with no live entry. That was read as "a plain worker succeeded", which dispatched a reviewer, which was stopped the same way — a loop nothing broke while the issue stayed terminal. The eligibility check now fails closed on an unknown run. Measured before the fix at 23-30 agent runs in 1.5s against an expected 2.
+- **The write-ahead outbox discarded its own completion transitions.** The completion path enqueues the session comment ahead of the state transition for the same issue, so the comment flushed first and bumped the tracker's `updated_at` without changing state — which reconciliation read as a human edit and dropped the transition, leaving the issue active and eligible for re-dispatch. Entries now record the state observed at enqueue time, and reconciliation requires an actual state change.
+- **A malformed persisted outbox entry could wedge an issue's write queue silently.** Entries are validated on load, not only on enqueue, and an undeliverable entry now accrues attempts so it backs off and surfaces as degraded instead of retrying at full tick rate behind a healthy-looking badge.
+- **Incremental dependency analysis eroded its own graph.** An inferred edge spanning a changed and an unchanged issue was dropped and could not be re-derived, because the unchanged endpoint never reached the analyzer. With auto-analysis on by default and no scheduled full pass, repeated runs degraded the graph and silently un-gated dispatch. Boundary-spanning edges now bring their unchanged endpoint into the pass.
+- **A cosmetic `server.host` edit could kill the daemon.** The reload path compared the literal `host:port` string, so `127.0.0.1` to `localhost` looked like a move; the new listener bound before the old one closed, collided with itself, and exited via a path that skipped cleanup of `daemon.pid`, `dashboard_url`, and `HEARTBEAT.md` — leaving `itervox doctor` reporting a daemon that had died. Rebinds are now decided on the resolved address and release the old socket first.
+- **Reviewer fan-out (`agent.reviewer_profiles`) is disabled in this release.** A config listing several reviewers runs only the first, with a startup warning, and a config setting only `reviewer_profiles` now starts instead of hard-failing. The chain did not advance past the first reviewer, and the workspace was cleared while a reviewer was still live. The machinery ships intact but gated.
+- **One transient accept failure could wedge the HTTP listener for the life of the process.** The daemon's accept loop replaced `http.Server.Serve`'s, which backs off and retries temporary errors — without that, a single fd-exhaustion blip (`EMFILE`/`ENFILE`) ended accepts while the socket stayed bound, so the port still showed LISTEN, clients hung, and a config reload could not recover it. Temporary accept errors now retry on net/http's 5ms-doubling-to-1s schedule.
+- **A config reload could briefly run two orchestrators against one outbox file.** `run()` waited for the HTTP server when the orchestrator exited first, but returned immediately in the opposite case — which is the one a reload actually takes, since shutting down the HTTP generation is a channel close while the orchestrator is still draining. The reload loop then opened a second `.itervox/outbox.json` handle, and two handles rewriting the whole file each persist can erase one another's durable entries. Both exit paths now wait, with a bounded grace and a warning if it is exceeded.
+- **The input-required reply check no longer scales its request rate with the backlog.** It spent one tracker request per stuck issue per tick, uncapped and in randomized map order, so a 19-issue backlog cost roughly 2,280 requests/hour against Linear's 2,500/hour ceiling before any real work (issue #42). It now spends a fixed budget per tick, least-recently-checked first, so cost is constant in backlog size and every entry is still reached within a couple of minutes. The pending-resume path gained the same bound on its failing-fetch retries.
+- A transient empty tracker fetch can no longer wipe the inferred-dependency sidecar.
+- Dependency-analyzer runs report the number of issues scanned, write logs to disk, and report progress.
 
 ---
 

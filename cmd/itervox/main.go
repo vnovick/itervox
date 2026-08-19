@@ -467,7 +467,7 @@ func main() {
 	// never races EADDRINUSE against the previous server's shutdown. Rebinding
 	// happens only when a reload actually changes server.host/server.port.
 	var srvPersist *persistentListener
-	var srvAddr, srvBoundKey string
+	var srvAddr string
 	for {
 		loaded, err := config.Load(*workflowPath)
 		if err == nil {
@@ -525,7 +525,23 @@ func main() {
 		if cfg.Server.Port != nil {
 			port = *cfg.Server.Port
 		}
-		if bindKey := fmt.Sprintf("%s:%d", host, port); srvPersist == nil || bindKey != srvBoundKey {
+		// Rebind only when the RESOLVED socket actually changes. Comparing
+		// the literal "host:port" treated `127.0.0.1` -> `localhost` as a
+		// move, even though it is the same socket.
+		if srvPersist == nil || !sameBindTarget(srvAddr, host, port) {
+			// Release the old socket BEFORE binding the new one. The previous
+			// order (bind, then close) assumed a changed key implied a
+			// different socket, so the two could never collide; the alias
+			// case above disproves that, and the daemon hit EADDRINUSE
+			// against its own listener and called fatalExit -> os.Exit,
+			// skipping the deferred cleanup of daemon.pid / dashboard_url /
+			// HEARTBEAT.md and leaving `itervox doctor` reporting a live
+			// daemon that had died. Closing first cannot regress the failure
+			// path: a failed bind was already fatal either way.
+			if srvPersist != nil {
+				_ = srvPersist.Close()
+				srvPersist = nil
+			}
 			raw, addr, err := listenStrict(host, port)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err.Error())
@@ -534,15 +550,8 @@ func main() {
 				writeStartupErrorMarker(*workflowPath, err)
 				fatalExit(1)
 			}
-			// New socket first, old one closed after — the keys differ, so
-			// they cannot collide, and a failed rebind must not leave the
-			// daemon with no listener at all.
-			if srvPersist != nil {
-				_ = srvPersist.Close()
-			}
 			srvPersist = newPersistentListener(raw)
 			srvAddr = addr
-			srvBoundKey = bindKey
 			slog.Info("HTTP server listening", "addr", addr)
 		}
 
@@ -1023,13 +1032,25 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		// reason other than ctx cancellation (orchestrator error) — the
 		// ctx-driven Shutdown in serveOnListener never fires on that path.
 		_ = srvListener.Close()
-		select {
-		case <-srvDone:
-		case <-time.After(6 * time.Second):
-			slog.Warn("run: http server did not stop within 6s of orchestrator exit")
+		if !awaitStop(srvDone, runShutdownGrace) {
+			slog.Warn("run: http server did not stop within the shutdown grace of orchestrator exit",
+				"grace", runShutdownGrace)
 		}
 		return err
 	case err := <-srvDone:
+		// Symmetric with the branch above: do NOT return while the
+		// orchestrator is still running. main()'s reload loop calls run()
+		// again as soon as this returns, and a second live orchestrator means
+		// a second outbox.New on the same .itervox/outbox.json — two handles
+		// each rewriting the whole file on every persist, silently erasing
+		// each other's durable entries. On a reload this is the branch that
+		// actually fires: shutting the HTTP generation down is a channel
+		// close, while orch.Run is still draining its WaitGroups.
+		if !awaitStop(orchDone, runShutdownGrace) {
+			slog.Warn("run: orchestrator did not stop within the shutdown grace of http server exit; "+
+				"a reload now would run two orchestrators against one outbox file",
+				"grace", runShutdownGrace)
+		}
 		return err
 	}
 }

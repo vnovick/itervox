@@ -435,3 +435,53 @@ func TestConcurrentEnqueueDueMarkFlushedMarkFailed(t *testing.T) {
 		assert.Equal(t, entries[0].ID, got.ID, "Due must return the FIFO head, not any later entry")
 	}
 }
+
+// TestNew_DropsInvalidPersistedEntries pins that the load path enforces the
+// same invariants Enqueue does. validateEntry used to guard only Enqueue,
+// which left it as the *assumed* sole door into o.entries — but New is a
+// second door. A persisted entry with an unknown Kind (a hand edit, a
+// rolled-back schema, or a downgrade from a build that added a kind) parses
+// as valid JSON and used to load clean. Because Due is per-issue-FIFO
+// head-only and the flusher cannot deliver an unknown kind, such an entry
+// pinned its issue's entire write queue forever while reporting Attempts=0
+// and Degraded()=false — a silent, permanent, invisible write loss.
+func TestNew_DropsInvalidPersistedEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.json")
+	require.NoError(t, os.WriteFile(path, []byte(`[
+	  {"id":"poison","kind":"move_issue","issue_id":"ISSUE-1","identifier":"ENG-1",
+	   "enqueued_at":"2026-01-01T00:00:00Z","attempts":0,"next_attempt_at":"2026-01-01T00:00:00Z"},
+	  {"id":"real","kind":"update_state","issue_id":"ISSUE-1","identifier":"ENG-1",
+	   "target_state":"Done","enqueued_at":"2026-01-02T00:00:00Z","attempts":0,
+	   "next_attempt_at":"2026-01-02T00:00:00Z"}
+	]`), 0o644))
+
+	ob, err := outbox.New(path)
+	require.NoError(t, err)
+
+	due := ob.Due(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.Len(t, due, 1, "the surviving legitimate entry must be deliverable")
+	assert.Equal(t, "real", due[0].ID, "the poison entry must not hold the FIFO head")
+	assert.Equal(t, outbox.KindUpdateState, due[0].Kind)
+}
+
+// TestNew_KeepsValidPersistedEntriesUntouched guards the drop above from
+// over-reaching: a well-formed file must survive load byte-for-byte.
+func TestNew_KeepsValidPersistedEntriesUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.json")
+	first, err := outbox.New(path)
+	require.NoError(t, err)
+	require.NoError(t, first.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "ISSUE-1", Identifier: "ENG-1",
+		TargetState: "Done", FromState: "In Progress",
+	}))
+	require.NoError(t, first.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "ISSUE-2", Identifier: "ENG-2", Body: "hi",
+	}))
+
+	reloaded, err := outbox.New(path)
+	require.NoError(t, err)
+	got := reloaded.Snapshot()
+	require.Len(t, got, 2)
+	assert.Equal(t, "In Progress", got[0].FromState, "FromState must survive a restart")
+	assert.Equal(t, outbox.KindCreateComment, got[1].Kind)
+}

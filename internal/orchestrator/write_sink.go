@@ -41,8 +41,14 @@ var transitionRetryBaseDelay = 2 * time.Second
 // are interchangeable between the two sinks without an if/else.
 type WriteSink interface {
 	// UpdateIssueState transitions issueID (identifier is its human-readable
-	// key) to state.
-	UpdateIssueState(ctx context.Context, issueID, identifier, state string) error
+	// key) to state. fromState is the tracker state the issue was observed
+	// in when the call was made, or "" when the caller has no reliable
+	// observation. directWriteSink ignores it; outboxWriteSink records it on
+	// the entry as the baseline reconciliation compares against to tell a
+	// human's move apart from an UpdatedAt bump the outbox itself caused.
+	// Passing "" is always safe: reconciliation then declines to supersede
+	// rather than guess, so the write is retried instead of dropped.
+	UpdateIssueState(ctx context.Context, issueID, identifier, state, fromState string) error
 	// CreateComment posts body on issueID (identifier is its human-readable
 	// key).
 	CreateComment(ctx context.Context, issueID, identifier, body string) error
@@ -85,7 +91,9 @@ func NewDirectWriteSink(tr tracker.Tracker) WriteSink {
 // caller, bounded or not, rather than relying solely on the select.
 // identifier is accepted (WriteSink interface parity with outboxWriteSink)
 // but unused — tracker.Tracker.UpdateIssueState takes no identifier.
-func (s *directWriteSink) UpdateIssueState(ctx context.Context, issueID, identifier, state string) error {
+// fromState is unused here: the direct sink calls the tracker immediately,
+// so there is no queued write for reconciliation to later second-guess.
+func (s *directWriteSink) UpdateIssueState(ctx context.Context, issueID, identifier, state, _ string) error {
 	callCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 	defer cancel()
 
@@ -141,12 +149,17 @@ func NewOutboxWriteSink(ob *outbox.Outbox) WriteSink {
 // the tracker directly — ctx is accepted for interface parity with
 // directWriteSink but unused, since Enqueue is synchronous, in-process, and
 // does not itself make a tracker API call.
-func (s *outboxWriteSink) UpdateIssueState(_ context.Context, issueID, identifier, state string) error {
+// fromState is recorded on the entry as reconciliation's baseline — see
+// outbox.ReconcileVerdict. An empty fromState is safe but weaker: without a
+// baseline, reconciliation cannot tell a human's move from the outbox's own
+// UpdatedAt bump, so it keeps the entry rather than dropping it.
+func (s *outboxWriteSink) UpdateIssueState(_ context.Context, issueID, identifier, state, fromState string) error {
 	return s.outbox.Enqueue(outbox.Entry{
 		Kind:        outbox.KindUpdateState,
 		IssueID:     issueID,
 		Identifier:  identifier,
 		TargetState: state,
+		FromState:   fromState,
 	})
 }
 

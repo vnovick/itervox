@@ -347,11 +347,16 @@ func TestStartOutboxFlusherNilSafe(t *testing.T) {
 // longer in this tick's active-states candidate fetch.
 func TestAbsentIssueReconcileDropsSuperseded(t *testing.T) {
 	ob := newTestOutbox(t)
-	require.NoError(t, ob.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "id-a", Identifier: "ENG-A", TargetState: "Done"}))
+	// FromState is the baseline reconciliation compares against; without it
+	// rule 2 cannot distinguish a human's move from an UpdatedAt bump the
+	// outbox itself caused, and declines to supersede. See
+	// outbox.ReconcileVerdict.
+	require.NoError(t, ob.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "id-a", Identifier: "ENG-A", TargetState: "Done", FromState: "In Progress"}))
 	entry := ob.PendingFor("id-a")[0]
 
-	// The tracker's polled state is a DIFFERENT state than the target, with
-	// UpdatedAt strictly after the entry's own EnqueuedAt — a human moved it.
+	// The tracker's polled state differs from BOTH the target and the
+	// baseline, with UpdatedAt strictly after the entry's own EnqueuedAt —
+	// a human moved it.
 	future := entry.EnqueuedAt.Add(time.Hour)
 	tr := newRecordingFlusherTracker([]domain.Issue{
 		{ID: "id-a", Identifier: "ENG-A", State: "Backlog", UpdatedAt: &future},
@@ -600,4 +605,74 @@ func TestAbsentIssueReconcilerTryRunGuardsAgainstOverlap(t *testing.T) {
 	r.finish()
 	assert.True(t, r.tryRun(base.Add(absentReconcileInterval+time.Minute)),
 		"may start again once the previous round finished")
+}
+
+// TestFlushOutboxEntryUnknownKindMarksFailed pins that an undeliverable
+// entry backs off and becomes operator-visible instead of spinning
+// silently. The unknown-kind arm previously logged and returned WITHOUT
+// calling MarkFailed, so Attempts stayed 0 forever: NextAttemptAt never
+// advanced (the entry was re-selected every tick at full rate) and
+// Degraded() never tripped (the dashboard's error badge never lit). Since
+// Due is per-issue-FIFO head-only, that combination pinned the issue's
+// entire write queue while presenting as healthy.
+//
+// Both doors into the outbox now reject unknown kinds — Enqueue always did,
+// and New validates on load — so this arm is defence in depth. The entry is
+// therefore constructed by mutating a delivered copy, which is exactly how
+// a future EntryKind addition would reach a build that predates it.
+func TestFlushOutboxEntryUnknownKindMarksFailed(t *testing.T) {
+	ob := newTestOutbox(t)
+	tr := newRecordingFlusherTracker([]domain.Issue{{ID: "id-a", Identifier: "ENG-A", State: "In Progress"}})
+	refresher := &fakeRefresher{}
+
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "id-a", Identifier: "ENG-A",
+		TargetState: "Done", FromState: "In Progress",
+	}))
+
+	entry := ob.Snapshot()[0]
+	entry.Kind = "move_issue" // a kind this build cannot deliver
+
+	flushOutboxEntry(context.Background(), ob, tr, refresher, entry, time.Now())
+
+	assert.Empty(t, tr.CallOrder(), "an undeliverable kind must not reach the tracker")
+	assert.EqualValues(t, 0, refresher.calls.Load(), "no Refresh for a failed flush")
+
+	pending := ob.PendingFor("id-a")
+	require.Len(t, pending, 1)
+	assert.Equal(t, 1, pending[0].Attempts,
+		"an undeliverable entry must accrue attempts so it backs off and can reach Degraded()")
+	assert.NotEmpty(t, pending[0].LastError, "the failure reason must be recorded for the operator")
+}
+
+// TestAbsentIssueReconcileKeepsWhenOurOwnWriteBumpedUpdatedAt is the
+// end-to-end guard for the default completion path. worker.go enqueues the
+// session comment for an issue and then the completion transition for the
+// same issue, so the comment is the per-issue FIFO head and flushes first.
+// Posting it bumps the tracker's UpdatedAt while leaving State untouched.
+//
+// Reconciliation used to read that bare UpdatedAt bump as "a human moved
+// this issue" and drop the queued transition, so the issue never reached
+// its completion state and was re-dispatched with the work already done —
+// the exact durability failure the write-ahead outbox exists to prevent.
+func TestAbsentIssueReconcileKeepsWhenOurOwnWriteBumpedUpdatedAt(t *testing.T) {
+	ob := newTestOutbox(t)
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "id-a", Identifier: "ENG-A",
+		TargetState: "Done", FromState: "In Progress",
+	}))
+	entry := ob.PendingFor("id-a")[0]
+
+	// UpdatedAt advanced past the entry's EnqueuedAt, but State is still the
+	// baseline: nothing but our own comment touched this issue.
+	future := entry.EnqueuedAt.Add(time.Hour)
+	tr := newRecordingFlusherTracker([]domain.Issue{
+		{ID: "id-a", Identifier: "ENG-A", State: "In Progress", UpdatedAt: &future},
+	})
+
+	runAbsentIssueReconcileTick(context.Background(), ob, tr)
+
+	pending := ob.PendingFor("id-a")
+	require.Len(t, pending, 1, "the completion transition must survive our own UpdatedAt bump")
+	assert.Equal(t, "Done", pending[0].TargetState)
 }

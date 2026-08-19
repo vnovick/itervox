@@ -49,9 +49,38 @@ func ReconcileVerdict(e Entry, polledState string, polledUpdatedAt *time.Time) (
 	switch {
 	case polledState == e.TargetState:
 		return true, "already_applied"
-	case polledUpdatedAt != nil && polledUpdatedAt.After(e.EnqueuedAt) && polledState != e.TargetState:
+	case supersededByTracker(e, polledState, polledUpdatedAt):
 		return true, "superseded_by_tracker"
 	default:
 		return false, ""
 	}
+}
+
+// supersededByTracker reports whether the tracker's own state genuinely
+// moved away from this entry's baseline, to something that is not what the
+// entry asks for.
+//
+// A fresher UpdatedAt alone is NOT sufficient evidence, because the outbox
+// bumps UpdatedAt itself: entries are per-issue FIFO, and the completion
+// path enqueues the session comment (worker.go) before the completion
+// transition for the same issue, so the comment always flushes first and
+// advances UpdatedAt without touching State. Treating that as a human edit
+// dropped the queued transition, left the issue in its active state, and
+// re-dispatched work that had already succeeded.
+//
+// Requiring polledState != e.FromState is what separates the two: a comment
+// flush leaves State equal to the baseline, a human move does not.
+//
+// An empty FromState means the enqueue site could not observe the issue's
+// state, so there is no baseline and the two cases are indistinguishable.
+// Fail safe by keeping the entry: a redundant transition is recoverable,
+// a silently dropped one is not.
+func supersededByTracker(e Entry, polledState string, polledUpdatedAt *time.Time) bool {
+	if polledUpdatedAt == nil || !polledUpdatedAt.After(e.EnqueuedAt) {
+		return false
+	}
+	if e.FromState == "" {
+		return false
+	}
+	return polledState != e.TargetState && polledState != e.FromState
 }

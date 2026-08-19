@@ -90,12 +90,18 @@ func TestReconcileAndOverlayOutboxSupersededDropped(t *testing.T) {
 	o := &Orchestrator{}
 	o.SetOutbox(ob)
 
-	require.NoError(t, ob.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "id-a", Identifier: "ENG-A", TargetState: "Done"}))
+	// FromState is the baseline reconciliation compares the polled state
+	// against. Without it, rule 2 cannot tell a human's move from an
+	// UpdatedAt bump the outbox itself caused (flushing the session comment
+	// the completion path enqueues ahead of the transition), and declines to
+	// supersede. See outbox.ReconcileVerdict.
+	require.NoError(t, ob.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "id-a", Identifier: "ENG-A", TargetState: "Done", FromState: "In Progress"}))
 	enqueued := ob.PendingFor("id-a")
 	require.Len(t, enqueued, 1)
 
 	// A human moved the issue to "In Review" in the tracker AFTER this
-	// write was enqueued.
+	// write was enqueued — a state that is neither our target nor the
+	// baseline we observed.
 	humanChange := enqueued[0].EnqueuedAt.Add(1 * time.Hour)
 	issues := []domain.Issue{{ID: "id-a", Identifier: "ENG-A", State: "In Review", UpdatedAt: timePtr(humanChange)}}
 
