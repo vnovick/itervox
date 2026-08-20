@@ -696,7 +696,14 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	}
 	slices.Sort(identifiers)
 
-	fetches := 0
+	// Which entries may spend a tracker request this tick, least-recently-
+	// attempted first. Computed once, before the loop, so the cheap
+	// bookkeeping below stays unbudgeted.
+	fetchAllowed := make(map[string]struct{}, trackerReplyCheckPerTickBudget)
+	for _, identifier := range selectPendingResumeFetchBatch(state.PendingInputResumes, trackerReplyCheckPerTickBudget) {
+		fetchAllowed[identifier] = struct{}{}
+	}
+
 	for _, identifier := range identifiers {
 		if AvailableSlots(state) <= 0 {
 			break
@@ -732,10 +739,18 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		// was retried every tick. That is the self-sustaining half of issue
 		// #42: the resume path needs a successful read to drain the backlog,
 		// and its own retries were consuming the budget that read needed.
-		if fetches >= trackerReplyCheckPerTickBudget {
-			break
+		//
+		// Membership, not a counter: a plain per-tick count still spent the
+		// whole budget on the same lexically-first entries every tick, so a
+		// permanently unfetchable issue at the head starved everything
+		// behind it. The bookkeeping above this point stays unbudgeted — it
+		// costs no tracker request.
+		if _, mayFetch := fetchAllowed[identifier]; !mayFetch {
+			continue
 		}
-		fetches++
+		// Stamp before the fetch so a failing entry still yields its place;
+		// otherwise it would monopolise the budget forever.
+		entry.LastResumeAttemptAt = now
 		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
 		if err != nil {
 			slog.Warn("orchestrator: pending input resume detail fetch failed",
@@ -1490,7 +1505,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// advanceReviewChainForIssue knows a chain is in flight. When
 				// the chain has a single entry this is inert bookkeeping and
 				// the reviewer behaves exactly as before.
-				if chain := ReviewerProfileChain(o.cfg); len(chain) > 1 {
+				if chain := o.reviewerChainCfg(); len(chain) > 1 {
 					ResetReviewChain(&state, issue.Identifier)
 					reviewerProfile = chain[0]
 				}
@@ -1670,7 +1685,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 							"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 							"queued", rateLimitedQueued)
 					} else if failedState != "" {
-						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
+						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState, issue.State)
 						// New semantics (v0.2.0): clear workspace when the
 						// issue reaches a terminal tracker state. FailedState
 						// is terminal — no retries remain and no rate-limited
@@ -1754,7 +1769,7 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 // bounded regardless of which sink is active — the outbox sink ignores
 // ctx entirely (Enqueue is synchronous, in-process), so the bound is a
 // no-op there and only matters for the direct sink.
-func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identifier, targetState string) State {
+func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identifier, targetState, fromState string) State {
 	if issueID == "" || targetState == "" {
 		return state
 	}
@@ -1763,12 +1778,18 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 	go func() {
 		defer o.discardWg.Done()
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		// No fromState: this path receives only issueID/identifier/target,
-		// with no observation of the issue's current tracker state. Passing
-		// "" makes reconciliation decline to supersede this entry at all,
-		// which fails safe — the transition is retried rather than silently
-		// dropped. See outbox.ReconcileVerdict.
-		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, "")
+		// fromState is the tracker state observed when this transition was
+		// decided. It is what lets reconciliation tell a human's later move
+		// apart from the outbox's own writes.
+		//
+		// Passing "" here was NOT the safe default it looked like: an entry
+		// with no baseline is exempt from rule 2 entirely, so it can never be
+		// superseded — and this is the failed-state path, whose entries retry
+		// with no terminal give-up. An operator who moved a stuck issue out
+		// of the failed state would have had that move overwritten. Empty
+		// stays permitted for callers that genuinely cannot observe the
+		// state; this caller can.
+		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, fromState)
 		updateCancel()
 		if err != nil {
 			slog.Warn("orchestrator: failed to transition issue to failed state",

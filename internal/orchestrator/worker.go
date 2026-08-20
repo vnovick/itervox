@@ -413,7 +413,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// #58 — when this run is one profile of a multi-reviewer chain, tell
 		// the agent where to record its verdict. Empty (and therefore a
 		// no-op) for normal workers and single-reviewer setups.
-		if verdictPath := reviewVerdictRelPathFor(o.cfg, issue.Identifier, profileName); verdictPath != "" {
+		if verdictPath := o.reviewVerdictRelPathCfg(issue.Identifier, profileName); verdictPath != "" {
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 

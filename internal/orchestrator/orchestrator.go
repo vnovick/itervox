@@ -285,11 +285,18 @@ type Orchestrator struct {
 	// goroutines so Run can wait for them before returning.
 	discardWg sync.WaitGroup
 
-	// commentWg tracks the two untracked-by-default tracker-comment goroutines
-	// in event_loop.go (post-user-input comment, post-input-required-question
-	// comment). Without this, Run could return while the goroutines were still
-	// blocked on the tracker API, occasionally dropping a comment the user
-	// expected persisted. T-44 (gaps_280426 02.G-01).
+	// commentWg tracks every fire-and-forget tracker-comment goroutine, so
+	// Run cannot return while one is still writing: the two in event_loop.go
+	// (post-user-input comment, post-input-required-question comment) and the
+	// two rate-limit notices in automation_rate_limited.go (auto-switch,
+	// cap-exhausted). Without this, Run could return mid-write and drop a
+	// comment the user expected persisted. T-44 (gaps_280426 02.G-01).
+	//
+	// Under the write-ahead outbox these are no longer just API calls — they
+	// enqueue DURABLE entries, so an untracked one can also persist
+	// .itervox/outbox.json after run() has returned and main()'s reload loop
+	// has opened a second handle on the same file, which is a whole-file
+	// rewrite from stale memory.
 	commentWg sync.WaitGroup
 
 	// depsRefreshWg tracks the in-flight dependency-refresh goroutine so Run
@@ -683,6 +690,30 @@ func (o *Orchestrator) ReviewerCfg() (profile string, autoReview bool) {
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
 	return o.cfg.Agent.ReviewerProfile, o.cfg.Agent.AutoReview
+}
+
+// reviewerChainCfg returns the reviewer chain read under cfgMu.
+//
+// cfg.Agent.ReviewerProfile is on the cfgMu allowlist and has a live runtime
+// writer — SetReviewerCfg, reachable from the PUT /settings/reviewer handler
+// goroutine. ReviewerProfileChain reads that field whenever the plural form
+// is unset, which is the default single-reviewer shape, so every unlocked
+// call was an unsynchronized string-header read racing that writer. The
+// returned slice is freshly allocated inside ReviewerProfileChain, so it is
+// safe to use after the lock is released.
+func (o *Orchestrator) reviewerChainCfg() []string {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return ReviewerProfileChain(o.cfg)
+}
+
+// reviewVerdictRelPathCfg is reviewVerdictRelPathFor read under cfgMu. Called
+// from runWorker — a worker goroutine — which must never touch o.cfg
+// directly; see reviewerChainCfg for the writer it races.
+func (o *Orchestrator) reviewVerdictRelPathCfg(identifier, profileName string) string {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return reviewVerdictRelPathFor(o.cfg, identifier, profileName)
 }
 
 // DepsAnalyzerProfileCfg returns the configured deps-analyzer profile name

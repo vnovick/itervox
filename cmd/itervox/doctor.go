@@ -137,9 +137,19 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 	// held by a process that is NOT this WORKFLOW.md's recorded daemon, the
 	// operator either left a stray daemon running or has the Vite proxy /
 	// `localhost:<port>` open against the wrong process.
+	//
+	// The holder PID is compared against this WORKFLOW.md's recorded daemon,
+	// because the `cfg.Server.Port != nil` guard no longer means "the
+	// operator named a port": server.port now defaults to 8090, so config
+	// load ALWAYS populates it. Without the PID check every healthy daemon
+	// reported its own listening socket as a collision — a warning plus
+	// exit 1 from `itervox doctor` on a perfectly good setup.
 	if cfg != nil && cfg.Server.Port != nil {
 		port := *cfg.Server.Port
-		if holder := describePortHolder(port); holder != "" {
+		holder, holderPID := describePortHolderWithPID(port)
+		ownPID, _, _, pidErr := readPIDFile(workflowPath)
+		selfHeld := pidErr == nil && holderPID != 0 && holderPID == ownPID
+		if holder != "" && !selfHeld {
 			report.PortInUseWarning = fmt.Sprintf(
 				"port %d in use%s — if this is not your expected itervox daemon, the dashboard URL will reach the wrong process",
 				port, holder)

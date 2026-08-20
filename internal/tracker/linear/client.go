@@ -607,6 +607,22 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 	}
 	rawIssue, ok := data["issue"].(map[string]any)
 	if !ok {
+		// Linear returns `data.issue = null` for an issue that has been
+		// deleted or is no longer visible to this API key. That is a
+		// not-found, not a protocol error, and callers must be able to tell
+		// them apart: the dependency-audit refresh retires an audit row on
+		// tracker.ErrNotFound but RETRIES anything else, so a generic error
+		// here left a deleted blocker retrying forever — burning a request
+		// every refresh interval and never releasing the issues it blocked.
+		// Before this, ErrNotFound was only ever produced by the GitHub
+		// adapter, so errors.Is could not match on Linear at all.
+		//
+		// A response with no `issue` key at all stays a protocol error: it is
+		// not evidence the issue is gone, and misreading it would retire a
+		// live audit row.
+		if raw, present := data["issue"]; present && raw == nil {
+			return nil, &tracker.NotFoundError{Adapter: "linear", Identifier: issueID}
+		}
 		return nil, fmt.Errorf("linear_fetch_detail: missing issue in response")
 	}
 	issue := normalizeIssue(rawIssue)

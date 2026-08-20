@@ -258,7 +258,7 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 	finishedProfile string,
 	now time.Time,
 ) State {
-	chain := ReviewerProfileChain(o.cfg)
+	chain := o.reviewerChainCfg()
 	if len(chain) <= 1 {
 		return state
 	}

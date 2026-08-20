@@ -48,7 +48,11 @@ func TestReconcileVerdictSuperseded(t *testing.T) {
 // the tracker snapshot is stale relative to our own write.
 func TestReconcileVerdictKeepsWhenPolledUpdateIsOlder(t *testing.T) {
 	enqueuedAt := time.Now()
-	e := outbox.Entry{TargetState: "Done", EnqueuedAt: enqueuedAt}
+	// FromState is set and DIFFERENT from the polled state so the stale
+	// timestamp is the only thing preventing a supersede. Without a
+	// baseline, supersededByTracker returns early and this test would pass
+	// for a reason unrelated to the UpdatedAt guard it names.
+	e := outbox.Entry{TargetState: "Done", FromState: "Todo", EnqueuedAt: enqueuedAt}
 
 	older := enqueuedAt.Add(-time.Hour)
 	drop, reason := outbox.ReconcileVerdict(e, "In Progress", timePtr(older))
@@ -62,7 +66,11 @@ func TestReconcileVerdictKeepsWhenPolledUpdateIsOlder(t *testing.T) {
 // state must never be treated as superseded.
 func TestReconcileVerdictNilUpdatedAtNeverSupersedes(t *testing.T) {
 	enqueuedAt := time.Now()
-	e := outbox.Entry{TargetState: "Done", EnqueuedAt: enqueuedAt}
+	// Baseline set, and the polled state differs from both it and the
+	// target — so a nil UpdatedAt is the only reason this must not
+	// supersede. Leaving FromState empty would short-circuit first and the
+	// nil guard would go unexercised.
+	e := outbox.Entry{TargetState: "Done", FromState: "Todo", EnqueuedAt: enqueuedAt}
 
 	drop, reason := outbox.ReconcileVerdict(e, "Backlog", nil)
 	assert.False(t, drop)
@@ -116,11 +124,16 @@ func TestReconcileVerdictSupersededRequiresActualStateChange(t *testing.T) {
 }
 
 // TestReconcileVerdictUnknownFromStateNeverSupersedes is the fail-safe
-// degradation. Not every enqueue site can observe the issue's current state
-// (asyncDiscardAndTransitionTo has only the target). With no baseline to
-// compare against, rule 2 cannot distinguish our own write from a human's,
-// so it must not fire: keeping a write costs a redundant transition, while
-// dropping one silently loses it.
+// degradation for an entry that carries no baseline. Every in-tree enqueue
+// site now supplies one, so this guards the contract rather than a live
+// caller: a persisted entry written by an older build, or a future call site
+// that cannot observe the state, must not be superseded on a bare UpdatedAt
+// bump. Keeping such a write costs a redundant transition; dropping one
+// silently loses it.
+//
+// Note the cost of that choice, documented so it is a decision and not an
+// oversight: a baseline-less entry can ALSO never yield to a human's move,
+// so it retries until it lands or an operator discards it.
 func TestReconcileVerdictUnknownFromStateNeverSupersedes(t *testing.T) {
 	enqueuedAt := time.Now()
 	e := outbox.Entry{TargetState: "Done", EnqueuedAt: enqueuedAt} // FromState unset

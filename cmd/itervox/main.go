@@ -1013,15 +1013,27 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// orchestrator kept its direct sink) so starting the goroutine would be
 	// harmless but pointless; skipping it entirely keeps "outbox off" free
 	// of any extra background goroutine.
+	// flusherDone closes once the flusher goroutine and every absent-reconcile
+	// child it spawned have returned. run() must join it before returning —
+	// they write .itervox/outbox.json, and main()'s reload loop opens a second
+	// handle on the same path.
+	flusherDone := make(chan struct{})
+	close(flusherDone)
 	if cfg.Tracker.Outbox {
-		startOutboxFlusher(ctx, ob, tr, orch)
+		flusherDone = make(chan struct{})
+		go func() {
+			defer close(flusherDone)
+			<-startOutboxFlusher(ctx, ob, tr, orch)
+		}()
 	}
 
 	orchDone := make(chan error, 1)
 	go func() { orchDone <- orch.Run(ctx) }()
 
 	if srvDone == nil {
-		return <-orchDone
+		err := <-orchDone
+		awaitOutboxFlusher(flusherDone)
+		return err
 	}
 	select {
 	case err := <-orchDone:
@@ -1036,6 +1048,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			slog.Warn("run: http server did not stop within the shutdown grace of orchestrator exit",
 				"grace", runShutdownGrace)
 		}
+		awaitOutboxFlusher(flusherDone)
 		return err
 	case err := <-srvDone:
 		// Symmetric with the branch above: do NOT return while the
@@ -1051,6 +1064,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				"a reload now would run two orchestrators against one outbox file",
 				"grace", runShutdownGrace)
 		}
+		awaitOutboxFlusher(flusherDone)
 		return err
 	}
 }

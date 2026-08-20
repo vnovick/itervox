@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -47,17 +48,40 @@ func listenStrict(host string, port int) (net.Listener, string, error) {
 // absent or returned nothing useful — best-effort. Operators on Linux
 // without lsof installed still get the actionable port-in-use message.
 func describePortHolder(port int) string {
+	desc, _ := describePortHolderWithPID(port)
+	return desc
+}
+
+// describePortHolderWithPID is describePortHolder plus the holder's PID, so
+// callers can tell "some other process has this port" from "our own daemon
+// has it". Returns pid 0 when the PID column cannot be parsed.
+func describePortHolderWithPID(port int) (desc string, pid int) {
 	cmd := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN")
 	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", 0
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return parseLsofHolder(string(out))
+}
+
+// parseLsofHolder extracts the operator-facing description and the PID from
+// `lsof -nP -iTCP:<port> -sTCP:LISTEN` output. Split out from the exec so the
+// parsing is testable without a live socket.
+//
+// lsof's data columns are COMMAND PID USER ... — the second field is the PID.
+func parseLsofHolder(out string) (desc string, pid int) {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 2 {
-		return ""
+		return "", 0
 	}
 	// Skip header; first data line is good enough for the operator.
-	return " (held by " + strings.Join(strings.Fields(lines[1]), " ") + ")"
+	fields := strings.Fields(lines[1])
+	if len(fields) >= 2 {
+		if parsed, convErr := strconv.Atoi(fields[1]); convErr == nil {
+			pid = parsed
+		}
+	}
+	return " (held by " + strings.Join(fields, " ") + ")", pid
 }
 
 // listenWithFallback tries to listen on the given host:port. If the port is

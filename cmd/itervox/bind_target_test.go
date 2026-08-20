@@ -19,9 +19,14 @@ func TestSameBindTarget(t *testing.T) {
 		{"identical literal", "127.0.0.1:8090", "127.0.0.1", 8090, true},
 		{"different port", "127.0.0.1:8090", "127.0.0.1", 8091, false},
 		{"loopback to wildcard", "127.0.0.1:8090", "0.0.0.0", 8090, false},
-		// An explicit 0 means "give me a fresh OS-assigned port", so it must
-		// always rebind even though the current port is known.
-		{"explicit zero always rebinds", "127.0.0.1:8090", "127.0.0.1", 0, false},
+		// `server.port: 0` means "any free port", and the OS already picked
+		// one on the first bind — the socket we hold still satisfies the
+		// request, so it must be KEPT. Returning false here re-rolled the
+		// port on every reload, which is issue #44's original symptom
+		// reintroduced for exactly the config the upgrade notes recommend
+		// for multi-daemon setups.
+		{"explicit zero keeps the port the OS already picked", "127.0.0.1:8090", "127.0.0.1", 0, true},
+		{"explicit zero still rebinds when the host changes", "127.0.0.1:8090", "0.0.0.0", 0, false},
 		{"no current listener", "", "127.0.0.1", 8090, false},
 		{"unresolvable current", "not-an-addr", "127.0.0.1", 8090, false},
 	} {

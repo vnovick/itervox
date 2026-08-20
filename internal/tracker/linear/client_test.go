@@ -497,7 +497,13 @@ func TestFetchIssueDetailMissingIssue(t *testing.T) {
 
 	_, err := client.FetchIssueDetail(context.Background(), "nonexistent")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing issue")
+	// `data.issue = null` is a DELETED issue, and now surfaces as the
+	// tracker.ErrNotFound sentinel rather than an opaque "missing issue"
+	// string. The distinction is load-bearing downstream: the dependency
+	// audit retires a row on not-found but retries every other error, so the
+	// old generic error left a deleted blocker retrying forever. The
+	// substring assertion this replaces would have passed either way.
+	assert.ErrorIs(t, err, tracker.ErrNotFound)
 }
 
 func TestFetchIssueDetailGraphQLError(t *testing.T) {

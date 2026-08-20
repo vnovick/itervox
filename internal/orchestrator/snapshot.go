@@ -51,8 +51,8 @@ func (o *Orchestrator) Snapshot() State {
 	snap.DiscardingIdentifiers = maps.Clone(snap.DiscardingIdentifiers)
 	snap.AutoSwitchedIdentifiers = maps.Clone(snap.AutoSwitchedIdentifiers)
 	snap.AutoSwitchedAt = maps.Clone(snap.AutoSwitchedAt)
-	snap.InputRequiredIssues = maps.Clone(snap.InputRequiredIssues)
-	snap.PendingInputResumes = maps.Clone(snap.PendingInputResumes)
+	snap.InputRequiredIssues = copyInputRequiredMap(snap.InputRequiredIssues)
+	snap.PendingInputResumes = copyPendingInputResumeMap(snap.PendingInputResumes)
 	snap.AutomationQueue = copyAutomationQueueMap(snap.AutomationQueue)
 	snap.AutomationQueueOrder = append([]string(nil), snap.AutomationQueueOrder...)
 	snap.DependencyAudit = copyDependencyAuditMap(snap.DependencyAudit)
@@ -312,6 +312,14 @@ type inputRequiredDisk struct {
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
 	QueuedAt           string `json:"queued_at"`
+	// LastReplyCheckAt persists the reply-check fairness ordering across
+	// restarts and config reloads. Without it every reload zeroed the key for
+	// every entry, so selectTrackerReplyCheckBatch fell through to its
+	// identifier tie-break and restarted at the alphabetically-first five —
+	// on a backlog larger than the budget, entries sorting later were never
+	// checked at all. That is the exact starvation the ordering exists to
+	// prevent, and an operator iterating on WORKFLOW.md reloads often.
+	LastReplyCheckAt string `json:"last_reply_check_at,omitempty"`
 }
 
 type pendingInputResumeDisk struct {
@@ -376,6 +384,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
+			LastReplyCheckAt:   formatOptionalTime(v.LastReplyCheckAt),
 		}
 	}
 	pendingDisk := make(map[string]pendingInputResumeDisk, len(pending))
@@ -465,6 +474,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           queuedAt,
+			LastReplyCheckAt:   parseOptionalTime(v.LastReplyCheckAt),
 		}
 	}
 	for k, v := range pending {
@@ -955,8 +965,8 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
 	snap.AutoSwitchedIdentifiers = maps.Clone(s.AutoSwitchedIdentifiers)
 	snap.AutoSwitchedAt = maps.Clone(s.AutoSwitchedAt)
-	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
-	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
+	snap.InputRequiredIssues = copyInputRequiredMap(s.InputRequiredIssues)
+	snap.PendingInputResumes = copyPendingInputResumeMap(s.PendingInputResumes)
 	snap.AutomationQueue = copyAutomationQueueMap(s.AutomationQueue)
 	snap.AutomationQueueOrder = append([]string(nil), s.AutomationQueueOrder...)
 	snap.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
@@ -979,4 +989,67 @@ func (o *Orchestrator) storeSnap(s State) {
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}
+}
+
+// copyInputRequiredMap deep-copies the input-required queue.
+//
+// maps.Clone is a SHALLOW clone: on a map of pointers it duplicates the map
+// but shares every *InputRequiredEntry with the event loop. That was
+// harmless while the loop only ever inserted and deleted whole entries, and
+// became a data race the moment checkTrackerReplies started stamping
+// LastReplyCheckAt in place on the entry it had just selected — a race
+// reproduced against Snapshot's clone. Copying the struct value keeps
+// CLAUDE.md's rule that a snapshot handed to HTTP handler goroutines shares
+// nothing mutable with the loop.
+func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputRequiredEntry {
+	cp := make(map[string]*InputRequiredEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v // copy struct value; InputRequiredEntry has no reference fields
+		cp[k] = &e
+	}
+	return cp
+}
+
+// copyPendingInputResumeMap deep-copies the pending-resume queue, for the
+// same reason as copyInputRequiredMap. No field on it is mutated in place
+// today, but it is the same pointer-map shape reached by the same snapshot
+// path, and the next in-place write would be the same silent race.
+func copyPendingInputResumeMap(m map[string]*PendingInputResumeEntry) map[string]*PendingInputResumeEntry {
+	cp := make(map[string]*PendingInputResumeEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v
+		cp[k] = &e
+	}
+	return cp
+}
+
+// formatOptionalTime renders t for disk, mapping the zero value to "" so a
+// never-set timestamp round-trips as never-set rather than as year 1.
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+// parseOptionalTime is formatOptionalTime's inverse. An empty or unparseable
+// value yields the zero time, which sorts first — a never-checked entry gets
+// priority, the safe direction for a fairness key.
+func parseOptionalTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }

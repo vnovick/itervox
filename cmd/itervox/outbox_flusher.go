@@ -135,11 +135,24 @@ func (r *absentIssueReconciler) finish() {
 // ob and tr must be non-nil; a nil ob or tr is a caller error (cmd/itervox
 // only calls this when cfg.Tracker.Outbox gated construction succeeded) and
 // this no-ops defensively rather than panicking a daemon goroutine.
-func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher) {
+func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher) <-chan struct{} {
+	done := make(chan struct{})
 	if ob == nil || tr == nil {
-		return
+		close(done)
+		return done
 	}
+	// wg covers the ticker goroutine AND every absent-reconcile child it
+	// spawns, because both write .itervox/outbox.json. run() must be able to
+	// join them before returning: main()'s reload loop opens a SECOND
+	// outbox.New on the same path, and every persist is a whole-file rewrite
+	// from that handle's in-memory list — so a late write from the old
+	// generation either erases an entry the new one durably enqueued or
+	// resurrects one it had already dropped. run() already guarded this for
+	// the orchestrator; the flusher is the other writer and was unguarded.
+	var wg sync.WaitGroup
 	go func() {
+		defer close(done)
+		defer wg.Wait()
 		ticker := time.NewTicker(outboxFlushInterval)
 		defer ticker.Stop()
 		absentReconciler := &absentIssueReconciler{}
@@ -159,7 +172,9 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 				// prevent. tryRun's in-flight guard means a slow round is
 				// skipped over (not queued behind) by later due checks.
 				if absentReconciler.tryRun(now) {
+					wg.Add(1)
 					go func() {
+						defer wg.Done()
 						defer absentReconciler.finish()
 						runAbsentIssueReconcileTick(ctx, ob, tr)
 					}()
@@ -167,6 +182,7 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 			}
 		}
 	}()
+	return done
 }
 
 // runOutboxFlusherTick performs one flusher tick: it delivers every entry
@@ -288,6 +304,15 @@ func runAbsentIssueReconcileTick(ctx context.Context, ob *outbox.Outbox, tr trac
 	}
 
 	for _, entry := range ob.Snapshot() {
+		// Each Drop is a whole-file atomicfs rewrite with two fsyncs, so this
+		// loop costs real time on a large backlog — measured at ~9.4ms per
+		// entry, i.e. ~1.9s at 200 entries, which is exactly the post-outage
+		// backlog the outbox exists to hold. Re-checking ctx keeps a
+		// cancelled generation from continuing to write the file that the
+		// NEXT generation has already opened.
+		if ctx.Err() != nil {
+			return
+		}
 		if entry.Kind != outbox.KindUpdateState {
 			continue
 		}

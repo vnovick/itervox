@@ -741,7 +741,9 @@ func TestMultiReviewerConfigFallsBackToSingleReviewer(t *testing.T) {
 	cancel()
 	time.Sleep(200 * time.Millisecond)
 
-	assert.LessOrEqual(t, calls, 2,
+	// Both bounds, for the same reason as above: an upper bound alone passes
+	// on zero dispatches and would not prove the reviewer ran at all.
+	assert.Equal(t, 2, calls,
 		"fan-out is disabled: exactly one worker and one reviewer, and no re-dispatch loop")
 	assert.Len(t, orchestrator.ReviewerProfileChain(cfg), 1,
 		"the reviewer chain must be truncated to a single profile while fan-out is disabled")
@@ -801,6 +803,9 @@ func TestAutoReviewDoesNotLoopWhenReconciliationStopsTheReviewer(t *testing.T) {
 	cancel()
 	time.Sleep(150 * time.Millisecond)
 
-	assert.LessOrEqual(t, calls, 2,
-		"one worker and one reviewer — a nil live run entry must not be read as a reviewable worker success")
+	// Both bounds. An upper bound alone is satisfied by zero dispatches, so
+	// the fixture would never have to route through the auto-review path the
+	// test is named for — the test could pass while proving nothing.
+	assert.Equal(t, 2, calls,
+		"exactly one worker and one reviewer — a nil live run entry must not be read as a reviewable worker success")
 }

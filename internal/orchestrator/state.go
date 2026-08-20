@@ -168,6 +168,13 @@ type PendingInputResumeEntry struct {
 	QuestionAuthorID   string
 	QuestionAuthorName string
 	QueuedAt           time.Time
+	// LastResumeAttemptAt is when processPendingInputResumes last spent a
+	// FetchIssueDetail on this entry. It orders the per-tick fetch budget
+	// least-recently-attempted first: without it the loop re-spent the whole
+	// budget on the same lexically-first entries every tick, so one
+	// permanently unfetchable issue starved every entry behind it forever.
+	// Zero means never attempted, which sorts first.
+	LastResumeAttemptAt time.Time
 }
 
 // RunEntry tracks a live agent worker goroutine.

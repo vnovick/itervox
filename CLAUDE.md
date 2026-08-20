@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.12) that implements the
+**Itervox** is a long-running daemon (Go 1.25.13) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
@@ -287,7 +287,15 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 ## Known dead code (do not flag as bugs)
 
-*No known dead code at this time.*
+**Reviewer fan-out machinery (gated, not removed).** `ReviewerProfileChain`
+truncates its result to one entry while multi-reviewer fan-out is disabled for
+the v0.2.1 release, so every `len(chain) > 1` guard resolves statically and the
+following have no reachable read site: `AdvanceReviewChain`, `ReadReviewVerdict`,
+`advanceReviewChainForIssue`'s body past its early return, `reviewVerdictRelPathFor`,
+`State.ReviewChainIndex`, `State.ReviewOutcomes`, and the `agent.review_quorum`
+config field. This is deliberate — see the comment on `ReviewerProfileChain` for
+the three reproduced failures that gate it. Deleting the truncation re-enables
+the whole path; do not delete the machinery as "unused".
 
 ---
 
