@@ -24,7 +24,12 @@ import (
 // run from the test goroutine only.
 type countingTracker struct {
 	*tracker.MemoryTracker
-	fetchDetail     atomic.Int64
+	fetchDetail atomic.Int64
+	// fetchStatesIDs counts the ISSUE IDS the batched refresh asked for, not
+	// the number of requests. The cap is on rows refreshed per tick, and
+	// batching means one request can carry many rows — counting requests
+	// would silently pass a cap violation.
+	fetchStatesIDs  atomic.Int64
 	fetchByID       atomic.Int64
 	fetchByStates   atomic.Int64
 	fetchCandidates atomic.Int64
@@ -49,6 +54,20 @@ func (c *countingTracker) FetchIssueDetail(ctx context.Context, issueID string) 
 	c.fetchedDetailIDs = append(c.fetchedDetailIDs, issueID)
 	c.fetchedDetailIDsMu.Unlock()
 	return c.MemoryTracker.FetchIssueDetail(ctx, issueID)
+}
+
+// FetchIssueStatesByIDs records how many ROWS the batched refresh requested,
+// so the per-tick cap stays measurable now that many rows share one request.
+func (c *countingTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]domain.Issue, error) {
+	c.fetchStatesIDs.Add(int64(len(ids)))
+	// Record into the SAME list the per-issue path uses. Tests assert on
+	// which rows the refresh selected, and that question is independent of
+	// whether those rows travelled as one batched request or many single
+	// ones — splitting the record would make the selection untestable.
+	c.fetchedDetailIDsMu.Lock()
+	c.fetchedDetailIDs = append(c.fetchedDetailIDs, ids...)
+	c.fetchedDetailIDsMu.Unlock()
+	return c.MemoryTracker.FetchIssueStatesByIDs(ctx, ids)
 }
 
 func (c *countingTracker) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
@@ -120,7 +139,11 @@ func TestReconcileDependencyRefreshRespectsBatchSizeCap(t *testing.T) {
 	o.depsRefreshWg.Wait()
 	<-o.events
 
-	assert.Equal(t, int64(20), ct.fetchDetail.Load(),
+	// The refresh now batches ID-bearing rows into one FetchIssueStatesByIDs
+	// call, so the cap is measured in ROWS REQUESTED, not in per-issue
+	// fetches. Both are counted so the assertion still fails if the cap is
+	// dropped on either path.
+	assert.Equal(t, int64(20), ct.fetchStatesIDs.Load()+ct.fetchDetail.Load(),
 		"refresh must cap at the configured DependencyAuditRefreshBatchSize")
 }
 
@@ -182,7 +205,9 @@ func TestReconcileDependencyRefreshPrioritisesBlockersResolvedConsumers(t *testi
 	o.depsRefreshWg.Wait()
 	<-o.events
 
-	require.Equal(t, int64(3), ct.fetchDetail.Load(),
+	// Rows refreshed, however they travelled: ID-bearing rows now share one
+	// batched request, so counting requests would hide a cap violation.
+	require.Equal(t, int64(3), ct.fetchStatesIDs.Load()+ct.fetchDetail.Load(),
 		"batch size 3 must clip the 5-row fixture down to exactly the priority set")
 
 	ct.fetchedDetailIDsMu.Lock()

@@ -1,6 +1,9 @@
 package depsanalysis
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // Incremental pass modes. Mirrors the requestedMode strings accepted by
 // PlanIncremental's callers ("full", "incremental", "auto", "") but only
@@ -196,7 +199,7 @@ func MergeIncremental(prev *Sidecar, plan IncrementalPlan, newEdges []InferredEd
 	// fresh agent edge on any equal-confidence collision — backwards from
 	// the documented tie-break rationale.
 	combined := make([]InferredEdge, 0, len(newEdges)+len(revalidated))
-	combined = append(combined, newEdges...)
+	combined = append(combined, filterEdgesToKnownIssues(newEdges, issues)...)
 	combined = append(combined, revalidated...)
 	deduped := DedupeInferredEdges(combined)
 
@@ -242,4 +245,45 @@ func MergeIncremental(prev *Sidecar, plan IncrementalPlan, newEdges []InferredEd
 		Edges:    edges,
 		Analyzed: analyzed,
 	}
+}
+
+// filterEdgesToKnownIssues drops analyzer-emitted edges whose Source or
+// Target names an issue that is not in the current fetch.
+//
+// Issue #43's secondary defect: nothing validated the analyzer's identifiers,
+// so a hallucinated pair was written to .itervox/dependencies.json and
+// reloaded verbatim on every start. The analyzer is an LLM and its output is
+// untrusted input; the fetched issue set is the authority on what exists.
+//
+// The authority is deliberately the whole FETCH, not plan.ToAnalyze. Under
+// chunking the analyzer only sees a subset, but an edge pointing at a real
+// issue outside this chunk is legitimate and must survive — validating
+// against the analyzed subset would silently delete correct cross-chunk
+// edges, trading a hallucination bug for a data-loss bug.
+//
+// Dropping rather than keeping-and-flagging is the right default: an edge to
+// a nonexistent issue can never become satisfiable, so retaining it would
+// hold its target forever. inferredGatingFor already refuses to gate on an
+// unknown source, so this closes the sidecar/dashboard half of the same hole.
+func filterEdgesToKnownIssues(edges []InferredEdge, issues []AnalyzerIssue) []InferredEdge {
+	if len(edges) == 0 {
+		return nil
+	}
+	known := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		known[issue.Identifier] = struct{}{}
+	}
+	out := make([]InferredEdge, 0, len(edges))
+	for _, e := range edges {
+		_, srcOK := known[e.Source]
+		_, tgtOK := known[e.Target]
+		if !srcOK || !tgtOK {
+			slog.Warn("deps analyzer: dropping inferred edge naming an unknown issue",
+				"source", e.Source, "target", e.Target,
+				"source_known", srcOK, "target_known", tgtOK)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

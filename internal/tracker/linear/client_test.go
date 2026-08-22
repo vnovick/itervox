@@ -507,9 +507,15 @@ func TestFetchIssueDetailMissingIssue(t *testing.T) {
 }
 
 func TestFetchIssueDetailGraphQLError(t *testing.T) {
+	// A TRANSIENT GraphQL failure. This fixture used "Entity not found",
+	// which is Linear's permanent entity-missing signal and now maps to
+	// tracker.NotFoundError so the dependency audit can retire the row
+	// instead of retrying it forever. Using it here asserted the opposite of
+	// what this test is named for; the generic GraphQLError path is what
+	// non-not-found errors take.
 	resp := map[string]interface{}{
 		"errors": []interface{}{
-			map[string]interface{}{"message": "Entity not found"},
+			map[string]interface{}{"message": "Rate limit exceeded"},
 		},
 	}
 	srv := serveJSON(t, []map[string]interface{}{resp})

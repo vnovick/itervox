@@ -31,10 +31,29 @@ func dirExists(path string) bool {
 func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error) {
 	barePath := BarePath(root)
 
-	// Already exists — reuse.
+	// Already exists — reuse, but ONLY if it is the repository we were asked
+	// for.
+	//
+	// Reusing on the mere presence of HEAD meant a bare clone of repository A
+	// was silently handed to a daemon configured for repository B whenever the
+	// two shared a workspace root: agents then branched from, committed to and
+	// pushed the WRONG repository, and `git worktree add` metadata under
+	// .bare/worktrees/<identifier> collided for two repos' issue #1. Sharing a
+	// root is no longer the default, but an operator can still set one, so the
+	// check belongs here rather than resting on the path convention.
 	if info, err := os.Stat(filepath.Join(barePath, "HEAD")); err == nil && !info.IsDir() {
-		slog.Debug("bare: reusing existing bare clone", "path", barePath)
-		return barePath, nil
+		if cloneURL == "" || bareRemoteMatches(ctx, barePath, cloneURL) {
+			slog.Debug("bare: reusing existing bare clone", "path", barePath)
+			return barePath, nil
+		}
+		// Refuse rather than re-clone over it: the existing clone may hold
+		// another daemon's live worktrees, and deleting those would destroy
+		// in-flight work. An explicit error names the collision so the
+		// operator can give each project its own workspace.root.
+		return "", fmt.Errorf(
+			"bare: %s is a clone of a different repository than %q — "+
+				"two projects are sharing one workspace.root; give each its own",
+			barePath, cloneURL)
 	}
 
 	if cloneURL == "" {
@@ -75,4 +94,39 @@ func FetchBare(ctx context.Context, barePath string) error {
 		return fmt.Errorf("bare: fetch: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// bareRemoteMatches reports whether the bare clone at barePath has cloneURL as
+// its origin.
+//
+// Compared after normalisation because the same repository is spelled several
+// ways — scp-style vs https, with and without a trailing ".git" — and treating
+// those as different would force a needless re-clone. Unreadable config is
+// treated as a MISMATCH: refusing costs a clear error, while wrongly reusing
+// points a daemon at someone else's repository.
+func bareRemoteMatches(ctx context.Context, barePath, cloneURL string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", barePath, "config", "--get", "remote.origin.url")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return normalizeRemoteURL(string(out)) == normalizeRemoteURL(cloneURL)
+}
+
+// normalizeRemoteURL reduces the common spellings of one repository to a
+// comparable form: trailing whitespace and ".git", the scp-style "git@host:"
+// prefix, and any "scheme://" prefix.
+func normalizeRemoteURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	u = strings.TrimSuffix(u, ".git")
+	if i := strings.Index(u, "://"); i >= 0 {
+		u = u[i+3:]
+		if at := strings.Index(u, "@"); at >= 0 {
+			u = u[at+1:] // strip any userinfo
+		}
+	} else if at := strings.Index(u, "@"); at >= 0 {
+		u = u[at+1:]
+	}
+	u = strings.Replace(u, ":", "/", 1) // scp-style host:path -> host/path
+	return strings.ToLower(strings.TrimSuffix(u, "/"))
 }

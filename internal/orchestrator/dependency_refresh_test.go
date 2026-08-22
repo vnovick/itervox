@@ -1268,6 +1268,14 @@ func (s *slowDetailTracker) FetchIssueDetail(ctx context.Context, issueID string
 	return s.MemoryTracker.FetchIssueDetail(ctx, issueID)
 }
 
+// FetchIssueByIdentifier is the path identifier-only targets still take
+// per-issue after ID-bearing targets began batching, so it carries the same
+// delay — it is now where target-loop starvation is reachable.
+func (s *slowDetailTracker) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
+	time.Sleep(s.delay)
+	return s.MemoryTracker.FetchIssueByIdentifier(ctx, identifier)
+}
+
 func (s *slowDetailTracker) FetchIssuesByStates(ctx context.Context, states []string) ([]domain.Issue, error) {
 	s.statesCalled.Store(true)
 	return s.MemoryTracker.FetchIssuesByStates(ctx, states)
@@ -1301,9 +1309,14 @@ func TestRunDependencyRefreshStatesScanRunsBeforeTargetLoopExhaustsBudget(t *tes
 	const targetCount = 10
 	targets := make([]dependencyRefreshTarget, targetCount)
 	for i := range targets {
+		// Identifier-only, deliberately: ID-bearing targets now resolve in a
+		// single batched request, so they can no longer exhaust the budget.
+		// The per-issue path this exercises is the one that still can, and
+		// the property under test — the states scan must not be starved by
+		// target work — is unchanged.
 		targets[i] = dependencyRefreshTarget{
-			Key:     fmt.Sprintf("k%d", i),
-			IssueID: fmt.Sprintf("id-%d", i),
+			Key:        fmt.Sprintf("k%d", i),
+			Identifier: fmt.Sprintf("ENG-%d", i),
 		}
 	}
 

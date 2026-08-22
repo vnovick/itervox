@@ -299,6 +299,11 @@ type Orchestrator struct {
 	// rewrite from stale memory.
 	commentWg sync.WaitGroup
 
+	// transitionFailed marks issues whose completion-state tracker write
+	// failed, so the event loop can record PauseReasonTransitionFailed rather
+	// than mislabelling it a user cancel (#42-F).
+	transitionFailed transitionFailedSet
+
 	// depsRefreshWg tracks the in-flight dependency-refresh goroutine so Run
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup

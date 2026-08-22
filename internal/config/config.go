@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -73,6 +75,12 @@ const (
 // and the scaffolded WORKFLOW.md. An explicit `server.port: 0` still asks the
 // OS for a free port, which is the knob for running several daemons at once.
 const DefaultServerPort = 8090
+
+// DefaultRateLimitReservePercent is the share of the tracker request budget
+// reserved for writes. Mirrored by orchestrator.DefaultRateLimitReservePercent
+// so a hand-built config.Config clamps to the same value the loader defaults
+// to.
+const DefaultRateLimitReservePercent = 10
 
 // DefaultDependenciesConfidenceThreshold / DefaultDependenciesStalenessHours
 // are the config-loader defaults for DependenciesConfig. Exported so callers
@@ -167,6 +175,16 @@ type TrackerConfig struct {
 // PollingConfig holds polling settings.
 type PollingConfig struct {
 	IntervalMs int
+	// RateLimitReservePercent is the share of the tracker's request budget
+	// held back for writes. Below it, the orchestrator stops spending
+	// requests on polling reads so state transitions, comments and the
+	// input-resume path can still land (issue #42-E: reads and writes drew on
+	// one budget, so polling exhausted the hour early and then starved the
+	// very writes that would have drained the queue).
+	//
+	// An explicit 0 disables shedding entirely. Values >= 100 would shed
+	// permanently and are clamped to the default.
+	RateLimitReservePercent int
 }
 
 // WorkspaceConfig holds workspace settings.
@@ -524,6 +542,16 @@ type DependenciesConfig struct {
 	// avoid analyzing while state is still settling. Parsed via positiveIntField;
 	// <=0 becomes the default. No meaningful zero — debounce must delay.
 	AutoAnalyzeDebounceMinutes int
+	// StackedPRs bases an issue's worktree on its blocker's branch instead of
+	// workspace.base_branch, when the issue has exactly one live blocker, so
+	// the resulting PR shows only the increment rather than its blocker's
+	// commits as well.
+	//
+	// Opt-in (default false): it changes which commit work starts from, which
+	// is not a change to make silently on upgrade. Best-effort — an
+	// unresolvable blocker branch falls back to base_branch rather than
+	// failing the dispatch.
+	StackedPRs bool
 }
 
 // Config is the fully-parsed, defaulted, and resolved Itervox configuration.
@@ -616,10 +644,13 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	// Polling
 	polling := nestedMap(raw, "polling")
 	cfg.Polling.IntervalMs = intField(polling, "interval_ms", 30000)
+	// intField, not positiveIntField: an explicit 0 is meaningful here (shed
+	// nothing) and must survive, exactly like escalate_blocked_after_hours.
+	cfg.Polling.RateLimitReservePercent = intField(polling, "rate_limit_reserve_percent", DefaultRateLimitReservePercent)
 
 	// Workspace
 	ws := nestedMap(raw, "workspace")
-	defaultWSRoot := defaultWorkspaceRoot()
+	defaultWSRoot := defaultWorkspaceRoot(WorkspaceProjectKey(workflowPath))
 	cfg.Workspace.Root = resolvePathValue(strField(ws, "root", ""), defaultWSRoot)
 	cfg.Workspace.AutoClearWorkspace = boolField(ws, "auto_clear", false)
 	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
@@ -779,6 +810,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// auto_analyze: enable/disable periodic dependency analysis. Default true.
 	cfg.Dependencies.AutoAnalyze = boolField(deps, "auto_analyze", true)
+	cfg.Dependencies.StackedPRs = boolField(deps, "stacked_prs", false)
 	// auto_analyze_min_interval_minutes and auto_analyze_debounce_minutes:
 	// both parsed via positiveIntField (<=0 -> default). No meaningful zero
 	// here — analyzer must not run every tick, and debounce must delay.
@@ -839,13 +871,54 @@ func resolvePathValue(value, defaultVal string) string {
 	return expanded
 }
 
-// defaultWorkspaceRoot returns ~/.itervox/workspaces, falling back to
-// os.TempDir()/itervox_workspaces if the home directory cannot be determined.
-func defaultWorkspaceRoot() string {
+// defaultWorkspaceRoot returns a per-PROJECT workspace root under
+// ~/.itervox/workspaces, falling back to os.TempDir() if the home directory
+// cannot be determined.
+//
+// The per-project namespace is not cosmetic. A workspace directory is keyed by
+// issue IDENTIFIER alone (workspace.WorkspacePath), and identifiers are only
+// unique within one tracker project:
+//
+//   - GitHub identifiers are the repo-local issue number — "#1", "#2". EVERY
+//     GitHub repo has a #1, so a shared root put two repos' agents in the same
+//     directory, each checking out different code over the other, and let one
+//     project's workspace.auto_clear delete another project's live worktree
+//     mid-run.
+//   - Linear identifiers are team-scoped ("ENG-1"), so two workspaces sharing
+//     a team prefix collide the same way.
+//
+// projectKey is derived from the workflow path, which is the only identity
+// available this early — tracker config is still being parsed. An operator who
+// sets workspace.root explicitly is untouched.
+func defaultWorkspaceRoot(projectKey string) string {
+	base := filepath.Join(os.TempDir(), "itervox_workspaces")
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".itervox", "workspaces")
+		base = filepath.Join(home, ".itervox", "workspaces")
 	}
-	return filepath.Join(os.TempDir(), "itervox_workspaces")
+	if projectKey == "" {
+		return base
+	}
+	return filepath.Join(base, projectKey)
+}
+
+// WorkspaceProjectKey derives a stable, filesystem-safe namespace for a
+// project from its WORKFLOW.md path. Exported so cmd/itervox can reuse the
+// same derivation for other per-project state.
+func WorkspaceProjectKey(workflowPath string) string {
+	if workflowPath == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(workflowPath)
+	if err != nil {
+		abs = workflowPath
+	}
+	sum := sha256.Sum256([]byte(abs))
+	label := filepath.Base(filepath.Dir(abs))
+	safe := strings.NewReplacer("/", "_", `\`, "_", ":", "_", " ", "_", ".", "_").Replace(label)
+	if safe == "" || safe == "_" {
+		safe = "project"
+	}
+	return safe + "-" + hex.EncodeToString(sum[:4])
 }
 
 func expandTilde(path string) string {

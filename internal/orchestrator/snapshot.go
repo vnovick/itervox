@@ -41,6 +41,7 @@ func (o *Orchestrator) Snapshot() State {
 	snap.Claimed = maps.Clone(snap.Claimed)
 	snap.RetryAttempts = copyRetryMap(snap.RetryAttempts)
 	snap.PausedIdentifiers = maps.Clone(snap.PausedIdentifiers)
+	snap.PauseReasons = maps.Clone(snap.PauseReasons)
 	snap.PausedSessions = maps.Clone(snap.PausedSessions)
 	snap.IssueProfiles = maps.Clone(snap.IssueProfiles)
 	snap.IssueBackends = maps.Clone(snap.IssueBackends)
@@ -917,8 +918,80 @@ func (o *Orchestrator) saveAutoSwitchedToDisk(
 	}
 }
 
-// savePausedToDisk writes PausedIdentifiers to disk in the new map format
-// {"identifier": "issueUUID"}. Must NOT be called with snapMu held.
+func pauseReasonsPath(pausedFile string) string {
+	if pausedFile == "" {
+		return ""
+	}
+	return pausedFile + ".reasons.json"
+}
+
+// savePauseReasonsToDisk persists why each identifier is paused. Failure is
+// logged, not fatal: a lost reason degrades diagnostics, never correctness —
+// the pause itself lives in the paused file.
+func (o *Orchestrator) savePauseReasonsToDisk(reasons map[string]string) {
+	o.pausedMu.RLock()
+	path := pauseReasonsPath(o.pausedFile)
+	o.pausedMu.RUnlock()
+	if path == "" {
+		return
+	}
+	// storeSnap runs on every event-loop turn, and each save is an atomic
+	// write (temp + fsync + rename). Almost every daemon has no paused issues
+	// at all, so skip the write entirely when there is nothing to record AND
+	// no stale file to clear — otherwise this costs a file write per turn to
+	// persist an empty map.
+	//
+	// The "no stale file" half is load-bearing: when the last pause is
+	// cleared the map goes empty and the file MUST be rewritten, or a
+	// restart would resurrect reasons for issues that are no longer paused.
+	if len(reasons) == 0 {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			return
+		}
+	}
+	data, err := json.Marshal(reasons)
+	if err != nil {
+		slog.Warn("orchestrator: failed to marshal pause reasons", "error", err)
+		return
+	}
+	if err := writeFileAtomically(path, data, 0o644); err != nil {
+		slog.Warn("orchestrator: failed to write pause reasons file", "path", path, "error", err)
+	}
+}
+
+// loadPauseReasonsFromDisk restores pause reasons, dropping any whose
+// identifier is no longer paused so the map cannot outlive its pauses.
+func (o *Orchestrator) loadPauseReasonsFromDisk(state State) State {
+	o.pausedMu.RLock()
+	path := pauseReasonsPath(o.pausedFile)
+	o.pausedMu.RUnlock()
+	if path == "" {
+		return state
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // daemon-controlled path
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("orchestrator: failed to load pause reasons file", "path", path, "error", err)
+		}
+		return state
+	}
+	var reasons map[string]string
+	if err := json.Unmarshal(data, &reasons); err != nil {
+		slog.Warn("orchestrator: failed to parse pause reasons file, continuing without reasons",
+			"path", path, "error", err)
+		return state
+	}
+	if state.PauseReasons == nil {
+		state.PauseReasons = make(map[string]string, len(reasons))
+	}
+	for ident, reason := range reasons {
+		if _, stillPaused := state.PausedIdentifiers[ident]; stillPaused {
+			state.PauseReasons[ident] = reason
+		}
+	}
+	return state
+}
+
 func (o *Orchestrator) savePausedToDisk(paused map[string]string) {
 	o.pausedMu.RLock()
 	path := o.pausedFile
@@ -955,6 +1028,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.Claimed = maps.Clone(s.Claimed)
 	snap.RetryAttempts = copyRetryMap(s.RetryAttempts)
 	snap.PausedIdentifiers = maps.Clone(s.PausedIdentifiers)
+	snap.PauseReasons = maps.Clone(s.PauseReasons)
 	snap.PausedSessions = maps.Clone(s.PausedSessions)
 	snap.IssueProfiles = maps.Clone(s.IssueProfiles)
 	snap.IssueBackends = maps.Clone(s.IssueBackends)
@@ -984,6 +1058,14 @@ func (o *Orchestrator) storeSnap(s State) {
 	o.snapMu.Unlock()
 
 	o.savePausedToDisk(snap.PausedIdentifiers)
+	// Reasons persist alongside the pauses they explain, from the SAME place.
+	// Persisting only at the individual pause sites missed the one that
+	// matters most: the transition-failed reason is set in the worker-exit
+	// handler, which has no savePaused call of its own, so the reason was
+	// recorded in memory and lost on restart — leaving a recoverable pause
+	// indistinguishable from a user cancel again, which is the whole point of
+	// #42-F. Persisting here covers every pause site by construction.
+	o.savePauseReasonsToDisk(snap.PauseReasons)
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
 	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq)
 	if o.OnStateChange != nil {

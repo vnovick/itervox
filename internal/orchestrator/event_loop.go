@@ -25,6 +25,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.loadHistoryFromDisk()
 	state := NewState(o.cfg)
 	state = o.loadPausedFromDisk(state)
+	state = o.loadPauseReasonsFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
 	state = o.loadInputRequiredFromDisk(state)
 	state = o.loadAutomationQueueFromDisk(state)
@@ -110,6 +111,26 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
 
 	// 4. Fetch candidates and dispatch eligible issues.
+	//
+	// #42-E — write priority. When the tracker budget has fallen into the
+	// write reserve, skip the polling reads for this tick so the remaining
+	// requests are available for WRITES: state transitions, comments, and the
+	// resume-path detail fetch below. Reads and writes drew on one budget, so
+	// the polling loops exhausted the hour early and then every operation
+	// that would have drained the queue failed — and those loops scale with
+	// the number of stuck issues, which is what made it self-sustaining.
+	//
+	// Skipping the tick is safe: dispatch simply does not advance until the
+	// budget resets, whereas continuing to poll guarantees the writes fail.
+	shedReads := shouldShedPollingReads(o.tracker, o.rateLimitReservePercent())
+	if shedReads {
+		logReadShedding(o.tracker)
+		// processPendingInputResumes still runs below: its FetchIssueDetail is
+		// the read that UNSTICKS the backlog, and starving it is precisely
+		// the deadlock #42 documents.
+		state = o.processPendingInputResumes(ctx, state, now)
+		return state
+	}
 	issues, err := o.tracker.FetchCandidateIssues(ctx)
 	if err != nil {
 		slog.Warn("orchestrator: fetch candidates failed", "error", err)
@@ -218,6 +239,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 				continue
 			}
 			delete(state.PausedIdentifiers, issue.Identifier)
+			clearPauseReason(&state, issue.Identifier)
 			// Keep PausedSessions so that auto-resume from a tracker state change
 			// can also reuse the captured session ID. Dispatch will consume it.
 			slog.Info("orchestrator: auto-resumed issue re-activated in tracker",
@@ -238,7 +260,13 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 
 	// Check for tracker comment replies to input-required issues.
 	// If a user replied via Linear/GitHub, auto-resume the agent.
-	state = o.checkTrackerReplies(ctx, state)
+	// checkTrackerReplies is a polling read: it re-fetches issues nobody has
+	// necessarily touched, looking for a reply. processPendingInputResumes is
+	// not — its fetch is the one that lets a queued resume proceed — so it
+	// runs regardless of the reserve.
+	if !shedReads {
+		state = o.checkTrackerReplies(ctx, state)
+	}
 	state = o.processPendingInputResumes(ctx, state, now)
 	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
 
@@ -1091,12 +1119,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// Runs in the event loop goroutine — safe to mutate state maps directly.
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			clearPauseReason(&state, ev.Identifier)
 			// Force-reanalyze starts fresh — drop any captured session so dispatch
 			// runs runWorker without --resume.
 			delete(state.PausedSessions, ev.Identifier)
 			state.ForceReanalyze[ev.Identifier] = struct{}{}
 			// Persist immediately so a crash between ticks doesn't re-pause the issue.
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			slog.Info("orchestrator: issue un-paused for forced re-analysis",
 				"identifier", ev.Identifier)
 			if o.OnStateChange != nil {
@@ -1107,7 +1137,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventResumeIssue:
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			clearPauseReason(&state, ev.Identifier)
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			slog.Info("orchestrator: issue resumed", "identifier", ev.Identifier)
 			if o.OnStateChange != nil {
 				o.OnStateChange()
@@ -1117,9 +1149,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventTerminatePaused:
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			clearPauseReason(&state, ev.Identifier)
 			// Terminate discards the issue entirely; drop any captured session.
 			delete(state.PausedSessions, ev.Identifier)
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			slog.Info("orchestrator: paused issue terminated (claim released)", "identifier", ev.Identifier)
 			// Move the issue back to Backlog (or first active state if no backlog
 			// is configured) to remove the in-progress label and prevent it from
@@ -1163,7 +1197,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// automatically re-dispatched until the user explicitly resumes it.
 		state = CancelRetry(state, ev.IssueID)
 		state.PausedIdentifiers[ev.Identifier] = ev.IssueID
+		setPauseReason(&state, ev.Identifier, PauseReasonUserCancelled)
 		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+		o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 		slog.Info("orchestrator: retry-queue issue cancelled and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -1219,7 +1255,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
+		setPauseReason(&state, ev.Identifier, PauseReasonUserDismissedInput)
 		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+		o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 		slog.Info("orchestrator: input-required issue dismissed and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -1331,6 +1369,17 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 		if wasCancelledByUser {
 			state.PausedIdentifiers[issue.Identifier] = issue.ID
+			// The worker signals a FAILED COMPLETION TRANSITION through the
+			// same cancelled-IDs set it uses for a real user cancel, because
+			// both must stop the dispatch loop. They are not the same event:
+			// the transition failure means the agent's work succeeded and only
+			// the tracker write did not, which is recoverable without a human.
+			// #42-F.
+			reason := PauseReasonUserCancelled
+			if o.takeTransitionFailed(issue.Identifier) {
+				reason = PauseReasonTransitionFailed
+			}
+			setPauseReason(&state, issue.Identifier, reason)
 			// Capture session info so resume can continue the same agent session
 			// via --resume / `exec resume` instead of starting from scratch.
 			// Only meaningful when the agent has actually established a session
@@ -1704,7 +1753,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 						}
 					} else {
 						state.PausedIdentifiers[issue.Identifier] = issue.ID
+						setPauseReason(&state, issue.Identifier, PauseReasonRetriesExhausted)
 						o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+						o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 					}
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {

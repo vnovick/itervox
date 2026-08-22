@@ -129,11 +129,32 @@ Controls how frequently Itervox checks the tracker for new or updated issues.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `interval_ms` | int | `30000` | Polling interval in milliseconds. |
+| `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. Set `0` to disable. |
 
 ```yaml
 polling:
   interval_ms: 60000  # check every minute
+  rate_limit_reserve_percent: 10
 ```
+
+### Write priority under rate limits
+
+Reads and writes draw on one tracker budget, and the polling loops scale with
+the number of stuck issues — so on a busy project polling could exhaust the
+hourly budget early, after which every state transition, comment and dependency
+audit failed. Unsticking an issue requires a write, so the reads starved the
+very operations that would have drained the queue.
+
+When the remaining budget falls into `rate_limit_reserve_percent`, Itervox stops
+spending requests on **polling** reads for that tick — the candidate poll and the
+input-required reply check — while continuing to admit writes and the
+input-resume fetch that lets a queued resume proceed. Dispatch pauses until the
+budget resets rather than failing every write in the meantime, and the daemon
+logs a warning naming the remaining budget and reset time so a stalled board is
+never mistaken for a hung daemon.
+
+Adapters that do not report rate-limit counters are unaffected: the check fails
+open and polls as before.
 
 ---
 
@@ -143,7 +164,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.itervox/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
+| `root` | string | `~/.itervox/workspaces/<project>` | Directory where per-issue workspaces are created, namespaced per project by default. Supports `~` expansion and `$VAR_NAME` env var references. |
 | `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
@@ -184,6 +205,16 @@ Profile names with spaces are slugified (`"story writer"` → `story-writer`). A
 See the [Agent Handoff guide](/guides/agent-handoff/) for a worked example chaining three profiles end-to-end.
 
 ---
+
+
+:::note[Why the default is per project]
+A workspace directory is keyed by issue **identifier** alone, and identifiers
+are only unique within one tracker project. GitHub identifiers are the
+repo-local issue number, so every repo has a `#1` — with a single shared root,
+two daemons would use the same directory for their respective issue #1, and one
+project's `auto_clear` would delete another project's live worktree. Set `root`
+explicitly if you want the old shared layout.
+:::
 
 ## agent
 
@@ -484,6 +515,7 @@ Tracker-declared blockers (`issue.BlockedBy`) always hard-block dispatch and are
 | `ordering` | string | `"critical_path"` | Dispatch ordering strategy. One of `critical_path`, `critical_path_strict`, or `simple` — see [Ordering modes](#ordering-modes). An unrecognized value falls back to the default with a warning. |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it surfaces as needing attention. **An explicit `0` disables escalation** and is preserved as a meaningful value; only a negative value falls back to the default. |
 | `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. Set `false` to make analysis strictly manual (dashboard, API, or CLI). |
+| `stacked_prs` | bool | `false` | Branch an issue's worktree from its single live blocker's branch. Does not set the PR base — see below. |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between scheduled analysis passes. Non-positive values fall back to the default — the analyzer must not run every tick. |
 | `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before analysis starts, so it waits for state to settle rather than racing an in-flight dispatch. |
 
@@ -498,6 +530,45 @@ dependencies:
   auto_analyze_min_interval_minutes: 60
   auto_analyze_debounce_minutes: 5
 ```
+
+### Stacked worktrees
+
+Set `dependencies.stacked_prs: true` to have an issue's worktree branch from
+its blocker instead of `workspace.base_branch`, so the work starts from the
+blocker's commits rather than duplicating them.
+
+:::caution[The PR base is not set yet]
+This currently changes only where the **branch starts**. Nothing sets the pull
+request's base branch, so a PR opened from a stacked branch still diffs against
+the default branch and therefore still shows the blocker's commits. Reviewing
+each piece in isolation needs the PR base too — tracked in
+[#60](https://github.com/vnovick/itervox/issues/60).
+:::
+
+```yaml
+dependencies:
+  stacked_prs: true
+```
+
+It applies only when an issue has **exactly one** live blocker, and that
+blocker must carry an identifier — without one it cannot name a branch, so
+itervox declines to stack rather than guess. An unidentified blocker still
+*counts* as a live blocker: it is a real dependency, so an issue with one
+identified and one unidentified live blocker does not stack either. With
+several live blockers,
+any choice of base would be arbitrary: the branch would sit on one blocker
+while still depending on the others, so the PR would not be reviewable in
+isolation. A blocker that has already reached a terminal state is skipped —
+its work is in `base_branch` already.
+
+Stacking is best-effort by design. If the blocker's branch does not exist in
+this checkout — not dispatched yet, worked on another machine, worktree
+cleared — itervox falls back to `base_branch` and logs the decision. Review
+ergonomics must never be the reason a dispatch fails.
+
+**Not yet handled: restacking.** When a blocker merges, branches stacked on it
+are not automatically rebased onto the new base. Until that lands, treat
+stacked branches as needing a manual rebase after their blocker merges.
 
 ### Ordering modes
 

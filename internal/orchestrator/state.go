@@ -106,6 +106,29 @@ const (
 	TerminalInputRequired TerminalReason = "input_required"
 )
 
+// Pause reasons recorded in State.PauseReasons (issue #42-F).
+//
+// The distinction that motivated these: PauseReasonTransitionFailed is a
+// TRANSIENT infrastructure failure — the agent's work succeeded and only the
+// tracker write did not — whereas PauseReasonUserCancelled is a deliberate
+// human decision. Both used to be recorded identically, so an operator could
+// not tell which pauses were safe to resume in bulk, and a transition failure
+// sat waiting on a human who had no way to know it was waiting.
+const (
+	// PauseReasonUserCancelled — a human cancelled the run or its retry.
+	PauseReasonUserCancelled = "user_cancelled"
+	// PauseReasonUserDismissedInput — a human dismissed an input-required
+	// prompt without answering it.
+	PauseReasonUserDismissedInput = "user_dismissed_input"
+	// PauseReasonRetriesExhausted — retries ran out and no failed_state is
+	// configured to move the issue to.
+	PauseReasonRetriesExhausted = "retries_exhausted"
+	// PauseReasonTransitionFailed — the agent finished successfully but the
+	// completion-state tracker write failed after its retries. Distinct from
+	// user_cancelled precisely because it is recoverable: the work is done.
+	PauseReasonTransitionFailed = "transition_failed"
+)
+
 // ResumeContext, when non-nil, configures a worker to continue an existing
 // agent session via --resume instead of starting a fresh one. It unifies two
 // resume flows that used to be handled separately:
@@ -298,6 +321,14 @@ type State struct {
 	// from an old disk snapshot that predates UUID persistence).
 	// Paused issues are not re-dispatched until explicitly resumed.
 	PausedIdentifiers map[string]string
+	// PauseReasons records WHY each paused identifier is paused, keyed the
+	// same way as PausedIdentifiers. Issue #42-F: the pause map alone cannot
+	// distinguish a deliberate user cancel from a completion-state transition
+	// that failed, so every automatic pause looked like a human decision and
+	// needed a human to undo. A missing entry means "recorded before reasons
+	// existed", which callers must treat as unknown rather than as any
+	// specific reason.
+	PauseReasons map[string]string
 	// PausedSessions stores per-issue session-resume info captured at pause time.
 	// When a user pauses a running issue, the orchestrator captures the live
 	// RunEntry's SessionID, WorkerHost, Backend, Command, and ProfileName so that

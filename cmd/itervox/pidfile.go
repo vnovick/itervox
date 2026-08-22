@@ -37,7 +37,21 @@ func pidFilePath(workflowPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve workflow path: %w", err)
 	}
-	return filepath.Join(filepath.Dir(abs), ".itervox", "daemon.pid"), nil
+	// Resolve symlinks so two spellings of ONE checkout agree on the path.
+	//
+	// filepath.Abs alone does not: a symlinked checkout (or a /tmp path on
+	// macOS, where /tmp -> /private/tmp) produces a different absolute string
+	// for the same directory, so two daemons on the same WORKFLOW.md wrote
+	// two different pid files and neither saw the other — defeating the guard
+	// entirely and letting both clobber the same .itervox state.
+	//
+	// EvalSymlinks fails when the path does not exist yet, which is normal on
+	// first run, so fall back to the unresolved form rather than erroring.
+	dir := filepath.Dir(abs)
+	if resolved, resolveErr := filepath.EvalSymlinks(dir); resolveErr == nil {
+		dir = resolved
+	}
+	return filepath.Join(dir, ".itervox", "daemon.pid"), nil
 }
 
 // writePIDFile writes the current process PID (plus the absolute workflow
@@ -198,4 +212,27 @@ func removeHeartbeatFile(workflowPath string) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		slog.Warn("itervox: failed to remove HEARTBEAT.md", "path", path, "error", err)
 	}
+}
+
+// warnIfDaemonRunning prints a warning when a live daemon owns workflowPath.
+//
+// Used by the one-shot subcommands that write `.itervox/` state — `init
+// --update`, `deps analyze` — which run outside the daemon and so bypass
+// requireNoLiveDaemon entirely. Their writes race the running daemon's own:
+// a migration rewrites WORKFLOW.md under a daemon that has already parsed it,
+// and an analyzer pass rewrites the dependency sidecar the daemon is reading.
+//
+// A warning rather than a refusal: both commands are legitimate against a live
+// daemon (a migration is often exactly what you want before a reload), and
+// hard-failing would break established workflows. The point is that the
+// operator learns about the overlap instead of debugging its symptoms.
+func warnIfDaemonRunning(workflowPath, action string) {
+	pid, _, path, err := readPIDFile(workflowPath)
+	if err != nil || !processAlive(pid) {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: a daemon is running for this WORKFLOW.md (pid=%d, %s).\n"+
+			"  %s writes .itervox state that the daemon also owns; restart it afterwards so it picks up the change.\n",
+		pid, path, action)
 }

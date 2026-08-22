@@ -325,7 +325,34 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	if len(issueIDs) == 0 {
 		return []domain.Issue{}, nil
 	}
-	return c.fetchByIDsPage(ctx, issueIDs, nil)
+	// Drop ids Linear's argument validation would reject. The batched
+	// `issues(filter: {id: {in: [...]}})` query validates the WHOLE list and
+	// fails the entire request if any element is malformed, so a single stale
+	// or seeded id takes down every healthy row beside it — observed live as
+	// a batch of 11 failing because 10 ids were malformed, including the one
+	// real UUID.
+	//
+	// Omitting them is the right answer, not an error: callers treat an
+	// absent id as "not in this response" and confirm it with a single-issue
+	// fetch, which Linear answers with "Entity not found" and which finally
+	// retires the row.
+	valid, invalid := partitionValidIssueRefs(issueIDs)
+	if len(invalid) > 0 {
+		slog.Warn("linear: skipping malformed issue ids in batch fetch",
+			"skipped", len(invalid), "kept", len(valid), "examples", firstN(invalid, 3))
+	}
+	if len(valid) == 0 {
+		return []domain.Issue{}, nil
+	}
+	return c.fetchByIDsPage(ctx, valid, nil)
+}
+
+// firstN returns at most n elements, for bounded log lines.
+func firstN(items []string, n int) []string {
+	if len(items) <= n {
+		return items
+	}
+	return items[:n]
 }
 
 // UpdateIssueState transitions the issue to the named workflow state.
@@ -778,9 +805,56 @@ func decodeResponse(body map[string]any) ([]domain.Issue, error) {
 
 func decodeError(body map[string]any) error {
 	if errs, ok := body["errors"]; ok {
+		// Linear reports an unknown entity as a GraphQL ERROR, not as a null
+		// data field: `Entity not found: Issue` with code INPUT_ERROR. That is
+		// a permanent condition — the ID will never resolve — so it must be
+		// distinguishable from a transient failure.
+		//
+		// Without this, the dependency-audit refresh routed such rows to
+		// FailedKeys (retain and retry) rather than MissingKeys (delete), so a
+		// stale or seeded issue ID burned one Linear request per refresh cycle
+		// for the daemon's lifetime and the row never retired. On a backlog
+		// carrying a batch of them that is a standing drain on exactly the
+		// budget issue #42 is about.
+		if graphQLErrorsIndicateNotFound(errs) {
+			return &tracker.NotFoundError{Adapter: "linear"}
+		}
 		return &tracker.GraphQLError{Message: fmt.Sprintf("%v", errs)}
 	}
 	return fmt.Errorf("linear_unknown_payload: %v", body)
+}
+
+// notFoundGraphQLMessagePrefix is Linear's canonical wording for a reference
+// to an entity that does not exist ("Entity not found: Issue").
+const notFoundGraphQLMessagePrefix = "entity not found"
+
+// graphQLErrorsIndicateNotFound reports whether a GraphQL errors array is
+// Linear saying the referenced entity does not exist.
+//
+// Deliberately narrow: ONLY this message maps to not-found. Every other
+// GraphQL error — rate limits, auth, validation — stays transient and
+// retryable, because the caller's response to not-found is to DELETE the
+// audit row. Over-matching here would silently discard live rows on a blip,
+// which is a far worse failure than retrying a dead one.
+func graphQLErrorsIndicateNotFound(errs any) bool {
+	list, ok := errs.([]any)
+	if !ok || len(list) == 0 {
+		return false
+	}
+	for _, raw := range list {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		msg, _ := entry["message"].(string)
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg)), notFoundGraphQLMessagePrefix) {
+			// Every error in the array must be a not-found for the whole
+			// response to count as one; a mixed response may still contain a
+			// transient failure worth retrying.
+			return false
+		}
+	}
+	return true
 }
 
 func extractPageInfo(issuesBlock map[string]any) pageInfo {
@@ -829,7 +903,10 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	req.Header.Set("Authorization", c.cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	// Rate limits are waited out, not surfaced as failures: a 429 used to
+	// fail every call the moment the budget ran out, including the writes
+	// that would have drained the queue (#42).
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "linear")
 	if err != nil {
 		return nil, fmt.Errorf("linear_api_request: %w", err)
 	}

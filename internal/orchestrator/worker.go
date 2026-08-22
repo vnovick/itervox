@@ -150,7 +150,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	if o.workspace != nil {
-		ws, err := o.workspace.EnsureWorkspace(ctx, issue.Identifier, branchName)
+		// Stacked PRs: when enabled and the issue has exactly one live
+		// blocker, base this worktree on that blocker's branch so the PR
+		// shows only the increment. Opt-in, best-effort, and type-asserted —
+		// a provider that cannot stack, or a blocker branch that does not
+		// exist here, falls back to workspace.base_branch unchanged.
+		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -953,6 +958,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 			// Pause the issue so it doesn't re-enter the dispatch loop and cause
 			// an infinite retry cycle. The user can resume it manually.
+			// Marked BEFORE the cancelled-IDs entry the event loop reads, so
+			// the reason is available by the time the pause is recorded. Both
+			// are needed: cancelled-IDs is what stops the dispatch loop,
+			// transitionFailed is what says this pause is recoverable without
+			// a human (#42-F).
+			o.markTransitionFailed(issue.Identifier)
 			o.userCancelledMu.Lock()
 			o.userCancelledIDs[issue.Identifier] = struct{}{}
 			o.userCancelledMu.Unlock()

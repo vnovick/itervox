@@ -480,7 +480,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		resp, err := c.httpClient.Do(req)
+		resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 		if err != nil {
 			slog.Warn("github_update_state: remove label request failed (ignored)",
 				"label", label, "issue_id", issueID, "error", err)
@@ -507,7 +507,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return fmt.Errorf("github_update_state: %w", err)
 	}
@@ -554,7 +554,7 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
@@ -606,7 +606,7 @@ func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateNa
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return nil, fmt.Errorf("github_create_issue: %w", err)
 	}
@@ -638,7 +638,7 @@ func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return nil, "", fmt.Errorf("github_api_request: %w", err)
 	}

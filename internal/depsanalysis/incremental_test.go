@@ -207,9 +207,17 @@ func TestMergeIncrementalFullModeIgnoresPrevEdges(t *testing.T) {
 	newEdges := []InferredEdge{
 		{Source: "C", Target: "D", Evidence: "new", Confidence: 0.5},
 	}
+	// C and D must appear in the fetch: edges are now validated against the
+	// fetched issue set (#43's hallucinated-edge secondary), and this
+	// fixture previously emitted an edge between issues it never declared.
+	// That incoherence was invisible while nothing checked identifiers; it
+	// is not what this test is about, which is that full mode ignores
+	// prev.Edges.
 	issues := []AnalyzerIssue{
 		{Identifier: "A", Title: "A title", Description: "A desc"},
 		{Identifier: "B", Title: "B title", Description: "B desc"},
+		{Identifier: "C", Title: "C title", Description: "C desc"},
+		{Identifier: "D", Title: "D title", Description: "D desc"},
 	}
 
 	result := MergeIncremental(prev, plan, newEdges, issues, "deps-analyzer", now)
@@ -436,4 +444,63 @@ func TestPlanIncrementalDoesNotPullInUnrelatedUnchangedIssues(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"CHANGED"}, identifiers(plan.ToAnalyze),
 		"an unchanged pair with no edge to the changed issue must stay out of the pass")
+}
+
+// TestMergeIncrementalDropsEdgesToUnknownIssues closes issue #43's secondary
+// defect: nothing validated that analyzer-emitted source/target identifiers
+// correspond to real issues, so a hallucinated pair landed in
+// .itervox/dependencies.json and was reloaded verbatim on every start.
+//
+// The analyzer is an LLM. Its output is untrusted input, and the fetched
+// issue set is the authority on which identifiers exist. Downstream,
+// inferredGatingFor already refuses to gate on an unknown source, so a
+// hallucinated edge could not block dispatch — but it still polluted the
+// sidecar, the dashboard's dependency graph, and every later incremental
+// pass that revalidated against it.
+func TestMergeIncrementalDropsEdgesToUnknownIssues(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	issues := []AnalyzerIssue{
+		{Identifier: "ENG-1", Title: "a", Description: "a"},
+		{Identifier: "ENG-2", Title: "b", Description: "b"},
+	}
+	plan := IncrementalPlan{Mode: IncrementalModeFull, ToAnalyze: issues, Unchanged: map[string]struct{}{}}
+
+	newEdges := []InferredEdge{
+		{Source: "ENG-1", Target: "ENG-2", Evidence: "real", Confidence: 0.9},
+		{Source: "GHOST-999", Target: "ENG-2", Evidence: "hallucinated source", Confidence: 0.95},
+		{Source: "ENG-1", Target: "PHANTOM-1", Evidence: "hallucinated target", Confidence: 0.95},
+		{Source: "NOPE-1", Target: "NOPE-2", Evidence: "both invented", Confidence: 0.99},
+	}
+
+	sc := MergeIncremental(nil, plan, newEdges, issues, "deps-analyzer", now)
+
+	require.Len(t, sc.Edges, 1, "only the edge between two real issues may survive")
+	assert.Equal(t, "ENG-1", sc.Edges[0].Source)
+	assert.Equal(t, "ENG-2", sc.Edges[0].Target)
+}
+
+// TestMergeIncrementalKeepsEdgesAcrossTheAnalyzedBoundary guards the filter
+// from over-reaching. Under chunking the analyzer only sees plan.ToAnalyze,
+// but a legitimate edge may point at an issue that is real and fetched yet
+// not in this chunk — those must survive. The authority is the FETCH, not
+// the analyzed subset.
+func TestMergeIncrementalKeepsEdgesAcrossTheAnalyzedBoundary(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	issues := []AnalyzerIssue{
+		{Identifier: "ENG-1", Title: "a", Description: "a"},
+		{Identifier: "ENG-2", Title: "b", Description: "b"},
+		{Identifier: "ENG-3", Title: "c", Description: "c"},
+	}
+	// Only ENG-1 was analyzed this pass; ENG-3 is fetched but out of chunk.
+	plan := IncrementalPlan{
+		Mode:      IncrementalModeIncremental,
+		ToAnalyze: []AnalyzerIssue{issues[0]},
+		Unchanged: map[string]struct{}{"ENG-2": {}, "ENG-3": {}},
+	}
+	newEdges := []InferredEdge{{Source: "ENG-1", Target: "ENG-3", Evidence: "cross-chunk", Confidence: 0.8}}
+
+	sc := MergeIncremental(nil, plan, newEdges, issues, "deps-analyzer", now)
+
+	require.Len(t, sc.Edges, 1, "an edge to a fetched-but-unanalyzed issue is legitimate")
+	assert.Equal(t, "ENG-3", sc.Edges[0].Target)
 }

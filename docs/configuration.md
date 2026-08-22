@@ -61,6 +61,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
+| `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. |
 
 ---
 
@@ -329,6 +330,7 @@ edges factor into automation dispatch gating. See the deps-analyzer agent pass
 | `ordering` | string | `"critical_path"` | Dispatch ordering strategy for eligible issues. One of `critical_path` (default), `critical_path_strict`, or `simple`. See [Ordering modes](#ordering-modes) below. An unrecognized value falls back to the default with a `slog.Warn` |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it becomes eligible for the `blockers_resolved`/attention automation surface (`state.DependencyAttention`, kind `stale_blocker`). **`0` is a meaningful, explicit value that disables the escalation** — it is not treated as "absent"; only a negative value falls back to the default (with a `slog.Warn`) |
 | `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. When `true`, the daemon periodically re-runs the deps-analyzer pass in the background (fingerprint-scoped to changed issues) without an operator clicking "Analyze dependencies". Set `false` to make analysis strictly manual (dashboard button, API, or CLI) |
+| `stacked_prs` | bool | `false` | Branch an issue's worktree from its blocker's branch instead of `workspace.base_branch`, when the issue has exactly one live blocker that carries an identifier. Best-effort: several live blockers give no unambiguous base, and a blocker branch missing locally falls back to `base_branch` rather than failing the dispatch. The PR base is not yet set from the blocker (#60) |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between consecutive scheduled analysis passes. Parsed via `positiveIntField`; non-positive values fall back to the default — there is no meaningful zero here (the analyzer must not run every tick) |
 | `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before a scheduled analysis pass starts, so analysis waits for state to settle instead of racing an in-flight dispatch. Parsed via `positiveIntField`; non-positive values fall back to the default |
 
@@ -384,7 +386,7 @@ changes nothing.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.itervox/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` |
+| `root` | string | no | `~/.itervox/workspaces/<project>` | Where per-issue workspaces are created. Namespaced per project by default because a workspace directory is keyed by issue identifier alone, and identifiers are only unique within one tracker project (every GitHub repo has a `#1`). Set explicitly to opt out |
 | `auto_clear` | bool | `false` | Delete the workspace directory **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are preserved. Runtime-editable. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes. **Breaking change in v0.2.0**: previous semantics cleared after every successful run |
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |

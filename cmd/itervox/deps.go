@@ -67,6 +67,8 @@ func runDepsAnalyze(args []string) {
 		mode = depsanalysis.IncrementalModeFull
 	}
 
+	warnIfDaemonRunning(*workflowPath, "`itervox deps analyze`")
+
 	loadDotEnv()
 	issueCount, analyzedCount, edgeCount, sidecarPath, guarded, err := runInitDepsAnalysis(*workflowPath, mode)
 	if err != nil {

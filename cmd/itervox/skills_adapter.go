@@ -141,8 +141,21 @@ func (a *orchestratorAdapter) Analytics() *skills.AnalyticsSnapshot {
 		return nil
 	}
 	_, homeDir := a.projectAndHome()
+	// Derive THIS project's logs dir rather than the bare ~/.itervox/logs.
+	//
+	// That shared path is no longer where the daemon writes: logs are now
+	// namespaced per project, so reading the bare base returned either
+	// nothing or another project's leftovers — silently wrong analytics
+	// rather than an error. defaultLogsDir applies the same derivation the
+	// daemon used.
+	//
+	// Caveat: an operator who passed --logs-dir is not reflected here, since
+	// the resolved value is not threaded onto the adapter. That is a smaller
+	// wrong than pointing at a directory nothing writes.
 	logsDir := ""
-	if homeDir != "" {
+	if a.workflowPath != "" {
+		logsDir = defaultLogsDir(a.workflowPath)
+	} else if homeDir != "" {
 		logsDir = filepath.Join(homeDir, ".itervox", "logs")
 	}
 	claudeRT, _ := skills.ParseClaudeRuntime(logsDir, 25)

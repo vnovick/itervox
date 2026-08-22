@@ -515,6 +515,7 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 	if dispatch.Trigger.Type == config.AutomationTriggerRateLimited && dispatch.AutoResume {
 		if _, autoSwitched := state.AutoSwitchedIdentifiers[issue.Identifier]; autoSwitched {
 			delete(state.PausedIdentifiers, issue.Identifier)
+			clearPauseReason(state, issue.Identifier)
 			delete(state.PausedSessions, issue.Identifier)
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 		}

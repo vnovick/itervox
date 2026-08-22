@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -109,11 +110,51 @@ func defaultLogsDir(workflowPath string) string {
 	}
 	cfg, err := config.Load(workflowPath)
 	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ProjectSlug == "" {
-		return base
+		// No slug to namespace by — fall back to a directory derived from the
+		// workflow's own path rather than the shared base.
+		//
+		// The shared base was a cross-project state collision: this directory
+		// holds automation_queue.json, which carries the DEPENDENCY AUDIT, so
+		// every project without a project_slug read and wrote one another's
+		// audit rows. Observed live — a Linear project inherited ten
+		// `demo-id-*` rows written by an unrelated `kind: memory` run, then
+		// asked Linear about issues that had never existed there on every
+		// refresh cycle.
+		return filepath.Join(base, "workflow", workflowPathKey(workflowPath))
 	}
-	// Encode the slug so it is safe as a directory name component.
+	// Encode the slug so it is safe as a directory name component, and append
+	// the workflow key.
+	//
+	// The slug ALONE is not a project identity: two checkouts of one repo (a
+	// git worktree dev setup), or several repos driven by one Linear project,
+	// share a slug and would share this directory — which holds
+	// automation_queue.json and therefore the dependency audit, plus
+	// history.json, paused.json and input_required.json. The PID guard does
+	// not stop it: it keys on the workflow's directory, so both checkouts pass.
+	//
+	// The slug stays in the path so the directory remains recognisable to a
+	// human browsing ~/.itervox/logs.
 	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
-	return filepath.Join(base, cfg.Tracker.Kind, safe)
+	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+workflowPathKey(workflowPath))
+}
+
+// workflowPathKey derives a stable, filesystem-safe directory name for a
+// WORKFLOW.md path. A hash rather than a sanitised path so the name has a
+// bounded length and cannot collide with a tracker kind directory; the last
+// path element is prefixed to keep it recognisable to a human browsing
+// ~/.itervox/logs.
+func workflowPathKey(workflowPath string) string {
+	abs, err := filepath.Abs(workflowPath)
+	if err != nil {
+		abs = workflowPath
+	}
+	sum := sha256.Sum256([]byte(abs))
+	label := filepath.Base(filepath.Dir(abs))
+	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_", ".", "_").Replace(label)
+	if safe == "" || safe == "_" {
+		safe = "workflow"
+	}
+	return safe + "-" + hex.EncodeToString(sum[:4])
 }
 
 func configuredBackend(command, explicit string) string {
@@ -370,10 +411,26 @@ func main() {
 	// per-project path under ~/.itervox/logs/<kind>/<slug> so that logs are
 	// co-located with workspaces and automatically scoped to the project.
 	// We do a lightweight early config read solely to get the tracker kind and
-	// project slug; failures are non-fatal and fall back to a shared default.
+	// project slug; failures are non-fatal and fall back to a per-project default.
 	resolvedLogsDir := *logsDir
 	if resolvedLogsDir == "" {
 		resolvedLogsDir = defaultLogsDir(*workflowPath)
+	}
+
+	// Refuse a second daemon BEFORE touching any shared state.
+	//
+	// This check used to run after the logs directory was created and the
+	// rotating file handler installed, so a daemon that was about to be
+	// rejected had already written to the log file the live daemon owns —
+	// interleaving two daemons' output in one file and rotating it out from
+	// under the running one. Nothing below this point may precede the guard.
+	if pid, recorded, pidPath, err := requireNoLiveDaemon(*workflowPath); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		writeStartupErrorMarker(*workflowPath, err)
+		_ = pid
+		_ = recorded
+		_ = pidPath
+		fatalExit(1)
 	}
 
 	// Tee logs to stderr and a rotating file under <logs-dir>/itervox.log.
@@ -429,14 +486,6 @@ func main() {
 	// first's HEARTBEAT.md, automation_queue.json, and per-issue logs,
 	// producing the symptom triad: "stale HEARTBEAT.md", "lost queue
 	// entries", "dashboard URL points at a daemon I can't find".
-	if pid, recorded, pidPath, err := requireNoLiveDaemon(*workflowPath); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		writeStartupErrorMarker(*workflowPath, err)
-		_ = pid
-		_ = recorded
-		_ = pidPath
-		fatalExit(1)
-	}
 
 	// Write a per-project PID file so `itervox stop` can find and terminate
 	// this daemon. Cleaned up on graceful shutdown (see defer below).
@@ -451,6 +500,15 @@ func main() {
 		defer removePIDFile(*workflowPath)
 		defer removeDashboardURLFile(*workflowPath)
 		defer removeHeartbeatFile(*workflowPath)
+		// os.Exit skips the defers above, so every fatalExit path — a failed
+		// rebind, an invalid config on the first iteration — used to leave
+		// these files behind and make doctor report a daemon that had died.
+		// Same cleanup, reachable from fatalExit. See exit.go's onFatalExit.
+		onFatalExit = func() {
+			removePIDFile(*workflowPath)
+			removeDashboardURLFile(*workflowPath)
+			removeHeartbeatFile(*workflowPath)
+		}
 	}
 
 	// Outer loop: restart when WORKFLOW.md changes.

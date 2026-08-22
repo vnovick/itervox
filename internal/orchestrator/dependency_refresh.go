@@ -234,7 +234,22 @@ func (o *Orchestrator) runDependencyRefresh(
 		}
 	}
 
-	for _, t := range order.Targets {
+	// Targets carrying an IssueID go out as ONE batched request instead of one
+	// request each. The audit reads only BlockedBy/ID/Identifier/State, and
+	// FetchIssueStatesByIDs returns all four (its query selects
+	// inverseRelations and state), so nothing is lost by not fetching full
+	// detail. This was the single largest per-issue consumer of the tracker
+	// budget — issue #42 measured the audit at ~28% of Linear traffic on a
+	// deployment that sat at zero remaining budget for 35 minutes of every
+	// hour.
+	//
+	// Identifier-only targets still fall back to a per-issue fetch: there is
+	// no by-identifier batch endpoint, and they are the rare case (a row whose
+	// tracker ID was never observed).
+	batched, perIssue := partitionRefreshTargets(order.Targets)
+	o.fetchDependencyRefreshBatched(fetchCtx, batched, result)
+
+	for _, t := range perIssue {
 		if fetchCtx.Err() != nil {
 			// Remaining targets stay unreported; the handler clears their
 			// InFlight via BatchKeys regardless.
@@ -254,6 +269,169 @@ func (o *Orchestrator) runDependencyRefresh(
 				Issue:      *issue,
 			})
 		}
+	}
+}
+
+// partitionRefreshTargets splits targets into those that can be batched (they
+// carry an IssueID) and those that cannot. Every target lands in exactly one
+// bucket, so no row is fetched twice or silently dropped.
+func partitionRefreshTargets(targets []dependencyRefreshTarget) (batched, perIssue []dependencyRefreshTarget) {
+	for _, t := range targets {
+		if t.IssueID != "" {
+			batched = append(batched, t)
+			continue
+		}
+		perIssue = append(perIssue, t)
+	}
+	return batched, perIssue
+}
+
+// dependencyRefreshDegradeBudget caps how many per-issue confirmations a
+// FAILED batch may spend in one tick.
+//
+// Without it, one systemic failure (revoked token, 5xx, refused connection)
+// costs one request per target — 101 at the default batch size of 100 — every
+// refresh cycle, on the tracker this batching exists to stop over-polling.
+// 10 recovers the common case (a batch failed because of one bad row) within
+// a couple of cycles while keeping the pathological case flat.
+const dependencyRefreshDegradeBudget = 10
+
+// boundRefreshDegradation splits targets into the prefix a failed batch may
+// spend per-issue confirmations on this tick, and the remainder deferred to
+// FailedKeys. Shared by BOTH failure branches — bounding only one of them left
+// the other with the amplification the bound exists to prevent.
+func boundRefreshDegradation(targets []dependencyRefreshTarget) (confirm, deferred []dependencyRefreshTarget) {
+	if len(targets) <= dependencyRefreshDegradeBudget {
+		return targets, nil
+	}
+	return targets[:dependencyRefreshDegradeBudget], targets[dependencyRefreshDegradeBudget:]
+}
+
+// fetchDependencyRefreshBatched resolves every ID-bearing target in one
+// FetchIssueStatesByIDs call and files the outcomes onto result.
+//
+// An ID the batch omits is NOT assumed deleted. Omission is only authoritative
+// if the endpoint is, and that is not a property this code can rely on across
+// adapters — a batch that silently returns a subset would retire every live
+// audit row it skipped, which is unrecoverable. Omitted IDs therefore fall
+// back to a per-issue fetch, whose ErrNotFound IS authoritative and is already
+// classified correctly.
+//
+// The fallback costs one request per genuinely-missing issue, once, because
+// that row then retires. The batch win applies to the common case where every
+// row resolves.
+//
+// A whole-batch error is transient by contrast (network, rate limit, auth), so
+// every key in it goes to FailedKeys and is retried.
+func (o *Orchestrator) fetchDependencyRefreshBatched(
+	ctx context.Context,
+	targets []dependencyRefreshTarget,
+	result *DependencyRefreshResult,
+) {
+	if len(targets) == 0 || ctx.Err() != nil {
+		return
+	}
+	ids := make([]string, 0, len(targets))
+	for _, t := range targets {
+		ids = append(ids, t.IssueID)
+	}
+	issues, err := o.tracker.FetchIssueStatesByIDs(ctx, ids)
+	switch {
+	case errors.Is(err, tracker.ErrNotFound):
+		// A not-found from the BATCH does not say WHICH id was bad, so it
+		// cannot be applied to the whole set — one dead row would retire
+		// every healthy row beside it. Fall through to per-issue
+		// confirmation, which resolves each target individually.
+		//
+		// Filing these as transient instead was the bug: a permanently
+		// unknown issue ID then retried on every refresh cycle forever,
+		// which is exactly the drain batching was added to stop.
+		// Bounded exactly like the transient branch below. Confirming an
+		// unbounded batch here was the same amplification that branch guards
+		// against — 101 requests at the default batch size — and worse, it
+		// does not converge: when the confirmations fail transiently every
+		// key returns to FailedKeys and the identical burst fires next cycle.
+		confirm, deferred := boundRefreshDegradation(targets)
+		slog.Debug("orchestrator: dependency audit batch reported not-found; confirming a bounded prefix per issue",
+			"targets", len(targets), "confirming", len(confirm), "deferred", len(deferred))
+		o.confirmDependencyRefreshTargets(ctx, confirm, map[string]domain.Issue{}, result)
+		for _, t := range deferred {
+			result.FailedKeys = append(result.FailedKeys, t.Key)
+		}
+		return
+	case err != nil:
+		// Degrade to per-target, but only for a BOUNDED prefix.
+		//
+		// A whole-batch error says nothing about which row caused it, and on
+		// GitHub it frequently is one row: FetchIssueStatesByIDs there fans
+		// out to individual requests and returns on the first failure,
+		// discarding every issue it had already fetched. Retrying per target
+		// recovers the rows that would have succeeded.
+		//
+		// Unbounded, though, that is request amplification: nothing here can
+		// tell a per-row failure from a systemic one, so a revoked token, a
+		// 5xx or a refused connection fails the batch instantly and then
+		// fires one doomed request per target — 101 requests at the default
+		// batch size of 100, every refresh cycle, against the very tracker
+		// this batching exists to stop over-polling.
+		//
+		// The cap keeps the recovery while bounding the worst case. Targets
+		// past it stay FailedKeys and are retried next cycle, so a genuine
+		// per-row failure still resolves, just over a few cycles instead of
+		// one.
+		degrade, deferred := boundRefreshDegradation(targets)
+		slog.Warn("orchestrator: dependency audit batch refresh failed; retrying a bounded prefix per issue",
+			"targets", len(targets), "retrying", len(degrade), "deferred", len(deferred), "error", err)
+		o.confirmDependencyRefreshTargets(ctx, degrade, map[string]domain.Issue{}, result)
+		for _, t := range deferred {
+			result.FailedKeys = append(result.FailedKeys, t.Key)
+		}
+		return
+	}
+	byID := make(map[string]domain.Issue, len(issues))
+	for _, issue := range issues {
+		byID[issue.ID] = issue
+	}
+	o.confirmDependencyRefreshTargets(ctx, targets, byID, result)
+}
+
+// confirmDependencyRefreshTargets files each target using the batch result
+// where present, and an authoritative per-issue fetch where absent.
+func (o *Orchestrator) confirmDependencyRefreshTargets(
+	ctx context.Context,
+	targets []dependencyRefreshTarget,
+	byID map[string]domain.Issue,
+	result *DependencyRefreshResult,
+) {
+	for _, t := range targets {
+		issue, found := byID[t.IssueID]
+		if !found {
+			// Confirm with an authoritative single fetch before retiring the
+			// row. See the doc comment: batch omission is not proof.
+			if ctx.Err() != nil {
+				result.FailedKeys = append(result.FailedKeys, t.Key)
+				continue
+			}
+			confirmed, err := o.fetchDependencyRefreshIssue(ctx, t)
+			switch {
+			case errors.Is(err, tracker.ErrNotFound):
+				result.MissingKeys = append(result.MissingKeys, t.Key)
+			case err != nil:
+				slog.Warn("orchestrator: dependency audit refresh failed",
+					"identifier", t.Identifier, "issue_id", t.IssueID, "error", err)
+				result.FailedKeys = append(result.FailedKeys, t.Key)
+			default:
+				result.Issues = append(result.Issues, DependencyRefreshIssue{
+					RequestKey: t.Key,
+					Issue:      *confirmed,
+				})
+			}
+			continue
+		}
+		result.Issues = append(result.Issues, DependencyRefreshIssue{
+			RequestKey: t.Key,
+			Issue:      issue,
+		})
 	}
 }
 

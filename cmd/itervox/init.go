@@ -16,7 +16,7 @@ import (
 )
 
 // generateWorkflow builds the WORKFLOW.md content from scanned repo info.
-func generateWorkflow(trackerKind, runner string, info repoInfo) string {
+func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath string) string {
 	var b strings.Builder
 
 	// ── frontmatter ───────────────────────────────────────────────────────────
@@ -156,7 +156,18 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		cloneURL = "git@github.com:owner/" + info.ProjectName + ".git"
 	}
 	b.WriteString("\nworkspace:\n")
-	b.WriteString("  root: ~/.itervox/workspaces/" + info.ProjectName + "\n")
+	// Namespaced with the same derivation as the built-in default, NOT the
+	// bare project name. A workspace directory is keyed by issue identifier
+	// alone, and info.ProjectName is only the repo basename — so two checkouts
+	// named "api" under different owners shared a root, and EVERY non-git
+	// directory shared "my-project". Two agents would then check out different
+	// codebases into the same directory, and one project's auto_clear would
+	// delete the other's live worktree.
+	//
+	// Because init writes this explicitly, resolvePathValue never consults
+	// defaultWorkspaceRoot — so scaffolding the bare name here bypassed that
+	// protection entirely.
+	b.WriteString("  root: ~/.itervox/workspaces/" + config.WorkspaceProjectKey(workflowPath) + "\n")
 	b.WriteString("  worktree: true\n")
 	b.WriteString("  clone_url: " + cloneURL + "\n")
 	b.WriteString("  base_branch: " + info.DefaultBranch + "\n")
@@ -362,6 +373,7 @@ func runInit(args []string) {
 	_ = *templateName // currently scaffolds the same default; future presets emit different blocks.
 
 	if *update {
+		warnIfDaemonRunning(*workflowPath, "`itervox init --update`")
 		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
@@ -387,6 +399,24 @@ func runInit(args []string) {
 		}
 		for _, warning := range result.Warnings {
 			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
+		}
+		// --update returns here, so anything an EXISTING project still needs
+		// must be done before this point. The .env stub is one of them: the
+		// fresh-init path below creates it, but a project migrating an old
+		// WORKFLOW.md never reaches that code, so `init --update` left the
+		// operator with `api_key: $LINEAR_API_KEY` and no file to define it
+		// in — the daemon then hard-failed startup with "missing
+		// tracker.api_key" and no indication of where to put it.
+		//
+		// The tracker kind comes from the migrated workflow, not --tracker,
+		// which is not required for --update.
+		updateDir := filepath.Join(filepath.Dir(*workflowPath), ".itervox")
+		ensureEnvStub(updateDir, trackerKindFromWorkflow(*workflowPath))
+		// The nested .itervox/.gitignore is self-healed on daemon startup,
+		// but write it now so the .env just created is covered before the
+		// operator's next `git add`.
+		if err := finalizeItervoxGitignore(updateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 		}
 		return
 	}
@@ -456,7 +486,7 @@ func runInit(args []string) {
 	info.CodexModels = agent.ListCodexModels()
 	fmt.Printf("  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
 
-	content := generateWorkflow(*trackerKind, *runner, info)
+	content := generateWorkflow(*trackerKind, *runner, info, *output)
 
 	if err := atomicfs.WriteFile(*output, []byte(content), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", *output, err)
@@ -483,21 +513,7 @@ func runInit(args []string) {
 	}
 	envDir := filepath.Join(outputDir, ".itervox")
 	envPath := filepath.Join(envDir, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		_ = os.MkdirAll(envDir, 0o755)
-		var envContent string
-		switch *trackerKind {
-		case "linear":
-			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-		case "github":
-			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nGITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-		}
-		if err := os.WriteFile(envPath, []byte(envContent), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", envPath, err)
-		} else {
-			fmt.Printf("itervox init: wrote %s\n", envPath)
-		}
-	}
+	ensureEnvStub(envDir, *trackerKind)
 
 	// Ensure .itervox runtime files are gitignored and the root .gitignore
 	// has carve-outs for agent / handoff dirs (no-op if root .gitignore

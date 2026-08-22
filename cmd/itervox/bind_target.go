@@ -21,8 +21,8 @@ import (
 // is alive, so it died and left evidence saying otherwise.
 //
 // Resolving both sides collapses the aliases. An explicit `server.port: 0`
-// never matches: the operator is asking the OS for a fresh port, so a rebind
-// is genuinely intended.
+// is handled below: the OS already picked a port on the first bind, so the
+// held socket still satisfies the request and is kept.
 func sameBindTarget(currentAddr, host string, port int) bool {
 	if currentAddr == "" {
 		return false
@@ -62,18 +62,29 @@ func sameBindTarget(currentAddr, host string, port int) bool {
 // returning anyway.
 //
 // It MUST exceed the longest bounded wait inside orch.Run's shutdown, which
-// ends by draining autoClearWg, discardWg, commentWg and depsRefreshWg. The
-// longest of those is the post-run comment at postRunTimeout (60s,
-// worker.go); the async discard paths bound at 15s for the tracker write
-// plus 30s for the event send, i.e. 45s.
+// ends by draining autoClearWg, discardWg, commentWg and depsRefreshWg.
+// Each of the two worst paths is a tracker call followed by an event send,
+// SEQUENTIALLY in the same goroutine, so the bounds add:
 //
-// This was 6s, which is shorter than all of them — so on a reload during a
-// failed-run cleanup or a post-run comment, awaitStop timed out, run()
-// returned anyway, and main()'s loop opened a SECOND outbox.New on the live
-// .itervox/outbox.json. That is exactly the double-handle corruption the
-// wait was added to prevent, so the guard did not actually hold. 75s clears
-// the 60s worst case with headroom.
-const runShutdownGrace = 75 * time.Second
+//   - commentWg's input-required comment (event_loop.go): CreateComment
+//     bounded by postRunTimeout (60s, worker.go) THEN a 30s send  = 90s.
+//   - asyncDiscardAndTransitionTo (event_loop.go): the caller passes a 15s
+//     ctx, but directWriteSink.UpdateIssueState (write_sink.go) builds its
+//     OWN context.Background()+postRunTimeout call ctx and only checks the
+//     caller's ctx between attempts — so attempt 1 runs up to 60s, then a
+//     30s send                                                    = 90s.
+//
+// 105s clears that 90s worst case with headroom. Two earlier values were
+// wrong and both failed the same way: 6s was shorter than every one of these
+// waits, and 75s counted the trailing 30s send for the discard path while
+// omitting it for the comment path that has the identical shape.
+//
+// Getting this too low is not a slow shutdown — it is silent corruption.
+// awaitStop LOGS and returns anyway on timeout, so run() returns with the
+// orchestrator still live and main()'s reload loop opens a SECOND
+// outbox.New on the same .itervox/outbox.json; each persist is a whole-file
+// rewrite from one handle's memory.
+const runShutdownGrace = 105 * time.Second
 
 // awaitStop waits for done to fire, up to grace. It reports whether the
 // component stopped in time.
