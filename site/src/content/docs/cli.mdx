@@ -26,7 +26,7 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `-workflow` | string | `WORKFLOW.md` | Path to your `WORKFLOW.md` configuration file |
-| `-logs-dir` | string | `~/.itervox/logs/<kind>/<project>` | Directory for rotating log files |
+| `-logs-dir` | string | `~/.itervox/logs/<kind>/<slug>-<project>` (or `~/.itervox/logs/workflow/<project>` when no `project_slug` is set) | Directory for rotating log files |
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 
@@ -209,7 +209,7 @@ When the daemon starts, it writes `.itervox/HEARTBEAT.md` beside the active `WOR
 
 ## Logging
 
-**Location:** `~/.itervox/logs/<tracker_kind>/<project_slug>/itervox.log`
+**Location:** `~/.itervox/logs/<kind>/<slug>-<project>/itervox.log` (or `~/.itervox/logs/workflow/<project>/itervox.log` when no `project_slug` is set)
 
 The path is derived from the `tracker.kind` and `tracker.project_slug` fields in `WORKFLOW.md`. You can override it with the `-logs-dir` flag.
 

@@ -901,6 +901,33 @@ func defaultWorkspaceRoot(projectKey string) string {
 	return filepath.Join(base, projectKey)
 }
 
+// CanonicalWorkflowPath returns an absolute, symlink-resolved form of
+// workflowPath, so every per-project namespace derived from it agrees no
+// matter which spelling the operator used.
+//
+// Two spellings of ONE checkout are routine: a symlinked working copy, or
+// simply `/tmp/x` on macOS where /tmp is a symlink to /private/tmp. Hashing
+// the unresolved path gave each spelling its own namespace — and those
+// namespaces hold automation_queue.json (the dependency audit), history.json,
+// paused.json, input_required.json, and a whole workspace/worktree set. A
+// daemon restarted under the other spelling silently abandoned the previous
+// run's queue, audit and worktrees. That is the same collision class the
+// namespacing was added to prevent, merely keyed wrong.
+//
+// EvalSymlinks fails on a path that does not exist yet, which is normal before
+// `itervox init`, so it degrades to the unresolved absolute form rather than
+// erroring.
+func CanonicalWorkflowPath(workflowPath string) string {
+	abs, err := filepath.Abs(workflowPath)
+	if err != nil {
+		abs = workflowPath
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(filepath.Dir(abs)); resolveErr == nil {
+		return filepath.Join(resolved, filepath.Base(abs))
+	}
+	return abs
+}
+
 // WorkspaceProjectKey derives a stable, filesystem-safe namespace for a
 // project from its WORKFLOW.md path. Exported so cmd/itervox can reuse the
 // same derivation for other per-project state.
@@ -908,10 +935,7 @@ func WorkspaceProjectKey(workflowPath string) string {
 	if workflowPath == "" {
 		return ""
 	}
-	abs, err := filepath.Abs(workflowPath)
-	if err != nil {
-		abs = workflowPath
-	}
+	abs := CanonicalWorkflowPath(workflowPath)
 	sum := sha256.Sum256([]byte(abs))
 	label := filepath.Base(filepath.Dir(abs))
 	safe := strings.NewReplacer("/", "_", `\`, "_", ":", "_", " ", "_", ".", "_").Replace(label)

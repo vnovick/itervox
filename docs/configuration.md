@@ -386,7 +386,7 @@ changes nothing.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | no | `~/.itervox/workspaces/<project>` | Where per-issue workspaces are created. Namespaced per project by default because a workspace directory is keyed by issue identifier alone, and identifiers are only unique within one tracker project (every GitHub repo has a `#1`). Set explicitly to opt out |
+| `root` | string | `~/.itervox/workspaces/<project>` | Where per-issue workspaces are created. Namespaced per project by default because a workspace directory is keyed by issue identifier alone, and identifiers are only unique within one tracker project (every GitHub repo has a `#1`). Set explicitly to opt out |
 | `auto_clear` | bool | `false` | Delete the workspace directory **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are preserved. Runtime-editable. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes. **Breaking change in v0.2.0**: previous semantics cleared after every successful run |
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |

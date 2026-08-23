@@ -119,14 +119,32 @@ func bareRemoteMatches(ctx context.Context, barePath, cloneURL string) bool {
 func normalizeRemoteURL(raw string) string {
 	u := strings.TrimSpace(raw)
 	u = strings.TrimSuffix(u, ".git")
+
+	scpStyle := true
 	if i := strings.Index(u, "://"); i >= 0 {
 		u = u[i+3:]
-		if at := strings.Index(u, "@"); at >= 0 {
-			u = u[at+1:] // strip any userinfo
-		}
-	} else if at := strings.Index(u, "@"); at >= 0 {
-		u = u[at+1:]
+		scpStyle = false
 	}
-	u = strings.Replace(u, ":", "/", 1) // scp-style host:path -> host/path
-	return strings.ToLower(strings.TrimSuffix(u, "/"))
+
+	// Split authority from path FIRST, then strip userinfo only inside the
+	// authority. Searching the whole string for "@" let a path segment
+	// impersonate a host: "https://evil.example.com/x@gitlab.com/org/repo"
+	// normalised to the same value as "https://gitlab.com/org/repo", so a
+	// bare clone of one repository would be reused for a different one —
+	// exactly the substitution EnsureBareClone's check exists to prevent.
+	authority, path := u, ""
+	if slash := strings.Index(u, "/"); slash >= 0 {
+		authority, path = u[:slash], u[slash:]
+	}
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		authority = authority[at+1:]
+	}
+	if scpStyle {
+		// scp-style "host:path" — only the authority's colon separates them,
+		// and it must not be confused with a "host:port".
+		if colon := strings.Index(authority, ":"); colon >= 0 {
+			authority, path = authority[:colon], "/"+authority[colon+1:]+path
+		}
+	}
+	return strings.ToLower(strings.TrimSuffix(authority+path, "/"))
 }

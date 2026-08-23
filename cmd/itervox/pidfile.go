@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/vnovick/itervox/internal/config"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -33,24 +34,15 @@ import (
 
 // pidFilePath returns the canonical PID-file path for a given WORKFLOW.md.
 func pidFilePath(workflowPath string) (string, error) {
-	abs, err := filepath.Abs(workflowPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workflow path: %w", err)
-	}
-	// Resolve symlinks so two spellings of ONE checkout agree on the path.
+	// Canonicalised through the SAME derivation as every other per-project
+	// path, so the pid file and the rest of .itervox cannot land in different
+	// directories when a checkout is addressed by two spellings.
 	//
-	// filepath.Abs alone does not: a symlinked checkout (or a /tmp path on
-	// macOS, where /tmp -> /private/tmp) produces a different absolute string
-	// for the same directory, so two daemons on the same WORKFLOW.md wrote
-	// two different pid files and neither saw the other — defeating the guard
-	// entirely and letting both clobber the same .itervox state.
-	//
-	// EvalSymlinks fails when the path does not exist yet, which is normal on
-	// first run, so fall back to the unresolved form rather than erroring.
-	dir := filepath.Dir(abs)
-	if resolved, resolveErr := filepath.EvalSymlinks(dir); resolveErr == nil {
-		dir = resolved
-	}
+	// Note this is a consistency cleanup, NOT a fix for a broken guard: both
+	// spellings of a symlinked checkout open the same inode, so
+	// requireNoLiveDaemon fired correctly before this change too. Verified by
+	// probing the pre-change code.
+	dir := filepath.Dir(config.CanonicalWorkflowPath(workflowPath))
 	return filepath.Join(dir, ".itervox", "daemon.pid"), nil
 }
 

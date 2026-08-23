@@ -86,4 +86,24 @@ func TestNormalizeRemoteURL(t *testing.T) {
 	}
 	assert.NotEqual(t, want, normalizeRemoteURL("git@github.com:acme/other.git"))
 	assert.NotEqual(t, want, normalizeRemoteURL("git@github.com:someone-else/api.git"))
+
+	// A path segment must not be able to impersonate a host. Searching the
+	// whole string for "@" made these compare EQUAL, so a bare clone of one
+	// repository would be reused for a different one — the exact substitution
+	// EnsureBareClone's check exists to prevent.
+	assert.NotEqual(t,
+		normalizeRemoteURL("https://gitlab.com/org/repo"),
+		normalizeRemoteURL("https://evil.example.com/x@gitlab.com/org/repo"),
+		"a path segment containing @ must not impersonate a host")
+
+	// A port is part of the identity: two different endpoints on one host.
+	assert.NotEqual(t,
+		normalizeRemoteURL("https://host:8443/a/b"),
+		normalizeRemoteURL("https://host/8443/a/b"),
+		"a port must not collapse into the path")
+
+	// scp-style host:path still normalises to the https spelling.
+	assert.Equal(t,
+		normalizeRemoteURL("git@github.com:acme/api.git"),
+		normalizeRemoteURL("https://github.com/acme/api"))
 }

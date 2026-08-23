@@ -161,6 +161,10 @@ func (a *orchestratorAdapter) Analytics() *skills.AnalyticsSnapshot {
 	claudeRT, _ := skills.ParseClaudeRuntime(logsDir, 25)
 	codexRT, _ := skills.ParseCodexRuntime(homeDir, 25)
 	merged := skills.MergeRuntimeSnapshots(claudeRT, codexRT)
+	// ProfilesCfg reads under cfgMu. The a.cfg fallback is only for the
+	// no-orchestrator case (tests): Agent.Profiles is on the cfgMu allowlist
+	// and has a live runtime writer, so reading it directly whenever an
+	// orchestrator exists would race the settings handler.
 	profilesCfg := a.cfg.Agent.Profiles
 	if a.orch != nil {
 		profilesCfg = a.orch.ProfilesCfg()

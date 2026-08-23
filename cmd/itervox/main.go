@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -120,7 +119,7 @@ func defaultLogsDir(workflowPath string) string {
 		// `demo-id-*` rows written by an unrelated `kind: memory` run, then
 		// asked Linear about issues that had never existed there on every
 		// refresh cycle.
-		return filepath.Join(base, "workflow", workflowPathKey(workflowPath))
+		return filepath.Join(base, "workflow", config.WorkspaceProjectKey(workflowPath))
 	}
 	// Encode the slug so it is safe as a directory name component, and append
 	// the workflow key.
@@ -135,26 +134,7 @@ func defaultLogsDir(workflowPath string) string {
 	// The slug stays in the path so the directory remains recognisable to a
 	// human browsing ~/.itervox/logs.
 	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
-	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+workflowPathKey(workflowPath))
-}
-
-// workflowPathKey derives a stable, filesystem-safe directory name for a
-// WORKFLOW.md path. A hash rather than a sanitised path so the name has a
-// bounded length and cannot collide with a tracker kind directory; the last
-// path element is prefixed to keep it recognisable to a human browsing
-// ~/.itervox/logs.
-func workflowPathKey(workflowPath string) string {
-	abs, err := filepath.Abs(workflowPath)
-	if err != nil {
-		abs = workflowPath
-	}
-	sum := sha256.Sum256([]byte(abs))
-	label := filepath.Base(filepath.Dir(abs))
-	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_", ".", "_").Replace(label)
-	if safe == "" || safe == "_" {
-		safe = "workflow"
-	}
-	return safe + "-" + hex.EncodeToString(sum[:4])
+	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+config.WorkspaceProjectKey(workflowPath))
 }
 
 func configuredBackend(command, explicit string) string {
@@ -378,7 +358,7 @@ func main() {
 
 	flag.Usage = printUsage
 	workflowPath := flag.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
-	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: ~/.itervox/logs/<kind>/<project>)")
+	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: a per-project dir under ~/.itervox/logs)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "grace period for active workers on SIGINT/SIGTERM before force exit")
 	logFormatFlag := flag.String("log-format", "", "log format for the rotating file sink: text|json (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
@@ -425,8 +405,16 @@ func main() {
 	// interleaving two daemons' output in one file and rotating it out from
 	// under the running one. Nothing below this point may precede the guard.
 	if pid, recorded, pidPath, err := requireNoLiveDaemon(*workflowPath); err != nil {
+		// Deliberately NOT writeStartupErrorMarker: that writes
+		// STARTUP_ERROR.md into the directory the LIVE daemon owns, and the
+		// heartbeat writer reads it to report "Daemon: degraded". A refused
+		// second start would therefore flip a perfectly healthy daemon to
+		// degraded with someone else's error, until an operator ran
+		// `itervox doctor --clear-startup-error`.
+		//
+		// This is also not a startup CONFIG error — the config is fine; the
+		// operator simply started twice. stderr is the right and only channel.
 		fmt.Fprintln(os.Stderr, err.Error())
-		writeStartupErrorMarker(*workflowPath, err)
 		_ = pid
 		_ = recorded
 		_ = pidPath
