@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/vnovick/itervox/internal/config"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -33,11 +34,16 @@ import (
 
 // pidFilePath returns the canonical PID-file path for a given WORKFLOW.md.
 func pidFilePath(workflowPath string) (string, error) {
-	abs, err := filepath.Abs(workflowPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workflow path: %w", err)
-	}
-	return filepath.Join(filepath.Dir(abs), ".itervox", "daemon.pid"), nil
+	// Canonicalised through the SAME derivation as every other per-project
+	// path, so the pid file and the rest of .itervox cannot land in different
+	// directories when a checkout is addressed by two spellings.
+	//
+	// Note this is a consistency cleanup, NOT a fix for a broken guard: both
+	// spellings of a symlinked checkout open the same inode, so
+	// requireNoLiveDaemon fired correctly before this change too. Verified by
+	// probing the pre-change code.
+	dir := filepath.Dir(config.CanonicalWorkflowPath(workflowPath))
+	return filepath.Join(dir, ".itervox", "daemon.pid"), nil
 }
 
 // writePIDFile writes the current process PID (plus the absolute workflow
@@ -198,4 +204,27 @@ func removeHeartbeatFile(workflowPath string) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		slog.Warn("itervox: failed to remove HEARTBEAT.md", "path", path, "error", err)
 	}
+}
+
+// warnIfDaemonRunning prints a warning when a live daemon owns workflowPath.
+//
+// Used by the one-shot subcommands that write `.itervox/` state — `init
+// --update`, `deps analyze` — which run outside the daemon and so bypass
+// requireNoLiveDaemon entirely. Their writes race the running daemon's own:
+// a migration rewrites WORKFLOW.md under a daemon that has already parsed it,
+// and an analyzer pass rewrites the dependency sidecar the daemon is reading.
+//
+// A warning rather than a refusal: both commands are legitimate against a live
+// daemon (a migration is often exactly what you want before a reload), and
+// hard-failing would break established workflows. The point is that the
+// operator learns about the overlap instead of debugging its symptoms.
+func warnIfDaemonRunning(workflowPath, action string) {
+	pid, _, path, err := readPIDFile(workflowPath)
+	if err != nil || !processAlive(pid) {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: a daemon is running for this WORKFLOW.md (pid=%d, %s).\n"+
+			"  %s writes .itervox state that the daemon also owns; restart it afterwards so it picks up the change.\n",
+		pid, path, action)
 }

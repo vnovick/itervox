@@ -69,12 +69,29 @@ type Issue struct {
 }
 
 // BlockerRef — a lightweight reference to a blocking issue.
+//
+// Origin is an optional provenance marker set by the tracker adapter at
+// normalize time. "" (the zero value) means "no adapter-supplied origin" —
+// internal/orchestrator/dependency_audit.go::dependencySourceForBlocker
+// falls back to its existing text-vs-relation heuristic in that case. Linear
+// sets Origin to "sub_issue" for BlockerRefs derived from a parent's
+// children (see internal/tracker/linear/normalize.go), which maps to the
+// dedicated DependencySourceSubIssue audit label so operators can tell
+// sub-issue gating apart from an explicit "blocks" relation.
 type BlockerRef struct {
 	ID         *string
 	Identifier *string
 	State      *string
 	URL        *string
+	Origin     string
 }
+
+// BlockerOriginSubIssue is the BlockerRef.Origin value for refs derived from
+// a parent issue's sub-issues. The single shared constant exists because
+// three packages (tracker/linear sets it, orchestrator maps it, and the
+// audit-source label mirrors it) must agree on the string — a bare literal
+// in any of them could drift with no compiler signal.
+const BlockerOriginSubIssue = "sub_issue"
 
 // Project is a generic project/team/repository grouping returned by trackers
 // that support project-level filtering (e.g. Linear workspaces).

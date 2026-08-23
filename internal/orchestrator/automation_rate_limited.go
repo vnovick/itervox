@@ -124,7 +124,14 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 			// they don't have to grep daemon logs to know why a stuck
 			// issue stopped auto-switching. Fire-and-forget.
 			if o.claimRateLimitCapComment(issue.ID, now) {
-				go o.commentRateLimitCapExhausted(issue, failedProfile)
+				// Tracked on commentWg: this goroutine enqueues a DURABLE
+				// outbox entry, so Run must not return while it is still
+				// writing .itervox/outbox.json.
+				o.commentWg.Add(1)
+				go func() {
+					defer o.commentWg.Done()
+					o.commentRateLimitCapExhausted(issue, failedProfile)
+				}()
 			}
 			continue
 		}
@@ -215,7 +222,12 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 			// claude-coder → codex-coder due to rate-limit" without
 			// having to read the daemon logs. Fire-and-forget — failure
 			// to post must NOT block the dispatch.
-			go o.commentRateLimitedSwitch(issue, failedProfile, failedBackend, rule, promptTokensTotal, completionTokensTotal)
+			// Tracked on commentWg — see the cap-exhausted call site above.
+			o.commentWg.Add(1)
+			go func() {
+				defer o.commentWg.Done()
+				o.commentRateLimitedSwitch(issue, failedProfile, failedBackend, rule, promptTokensTotal, completionTokensTotal)
+			}()
 		}
 	}
 	return queued
@@ -361,7 +373,7 @@ func (o *Orchestrator) commentRateLimitedSwitch(
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(body)); err != nil {
+	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
 		slog.Warn("orchestrator: failed to post rate-limit switch comment",
 			"issue_id", issue.ID, "automation", rule.ID, "error", err)
 	}
@@ -388,7 +400,7 @@ func (o *Orchestrator) commentRateLimitCapExhausted(issue domain.Issue, failedPr
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(body)); err != nil {
+	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
 		slog.Warn("orchestrator: failed to post cap-exhausted comment",
 			"issue_id", issue.ID, "error", err)
 	}

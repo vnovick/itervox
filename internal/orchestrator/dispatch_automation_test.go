@@ -273,6 +273,114 @@ func TestAutomationQueueDrainStartsWorkerWhenSlotAvailable(t *testing.T) {
 	assert.Equal(t, "automation", run.Kind)
 }
 
+// TestAutomationQueueableReasonInferredBlockedBy is C1's classifier-level
+// regression guard: the soft (LLM-inferred) dependency gate added by
+// dispatch.go ("inferred_blocked_by:<source>") must be queueable with the
+// same Blocked-style status as the hard tracker-blocker gate, preserving the
+// detail suffix. Before the fix, automationQueueReasonFromString only
+// special-cased the "blocked_by" prefix, so "inferred_blocked_by:ENG-1" fell
+// through to AutomationQueueReason("inferred_blocked_by:ENG-1") (the whole
+// string, colon included) which the switch in automationQueueableReason does
+// not recognize — default case, not queueable.
+func TestAutomationQueueableReasonInferredBlockedBy(t *testing.T) {
+	t.Parallel()
+
+	queueable, reason, detail := automationQueueableReason("inferred_blocked_by:ENG-1")
+	require.True(t, queueable, "inferred_blocked_by must be queueable — the soft gate must never be harsher than the hard gate")
+	assert.Equal(t, AutomationQueueReasonInferredBlockedBy, reason)
+	assert.Equal(t, "ENG-1", detail)
+	assert.Equal(t, AutomationQueueBlocked, automationQueueStatusForReason(reason),
+		"inferred_blocked_by must map to the same Blocked-style status as blocked_by")
+}
+
+// TestAutomationDispatchQueuesWhenInferredBlocked is C1's handleAutomationDispatch
+// regression guard: an issue held only by a gating LLM-inferred dependency
+// edge (dispatch.go's ineligibleReasonShared "inferred_blocked_by:<source>"
+// guard) must be queued durably with a Blocked-style status, exactly like the
+// tracker-blocked_by case, instead of being silently dropped.
+func TestAutomationDispatchQueuesWhenInferredBlocked(t *testing.T) {
+	cfg := automationBaseCfg()
+	state := NewState(cfg)
+	// Gate ENG-1 via an LLM-inferred edge only — no tracker BlockedBy.
+	state.InferredDeps["ENG-1"] = []InferredDepEntry{
+		{Source: "ENG-0", Gating: true},
+	}
+
+	o := New(cfg, nil, nil, nil)
+	issue := automationIssue("Todo")
+	dispatch := AutomationDispatch{
+		AutomationID: "nightly-cron",
+		ProfileName:  "default",
+		Instructions: "Inspect queued work",
+		Trigger: AutomationTriggerContext{
+			Type:    config.AutomationTriggerCron,
+			Cron:    "*/1 * * * *",
+			FiredAt: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		},
+	}
+
+	out := o.handleEvent(t.Context(), state, OrchestratorEvent{
+		Type:       EventDispatchAutomation,
+		Issue:      &issue,
+		Automation: &dispatch,
+	})
+
+	require.Empty(t, out.Running, "an inferred-blocked issue must not start a worker")
+	require.Len(t, out.AutomationQueue, 1, "the dispatch must be queued, not dropped")
+	entry := out.AutomationQueue[automationQueueKey(issue, dispatch)]
+	require.NotNil(t, entry)
+	assert.Equal(t, AutomationQueueReasonInferredBlockedBy, entry.Reason)
+	assert.Equal(t, "ENG-0", entry.ReasonDetail)
+	assert.Equal(t, AutomationQueueBlocked, entry.Status,
+		"inferred-blocked entries must carry the same Blocked-style status as tracker-blocked entries")
+}
+
+// TestDrainDoesNotRemoveEntryWhenTargetBecomesInferredBlocked is C1's
+// durable-state-deletion regression guard: a parked queue entry whose target
+// issue subsequently acquires a gating LLM-inferred edge must stay in the
+// queue (reclassified to Blocked), not be deleted by
+// drainAutomationQueueWithCandidates's removeAutomationQueueEntry fallback
+// for non-queueable reasons.
+func TestDrainDoesNotRemoveEntryWhenTargetBecomesInferredBlocked(t *testing.T) {
+	cfg := automationBaseCfg()
+	state := NewState(cfg)
+	issue := automationIssue("Todo")
+	firstAt := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	dispatch := AutomationDispatch{
+		AutomationID: "nightly-cron",
+		ProfileName:  "default",
+		Instructions: "Inspect queued work",
+		Trigger: AutomationTriggerContext{
+			Type:    config.AutomationTriggerCron,
+			Cron:    "*/1 * * * *",
+			FiredAt: firstAt,
+		},
+	}
+	// Park the entry with an unrelated queueable reason first, mirroring a
+	// prior tick where e.g. a per-state limit applied.
+	require.True(t, enqueueAutomation(&state, issue, dispatch, "per_state_limit", firstAt))
+	require.Contains(t, state.AutomationQueue, automationQueueKey(issue, dispatch))
+
+	// The analyzer pass now attaches a gating inferred edge to the same
+	// target between drain ticks.
+	state.InferredDeps["ENG-1"] = []InferredDepEntry{
+		{Source: "ENG-0", Gating: true},
+	}
+	candidates := map[string]domain.Issue{
+		issue.ID:         issue,
+		issue.Identifier: issue,
+	}
+
+	o := New(cfg, nil, nil, nil)
+	o.drainAutomationQueueWithCandidates(t.Context(), &state, firstAt.Add(time.Minute), candidates)
+
+	entry := state.AutomationQueue[automationQueueKey(issue, dispatch)]
+	require.NotNil(t, entry, "a fresh analyzer pass must not silently delete a durable queue entry — C1")
+	assert.Equal(t, AutomationQueueReasonInferredBlockedBy, entry.Reason)
+	assert.Equal(t, "ENG-0", entry.ReasonDetail)
+	assert.Equal(t, AutomationQueueBlocked, entry.Status)
+}
+
 func TestAutomationQueueableReasonClassifiesRetryableAndTerminalReasons(t *testing.T) {
 	t.Parallel()
 

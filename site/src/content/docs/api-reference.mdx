@@ -19,14 +19,20 @@ http://localhost:8090/api/v1
 
 ### Dashboard / API bearer auth
 
-When Itervox binds to a non-loopback address, it secures all `/api/v1/*`
-routes except `/health` with bearer-token auth.
+By default, on every bind — including loopback (`127.0.0.1`, `localhost`,
+`::1`) — Itervox secures all `/api/v1/*` routes except `/api/v1/health` with
+bearer-token auth. Bind address is not treated as a security boundary: a
+loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
+one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
-- If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated_lan` is
-  `false`, Itervox auto-generates an ephemeral token at startup.
-- Loopback binds (`127.0.0.1`, `localhost`, `::1`) do not require auth.
-- `GET /health` is always auth-exempt.
+- If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
+  `false` (the default), Itervox auto-generates an ephemeral token at
+  startup and prints the tokened dashboard URL to stderr once.
+- `server.allow_unauthenticated: true` disables auth entirely, on every
+  bind. Renamed from `server.allow_unauthenticated_lan`, which still parses
+  as a deprecated alias.
+- `GET /api/v1/health` is always auth-exempt — the only auth-exempt route.
 
 ```bash
 curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
@@ -76,7 +82,7 @@ JSON errors use the typed envelope below:
 
 ## Health
 
-### `GET /health`
+### `GET /api/v1/health`
 
 Auth-exempt liveness probe.
 

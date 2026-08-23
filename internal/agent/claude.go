@@ -142,6 +142,7 @@ func (c *ClaudeRunner) RunTurn(
 		// The workspace path is expected to exist on the remote host (e.g. NFS share).
 		// Use -t to allocate a PTY so remote processes receive SIGHUP when SSH exits.
 		shellCmd := buildShellCmd(command, sessionID, prompt)
+		shellCmd = itervoxAgentExportPrefix() + shellCmd
 		if logDir != "" {
 			shellCmd = "export CLAUDE_CODE_LOG_DIR=" + shellQuote(logDir) + "; mkdir -p " + shellQuote(logDir) + "; " + shellCmd
 		}
@@ -163,12 +164,18 @@ func (c *ClaudeRunner) RunTurn(
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
 	}
+	logDirEnv := ""
 	if logDir != "" && workerHost == "" {
 		if err := os.MkdirAll(logDir, 0o755); err != nil {
 			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
 		}
-		cmd.Env = append(os.Environ(), "CLAUDE_CODE_LOG_DIR="+logDir)
+		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
 	}
+	// Set unconditionally: Go inherits the parent environment when cmd.Env is
+	// nil, so leaving it unset on any path silently drops the marker. For the
+	// SSH path cmd.Env applies to the local ssh process only — the marker
+	// travels in the shell command instead (see below).
+	cmd.Env = itervoxAgentEnv(logDirEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

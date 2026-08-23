@@ -143,8 +143,10 @@ counted for audit, and existing queued work continues draining until the queue
 falls below the low-water mark.
 
 Dependency audit normalizes `issue.BlockedBy` into observable `blocked`,
-`unknown`, and `unblocked` states. Linear blockers come from native relations;
-GitHub blockers come from issue-body `blocked by #123` references. Unknown
+`unknown`, and `unblocked` states. Linear blockers come from native relations
+and sub-issues (children block their parent); GitHub blockers come from
+issue-body phrases (`blocked by`/`blocked on`/`depends on`/`depends upon`/
+`requires`/`waiting on`/`waiting for` + `#123` reference lists). Unknown
 blocker state remains unresolved. A PR merge does not unblock dependents until
 the tracker later reports the blocking issue as terminal/closed/done.
 

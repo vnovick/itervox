@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.11) that implements the
+**Itervox** is a long-running daemon (Go 1.25.13) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
@@ -80,8 +80,8 @@ No mutex is needed for `State` fields — only the event loop writes them.
 ### Queue, dependency audit, and status ledgers are event-loop state
 
 `AutomationQueue`, `AutomationQueueOrder`, `AutomationQueueBackpressure`,
-`DependencyAudit`, and `IssueStatusHistory` are normal `orchestrator.State`
-fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
+`DependencyAudit`, `DispatchPressure`, and `IssueStatusHistory` are normal
+`orchestrator.State` fields. They follow the same rule as `Running`, `RetryQueue`, and other state:
 only the event loop mutates them.
 
 - Automation producers send `EventDispatchAutomation`; the event loop decides
@@ -92,10 +92,31 @@ only the event loop mutates them.
   `blockers_resolved` automation trigger when blockers transition to terminal,
   but tracker state moves require explicit automation policy plus a profile with
   `move_state`.
-- The dashboard Deps tab is display-only in v0.2.0 and must derive from
-  snapshot dependency graph rows, not a parallel frontend dependency store.
+- Inferred (LLM-detected) edges soft-gate dispatch: a confidence threshold,
+  a staleness window, and a per-issue operator override (`State.DepsOverrides`)
+  all factor into `InferredDepEntry.Gating`; tracker-declared blockers
+  (`DependencyAudit`) stay hard blocks regardless. The dependency graph is
+  derived solely from `orchestrator.State.InferredDeps` (event-loop
+  reconciled) plus `DependencyAudit` — `cmd/itervox` no longer reads the
+  deps-analyzer sidecar for the dashboard graph.
+- The dashboard Deps tab derives from snapshot dependency graph rows, not a
+  parallel frontend dependency store. Its only mutation surface is the
+  per-issue inferred-blockers override, which goes through the documented
+  `POST`/`DELETE /api/v1/issues/{identifier}/deps-override` endpoints →
+  `SetDepsOverride` → `EventSetDepsOverride` in the event loop; the tab never
+  mutates dependency state directly.
 - Issue status history is bounded runtime-session history unless future work
   explicitly adds restart durability.
+- `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
+  (no free slots with eligible work waiting) or *dependency-bound* (free
+  slots that went unused because remaining candidates were blocked). It is
+  observed once per tick after the dispatch loop via `observeDispatchPressure`
+  and is session-scoped — deliberately not persisted, since it describes the
+  running fleet's current configuration. Classification runs against a probe
+  copy of `State` with the slot gate neutralized, because
+  `ineligibleReasonShared` checks `AvailableSlots` *before* the blocker gates
+  and would otherwise mask every dependency reason as `no_slots` on exactly
+  the saturated ticks the metric exists to explain.
 
 ### `cfgMu` guards exactly these fields (and nothing else)
 
@@ -220,7 +241,7 @@ cmd/itervox (wires everything)
 - **State**: Zustand (`itervoxStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters, `tokenStore`/`authStore` for auth)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
 - **Real-time**: SSE via `@microsoft/fetch-event-source` (NOT native `EventSource`) — needed so the connection can carry an `Authorization: Bearer` header. Single seam is `web/src/auth/authedEventStream.ts`, consumed by `useItervoxSSE`, `useLogStream`, and the per-issue log-stream in `queries/logs.ts`.
-- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on non-loopback bind unless `server.allow_unauthenticated_lan: true`. All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
+- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results
@@ -266,7 +287,15 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 ## Known dead code (do not flag as bugs)
 
-*No known dead code at this time.*
+**Reviewer fan-out machinery (gated, not removed).** `ReviewerProfileChain`
+truncates its result to one entry while multi-reviewer fan-out is disabled for
+the v0.2.1 release, so every `len(chain) > 1` guard resolves statically and the
+following have no reachable read site: `AdvanceReviewChain`, `ReadReviewVerdict`,
+`advanceReviewChainForIssue`'s body past its early return, `reviewVerdictRelPathFor`,
+`State.ReviewChainIndex`, `State.ReviewOutcomes`, and the `agent.review_quorum`
+config field. This is deliberate — see the comment on `ReviewerProfileChain` for
+the three reproduced failures that gate it. Deleting the truncation re-enables
+the whole path; do not delete the machinery as "unused".
 
 ---
 

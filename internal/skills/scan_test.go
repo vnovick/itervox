@@ -16,6 +16,7 @@ func TestScan_StubReturnsInventoryWithScanTime(t *testing.T) {
 	}
 	if inv == nil {
 		t.Fatal("Scan returned nil inventory")
+		return
 	}
 	if inv.ScanTime.Before(before) || inv.ScanTime.After(after) {
 		t.Fatalf("ScanTime %v outside expected window [%v, %v]", inv.ScanTime, before, after)

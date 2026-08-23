@@ -4,7 +4,19 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"strings"
+	"sync"
 )
+
+// secretPattern pairs a regex with its replacement string. Most patterns
+// replace the entire match with secretMask; the token query-param pattern
+// captures a prefix group and needs a `$1`-style replacement to preserve it
+// (see secretValuePatterns below), so ReplaceAllString needs a per-pattern
+// replacement rather than a single constant.
+type secretPattern struct {
+	re          *regexp.Regexp
+	replacement string
+}
 
 // secretValuePatterns are regex patterns for plain-string secrets that may
 // appear in log records. These catch values that escape the structured-attr
@@ -13,32 +25,109 @@ import (
 // that hasn't been migrated to the Secret LogValuer yet.
 //
 // Each pattern is RE2-compatible (Go regexp). The redactor replaces every
-// match with the `secretMask` constant from secret.go.
+// match with `secretMask` (or, for patterns with a capture group, with the
+// captured group followed by `secretMask`).
 //
 // Patterns are intentionally conservative — false-redacting is much better
 // than false-leaking. If a new secret format appears in production logs, add
 // a pattern here.
-var secretValuePatterns = []*regexp.Regexp{
+var secretValuePatterns = []secretPattern{
 	// Anthropic API keys: "sk-ant-..." (alphanumeric body of variable length).
-	regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{32,}`),
+	{regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{32,}`), secretMask},
 	// Linear API keys: "lin_api_..." (legacy) and "lin_oauth_..." (OAuth).
-	regexp.MustCompile(`lin_(?:api|oauth)_[A-Za-z0-9]{32,}`),
+	{regexp.MustCompile(`lin_(?:api|oauth)_[A-Za-z0-9]{32,}`), secretMask},
 	// GitHub personal-access tokens (classic + fine-grained).
-	regexp.MustCompile(`ghp_[A-Za-z0-9]{36,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{82,}`),
+	{regexp.MustCompile(`ghp_[A-Za-z0-9]{36,}`), secretMask},
+	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{82,}`), secretMask},
 	// Authorization: Bearer <token> (any token shape).
-	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+[^\s"',]+`),
-	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{16,}`),
+	{regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+[^\s"',]+`), secretMask},
+	{regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{16,}`), secretMask},
+	// Dashboard URL token query param: "?token=<hex>" / "&token=<hex>". The
+	// startup log line prints "http://host/?token=<hex>" verbatim (see
+	// main.go), so any log line, doctor output, or copy/paste that echoes
+	// that URL carries the bearer token in the clear. The `[?&]token=`
+	// prefix is captured and kept so the redacted line still reads as a
+	// URL with a token param — only the hex value itself is masked.
+	{regexp.MustCompile(`([?&]token=)[0-9a-f]{32,}`), "${1}" + secretMask},
 }
 
 // redactString applies every secretValuePattern to s, replacing every match
-// with `secretMask`. Returns the original string when no pattern matches —
-// callers can use the returned string == s comparison as a fast-path check.
+// with `secretMask` (preserving captured prefixes where the pattern has
+// one), then scrubs any exact values registered via RegisterSecret. Returns
+// the original string when nothing matches — callers can use the returned
+// string == s comparison as a fast-path check.
 func redactString(s string) string {
-	for _, re := range secretValuePatterns {
-		s = re.ReplaceAllString(s, secretMask)
+	for _, p := range secretValuePatterns {
+		s = p.re.ReplaceAllString(s, p.replacement)
+	}
+
+	registeredSecretsMu.RLock()
+	secrets := registeredSecrets
+	registeredSecretsMu.RUnlock()
+	for _, v := range secrets {
+		if strings.Contains(s, v) {
+			s = strings.ReplaceAll(s, v, secretMask)
+		}
 	}
 	return s
+}
+
+// minRegisteredSecretLen is the shortest value RegisterSecret will accept.
+// Values shorter than this are far more likely to be an accidental short
+// string (a typo'd env var, a test fixture) than a real secret, and
+// registering them would risk mass-redacting ordinary log text that happens
+// to contain the same short substring.
+const minRegisteredSecretLen = 8
+
+// registeredSecretsMu guards registeredSecrets. RegisterSecret is called
+// rarely (a handful of times at startup); redactString is called on every
+// log record from potentially many goroutines (worker subprocesses, HTTP
+// handlers, the orchestrator event loop), so the hot path takes RLock and
+// copies the slice header only — no per-record allocation or contention
+// against other readers.
+var (
+	registeredSecretsMu sync.RWMutex
+	registeredSecrets   []string
+)
+
+// RegisterSecret adds value to the set of exact-match strings that
+// redactString scrubs from every subsequent log line (message and
+// attributes), in addition to the pattern-based matches in
+// secretValuePatterns above.
+//
+// Rationale (wave-1 review): agent subprocesses (claude/codex) inherit the
+// full process environment, including ITERVOX_API_TOKEN — a bare hex string
+// that doesn't match any Anthropic/Linear/GitHub/Bearer pattern above. If a
+// subprocess dumps its environment (debug output, a crash, `env` invoked by
+// the agent itself) that output is slogged verbatim and the pattern-based
+// redactor would miss it entirely. Headless mode additionally fans
+// post-startup logs to journald, widening the blast radius of any leak.
+// Registering the live token's exact value closes that gap independent of
+// its shape.
+//
+// value is never logged by this function — only its length is inspectable
+// (via the no-op-on-short guard below), never its content.
+//
+// No-ops on empty or short (<8 char) values: an empty value signals nothing
+// was configured, and a short value is likely not a real secret — treating
+// it as one would risk redacting unrelated log text that happens to share
+// the substring.
+func RegisterSecret(value string) {
+	if len(value) < minRegisteredSecretLen {
+		return
+	}
+	registeredSecretsMu.Lock()
+	defer registeredSecretsMu.Unlock()
+	for _, v := range registeredSecrets {
+		if v == value {
+			return
+		}
+	}
+	// Append-only: never mutate an existing element or truncate the slice,
+	// so a reader that copied the old slice header under RLock before this
+	// Lock can safely range over it after we release — the elements it
+	// already saw never change.
+	registeredSecrets = append(registeredSecrets, value)
 }
 
 // RedactingHandler wraps another slog.Handler and runs every string-typed

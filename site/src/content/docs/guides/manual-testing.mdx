@@ -595,11 +595,11 @@ Walk through each dashboard view and confirm visual coverage.
 - Skills Inventory: scan shows skills/plugins/hooks/MCP/instructions counts; re-scan button works
 
 **Auth flow:**
-- Stop the daemon, restart binding to `0.0.0.0:8090` (non-loopback)
-- Without `ITERVOX_API_TOKEN`, daemon auto-generates one and prints it
+- Start the daemon on the default loopback bind (`127.0.0.1:8090`)
+- Without `ITERVOX_API_TOKEN`, daemon auto-generates one and prints it (auth is on by default on every bind, including loopback)
 - Visit `http://localhost:8090/?token=<token>` — should auto-capture and proceed
 - Visit `http://localhost:8090/` without token — should show the login screen
-- Set `server.allow_unauthenticated_lan: true` and confirm token is no longer required
+- Set `server.allow_unauthenticated: true` and confirm token is no longer required
 
 ---
 

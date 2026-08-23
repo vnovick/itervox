@@ -66,6 +66,7 @@ func (c *CodexRunner) RunTurn(
 	var cmd *exec.Cmd
 	if workerHost != "" {
 		shellCmd := buildCodexShellCmd(command, sessionID, prompt, workspacePath)
+		shellCmd = itervoxAgentExportPrefix() + shellCmd
 		if logDir != "" {
 			// Tee codex stdout to a file on the remote host so sshFetchLogs can read it later.
 			shellCmd = shellCmd + " | tee " + shellQuote(filepath.Join(logDir, logFileName))
@@ -89,6 +90,11 @@ func (c *CodexRunner) RunTurn(
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
 	}
+	// Set unconditionally: Go inherits the parent environment when cmd.Env is
+	// nil, so leaving it unset on any path silently drops the marker. For the
+	// SSH path cmd.Env applies to the local ssh process only — the marker
+	// travels in the shell command instead (see above).
+	cmd.Env = itervoxAgentEnv()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

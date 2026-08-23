@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -72,12 +74,78 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, 300000, cfg.Agent.MaxRetryBackoffMs)
 	assert.Equal(t, 5, cfg.Agent.MaxRetries)
 	assert.Equal(t, "", cfg.Tracker.FailedState)
+	assert.True(t, cfg.Tracker.Outbox, "tracker.outbox must default true")
 	assert.Equal(t, "claude", cfg.Agent.Command)
 	assert.Equal(t, 3600000, cfg.Agent.TurnTimeoutMs)
 	assert.Equal(t, 30000, cfg.Agent.ReadTimeoutMs)
 	assert.Equal(t, 300000, cfg.Agent.StallTimeoutMs)
 	assert.Equal(t, 60000, cfg.Hooks.TimeoutMs)
-	assert.Nil(t, cfg.Server.Port)
+	require.NotNil(t, cfg.Server.Port)
+	assert.Equal(t, config.DefaultServerPort, *cfg.Server.Port)
+}
+
+// server.port has three meaningful spellings: absent (fixed default, stable
+// dashboard URL across restarts and reloads), explicit 0 (OS picks — the
+// multi-daemon knob), and an explicit port. Absent used to mean ephemeral,
+// which re-rolled the port on every config reload; this pins the new contract.
+func TestServerPortDefaultAndExplicitZero(t *testing.T) {
+	t.Run("absent defaults to fixed port", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("")))
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Server.Port)
+		assert.Equal(t, config.DefaultServerPort, *cfg.Server.Port)
+	})
+	t.Run("explicit zero is preserved", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("server:\n  port: 0\n")))
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Server.Port)
+		assert.Zero(t, *cfg.Server.Port)
+	})
+	t.Run("explicit port is preserved", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("server:\n  port: 9321\n")))
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Server.Port)
+		assert.Equal(t, 9321, *cfg.Server.Port)
+	})
+	t.Run("negative port falls back to the default", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("server:\n  port: -1\n")))
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Server.Port)
+		assert.Equal(t, config.DefaultServerPort, *cfg.Server.Port)
+	})
+}
+
+// TestServerAllowUnauthenticatedAlias covers the #48 rename:
+// server.allow_unauthenticated is the preferred key, the legacy
+// server.allow_unauthenticated_lan still parses as a deprecated alias, and
+// the new key wins when both are present in the same WORKFLOW.md.
+func TestServerAllowUnauthenticatedAlias(t *testing.T) {
+	t.Run("new key parses", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("server:\n  allow_unauthenticated: true\n")))
+		require.NoError(t, err)
+		assert.True(t, cfg.Server.AllowUnauthenticatedLAN)
+	})
+	t.Run("new key absent defaults false", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("")))
+		require.NoError(t, err)
+		assert.False(t, cfg.Server.AllowUnauthenticatedLAN)
+	})
+	t.Run("old key still parses and warns", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("server:\n  allow_unauthenticated_lan: true\n")))
+		require.NoError(t, err)
+		assert.True(t, cfg.Server.AllowUnauthenticatedLAN)
+	})
+	t.Run("new key wins on conflict", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal(
+			"server:\n  allow_unauthenticated: false\n  allow_unauthenticated_lan: true\n")))
+		require.NoError(t, err)
+		assert.False(t, cfg.Server.AllowUnauthenticatedLAN)
+
+		cfg2, err := config.Load(workflowWithContent(t, minimal(
+			"server:\n  allow_unauthenticated: true\n  allow_unauthenticated_lan: false\n")))
+		require.NoError(t, err)
+		assert.True(t, cfg2.Server.AllowUnauthenticatedLAN)
+	})
 }
 
 func TestTrackerKindRequired(t *testing.T) {
@@ -179,6 +247,26 @@ func TestFailedStateExplicit(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, "Backlog", cfg.Tracker.FailedState)
+}
+
+// TestTrackerOutboxExplicitFalse pins the kill switch: `tracker.outbox: false`
+// must round-trip to false (default is true — see TestDefaults).
+func TestTrackerOutboxExplicitFalse(t *testing.T) {
+	content := minimal("  outbox: false\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Outbox)
+}
+
+// TestTrackerOutboxExplicitTrue pins the explicit-true spelling round-trips
+// (not just the absent-key default from TestDefaults).
+func TestTrackerOutboxExplicitTrue(t *testing.T) {
+	content := minimal("  outbox: true\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Outbox)
 }
 
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
@@ -1154,4 +1242,344 @@ func TestLegacySchedulesParsedAsCronAutomations(t *testing.T) {
 	assert.Equal(t, "reviewer", cfg.Automations[0].Profile)
 	assert.Equal(t, []string{"Backlog"}, cfg.Automations[0].Filter.States)
 	assert.Equal(t, []string{"triage"}, cfg.Automations[0].Filter.LabelsAny)
+}
+
+func TestDependencyAuditRefreshDefaults(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	// 10 minutes, deliberately much larger than polling.interval_ms — an
+	// interval shorter than the poll never binds, and the dependency audit is
+	// one of the largest tracker-request consumers (issue #42).
+	assert.Equal(t, 600000, cfg.Agent.DependencyAuditRefreshIntervalMs)
+	assert.Equal(t, 30000, cfg.Agent.DependencyAuditRefreshTimeoutMs)
+	assert.Equal(t, 100, cfg.Agent.DependencyAuditRefreshBatchSize)
+}
+
+func TestDependencyAuditRefreshOverrides(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  dependency_audit_refresh_interval_ms: 5000\n"+
+			"  dependency_audit_refresh_timeout_ms: 9000\n"+
+			"  dependency_audit_refresh_batch_size: 25\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 5000, cfg.Agent.DependencyAuditRefreshIntervalMs)
+	assert.Equal(t, 9000, cfg.Agent.DependencyAuditRefreshTimeoutMs)
+	assert.Equal(t, 25, cfg.Agent.DependencyAuditRefreshBatchSize)
+}
+
+// positiveIntField replaces <= 0 with the default. None of these three fields
+// has a meaningful "disabled" semantic: an interval of 0 re-fetches every tick,
+// a timeout of 0 cancels instantly, a batch size of 0 refreshes nothing.
+func TestDependencyAuditRefreshRejectsNonPositive(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  dependency_audit_refresh_interval_ms: 0\n"+
+			"  dependency_audit_refresh_timeout_ms: -1\n"+
+			"  dependency_audit_refresh_batch_size: 0\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	// 10 minutes, deliberately much larger than polling.interval_ms — an
+	// interval shorter than the poll never binds, and the dependency audit is
+	// one of the largest tracker-request consumers (issue #42).
+	assert.Equal(t, 600000, cfg.Agent.DependencyAuditRefreshIntervalMs)
+	assert.Equal(t, 30000, cfg.Agent.DependencyAuditRefreshTimeoutMs)
+	assert.Equal(t, 100, cfg.Agent.DependencyAuditRefreshBatchSize)
+}
+
+func TestDepsAnalyzerJobDefaults(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 600000, cfg.Agent.DepsAnalyzerTimeoutMs)
+	assert.Equal(t, 75, cfg.Agent.DepsAnalyzerChunkSize)
+}
+
+func TestDepsAnalyzerJobOverrides(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  deps_analyzer_timeout_ms: 120000\n"+
+			"  deps_analyzer_chunk_size: 20\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 120000, cfg.Agent.DepsAnalyzerTimeoutMs)
+	assert.Equal(t, 20, cfg.Agent.DepsAnalyzerChunkSize)
+}
+
+// positiveIntField replaces <= 0 with the default. Neither field has a
+// meaningful "disabled" semantic: a 0 timeout yields an instantly-expired
+// context (every job launches, does nothing, and still looks like it ran), and
+// a 0 chunk size would produce no chunks at all.
+func TestDepsAnalyzerJobRejectsNonPositive(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  deps_analyzer_timeout_ms: 0\n"+
+			"  deps_analyzer_chunk_size: -5\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 600000, cfg.Agent.DepsAnalyzerTimeoutMs)
+	assert.Equal(t, 75, cfg.Agent.DepsAnalyzerChunkSize)
+}
+
+// TestDependenciesConfigDefaults asserts that an absent `dependencies:`
+// section fully defaults: gating on, threshold at
+// DefaultDependenciesConfidenceThreshold, staleness at
+// DefaultDependenciesStalenessHours.
+func TestDependenciesConfigDefaults(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Dependencies.InferredGating)
+	assert.Equal(t, config.DefaultDependenciesConfidenceThreshold, cfg.Dependencies.ConfidenceThreshold)
+	assert.Equal(t, config.DefaultDependenciesStalenessHours, cfg.Dependencies.StalenessHours)
+}
+
+// TestDependenciesConfigIntConfidenceThreshold pins #50's test-coverage gap:
+// an int-typed YAML literal (`confidence_threshold: 1`, no decimal point)
+// decodes as a Go `int` via yaml.v3, not `float64`. toFloat's `case int`
+// branch must coerce it to the in-range float 1.0 — verified empirically at
+// the #50 review but never pinned by a test — and it must NOT trigger the
+// out-of-range warning, since 1.0 sits exactly on the closed [0,1] bound.
+func TestDependenciesConfigIntConfidenceThreshold(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  confidence_threshold: 1\n"))
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1.0, cfg.Dependencies.ConfidenceThreshold, "int-typed 1 must coerce to float64 1.0")
+	assert.NotContains(t, buf.String(), "confidence_threshold out of range",
+		"an in-range int-typed threshold must not trigger the out-of-range warning")
+}
+
+// TestDependenciesConfigParsed asserts explicit `dependencies:` values,
+// including a non-default boolean (inferred_gating: false), round-trip
+// unchanged.
+func TestDependenciesConfigParsed(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  inferred_gating: false\n"+
+			"  confidence_threshold: 0.85\n"+
+			"  staleness_hours: 24\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Dependencies.InferredGating)
+	assert.Equal(t, 0.85, cfg.Dependencies.ConfidenceThreshold)
+	assert.Equal(t, 24, cfg.Dependencies.StalenessHours)
+}
+
+// TestDependenciesConfigClamped asserts out-of-range values fall back to the
+// DEFAULT (not the nearest bound): confidence_threshold outside [0,1] falls
+// back to DefaultDependenciesConfidenceThreshold, and staleness_hours <= 0
+// falls back to DefaultDependenciesStalenessHours.
+func TestDependenciesConfigClamped(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  confidence_threshold: 1.5\n"+
+			"  staleness_hours: -5\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.DefaultDependenciesConfidenceThreshold, cfg.Dependencies.ConfidenceThreshold)
+	assert.Equal(t, config.DefaultDependenciesStalenessHours, cfg.Dependencies.StalenessHours)
+}
+
+// TestDependenciesOrderingDefaults asserts that when `dependencies:` is
+// absent entirely, Ordering defaults to "critical_path" and
+// EscalateBlockedAfterHours defaults to 48.
+func TestDependenciesOrderingDefaults(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.DependenciesOrderingCriticalPath, cfg.Dependencies.Ordering)
+	assert.Equal(t, config.DefaultDependenciesOrdering, cfg.Dependencies.Ordering)
+	assert.Equal(t, config.DefaultDependenciesEscalateHours, cfg.Dependencies.EscalateBlockedAfterHours)
+}
+
+// TestDependenciesOrderingParsed asserts explicit `dependencies.ordering:
+// simple` is respected, and that an explicit
+// `escalate_blocked_after_hours: 0` is preserved as the meaningful
+// "disabled" value rather than being replaced by the default (the exact
+// footgun a positiveIntField-style parse would introduce).
+func TestDependenciesOrderingParsed(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  ordering: simple\n"+
+			"  escalate_blocked_after_hours: 0\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.DependenciesOrderingSimple, cfg.Dependencies.Ordering)
+	assert.Equal(t, 0, cfg.Dependencies.EscalateBlockedAfterHours)
+}
+
+// TestReviewerProfilesAndQuorumParsed asserts the multi-reviewer fan-out
+// fields round-trip, and that review_quorum defaults to the strictest rule
+// when absent (adding reviewers must never weaken the gate).
+func TestReviewerProfilesAndQuorumParsed(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  reviewer_profiles:\n"+
+			"    - security\n"+
+			"    - correctness\n"+
+			"  review_quorum: majority\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"security", "correctness"}, cfg.Agent.ReviewerProfiles)
+	assert.Equal(t, config.ReviewQuorumMajority, cfg.Agent.ReviewQuorum)
+}
+
+func TestReviewQuorumDefaultsToAnyBlock(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, config.ReviewQuorumAnyBlock, cfg.Agent.ReviewQuorum)
+	assert.Equal(t, config.DefaultReviewQuorum, cfg.Agent.ReviewQuorum)
+	assert.Empty(t, cfg.Agent.ReviewerProfiles, "absent reviewer_profiles must stay empty so ReviewerProfileChain falls back")
+}
+
+func TestReviewQuorumInvalidFallsBack(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  review_quorum: sometimes\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, config.DefaultReviewQuorum, cfg.Agent.ReviewQuorum,
+		"an unrecognized quorum must fall back to the strictest rule, not the loosest")
+}
+
+// TestDependenciesOrderingStrictParsed asserts the `critical_path_strict`
+// value survives the loader as itself rather than being swallowed by the
+// unrecognized-value fallback. This is the test that would catch a typo in
+// the YAML key or a missed arm in the validation switch — both of which fail
+// silently by resetting the field to "critical_path", which is exactly the
+// mode the operator was trying to opt out of.
+func TestDependenciesOrderingStrictParsed(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  ordering: critical_path_strict\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.DependenciesOrderingCriticalPathStrict, cfg.Dependencies.Ordering)
+	assert.NotEqual(t, config.DefaultDependenciesOrdering, cfg.Dependencies.Ordering,
+		"critical_path_strict must not silently fall back to the default")
+}
+
+// TestDependenciesOrderingInvalidFallsBack asserts an unknown ordering value
+// falls back to the default "critical_path", and a negative
+// escalate_blocked_after_hours falls back to the default 48 (unlike an
+// explicit 0, which is meaningful and preserved).
+func TestDependenciesOrderingInvalidFallsBack(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"dependencies:\n"+
+			"  ordering: foo\n"+
+			"  escalate_blocked_after_hours: -5\n"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.DependenciesOrderingCriticalPath, cfg.Dependencies.Ordering)
+	assert.Equal(t, config.DefaultDependenciesEscalateHours, cfg.Dependencies.EscalateBlockedAfterHours)
+}
+
+// TestPreferHighOutdegreeAlias asserts the deprecated
+// agent.sort.prefer_high_outdegree knob aliases to dependencies.ordering:
+// critical_path when dependencies.ordering is absent from the YAML, and
+// that an explicit dependencies.ordering (including explicit "simple")
+// always wins over the alias.
+func TestPreferHighOutdegreeAlias(t *testing.T) {
+	t.Run("alias applies when ordering absent", func(t *testing.T) {
+		path := workflowWithContent(t, minimal(
+			"agent:\n"+
+				"  sort:\n"+
+				"    prefer_high_outdegree: true\n"))
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+
+		assert.True(t, cfg.Agent.PreferHighOutdegreeSort)
+		assert.Equal(t, config.DependenciesOrderingCriticalPath, cfg.Dependencies.Ordering)
+	})
+
+	t.Run("explicit ordering wins over alias", func(t *testing.T) {
+		path := workflowWithContent(t, minimal(
+			"agent:\n"+
+				"  sort:\n"+
+				"    prefer_high_outdegree: true\n"+
+				"dependencies:\n"+
+				"  ordering: simple\n"))
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+
+		assert.True(t, cfg.Agent.PreferHighOutdegreeSort)
+		assert.Equal(t, config.DependenciesOrderingSimple, cfg.Dependencies.Ordering)
+	})
+}
+
+// TestDependenciesAutoAnalyzeDefaults asserts that when `dependencies:` is
+// absent entirely, AutoAnalyze defaults to true, AutoAnalyzeMinIntervalMinutes
+// defaults to 60, and AutoAnalyzeDebounceMinutes defaults to 5.
+func TestDependenciesAutoAnalyzeDefaults(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Dependencies.AutoAnalyze)
+	assert.Equal(t, config.DefaultDependenciesAutoAnalyzeMinIntervalMinutes, cfg.Dependencies.AutoAnalyzeMinIntervalMinutes)
+	assert.Equal(t, config.DefaultDependenciesAutoAnalyzeDebounceMinutes, cfg.Dependencies.AutoAnalyzeDebounceMinutes)
+}
+
+// TestDependenciesAutoAnalyzeParsed asserts that explicit
+// `dependencies.auto_analyze` values are respected, along with explicit
+// interval values. It also verifies that <=0 values fall back to defaults
+// (positiveIntField behavior: there is no meaningful zero for analyzer timing).
+func TestDependenciesAutoAnalyzeParsed(t *testing.T) {
+	t.Run("auto_analyze false respected", func(t *testing.T) {
+		path := workflowWithContent(t, minimal(
+			"dependencies:\n"+
+				"  auto_analyze: false\n"))
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+
+		assert.False(t, cfg.Dependencies.AutoAnalyze)
+	})
+
+	t.Run("explicit intervals respected", func(t *testing.T) {
+		path := workflowWithContent(t, minimal(
+			"dependencies:\n"+
+				"  auto_analyze_min_interval_minutes: 90\n"+
+				"  auto_analyze_debounce_minutes: 10\n"))
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, 90, cfg.Dependencies.AutoAnalyzeMinIntervalMinutes)
+		assert.Equal(t, 10, cfg.Dependencies.AutoAnalyzeDebounceMinutes)
+	})
+
+	t.Run("zero and negative intervals fall back to defaults", func(t *testing.T) {
+		path := workflowWithContent(t, minimal(
+			"dependencies:\n"+
+				"  auto_analyze_min_interval_minutes: 0\n"+
+				"  auto_analyze_debounce_minutes: -3\n"))
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, config.DefaultDependenciesAutoAnalyzeMinIntervalMinutes, cfg.Dependencies.AutoAnalyzeMinIntervalMinutes)
+		assert.Equal(t, config.DefaultDependenciesAutoAnalyzeDebounceMinutes, cfg.Dependencies.AutoAnalyzeDebounceMinutes)
+	})
 }

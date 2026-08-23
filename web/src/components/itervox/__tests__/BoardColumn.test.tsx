@@ -27,11 +27,24 @@ vi.mock('@dnd-kit/utilities', () => ({
   },
 }));
 
-// IssueCard renders the issue; mock it to keep tests focused on BoardColumn
+// IssueCard renders the issue; mock it to keep tests focused on BoardColumn.
+// `syncing` is surfaced via data-syncing so tests can assert the
+// syncingIdentifiers join (BoardColumn -> DraggableCard -> IssueCard)
+// reaches the leaf without re-testing IssueCard's own badge rendering
+// (covered by IssueCard.test.tsx).
 vi.mock('../IssueCard', () => ({
-  default: ({ issue, onSelect }: { issue: TrackerIssue; onSelect: (id: string) => void }) => (
+  default: ({
+    issue,
+    onSelect,
+    syncing,
+  }: {
+    issue: TrackerIssue;
+    onSelect: (id: string) => void;
+    syncing?: boolean;
+  }) => (
     <div
       data-testid="issue-card"
+      data-syncing={syncing ? 'true' : 'false'}
       onClick={() => {
         onSelect(issue.identifier);
       }}
@@ -117,5 +130,39 @@ describe('BoardColumn', () => {
     );
     await userEvent.click(screen.getByTestId('issue-card'));
     expect(onSelect).toHaveBeenCalledWith('ABC-99');
+  });
+
+  // outbox Task 4 — syncingIdentifiers is joined against each issue's
+  // identifier (BoardColumn -> DraggableCard's `.has(issue.identifier)`)
+  // and threaded down to IssueCard's `syncing` prop.
+  describe('outbox Task 4: syncingIdentifiers join', () => {
+    it('marks only issues present in syncingIdentifiers as syncing', () => {
+      const issues = [makeIssue('ENG-1'), makeIssue('ENG-2')];
+      render(
+        <BoardColumn
+          state="In Progress"
+          issues={issues}
+          isOver={false}
+          onSelect={vi.fn()}
+          syncingIdentifiers={new Set(['ENG-1'])}
+        />,
+      );
+      const cards = screen.getAllByTestId('issue-card');
+      const byIdentifier = new Map(cards.map((c) => [c.textContent, c]));
+      expect(byIdentifier.get('ENG-1')).toHaveAttribute('data-syncing', 'true');
+      expect(byIdentifier.get('ENG-2')).toHaveAttribute('data-syncing', 'false');
+    });
+
+    it('marks no issues as syncing when syncingIdentifiers is absent', () => {
+      render(
+        <BoardColumn
+          state="In Progress"
+          issues={[makeIssue('ENG-3')]}
+          isOver={false}
+          onSelect={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('issue-card')).toHaveAttribute('data-syncing', 'false');
+    });
   });
 });

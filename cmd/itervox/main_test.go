@@ -306,7 +306,7 @@ func TestInitExistingWorkflowMessageMentionsUpdate(t *testing.T) {
 }
 
 func TestGenerateWorkflow_UsesSchema2ProfileFiles(t *testing.T) {
-	content := generateWorkflow("github", "codex", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"})
+	content := generateWorkflow("github", "codex", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"}, filepath.Join(t.TempDir(), "WORKFLOW.md"))
 
 	assert.Contains(t, content, "itervox_schema_version: 2")
 	for _, profile := range []string{"implementer", "reviewer", "input-responder"} {

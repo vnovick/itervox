@@ -37,6 +37,26 @@ func checkForegroundTTYOwnership() error {
 	)
 }
 
+// TerminalAvailable reports whether Run would actually start the TUI: true
+// when this process currently owns (or can silently reclaim) the foreground
+// TTY, false when there is no controlling terminal at all — headless
+// (systemd, container, CI, detached stdio) — or foreground ownership cannot
+// be resolved.
+//
+// This is a single side-effect-free check: no retry loop, no sleep, no log
+// line. It exists so callers (main.go's pre-TUI slog redirect) can decide
+// ahead of time whether the TUI is about to take the alt-screen, without
+// paying for or triggering the interactive retry/backoff that
+// checkForegroundTTYOwnershipWithRetry performs when stdin is a terminal.
+//
+// It calls the same checkForegroundTTYOwnership core that
+// checkForegroundTTYOwnershipWithRetry uses (that function's first
+// iteration, before any retry), so this probe and Run's internal check
+// cannot drift on what counts as "has a TTY".
+func TerminalAvailable() bool {
+	return checkForegroundTTYOwnership() == nil
+}
+
 func checkForegroundTTYOwnershipWithRetry() error {
 	attempts := 1
 	if stdinIsTerminal() {

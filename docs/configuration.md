@@ -4,7 +4,7 @@ Itervox is configured via a single `WORKFLOW.md` file in your project root
 (or wherever you point `--workflow`). The file contains a YAML front matter
 block followed by a Liquid-templated agent prompt.
 
-**Note:** As of v0.2.0, `server.port` defaults to `0` — the OS picks a free port and the actual URL is written to `.itervox/dashboard_url` (read by Vite's dev proxy) and surfaced in `HEARTBEAT.md` + the startup banner. Set an explicit port if you need a stable known URL; otherwise leave it unset for multi-repo coexistence. Previous v0.1.x behaviour (`port omitted → no HTTP server`) is removed; if you genuinely want to run without the dashboard, kill the dashboard process or run `itervox` with a binary that omits the listener (currently not supported via config).
+**Note:** `server.port` defaults to `8090` — a fixed port, so the dashboard URL is stable across daemon restarts **and** config reloads (the socket stays bound while WORKFLOW.md reloads; only changing `server.host`/`server.port` rebinds it). The bound URL is written to `.itervox/dashboard_url` (read by Vite's dev proxy) and surfaced in `HEARTBEAT.md` + the startup banner. To run several daemons on one machine, give each repo a distinct explicit `server.port`, or set `server.port: 0` to let the OS pick a free port per daemon. If the port is already taken, startup fails loudly naming the holding process — Itervox never silently shifts to a neighbouring port. Previous v0.1.x behaviour (`port omitted → no HTTP server`) is removed; if you genuinely want to run without the dashboard, kill the dashboard process or run `itervox` with a binary that omits the listener (currently not supported via config).
 
 ```markdown
 ---
@@ -52,6 +52,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `working_state` | string | no | `"In Progress"` | State assigned when an agent starts. Empty string disables the transition |
 | `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched |
 | `failed_state` | string | no | `""` | State assigned when max retries are exhausted. When empty, failed issues are paused instead |
+| `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry |
 
 ---
 
@@ -60,6 +61,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
+| `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. |
 
 ---
 
@@ -90,6 +92,8 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `ssh_strict_host_by_host` | map[string]string | `{}` | Per-host override for `StrictHostKeyChecking`. Keys are host addresses, values use the same set as `ssh_strict_host_checking`. Useful for hardening production hosts (`yes`) or temporarily relaxing sandbox VMs (`no`) |
 | `dispatch_strategy` | string | `"round-robin"` | Routing for SSH hosts. One of `round-robin`, `least-loaded`. Runtime-editable |
 | `reviewer_profile` | string | `""` | Name of the profile used for AI code review. Required if `auto_review: true` |
+| `reviewer_profiles` | []string | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. When it has more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict; the combined result is decided by `review_quorum`. Empty falls back to `reviewer_profile`, so existing single-reviewer configs are unaffected. Sequential rather than concurrent because `State.Running` is keyed by issue — fan-out buys independence of judgement, not wall-clock |
+| `review_quorum` | string | `"any_block"` | How multiple reviewer verdicts combine. One of `any_block` (default — a single blocking verdict blocks), `majority` (strictly more than half), or `unanimous` (every reviewer must block). The default is the strictest on purpose: adding a reviewer must never make it *easier* to ship. A reviewer that runs but records no parseable verdict counts as a **block**, so a crashing reviewer cannot shrink the quorum until the gate passes |
 | `auto_review` | bool | `false` | When `true`, dispatches a reviewer worker after every successful worker completion |
 | `reviewer_prompt` | string | Built-in default | **Deprecated** — prefer `reviewer_profile`. Liquid template used when no reviewer profile is set |
 | `profiles` | map | `{}` | Named agent profiles — see below. Runtime-editable |
@@ -99,8 +103,10 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `merge_block_labels` | []string | `["needs-human","migration","auth","feature-flag","breaking"]` | Case-insensitive PR labels that cause the `merge_pr` action to refuse the merge with reason `blocked_label:<label>`. Empty list disables the guard |
 | `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge a PR on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning |
 | `transport_error_patterns` | []string | `["stream disconnected","connection reset","i/o timeout"]` | Substrings (case-insensitive) that classify an agent-runner error as a transient transport failure rather than a generic failure. Increments `state.TransportFailureCount` when matched |
-| `sort.prefer_high_outdegree` | bool | `false` | When `true`, the dispatch comparator inserts a tiebreaker that ranks issues blocking more dependent siblings ahead of others, between the priority and createdAt tiers (P2) |
+| `sort.prefer_high_outdegree` | bool | `false` | **Deprecated** — aliased to `dependencies.ordering: critical_path`. When `true` and `dependencies.ordering` was not explicitly set in the front matter, the daemon logs a one-time `slog.Warn` and behaves as if `dependencies.ordering: critical_path` were set (critical_path is already the default, so the net runtime effect is unchanged — only the tiebreaking got more precise). If `dependencies.ordering` **was** explicitly set, that value wins and the flag is a no-op. Prefer setting `dependencies.ordering` directly; this field will be removed in a future release |
 | `deps_analyzer_profile` | string | `""` | Profile name used by the dashboard's "Analyze dependencies" sidecar. Empty disables the analyzer button |
+| `deps_analyzer_timeout_ms` | int | `600000` | Wall-clock limit for one analyzer job end to end, across all chunks. `≤ 0` falls back to the default (matches the dashboard's 10-minute poll deadline) |
+| `deps_analyzer_chunk_size` | int | `75` | Maximum issues sent to the agent in one analyzer turn. Larger backlogs are split into sequential chunks; relations spanning two chunks are not examined (the accepted blind spot — logged at analysis time). Raise this if you need full-graph fidelity over a larger backlog and can tolerate a longer/costlier turn. `≤ 0` falls back to the default |
 
 ### Agent profiles
 
@@ -310,11 +316,77 @@ at migration time.
 
 ---
 
+## `dependencies`
+
+Settings for the unified dependency graph — how LLM-inferred (non-tracker) blocker
+edges factor into automation dispatch gating. See the deps-analyzer agent pass
+(`agent.deps_analyzer_profile`) for how inferred edges are produced.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `inferred_gating` | bool | `true` | Soft-gate kill-switch: when `true`, inferred (non-tracker) dependency edges can hold automation dispatch for their target issue, same as tracker-declared blockers. Set `false` to make inferred edges display-only |
+| `confidence_threshold` | float | `0.7` | Minimum analyzer confidence score (`0.0`-`1.0`) an inferred edge must meet to gate dispatch; edges below the threshold are surfaced on the dashboard but never gate. Out-of-range values fall back to the default |
+| `staleness_hours` | int | `168` | How long an inferred edge is trusted before it is considered stale and stops gating; non-positive values fall back to the default |
+| `ordering` | string | `"critical_path"` | Dispatch ordering strategy for eligible issues. One of `critical_path` (default), `critical_path_strict`, or `simple`. See [Ordering modes](#ordering-modes) below. An unrecognized value falls back to the default with a `slog.Warn` |
+| `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it becomes eligible for the `blockers_resolved`/attention automation surface (`state.DependencyAttention`, kind `stale_blocker`). **`0` is a meaningful, explicit value that disables the escalation** — it is not treated as "absent"; only a negative value falls back to the default (with a `slog.Warn`) |
+| `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. When `true`, the daemon periodically re-runs the deps-analyzer pass in the background (fingerprint-scoped to changed issues) without an operator clicking "Analyze dependencies". Set `false` to make analysis strictly manual (dashboard button, API, or CLI) |
+| `stacked_prs` | bool | `false` | Branch an issue's worktree from its blocker's branch instead of `workspace.base_branch`, when the issue has exactly one live blocker that carries an identifier. Best-effort: several live blockers give no unambiguous base, and a blocker branch missing locally falls back to `base_branch` rather than failing the dispatch. The PR base is not yet set from the blocker (#60) |
+| `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between consecutive scheduled analysis passes. Parsed via `positiveIntField`; non-positive values fall back to the default — there is no meaningful zero here (the analyzer must not run every tick) |
+| `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before a scheduled analysis pass starts, so analysis waits for state to settle instead of racing an in-flight dispatch. Parsed via `positiveIntField`; non-positive values fall back to the default |
+
+```yaml
+dependencies:
+  inferred_gating: true
+  confidence_threshold: 0.7
+  staleness_hours: 168
+  ordering: critical_path
+  escalate_blocked_after_hours: 48
+  auto_analyze: true
+  auto_analyze_min_interval_minutes: 60
+  auto_analyze_debounce_minutes: 5
+```
+
+### Ordering modes
+
+All three modes share the same final tiebreakers (`created_at` ascending with
+nil last, then identifier ascending). They differ only in what they consider
+before reaching them:
+
+| Mode | Comparison order | Use when |
+|---|---|---|
+| `critical_path` (default) | priority band → fan-out → chain length | You want operator-set priority to stay authoritative. |
+| `critical_path_strict` | fan-out → chain length → priority band | You want throughput across the dependency graph to outrank the priority field. |
+| `simple` | priority band only (no graph awareness) | You want the legacy pre-graph behavior. |
+
+"Fan-out" is `TransitiveDependents`: how many issues are transitively unblocked
+by finishing this one. "Chain length" is `LongestChain`, the longest downstream
+path in edges. Both are computed per tick over the SCC condensation of the
+dependency graph, so a cycle collapses to one node and cannot skew the counts.
+
+The distinction that matters between the two critical-path modes is that
+**`critical_path` only applies graph leverage as a tiebreaker within a single
+priority band.** If your issues carry consistently distinct priorities, the
+graph metrics never get consulted and the mode behaves like `simple`. Choose
+`critical_path_strict` if you want a blocker that gates a dozen issues to
+dispatch ahead of an unrelated urgent leaf.
+
+The tradeoff is real and runs the other way too: `critical_path_strict`
+deliberately overrides an explicit operator signal. An issue marked urgent for
+a reason outside the graph — a customer escalation, a deadline — will wait
+behind a high-fan-out lower-priority blocker. Prefer the default unless you are
+specifically optimizing fleet throughput.
+
+Both graph-aware modes degrade to exactly `simple`'s ordering when the issue
+set has no dependency edges, so enabling either on a project without blockers
+changes nothing.
+
+---
+
 ## `workspace`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.itervox/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` |
+| `root` | string | `~/.itervox/workspaces/<project>` | Where per-issue workspaces are created. Namespaced per project by default because a workspace directory is keyed by issue identifier alone, and identifiers are only unique within one tracker project (every GitHub repo has a `#1`). Set explicitly to opt out |
 | `auto_clear` | bool | `false` | Delete the workspace directory **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are preserved. Runtime-editable. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes. **Breaking change in v0.2.0**: previous semantics cleared after every successful run |
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
@@ -371,14 +443,14 @@ hooks:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `host` | string | `"127.0.0.1"` | HTTP bind address. Change to `0.0.0.0` to expose to LAN |
-| `port` | int | unset → no HTTP server | HTTP listen port. The scaffolded `WORKFLOW.md` defaults to `8090`; if the port is in use, Itervox tries up to 10 successors |
-| `allow_unauthenticated_lan` | bool | `false` | When binding to a non-loopback address (e.g. `0.0.0.0`), Itervox requires bearer-token auth on every request and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set this flag to `true` to disable that gate — **only** for trusted-LAN air-gapped setups where the daemon is physically unreachable from the public internet. Has no effect on loopback binds. |
+| `port` | int | `8090` | HTTP listen port. `0` = OS picks a free port (for running several daemons at once). If the configured port is in use, startup fails loudly naming the holder — no silent shifting |
+| `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback (`127.0.0.1`) — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set this flag to `true` to disable that gate entirely — **only** for trusted, fully local setups where the daemon is physically unreachable from anyone else. Has an effect on every bind, not just non-loopback ones: a loopback daemon behind a tunnel or reverse proxy is just as exposed as one bound to `0.0.0.0`, which is why the gate is no longer bind-address-scoped. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically, but logs a deprecation warning at startup — new configs should use `allow_unauthenticated`. |
 
 ### Authentication
 
-Any non-loopback bind requires `Authorization: Bearer <token>` on every HTTP request and on the SSE stream. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; if unset, the daemon generates a random ephemeral token at startup and logs it once. The dashboard prompts for the token on first load and persists it (session-only by default, or via "Remember" checkbox in `localStorage`).
+Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and on the SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; if unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once. The dashboard prompts for the token on first load and persists it (session-only by default, or via "Remember" checkbox in `localStorage`).
 
-The `GET /health` endpoint is auth-exempt so external probes (load balancers, uptime monitors) can verify the daemon is up.
+The `GET /api/v1/health` endpoint is auth-exempt so external probes (load balancers, uptime monitors) can verify the daemon is up. It is the only auth-exempt route.
 
 ---
 

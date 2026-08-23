@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/server"
 )
 
@@ -50,6 +52,25 @@ func automationQueueBackpressureRow(bp orchestrator.AutomationQueueBackpressure)
 		RejectedSinceBoot:  bp.RejectedSinceBoot,
 		LastRejectedAt:     nilIfZero(bp.LastRejectedAt),
 		LastRejectedReason: bp.LastRejectedReason,
+	}
+}
+
+// dispatchPressureRow converts the event-loop dispatch-pressure counters to
+// their wire shape, returning nil before the first tick completes so the
+// snapshot omits the field entirely rather than publishing an all-zero row
+// (which the dashboard would otherwise render as a confident "0% utilized"
+// on a daemon that has simply not measured anything yet).
+func dispatchPressureRow(p orchestrator.DispatchPressure) *server.DispatchPressureRow {
+	if p.TicksObserved == 0 {
+		return nil
+	}
+	return &server.DispatchPressureRow{
+		ObservedTicks:        p.TicksObserved,
+		SlotBoundTicks:       p.TicksSlotBound,
+		DependencyBoundTicks: p.TicksDependencyBound,
+		UtilizationPercent:   p.UtilizationPercent(),
+		BlockedByDependency:  p.BlockedByDependency,
+		EligibleWaiting:      p.EligibleWaiting,
 	}
 }
 
@@ -141,9 +162,25 @@ func dependencyAuditRows(audit map[string]*orchestrator.DependencyAuditEntry) []
 			LastAuditedAt:         nilIfZero(entry.LastAuditedAt),
 			LastTransitionVersion: entry.LastTransitionVersion,
 			LastTransitionReason:  entry.LastTransitionReason,
+			Degraded:              entry.ConsecutiveFailures >= orchestrator.DependencyRefreshDegradedThreshold,
 		})
 	}
 	return rows
+}
+
+// degradedDependencyAuditCount counts dependency-audit entries whose
+// consecutive refresh failures crossed orchestrator.DependencyRefreshDegradedThreshold.
+// Surfaced on the snapshot so the dashboard can distinguish "still blocked
+// because the tracker says so" from "blocked because we can't get fresh data
+// anymore".
+func degradedDependencyAuditCount(audit map[string]*orchestrator.DependencyAuditEntry) int {
+	count := 0
+	for _, entry := range audit {
+		if entry != nil && entry.ConsecutiveFailures >= orchestrator.DependencyRefreshDegradedThreshold {
+			count++
+		}
+	}
+	return count
 }
 
 func blockerRefRows(blockers []domain.BlockerRef) []server.BlockerRefRow {
@@ -183,8 +220,47 @@ func statusChangeRows(changes []orchestrator.IssueStatusChange) []server.IssueSt
 	return rows
 }
 
-func dependencyGraphRows(s orchestrator.State, sidecar *depsanalysis.Sidecar) ([]server.DependencyGraphNodeRow, []server.DependencyGraphEdgeRow) {
-	if len(s.DependencyAudit) == 0 && (sidecar == nil || len(sidecar.Edges) == 0) {
+// dependencyCycleRows maps state.DependencyCycles (Task 4's cycle-detection
+// output) to the wire row shape, preserving order and independently copying
+// each cycle's Members slice so a caller mutating a returned row can never
+// reach back into orchestrator.State. critical-path-ordering Task 5.
+func dependencyCycleRows(s orchestrator.State) []server.DependencyCycleRow {
+	if len(s.DependencyCycles) == 0 {
+		return nil
+	}
+	rows := make([]server.DependencyCycleRow, 0, len(s.DependencyCycles))
+	for _, cyc := range s.DependencyCycles {
+		rows = append(rows, server.DependencyCycleRow{
+			Members:    append([]string(nil), cyc.Members...),
+			Kind:       cyc.Kind,
+			DetectedAt: cyc.DetectedAt,
+		})
+	}
+	return rows
+}
+
+// dependencyAttentionRows maps state.DependencyAttention (Task 4's
+// operator-attention output) to the wire row shape, preserving order and
+// independently copying each entry's Blockers slice. critical-path-ordering
+// Task 5.
+func dependencyAttentionRows(s orchestrator.State) []server.DependencyAttentionRow {
+	if len(s.DependencyAttention) == 0 {
+		return nil
+	}
+	rows := make([]server.DependencyAttentionRow, 0, len(s.DependencyAttention))
+	for _, entry := range s.DependencyAttention {
+		rows = append(rows, server.DependencyAttentionRow{
+			Identifier:   entry.Identifier,
+			Blockers:     append([]string(nil), entry.Blockers...),
+			BlockedSince: entry.BlockedSince,
+			Kind:         entry.Kind,
+		})
+	}
+	return rows
+}
+
+func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow, []server.DependencyGraphEdgeRow) {
+	if len(s.DependencyAudit) == 0 && len(s.InferredDeps) == 0 {
 		return nil, nil
 	}
 	running := make(map[string]bool, len(s.Running))
@@ -257,46 +333,65 @@ func dependencyGraphRows(s orchestrator.State, sidecar *depsanalysis.Sidecar) ([
 				Resolved:         resolved,
 				SourceKnown:      sourceKnown,
 				Origin:           string(depsanalysis.OriginTracker),
+				// A tracker-declared blocker gates dispatch of its target for
+				// as long as it remains unresolved — mirrors the dispatch
+				// guard's own "blocked while any blocker is non-terminal"
+				// semantics (see DependencyAuditEntry.Status).
+				Gating: !resolved,
 			})
 			trackerEdgeKeys[sourceID+"->"+targetID] = struct{}{}
 		}
 	}
-	if sidecar != nil {
-		for _, ie := range sidecar.Edges {
-			if ie.Source == "" || ie.Target == "" {
+	// Inferred edges are derived solely from State.InferredDeps (the
+	// event-loop's per-tick ReconcileInferredDeps output) — unified-
+	// dependency-graph Task 7. The cmd layer no longer reads the deps-
+	// analyzer sidecar directly for the dashboard graph; InferredDeps is the
+	// single source of truth and already carries every provenance flag the
+	// dashboard needs (Confidence/Stale/Overridden/Gating).
+	for targetID, entries := range s.InferredDeps {
+		if targetID == "" {
+			continue
+		}
+		for _, entry := range entries {
+			sourceID := entry.Source
+			if sourceID == "" {
 				continue
 			}
-			edgeID := ie.Source + "->" + ie.Target
+			edgeID := sourceID + "->" + targetID
 			if _, dup := trackerEdgeKeys[edgeID]; dup {
 				continue
 			}
 			// Ensure both endpoints have at least a minimal node entry.
-			nodes[ie.Source] = mergeDependencyGraphNode(nodes[ie.Source], server.DependencyGraphNodeRow{
-				ID:         ie.Source,
-				Identifier: ie.Source,
-				Title:      nodeTitles[ie.Source],
-				Running:    running[ie.Source],
-				Queued:     queued[ie.Source],
-				URL:        nodeURLs[ie.Source],
+			nodes[sourceID] = mergeDependencyGraphNode(nodes[sourceID], server.DependencyGraphNodeRow{
+				ID:         sourceID,
+				Identifier: sourceID,
+				Title:      nodeTitles[sourceID],
+				Running:    running[sourceID],
+				Queued:     queued[sourceID],
+				URL:        nodeURLs[sourceID],
 			})
-			nodes[ie.Target] = mergeDependencyGraphNode(nodes[ie.Target], server.DependencyGraphNodeRow{
-				ID:         ie.Target,
-				Identifier: ie.Target,
-				Title:      nodeTitles[ie.Target],
-				Running:    running[ie.Target],
-				Queued:     queued[ie.Target],
-				URL:        nodeURLs[ie.Target],
+			nodes[targetID] = mergeDependencyGraphNode(nodes[targetID], server.DependencyGraphNodeRow{
+				ID:         targetID,
+				Identifier: targetID,
+				Title:      nodeTitles[targetID],
+				Running:    running[targetID],
+				Queued:     queued[targetID],
+				URL:        nodeURLs[targetID],
 			})
 			edges = append(edges, server.DependencyGraphEdgeRow{
 				ID:               edgeID,
-				SourceIdentifier: ie.Source,
-				TargetIdentifier: ie.Target,
-				SourceState:      nodes[ie.Source].State,
-				TargetState:      nodes[ie.Target].State,
-				Resolved:         nodes[ie.Source].Terminal,
-				SourceKnown:      true,
+				SourceIdentifier: sourceID,
+				TargetIdentifier: targetID,
+				SourceState:      nodes[sourceID].State,
+				TargetState:      nodes[targetID].State,
+				Resolved:         entry.SourceTerminal,
+				SourceKnown:      entry.SourceKnown,
 				Origin:           string(depsanalysis.OriginInferred),
-				Evidence:         ie.Evidence,
+				Evidence:         entry.Evidence,
+				Confidence:       entry.Confidence,
+				Stale:            entry.Stale,
+				Overridden:       entry.Overridden,
+				Gating:           entry.Gating,
 			})
 		}
 	}
@@ -381,4 +476,110 @@ func stringValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// snapshotCandidateSeenRows converts orchestrator.State.CandidateSeen
+// (already sorted by Identifier — see candidate_seen.go's candidateSeenRows)
+// to the wire shape. analyzer-autonomy Task 4 fix round.
+func snapshotCandidateSeenRows(rows []orchestrator.CandidateSeenRow) []server.CandidateSeenRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]server.CandidateSeenRow, len(rows))
+	for i, r := range rows {
+		out[i] = server.CandidateSeenRow{Identifier: r.Identifier, UpdatedAt: r.UpdatedAt}
+	}
+	return out
+}
+
+// Snapshot-support helpers moved out of main.go (size budget): row sorting
+// and the project-name resolution used by buildSnapFunc.
+func sortedRetryRows(retries map[string]*orchestrator.RetryEntry) []server.RetryRow {
+	rows := make([]server.RetryRow, 0, len(retries))
+	for _, r := range retries {
+		row := server.RetryRow{
+			Identifier: r.Identifier,
+			Attempt:    r.Attempt,
+			DueAt:      r.DueAt,
+		}
+		if r.Error != nil {
+			row.Error = *r.Error
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].Identifier < rows[j].Identifier
+	})
+	return rows
+}
+
+// outboxEntryRows converts the write-ahead outbox's own Snapshot() (global
+// enqueue order — already stable, see internal/outbox/outbox.go) into wire
+// rows for the dashboard's Outbox panel. write-ahead-outbox design,
+// "Surfaces" / Task 4.
+func outboxEntryRows(entries []outbox.Entry) []server.OutboxEntryRow {
+	if len(entries) == 0 {
+		return nil
+	}
+	rows := make([]server.OutboxEntryRow, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, server.OutboxEntryRow{
+			ID:            e.ID,
+			Kind:          string(e.Kind),
+			Identifier:    e.Identifier,
+			TargetState:   e.TargetState,
+			Attempts:      e.Attempts,
+			LastError:     e.LastError,
+			Degraded:      e.Degraded(),
+			EnqueuedAt:    e.EnqueuedAt,
+			NextAttemptAt: e.NextAttemptAt,
+		})
+	}
+	return rows
+}
+
+// outboxSyncingRows sorts orchestrator.State.OutboxSyncing's map keys into
+// the stable []string the wire snapshot exposes as StateSnapshot.OutboxSyncing
+// — the join key list /api/v1/issues rows are matched against on the web
+// side (state.go's OutboxSyncing doc comment; there is no Syncing field on
+// TrackerIssue itself because /api/v1/issues is built from a direct
+// tracker fetch, not this snapshot).
+func outboxSyncingRows(syncing map[string]struct{}) []string {
+	if len(syncing) == 0 {
+		return nil
+	}
+	identifiers := make([]string, 0, len(syncing))
+	for identifier := range syncing {
+		identifiers = append(identifiers, identifier)
+	}
+	sort.Strings(identifiers)
+	return identifiers
+}
+
+func sortedPausedIdentifiers(paused map[string]string) []string {
+	identifiers := make([]string, 0, len(paused))
+	for identifier := range paused {
+		identifiers = append(identifiers, identifier)
+	}
+	sort.Strings(identifiers)
+	return identifiers
+}
+
+// resolveProjectName returns a short, human-readable label for the project
+// this daemon is serving. Preference order:
+//  1. `tracker.project_slug` from WORKFLOW.md (when the user has declared
+//     one — most Linear/GitHub setups do).
+//  2. The basename of the WORKFLOW.md directory (e.g. `/Users/me/acme/WORKFLOW.md`
+//     → "acme"), which works for unslugged local scaffolds.
+//  3. "itervox" as a last-resort fallback so the header never renders empty.
+func resolveProjectName(cfg *config.Config, workflowPath string) string {
+	if cfg != nil && strings.TrimSpace(cfg.Tracker.ProjectSlug) != "" {
+		return cfg.Tracker.ProjectSlug
+	}
+	if abs, err := filepath.Abs(workflowPath); err == nil {
+		if base := filepath.Base(filepath.Dir(abs)); base != "." && base != "/" && base != "" {
+			return base
+		}
+	}
+	return "itervox"
 }

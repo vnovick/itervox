@@ -41,6 +41,7 @@ func (o *Orchestrator) Snapshot() State {
 	snap.Claimed = maps.Clone(snap.Claimed)
 	snap.RetryAttempts = copyRetryMap(snap.RetryAttempts)
 	snap.PausedIdentifiers = maps.Clone(snap.PausedIdentifiers)
+	snap.PauseReasons = maps.Clone(snap.PauseReasons)
 	snap.PausedSessions = maps.Clone(snap.PausedSessions)
 	snap.IssueProfiles = maps.Clone(snap.IssueProfiles)
 	snap.IssueBackends = maps.Clone(snap.IssueBackends)
@@ -51,13 +52,19 @@ func (o *Orchestrator) Snapshot() State {
 	snap.DiscardingIdentifiers = maps.Clone(snap.DiscardingIdentifiers)
 	snap.AutoSwitchedIdentifiers = maps.Clone(snap.AutoSwitchedIdentifiers)
 	snap.AutoSwitchedAt = maps.Clone(snap.AutoSwitchedAt)
-	snap.InputRequiredIssues = maps.Clone(snap.InputRequiredIssues)
-	snap.PendingInputResumes = maps.Clone(snap.PendingInputResumes)
+	snap.InputRequiredIssues = copyInputRequiredMap(snap.InputRequiredIssues)
+	snap.PendingInputResumes = copyPendingInputResumeMap(snap.PendingInputResumes)
 	snap.AutomationQueue = copyAutomationQueueMap(snap.AutomationQueue)
 	snap.AutomationQueueOrder = append([]string(nil), snap.AutomationQueueOrder...)
 	snap.DependencyAudit = copyDependencyAuditMap(snap.DependencyAudit)
 	snap.PROpenedDispatched = maps.Clone(snap.PROpenedDispatched)
 	snap.PRMergedDispatched = maps.Clone(snap.PRMergedDispatched)
+	snap.InferredDeps = copyInferredDepsMap(snap.InferredDeps)
+	snap.DepsOverrides = maps.Clone(snap.DepsOverrides)
+	snap.DependencyCycles = copyDependencyCycles(snap.DependencyCycles)
+	snap.DependencyAttention = copyDependencyAttention(snap.DependencyAttention)
+	snap.CandidateSeen = append([]CandidateSeenRow(nil), snap.CandidateSeen...)
+	snap.OutboxSyncing = maps.Clone(snap.OutboxSyncing)
 
 	o.issueProfilesMu.RLock()
 	if len(o.issueProfiles) > 0 {
@@ -306,6 +313,14 @@ type inputRequiredDisk struct {
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
 	QueuedAt           string `json:"queued_at"`
+	// LastReplyCheckAt persists the reply-check fairness ordering across
+	// restarts and config reloads. Without it every reload zeroed the key for
+	// every entry, so selectTrackerReplyCheckBatch fell through to its
+	// identifier tie-break and restarted at the alphabetically-first five —
+	// on a backlog larger than the budget, entries sorting later were never
+	// checked at all. That is the exact starvation the ordering exists to
+	// prevent, and an operator iterating on WORKFLOW.md reloads often.
+	LastReplyCheckAt string `json:"last_reply_check_at,omitempty"`
 }
 
 type pendingInputResumeDisk struct {
@@ -370,6 +385,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
+			LastReplyCheckAt:   formatOptionalTime(v.LastReplyCheckAt),
 		}
 	}
 	pendingDisk := make(map[string]pendingInputResumeDisk, len(pending))
@@ -459,6 +475,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           queuedAt,
+			LastReplyCheckAt:   parseOptionalTime(v.LastReplyCheckAt),
 		}
 	}
 	for k, v := range pending {
@@ -644,15 +661,17 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 	// nothing. Old payloads simply lack these keys → nil ledger + zero seq,
 	// which is today's behavior.
 	if len(disk.DependencyAudit) > 0 {
-		state.DependencyAudit = copyDependencyAuditMap(disk.DependencyAudit)
+		state.DependencyAudit = copyDependencyAuditMapForRestore(disk.DependencyAudit)
 	}
 	state.DependencyTransitionSeq = disk.DependencyTransitionSeq
-	// AUTO-4 aggravator — auditBlockersResolvedAutomationSources early-returns
-	// when DependencyTransitionSeq == LastBlockersResolvedAuditSeq (both 0 after
-	// a fresh restart), which would skip the one scan needed to notice blockers
-	// that closed while the daemon was down. Seed the watermark one behind the
-	// restored seq so the next pass runs exactly once, then re-converges (the
-	// pass sets LastBlockersResolvedAuditSeq = DependencyTransitionSeq).
+	// AUTO-4 aggravator — pendingBlockersResolvedStates (consulted by
+	// reconcileDependencyRefresh) treats DependencyTransitionSeq ==
+	// LastBlockersResolvedAuditSeq as "nothing pending" and skips the batch
+	// (both are 0 after a fresh restart), which would skip the one scan
+	// needed to notice blockers that closed while the daemon was down. Seed
+	// the watermark one behind the restored seq so the next pass runs
+	// exactly once, then re-converges (the apply handler sets
+	// LastBlockersResolvedAuditSeq = the launch-time seq it was given).
 	if len(state.DependencyAudit) > 0 {
 		state.LastBlockersResolvedAuditSeq = state.DependencyTransitionSeq - 1
 	}
@@ -720,10 +739,64 @@ func copyDependencyAuditMap(m map[string]*DependencyAuditEntry) map[string]*Depe
 	return cp
 }
 
+// copyDependencyAuditMapForRestore deep-copies the persisted dependency-audit
+// ledger and clears the transient in-flight latch. Used only on the envelope
+// restore path — a daemon that crashed mid-refresh must not come back up with
+// rows marked in-flight, because nothing would ever clear them.
+func copyDependencyAuditMapForRestore(m map[string]*DependencyAuditEntry) map[string]*DependencyAuditEntry {
+	cp := copyDependencyAuditMap(m)
+	for _, entry := range cp {
+		if entry == nil {
+			continue
+		}
+		entry.InFlight = false
+	}
+	return cp
+}
+
 func copyIssueStatusHistoryMap(m map[string][]IssueStatusChange) map[string][]IssueStatusChange {
 	cp := make(map[string][]IssueStatusChange, len(m))
 	for k, v := range m {
 		cp[k] = append([]IssueStatusChange(nil), v...)
+	}
+	return cp
+}
+
+// copyInferredDepsMap deep-copies State.InferredDeps. Entries are plain
+// values (InferredDepEntry has no pointer/map fields), so copying the map and
+// each per-target slice is sufficient — mirrors copyIssueStatusHistoryMap.
+func copyInferredDepsMap(m map[string][]InferredDepEntry) map[string][]InferredDepEntry {
+	cp := make(map[string][]InferredDepEntry, len(m))
+	for k, v := range m {
+		cp[k] = append([]InferredDepEntry(nil), v...)
+	}
+	return cp
+}
+
+// copyDependencyCycles deep-copies State.DependencyCycles. Each
+// DependencyCycle's Members slice is independently copied so a mutation on
+// the live event-loop slice cannot leak into an already-published snapshot.
+// A nil input returns an empty, non-nil slice — matching the map-copy
+// siblings above (copyRunningMap, copyAutomationQueueMap, ...), which all
+// `make(..., len(m))` regardless of whether the source was nil, so JSON
+// marshaling of a snapshot with no cycles emits `[]` rather than `null`.
+func copyDependencyCycles(cycles []DependencyCycle) []DependencyCycle {
+	cp := make([]DependencyCycle, len(cycles))
+	for i, c := range cycles {
+		cp[i] = c
+		cp[i].Members = append([]string(nil), c.Members...)
+	}
+	return cp
+}
+
+// copyDependencyAttention deep-copies State.DependencyAttention. Each
+// entry's Blockers slice is independently copied, mirroring
+// copyDependencyCycles — including the nil-in/empty-out behavior.
+func copyDependencyAttention(entries []DependencyAttentionEntry) []DependencyAttentionEntry {
+	cp := make([]DependencyAttentionEntry, len(entries))
+	for i, e := range entries {
+		cp[i] = e
+		cp[i].Blockers = append([]string(nil), e.Blockers...)
 	}
 	return cp
 }
@@ -845,8 +918,80 @@ func (o *Orchestrator) saveAutoSwitchedToDisk(
 	}
 }
 
-// savePausedToDisk writes PausedIdentifiers to disk in the new map format
-// {"identifier": "issueUUID"}. Must NOT be called with snapMu held.
+func pauseReasonsPath(pausedFile string) string {
+	if pausedFile == "" {
+		return ""
+	}
+	return pausedFile + ".reasons.json"
+}
+
+// savePauseReasonsToDisk persists why each identifier is paused. Failure is
+// logged, not fatal: a lost reason degrades diagnostics, never correctness —
+// the pause itself lives in the paused file.
+func (o *Orchestrator) savePauseReasonsToDisk(reasons map[string]string) {
+	o.pausedMu.RLock()
+	path := pauseReasonsPath(o.pausedFile)
+	o.pausedMu.RUnlock()
+	if path == "" {
+		return
+	}
+	// storeSnap runs on every event-loop turn, and each save is an atomic
+	// write (temp + fsync + rename). Almost every daemon has no paused issues
+	// at all, so skip the write entirely when there is nothing to record AND
+	// no stale file to clear — otherwise this costs a file write per turn to
+	// persist an empty map.
+	//
+	// The "no stale file" half is load-bearing: when the last pause is
+	// cleared the map goes empty and the file MUST be rewritten, or a
+	// restart would resurrect reasons for issues that are no longer paused.
+	if len(reasons) == 0 {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			return
+		}
+	}
+	data, err := json.Marshal(reasons)
+	if err != nil {
+		slog.Warn("orchestrator: failed to marshal pause reasons", "error", err)
+		return
+	}
+	if err := writeFileAtomically(path, data, 0o644); err != nil {
+		slog.Warn("orchestrator: failed to write pause reasons file", "path", path, "error", err)
+	}
+}
+
+// loadPauseReasonsFromDisk restores pause reasons, dropping any whose
+// identifier is no longer paused so the map cannot outlive its pauses.
+func (o *Orchestrator) loadPauseReasonsFromDisk(state State) State {
+	o.pausedMu.RLock()
+	path := pauseReasonsPath(o.pausedFile)
+	o.pausedMu.RUnlock()
+	if path == "" {
+		return state
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // daemon-controlled path
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("orchestrator: failed to load pause reasons file", "path", path, "error", err)
+		}
+		return state
+	}
+	var reasons map[string]string
+	if err := json.Unmarshal(data, &reasons); err != nil {
+		slog.Warn("orchestrator: failed to parse pause reasons file, continuing without reasons",
+			"path", path, "error", err)
+		return state
+	}
+	if state.PauseReasons == nil {
+		state.PauseReasons = make(map[string]string, len(reasons))
+	}
+	for ident, reason := range reasons {
+		if _, stillPaused := state.PausedIdentifiers[ident]; stillPaused {
+			state.PauseReasons[ident] = reason
+		}
+	}
+	return state
+}
+
 func (o *Orchestrator) savePausedToDisk(paused map[string]string) {
 	o.pausedMu.RLock()
 	path := o.pausedFile
@@ -883,6 +1028,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.Claimed = maps.Clone(s.Claimed)
 	snap.RetryAttempts = copyRetryMap(s.RetryAttempts)
 	snap.PausedIdentifiers = maps.Clone(s.PausedIdentifiers)
+	snap.PauseReasons = maps.Clone(s.PauseReasons)
 	snap.PausedSessions = maps.Clone(s.PausedSessions)
 	snap.IssueProfiles = maps.Clone(s.IssueProfiles)
 	snap.IssueBackends = maps.Clone(s.IssueBackends)
@@ -893,22 +1039,99 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
 	snap.AutoSwitchedIdentifiers = maps.Clone(s.AutoSwitchedIdentifiers)
 	snap.AutoSwitchedAt = maps.Clone(s.AutoSwitchedAt)
-	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
-	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
+	snap.InputRequiredIssues = copyInputRequiredMap(s.InputRequiredIssues)
+	snap.PendingInputResumes = copyPendingInputResumeMap(s.PendingInputResumes)
 	snap.AutomationQueue = copyAutomationQueueMap(s.AutomationQueue)
 	snap.AutomationQueueOrder = append([]string(nil), s.AutomationQueueOrder...)
 	snap.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
 	snap.PROpenedDispatched = maps.Clone(s.PROpenedDispatched)
 	snap.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
+	snap.InferredDeps = copyInferredDepsMap(s.InferredDeps)
+	snap.DepsOverrides = maps.Clone(s.DepsOverrides)
+	snap.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
+	snap.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
+	snap.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
+	snap.OutboxSyncing = maps.Clone(s.OutboxSyncing)
 
 	o.snapMu.Lock()
 	o.lastSnap = snap
 	o.snapMu.Unlock()
 
 	o.savePausedToDisk(snap.PausedIdentifiers)
+	// Reasons persist alongside the pauses they explain, from the SAME place.
+	// Persisting only at the individual pause sites missed the one that
+	// matters most: the transition-failed reason is set in the worker-exit
+	// handler, which has no savePaused call of its own, so the reason was
+	// recorded in memory and lost on restart — leaving a recoverable pause
+	// indistinguishable from a user cancel again, which is the whole point of
+	// #42-F. Persisting here covers every pause site by construction.
+	o.savePauseReasonsToDisk(snap.PauseReasons)
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
 	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}
+}
+
+// copyInputRequiredMap deep-copies the input-required queue.
+//
+// maps.Clone is a SHALLOW clone: on a map of pointers it duplicates the map
+// but shares every *InputRequiredEntry with the event loop. That was
+// harmless while the loop only ever inserted and deleted whole entries, and
+// became a data race the moment checkTrackerReplies started stamping
+// LastReplyCheckAt in place on the entry it had just selected — a race
+// reproduced against Snapshot's clone. Copying the struct value keeps
+// CLAUDE.md's rule that a snapshot handed to HTTP handler goroutines shares
+// nothing mutable with the loop.
+func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputRequiredEntry {
+	cp := make(map[string]*InputRequiredEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v // copy struct value; InputRequiredEntry has no reference fields
+		cp[k] = &e
+	}
+	return cp
+}
+
+// copyPendingInputResumeMap deep-copies the pending-resume queue, for the
+// same reason as copyInputRequiredMap. No field on it is mutated in place
+// today, but it is the same pointer-map shape reached by the same snapshot
+// path, and the next in-place write would be the same silent race.
+func copyPendingInputResumeMap(m map[string]*PendingInputResumeEntry) map[string]*PendingInputResumeEntry {
+	cp := make(map[string]*PendingInputResumeEntry, len(m))
+	for k, v := range m {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		e := *v
+		cp[k] = &e
+	}
+	return cp
+}
+
+// formatOptionalTime renders t for disk, mapping the zero value to "" so a
+// never-set timestamp round-trips as never-set rather than as year 1.
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+// parseOptionalTime is formatOptionalTime's inverse. An empty or unparseable
+// value yields the zero time, which sorts first — a never-checked entry gets
+// priority, the safe direction for a fairness key.
+func parseOptionalTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }

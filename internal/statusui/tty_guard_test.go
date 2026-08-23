@@ -106,6 +106,53 @@ func TestCheckForegroundTTYOwnership_PropagatesLookupErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "boom")
 }
 
+func TestTerminalAvailable_TrueWhenForegroundOwner(t *testing.T) {
+	orig := foregroundTTYProcessGroups
+	t.Cleanup(func() { foregroundTTYProcessGroups = orig })
+
+	foregroundTTYProcessGroups = func() (int, int, error) {
+		return 44123, 44123, nil
+	}
+
+	assert.True(t, TerminalAvailable())
+}
+
+func TestTerminalAvailable_FalseWhenNoControllingTTY(t *testing.T) {
+	orig := foregroundTTYProcessGroups
+	t.Cleanup(func() { foregroundTTYProcessGroups = orig })
+
+	// Mirrors the headless case: opening /dev/tty (or reading stdin's
+	// process group) fails outright because there is no controlling
+	// terminal at all — e.g. systemd, a container, or detached stdio.
+	foregroundTTYProcessGroups = func() (int, int, error) {
+		return 0, 0, errors.New("statusui: open controlling tty: no such device or address")
+	}
+
+	assert.False(t, TerminalAvailable())
+}
+
+func TestTerminalAvailable_FalseWhenBackgroundedAndDoesNotRetry(t *testing.T) {
+	orig := foregroundTTYProcessGroups
+	origExists := foregroundTTYProcessGroupExists
+	t.Cleanup(func() {
+		foregroundTTYProcessGroups = orig
+		foregroundTTYProcessGroupExists = origExists
+	})
+
+	// A backgrounded interactive shell would eventually be resolved by
+	// checkForegroundTTYOwnershipWithRetry's retry loop, but the probe is
+	// deliberately single-shot: it must not sleep or retry.
+	calls := 0
+	foregroundTTYProcessGroups = func() (int, int, error) {
+		calls++
+		return 44123, 44216, nil
+	}
+	foregroundTTYProcessGroupExists = func(int) (bool, error) { return true, nil }
+
+	assert.False(t, TerminalAvailable())
+	assert.Equal(t, 1, calls)
+}
+
 func TestForegroundTTYFD_UsesStdinWhenItIsATerminal(t *testing.T) {
 	origIsTTY := stdinIsTerminal
 	origOpenTTY := openControllingTTY

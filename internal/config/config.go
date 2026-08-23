@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,6 +28,121 @@ var envVarRe = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
 // accepted for daemon startup.
 const LatestWorkflowSchemaVersion = 2
 
+// DefaultDependencyAuditRefreshIntervalMs / TimeoutMs / BatchSize are the
+// config-loader defaults for the off-loop dependency-audit refresh (see
+// AgentConfig.DependencyAuditRefresh* below). Exported so
+// internal/orchestrator can fall back to the same values when clamping a
+// non-positive runtime value (Task 6 review Gap F): positiveIntField already
+// floors these at load time for anything reachable from WORKFLOW.md, so a
+// non-positive value can only originate from a hand-constructed
+// config.Config (tests). If it ever reached production unclamped,
+// batchSize<=0 would silently disable the refresh and
+// context.WithTimeout(ctx, 0<=timeout) would make every batch fetch nothing
+// while still arming the throttle. Sharing these constants keeps the
+// load-time default and the runtime clamp from drifting apart.
+// The interval default is 10 minutes, NOT a poll-interval-scale value, and that
+// is deliberate. This throttle is the only thing bounding how often a given
+// audit row costs a tracker request, and the dependency audit is one of the
+// largest consumers of the tracker's request budget (see issue #42: it was
+// ~28% of Linear traffic on a real deployment that sat at zero remaining
+// budget for 35 minutes of every hour).
+//
+// An interval SHORTER than polling.interval_ms never binds — every row is
+// eligible on every tick — so the batch cap alone governs, and at
+// BatchSize=100 against a 60s poll that is 6000 requests/hour from this path
+// alone, roughly 2.4x Linear's documented 2500/hour ceiling. At 10 minutes a
+// 59-row audit set costs ~354/hour instead. Raise it if you want fresher
+// dependency state and have the budget; do not lower it below
+// polling.interval_ms without checking the rate-limit headroom the dashboard
+// already reports.
+const (
+	DefaultDependencyAuditRefreshIntervalMs = 600000
+	DefaultDependencyAuditRefreshTimeoutMs  = 30000
+	DefaultDependencyAuditRefreshBatchSize  = 100
+)
+
+// DefaultDepsAnalyzerTimeoutMs / DefaultDepsAnalyzerChunkSize are exported so
+// the analyzer service clamps to the SAME values the loader defaults to. A
+// second copy in the service would drift.
+const (
+	DefaultDepsAnalyzerTimeoutMs = 600000 // 10 min — matches the dashboard's poll deadline
+	DefaultDepsAnalyzerChunkSize = 75
+)
+
+// DefaultServerPort is the HTTP port bound when `server.port` is absent from
+// WORKFLOW.md. A fixed default — not ephemeral — so the dashboard URL survives
+// daemon restarts and config reloads; 8090 matches the Vite dev proxy target
+// and the scaffolded WORKFLOW.md. An explicit `server.port: 0` still asks the
+// OS for a free port, which is the knob for running several daemons at once.
+const DefaultServerPort = 8090
+
+// DefaultRateLimitReservePercent is the share of the tracker request budget
+// reserved for writes. Mirrored by orchestrator.DefaultRateLimitReservePercent
+// so a hand-built config.Config clamps to the same value the loader defaults
+// to.
+const DefaultRateLimitReservePercent = 10
+
+// DefaultDependenciesConfidenceThreshold / DefaultDependenciesStalenessHours
+// are the config-loader defaults for DependenciesConfig. Exported so callers
+// that need to fall back to the same values (e.g. clamping a
+// hand-constructed config.Config in tests) do not drift from the load-time
+// default.
+const (
+	DefaultDependenciesConfidenceThreshold = 0.7
+	DefaultDependenciesStalenessHours      = 168
+)
+
+// DefaultDependenciesAutoAnalyzeMinIntervalMinutes /
+// DefaultDependenciesAutoAnalyzeDebounceMinutes are the config-loader
+// defaults for auto-analyzer triggering. These values parse via positiveIntField
+// so <=0 in YAML becomes the default; unlike escalate_blocked_after_hours,
+// there is no meaningful zero here (analyzer must not run every tick).
+const (
+	DefaultDependenciesAutoAnalyzeMinIntervalMinutes = 60
+	DefaultDependenciesAutoAnalyzeDebounceMinutes    = 5
+)
+
+// DependenciesOrderingCriticalPath / DependenciesOrderingCriticalPathStrict /
+// DependenciesOrderingSimple are the accepted values for
+// dependencies.ordering. DefaultDependenciesOrdering is the config-loader
+// default (critical-path-aware dispatch ordering).
+//
+// critical_path and critical_path_strict differ ONLY in whether the priority
+// band outranks graph leverage. critical_path compares priority first, so
+// fan-out/chain-length only break ties within one band; critical_path_strict
+// compares fan-out first, so a high-leverage blocker dispatches ahead of an
+// unrelated urgent leaf. See SortForDispatchCriticalPath and
+// SortForDispatchCriticalPathStrict in internal/orchestrator.
+// DefaultDependenciesEscalateHours is the config-loader default for
+// dependencies.escalate_blocked_after_hours: how long an issue may sit
+// blocked before automation escalation triggers. An explicit `0` disables
+// escalation (a meaningful, deliberately-chosen value) and must NOT be
+// treated as "absent" — see the parse site in LoadFromFrontMatter, which
+// uses a plain intField + explicit sign check instead of positiveIntField
+// specifically to preserve that distinction.
+// ReviewQuorumAnyBlock / ReviewQuorumMajority / ReviewQuorumUnanimous are the
+// accepted values for agent.review_quorum, deciding how multiple reviewer
+// verdicts combine into one outcome (#58).
+//
+// The default is deliberately the STRICTEST of the three: with any_block, a
+// single reviewer raising a concern blocks. A review gate that gets weaker as
+// you add reviewers would be a strange default — adding a second opinion
+// should never make it easier to ship.
+const (
+	ReviewQuorumAnyBlock  = "any_block"
+	ReviewQuorumMajority  = "majority"
+	ReviewQuorumUnanimous = "unanimous"
+	DefaultReviewQuorum   = ReviewQuorumAnyBlock
+)
+
+const (
+	DependenciesOrderingCriticalPath       = "critical_path"
+	DependenciesOrderingCriticalPathStrict = "critical_path_strict"
+	DependenciesOrderingSimple             = "simple"
+	DefaultDependenciesOrdering            = DependenciesOrderingCriticalPath
+	DefaultDependenciesEscalateHours       = 48
+)
+
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
 	Kind           string
@@ -47,11 +164,27 @@ type TrackerConfig struct {
 	// FailedState is the state to move issues to when max retries are exhausted.
 	// When empty, issues are paused instead of transitioned.
 	FailedState string
+	// Outbox enables the write-ahead outbox for tracker state transitions and
+	// comments: writes are persisted durably and flushed by an independent
+	// worker instead of being made synchronously (with inline retries) from
+	// the orchestrator's completion/failed-state paths. Default true; set
+	// false as a kill switch to restore the old synchronous behavior.
+	Outbox bool
 }
 
 // PollingConfig holds polling settings.
 type PollingConfig struct {
 	IntervalMs int
+	// RateLimitReservePercent is the share of the tracker's request budget
+	// held back for writes. Below it, the orchestrator stops spending
+	// requests on polling reads so state transitions, comments and the
+	// input-resume path can still land (issue #42-E: reads and writes drew on
+	// one budget, so polling exhausted the hour early and then starved the
+	// very writes that would have drained the queue).
+	//
+	// An explicit 0 disables shedding entirely. Values >= 100 would shed
+	// permanently and are clamped to the default.
+	RateLimitReservePercent int
 }
 
 // WorkspaceConfig holds workspace settings.
@@ -195,6 +328,20 @@ type AgentConfig struct {
 	// looping without making progress). Default: 300 000 ms (5 min).
 	// Set to ≤ 0 to disable stall detection entirely.
 	StallTimeoutMs int
+	// DependencyAuditRefreshIntervalMs is the minimum gap between refreshes of
+	// the same dependency-audit row. Startup-only: there is no HTTP setter, so
+	// it needs no cfgMu guard (same reasoning as StallTimeoutMs — see
+	// CLAUDE.md, section "`cfgMu` guards exactly these fields (and nothing
+	// else)").
+	DependencyAuditRefreshIntervalMs int
+	// DependencyAuditRefreshTimeoutMs bounds one off-loop refresh batch.
+	// Startup-only; see DependencyAuditRefreshIntervalMs.
+	DependencyAuditRefreshTimeoutMs int
+	// DependencyAuditRefreshBatchSize caps how many rows one batch may fetch.
+	// Replaces the former dependencyAuditRefreshPerTickBudget constant, whose
+	// value of 20 existed only because the fetches blocked the event loop.
+	// Startup-only; see DependencyAuditRefreshIntervalMs.
+	DependencyAuditRefreshBatchSize int
 	// SSHHosts is an optional list of "host" or "host:port" addresses.
 	// When set, agent turns are executed on these hosts via SSH in order,
 	// falling back to the next host on failure. Empty = run locally.
@@ -228,6 +375,24 @@ type AgentConfig struct {
 	// instead of the legacy ReviewerPrompt field. The reviewer runs as a
 	// regular worker in the queue with Kind="reviewer".
 	ReviewerProfile string
+	// ReviewerProfiles is the ordered list of profiles used for multi-reviewer
+	// fan-out (#58). When it has more than one entry, each reviewer runs
+	// SEQUENTIALLY and independently over the same issue and emits a verdict;
+	// the combined outcome is decided by ReviewQuorum.
+	//
+	// Sequential rather than concurrent is deliberate: `State.Running` is keyed
+	// by issue.ID (one agent per issue), an invariant dispatch, the janitor,
+	// retry, automation, and worktree isolation all depend on. Fan-out here
+	// buys independence of judgement, not wall-clock.
+	//
+	// Empty means "fall back to ReviewerProfile", so existing single-reviewer
+	// configs are unaffected.
+	ReviewerProfiles []string
+	// ReviewQuorum decides how multiple reviewer verdicts combine. One of
+	// ReviewQuorumAnyBlock (default — any single blocking verdict blocks),
+	// ReviewQuorumMajority, or ReviewQuorumUnanimous (every reviewer must
+	// block before the review is treated as blocked).
+	ReviewQuorum string
 	// AutoReview, when true, automatically dispatches a reviewer worker
 	// using ReviewerProfile after each successful worker completion.
 	// Requires ReviewerProfile to be set. Default: false.
@@ -241,6 +406,14 @@ type AgentConfig struct {
 	// dashboard's "Analyze dependencies" button is disabled and the Deps tab
 	// shows tracker-declared edges only.
 	DepsAnalyzerProfile string
+	// DepsAnalyzerTimeoutMs bounds one analyzer job end to end, all chunks
+	// included. Independent of TurnTimeoutMs, whose 1-hour default is far too
+	// long for this job. Startup-only: no HTTP setter, so no cfgMu guard is
+	// needed (same precedent as StallTimeoutMs).
+	DepsAnalyzerTimeoutMs int
+	// DepsAnalyzerChunkSize caps how many issues go into one analyzer turn.
+	// Startup-only; see DepsAnalyzerTimeoutMs.
+	DepsAnalyzerChunkSize int
 	// InlineInput controls whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	// When true, the issue moves to the completion state with a question comment;
@@ -312,12 +485,73 @@ type HooksConfig struct {
 type ServerConfig struct {
 	Port *int
 	Host string
-	// AllowUnauthenticatedLAN, when true, lets the daemon bind to a
-	// non-loopback address without requiring ITERVOX_API_TOKEN. Explicit
-	// opt-in for trusted networks (air-gapped LAN, behind a firewall).
-	// Default false: a random token is auto-generated when binding
-	// non-loopback without one.
+	// AllowUnauthenticatedLAN, when true, lets the daemon start (on ANY
+	// bind address, loopback included) without requiring ITERVOX_API_TOKEN.
+	// Explicit opt-in for trusted environments. Default false: a random
+	// token is always auto-generated when no token is set, regardless of
+	// bind address — see #48. Bind address is not a security boundary (a
+	// loopback daemon behind a tunnel or reverse proxy is exactly as
+	// exposed as a non-loopback one), so this is no longer LAN-specific.
+	//
+	// YAML key: `server.allow_unauthenticated` (preferred). The legacy key
+	// `server.allow_unauthenticated_lan` still parses as a deprecated alias
+	// (one-time slog.Warn); the new key wins if both are present.
 	AllowUnauthenticatedLAN bool
+}
+
+// DependenciesConfig holds settings for the unified dependency graph:
+// whether inferred (non-tracker) dependency edges gate automation dispatch,
+// and the confidence/staleness thresholds inferred edges are held to.
+type DependenciesConfig struct {
+	// InferredGating, when true, lets inferred dependency edges (not just
+	// tracker-declared blockers) hold automation dispatch until resolved.
+	// Default true.
+	InferredGating bool
+	// ConfidenceThreshold is the minimum confidence score (0.0-1.0) an
+	// inferred dependency edge must meet to be treated as gating. Values
+	// outside [0,1] fall back to DefaultDependenciesConfidenceThreshold.
+	ConfidenceThreshold float64
+	// StalenessHours is how long an inferred dependency edge is trusted
+	// before it is considered stale and re-evaluated. Non-positive values
+	// fall back to DefaultDependenciesStalenessHours.
+	StalenessHours int
+	// Ordering selects the dispatch ordering strategy: "critical_path"
+	// (default) ranks issues by how many dependents they unblock but only
+	// within a priority band, "critical_path_strict" ranks by that same
+	// graph leverage ahead of the priority band, and "simple" uses the
+	// legacy priority/createdAt sort with no graph awareness. An
+	// unrecognized value falls back to DefaultDependenciesOrdering with a
+	// slog.Warn. See also the deprecated agent.sort.prefer_high_outdegree
+	// alias, handled at the parse site.
+	Ordering string
+	// EscalateBlockedAfterHours is how long an issue may remain blocked
+	// before automation escalation fires. Default 48. An explicit `0` is
+	// meaningful — it disables escalation — and is preserved as-is. A
+	// negative value falls back to DefaultDependenciesEscalateHours with a
+	// slog.Warn.
+	EscalateBlockedAfterHours int
+	// AutoAnalyze, when true, enables periodic dependency analysis.
+	// Default true.
+	AutoAnalyze bool
+	// AutoAnalyzeMinIntervalMinutes is the minimum gap between consecutive
+	// dependency analyses on the same issue. Parsed via positiveIntField;
+	// <=0 becomes the default. There is no meaningful zero here (unlike
+	// escalate_blocked_after_hours) — analyzer must not run every tick.
+	AutoAnalyzeMinIntervalMinutes int
+	// AutoAnalyzeDebounceMinutes delays analysis start after a dispatch to
+	// avoid analyzing while state is still settling. Parsed via positiveIntField;
+	// <=0 becomes the default. No meaningful zero — debounce must delay.
+	AutoAnalyzeDebounceMinutes int
+	// StackedPRs bases an issue's worktree on its blocker's branch instead of
+	// workspace.base_branch, when the issue has exactly one live blocker, so
+	// the resulting PR shows only the increment rather than its blocker's
+	// commits as well.
+	//
+	// Opt-in (default false): it changes which commit work starts from, which
+	// is not a change to make silently on upgrade. Best-effort — an
+	// unresolvable blocker branch falls back to base_branch rather than
+	// failing the dispatch.
+	StackedPRs bool
 }
 
 // Config is the fully-parsed, defaulted, and resolved Itervox configuration.
@@ -335,6 +569,7 @@ type Config struct {
 	Agent          AgentConfig
 	Hooks          HooksConfig
 	Server         ServerConfig
+	Dependencies   DependenciesConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
 }
@@ -404,14 +639,18 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
+	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
 
 	// Polling
 	polling := nestedMap(raw, "polling")
 	cfg.Polling.IntervalMs = intField(polling, "interval_ms", 30000)
+	// intField, not positiveIntField: an explicit 0 is meaningful here (shed
+	// nothing) and must survive, exactly like escalate_blocked_after_hours.
+	cfg.Polling.RateLimitReservePercent = intField(polling, "rate_limit_reserve_percent", DefaultRateLimitReservePercent)
 
 	// Workspace
 	ws := nestedMap(raw, "workspace")
-	defaultWSRoot := defaultWorkspaceRoot()
+	defaultWSRoot := defaultWorkspaceRoot(WorkspaceProjectKey(workflowPath))
 	cfg.Workspace.Root = resolvePathValue(strField(ws, "root", ""), defaultWSRoot)
 	cfg.Workspace.AutoClearWorkspace = boolField(ws, "auto_clear", false)
 	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
@@ -429,6 +668,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.TurnTimeoutMs = intField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
+	cfg.Agent.DependencyAuditRefreshIntervalMs = positiveIntField(agent, "dependency_audit_refresh_interval_ms", DefaultDependencyAuditRefreshIntervalMs)
+	cfg.Agent.DependencyAuditRefreshTimeoutMs = positiveIntField(agent, "dependency_audit_refresh_timeout_ms", DefaultDependencyAuditRefreshTimeoutMs)
+	cfg.Agent.DependencyAuditRefreshBatchSize = positiveIntField(agent, "dependency_audit_refresh_batch_size", DefaultDependencyAuditRefreshBatchSize)
 	cfg.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(mapField(agent, "max_concurrent_agents_by_state"))
 	cfg.Agent.PauseDispatchWhenAnyInState = strSliceField(agent, "pause_dispatch_when_any_in_state", nil)
 	cfg.Agent.MergeStrategy = strField(agent, "merge_strategy", "squash")
@@ -447,7 +689,20 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
+	cfg.Agent.ReviewerProfiles = strSliceField(agent, "reviewer_profiles", nil)
+	normalizeReviewerProfiles(&cfg.Agent)
+	cfg.Agent.ReviewQuorum = strField(agent, "review_quorum", DefaultReviewQuorum)
+	switch cfg.Agent.ReviewQuorum {
+	case ReviewQuorumAnyBlock, ReviewQuorumMajority, ReviewQuorumUnanimous:
+		// recognized
+	default:
+		slog.Warn("config: agent.review_quorum unrecognized, using default",
+			"value", cfg.Agent.ReviewQuorum, "default", DefaultReviewQuorum)
+		cfg.Agent.ReviewQuorum = DefaultReviewQuorum
+	}
 	cfg.Agent.DepsAnalyzerProfile = strField(agent, "deps_analyzer_profile", "")
+	cfg.Agent.DepsAnalyzerTimeoutMs = positiveIntField(agent, "deps_analyzer_timeout_ms", DefaultDepsAnalyzerTimeoutMs)
+	cfg.Agent.DepsAnalyzerChunkSize = positiveIntField(agent, "deps_analyzer_chunk_size", DefaultDepsAnalyzerChunkSize)
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
@@ -487,7 +742,94 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			cfg.Server.Port = &pInt
 		}
 	}
-	cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+	// Absent (or unparseable) port → fixed default. Port stays a *int only so
+	// an explicit `0` (OS picks a free port, for multi-daemon setups) remains
+	// distinguishable in the YAML; after load it is always non-nil.
+	if cfg.Server.Port == nil {
+		defaultPort := DefaultServerPort
+		cfg.Server.Port = &defaultPort
+	}
+	// Alias: server.allow_unauthenticated_lan is deprecated in favor of
+	// server.allow_unauthenticated (#48 — the flag is no longer LAN-scoped,
+	// it opts out of auth entirely regardless of bind address). The new key
+	// wins if both are present in the same WORKFLOW.md.
+	_, newAllowUnauthKeySet := srv["allow_unauthenticated"]
+	_, oldAllowUnauthKeySet := srv["allow_unauthenticated_lan"]
+	switch {
+	case newAllowUnauthKeySet:
+		cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated", false)
+		if oldAllowUnauthKeySet {
+			slog.Warn("config: both server.allow_unauthenticated and deprecated server.allow_unauthenticated_lan are set; using server.allow_unauthenticated")
+		}
+	case oldAllowUnauthKeySet:
+		slog.Warn("config: server.allow_unauthenticated_lan is deprecated, use server.allow_unauthenticated instead")
+		cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+	default:
+		cfg.Server.AllowUnauthenticatedLAN = false
+	}
+
+	// Dependencies
+	deps := nestedMap(raw, "dependencies")
+	cfg.Dependencies.InferredGating = boolField(deps, "inferred_gating", true)
+	confidenceThreshold := floatField(deps, "confidence_threshold", DefaultDependenciesConfidenceThreshold)
+	if confidenceThreshold < 0 || confidenceThreshold > 1 {
+		slog.Warn("config: dependencies.confidence_threshold out of range [0,1], using default",
+			"value", confidenceThreshold, "default", DefaultDependenciesConfidenceThreshold)
+		confidenceThreshold = DefaultDependenciesConfidenceThreshold
+	}
+	cfg.Dependencies.ConfidenceThreshold = confidenceThreshold
+	cfg.Dependencies.StalenessHours = positiveIntField(deps, "staleness_hours", DefaultDependenciesStalenessHours)
+
+	_, orderingExplicit := deps["ordering"]
+	cfg.Dependencies.Ordering = strField(deps, "ordering", DefaultDependenciesOrdering)
+	switch cfg.Dependencies.Ordering {
+	case DependenciesOrderingCriticalPath, DependenciesOrderingCriticalPathStrict, DependenciesOrderingSimple:
+		// recognized
+	default:
+		slog.Warn("config: dependencies.ordering unrecognized, using default",
+			"value", cfg.Dependencies.Ordering, "default", DefaultDependenciesOrdering)
+		cfg.Dependencies.Ordering = DefaultDependenciesOrdering
+	}
+
+	// escalate_blocked_after_hours: absent -> default (48); explicit 0 is a
+	// meaningful "disabled" value and must be preserved; negative -> default
+	// with a warning. Deliberately NOT positiveIntField, which would treat
+	// an explicit 0 the same as absent and destroy the "disabled" signal —
+	// the exact footgun documented for timeout fields in CLAUDE.md.
+	if _, ok := deps["escalate_blocked_after_hours"]; ok {
+		escalateHours := intField(deps, "escalate_blocked_after_hours", DefaultDependenciesEscalateHours)
+		if escalateHours < 0 {
+			slog.Warn("config: dependencies.escalate_blocked_after_hours negative, using default",
+				"value", escalateHours, "default", DefaultDependenciesEscalateHours)
+			escalateHours = DefaultDependenciesEscalateHours
+		}
+		cfg.Dependencies.EscalateBlockedAfterHours = escalateHours
+	} else {
+		cfg.Dependencies.EscalateBlockedAfterHours = DefaultDependenciesEscalateHours
+	}
+
+	// auto_analyze: enable/disable periodic dependency analysis. Default true.
+	cfg.Dependencies.AutoAnalyze = boolField(deps, "auto_analyze", true)
+	cfg.Dependencies.StackedPRs = boolField(deps, "stacked_prs", false)
+	// auto_analyze_min_interval_minutes and auto_analyze_debounce_minutes:
+	// both parsed via positiveIntField (<=0 -> default). No meaningful zero
+	// here — analyzer must not run every tick, and debounce must delay.
+	cfg.Dependencies.AutoAnalyzeMinIntervalMinutes = positiveIntField(deps, "auto_analyze_min_interval_minutes", DefaultDependenciesAutoAnalyzeMinIntervalMinutes)
+	cfg.Dependencies.AutoAnalyzeDebounceMinutes = positiveIntField(deps, "auto_analyze_debounce_minutes", DefaultDependenciesAutoAnalyzeDebounceMinutes)
+
+	// Alias: agent.sort.prefer_high_outdegree is deprecated in favor of
+	// dependencies.ordering. If set, log a one-time deprecation warning. If
+	// dependencies.ordering was absent from the YAML, the alias leaves the
+	// default critical_path in place (net effect: same behavior, better
+	// tiebreaking). If dependencies.ordering was explicitly present
+	// (including explicit "simple"), it wins outright.
+	if cfg.Agent.PreferHighOutdegreeSort {
+		slog.Warn("config: agent.sort.prefer_high_outdegree is deprecated, use dependencies.ordering: critical_path instead")
+		if !orderingExplicit {
+			cfg.Dependencies.Ordering = DependenciesOrderingCriticalPath
+		}
+	}
+
 	cfg.Automations = parseAutomations(raw["automations"])
 	if len(cfg.Automations) == 0 {
 		legacy := legacySchedulesToAutomations(parseSchedules(raw["schedules"]))
@@ -529,13 +871,78 @@ func resolvePathValue(value, defaultVal string) string {
 	return expanded
 }
 
-// defaultWorkspaceRoot returns ~/.itervox/workspaces, falling back to
-// os.TempDir()/itervox_workspaces if the home directory cannot be determined.
-func defaultWorkspaceRoot() string {
+// defaultWorkspaceRoot returns a per-PROJECT workspace root under
+// ~/.itervox/workspaces, falling back to os.TempDir() if the home directory
+// cannot be determined.
+//
+// The per-project namespace is not cosmetic. A workspace directory is keyed by
+// issue IDENTIFIER alone (workspace.WorkspacePath), and identifiers are only
+// unique within one tracker project:
+//
+//   - GitHub identifiers are the repo-local issue number — "#1", "#2". EVERY
+//     GitHub repo has a #1, so a shared root put two repos' agents in the same
+//     directory, each checking out different code over the other, and let one
+//     project's workspace.auto_clear delete another project's live worktree
+//     mid-run.
+//   - Linear identifiers are team-scoped ("ENG-1"), so two workspaces sharing
+//     a team prefix collide the same way.
+//
+// projectKey is derived from the workflow path, which is the only identity
+// available this early — tracker config is still being parsed. An operator who
+// sets workspace.root explicitly is untouched.
+func defaultWorkspaceRoot(projectKey string) string {
+	base := filepath.Join(os.TempDir(), "itervox_workspaces")
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".itervox", "workspaces")
+		base = filepath.Join(home, ".itervox", "workspaces")
 	}
-	return filepath.Join(os.TempDir(), "itervox_workspaces")
+	if projectKey == "" {
+		return base
+	}
+	return filepath.Join(base, projectKey)
+}
+
+// CanonicalWorkflowPath returns an absolute, symlink-resolved form of
+// workflowPath, so every per-project namespace derived from it agrees no
+// matter which spelling the operator used.
+//
+// Two spellings of ONE checkout are routine: a symlinked working copy, or
+// simply `/tmp/x` on macOS where /tmp is a symlink to /private/tmp. Hashing
+// the unresolved path gave each spelling its own namespace — and those
+// namespaces hold automation_queue.json (the dependency audit), history.json,
+// paused.json, input_required.json, and a whole workspace/worktree set. A
+// daemon restarted under the other spelling silently abandoned the previous
+// run's queue, audit and worktrees. That is the same collision class the
+// namespacing was added to prevent, merely keyed wrong.
+//
+// EvalSymlinks fails on a path that does not exist yet, which is normal before
+// `itervox init`, so it degrades to the unresolved absolute form rather than
+// erroring.
+func CanonicalWorkflowPath(workflowPath string) string {
+	abs, err := filepath.Abs(workflowPath)
+	if err != nil {
+		abs = workflowPath
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(filepath.Dir(abs)); resolveErr == nil {
+		return filepath.Join(resolved, filepath.Base(abs))
+	}
+	return abs
+}
+
+// WorkspaceProjectKey derives a stable, filesystem-safe namespace for a
+// project from its WORKFLOW.md path. Exported so cmd/itervox can reuse the
+// same derivation for other per-project state.
+func WorkspaceProjectKey(workflowPath string) string {
+	if workflowPath == "" {
+		return ""
+	}
+	abs := CanonicalWorkflowPath(workflowPath)
+	sum := sha256.Sum256([]byte(abs))
+	label := filepath.Base(filepath.Dir(abs))
+	safe := strings.NewReplacer("/", "_", `\`, "_", ":", "_", " ", "_", ".", "_").Replace(label)
+	if safe == "" || safe == "_" {
+		safe = "project"
+	}
+	return safe + "-" + hex.EncodeToString(sum[:4])
 }
 
 func expandTilde(path string) string {
@@ -814,6 +1221,21 @@ func intField(m map[string]any, key string, defaultVal int) int {
 	return n
 }
 
+func floatField(m map[string]any, key string, defaultVal float64) float64 {
+	if m == nil {
+		return defaultVal
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return defaultVal
+	}
+	f, ok := toFloat(v)
+	if !ok {
+		return defaultVal
+	}
+	return f
+}
+
 func boolField(m map[string]any, key string, defaultVal bool) bool {
 	if m == nil {
 		return defaultVal
@@ -871,4 +1293,61 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	}
 	return 0, false
+}
+
+// toFloat coerces a YAML-decoded numeric value to float64. YAML numbers
+// arrive as int or float64 in a map[string]any, depending on whether the
+// literal contained a decimal point — yaml.v3 never produces a float32, so
+// there is no float32 case here (#50: it was dead defensive code, removed as
+// pure churn).
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// normalizeReviewerProfiles makes a reviewer_profiles-only configuration
+// usable and predictable while reviewer fan-out is disabled for the v0.2.1
+// release (see orchestrator.ReviewerProfileChain for the three reproduced
+// failures that gate it).
+//
+// Two problems it solves:
+//
+//   - ValidateReviewerAutoReview checks the SINGULAR reviewer_profile, so
+//     `auto_review: true` with only reviewer_profiles set hard-failed at
+//     startup — the very shape the fan-out feature's own tests use.
+//   - Several dispatch decisions read cfg.Agent.ReviewerProfile directly, so
+//     even if such a config booted, no review would ever run: the daemon
+//     would silently do nothing rather than review with the listed profile.
+//
+// Promoting the first entry into reviewer_profile collapses both onto the
+// long-standing, working single-reviewer path. The warning is deliberately
+// loud: an operator who listed several reviewers must know only the first
+// one runs, rather than discovering it from a quiet dashboard.
+func normalizeReviewerProfiles(agent *AgentConfig) {
+	trimmed := make([]string, 0, len(agent.ReviewerProfiles))
+	for _, p := range agent.ReviewerProfiles {
+		if p = strings.TrimSpace(p); p != "" {
+			trimmed = append(trimmed, p)
+		}
+	}
+	agent.ReviewerProfiles = trimmed
+	if len(trimmed) == 0 {
+		return
+	}
+	if agent.ReviewerProfile == "" {
+		agent.ReviewerProfile = trimmed[0]
+		slog.Warn("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry",
+			"reviewer_profile", trimmed[0])
+	}
+	if len(trimmed) > 1 {
+		slog.Warn("config: multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs",
+			"running", agent.ReviewerProfile, "ignored", trimmed[1:])
+	}
 }

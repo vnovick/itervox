@@ -15,6 +15,24 @@ type Provider interface {
 	ResolvePath(identifier string) string
 }
 
+// StackedProvider is an OPTIONAL interface for providers that can base a new
+// worktree on a branch other than workspace.base_branch — the mechanism behind
+// stacked PRs, where an issue's work sits on top of its blocker's branch so
+// the diff shows only the increment.
+//
+// Optional, and type-asserted rather than added to Provider, for the same
+// reason tracker.RateLimiter is: widening a small interface with several
+// implementations (including every test fake) forces unrelated churn on all of
+// them. A provider that does not implement this simply never stacks, which is
+// the correct fallback.
+type StackedProvider interface {
+	// EnsureWorkspaceFrom is EnsureWorkspace with an explicit start point.
+	// An empty or non-existent startPoint must behave exactly like
+	// EnsureWorkspace — stacking is best-effort and must never be the reason
+	// a dispatch fails.
+	EnsureWorkspaceFrom(ctx context.Context, identifier, branchName, startPoint string) (Workspace, error)
+}
+
 // Workspace represents a resolved per-issue workspace directory.
 type Workspace struct {
 	Path       string
@@ -37,9 +55,23 @@ func NewManager(cfg *config.Config) *Manager {
 // the desired branch). Otherwise the legacy directory-based path is used and
 // both ctx and branchName are ignored.
 func (m *Manager) EnsureWorkspace(ctx context.Context, identifier, branchName string) (Workspace, error) {
+	return m.EnsureWorkspaceFrom(ctx, identifier, branchName, "")
+}
+
+// EnsureWorkspaceFrom implements StackedProvider: it is EnsureWorkspace with
+// an explicit start point for the new branch.
+//
+// startPoint is ADVISORY. It is used only when it names a ref that actually
+// exists, because the branch it points at may legitimately be absent — the
+// blocker may not have been dispatched yet, may have been worked on a
+// different machine, or may have had its worktree cleared. Stacking is a
+// review-ergonomics improvement; it must never be the reason a dispatch
+// fails, so an unresolvable start point silently falls back to base_branch.
+func (m *Manager) EnsureWorkspaceFrom(ctx context.Context, identifier, branchName, startPoint string) (Workspace, error) {
 	if m.cfg.Workspace.Worktree {
-		return m.ensureWorktree(ctx, identifier, branchName)
+		return m.ensureWorktree(ctx, identifier, branchName, startPoint)
 	}
+	// Directory mode has no branches, so there is nothing to stack on.
 	return m.ensureDirectory(identifier)
 }
 

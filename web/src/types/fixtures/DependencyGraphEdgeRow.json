@@ -5,5 +5,7 @@
   "sourceState": "In Progress",
   "targetState": "Todo",
   "resolved": false,
-  "sourceKnown": true
+  "sourceKnown": true,
+  "origin": "tracker",
+  "gating": true
 }

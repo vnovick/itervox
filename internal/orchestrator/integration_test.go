@@ -484,7 +484,14 @@ func TestInputRequiredResumeReusesWorkspaceWithoutRerunningBeforeRun(t *testing.
 		calls, sessionIDs, prompts, workspacePaths, commands, _ := runner.snapshot()
 		issues, err := mt.FetchIssueStatesByIDs(ctx, []string{"id1"})
 		require.NoError(t, err)
-		if calls >= 2 && len(issues) > 0 && issues[0].State == "Done" {
+		// RunHistory is part of the readiness condition, not just the
+		// assertions below. `calls` increments inside RunTurn on the runner
+		// goroutine, while the history entry is recorded later by the event
+		// loop when it processes EventWorkerExited — so under load this loop
+		// could observe calls==2 and a Done issue while history still held
+		// only the first run, then fail on require.Len(history, 2). Waiting
+		// for the thing being asserted removes that race.
+		if calls >= 2 && len(issues) > 0 && issues[0].State == "Done" && len(orch.RunHistory()) >= 2 {
 			require.Len(t, sessionIDs, 2)
 			require.Len(t, prompts, 2)
 			require.Len(t, workspacePaths, 2)

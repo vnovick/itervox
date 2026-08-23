@@ -46,6 +46,35 @@ type rateLimitSnapshot struct {
 	reset     *time.Time
 }
 
+// blockerStateCacheTTL bounds how long a successfully fetched blocker state
+// is reused before populateBlockerStates re-fetches it from GitHub.
+//
+// Set well within the dependency-audit refresh interval's freshness
+// expectations (config.DefaultDependencyAuditRefreshIntervalMs, 10 minutes
+// by default) so a cached read never outlives the audit's own staleness
+// budget; it also bounds the worst-case delay before an unblock (a closed
+// blocker) is observed by a dependent issue. Not configurable — YAGNI until
+// an operator actually needs a different value; this is a single
+// bandwidth-vs-freshness tradeoff with one obviously correct default.
+//
+// Staleness compounds with the dependency-audit refresh path rather than
+// replacing it: a watched-but-inactive issue is only re-evaluated on that
+// path's own interval (10 minutes by default), so the worst case for
+// observing blockers_resolved through that path is roughly TTL + refresh
+// interval — about 15 minutes, up from ~10 minutes pre-cache. The fail
+// direction is safe: a stale cache entry can only read as "still blocked"
+// (state unchanged since the last successful fetch), never as a false
+// unblock, so the extra delay costs latency, not correctness.
+const blockerStateCacheTTL = 5 * time.Minute
+
+// blockerCacheEntry is a cached populateBlockerStates result for one blocker
+// issue. Only successful fetches are stored — see populateBlockerStates.
+type blockerCacheEntry struct {
+	state     string
+	url       string
+	fetchedAt time.Time
+}
+
 // Client is the GitHub Issues REST tracker adapter.
 type Client struct {
 	cfg           ClientConfig
@@ -54,6 +83,29 @@ type Client struct {
 	repo          string
 	rateMu        sync.RWMutex
 	lastRateLimit *rateLimitSnapshot
+
+	// blockerCacheMu guards blockerCache, the TTL cache of blocker states
+	// used by populateBlockerStates (see blockerStateCacheTTL). It is keyed
+	// by blocker issue ID and lives for the process lifetime, capped by TTL
+	// per entry rather than by eviction.
+	//
+	// A FAILED fetch is never stored here: populateBlockerStates only calls
+	// storeBlockerState for a SUCCESSFUL GET (its result's ok == true), so a
+	// transient GitHub error (network blip, rate limit, 5xx) re-fetches on
+	// the very next poll instead of suppressing state resolution for the
+	// whole TTL window. Success is judged by whether the GET returned an
+	// issue, not by whether that issue resolved to a non-empty state — an
+	// open, unlabeled blocker (deriveState returns "") is a valid, cacheable
+	// answer, and the common case for "depends on #N" references to
+	// untriaged prerequisites; treating it as "no cache entry" would defeat
+	// the cache for exactly that population.
+	blockerCacheMu sync.RWMutex
+	blockerCache   map[string]blockerCacheEntry
+
+	// now returns the current time. Defaults to time.Now; overridable in
+	// tests (see export_test.go) to exercise blockerStateCacheTTL expiry
+	// without sleeping.
+	now func() time.Time
 }
 
 // NewClient creates a new GitHub Client.
@@ -63,11 +115,34 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 	owner, repo, _ := strings.Cut(cfg.ProjectSlug, "/")
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: httpTimeout},
-		owner:      owner,
-		repo:       repo,
+		cfg:          cfg,
+		httpClient:   &http.Client{Timeout: httpTimeout},
+		owner:        owner,
+		repo:         repo,
+		blockerCache: make(map[string]blockerCacheEntry),
+		now:          time.Now,
 	}
+}
+
+// lookupBlockerState returns the cached state for blocker id if it was
+// fetched successfully within blockerStateCacheTTL. ok is false on a cache
+// miss or an expired entry.
+func (c *Client) lookupBlockerState(id string) (blockerCacheEntry, bool) {
+	c.blockerCacheMu.RLock()
+	defer c.blockerCacheMu.RUnlock()
+	entry, ok := c.blockerCache[id]
+	if !ok || c.now().Sub(entry.fetchedAt) >= blockerStateCacheTTL {
+		return blockerCacheEntry{}, false
+	}
+	return entry, true
+}
+
+// storeBlockerState caches a successfully fetched blocker state. Callers
+// must not call this for a failed fetch — see blockerCacheMu's doc comment.
+func (c *Client) storeBlockerState(id, state, url string) {
+	c.blockerCacheMu.Lock()
+	defer c.blockerCacheMu.Unlock()
+	c.blockerCache[id] = blockerCacheEntry{state: state, url: url, fetchedAt: c.now()}
 }
 
 // FetchCandidateIssues fetches open issues filtered by active-state labels, paginated.
@@ -405,7 +480,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		resp, err := c.httpClient.Do(req)
+		resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 		if err != nil {
 			slog.Warn("github_update_state: remove label request failed (ignored)",
 				"label", label, "issue_id", issueID, "error", err)
@@ -432,7 +507,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return fmt.Errorf("github_update_state: %w", err)
 	}
@@ -479,7 +554,7 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
@@ -531,7 +606,7 @@ func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateNa
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return nil, fmt.Errorf("github_create_issue: %w", err)
 	}
@@ -563,7 +638,7 @@ func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
 	if err != nil {
 		return nil, "", fmt.Errorf("github_api_request: %w", err)
 	}
@@ -666,36 +741,73 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 		id    string
 		state string
 		url   string
+		// ok is true iff the GET succeeded, independent of state. A fetch
+		// can succeed and still yield state == "" — deriveState returns ""
+		// for an open issue with no active/terminal label, which is the
+		// COMMON case for "depends on #N" references to untriaged
+		// prerequisites. ok, not state, is what must gate the cache write:
+		// keying on state alone would conflate "successfully learned this
+		// blocker has no resolvable state" with "the fetch failed", and
+		// re-fetch that (very common) population on every single poll —
+		// exactly the amplification this cache exists to remove. See
+		// storeBlockerState.
+		ok bool
 	}
-	ch := make(chan result, len(ids))
-	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
-		issue, err := c.fetchSingleIssue(ctx, id)
-		if err != nil {
-			// D4 fail-safe: ALL fetch errors — including 404, which GitHub returns
-			// for permission loss and transferred issues, not just deletion — leave
-			// State nil so the orchestrator treats the dependency as unmet. A
-			// genuinely deleted blocker surfaces as a permanent "unknown" row in the
-			// Deps dashboard; the operator resolves it by removing the reference.
-			slog.Error("github: blocker state fetch failed — dependents stay blocked until resolved",
-				"blocker_id", id, "error", err)
-			ch <- result{id: id}
-			return
-		}
-		if issue == nil {
-			ch <- result{id: id}
-			return
-		}
-		url := ""
-		if issue.URL != nil {
-			url = *issue.URL
-		}
-		ch <- result{id: id, state: issue.State, url: url}
-	})
-	close(ch)
 
+	// Serve whatever is already fresh in the cache; only the remainder needs
+	// a live GET. This is what keeps the widened phrase matcher's larger ID
+	// set from re-hitting GitHub every poll — see blockerStateCacheTTL.
 	resultMap := make(map[string]result, len(ids))
-	for r := range ch {
-		resultMap[r.id] = r
+	var toFetch []string
+	for _, id := range ids {
+		if entry, ok := c.lookupBlockerState(id); ok {
+			resultMap[id] = result{id: id, state: entry.state, url: entry.url, ok: true}
+			continue
+		}
+		toFetch = append(toFetch, id)
+	}
+
+	if len(toFetch) > 0 {
+		ch := make(chan result, len(toFetch))
+		boundedDo(ctx, toFetch, func(ctx context.Context, _ int, id string) {
+			issue, err := c.fetchSingleIssue(ctx, id)
+			if err != nil {
+				// D4 fail-safe: ALL fetch errors — including 404, which GitHub returns
+				// for permission loss and transferred issues, not just deletion — leave
+				// State nil so the orchestrator treats the dependency as unmet. A
+				// genuinely deleted blocker surfaces as a permanent "unknown" row in the
+				// Deps dashboard; the operator resolves it by removing the reference.
+				slog.Error("github: blocker state fetch failed — dependents stay blocked until resolved",
+					"blocker_id", id, "error", err)
+				ch <- result{id: id}
+				return
+			}
+			if issue == nil {
+				ch <- result{id: id}
+				return
+			}
+			url := ""
+			if issue.URL != nil {
+				url = *issue.URL
+			}
+			ch <- result{id: id, state: issue.State, url: url, ok: true}
+		})
+		close(ch)
+
+		for r := range ch {
+			resultMap[r.id] = r
+			// Cache every SUCCESSFUL fetch, including one that resolved to
+			// an empty state (open, unlabeled blocker) — that empty state
+			// is itself the correct, stable answer until the blocker is
+			// labeled or closed, and re-deriving it every poll is exactly
+			// the amplification being fixed here. Only a FAILED fetch
+			// (r.ok == false) is left uncached, so a transient GitHub error
+			// re-resolves on the very next poll instead of being pinned
+			// for the full TTL — see blockerCacheMu.
+			if r.ok {
+				c.storeBlockerState(r.id, r.state, r.url)
+			}
+		}
 	}
 
 	for i := range issues {
