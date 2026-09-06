@@ -48,7 +48,7 @@ func TestRequireNoLiveDaemonAllowsStalePidfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	livePid, _, _, err := requireNoLiveDaemon(wf)
+	livePid, _, _, err := claimPIDFile(wf)
 	if err != nil {
 		t.Errorf("stale pidfile must not block startup; got %v", err)
 	}
@@ -78,7 +78,7 @@ func TestRequireNoLiveDaemonRefusesWhenPidAlive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, _, err := requireNoLiveDaemon(wf)
+	_, _, _, err := claimPIDFile(wf)
 	if err == nil {
 		t.Fatal("expected refusal when previous daemon PID is alive")
 	}

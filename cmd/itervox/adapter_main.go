@@ -32,6 +32,13 @@ type orchestratorAdapter struct {
 	workflowPath string
 	notify       func()
 	skillsCache  *skills.Cache
+	// logsDir is the logs directory the daemon actually writes to, including
+	// an operator-supplied --logs-dir. Empty means "not threaded" (tests, and
+	// any caller with no log file), in which case Analytics falls back to
+	// deriving the default. Without this, skill analytics computed the
+	// DEFAULT path while the daemon wrote somewhere else, and rendered empty
+	// rather than erroring — silently wrong (issue #65).
+	logsDir string
 	// ob is the write-ahead outbox handle (always non-nil — cmd/itervox
 	// constructs it unconditionally in main.go's run(), even when
 	// cfg.Tracker.Outbox is false and it is never wired into the

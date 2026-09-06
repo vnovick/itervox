@@ -29,6 +29,32 @@ const (
 // as outboxFlushInterval. Production never reassigns it.
 var rateLimitWaitBase = DefaultRateLimitWait
 
+// sharedGate is the process-wide rate-limit gate consulted by every call that
+// goes through DoWithRateLimitRetry (issue #61). Package-level rather than
+// injected because the whole point is that unrelated callers — N workers, the
+// poller, the outbox flusher — coordinate without knowing about each other.
+var sharedGate = NewRateLimitGate()
+
+// SharedRateLimitGate exposes the process-wide gate so the dashboard and
+// heartbeat can report "the fleet is waiting on a rate limit until T" instead
+// of leaving an operator to infer it from stalled work.
+func SharedRateLimitGate() *RateLimitGate { return sharedGate }
+
+// isWriteRequest classifies a request for the gate's write-first admission.
+//
+// GET and HEAD re-derive state the daemon recomputes next tick; everything else
+// is a state transition, comment, or mutation that may never be retried if it
+// is starved. This is the same priority the read-shedding reserve applies at
+// the polling layer, enforced here for in-flight callers too.
+func isWriteRequest(req *http.Request) bool {
+	switch req.Method {
+	case http.MethodGet, http.MethodHead:
+		return false
+	default:
+		return true
+	}
+}
+
 // ParseRetryAfter interprets a Retry-After header, which RFC 9110 allows in
 // two forms: delay-seconds, or an HTTP-date. Returns 0 when absent or
 // unparseable, letting the caller fall back to its own backoff.
@@ -80,12 +106,26 @@ func rateLimitBackoff(attempt int, retryAfter time.Duration) time.Duration {
 // adapters use. A request without it is sent once and returned as-is rather
 // than silently re-sent with an empty body.
 func DoWithRateLimitRetry(ctx context.Context, client *http.Client, req *http.Request, adapter string) (*http.Response, error) {
+	isWrite := isWriteRequest(req)
+	// Wait out a window another caller already discovered, rather than
+	// spending a request to learn the same thing (#61). No window open is the
+	// overwhelmingly common case and costs one mutex acquisition.
+	if gateErr := sharedGate.Wait(ctx, adapter, isWrite); gateErr != nil {
+		return nil, gateErr
+	}
 	resp, err := client.Do(req)
 	for attempt := range MaxRateLimitRetries {
 		if err != nil || resp == nil || !isRateLimited(resp) {
 			return resp, err
 		}
-		wait := rateLimitBackoff(attempt, ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now()))
+		retryAfter := ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		wait := rateLimitBackoff(attempt, retryAfter)
+		// Publish the window so the rest of the fleet waits instead of each
+		// caller discovering it independently. Record the wait actually being
+		// taken, not just the header: with no Retry-After the backoff ladder
+		// is the only estimate available, and an uncoordinated fleet is worse
+		// than a slightly conservative one.
+		sharedGate.Record(adapter, wait)
 		retryable, rewindErr := rewindRequest(req)
 		if !retryable {
 			if rewindErr != nil {

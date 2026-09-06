@@ -98,7 +98,7 @@ func TestClaudeDirectBinaryTurnCarriesMarkerInRealEnv(t *testing.T) {
 		context.Background(), slog.Default(), nil,
 		nil, "hi", dir, fakeExe, "", "",
 		30000, 60000,
-	)
+		agent.PermissionBypass)
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(envFile)
@@ -121,7 +121,7 @@ func TestCodexDirectBinaryTurnCarriesMarkerInRealEnv(t *testing.T) {
 		context.Background(), slog.Default(), nil,
 		nil, "hi", dir, fakeExe, "", "",
 		30000, 60000,
-	)
+		agent.PermissionBypass)
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(envFile)
@@ -148,7 +148,7 @@ func TestClaudeSSHTurnCarriesMarkerAcrossBoundary(t *testing.T) {
 		context.Background(), slog.Default(), nil,
 		nil, "hi", "", "claude", "worker.example.test", "",
 		30000, 60000,
-	)
+		agent.PermissionBypass)
 
 	got, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
@@ -170,7 +170,7 @@ func TestCodexSSHTurnCarriesMarkerAcrossBoundary(t *testing.T) {
 		context.Background(), slog.Default(), nil,
 		nil, "hi", "", "codex", "worker.example.test", "",
 		30000, 60000,
-	)
+		agent.PermissionBypass)
 
 	got, err := os.ReadFile(argsFile)
 	require.NoError(t, err)

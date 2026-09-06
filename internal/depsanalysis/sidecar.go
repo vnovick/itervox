@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -120,10 +121,51 @@ func LoadSidecar(path string) (*Sidecar, error) {
 	if sc.Version < sidecarMinSupportedVersion || sc.Version > SidecarSchemaVersion {
 		return nil, nil
 	}
-	for i, edge := range sc.Edges {
-		sc.Edges[i].Confidence = clampConfidence(edge.Confidence)
+	kept := sc.Edges[:0]
+	for _, edge := range sc.Edges {
+		// A sidecar written before the analyzer-boundary guard can hold a
+		// self-edge. Drop it on load rather than only on the next analysis:
+		// a self-edge forms a single-node cycle whose members stay blocked
+		// (see orchestrator.DependencyCycle), so leaving one in place holds a
+		// real issue until an operator notices and overrides it by hand.
+		if isSelfEdge(edge.Source, edge.Target) {
+			slog.Warn("depsanalysis: dropping self-referential edge from sidecar",
+				"identifier", edge.Source, "path", path)
+			continue
+		}
+		edge.Confidence = clampConfidence(edge.Confidence)
+		kept = append(kept, edge)
 	}
+	sc.Edges = kept
 	return &sc, nil
+}
+
+// isSelfEdge reports whether an inferred edge claims an issue depends on
+// itself.
+//
+// This is issue #63 / #43's secondary defect in its one form that can be
+// rejected with NO false positives: identifier validation already proves both
+// endpoints exist, but nothing checked that the claimed RELATIONSHIP is
+// possible, and no issue can legitimately depend on itself. Dropping it
+// therefore cannot discard a genuine dependency — unlike quote-matching the
+// evidence against issue bodies, which was considered and rejected below.
+//
+// The impact is not cosmetic. A self-edge is a single-node SCC, which the tick
+// graph reports as a DependencyCycle, and cycle members STAY BLOCKED — nothing
+// auto-releases them. So one hallucinated "ENG-7 blocks ENG-7" parks a real
+// issue indefinitely.
+//
+// Deliberately NOT implemented: requiring Evidence to quote the issue it cites.
+// Analyzer evidence is a paraphrase far more often than a verbatim quote, so
+// substring matching would drop genuine edges in bulk — trading a hallucination
+// bug for the data-loss bug filterEdgesToKnownIssues explicitly refuses to
+// make. A fabricated relationship between two DIFFERENT real issues therefore
+// still reaches the sidecar; it is soft-gated (confidence threshold, staleness
+// window, known non-terminal source) and dismissible per-issue via the
+// deps-override endpoint, so it can bias ordering but cannot hard-block
+// dispatch.
+func isSelfEdge(source, target string) bool {
+	return source != "" && source == target
 }
 
 // clampConfidence restricts a confidence value to [0, 1].

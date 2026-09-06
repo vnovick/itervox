@@ -129,6 +129,7 @@ func (c *ClaudeRunner) RunTurn(
 	sessionID *string,
 	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
+	permissionMode PermissionMode,
 ) (TurnResult, error) {
 	turnCtx, cancel := ctx, context.CancelFunc(func() {})
 	if turnTimeoutMs > 0 {
@@ -141,7 +142,7 @@ func (c *ClaudeRunner) RunTurn(
 		// Remote execution: SSH to host and run command in a login shell.
 		// The workspace path is expected to exist on the remote host (e.g. NFS share).
 		// Use -t to allocate a PTY so remote processes receive SIGHUP when SSH exits.
-		shellCmd := buildShellCmd(command, sessionID, prompt)
+		shellCmd := buildShellCmd(command, sessionID, prompt, permissionMode)
 		shellCmd = itervoxAgentExportPrefix() + shellCmd
 		if logDir != "" {
 			shellCmd = "export CLAUDE_CODE_LOG_DIR=" + shellQuote(logDir) + "; mkdir -p " + shellQuote(logDir) + "; " + shellCmd
@@ -155,10 +156,10 @@ func (c *ClaudeRunner) RunTurn(
 		cmd = exec.CommandContext(turnCtx, "ssh", sshArgs...)
 	} else if filepath.IsAbs(command) && !strings.Contains(command, " ") {
 		// Clean absolute path with no flags — run the binary directly, no shell needed.
-		cmd = exec.CommandContext(turnCtx, command, buildDirectArgs(sessionID, prompt)...)
+		cmd = exec.CommandContext(turnCtx, command, buildDirectArgs(sessionID, prompt, permissionMode)...)
 	} else {
 		// Bare name — wrap in login shell so PATH is resolved at runtime.
-		cmd = exec.CommandContext(turnCtx, loginShell(), "-lc", buildShellCmd(command, sessionID, prompt))
+		cmd = exec.CommandContext(turnCtx, loginShell(), "-lc", buildShellCmd(command, sessionID, prompt, permissionMode))
 	}
 	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
@@ -210,12 +211,27 @@ func (c *ClaudeRunner) RunTurn(
 	return result, nil
 }
 
-// sharedFlags are the CLI flags used by every claude invocation regardless of
-// execution mode (direct binary or shell). Centralised here so adding a new
-// flag only requires one edit.
-const sharedFlagsStr = " --output-format stream-json --verbose --dangerously-skip-permissions"
+// sharedFlagsBase are the CLI flags used by every claude invocation regardless
+// of execution mode (direct binary or shell) AND regardless of permission
+// mode. The approval flags are appended per-turn by claudePermissionFlags,
+// because they are the one part that varies by profile (issue #66).
+var sharedFlagsBase = []string{"--output-format", "stream-json", "--verbose"}
 
-var sharedFlagsSlice = []string{"--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+// sharedFlagsSliceFor returns the full flag slice for a permission mode.
+func sharedFlagsSliceFor(mode PermissionMode) []string {
+	out := append([]string{}, sharedFlagsBase...)
+	return append(out, claudePermissionFlags(mode)...)
+}
+
+// sharedFlagsStrFor is the shell-command form. The leading space is load
+// bearing — callers concatenate it directly onto the command.
+func sharedFlagsStrFor(mode PermissionMode) string {
+	out := ""
+	for _, f := range sharedFlagsSliceFor(mode) {
+		out += " " + f
+	}
+	return out
+}
 
 // safePromptArg prevents Claude's CLI argparse from interpreting a prompt
 // that starts with '-' as another flag. The parser treats `-<anything>` as a
@@ -232,8 +248,8 @@ func safePromptArg(prompt string) string {
 }
 
 // buildDirectArgs returns CLI args for direct (non-shell) invocation.
-func buildDirectArgs(sessionID *string, prompt string) []string {
-	base := append([]string{}, sharedFlagsSlice...)
+func buildDirectArgs(sessionID *string, prompt string, mode PermissionMode) []string {
+	base := sharedFlagsSliceFor(mode)
 	if sessionID != nil && *sessionID != "" {
 		args := append(base, "--resume", *sessionID)
 		if prompt != "" {
@@ -249,16 +265,16 @@ func buildDirectArgs(sessionID *string, prompt string) []string {
 // special characters (backticks, $, !, quotes) in the rendered template.
 //
 // Defensive: if command is empty or whitespace, fall back to "claude" and
-// log a warning. Without this, sharedFlagsStr's leading space would produce
+// log a warning. Without this, the flag string's leading space would produce
 // " --output-format ..." which bash interprets as `--output-format` being
 // the command name, surfacing as `--output-format: command not found`.
-func buildShellCmd(command string, sessionID *string, prompt string) string {
+func buildShellCmd(command string, sessionID *string, prompt string, mode PermissionMode) string {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		slog.Warn("agent: empty command resolved at dispatch — falling back to 'claude'. Check WORKFLOW.md agent.command and any profile.command fields.")
 		command = "claude"
 	}
-	base := command + sharedFlagsStr
+	base := command + sharedFlagsStrFor(mode)
 	if sessionID != nil && *sessionID != "" {
 		// Resume an existing session. When a prompt is also provided (e.g.,
 		// the user's reply to an input-required question), append it with -p

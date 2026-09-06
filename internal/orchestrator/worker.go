@@ -227,6 +227,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	o.cfgMu.RUnlock()
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
+	// Resolved once from the same cfgMu snapshot as the rest of the profile,
+	// so every turn of this run launches with a consistent permission mode
+	// even if the profile is edited mid-run (issue #66).
+	permissionMode := agent.ParsePermissionMode(profilesSnap[profileName].PermissionMode)
 	profileCreateIssueState := strings.TrimSpace(profilesSnap[profileName].CreateIssueState)
 	profileMoveIssueState := ""
 	if automation != nil && automation.Trigger.Type == config.AutomationTriggerBlockersResolved {
@@ -521,7 +525,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
 		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
-			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 
 		if result.SessionID != "" {
 			s := result.SessionID

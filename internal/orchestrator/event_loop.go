@@ -673,7 +673,20 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 	// Bounded, least-recently-checked-first. Ranging over the whole map cost
 	// one tracker request per input-required issue per tick, so this loop's
 	// request rate scaled with the backlog it exists to clear (issue #42).
-	for _, identifier := range selectTrackerReplyCheckBatch(state.InputRequiredIssues, trackerReplyCheckPerTickBudget) {
+	selected := selectTrackerReplyCheckBatch(state.InputRequiredIssues, trackerReplyCheckPerTickBudget)
+	// Collapse the whole tick's reads into one request where the tracker can
+	// do it (issue #42: this loop was ~15% of the measured budget). A tracker
+	// without DetailBatcher returns nil here and every entry below takes the
+	// unchanged per-issue path.
+	replyIDs := make([]string, 0, len(selected))
+	for _, identifier := range selected {
+		if e := state.InputRequiredIssues[identifier]; e != nil {
+			replyIDs = append(replyIDs, e.IssueID)
+		}
+	}
+	prefetched := tracker.PrefetchDetails(ctx, o.tracker, replyIDs)
+
+	for _, identifier := range selected {
 		entry := state.InputRequiredIssues[identifier]
 		if entry == nil {
 			continue
@@ -684,11 +697,19 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 		// starve every other entry — the exact starvation the ordering is
 		// here to prevent.
 		entry.LastReplyCheckAt = time.Now()
-		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
-		if err != nil {
-			slog.Warn("orchestrator: tracker-reply check failed",
-				"identifier", identifier, "error", err)
-			continue
+		detailed := prefetched[entry.IssueID]
+		if detailed == nil {
+			// Not in the batch — either the tracker cannot batch, or this id
+			// was absent from the response. Absence is NOT deletion, so
+			// confirm with an authoritative single fetch rather than
+			// treating it as gone.
+			var err error
+			detailed, err = o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+			if err != nil {
+				slog.Warn("orchestrator: tracker-reply check failed",
+					"identifier", identifier, "error", err)
+				continue
+			}
 		}
 		if detailed != nil {
 			o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, time.Now())
@@ -728,9 +749,18 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	// attempted first. Computed once, before the loop, so the cheap
 	// bookkeeping below stays unbudgeted.
 	fetchAllowed := make(map[string]struct{}, trackerReplyCheckPerTickBudget)
+	resumeIDs := make([]string, 0, trackerReplyCheckPerTickBudget)
 	for _, identifier := range selectPendingResumeFetchBatch(state.PendingInputResumes, trackerReplyCheckPerTickBudget) {
 		fetchAllowed[identifier] = struct{}{}
+		if e := state.PendingInputResumes[identifier]; e != nil {
+			resumeIDs = append(resumeIDs, e.IssueID)
+		}
 	}
+	// One request for the whole budgeted set where the tracker supports it
+	// (issue #42: this loop was ~11% of the measured budget). Prefetching
+	// exactly the fetchAllowed set — not every pending entry — keeps the
+	// budget's meaning intact: entries this tick will not read are not read.
+	resumePrefetched := tracker.PrefetchDetails(ctx, o.tracker, resumeIDs)
 
 	for _, identifier := range identifiers {
 		if AvailableSlots(state) <= 0 {
@@ -779,11 +809,18 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		// Stamp before the fetch so a failing entry still yields its place;
 		// otherwise it would monopolise the budget forever.
 		entry.LastResumeAttemptAt = now
-		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
-		if err != nil {
-			slog.Warn("orchestrator: pending input resume detail fetch failed",
-				"identifier", identifier, "error", err)
-			continue
+		detailed := resumePrefetched[entry.IssueID]
+		if detailed == nil {
+			// Absent from the batch is not proof the issue is gone — confirm
+			// authoritatively before acting on it, since the branches below
+			// delete state on terminal/non-active.
+			var err error
+			detailed, err = o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+			if err != nil {
+				slog.Warn("orchestrator: pending input resume detail fetch failed",
+					"identifier", identifier, "error", err)
+				continue
+			}
 		}
 		if detailed == nil {
 			continue

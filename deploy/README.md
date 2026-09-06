@@ -106,14 +106,17 @@ directory. Sort this out **before** you debug anything else.
 
 ## Authentication
 
-> ⚠️ **Read this before exposing anything.** See
-> [issue #48](https://github.com/vnovick/itervox/issues/48).
+Itervox auto-generates an ephemeral bearer token on **every** bind — including
+loopback — unless you explicitly opt out with `server.allow_unauthenticated: true`.
+Bind address is deliberately not a signal: a loopback bind behind a tunnel or reverse
+proxy is exactly as internet-exposed as a public bind, and the daemon cannot tell the
+difference from inside the process. (This closed
+[issue #48](https://github.com/vnovick/itervox/issues/48), which described the older
+behaviour where a proxied loopback bind ran with no auth at all.)
 
-Itervox auto-generates a bearer token only when it binds a **non-loopback** address.
-A reverse proxy or tunnel in front of a `127.0.0.1` bind therefore gets **no
-authentication at all** — the daemon cannot see that it is publicly reachable.
-
-On any cloud VM, **set `ITERVOX_API_TOKEN` explicitly**:
+So you are authenticated by default. The reason to still pin a token on a VM is
+**stability, not security** — an auto-generated token is regenerated on every restart,
+breaking bookmarks and saved sessions each time systemd restarts the unit:
 
 ```bash
 openssl rand -hex 32
@@ -171,10 +174,11 @@ ownership guard detects the absence of a controlling terminal, logs
 `statusui: refusing to start TUI`, and the daemon continues. No flag needed, no retry
 delay when stdin is not a terminal.
 
-**But note where the logs go.** Immediately before launching the TUI, the daemon
-redirects `slog` to the rotating **file sink only**. That happens unconditionally,
-whether or not the TUI actually starts — so under systemd, journald captures the startup
-banner and then goes quiet. Your cloud logging agent must tail the log file:
+**Where the logs go.** With no controlling terminal the daemon fans logs out to
+**both stderr and the rotating file**, so `journalctl -u itervox` keeps working for the
+whole run rather than going quiet after the startup banner. Pass `--log-format=json`
+(or `ITERVOX_LOG_FORMAT=json`) to make the file sink structured for a cloud logging
+agent. The file sink lives at:
 
 ```
 ~/.itervox/logs/<kind>/<project>/itervox.log

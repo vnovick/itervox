@@ -404,7 +404,7 @@ func main() {
 	// rejected had already written to the log file the live daemon owns —
 	// interleaving two daemons' output in one file and rotating it out from
 	// under the running one. Nothing below this point may precede the guard.
-	if pid, recorded, pidPath, err := requireNoLiveDaemon(*workflowPath); err != nil {
+	if pid, recorded, pidPath, err := claimPIDFile(*workflowPath); err != nil {
 		// Deliberately NOT writeStartupErrorMarker: that writes
 		// STARTUP_ERROR.md into the directory the LIVE daemon owns, and the
 		// heartbeat writer reads it to report "Daemon: degraded". A refused
@@ -420,6 +420,12 @@ func main() {
 		_ = pidPath
 		fatalExit(1)
 	}
+	// The claim above WROTE the pid file, so this process now owns it from
+	// here rather than from the later write. Every exit path between this
+	// point and the fuller cleanup block below must release it, or a refused
+	// start would strand a claim no live process backs (issue #64).
+	defer removePIDFile(*workflowPath)
+	onFatalExit = func() { removePIDFile(*workflowPath) }
 
 	// Tee logs to stderr and a rotating file under <logs-dir>/itervox.log.
 	if err := os.MkdirAll(resolvedLogsDir, 0o755); err != nil {
@@ -477,10 +483,13 @@ func main() {
 
 	// Write a per-project PID file so `itervox stop` can find and terminate
 	// this daemon. Cleaned up on graceful shutdown (see defer below).
-	if path, err := writePIDFile(*workflowPath); err != nil {
-		slog.Warn("itervox: failed to write PID file — `itervox stop` will not find this daemon", "error", err)
+	// The pid file was already written by claimPIDFile's atomic claim above;
+	// re-writing it here would reintroduce the unconditional overwrite that
+	// made the guard racy. This block now only registers cleanup.
+	if pidPath, err := pidFilePath(*workflowPath); err != nil {
+		slog.Warn("itervox: could not resolve PID file path", "error", err)
 	} else {
-		slog.Info("itervox: wrote PID file", "path", path, "pid", os.Getpid())
+		slog.Info("itervox: holding PID file claim", "path", pidPath, "pid", os.Getpid())
 		// Clean shutdown removes pidfile, dashboard_url, and HEARTBEAT.md
 		// together so a future operator never sees stale state from this
 		// run. Doctor / `itervox status` rely on these files being either
@@ -980,12 +989,22 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			pm = &linearProjectManager{pm: tpm, workflowPath: workflowPath}
 		}
 
+		// logFile is rotatingFile.Filename, i.e. filepath.Join(resolvedLogsDir,
+		// "itervox.log") — so its directory IS the resolved logs dir, with
+		// --logs-dir already applied. Deriving it here rather than widening
+		// run's signature keeps the one place that resolves the path (main)
+		// authoritative (issue #65).
+		adapterLogsDir := ""
+		if logFile != "" {
+			adapterLogsDir = filepath.Dir(logFile)
+		}
 		adapter := &orchestratorAdapter{
 			orch:         orch,
 			logBuf:       logBuf,
 			cfg:          cfg,
 			tr:           tr,
 			workflowPath: workflowPath,
+			logsDir:      adapterLogsDir,
 			ob:           ob,
 		}
 		adapter.initSkillsCache()
@@ -1324,6 +1343,7 @@ func (r commandResolverRunner) RunTurn(
 	sessionID *string,
 	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
+	permissionMode agent.PermissionMode,
 ) (agent.TurnResult, error) {
 	resolver := r.resolve
 	if resolver == nil {
@@ -1332,7 +1352,7 @@ func (r commandResolverRunner) RunTurn(
 	if workerHost == "" {
 		command = resolveCommandLine(command, resolver)
 	}
-	return r.inner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	return r.inner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 }
 
 func resolveCommandLine(command string, resolver func(string) string) string {

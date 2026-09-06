@@ -29,6 +29,7 @@ func (m *MultiRunner) RunTurn(
 	sessionID *string,
 	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
+	permissionMode PermissionMode,
 ) (TurnResult, error) {
 	backend, cleanedCommand := backendFromCommand(command)
 	cleanedPrompt := stripBackendHintFromPrompt(prompt)
@@ -39,9 +40,9 @@ func (m *MultiRunner) RunTurn(
 	}
 
 	if r, ok := m.runners[backend]; ok {
-		return r.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+		return r.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 	}
-	return m.defaultRunner.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	return m.defaultRunner.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 }
 
 func stripBackendHintFromPrompt(prompt string) string {

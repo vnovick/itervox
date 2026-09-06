@@ -32,7 +32,7 @@ type promptCaptureRunner struct {
 	done    chan struct{}
 }
 
-func (r *promptCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *promptCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	r.prompts = append(r.prompts, prompt)
@@ -211,7 +211,7 @@ type chainingRunner struct {
 	done         chan int
 }
 
-func (r *chainingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *chainingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	r.prompts = append(r.prompts, prompt)
@@ -488,7 +488,7 @@ type alwaysFailingRunner struct {
 	calls atomic.Int64
 }
 
-func (r *alwaysFailingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *alwaysFailingRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.calls.Add(1)
 	// FailureText must be non-empty — the worker treats Failed=true with
 	// empty FailureText and zero tokens as "clean session end" rather than

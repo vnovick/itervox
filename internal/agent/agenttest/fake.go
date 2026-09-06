@@ -27,7 +27,7 @@ func NewFakeRunner(events []agent.StreamEvent) *FakeRunner {
 }
 
 // RunTurn replays the scripted events and builds a TurnResult.
-func (f *FakeRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (f *FakeRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	f.mu.Lock()
 	f.CallCount++
 	sid := ""

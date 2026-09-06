@@ -38,7 +38,7 @@ func TestShellQuoteSpecialChars(t *testing.T) {
 // --- buildShellCmd ---
 
 func TestBuildShellCmdNewSession(t *testing.T) {
-	cmd := buildShellCmd("claude", nil, "do the thing")
+	cmd := buildShellCmd("claude", nil, "do the thing", PermissionBypass)
 	assert.Contains(t, cmd, "claude")
 	assert.Contains(t, cmd, "--output-format stream-json")
 	assert.Contains(t, cmd, "-p")
@@ -48,7 +48,7 @@ func TestBuildShellCmdNewSession(t *testing.T) {
 
 func TestBuildShellCmdResumeWithoutPrompt(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "")
+	cmd := buildShellCmd("claude", &id, "", PermissionBypass)
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
 	// Resume without a prompt should not include -p.
@@ -57,7 +57,7 @@ func TestBuildShellCmdResumeWithoutPrompt(t *testing.T) {
 
 func TestBuildShellCmdResumeWithPrompt(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "the user reply")
+	cmd := buildShellCmd("claude", &id, "the user reply", PermissionBypass)
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
 	// Resume WITH a prompt (input-required flow) should include both flags.
@@ -67,7 +67,7 @@ func TestBuildShellCmdResumeWithPrompt(t *testing.T) {
 
 func TestBuildDirectArgsResumeWithoutPrompt(t *testing.T) {
 	id := "sess-abc"
-	args := buildDirectArgs(&id, "")
+	args := buildDirectArgs(&id, "", PermissionBypass)
 	assert.Equal(t, []string{
 		"--output-format", "stream-json",
 		"--verbose",
@@ -78,7 +78,7 @@ func TestBuildDirectArgsResumeWithoutPrompt(t *testing.T) {
 
 func TestBuildDirectArgsResumeWithPrompt(t *testing.T) {
 	id := "sess-abc"
-	args := buildDirectArgs(&id, "the user reply")
+	args := buildDirectArgs(&id, "the user reply", PermissionBypass)
 	assert.Equal(t, []string{
 		"--output-format", "stream-json",
 		"--verbose",
@@ -92,7 +92,7 @@ func TestBuildDirectArgsResumeWithPrompt(t *testing.T) {
 // `--output-format`. Without the fallback, bash -lc would interpret the flag
 // as the command name and print `--output-format: command not found`.
 func TestBuildShellCmdEmptyCommandFallsBackToClaude(t *testing.T) {
-	cmd := buildShellCmd("", nil, "do the thing")
+	cmd := buildShellCmd("", nil, "do the thing", PermissionBypass)
 	// Must not start with the flag (which would happen if leading whitespace
 	// was the only thing before --output-format).
 	assert.False(t, strings.HasPrefix(strings.TrimSpace(cmd), "--"),
@@ -102,14 +102,14 @@ func TestBuildShellCmdEmptyCommandFallsBackToClaude(t *testing.T) {
 }
 
 func TestBuildShellCmdWhitespaceCommandFallsBackToClaude(t *testing.T) {
-	cmd := buildShellCmd("   ", nil, "do the thing")
+	cmd := buildShellCmd("   ", nil, "do the thing", PermissionBypass)
 	assert.True(t, strings.HasPrefix(strings.TrimSpace(cmd), "claude "),
 		"whitespace-only command should fall back to 'claude'; got: %q", cmd)
 }
 
 func TestBuildShellCmdEmptySessionID(t *testing.T) {
 	id := ""
-	cmd := buildShellCmd("claude", &id, "use prompt")
+	cmd := buildShellCmd("claude", &id, "use prompt", PermissionBypass)
 	// Empty session ID should be treated as new session.
 	assert.NotContains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "-p")
@@ -148,7 +148,7 @@ func TestTodoItemsNoTodosKey(t *testing.T) {
 // --- buildCodexShellCmd ---
 
 func TestBuildCodexShellCmdNewSession(t *testing.T) {
-	cmd := buildCodexShellCmd("codex", nil, "do the work", "/workspace")
+	cmd := buildCodexShellCmd("codex", nil, "do the work", "/workspace", PermissionBypass)
 	assert.Contains(t, cmd, "codex")
 	assert.Contains(t, cmd, "-C")
 	assert.Contains(t, cmd, "/workspace")
@@ -160,20 +160,20 @@ func TestBuildCodexShellCmdNewSession(t *testing.T) {
 
 func TestBuildCodexShellCmdResume(t *testing.T) {
 	id := "sess-xyz"
-	cmd := buildCodexShellCmd("codex", &id, "continue", "")
+	cmd := buildCodexShellCmd("codex", &id, "continue", "", PermissionBypass)
 	assert.Contains(t, cmd, "resume")
 	assert.Contains(t, cmd, "sess-xyz")
 	assert.Contains(t, cmd, "continue")
 }
 
 func TestBuildCodexShellCmdNoWorkspace(t *testing.T) {
-	cmd := buildCodexShellCmd("codex", nil, "prompt", "")
+	cmd := buildCodexShellCmd("codex", nil, "prompt", "", PermissionBypass)
 	assert.NotContains(t, cmd, "-C")
 }
 
 func TestBuildCodexShellCmdEmptySessionID(t *testing.T) {
 	id := ""
-	cmd := buildCodexShellCmd("codex", &id, "prompt text", "")
+	cmd := buildCodexShellCmd("codex", &id, "prompt text", "", PermissionBypass)
 	assert.NotContains(t, cmd, "resume")
 }
 
@@ -283,7 +283,7 @@ func TestSafePromptArg(t *testing.T) {
 // the value slot after '-p'.
 func TestBuildDirectArgs_SafeForLeadingDashPrompt(t *testing.T) {
 	sid := "sess-123"
-	args := buildDirectArgs(&sid, "- id: x")
+	args := buildDirectArgs(&sid, "- id: x", PermissionBypass)
 	// Expect: [...sharedFlags, "--resume", "sess-123", "-p", " - id: x"]
 	require := func(cond bool, msg string) {
 		if !cond {

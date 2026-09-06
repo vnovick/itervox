@@ -53,6 +53,7 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/comment_pr`
 - `POST /agent-actions/{identifier}/create-issue`
 - `POST /agent-actions/{identifier}/move-state`
+- `POST /agent-actions/{identifier}/merge_pr`
 - `POST /agent-actions/{identifier}/provide-input`
 
 Profiles opt into these capabilities with `allowed_actions` and
@@ -190,11 +191,33 @@ Useful top-level fields include:
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/deps-override` | — | `202 {"identifier":"ENG-1","overridden":true}` |
+| `DELETE` | `/issues/{identifier}/deps-override` | — | `202 {"identifier":"ENG-1","overridden":false}` |
 
 `provide-input` / `dismiss-input` return `404 not_found` when the issue is not
 currently in `input_required`.
 
 ---
+
+#### Inferred-dependency override
+
+`POST` dismisses the **LLM-inferred** dependency gating layer for one issue;
+`DELETE` restores it. This is the only mutation surface behind the dashboard's
+Deps tab.
+
+Two things to know:
+
+- **Tracker-declared blockers are unaffected.** `issue.BlockedBy` stays a hard
+  block regardless of an override — this endpoint only relaxes the inferred
+  layer.
+- **`202` means queued, not applied.** The change is routed through the
+  orchestrator event loop. Poll `GET /state` or watch the SSE stream to observe
+  the resulting `InferredDeps` entry.
+
+Unlike the sibling issue actions there is no "must already be in state X"
+precondition, so a failure has exactly one cause: the orchestrator's event
+channel was full. That returns **`503 deps_override_queue_full`** rather than
+`404`, signalling *retry* rather than *unknown identifier*.
 
 ## Logs
 
@@ -309,6 +332,7 @@ field derived from `instructions`; new clients should use the file-backed fields
 | `GET` | `/settings/reviewer` | `{"profile":"reviewer","auto_review":true}` |
 | `PUT` | `/settings/reviewer` | `{"ok":true}` |
 | `GET` | `/settings/models` | `{ "<backend>": [ModelOption] }` |
+| `POST` | `/settings/models/refresh` | Re-queries each backend's `--list-models` and refreshes the cached list |
 
 `PUT /settings/reviewer` request body:
 
@@ -391,6 +415,43 @@ Validation failures return `400` with typed error codes such as:
 - `invalid_trigger_type`
 - `invalid_match_mode`
 - `invalid_limit`
+
+---
+
+## Dependency analysis
+
+Runs the LLM analyzer that populates the inferred-dependency sidecar. One job
+runs at a time.
+
+| Method | Path | Response |
+|---|---|---|
+| `POST` | `/deps/analyze` | `202 {"jobId":"..."}` — returns the in-flight job's ID if one is already running |
+| `GET` | `/deps/analyze/{jobId}` | `DepsAnalyzeJobRow` — status, chunk progress, `issuesScanned` |
+| `DELETE` | `/deps/analyze/{jobId}` | Cancels a running job; `404` if it already finished |
+
+Status is one of `running`, `succeeded`, `failed`, or `cancelled`. Cancellation
+is real rather than cosmetic: the job context threads into `exec.CommandContext`,
+so cancelling kills the agent subprocess.
+
+Jobs are bounded by `agent.deps_analyzer_timeout_ms` (default 10 minutes,
+matching the dashboard's poll deadline) and chunked at
+`agent.deps_analyzer_chunk_size` issues per turn.
+
+---
+
+## Outbox
+
+The write-ahead outbox holds tracker writes that have not yet been confirmed.
+Enabled by default via `tracker.outbox`.
+
+| Method | Path | Response |
+|---|---|---|
+| `POST` | `/outbox/{id}/retry` | Re-queues a failed or degraded entry |
+| `DELETE` | `/outbox/{id}` | Discards an entry permanently |
+
+Discard is the operator remedy for a stuck entry: an entry enqueued with no
+observed from-state baseline (currently only the issue-discard path) is exempt
+from supersede-reconciliation and will not clear on its own.
 
 ---
 

@@ -347,6 +347,97 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	return c.fetchByIDsPage(ctx, valid, nil)
 }
 
+// FetchIssueDetailsByIDs returns full issue detail — including comments — for
+// the given IDs in as few requests as pagination allows. It is the batched
+// counterpart to FetchIssueDetail and satisfies tracker.DetailBatcher.
+//
+// This exists for issue #42. The audit path already batched through
+// FetchIssueStatesByIDs, but three hot paths read Comments (the tracker-reply
+// check, the pending-input resume, and the input-required replay) and so were
+// stuck at one request per issue — together ~56% of the traffic measured in
+// that incident. FetchIssueStatesByIDs cannot serve them: QueryIssuesByIDs
+// deliberately omits comments.
+//
+// Absence is NOT deletion. An ID missing from the response means only "not in
+// this response" — callers must confirm with a single-issue fetch before
+// retiring anything, exactly as the dependency-audit refresh does. Malformed
+// IDs are dropped rather than failing the batch, for the same reason
+// FetchIssueStatesByIDs drops them: Linear validates the whole filter list and
+// one bad ID would take down every healthy row beside it.
+func (c *Client) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	if len(issueIDs) == 0 {
+		return []domain.Issue{}, nil
+	}
+	valid, invalid := partitionValidIssueRefs(issueIDs)
+	if len(invalid) > 0 {
+		slog.Warn("linear: skipping malformed issue ids in batch detail fetch",
+			"skipped", len(invalid), "kept", len(valid), "examples", firstN(invalid, 3))
+	}
+	if len(valid) == 0 {
+		return []domain.Issue{}, nil
+	}
+
+	var acc []domain.Issue
+	ids := valid
+	for len(ids) > 0 {
+		batch := ids
+		if len(ids) > pageSize {
+			batch = ids[:pageSize]
+			ids = ids[pageSize:]
+		} else {
+			ids = nil
+		}
+		body, err := c.graphql(ctx, QueryIssueDetailsByIDs, map[string]any{
+			"ids":           batch,
+			"first":         len(batch),
+			"relationFirst": pageSize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("linear_fetch_details_by_ids: %w", err)
+		}
+		issues, err := decodeDetailResponse(body)
+		if err != nil {
+			return nil, err
+		}
+		acc = append(acc, issues...)
+	}
+	return acc, nil
+}
+
+// decodeDetailResponse decodes a batched issues payload, attaching comments.
+// It is deliberately separate from decodeResponse: that one backs
+// FetchIssueStatesByIDs, whose query has no comments block, so routing this
+// through it would silently return every issue with an empty comment list —
+// which the reply-check callers would read as "no reply yet", forever.
+func decodeDetailResponse(body map[string]any) ([]domain.Issue, error) {
+	data, ok := body["data"].(map[string]any)
+	if !ok {
+		return nil, decodeError(body)
+	}
+	issuesBlock, ok := data["issues"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_unknown_payload: missing issues block")
+	}
+	nodesRaw, ok := issuesBlock["nodes"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_unknown_payload: missing nodes")
+	}
+	var result []domain.Issue
+	for _, n := range nodesRaw {
+		node, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+		issue := normalizeIssue(node)
+		if issue == nil {
+			continue
+		}
+		issue.Comments = extractComments(node)
+		result = append(result, *issue)
+	}
+	return result, nil
+}
+
 // firstN returns at most n elements, for bounded log lines.
 func firstN(items []string, n int) []string {
 	if len(items) <= n {
@@ -656,32 +747,47 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 	if issue == nil {
 		return nil, fmt.Errorf("linear_fetch_detail: could not normalize issue")
 	}
-	// Extract comments
-	if commentsBlock, ok := rawIssue["comments"].(map[string]any); ok {
-		if nodes, ok := commentsBlock["nodes"].([]any); ok {
-			for _, n := range nodes {
-				node, ok := n.(map[string]any)
-				if !ok {
-					continue
-				}
-				b, _ := node["body"].(string)
-				if b == "" {
-					continue
-				}
-				c := domain.Comment{
-					ID:        stringValue(node["id"]),
-					Body:      b,
-					CreatedAt: tracker.ParseTime(node["createdAt"]),
-				}
-				if user, ok := node["user"].(map[string]any); ok {
-					c.AuthorID = stringValue(user["id"])
-					c.AuthorName, _ = user["name"].(string)
-				}
-				issue.Comments = append(issue.Comments, c)
-			}
-		}
-	}
+	issue.Comments = extractComments(rawIssue)
 	return issue, nil
+}
+
+// extractComments decodes the `comments` block of a raw Linear issue payload.
+// Shared by the single-issue detail path and the batched
+// FetchIssueDetailsByIDs so the two cannot drift: a comment shape decoded in
+// one and not the other would make batching silently lossy, and the callers
+// that need comments (reply check, input-required replay) would see an empty
+// list rather than an error.
+func extractComments(rawIssue map[string]any) []domain.Comment {
+	commentsBlock, ok := rawIssue["comments"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	nodes, ok := commentsBlock["nodes"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []domain.Comment
+	for _, n := range nodes {
+		node, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+		b, _ := node["body"].(string)
+		if b == "" {
+			continue
+		}
+		c := domain.Comment{
+			ID:        stringValue(node["id"]),
+			Body:      b,
+			CreatedAt: tracker.ParseTime(node["createdAt"]),
+		}
+		if user, ok := node["user"].(map[string]any); ok {
+			c.AuthorID = stringValue(user["id"])
+			c.AuthorName, _ = user["name"].(string)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // FetchIssueByIdentifier returns a single issue by its human-readable identifier
@@ -979,3 +1085,9 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	}
 	return result, nil
 }
+
+// Compile-time proof the Linear adapter satisfies the optional batch-detail
+// interface. Without it, a signature drift would silently demote every caller
+// to the per-issue fallback — restoring exactly the request volume issue #42
+// was filed about, with no test failing.
+var _ tracker.DetailBatcher = (*Client)(nil)

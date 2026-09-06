@@ -81,7 +81,7 @@ func TestWarnIfDaemonRunning(t *testing.T) {
 	assert.Empty(t, capture(func() { warnIfDaemonRunning(wf, "test") }))
 
 	// A live daemon (this process stands in for one) must be reported.
-	_, err := writePIDFile(wf)
+	_, _, _, err := claimPIDFile(wf)
 	require.NoError(t, err)
 	out := capture(func() { warnIfDaemonRunning(wf, "`itervox deps analyze`") })
 	assert.Contains(t, out, "a daemon is running")
@@ -161,7 +161,7 @@ func TestOneShotCommandsWarnAboutALiveDaemon(t *testing.T) {
 			dir := t.TempDir()
 			wf := filepath.Join(dir, "WORKFLOW.md")
 			require.NoError(t, os.WriteFile(wf, []byte("---\n---\n"), 0o644))
-			_, err := writePIDFile(wf) // this process stands in for a live daemon
+			_, _, _, err := claimPIDFile(wf) // this process stands in for a live daemon
 			require.NoError(t, err)
 
 			out := capture(func() { warnIfDaemonRunning(wf, tc.action) })

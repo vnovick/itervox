@@ -27,6 +27,26 @@ type RateLimiter interface {
 	RateLimitSnapshot() *RateLimitSnapshot
 }
 
+// DetailBatcher is an optional interface implemented by tracker adapters that
+// can fetch FULL issue detail — including comments — for many issues in one
+// request. Callers should type-assert Tracker to DetailBatcher rather than
+// asserting the concrete adapter type, so new adapters can participate without
+// requiring changes to the call site, and must fall back to per-issue
+// FetchIssueDetail when the assertion fails.
+//
+// This is separate from the mandatory FetchIssueStatesByIDs because the two
+// answer different questions. FetchIssueStatesByIDs returns identity, state and
+// blockers — enough for the dependency audit, which reads exactly those. The
+// paths that dominated issue #42's request budget read Comments, which that
+// query deliberately omits, so they could not batch at all until this existed.
+//
+// Contract for implementers: an ID absent from the result is NOT proof of
+// deletion. It means only "not in this response". Callers that retire state on
+// absence must confirm with a single-issue fetch first.
+type DetailBatcher interface {
+	FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
+}
+
 // ProjectManager is an optional interface implemented by tracker adapters that
 // support listing available projects and scoping fetches to a project subset at
 // runtime. Callers should type-assert Tracker to ProjectManager rather than

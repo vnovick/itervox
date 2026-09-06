@@ -2,6 +2,7 @@ package agenttest
 
 import (
 	"context"
+	"github.com/vnovick/itervox/internal/agent"
 	"strings"
 	"sync"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestSuccessRunner_EmitsResult(t *testing.T) {
 	r := SuccessRunner("s1")
-	res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0)
+	res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.False(t, res.Failed)
 	assert.Equal(t, 1, r.CallCount)
@@ -23,7 +24,7 @@ func TestFailRunner_RecordsFailureAtomically(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 10 {
 		wg.Go(func() {
-			res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0)
+			res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0, agent.PermissionBypass)
 			require.NoError(t, err)
 			assert.True(t, res.Failed)
 			assert.Contains(t, res.FailureText, "disk full")
@@ -35,7 +36,7 @@ func TestFailRunner_RecordsFailureAtomically(t *testing.T) {
 
 func TestRateLimitedFailRunner_ClassifiedAsRateLimit(t *testing.T) {
 	r := RateLimitedFailRunner()
-	res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0)
+	res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0, agent.PermissionBypass)
 	require.NoError(t, err)
 	require.True(t, res.Failed)
 	// The orchestrator's IsRateLimitFailure classifier matches on
@@ -49,7 +50,7 @@ func TestRateLimitedFailRunner_ClassifiedAsRateLimit(t *testing.T) {
 
 func TestInputRequiredRunner_FlagsAreSet(t *testing.T) {
 	r := InputRequiredRunner("s1", "Should I rebase before merge?")
-	res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0)
+	res, err := r.RunTurn(context.Background(), nil, nil, nil, "", "", "", "", "", 0, 0, agent.PermissionBypass)
 	require.NoError(t, err)
 	// FakeRunner builds a TurnResult by ApplyEvent over the event list.
 	// IsInputRequired flag from the second event should bubble up.

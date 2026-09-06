@@ -293,6 +293,19 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	return out, nil
 }
 
+// The GitHub adapter deliberately does NOT implement tracker.DetailBatcher
+// (issue #62's "decide explicitly" acceptance).
+//
+// GitHub's REST API has no multi-issue endpoint, so a batch method here could
+// only be a fan-out of per-issue calls — exactly what FetchIssueStatesByIDs
+// above already is. Worse, FetchIssueDetail costs TWO requests (issue body,
+// then comments), so a "batch" of N would cost 2N while presenting itself to
+// callers as one cheap call, hiding the very cost issue #42 was about.
+//
+// Callers type-assert and fall back to per-issue FetchIssueDetail, which is
+// honest about the cost. If GitHub's GraphQL v4 API is adopted for reads later,
+// implementing DetailBatcher there would be a real win; against REST it is not.
+
 // FetchIssueDetail returns a single issue with its full comment thread.
 // issueID is the numeric issue number as a string (e.g. "42").
 func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.Issue, error) {

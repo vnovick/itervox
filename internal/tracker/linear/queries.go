@@ -168,6 +168,54 @@ query ItervoxListProjects {
   }
 }`
 
+// QueryIssueDetailsByIDs is QueryIssuesByIDs plus the comments block, so a
+// batch of issues can be fetched with the full detail the single-issue
+// QueryIssueDetail returns.
+//
+// It exists because the hot paths that dominated issue #42's request budget —
+// the tracker-reply check, the pending-input resume, and the input-required
+// replay — all read Comments, which QueryIssuesByIDs deliberately omits. They
+// therefore could not use FetchIssueStatesByIDs and stayed one-request-per-issue.
+//
+// The comments page size matches QueryIssueDetail (50). Raising it multiplies
+// across every issue in the batch, so it is deliberately not parameterised.
+const QueryIssueDetailsByIDs = `
+query ItervoxLinearIssueDetailsById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+  issues(filter: {id: {in: $ids}}, first: $first) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      trashed
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier url state { name } }
+        }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url state { name } }
+      }
+      comments(first: 50, orderBy: createdAt) {
+        nodes {
+          id
+          body
+          createdAt
+          user { id name }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+  }
+}`
+
 // QueryIssuesByIDs fetches issues by ID list for reconciliation (uses [ID!] type).
 const QueryIssuesByIDs = `
 query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {

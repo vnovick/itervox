@@ -149,14 +149,18 @@ func (a *orchestratorAdapter) Analytics() *skills.AnalyticsSnapshot {
 	// rather than an error. defaultLogsDir applies the same derivation the
 	// daemon used.
 	//
-	// Caveat: an operator who passed --logs-dir is not reflected here, since
-	// the resolved value is not threaded onto the adapter. That is a smaller
-	// wrong than pointing at a directory nothing writes.
-	logsDir := ""
-	if a.workflowPath != "" {
-		logsDir = defaultLogsDir(a.workflowPath)
-	} else if homeDir != "" {
-		logsDir = filepath.Join(homeDir, ".itervox", "logs")
+	// a.logsDir is the directory the daemon actually writes to, with any
+	// --logs-dir already applied, so it wins whenever it is set. The
+	// derivations below are the fallback for callers that never threaded it
+	// (tests, and any run without a log file); defaultLogsDir applies the
+	// same per-project derivation the daemon uses.
+	logsDir := a.logsDir
+	if logsDir == "" {
+		if a.workflowPath != "" {
+			logsDir = defaultLogsDir(a.workflowPath)
+		} else if homeDir != "" {
+			logsDir = filepath.Join(homeDir, ".itervox", "logs")
+		}
 	}
 	claudeRT, _ := skills.ParseClaudeRuntime(logsDir, 25)
 	codexRT, _ := skills.ParseCodexRuntime(homeDir, 25)

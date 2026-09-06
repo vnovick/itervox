@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -101,6 +102,7 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 		input.LogDir,
 		input.ReadTimeoutMs,
 		input.TurnTimeoutMs,
+		agent.ParsePermissionMode(input.Profile.PermissionMode),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAnalyzerFailed, err)
@@ -232,6 +234,11 @@ func convertParsedEdges(edges []parsedAnalyzerEdge) []InferredEdge {
 		src := strings.TrimSpace(e.Source)
 		dst := strings.TrimSpace(e.Target)
 		if src == "" || dst == "" {
+			continue
+		}
+		if isSelfEdge(src, dst) {
+			slog.Warn("deps analyzer: dropping self-referential inferred edge",
+				"identifier", src, "evidence", e.Evidence)
 			continue
 		}
 		out = append(out, InferredEdge{

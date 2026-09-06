@@ -207,6 +207,14 @@ func (o *Orchestrator) auditFetchedIssueDependenciesAndDispatch(
 	beforeSeq := state.DependencyTransitionSeq
 	entry := auditFetchedIssueDependencies(state, issue, now)
 	if entry.LastTransitionVersion > beforeSeq && entry.Status == DependencyAuditUnblocked {
+		// Replay a stacked worktree onto the merged base BEFORE dispatching
+		// automations: an automation may start an agent on this worktree, and
+		// rebasing under a running agent is exactly what restackEligible
+		// refuses to do (issue #60). Doing it first means the agent starts on
+		// the current base rather than a stale one.
+		if conflicted := o.restackUnblockedIssue(ctx, state, issue); conflicted {
+			o.markRestackConflict(state, issue, now)
+		}
 		o.dispatchMatchingBlockersResolvedAutomations(ctx, state, issue, entry, now)
 	}
 	return entry

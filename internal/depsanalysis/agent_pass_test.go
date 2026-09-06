@@ -29,6 +29,7 @@ func (r *fakeRunner) RunTurn(
 	_ *string,
 	prompt, _, _, _, _ string,
 	_, _ int,
+	_ agent.PermissionMode,
 ) (agent.TurnResult, error) {
 	r.gotPrompt = prompt
 	return r.result, r.err

@@ -44,7 +44,7 @@ type Logger interface {
 // onProgress, if non-nil, is called after each assistant event with the partial
 // TurnResult so callers can stream live token/message updates to the dashboard.
 type Runner interface {
-	RunTurn(ctx context.Context, log Logger, onProgress func(TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (TurnResult, error)
+	RunTurn(ctx context.Context, log Logger, onProgress func(TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, permissionMode PermissionMode) (TurnResult, error)
 }
 
 // FinalizeResult performs end-of-turn checks on an accumulated TurnResult.

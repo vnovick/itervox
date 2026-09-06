@@ -18,6 +18,15 @@ type MemoryTracker struct {
 	injectedError  error
 	nextCommentID  int
 	nextIssueID    int
+
+	// detailBatchCalls counts FetchIssueDetailsByIDs invocations so tests can
+	// assert N issues cost one call, not N.
+	detailBatchCalls int
+
+	// detailCalls counts per-issue FetchIssueDetail invocations. Batching is
+	// only proven when this reaches ZERO for a batched path — a batch that
+	// happens alongside N per-issue calls has saved nothing.
+	detailCalls int
 }
 
 // NewMemoryTracker constructs a MemoryTracker with the given issues and state config.
@@ -89,6 +98,54 @@ func (m *MemoryTracker) FetchIssuesByStates(ctx context.Context, stateNames []st
 		}
 	}
 	return result, nil
+}
+
+// FetchIssueDetailsByIDs returns issues matching the given IDs with full
+// detail. MemoryTracker stores whole domain.Issue values, so comments are
+// already present — it satisfies tracker.DetailBatcher so orchestrator tests
+// can exercise the batched path rather than only the per-issue fallback.
+//
+// It also counts calls via detailBatchCalls so a test can assert that N issues
+// cost ONE call, which is the entire point of the batching and the only thing
+// that distinguishes it from a loop.
+func (m *MemoryTracker) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	if len(issueIDs) == 0 {
+		return []domain.Issue{}, nil
+	}
+	m.mu.Lock()
+	m.detailBatchCalls++
+	m.mu.Unlock()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.injectedError != nil {
+		return nil, m.injectedError
+	}
+	idSet := make(map[string]bool, len(issueIDs))
+	for _, id := range issueIDs {
+		idSet[id] = true
+	}
+	var result []domain.Issue
+	for _, issue := range m.issues {
+		if idSet[issue.ID] {
+			result = append(result, issue)
+		}
+	}
+	return result, nil
+}
+
+// DetailCalls reports how many times per-issue FetchIssueDetail was invoked.
+func (m *MemoryTracker) DetailCalls() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.detailCalls
+}
+
+// DetailBatchCalls reports how many times FetchIssueDetailsByIDs was invoked.
+func (m *MemoryTracker) DetailBatchCalls() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.detailBatchCalls
 }
 
 // FetchIssueStatesByIDs returns issues matching the given IDs.
@@ -183,6 +240,10 @@ func (m *MemoryTracker) SetIssueBranch(_ context.Context, issueID, branchName st
 
 // FetchIssueDetail returns the issue from storage if it exists, else an error.
 func (m *MemoryTracker) FetchIssueDetail(_ context.Context, issueID string) (*domain.Issue, error) {
+	m.mu.Lock()
+	m.detailCalls++
+	m.mu.Unlock()
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, issue := range m.issues {
@@ -258,3 +319,8 @@ func issueNumericSuffix(value, prefix string) int {
 	}
 	return suffix
 }
+
+// Compile-time proof MemoryTracker satisfies DetailBatcher. Without this a
+// signature drift would silently demote every test to the per-issue fallback,
+// and the batching tests would still pass while asserting nothing.
+var _ DetailBatcher = (*MemoryTracker)(nil)

@@ -52,6 +52,7 @@ func (c *CodexRunner) RunTurn(
 	sessionID *string,
 	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
+	permissionMode PermissionMode,
 ) (TurnResult, error) {
 	turnCtx, cancel := ctx, context.CancelFunc(func() {})
 	if turnTimeoutMs > 0 {
@@ -65,7 +66,7 @@ func (c *CodexRunner) RunTurn(
 
 	var cmd *exec.Cmd
 	if workerHost != "" {
-		shellCmd := buildCodexShellCmd(command, sessionID, prompt, workspacePath)
+		shellCmd := buildCodexShellCmd(command, sessionID, prompt, workspacePath, permissionMode)
 		shellCmd = itervoxAgentExportPrefix() + shellCmd
 		if logDir != "" {
 			// Tee codex stdout to a file on the remote host so sshFetchLogs can read it later.
@@ -82,9 +83,9 @@ func (c *CodexRunner) RunTurn(
 		sshArgs = append(sshArgs, "-o", "BatchMode=yes", workerHost, "bash", "-lc", shellCmd)
 		cmd = exec.CommandContext(turnCtx, "ssh", sshArgs...)
 	} else if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-		cmd = exec.CommandContext(turnCtx, command, buildCodexDirectArgs(sessionID, prompt, workspacePath)...)
+		cmd = exec.CommandContext(turnCtx, command, buildCodexDirectArgs(sessionID, prompt, workspacePath, permissionMode)...)
 	} else {
-		cmd = exec.CommandContext(turnCtx, loginShell(), "-lc", buildCodexShellCmd(command, sessionID, prompt, workspacePath))
+		cmd = exec.CommandContext(turnCtx, loginShell(), "-lc", buildCodexShellCmd(command, sessionID, prompt, workspacePath, permissionMode))
 	}
 	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
@@ -153,7 +154,7 @@ func (c *CodexRunner) RunTurn(
 	return result, nil
 }
 
-func buildCodexDirectArgs(sessionID *string, prompt, workspacePath string) []string {
+func buildCodexDirectArgs(sessionID *string, prompt, workspacePath string, mode PermissionMode) []string {
 	// Same argv hazard as Claude: if the prompt begins with '-' the CLI
 	// parser interprets it as an unexpected flag. safePromptArg prepends a
 	// single space that Codex silently trims.
@@ -164,14 +165,18 @@ func buildCodexDirectArgs(sessionID *string, prompt, workspacePath string) []str
 	}
 	args = append(args, "exec")
 	if sessionID != nil && *sessionID != "" {
-		args = append(args, "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", *sessionID, safePrompt)
+		args = append(args, "resume", "--json")
+		args = append(args, codexPermissionFlags(mode)...)
+		args = append(args, "--skip-git-repo-check", *sessionID, safePrompt)
 		return args
 	}
-	args = append(args, "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", safePrompt)
+	args = append(args, "--json")
+	args = append(args, codexPermissionFlags(mode)...)
+	args = append(args, "--skip-git-repo-check", safePrompt)
 	return args
 }
 
-func buildCodexShellCmd(command string, sessionID *string, prompt, workspacePath string) string {
+func buildCodexShellCmd(command string, sessionID *string, prompt, workspacePath string, mode PermissionMode) string {
 	safePrompt := safePromptArg(prompt)
 	var b strings.Builder
 	b.WriteString(command)
@@ -181,13 +186,21 @@ func buildCodexShellCmd(command string, sessionID *string, prompt, workspacePath
 	}
 	b.WriteString(" exec")
 	if sessionID != nil && *sessionID != "" {
-		b.WriteString(" resume --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ")
+		b.WriteString(" resume --json")
+		for _, f := range codexPermissionFlags(mode) {
+			b.WriteString(" " + f)
+		}
+		b.WriteString(" --skip-git-repo-check ")
 		b.WriteString(shellQuote(*sessionID))
 		b.WriteString(" ")
 		b.WriteString(shellQuote(safePrompt))
 		return b.String()
 	}
-	b.WriteString(" --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ")
+	b.WriteString(" --json")
+	for _, f := range codexPermissionFlags(mode) {
+		b.WriteString(" " + f)
+	}
+	b.WriteString(" --skip-git-repo-check ")
 	b.WriteString(shellQuote(safePrompt))
 	return b.String()
 }

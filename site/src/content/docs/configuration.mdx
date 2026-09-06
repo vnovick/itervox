@@ -95,6 +95,13 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
+| `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. Load-time only (no runtime setter). |
+
+**Outbox visibility:** pending and degraded entries appear in the dashboard's
+Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
+enqueued with no observed from-state baseline (currently only the issue-discard
+path) is exempt from supersede-reconciliation, so **Discard is the operator
+remedy for a stuck entry**.
 
 **GitHub note:** GitHub Issues does not have built-in workflow states. Itervox simulates states using labels. Create labels in your repository settings that match the values you configure (e.g. create a label named `todo`, another named `in-review`).
 
@@ -244,6 +251,23 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `turn_timeout_ms` | int | `3600000` | Hard wall-clock limit for an entire agent session (all turns combined). When exceeded, the subprocess is killed and the issue is retried. `0` disables the timeout. |
 | `read_timeout_ms` | int | `30000` | Per-read timeout on the subprocess stdout pipe (30 seconds). If no bytes arrive within this window, the subprocess is killed. Catches OS-level pipe hangs before the stall detector fires. |
 | `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout (5 minutes). If no SSE events are produced within this window, the worker context is cancelled and the issue is retried. Operates on the parsed event stream and detects semantic stalls (e.g. agent looping without progress). Set to `0` or less to disable. |
+| `deps_analyzer_timeout_ms` | int | `600000` | Wall-clock limit for one dependency-analyzer job end to end, across all chunks. Matches the dashboard's 10-minute poll deadline. `≤ 0` falls back to the default. |
+| `deps_analyzer_chunk_size` | int | `75` | Maximum issues sent to the agent in one analyzer turn. Larger backlogs are split into sequential chunks; **relations spanning two chunks are not examined** (an accepted blind spot, logged at analysis time). Raise it for full-graph fidelity on a larger backlog if you can tolerate a longer, costlier turn. `≤ 0` falls back to the default. |
+| `dependency_audit_refresh_interval_ms` | int | `600000` | How often the off-loop dependency audit refreshes blocker state from the tracker. Startup-only — not runtime-editable. See the rate-limit note below before lowering. |
+| `dependency_audit_refresh_timeout_ms` | int | `30000` | Bounds a single off-loop refresh batch. Startup-only. |
+| `dependency_audit_refresh_batch_size` | int | `100` | Caps how many audit rows one batch may fetch. Startup-only. |
+
+:::caution[Dependency-audit refresh and your tracker's rate limit]
+Every audit row costs a tracker request, and the batch cap alone governs how
+many go out per refresh. At `dependency_audit_refresh_batch_size: 100` against a
+**60-second** interval that is ~6000 requests/hour from this path alone —
+roughly **2.4x Linear's documented 2500/hour ceiling**. At the 10-minute
+default, a 59-row audit set costs ~354/hour instead.
+
+Raise the interval if you want fresher dependency state and have the budget. Do
+not lower it below `polling.interval_ms` without first checking the rate-limit
+headroom the dashboard already reports.
+:::
 
 ### Behaviour fields
 
@@ -338,6 +362,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
+| `permission_mode` | string | `"bypass"` | Approval/sandbox flags this profile's agent turns launch with. `bypass` (default) keeps the long-standing `--dangerously-*` flags; `sandbox` uses `--permission-mode acceptEdits` (Claude) or `--sandbox workspace-write --ask-for-approval never` (Codex). Both stay non-interactive — itervox is headless, so a mode that can pause for approval hangs the turn. Unknown values warn and fall back to `bypass`. See [Agent Permissions](/guides/agent-permissions/). |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
@@ -566,9 +591,24 @@ this checkout — not dispatched yet, worked on another machine, worktree
 cleared — itervox falls back to `base_branch` and logs the decision. Review
 ergonomics must never be the reason a dispatch fails.
 
-**Not yet handled: restacking.** When a blocker merges, branches stacked on it
-are not automatically rebased onto the new base. Until that lands, treat
-stacked branches as needing a manual rebase after their blocker merges.
+**Restacking.** When a blocker reaches a terminal state, itervox replays the
+dependent's worktree onto `base_branch` automatically, so the stack does not
+drift behind subsequent merges. Three cases are refused rather than forced:
+
+| Situation | Behaviour |
+|---|---|
+| The dependent is **running** | Skipped. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; it is picked up on a later cycle instead. |
+| The worktree has **uncommitted changes** | Skipped. That work is unpushed and unbacked-up. |
+| The rebase **conflicts** | Aborted — the branch is left byte-identical — and the issue moves to `input_required` with the reason. A conflict needs an owner; resolving it automatically would be a guess. |
+
+An issue that still has another live blocker is never restacked, matching the
+rule that stacking only happens with exactly one live blocker.
+
+:::caution[The PR base is still not updated]
+Restacking rewrites the branch, not the pull request. If the blocker's branch
+was deleted by its merge, update the dependent PR's base to `base_branch`
+yourself.
+:::
 
 ### Ordering modes
 

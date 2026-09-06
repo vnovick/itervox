@@ -1,0 +1,222 @@
+---
+title: Deploying on a Cloud VM
+description: Running Itervox as a long-lived daemon on GCP, AWS, or Azure — systemd, sizing, secrets, dashboard exposure, and the failure modes that bite first.
+sidebar:
+  order: 11
+---
+
+Itervox is a **long-running stateful daemon**. It holds orchestrator state in
+memory in a single goroutine, spawns `claude`/`codex` subprocesses that live for
+minutes, keeps git worktrees on a local filesystem, and serves long-lived SSE
+connections.
+
+That shape points at one conclusion: **one VM with a persistent disk and a
+systemd unit.** Not serverless, not scale-to-zero. See
+[Why not serverless](#why-not-serverless).
+
+The deployment is identical across GCP, AWS, and Azure — only the provisioning
+commands and the private-access primitive differ, which is why the per-cloud
+scripts are thin wrappers around one shared `bootstrap.sh`.
+
+:::note[The scripts live in the repo]
+Everything described here ships in
+[`deploy/`](https://github.com/vnovick/itervox/tree/main/deploy): the systemd
+unit, `bootstrap.sh`, per-cloud `provision.sh` scripts, a Caddyfile, and
+heartbeat monitoring.
+:::
+
+## Quick start
+
+```bash
+# 1. Provision the VM (no public IP by default)
+./deploy/gcp/provision.sh          # or aws/ or azure/
+
+# 2. On the VM: install deps, itervox, and the systemd unit
+sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.1
+
+# 3. Fill in secrets, then start
+sudo systemctl enable --now itervox
+```
+
+Then reach the dashboard through your cloud's private tunnel.
+
+## Sizing
+
+Size for **concurrent agents**, not for the daemon. The daemon itself is cheap;
+each agent is a full Claude Code process running your project's builds and
+tests. `agent.max_concurrent_agents` is the real knob.
+
+| Concurrency | Machine | Disk |
+|---|---|---|
+| 1–2 agents | 2 vCPU / 8GB | 50GB |
+| 3–4 agents | 4 vCPU / 16GB | 100GB |
+| 5+ agents | 8 vCPU / 32GB | 200GB |
+
+Disk fills faster than you expect: every issue gets its own git worktree, plus a
+`node_modules` (or equivalent) per worktree. Alert on disk usage.
+
+## Secrets
+
+Everything goes in `<repo>/.itervox/.env`, which the daemon loads at startup and
+injects into its own environment — so spawned agent subprocesses inherit it.
+
+```bash
+# tracker
+LINEAR_API_KEY=lin_api_xxxx        # or GITHUB_TOKEN=ghp_xxxx
+
+# dashboard auth — pin this on a VM, see below
+ITERVOX_API_TOKEN=<64 hex chars>
+
+# agent credentials — without this every dispatch fails
+ANTHROPIC_API_KEY=sk-ant-xxxx
+```
+
+`.itervox/.env` is gitignored. Prefer materializing it from your cloud's secret
+manager in a systemd `ExecStartPre` over baking it into an image.
+
+:::caution[`.env` resolves relative to the working directory]
+The systemd unit sets `WorkingDirectory` to the repo root for exactly this
+reason. Don't change it.
+:::
+
+### Agent credentials are the real hurdle
+
+The single most common failure mode for a headless deployment: the daemon
+starts, the dashboard comes up, and **every dispatch fails** because `claude`
+has no credentials.
+
+`claude` needs either `ANTHROPIC_API_KEY` in the environment, or a token minted
+once interactively via `claude setup-token` and persisted to the service
+account's home directory. Sort this out before debugging anything else — the
+symptom looks like an orchestrator problem and isn't.
+
+## Dashboard authentication
+
+Itervox auto-generates an ephemeral bearer token on **every** bind — including
+loopback — unless you explicitly opt out with `server.allow_unauthenticated:
+true`. Bind address is deliberately *not* a signal: a loopback bind behind a
+tunnel or reverse proxy is exactly as internet-exposed as a public bind, and the
+daemon cannot tell the difference from inside the process.
+
+So you are authenticated by default. The reason to still set a token explicitly
+on a VM is **stability, not security** — an auto-generated token is regenerated
+on every restart, which breaks bookmarks and any saved session each time systemd
+restarts the unit.
+
+```bash
+openssl rand -hex 32   # put in .itervox/.env as ITERVOX_API_TOKEN
+```
+
+Reach the dashboard once at `https://your-host/?token=<token>`. The frontend
+captures it, stores it, and strips it from the URL.
+
+:::danger[`allow_unauthenticated: true` on a reachable host]
+This disables the bearer middleware entirely. Anyone who can reach the bind
+address — **including through a tunnel or reverse proxy** — has full API
+access: reading logs, dispatching agents, changing settings. Only use it on a
+host you are certain is unreachable.
+:::
+
+## Exposing the dashboard
+
+**Private tunnel — recommended.** No public IP, no firewall rule, no TLS to
+manage, access gated by cloud IAM. Strictly stronger than a bearer token. Each
+per-cloud `provision.sh` defaults to this and allocates no public IP.
+
+| Cloud | Command |
+|---|---|
+| GCP | `gcloud compute start-iap-tunnel itervox 8090 --local-host-port=localhost:8090 --zone=<zone>` |
+| AWS | `aws ssm start-session --target <id> --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["8090"],"localPortNumber":["8090"]}'` |
+| Azure | `az network bastion tunnel -g <rg> -n <bastion> --target-resource-id <vm-id> --resource-port 8090 --port 8090` |
+
+**Tailscale.** Best if you want phone access without running a tunnel client per
+session. See the [Remote Access guide](/guides/remote-access/).
+
+**Public HTTPS via Caddy.** Only if you genuinely need a public URL. Itervox has
+no TLS of its own, so something must terminate it. `deploy/caddy/Caddyfile` gets
+an automatic Let's Encrypt certificate; pass `--public your.domain.com` to
+`bootstrap.sh`.
+
+## `WORKFLOW.md` settings that matter on a VM
+
+```yaml
+server:
+  port: 8090      # PIN THIS
+  host: 127.0.0.1 # keep loopback; the tunnel or Caddy fronts it
+```
+
+Pin the port. The default of `0` picks a random free port on every start, which
+makes any static proxy or health-check configuration meaningless.
+
+:::caution[Health checks target `/api/v1/health`, not `/health`]
+The route is registered inside the `/api/v1` group; a bare `/health` hits the
+SPA catch-all and returns the dashboard HTML with a 200, so a naive probe looks
+healthy no matter what state the daemon is in.
+
+`/api/v1/health` is the one auth-exempt endpoint, so load balancers and uptime
+probes reach it without a token.
+:::
+
+## Running under systemd
+
+`itervox` starts a Bubbletea TUI when run interactively. Headless this is fine:
+a TTY-ownership guard detects the absence of a controlling terminal, logs
+`statusui: refusing to start TUI`, and the daemon continues. No flag needed.
+
+A few unit settings are load-bearing and worth understanding before you edit
+them:
+
+- **`TimeoutStopSec=300`** — `SIGTERM` begins a graceful drain that lets
+  in-flight agents finish. Agent turns routinely run for minutes, so a short
+  stop timeout means systemd escalates to `SIGKILL` mid-run.
+- **`StandardInput=null`** — gives the TUI guard the "no terminal" signal it
+  needs to fall back to headless cleanly.
+- **Deliberately modest hardening.** Agents run arbitrary project build and test
+  commands inside git worktrees, so `ProtectSystem=strict`, `ReadOnlyPaths`, or
+  `PrivateDevices` break them in ways that are tedious to diagnose. The unit
+  uses `ProtectSystem=full` and `NoNewPrivileges=true` instead.
+- **`LimitNOFILE=65536`** — worktrees plus per-worktree dependency trees open a
+  lot of files.
+
+:::tip[Structured logs for your cloud logging agent]
+Pass `--log-format=json` (or set `ITERVOX_LOG_FORMAT=json`) so the file sink
+emits JSON instead of logfmt, and your cloud metrics and alerts can query
+fields rather than regex unstructured text.
+
+When there is no controlling terminal — which is always the case under systemd —
+the daemon **fans logs out to both stderr and the rotating file**, so
+`journalctl -u itervox` keeps working for the whole run, not just the startup
+banner. The file sink is at:
+
+```
+~/.itervox/logs/<kind>/<project>/itervox.log
+```
+
+Tail either one. Interactive runs send logs to the file only, so the TUI is not
+fighting the log stream for the terminal.
+:::
+
+`deploy/monitoring/` has a `heartbeat-metrics.sh` that parses
+`.itervox/HEARTBEAT.md` into cloud custom metrics, plus a logging and alerting
+guide.
+
+## Why not serverless
+
+Vercel, Cloud Run, Lambda, Container Apps — all a mismatch, and not a marginal
+one:
+
+| Requirement | Serverless reality |
+|---|---|
+| One process alive for days holding in-memory state | Instances are recycled; state is lost |
+| Subprocesses running for minutes | Request-scoped execution limits |
+| Persistent git worktrees on local disk | Ephemeral filesystem |
+| Long-lived SSE connections | Connection duration caps |
+
+Vercel specifically runs serverless functions and static assets; there is no
+execution model there in which this daemon runs at all.
+
+The one thing that *would* technically work is hosting `web/` as a static site
+pointed at a remote daemon's API. It isn't worth it — the Vite bundle is already
+embedded in the Go binary by design, so you would add CORS, a split deploy, and
+a second version to keep in lockstep, all to avoid serving assets the daemon
+already serves for free.

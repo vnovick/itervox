@@ -41,6 +41,7 @@ type stubRunner struct {
 func (s *stubRunner) RunTurn(
 	ctx context.Context, _ agent.Logger, onProgress func(agent.TurnResult),
 	_ *string, prompt, _, _, _, logDir string, _, _ int,
+	_ agent.PermissionMode,
 ) (agent.TurnResult, error) {
 	n := s.calls.Add(1)
 	s.mu.Lock()
@@ -347,6 +348,7 @@ type blockingRunner struct {
 func (r *blockingRunner) RunTurn(
 	_ context.Context, _ agent.Logger, _ func(agent.TurnResult),
 	_ *string, _, _, _, _, _ string, _, _ int,
+	_ agent.PermissionMode,
 ) (agent.TurnResult, error) {
 	r.startOne.Do(func() { close(r.started) })
 	<-r.release

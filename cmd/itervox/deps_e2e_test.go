@@ -33,6 +33,7 @@ func (f *fakeAnalyzerRunner) RunTurn(
 	sessionID *string,
 	_, _, _, _, _ string,
 	_, _ int,
+	_ agent.PermissionMode,
 ) (agent.TurnResult, error) {
 	f.called++
 	if f.failOn > 0 && f.called == f.failOn {

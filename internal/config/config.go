@@ -253,6 +253,12 @@ type AgentProfile struct {
 	// CreateIssueState is the tracker state/column used when the create_issue
 	// action is allowed for this profile.
 	CreateIssueState string
+	// PermissionMode selects the approval/sandbox flags this profile's agent
+	// turns launch with: "bypass" (default, the long-standing behaviour) or
+	// "sandbox". Both are non-interactive — itervox is headless, so a mode
+	// that can pause for approval hangs the turn until the timeout kills it.
+	// See internal/agent/permission.go (issue #66).
+	PermissionMode string
 }
 
 // AgentConfig holds agent runner settings.
@@ -1047,6 +1053,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				Enabled:          boolPtr(boolField(m, "enabled", true)),
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
+				PermissionMode:   strField(m, "permission_mode", ""),
 			}
 			continue
 		}
@@ -1061,6 +1068,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			Enabled:          boolPtr(boolField(m, "enabled", true)),
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
+			PermissionMode:   strField(m, "permission_mode", ""),
 		}
 	}
 	if len(profiles) == 0 {
