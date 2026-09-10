@@ -131,40 +131,29 @@ func ReviewerProfileChain(cfg *config.Config) []string {
 			out = append(out, p)
 		}
 	}
-	// Reviewer fan-out is DISABLED for the v0.2.1 release: the chain is
-	// truncated to its first entry, so a multi-entry reviewer_profiles
-	// behaves exactly like the long-standing single-reviewer path.
+	// Reviewer fan-out is ENABLED as of #58. It was gated behind a
+	// truncate-to-one for the v0.2.1 release while two lifecycle defects were
+	// unfixed; both are now closed and pinned by tests:
 	//
-	// Measured with the truncation removed, on a config setting
-	// reviewer_profiles: [sec, corr] plus tracker.completion_state and a
-	// workspace provider: chain=[sec corr] but only 2 RunTurn calls — the
-	// worker and reviewer "sec". Reviewer "corr" never ran, and the log shows
-	// "dispatching reviewer profile=sec" immediately followed by "workspace
-	// auto-cleared". Two distinct defects produce that:
+	//  1. The chain never advanced. advanceReviewChainForIssue was reached
+	//     only from a TerminalSucceeded branch guarded on
+	//     `liveEntry != nil && liveEntry.Kind == "reviewer"`. With
+	//     tracker.completion_state set, the worker moves the issue terminal,
+	//     so ReconcileTrackerStates deleted the run from state.Running before
+	//     the reviewer's own exit event arrived — liveEntry was nil, the guard
+	//     never fired, and the quorum never closed. The handler now recovers
+	//     the reviewer identity from reviewerInjectedProfiles, which
+	//     reconciliation does not touch.
 	//
-	//  1. The chain never advances. advanceReviewChainForIssue is reached
-	//     only from the TerminalSucceeded branch guarded by
-	//     `liveEntry != nil && liveEntry.Kind == "reviewer"`. Setting
-	//     completion_state makes the worker move the issue terminal, so
-	//     ReconcileTrackerStates deletes the run from state.Running before
-	//     the reviewer's own exit event arrives — liveEntry is nil by then,
-	//     the guard never fires, and the quorum never closes.
-	//  2. The workspace is auto-cleared while a reviewer is still live: the
-	//     clear decision keys off runEligibleForAutoReview, which answers
-	//     "would a FRESH review start?", not "is a review in progress?".
+	//  2. The workspace was auto-cleared while a reviewer was still live. The
+	//     clear decision keyed off runEligibleForAutoReview, which answers
+	//     "would a FRESH review start?" and is false for a reviewer's own exit
+	//     by design. The decision now also consults reviewChainInFlight, so
+	//     the worktree survives until the quorum actually closes.
 	//
-	// Both are lifecycle problems between the review chain, terminal-state
-	// reconciliation, and workspace clearing — not local bugs — so the chain
-	// machinery is left intact and gated here rather than redesigned under
-	// release pressure. Deleting this truncation re-enables the whole path.
-	//
-	// A reviewer_profiles-only config no longer fails to boot: the loader
-	// promotes the first entry into reviewer_profile and warns
-	// (config.normalizeReviewerProfiles), so such a config runs that one
-	// reviewer instead of hard-failing startup.
-	if len(out) > 1 {
-		out = out[:1]
-	}
+	// A single-entry chain still behaves exactly as the long-standing
+	// single-reviewer path did — the fan-out code is inert for it.
+
 	return out
 }
 
@@ -326,4 +315,19 @@ func UpsertReviewVerdict(existing []ReviewVerdict, v ReviewVerdict) []ReviewVerd
 		}
 	}
 	return append(existing, v)
+}
+
+// reviewChainInFlight reports whether a multi-reviewer chain is still pending
+// for this issue.
+//
+// AdvanceReviewChain deletes ReviewChainIndex when the quorum closes and
+// increments it when another reviewer remains, so presence is the authoritative
+// "more reviewing to come" signal. Used by the auto-clear decision to keep the
+// worktree alive for the next reviewer (#58 defect 2).
+func reviewChainInFlight(state State, identifier string) bool {
+	if len(state.ReviewChainIndex) == 0 {
+		return false
+	}
+	_, inFlight := state.ReviewChainIndex[identifier]
+	return inFlight
 }

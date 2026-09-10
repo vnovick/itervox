@@ -287,15 +287,30 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 ## Known dead code (do not flag as bugs)
 
-**Reviewer fan-out machinery (gated, not removed).** `ReviewerProfileChain`
-truncates its result to one entry while multi-reviewer fan-out is disabled for
-the v0.2.1 release, so every `len(chain) > 1` guard resolves statically and the
-following have no reachable read site: `AdvanceReviewChain`, `ReadReviewVerdict`,
-`advanceReviewChainForIssue`'s body past its early return, `reviewVerdictRelPathFor`,
-`State.ReviewChainIndex`, `State.ReviewOutcomes`, and the `agent.review_quorum`
-config field. This is deliberate — see the comment on `ReviewerProfileChain` for
-the three reproduced failures that gate it. Deleting the truncation re-enables
-the whole path; do not delete the machinery as "unused".
+*Nothing is currently gated here.*
+
+**Reviewer fan-out was ungated in #58.** `ReviewerProfileChain` previously
+truncated its result to one entry, which made `AdvanceReviewChain`,
+`ReadReviewVerdict`, `reviewVerdictRelPathFor`, `State.ReviewChainIndex`,
+`State.ReviewOutcomes`, and `agent.review_quorum` statically unreachable. The
+truncation is gone and every one of those now has a live read site, so they must
+NOT be treated as dead code.
+
+The two lifecycle defects that justified the gate are fixed and pinned:
+
+1. **The chain never advanced.** The `TerminalSucceeded` handler identified a
+   reviewer only via `state.Running`, which `ReconcileTrackerStates` deletes
+   first when `tracker.completion_state` moves the issue terminal. It now
+   recovers the reviewer identity from `reviewerInjectedProfiles`, which
+   reconciliation does not touch.
+2. **The workspace was cleared mid-chain.** The auto-clear decision keyed off
+   `runEligibleForAutoReview` ("would a FRESH review start?"), which is false
+   for a reviewer's own exit. It now also consults `reviewChainInFlight`, so the
+   worktree survives until the quorum closes.
+
+Both are covered by `TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping`,
+which runs the exact configuration that reproduced them and asserts one worker
+plus both reviewers (no re-dispatch loop) and exactly one workspace clear.
 
 ---
 

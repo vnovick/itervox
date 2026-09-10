@@ -1496,7 +1496,38 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// T-21: clear reviewer-injected profile overrides only. A user-set
 			// override (via SetIssueProfile HTTP) is left intact even on a
 			// reviewer-Kind completion, since the user never asked us to forget it.
-			if liveEntry != nil && liveEntry.Kind == "reviewer" {
+			// #58 defect 1 — the reviewer's identity must survive a missing
+			// live entry.
+			//
+			// With tracker.completion_state set, a successful worker moves the
+			// issue terminal, so ReconcileTrackerStates deletes the run from
+			// state.Running BEFORE the run's own exit event arrives. liveEntry
+			// is then nil, the `liveEntry.Kind == "reviewer"` guard never
+			// fires, and the chain never advances — the quorum stayed open
+			// forever, which is why multi-reviewer fan-out was gated off.
+			//
+			// reviewerInjectedProfiles is written at reviewer dispatch and is
+			// NOT touched by reconciliation, so it still identifies the run.
+			// Recovering from it is strictly narrower than failing open: it
+			// says "this exact issue had a reviewer profile injected", not
+			// "we could not prove otherwise" — the distinction that made
+			// runEligibleForAutoReview fail closed.
+			finishedKind, finishedProfile := "", ""
+			if liveEntry != nil {
+				finishedKind, finishedProfile = liveEntry.Kind, liveEntry.ProfileName
+			}
+			o.issueProfilesMu.Lock()
+			if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
+				if finishedKind == "" {
+					finishedKind = "reviewer"
+				}
+				if finishedProfile == "" {
+					finishedProfile = o.issueProfiles[issue.Identifier]
+				}
+			}
+			o.issueProfilesMu.Unlock()
+
+			if finishedKind == "reviewer" {
 				o.issueProfilesMu.Lock()
 				if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
 					delete(o.issueProfiles, issue.Identifier)
@@ -1507,7 +1538,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// the next reviewer in the chain or close the quorum. Must
 				// run AFTER the profile-override cleanup above so the next
 				// reviewer's dispatch installs its own override cleanly.
-				state = o.advanceReviewChainForIssue(ctx, state, issue, liveEntry.ProfileName, now)
+				state = o.advanceReviewChainForIssue(ctx, state, issue, finishedProfile, now)
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -1569,7 +1600,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			autoReview := o.cfg.Agent.AutoReview
 			o.cfgMu.RUnlock()
 			reviewerWillRun := autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry)
-			if autoClear && !reviewerWillRun {
+			// #58 defect 2 — runEligibleForAutoReview answers "would a FRESH
+			// review start?", not "is a review in progress?". For a reviewer's
+			// own exit it is false by design (that is what stops review
+			// loops), so with a multi-reviewer chain the workspace was cleared
+			// out from under the NEXT reviewer, which then had no worktree to
+			// read a verdict from. advanceReviewChainForIssue ran just above
+			// and deletes ReviewChainIndex when the quorum closes, so a still
+			// present index means another reviewer is genuinely pending.
+			if autoClear && !reviewerWillRun && !reviewChainInFlight(state, issue.Identifier) {
 				// Use the actual worktree branch propagated via sendExitWithBranch.
 				// PR-continuation runs use prCtx.Branch, which differs from
 				// issue.BranchName; re-deriving the branch here would delete the

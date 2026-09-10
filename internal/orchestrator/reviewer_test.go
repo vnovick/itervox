@@ -693,7 +693,22 @@ var _ = bytes.Buffer{}
 // The assertion is therefore an upper bound on dispatches, not a lower one:
 // a regression here shows up as runaway agent spawning, which on a real
 // tracker means real API spend and real duplicated work.
-func TestMultiReviewerConfigFallsBackToSingleReviewer(t *testing.T) {
+// TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping is issue #58's
+// end-to-end acceptance, and the test that the two gated lifecycle defects
+// made impossible to pass.
+//
+// The configuration is exactly the one that reproduced them:
+// tracker.completion_state makes a successful worker move its issue terminal,
+// so ReconcileTrackerStates deletes the run from state.Running BEFORE its exit
+// event arrives (defect 1: the chain never advanced), and
+// workspace.auto_clear_workspace would clear the worktree the next reviewer
+// still needs (defect 2).
+//
+// Both bounds matter. The upper bound alone would pass on a runaway loop's
+// opposite — zero dispatches — and the lower bound alone would pass on the
+// unbounded agent-spawn loop that runEligibleForAutoReview fails closed
+// against. Exactly 3 means: one worker, both reviewers, nothing re-dispatched.
+func TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping(t *testing.T) {
 	wsDir := t.TempDir()
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 50
@@ -726,8 +741,8 @@ func TestMultiReviewerConfigFallsBackToSingleReviewer(t *testing.T) {
 	defer cancel()
 	go orch.Run(ctx) //nolint:errcheck
 
-	// Wait for the worker and its single reviewer.
-	for i := 0; i < 2; i++ {
+	// Wait for the worker and BOTH reviewers in the chain.
+	for i := 0; i < 3; i++ {
 		select {
 		case <-done:
 		case <-time.After(4 * time.Second):
@@ -743,10 +758,17 @@ func TestMultiReviewerConfigFallsBackToSingleReviewer(t *testing.T) {
 
 	// Both bounds, for the same reason as above: an upper bound alone passes
 	// on zero dispatches and would not prove the reviewer ran at all.
-	assert.Equal(t, 2, calls,
-		"fan-out is disabled: exactly one worker and one reviewer, and no re-dispatch loop")
-	assert.Len(t, orchestrator.ReviewerProfileChain(cfg), 1,
-		"the reviewer chain must be truncated to a single profile while fan-out is disabled")
+	assert.Equal(t, 3, calls,
+		"one worker plus both reviewers, and no re-dispatch loop")
+	assert.Len(t, orchestrator.ReviewerProfileChain(cfg), 2,
+		"the reviewer chain must carry every configured profile — #58 ungated")
+
+	// #58 defect 2: the worktree must survive until the quorum CLOSES. Without
+	// the reviewChainInFlight guard the clear fires on each reviewer's exit,
+	// so the second reviewer reads a verdict from a workspace that was already
+	// torn down. Exactly one clear is the difference between the two.
+	assert.EqualValues(t, 1, wsp.removeCalls.Load(),
+		"the workspace must be cleared once, after the chain closes — not once per reviewer")
 }
 
 // TestAutoReviewDoesNotLoopWhenReconciliationStopsTheReviewer pins the

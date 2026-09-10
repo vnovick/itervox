@@ -136,15 +136,12 @@ func TestReviewVerdictPathOnlyForFanoutReviewers(t *testing.T) {
 	require.Empty(t, reviewVerdictRelPathFor(single, "ENG-1", "reviewer"),
 		"a single-reviewer setup must not get verdict plumbing")
 
-	// Fan-out is gated for this release (see ReviewerProfileChain), so a
-	// multi-entry reviewer_profiles collapses to a one-profile chain and gets
-	// no verdict plumbing either — same as any other single-reviewer setup.
-	// The verdict file only earns its keep when a later reviewer will read
-	// it, and under the gate no later reviewer runs.
+	// A real fan-out chain DOES get verdict plumbing: the file only earns its
+	// keep when a later reviewer will read it, and with #58 ungated one will.
 	fanout := &config.Config{}
 	fanout.Agent.ReviewerProfiles = []string{"security", "correctness"}
-	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "security"),
-		"a gated fan-out chain is single-reviewer, so no verdict plumbing")
+	require.NotEmpty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "security"),
+		"a fan-out reviewer must be told where to record its verdict")
 	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "implementer"),
 		"a non-reviewer profile must never be asked for a verdict")
 	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", ""))
