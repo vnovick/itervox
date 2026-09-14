@@ -48,6 +48,26 @@ func (s *absentTrackerStub) FetchIssueByIdentifier(ctx context.Context, identifi
 // the production capture-before-overwrite ordering is what is exercised:
 // a deleted issue's ledger entries must survive ONE absent poll and be gone
 // after TWO consecutive absent polls.
+//
+// This test does not, in practice, launch an off-loop dependency-refresh
+// batch on any of its three ticks — but NOT because cfg leaves
+// DependencyAuditRefreshBatchSize/TimeoutMs at zero. After Gap F,
+// reconcileDependencyRefresh clamps a non-positive value to a default
+// (100 rows / 30s) instead of treating it as "disabled", so it IS reached
+// and DOES run its selection logic every tick. The real reasons no batch
+// launches here are (1) Gap E — LIVE-1 (and, on tick 1, DEL-1) are already
+// in the tracker's active states, so the inline candidate loop
+// (event_loop.go) audits them with the tick's own `now` before
+// reconcileDependencyRefresh runs, and selectDependencyRefreshBatch skips
+// any row whose LastAuditedAt equals `now` — and (2) no blockers_resolved
+// automation is registered, so pendingBlockersResolvedStates also returns
+// nothing to scan. What this test is actually about is the janitor's
+// two-tick grace window (gaps_11 G-2), which is orthogonal to how a
+// DependencyAudit row eventually gets dropped for a hard-deleted issue — in
+// production that is the off-loop refresh observing tracker.ErrNotFound
+// (see applyDependencyRefreshResult's MissingKeys handling); here it is
+// simulated directly (see the delete() call below) so the test stays
+// focused on the janitor ordering bug it exists to catch.
 func TestEventLoopTickOrdering_PruneAbsentSeesPriorTickSet(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tracker.ActiveStates = []string{"Todo"}
@@ -92,6 +112,18 @@ func TestEventLoopTickOrdering_PruneAbsentSeesPriorTickSet(t *testing.T) {
 	stub.candidates = []domain.Issue{live}
 	stub.deleted["del-1"] = true
 	stub.deleted["DEL-1"] = true
+	// Simulate the off-loop dependency-refresh batch that, in production,
+	// would land between now and the next tick and drop DEL-1's audit row
+	// on tracker.ErrNotFound (see applyDependencyRefreshResult's MissingKeys
+	// handling). This test does not drive that batch for real (cfg leaves
+	// the refresh disabled), so it reproduces the row's absence directly —
+	// buildPresentPredicate (janitor.go) treats any DependencyAudit
+	// reference as "still present", so without this the two-tick-grace-
+	// window assertions below would pass even with the gaps_11 G-2 ordering
+	// bug reintroduced, because DEL-1 would still be "present" via the
+	// audit row regardless of the janitor's prevActive/currentActive
+	// bookkeeping.
+	delete(state.DependencyAudit, del.ID)
 
 	// Tick 2: first absent poll — the grace window must preserve the
 	// ledger entries (prevActive from tick 1 still contains DEL-1).

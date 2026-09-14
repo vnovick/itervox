@@ -95,6 +95,13 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
+| `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. Load-time only (no runtime setter). |
+
+**Outbox visibility:** pending and degraded entries appear in the dashboard's
+Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
+enqueued with no observed from-state baseline (currently only the issue-discard
+path) is exempt from supersede-reconciliation, so **Discard is the operator
+remedy for a stuck entry**.
 
 **GitHub note:** GitHub Issues does not have built-in workflow states. Itervox simulates states using labels. Create labels in your repository settings that match the values you configure (e.g. create a label named `todo`, another named `in-review`).
 
@@ -129,11 +136,32 @@ Controls how frequently Itervox checks the tracker for new or updated issues.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `interval_ms` | int | `30000` | Polling interval in milliseconds. |
+| `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. Set `0` to disable. |
 
 ```yaml
 polling:
   interval_ms: 60000  # check every minute
+  rate_limit_reserve_percent: 10
 ```
+
+### Write priority under rate limits
+
+Reads and writes draw on one tracker budget, and the polling loops scale with
+the number of stuck issues — so on a busy project polling could exhaust the
+hourly budget early, after which every state transition, comment and dependency
+audit failed. Unsticking an issue requires a write, so the reads starved the
+very operations that would have drained the queue.
+
+When the remaining budget falls into `rate_limit_reserve_percent`, Itervox stops
+spending requests on **polling** reads for that tick — the candidate poll and the
+input-required reply check — while continuing to admit writes and the
+input-resume fetch that lets a queued resume proceed. Dispatch pauses until the
+budget resets rather than failing every write in the meantime, and the daemon
+logs a warning naming the remaining budget and reset time so a stalled board is
+never mistaken for a hung daemon.
+
+Adapters that do not report rate-limit counters are unaffected: the check fails
+open and polls as before.
 
 ---
 
@@ -143,7 +171,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.itervox/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
+| `root` | string | `~/.itervox/workspaces/<project>` | Directory where per-issue workspaces are created, namespaced per project by default. Supports `~` expansion and `$VAR_NAME` env var references. |
 | `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
@@ -185,6 +213,16 @@ See the [Agent Handoff guide](/guides/agent-handoff/) for a worked example chain
 
 ---
 
+
+:::note[Why the default is per project]
+A workspace directory is keyed by issue **identifier** alone, and identifiers
+are only unique within one tracker project. GitHub identifiers are the
+repo-local issue number, so every repo has a `#1` — with a single shared root,
+two daemons would use the same directory for their respective issue #1, and one
+project's `auto_clear` would delete another project's live worktree. Set `root`
+explicitly if you want the old shared layout.
+:::
+
 ## agent
 
 Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, retry behaviour, and advanced features like SSH dispatch and named profiles.
@@ -213,6 +251,23 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `turn_timeout_ms` | int | `3600000` | Hard wall-clock limit for an entire agent session (all turns combined). When exceeded, the subprocess is killed and the issue is retried. `0` disables the timeout. |
 | `read_timeout_ms` | int | `30000` | Per-read timeout on the subprocess stdout pipe (30 seconds). If no bytes arrive within this window, the subprocess is killed. Catches OS-level pipe hangs before the stall detector fires. |
 | `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout (5 minutes). If no SSE events are produced within this window, the worker context is cancelled and the issue is retried. Operates on the parsed event stream and detects semantic stalls (e.g. agent looping without progress). Set to `0` or less to disable. |
+| `deps_analyzer_timeout_ms` | int | `600000` | Wall-clock limit for one dependency-analyzer job end to end, across all chunks. Matches the dashboard's 10-minute poll deadline. `≤ 0` falls back to the default. |
+| `deps_analyzer_chunk_size` | int | `75` | Maximum issues sent to the agent in one analyzer turn. Larger backlogs are split into sequential chunks; **relations spanning two chunks are not examined** (an accepted blind spot, logged at analysis time). Raise it for full-graph fidelity on a larger backlog if you can tolerate a longer, costlier turn. `≤ 0` falls back to the default. |
+| `dependency_audit_refresh_interval_ms` | int | `600000` | How often the off-loop dependency audit refreshes blocker state from the tracker. Startup-only — not runtime-editable. See the rate-limit note below before lowering. |
+| `dependency_audit_refresh_timeout_ms` | int | `30000` | Bounds a single off-loop refresh batch. Startup-only. |
+| `dependency_audit_refresh_batch_size` | int | `100` | Caps how many audit rows one batch may fetch. Startup-only. |
+
+:::caution[Dependency-audit refresh and your tracker's rate limit]
+Every audit row costs a tracker request, and the batch cap alone governs how
+many go out per refresh. At `dependency_audit_refresh_batch_size: 100` against a
+**60-second** interval that is ~6000 requests/hour from this path alone —
+roughly **2.4x Linear's documented 2500/hour ceiling**. At the 10-minute
+default, a 59-row audit set costs ~354/hour instead.
+
+Raise the interval if you want fresher dependency state and have the budget. Do
+not lower it below `polling.interval_ms` without first checking the rate-limit
+headroom the dashboard already reports.
+:::
 
 ### Behaviour fields
 
@@ -222,6 +277,8 @@ These retry and rate-limit settings are also editable from the Settings dashboar
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
+| `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. |
+| `review_quorum` | string | `"any_block"` | How reviewer verdicts combine: `any_block` (one block blocks), `majority` (strictly more than half), or `unanimous` (all must block). A reviewer that records no parseable verdict counts as a block. |
 | `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. As of v0.2.0, this safely coexists with `workspace.auto_clear` — the clear is deferred until the reviewer also completes. |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. This cap limits switching; it is not the trigger condition. |
 | `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. |
@@ -305,6 +362,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
+| `permission_mode` | string | `"bypass"` | Approval/sandbox flags this profile's agent turns launch with. `bypass` (default) keeps the long-standing `--dangerously-*` flags; `sandbox` uses `--permission-mode acceptEdits` (Claude) or `--sandbox workspace-write --ask-for-approval never` (Codex). Both stay non-interactive — itervox is headless, so a mode that can pause for approval hangs the turn. Unknown values warn and fall back to `bypass`. See [Agent Permissions](/guides/agent-permissions/). |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
@@ -468,6 +526,112 @@ To migrate: rewrite each `schedules:` entry as an `automations:` entry with `tri
 
 ---
 
+## dependencies
+
+Controls the dependency graph: which inferred (LLM-detected) edges are trusted enough to hold dispatch, how eligible issues are ordered, and when a long-blocked issue escalates for attention.
+
+Tracker-declared blockers (`issue.BlockedBy`) always hard-block dispatch and are not configurable here. This block governs the *inferred* layer plus ordering.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `inferred_gating` | bool | `true` | Kill switch for the soft gate. When `true`, inferred edges can hold dispatch just like tracker blockers. Set `false` to make inferred edges display-only. |
+| `confidence_threshold` | float | `0.7` | Minimum analyzer confidence (`0.0`–`1.0`) an inferred edge needs to gate. Lower-confidence edges still appear on the dashboard but never block. Out-of-range values fall back to the default. |
+| `staleness_hours` | int | `168` | How long an inferred edge is trusted before it stops gating. Non-positive values fall back to the default. |
+| `ordering` | string | `"critical_path"` | Dispatch ordering strategy. One of `critical_path`, `critical_path_strict`, or `simple` — see [Ordering modes](#ordering-modes). An unrecognized value falls back to the default with a warning. |
+| `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it surfaces as needing attention. **An explicit `0` disables escalation** and is preserved as a meaningful value; only a negative value falls back to the default. |
+| `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. Set `false` to make analysis strictly manual (dashboard, API, or CLI). |
+| `stacked_prs` | bool | `false` | Branch an issue's worktree from its single live blocker's branch. Does not set the PR base — see below. |
+| `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between scheduled analysis passes. Non-positive values fall back to the default — the analyzer must not run every tick. |
+| `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before analysis starts, so it waits for state to settle rather than racing an in-flight dispatch. |
+
+```yaml
+dependencies:
+  inferred_gating: true
+  confidence_threshold: 0.7
+  staleness_hours: 168
+  ordering: critical_path
+  escalate_blocked_after_hours: 48
+  auto_analyze: true
+  auto_analyze_min_interval_minutes: 60
+  auto_analyze_debounce_minutes: 5
+```
+
+### Stacked worktrees
+
+Set `dependencies.stacked_prs: true` to have an issue's worktree branch from
+its blocker instead of `workspace.base_branch`, so the work starts from the
+blocker's commits rather than duplicating them.
+
+:::caution[The PR base is not set yet]
+This currently changes only where the **branch starts**. Nothing sets the pull
+request's base branch, so a PR opened from a stacked branch still diffs against
+the default branch and therefore still shows the blocker's commits. Reviewing
+each piece in isolation needs the PR base too — tracked in
+[#60](https://github.com/vnovick/itervox/issues/60).
+:::
+
+```yaml
+dependencies:
+  stacked_prs: true
+```
+
+It applies only when an issue has **exactly one** live blocker, and that
+blocker must carry an identifier — without one it cannot name a branch, so
+itervox declines to stack rather than guess. An unidentified blocker still
+*counts* as a live blocker: it is a real dependency, so an issue with one
+identified and one unidentified live blocker does not stack either. With
+several live blockers,
+any choice of base would be arbitrary: the branch would sit on one blocker
+while still depending on the others, so the PR would not be reviewable in
+isolation. A blocker that has already reached a terminal state is skipped —
+its work is in `base_branch` already.
+
+Stacking is best-effort by design. If the blocker's branch does not exist in
+this checkout — not dispatched yet, worked on another machine, worktree
+cleared — itervox falls back to `base_branch` and logs the decision. Review
+ergonomics must never be the reason a dispatch fails.
+
+**Restacking.** When a blocker reaches a terminal state, itervox replays the
+dependent's worktree onto `base_branch` automatically, so the stack does not
+drift behind subsequent merges. Three cases are refused rather than forced:
+
+| Situation | Behaviour |
+|---|---|
+| The dependent is **running** | Skipped. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; it is picked up on a later cycle instead. |
+| The worktree has **uncommitted changes** | Skipped. That work is unpushed and unbacked-up. |
+| The rebase **conflicts** | Aborted — the branch is left byte-identical — and the issue moves to `input_required` with the reason. A conflict needs an owner; resolving it automatically would be a guess. |
+
+An issue that still has another live blocker is never restacked, matching the
+rule that stacking only happens with exactly one live blocker.
+
+:::caution[The PR base is still not updated]
+Restacking rewrites the branch, not the pull request. If the blocker's branch
+was deleted by its merge, update the dependent PR's base to `base_branch`
+yourself.
+:::
+
+### Ordering modes
+
+All three modes share the same final tiebreakers (`created_at` oldest first, then identifier). They differ only in what they weigh before reaching them:
+
+| Mode | Comparison order | Use when |
+|---|---|---|
+| `critical_path` (default) | priority band → fan-out → chain length | You want operator-set priority to stay authoritative. |
+| `critical_path_strict` | fan-out → chain length → priority band | You want throughput across the dependency graph to outrank the priority field. |
+| `simple` | priority band only (no graph awareness) | You want the legacy pre-graph behaviour. |
+
+"Fan-out" is how many issues are transitively unblocked by finishing this one; "chain length" is the longest downstream path. Both are computed per tick over the dependency graph, with cycles collapsed so they cannot skew the counts.
+
+The distinction that matters: **`critical_path` applies graph leverage only as a tiebreaker within a single priority band.** If your issues carry consistently distinct priorities, the graph metrics are never consulted and the mode behaves like `simple`. Choose `critical_path_strict` when you want a blocker that gates a dozen issues to dispatch ahead of an unrelated urgent leaf.
+
+The tradeoff runs both ways. `critical_path_strict` deliberately overrides an explicit operator signal — an issue marked urgent for a reason outside the graph (a customer escalation, a deadline) will wait behind a high-fan-out lower-priority blocker. Prefer the default unless you are specifically optimising fleet throughput.
+
+Both graph-aware modes degrade to exactly `simple`'s ordering when the issue set has no dependency edges, so enabling either on a project without blockers changes nothing.
+
+For the full mental model, see the [Dependency Management guide](/guides/dependency-management/).
+
+---
+
 ## hooks
 
 Shell commands run at lifecycle points in each issue's workspace. All hooks run in the issue's workspace directory.
@@ -513,7 +677,7 @@ Controls the built-in HTTP server that serves the web dashboard and REST API.
 |---|---|---|---|
 | `host` | string | `"127.0.0.1"` | Interface the server listens on. Change to `"0.0.0.0"` to expose on all interfaces. |
 | `port` | int | auto-assigned | TCP port. When omitted, Itervox picks an available port and prints it at startup. |
-| `allow_unauthenticated_lan` | bool | `false` | When binding to a non-loopback address, Itervox requires bearer-token auth on every request and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted-LAN deployments where the daemon is physically unreachable from the public internet. No effect on loopback binds. |
+| `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted, fully local deployments where the daemon is physically unreachable from anyone else — this has an effect on every bind, including loopback, since a loopback daemon behind a tunnel or reverse proxy is exactly as reachable as one bound to `0.0.0.0`. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically but logs a deprecation warning at startup. |
 
 ```yaml
 server:
@@ -523,7 +687,7 @@ server:
 
 ### Authentication
 
-Any non-loopback bind requires `Authorization: Bearer <token>` on every HTTP request and SSE stream. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup and logs it once. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /health` probe is auth-exempt so load balancers and uptime monitors can check liveness without a token.
+Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /api/v1/health` probe is auth-exempt so load balancers and uptime monitors can check liveness without a token — it is the only auth-exempt route.
 
 See the [Remote access guide](/guides/remote-access/) for setting up persistent tokens and reverse-proxy TLS.
 

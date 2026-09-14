@@ -110,6 +110,27 @@ type AutomationQueueBackpressureRow struct {
 	LastRejectedReason string     `json:"lastRejectedReason,omitempty"`
 }
 
+// DispatchPressureRow reports which resource constrained the agent fleet, so
+// the dashboard can answer "would raising max_concurrent_agents help?"
+// without the operator having to infer it from an instantaneous gauge.
+//
+// SlotBoundTicks and DependencyBoundTicks are mutually exclusive per tick and
+// need not sum to ObservedTicks — ticks where the fleet had nothing to do are
+// charged to neither.
+type DispatchPressureRow struct {
+	ObservedTicks        int64 `json:"observedTicks"`
+	SlotBoundTicks       int64 `json:"slotBoundTicks"`
+	DependencyBoundTicks int64 `json:"dependencyBoundTicks"`
+	// UtilizationPercent is mean fleet utilization across the session
+	// (0-100), capacity-weighted so a mid-session capacity change is
+	// accounted for correctly.
+	UtilizationPercent int `json:"utilizationPercent"`
+	// BlockedByDependency and EligibleWaiting describe the MOST RECENT tick
+	// only, unlike the cumulative counters above.
+	BlockedByDependency int `json:"blockedByDependency"`
+	EligibleWaiting     int `json:"eligibleWaiting"`
+}
+
 type BlockerRefRow struct {
 	ID         string `json:"id,omitempty"`
 	Identifier string `json:"identifier,omitempty"`
@@ -169,6 +190,10 @@ type DependencyAuditRow struct {
 	LastAuditedAt         *time.Time      `json:"lastAuditedAt,omitempty"`
 	LastTransitionVersion int64           `json:"lastTransitionVersion,omitempty"`
 	LastTransitionReason  string          `json:"lastTransitionReason,omitempty"`
+	// Degraded is true when consecutive refresh failures crossed the
+	// orchestrator's threshold. Dispatch behaviour is unchanged — the row
+	// stays blocked — but the operator needs to know the data is stale.
+	Degraded bool `json:"degraded,omitempty"`
 }
 
 type DependencyGraphNodeRow struct {
@@ -200,6 +225,41 @@ type DependencyGraphEdgeRow struct {
 	// Evidence is the short quotation/paraphrase the analyzer attached to the
 	// edge. Populated only when Origin == "inferred".
 	Evidence string `json:"evidence,omitempty"`
+	// Confidence is the analyzer's confidence score for an inferred edge
+	// ([0,1]). Zero (and omitted) for tracker edges.
+	Confidence float64 `json:"confidence,omitempty"`
+	// Stale is true when an inferred edge is older than the configured
+	// dependencies staleness window. Always false for tracker edges.
+	Stale bool `json:"stale,omitempty"`
+	// Overridden is true when an operator has dismissed this inferred edge's
+	// target via SetDepsOverride. Always false for tracker edges.
+	Overridden bool `json:"overridden,omitempty"`
+	// Gating is true when this edge currently blocks dispatch of its target:
+	// for tracker edges, the blocker is unresolved; for inferred edges, the
+	// entry's InferredDepEntry.Gating (confidence/staleness/override/
+	// dependencies.InferredGating all considered).
+	Gating bool `json:"gating,omitempty"`
+}
+
+// DependencyCycleRow is one strongly-connected-component cycle (or
+// self-edge) in the tick graph, mirroring orchestrator.DependencyCycle.
+// Members stay blocked — this is a read-only operator alert, not a
+// resolution mechanism. critical-path-ordering Task 5.
+type DependencyCycleRow struct {
+	Members    []string  `json:"members"`
+	Kind       string    `json:"kind"` // "tracker" | "inferred" | "mixed"
+	DetectedAt time.Time `json:"detectedAt"`
+}
+
+// DependencyAttentionRow is one operator-facing dependency alert — either a
+// cycle member (Kind "cycle") or an issue blocked longer than the configured
+// escalation window (Kind "stale_blocker") — mirroring
+// orchestrator.DependencyAttentionEntry. critical-path-ordering Task 5.
+type DependencyAttentionRow struct {
+	Identifier   string    `json:"identifier"`
+	Blockers     []string  `json:"blockers"`
+	BlockedSince time.Time `json:"blockedSince"`
+	Kind         string    `json:"kind"` // "cycle" | "stale_blocker"
 }
 
 // Counts holds summary counts for the state snapshot.
@@ -303,6 +363,27 @@ type OrchestratorClient interface {
 	// only" filter. Errors out when the rule is not found, the referenced
 	// profile is missing, or the issue cannot be located.
 	TestAutomation(ctx context.Context, automationID, identifier string) error
+	// SetDepsOverride enables (true) or clears (false) an operator dismissal
+	// of the LLM-inferred dependency gating layer for identifier. Returns
+	// false only when the orchestrator's event channel is full (the handler
+	// surfaces this as a transient failure, not a 404 — unlike ResumeIssue,
+	// there is no "not currently gated" precondition to check).
+	// unified-dependency-graph Task 6.
+	SetDepsOverride(identifier string, enabled bool) bool
+	// RetryOutboxEntry makes a pending write-ahead-outbox entry immediately
+	// due (bypassing its backoff). Returns false when no entry with that id
+	// exists (handler surfaces 404) — unlike SetDepsOverride, there is no
+	// event-loop queue involved: the implementation calls the Outbox handle
+	// directly (see cmd/itervox's orchestratorAdapter.RetryOutboxEntry).
+	// write-ahead-outbox design, "Surfaces".
+	RetryOutboxEntry(id string) bool
+	// DropOutboxEntry discards a pending write-ahead-outbox entry (operator
+	// action — the remedy for an entry that can never auto-reconcile, e.g.
+	// an issue a human moved out of active states while a write was
+	// pending). Mirrors outbox.Outbox.Drop's own idempotent-on-unknown-id
+	// contract: never errors, so the handler always answers 202.
+	// write-ahead-outbox design, "Surfaces".
+	DropOutboxEntry(id string)
 }
 
 // noopClient implements OrchestratorClient with harmless defaults.
@@ -359,6 +440,9 @@ func (noopClient) DismissInput(string) bool                               { retu
 func (noopClient) SetInlineInput(bool) error                              { return errNotConfigured }
 func (noopClient) BumpCommentCount(string)                                {}
 func (noopClient) TestAutomation(context.Context, string, string) error   { return errNotConfigured }
+func (noopClient) SetDepsOverride(string, bool) bool                      { return false }
+func (noopClient) RetryOutboxEntry(string) bool                           { return false }
+func (noopClient) DropOutboxEntry(string)                                 {}
 
 // FuncClient builds an OrchestratorClient from individual function fields.
 // Any nil field falls back to the noopClient default. Intended for tests.
@@ -409,6 +493,9 @@ type FuncClient struct {
 	DismissInputFn                    func(string) bool
 	BumpCommentCountFn                func(string)
 	TestAutomationFn                  func(context.Context, string, string) error
+	SetDepsOverrideFn                 func(string, bool) bool
+	RetryOutboxEntryFn                func(string) bool
+	DropOutboxEntryFn                 func(string)
 }
 
 func (c *FuncClient) FetchIssues(ctx context.Context) ([]TrackerIssue, error) {
@@ -685,6 +772,26 @@ func (c *FuncClient) TestAutomation(ctx context.Context, automationID, identifie
 	return errNotConfigured
 }
 
+func (c *FuncClient) SetDepsOverride(identifier string, enabled bool) bool {
+	if c.SetDepsOverrideFn != nil {
+		return c.SetDepsOverrideFn(identifier, enabled)
+	}
+	return false
+}
+
+func (c *FuncClient) RetryOutboxEntry(id string) bool {
+	if c.RetryOutboxEntryFn != nil {
+		return c.RetryOutboxEntryFn(id)
+	}
+	return false
+}
+
+func (c *FuncClient) DropOutboxEntry(id string) {
+	if c.DropOutboxEntryFn != nil {
+		c.DropOutboxEntryFn(id)
+	}
+}
+
 // StateSnapshot is the payload returned by GET /api/v1/state.
 type StateSnapshot struct {
 	GeneratedAt         time.Time    `json:"generatedAt"`
@@ -773,16 +880,42 @@ type StateSnapshot struct {
 	// AutomationQueueBackpressure reports queue saturation so the dashboard can
 	// warn when automation producers are paused by the bounded durable queue.
 	AutomationQueueBackpressure *AutomationQueueBackpressureRow `json:"automationQueueBackpressure,omitempty"`
+	// DispatchPressure reports whether the fleet is slot-bound or
+	// dependency-bound. Pointer + omitempty so a daemon that has not
+	// completed a tick omits the field entirely rather than publishing an
+	// all-zero row the dashboard would render as "0% utilized".
+	DispatchPressure *DispatchPressureRow `json:"dispatchPressure,omitempty"`
 	// AutomationDropsSelfReentryTotal is the monotonic count of input_required
 	// automation dispatches suppressed by the self-reentry guard (the previous
 	// worker on the issue was itself automation-launched). Surfaced on the
 	// dashboard's LiveOpsStrip so operators can distinguish "guarded loop" from
 	// "automation never fired". omitempty: absent until the first drop.
 	// gaps_11 G-11.
-	AutomationDropsSelfReentryTotal uint64                   `json:"automationDropsSelfReentryTotal,omitempty"`
-	DependencyAudit                 []DependencyAuditRow     `json:"dependencyAudit,omitempty"`
-	DependencyGraphNodes            []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
-	DependencyGraphEdges            []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
+	AutomationDropsSelfReentryTotal uint64               `json:"automationDropsSelfReentryTotal,omitempty"`
+	DependencyAudit                 []DependencyAuditRow `json:"dependencyAudit,omitempty"`
+	// DepsRefreshingCount is how many dependency-audit rows the off-loop
+	// refresher currently holds. omitempty: absent when idle. Named distinctly
+	// from orchestrator.State.DepsRefreshInFlight (a bool single-flight latch)
+	// — this is a row COUNT, not a latch; the JSON tag is unchanged so the
+	// wire contract and web/src/types/schemas.ts stay untouched.
+	DepsRefreshingCount int `json:"depsRefreshInFlight,omitempty"`
+	// DepsRefreshLastDurationMs is the wall-clock of the last completed
+	// refresh batch.
+	DepsRefreshLastDurationMs int64 `json:"depsRefreshLastDurationMs,omitempty"`
+	// DepsRefreshDegradedCount is how many rows are past the failure threshold.
+	DepsRefreshDegradedCount int                      `json:"depsRefreshDegradedCount,omitempty"`
+	DependencyGraphNodes     []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
+	DependencyGraphEdges     []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
+	// DependencyCycles surfaces this tick's cycle-detection output (Task 4)
+	// so the dashboard and heartbeat can flag issues stuck in a dependency
+	// cycle that no amount of waiting will resolve. critical-path-ordering
+	// Task 5.
+	DependencyCycles []DependencyCycleRow `json:"dependencyCycles,omitempty"`
+	// DependencyAttention surfaces this tick's operator-attention entries
+	// (cycle members plus blockers past the escalation window). Derived,
+	// event-loop-owned state — see orchestrator.DeriveDependencyAttention.
+	// critical-path-ordering Task 5.
+	DependencyAttention []DependencyAttentionRow `json:"dependencyAttention,omitempty"`
 	// DepsAnalyzerProfile is the configured agent.deps_analyzer_profile (Phase
 	// 1.1). The dashboard gates the "Analyze dependencies" button on this being
 	// non-empty + the named profile existing + enabled.
@@ -791,12 +924,72 @@ type StateSnapshot struct {
 	// `.itervox/dependencies.json`. Absent when the sidecar is missing or
 	// outdated. Surfaced as a "Last analyzed N ago" label in the Deps toolbar.
 	DepsLastAnalyzedAt *time.Time `json:"depsLastAnalyzedAt,omitempty"`
+	// DepsAnalyzeJob is the analyzer JobManager's CURRENT job — whatever its
+	// status. Running: the dashboard derives the Cancel affordance from this
+	// (not mutation-local frontend state, which dies on a page refresh —
+	// #46-1). Terminal (succeeded/failed/cancelled): last-run info. Nil only
+	// when no analyzer job has ever run this process lifetime. Reusing
+	// DepsAnalyzeJobRow (the existing GET /api/v1/deps/analyze/:jobId shape)
+	// keeps one wire type for "a job" regardless of how it was reached.
+	DepsAnalyzeJob *DepsAnalyzeJobRow `json:"depsAnalyzeJob,omitempty"`
 	// ConfigInvalid surfaces an in-flight WORKFLOW.md validation failure to
 	// the dashboard / TUI banner. nil/absent means the daemon is reading a
 	// valid config; non-nil means the most recent reload tick failed and the
 	// daemon is running on the previously-valid config while exponentially
 	// backing off retries (T-26).
 	ConfigInvalid *ConfigInvalidStatus `json:"configInvalid,omitempty"`
+	// CandidateSeen is this tick's "what tracker polling saw" backlog rows —
+	// one per candidate-issue identifier, carrying the tracker's UpdatedAt
+	// when known. Additive, internal-tooling field: no dashboard consumer
+	// today (the web Zod schema ignores unknown keys, so no web change is
+	// needed). Read by cmd/itervox's deps auto-analyze scheduler as its
+	// change-signal source — DependencyGraphNodes/DependencyAudit are NOT a
+	// substitute because both stay empty until a dependency relation already
+	// exists, which is exactly wrong for detecting a fresh backlog with zero
+	// relations yet. analyzer-autonomy Task 4 fix round.
+	CandidateSeen []CandidateSeenRow `json:"candidateSeen,omitempty"`
+	// OutboxEntries is this tick's write-ahead-outbox contents, in global
+	// enqueue order (write-ahead-outbox design, "Surfaces"). Empty/absent
+	// when the outbox is empty or the kill switch (tracker.outbox: false)
+	// is set — cmd/itervox still constructs the Outbox handle in that case,
+	// but nothing is ever enqueued into it.
+	OutboxEntries []OutboxEntryRow `json:"outboxEntries,omitempty"`
+	// OutboxSyncing is the sorted list of issue identifiers whose tracker
+	// state was overlaid this tick by a pending outbox update_state entry —
+	// mirrors orchestrator.State.OutboxSyncing's map keys. This is the join
+	// key list the web uses to render a "syncing" badge on /api/v1/issues
+	// rows: /api/v1/issues builds TrackerIssue rows from a direct
+	// client-side tracker fetch, NOT from this snapshot, so there is no
+	// Syncing field on TrackerIssue itself — the frontend joins by
+	// Identifier against this list instead (see state.go's OutboxSyncing
+	// doc comment).
+	OutboxSyncing []string `json:"outboxSyncing,omitempty"`
+}
+
+// CandidateSeenRow is the wire shape of orchestrator.CandidateSeenRow.
+type CandidateSeenRow struct {
+	Identifier string    `json:"identifier"`
+	UpdatedAt  time.Time `json:"updatedAt,omitempty"`
+}
+
+// OutboxEntryRow is the wire shape of one internal/outbox.Entry, exposed on
+// the snapshot for the dashboard's Outbox panel (write-ahead-outbox design,
+// "Surfaces"). cmd/itervox builds these from ob.Snapshot() in global enqueue
+// order — see snapshot_rows.go's outboxEntryRows.
+type OutboxEntryRow struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Identifier string `json:"identifier"`
+	// TargetState is set for "update_state" entries only.
+	TargetState string `json:"targetState,omitempty"`
+	Attempts    int    `json:"attempts"`
+	LastError   string `json:"lastError,omitempty"`
+	// Degraded mirrors outbox.Entry.Degraded() — true once Attempts crosses
+	// the operator-visible-error-badge threshold. Retries continue past this
+	// point; there is no terminal give-up.
+	Degraded      bool      `json:"degraded,omitempty"`
+	EnqueuedAt    time.Time `json:"enqueuedAt"`
+	NextAttemptAt time.Time `json:"nextAttemptAt"`
 }
 
 // DepsAnalyzeJobRow is the wire shape returned by the deps-analyze status
@@ -810,8 +1003,32 @@ type DepsAnalyzeJobRow struct {
 	StartedAt     *time.Time `json:"startedAt,omitempty"`
 	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
 	IssuesScanned int        `json:"issuesScanned,omitempty"`
-	EdgesFound    int        `json:"edgesFound,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	// IssuesAnalyzed is the count of issues actually sent to the analyzer
+	// agent this pass (#52's IssuesScanned honesty fix) — distinct from
+	// IssuesScanned, the raw tracker-fetch count, which under incremental
+	// mode can be much larger (a revalidation-only run analyzes 0 while
+	// scanning the whole active backlog). Additive on the wire; an older
+	// daemon or job predating this field simply omits it.
+	IssuesAnalyzed int    `json:"issuesAnalyzed,omitempty"`
+	EdgesFound     int    `json:"edgesFound,omitempty"`
+	Error          string `json:"error,omitempty"`
+	// ChunksTotal / ChunksDone make in-flight progress visible on the wire.
+	// ChunksTotal is set once chunking completes (before the per-chunk loop
+	// starts), not only on terminal success, so a job observed mid-run
+	// carries a correct denominator instead of 0.
+	ChunksTotal int `json:"chunksTotal,omitempty"`
+	ChunksDone  int `json:"chunksDone,omitempty"`
+	// LastActivityAt is the analyzer's last progress heartbeat (bumped by
+	// MarkProgress on every agent turn event). It is the only liveness
+	// signal on a single-chunk run — the common case at the default
+	// deps_analyzer_chunk_size (75) — where ChunksTotal/ChunksDone never
+	// move past "1 / 1" for the run's entire duration.
+	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
+	// Trigger distinguishes an operator-initiated run ("manual" — dashboard
+	// button, direct API call, CLI) from a scheduler-initiated one ("auto" —
+	// Task 4). Additive; every job produced by JobManager.Enqueue /
+	// EnqueueWithOptions carries a non-empty value ("manual" by default).
+	Trigger string `json:"trigger,omitempty"`
 }
 
 // DepsAnalyzer is the optional service backing the `/api/v1/deps/analyze`
@@ -820,13 +1037,20 @@ type DepsAnalyzeJobRow struct {
 type DepsAnalyzer interface {
 	// EnqueueAnalysis kicks off (or returns the in-flight) analyzer job for the
 	// given profile. Empty `profile` falls back to the configured
-	// agent.deps_analyzer_profile.
-	EnqueueAnalysis(profile string) (jobID string, queuedAt time.Time, err error)
+	// agent.deps_analyzer_profile. mode is the requested incremental-pass
+	// mode ("auto" | "full" | "incremental"); empty behaves like "auto".
+	// Every call through this interface is a manual (operator-initiated)
+	// trigger — there is no "auto" trigger variant here because the
+	// scheduler (Task 4) calls the concrete depsAnalyzerService directly.
+	EnqueueAnalysis(profile, mode string) (jobID string, queuedAt time.Time, err error)
 	// Status returns the analyzer job with the given ID, or false when absent.
 	Status(jobID string) (DepsAnalyzeJobRow, bool)
 	// DefaultProfile returns the configured agent.deps_analyzer_profile, or
 	// empty when the analyzer is disabled.
 	DefaultProfile() string
+	// CancelAnalysis stops the running job with the given ID. Returns false
+	// when no such job is running.
+	CancelAnalysis(jobID string) bool
 }
 
 // ConfigInvalidStatus is the wire shape for a current WORKFLOW.md validation
@@ -1226,6 +1450,10 @@ func (s *Server) routes() {
 			r.Post("/issues/{identifier}/backend", s.handleSetIssueBackend)
 			r.Post("/issues/{identifier}/provide-input", s.handleProvideInput)
 			r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
+			r.Post("/issues/{identifier}/deps-override", s.handleSetDepsOverride)
+			r.Delete("/issues/{identifier}/deps-override", s.handleClearDepsOverride)
+			r.Post("/outbox/{id}/retry", s.handleRetryOutboxEntry)
+			r.Delete("/outbox/{id}", s.handleDropOutboxEntry)
 			r.Post("/settings/inline-input", s.handleSetInlineInput)
 			r.Get("/logs", s.handleLogs)
 			r.Post("/refresh", s.handleRefresh)
@@ -1256,6 +1484,7 @@ func (s *Server) routes() {
 			// Dependency analysis (Phase 2.3 of v0.2.0 todolist6).
 			r.Post("/deps/analyze", s.handleDepsAnalyzeEnqueue)
 			r.Get("/deps/analyze/{jobId}", s.handleDepsAnalyzeStatus)
+			r.Delete("/deps/analyze/{jobId}", s.handleDepsAnalyzeCancel)
 
 			// Skills inventory + analytics (T-87, T-95/T-96, T-102).
 			r.Get("/skills/inventory", s.handleSkillsInventory)

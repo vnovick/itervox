@@ -34,7 +34,7 @@ type captureRunner struct {
 	workerHost string
 }
 
-func (c *captureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, workerHost, _ string, _, _ int) (agent.TurnResult, error) {
+func (c *captureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, workerHost, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	c.command = command
 	c.workerHost = workerHost
 	return agent.TurnResult{}, nil
@@ -267,7 +267,7 @@ func TestCommandResolverRunnerSkipsResolutionForSSHWorkers(t *testing.T) {
 		},
 	}
 
-	_, err := runner.RunTurn(context.Background(), nil, nil, nil, "prompt", ".", "claude --model sonnet", "ssh://host", "", 0, 0)
+	_, err := runner.RunTurn(context.Background(), nil, nil, nil, "prompt", ".", "claude --model sonnet", "ssh://host", "", 0, 0, agent.PermissionBypass)
 
 	require.NoError(t, err)
 	assert.Equal(t, "claude --model sonnet", inner.command)
@@ -306,7 +306,7 @@ func TestInitExistingWorkflowMessageMentionsUpdate(t *testing.T) {
 }
 
 func TestGenerateWorkflow_UsesSchema2ProfileFiles(t *testing.T) {
-	content := generateWorkflow("github", "codex", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"})
+	content := generateWorkflow("github", "codex", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"}, filepath.Join(t.TempDir(), "WORKFLOW.md"))
 
 	assert.Contains(t, content, "itervox_schema_version: 2")
 	for _, profile := range []string{"implementer", "reviewer", "input-responder"} {

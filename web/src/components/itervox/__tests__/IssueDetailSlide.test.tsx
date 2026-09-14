@@ -326,6 +326,50 @@ describe('IssueDetailSlide', () => {
     expect(screen.getByText('retrying')).toBeInTheDocument();
   });
 
+  // outbox #54 fast-follow: ListView/IssueDetailSlide previously had no
+  // "⟳ Syncing" marker (accepted-minor D, final review) even though
+  // BoardView's DraggableCard has carried it since Task 4.
+  it('shows the syncing badge when the issue is in snapshot.outboxSyncing', () => {
+    const setSelectedIdentifier = vi.fn();
+    mockStore.mockImplementation((selector: (s: any) => any) =>
+      selector({
+        selectedIdentifier: 'ENG-10',
+        setSelectedIdentifier,
+        snapshot: { availableProfiles: [], outboxSyncing: ['ENG-10'] },
+      }),
+    );
+    mockUseIssues.mockReturnValue(castMock({ data: [baseIssue] }));
+    mockUseIssue.mockReturnValue(castMock({ data: baseIssue }));
+    mockUseCancelIssue.mockReturnValue(
+      castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    );
+    mockUseTerminateIssue.mockReturnValue(
+      castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    );
+    mockUseResumeIssue.mockReturnValue(
+      castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    );
+    mockUseTriggerAIReview.mockReturnValue(
+      castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    );
+    mockUseSetIssueProfile.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
+    mockUseSetIssueBackend.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
+    mockUseProvideInput.mockReturnValue(
+      castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    );
+    mockUseDismissInput.mockReturnValue(
+      castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    );
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId('issue-detail-syncing-badge')).toBeInTheDocument();
+  });
+
+  it('does not show the syncing badge when the issue is not in snapshot.outboxSyncing', () => {
+    setupDefaultMocks('ENG-10');
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.queryByTestId('issue-detail-syncing-badge')).not.toBeInTheDocument();
+  });
+
   it('shows Cancel Retry button when retrying', () => {
     setupDefaultMocks('ENG-10', { orchestratorState: 'retrying' });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });

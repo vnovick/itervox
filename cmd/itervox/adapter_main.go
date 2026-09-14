@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/skills"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -31,6 +32,21 @@ type orchestratorAdapter struct {
 	workflowPath string
 	notify       func()
 	skillsCache  *skills.Cache
+	// logsDir is the logs directory the daemon actually writes to, including
+	// an operator-supplied --logs-dir. Empty means "not threaded" (tests, and
+	// any caller with no log file), in which case Analytics falls back to
+	// deriving the default. Without this, skill analytics computed the
+	// DEFAULT path while the daemon wrote somewhere else, and rendered empty
+	// rather than erroring — silently wrong (issue #65).
+	logsDir string
+	// ob is the write-ahead outbox handle (always non-nil — cmd/itervox
+	// constructs it unconditionally in main.go's run(), even when
+	// cfg.Tracker.Outbox is false and it is never wired into the
+	// orchestrator). RetryOutboxEntry/DropOutboxEntry (adapter_outbox.go)
+	// call it directly, NOT through the orchestrator's event loop: Outbox
+	// is self-contained and thread-safe on its own mutex (see
+	// internal/outbox/outbox.go's package doc), unlike orchestrator.State.
+	ob *outbox.Outbox
 }
 
 func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {

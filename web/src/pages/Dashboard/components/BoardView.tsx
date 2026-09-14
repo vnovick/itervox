@@ -53,6 +53,7 @@ export function BoardView({
     inputRequired,
     retrying,
     maxRetries,
+    outboxSyncing,
   } = useItervoxStore(
     useShallow((s) => ({
       snapshotLoaded: s.snapshot !== null,
@@ -67,6 +68,7 @@ export function BoardView({
       inputRequired: s.snapshot?.inputRequired ?? EMPTY_INPUT_REQUIRED,
       retrying: s.snapshot?.retrying ?? EMPTY_RETRYING,
       maxRetries: s.snapshot?.maxRetries ?? 5,
+      outboxSyncing: s.snapshot?.outboxSyncing ?? EMPTY_STATES,
     })),
   );
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
@@ -142,6 +144,10 @@ export function BoardView({
     }
     return map;
   }, [retrying]);
+
+  // outbox Task 4 — snapshot.outboxSyncing is the sorted join-key list; the
+  // card badge joins by identifier against this set.
+  const syncingIdentifiers = useMemo(() => new Set(outboxSyncing), [outboxSyncing]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -235,6 +241,7 @@ export function BoardView({
             inputRequiredStaleByIdentifier={inputRequiredStaleByIdentifier}
             retryAttemptByIdentifier={retryAttemptByIdentifier}
             maxRetries={maxRetries}
+            syncingIdentifiers={syncingIdentifiers}
           />
         ))}
       </div>

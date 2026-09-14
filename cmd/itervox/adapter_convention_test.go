@@ -46,6 +46,11 @@ func TestAdapterPersistThenMutateConvention(t *testing.T) {
 		"ClearAllWorkspaces": "no config change; pure workspace fs cleanup",
 		// Per-issue runtime input/control (not config).
 		"DismissInput": "per-issue runtime control; not config",
+		// Per-issue runtime override (unified-dependency-graph Task 6): routed
+		// through the orchestrator event loop and persisted to its own
+		// deps_overrides.json (internal/orchestrator/deps_override.go), never
+		// to WORKFLOW.md.
+		"SetDepsOverride": "per-issue runtime override; persisted to deps_overrides.json, not WORKFLOW.md",
 	}
 
 	var violations []string

@@ -29,7 +29,7 @@ type succeedOnceRunner struct {
 	calls atomic.Int32
 }
 
-func (r *succeedOnceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *succeedOnceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	n := r.calls.Add(1)
 	if n == 1 {
 		return agent.TurnResult{
@@ -212,7 +212,7 @@ type inputRequiredResumeStallRunner struct {
 	workerHosts    []string
 }
 
-func (r *inputRequiredResumeStallRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *inputRequiredResumeStallRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	sid := ""
@@ -241,7 +241,7 @@ func (r *inputRequiredResumeStallRunner) RunTurn(ctx context.Context, _ agent.Lo
 	return agent.TurnResult{Failed: true}, ctx.Err()
 }
 
-func (r *inputRequiredResumeRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *inputRequiredResumeRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	sid := ""
@@ -484,7 +484,14 @@ func TestInputRequiredResumeReusesWorkspaceWithoutRerunningBeforeRun(t *testing.
 		calls, sessionIDs, prompts, workspacePaths, commands, _ := runner.snapshot()
 		issues, err := mt.FetchIssueStatesByIDs(ctx, []string{"id1"})
 		require.NoError(t, err)
-		if calls >= 2 && len(issues) > 0 && issues[0].State == "Done" {
+		// RunHistory is part of the readiness condition, not just the
+		// assertions below. `calls` increments inside RunTurn on the runner
+		// goroutine, while the history entry is recorded later by the event
+		// loop when it processes EventWorkerExited — so under load this loop
+		// could observe calls==2 and a Done issue while history still held
+		// only the first run, then fail on require.Len(history, 2). Waiting
+		// for the thing being asserted removes that race.
+		if calls >= 2 && len(issues) > 0 && issues[0].State == "Done" && len(orch.RunHistory()) >= 2 {
 			require.Len(t, sessionIDs, 2)
 			require.Len(t, prompts, 2)
 			require.Len(t, workspacePaths, 2)

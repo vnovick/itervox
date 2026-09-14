@@ -97,6 +97,54 @@ func TestIsEligibleTodoWithTerminalBlockerIsEligible(t *testing.T) {
 	assert.True(t, orchestrator.IsEligible(issue, state, cfg))
 }
 
+func TestInferredBlockedByGatesDispatch(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	state.InferredDeps["ENG-1"] = []orchestrator.InferredDepEntry{
+		{Source: "ENG-1", Gating: true},
+	}
+
+	assert.Equal(t, "inferred_blocked_by:ENG-1", orchestrator.IneligibleReason(issue, state, cfg))
+	assert.False(t, orchestrator.IsEligible(issue, state, cfg))
+}
+
+func TestInferredBlockedByReleasedWhenNotGating(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	state.InferredDeps["ENG-1"] = []orchestrator.InferredDepEntry{
+		{Source: "ENG-1", Gating: false},
+	}
+
+	assert.Equal(t, "", orchestrator.IneligibleReason(issue, state, cfg))
+	assert.True(t, orchestrator.IsEligible(issue, state, cfg))
+}
+
+func TestTrackerBlockerWinsOverInferred(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	blockerID := "ENG-0"
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	issue.BlockedBy = []domain.BlockerRef{{Identifier: &blockerID}}
+	state.InferredDeps["ENG-1"] = []orchestrator.InferredDepEntry{
+		{Source: "ENG-9", Gating: true},
+	}
+
+	assert.Equal(t, "blocked_by:ENG-0", orchestrator.IneligibleReason(issue, state, cfg))
+}
+
+func TestAutomationPathInheritsInferredGuard(t *testing.T) {
+	cfg := baseConfig()
+	state := orchestrator.NewState(cfg)
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	state.InferredDeps["ENG-1"] = []orchestrator.InferredDepEntry{
+		{Source: "ENG-1", Gating: true},
+	}
+
+	assert.Equal(t, "inferred_blocked_by:ENG-1", orchestrator.IneligibleReasonForAutomation(issue, state, cfg))
+}
+
 func TestSortForDispatch(t *testing.T) {
 	t1 := time.Unix(1000, 0)
 	t2 := time.Unix(2000, 0)

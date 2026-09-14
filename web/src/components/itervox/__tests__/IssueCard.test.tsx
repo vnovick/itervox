@@ -356,4 +356,16 @@ describe('IssueCard', () => {
       expect(screen.queryByTestId('issue-card-retry-badge')).not.toBeInTheDocument();
     });
   });
+
+  describe('outbox Task 4: syncing badge', () => {
+    it('renders the badge when syncing=true', () => {
+      render(<IssueCard issue={baseIssue} onSelect={vi.fn()} syncing />);
+      expect(screen.getByTestId('issue-card-syncing-badge')).toHaveTextContent('Syncing');
+    });
+
+    it('does not render the badge when syncing is false/undefined', () => {
+      render(<IssueCard issue={baseIssue} onSelect={vi.fn()} />);
+      expect(screen.queryByTestId('issue-card-syncing-badge')).not.toBeInTheDocument();
+    });
+  });
 });

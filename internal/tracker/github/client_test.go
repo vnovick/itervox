@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"errors"
 
@@ -263,6 +264,14 @@ func TestGHFetchIssueStatesByIDsFanOut(t *testing.T) {
 	result, err := client.FetchIssueStatesByIDs(context.Background(), []string{"1", "2"})
 	require.NoError(t, err)
 	assert.Len(t, result, 2)
+	// outbox #54 fast-follow's superseded_by_tracker reconciliation rule
+	// (outbox.ReconcileVerdict) depends on UpdatedAt being populated on
+	// every issue this method returns — pin it so a future normalize change
+	// can't silently drop the field.
+	for _, issue := range result {
+		require.NotNil(t, issue.UpdatedAt, "issue %s must carry a populated UpdatedAt", issue.Identifier)
+		assert.Equal(t, "2024-01-01T00:00:00Z", issue.UpdatedAt.UTC().Format(time.RFC3339))
+	}
 }
 
 func TestGHFetchIssueStatesByIDs404Skipped(t *testing.T) {

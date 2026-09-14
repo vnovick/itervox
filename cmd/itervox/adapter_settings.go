@@ -226,6 +226,10 @@ func (a *orchestratorAdapter) DismissInput(identifier string) bool {
 	return a.orch.DismissInput(identifier)
 }
 
+func (a *orchestratorAdapter) SetDepsOverride(identifier string, enabled bool) bool {
+	return a.orch.SetDepsOverride(identifier, enabled)
+}
+
 func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {
 	if err := workflow.PatchAgentBoolField(a.workflowPath, "inline_input", enabled); err != nil {
 		return err

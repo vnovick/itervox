@@ -224,6 +224,25 @@ export const AutomationQueueBackpressureSchema = z.object({
   lastRejectedReason: z.string().optional(),
 });
 
+// DispatchPressureSchema mirrors server.DispatchPressureRow. It answers
+// "would raising max_concurrent_agents help?": slotBoundTicks means yes
+// (work was ready and every slot was busy), dependencyBoundTicks means no
+// (slots sat idle because the remaining work was blocked).
+//
+// The two tick counters are mutually exclusive per tick and do NOT sum to
+// observedTicks — idle ticks are charged to neither.
+export const DispatchPressureSchema = z.object({
+  observedTicks: z.number(),
+  slotBoundTicks: z.number(),
+  dependencyBoundTicks: z.number(),
+  utilizationPercent: z.number(),
+  // Most-recent-tick counts, unlike the cumulative counters above.
+  blockedByDependency: z.number(),
+  eligibleWaiting: z.number(),
+});
+
+export type DispatchPressure = z.infer<typeof DispatchPressureSchema>;
+
 export const BlockerRefSchema = z.object({
   id: z.string().optional(),
   identifier: z.string().optional(),
@@ -272,6 +291,29 @@ export const DependencyAuditRowSchema = z.object({
   lastAuditedAt: optionalTimeString,
   lastTransitionVersion: optionalSafeInt,
   lastTransitionReason: z.string().optional(),
+  degraded: z.boolean().optional(),
+});
+
+// DependencyCycleRowSchema mirrors server.DependencyCycleRow (critical-path-
+// ordering Task 5/6) — one strongly-connected-component cycle (or self-edge)
+// in the tick graph. `kind` follows the same catch-fallback pattern as
+// DependencyGraphEdgeSchema.origin above: an unrecognised/future value from a
+// newer daemon should not fail the whole snapshot parse, so it falls back to
+// 'mixed' (the least-specific classification) rather than throwing.
+export const DependencyCycleRowSchema = z.object({
+  members: z.array(z.string()),
+  kind: z.enum(['tracker', 'inferred', 'mixed']).catch('mixed'),
+  detectedAt: z.string(),
+});
+
+// DependencyAttentionRowSchema mirrors server.DependencyAttentionRow —
+// operator-facing dependency alerts: cycle members and issues blocked past
+// the configured `dependencies.escalate_blocked_after_hours` window.
+export const DependencyAttentionRowSchema = z.object({
+  identifier: z.string(),
+  blockers: z.array(z.string()),
+  blockedSince: z.string(),
+  kind: z.enum(['cycle', 'stale_blocker']).catch('stale_blocker'),
 });
 
 export const DependencyGraphNodeSchema = z.object({
@@ -301,6 +343,20 @@ export const DependencyGraphEdgeSchema = z.object({
   origin: z.enum(['tracker', 'inferred']).optional().catch('tracker'),
   // Inferred edges carry an evidence string from the analyzer agent.
   evidence: z.string().optional(),
+  // unified-dependency-graph Task 8 — analyzer confidence score ([0,1]) for
+  // an inferred edge. Absent/omitted for tracker edges and for snapshots
+  // written before this field existed (old-payload back-compat).
+  confidence: z.number().optional(),
+  // True when an inferred edge has aged past the configured
+  // dependencies.staleness_hours window. Always absent/false for tracker
+  // edges.
+  stale: z.boolean().optional(),
+  // True when an operator has dismissed this issue's inferred blockers via
+  // POST/DELETE /api/v1/issues/{identifier}/deps-override.
+  overridden: z.boolean().optional(),
+  // True when this edge currently blocks dispatch of its target issue,
+  // considering confidence/staleness/override/dependencies.inferred_gating.
+  gating: z.boolean().optional(),
 });
 
 // v0.2.0 todolist6 — Phase 2.3 job-status wire shape returned by
@@ -308,13 +364,26 @@ export const DependencyGraphEdgeSchema = z.object({
 export const DepsAnalyzeJobSchema = z.object({
   jobId: z.string(),
   profile: z.string().optional(),
-  status: z.enum(['queued', 'running', 'succeeded', 'failed']),
+  status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']),
   queuedAt: z.string(),
   startedAt: optionalTimeString,
   finishedAt: optionalTimeString,
   issuesScanned: z.number().optional(),
   edgesFound: z.number().optional(),
+  chunksTotal: z.number().optional(),
+  issuesAnalyzed: z.number().optional(),
+  chunksDone: z.number().optional(),
+  // Last analyzer progress heartbeat — the only liveness signal on a
+  // single-chunk run, where chunksTotal/chunksDone never move.
+  lastActivityAt: optionalTimeString,
   error: z.string().optional(),
+  // analyzer-autonomy Task 5 — distinguishes an operator-initiated run
+  // ("manual" — dashboard button, direct API call, CLI) from a
+  // scheduler-initiated one ("auto"). Additive on the wire (server.go's
+  // DepsAnalyzeJobRow.Trigger, `omitempty`); an older daemon predating the
+  // field, or any unrecognized value, falls back to 'manual' rather than
+  // failing the whole job-status parse.
+  trigger: z.enum(['manual', 'auto']).optional().catch('manual'),
 });
 
 // The POST /api/v1/deps/analyze 202 body — partial shape that overlaps with
@@ -324,6 +393,21 @@ export const DepsAnalyzeEnqueueResponseSchema = z.object({
   jobId: z.string(),
   profile: z.string().optional(),
   queuedAt: z.string(),
+});
+
+// OutboxEntryRowSchema mirrors server.OutboxEntryRow (write-ahead-outbox
+// design, "Surfaces" / Task 4) — one pending write-ahead-outbox entry as
+// exposed on the snapshot for the dashboard's Outbox panel.
+export const OutboxEntryRowSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  identifier: z.string(),
+  targetState: z.string().optional(),
+  attempts: z.number(),
+  lastError: z.string().optional(),
+  degraded: z.boolean().optional(),
+  enqueuedAt: z.string(),
+  nextAttemptAt: z.string(),
 });
 
 export const StateSnapshotSchema = z.object({
@@ -372,11 +456,26 @@ export const StateSnapshotSchema = z.object({
   inputRequired: z.array(InputRequiredEntrySchema).optional(),
   automationQueue: z.array(AutomationQueueRowSchema).optional(),
   automationQueueBackpressure: AutomationQueueBackpressureSchema.optional(),
+  // Go-side omitempty: absent (not a zero row) until the daemon completes
+  // its first tick, and absent from snapshots emitted by older daemons.
+  dispatchPressure: DispatchPressureSchema.optional(),
   // gaps_11 G-11 — monotonic count of input_required automation dispatches
   // suppressed by the self-reentry guard. Go-side omitempty: absent (not 0)
   // until the first drop, and absent from snapshots emitted by older daemons.
   automationDropsSelfReentryTotal: optionalSafeInt,
   dependencyAudit: z.array(DependencyAuditRowSchema).optional(),
+  // depsRefreshInFlight is the off-loop refresher's current batch size, not
+  // a boolean latch — 0/absent means idle (or a states-only batch with no
+  // row targets; see LiveOpsStrip's depsChipLabel for why that case renders
+  // no "refreshing" suffix rather than "refreshing 0").
+  depsRefreshInFlight: optionalSafeInt,
+  // depsRefreshLastDurationMs is the wall-clock of the last completed
+  // refresh batch. int64 on the wire, hence optionalSafeInt (not a plain
+  // z.number()) per the v0.2.0 audit P1-11 precision guard above.
+  depsRefreshLastDurationMs: optionalSafeInt,
+  // depsRefreshDegradedCount is how many dependency-audit rows are past the
+  // orchestrator's consecutive-failure threshold.
+  depsRefreshDegradedCount: optionalSafeInt,
   dependencyGraphNodes: z.array(DependencyGraphNodeSchema).optional(),
   dependencyGraphEdges: z.array(DependencyGraphEdgeSchema).optional(),
   // v0.2.0 todolist6 — gates the dashboard "Analyze dependencies" button.
@@ -388,11 +487,35 @@ export const StateSnapshotSchema = z.object({
   // toolbar. Absent means the sidecar has never been written; the label
   // reads "Never" in that case.
   depsLastAnalyzedAt: optionalTimeString.optional(),
+  // #46-1 — the analyzer JobManager's CURRENT job (running or most recently
+  // terminal), independent of which browser tab/click started it. Reuses
+  // DepsAnalyzeJobSchema (the GET /api/v1/deps/analyze/:jobId shape) so a
+  // page refresh/navigation during a running job can still derive the
+  // Cancel affordance and the passive "auto" badge from server state
+  // instead of mutation-local frontend state, which dies on reload. Absent
+  // when no analyzer job has ever run this daemon process lifetime.
+  depsAnalyzeJob: DepsAnalyzeJobSchema.optional(),
   // ConfigInvalid surfaces a failed WORKFLOW.md reload to the banner. Absent
   // when the daemon is reading a valid config; present (non-null) when the
   // most recent reload tick failed and the daemon is exponentially backing
   // off retries on the last-valid config (T-26).
   configInvalid: ConfigInvalidStatusSchema.optional(),
+  // critical-path-ordering Task 4/5/6 — this tick's cycle-detection output
+  // and derived operator-attention entries. Both omitempty on the wire:
+  // absent on snapshots from daemons predating this feature, and on ticks
+  // with no cycles / no attention-worthy blockers.
+  dependencyCycles: z.array(DependencyCycleRowSchema).optional(),
+  dependencyAttention: z.array(DependencyAttentionRowSchema).optional(),
+  // outbox Task 4 — write-ahead-outbox surfaces. outboxEntries is this
+  // tick's outbox contents in global enqueue order; outboxSyncing is the
+  // sorted join-key list (issue identifiers) the frontend matches against
+  // /api/v1/issues rows by identifier to render the "syncing" badge —
+  // TrackerIssue has no Syncing field of its own (see
+  // server.StateSnapshot.OutboxSyncing's doc comment). Both additive/
+  // omitempty on the wire: absent on snapshots from daemons predating this
+  // feature.
+  outboxEntries: z.array(OutboxEntryRowSchema).optional(),
+  outboxSyncing: z.array(z.string()).optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -495,9 +618,12 @@ export type AutomationQueueBackpressure = z.infer<typeof AutomationQueueBackpres
 export type DependencyAuditRow = z.infer<typeof DependencyAuditRowSchema>;
 export type DependencyGraphNode = z.infer<typeof DependencyGraphNodeSchema>;
 export type DependencyGraphEdge = z.infer<typeof DependencyGraphEdgeSchema>;
+export type DependencyCycleRow = z.infer<typeof DependencyCycleRowSchema>;
+export type DependencyAttentionRow = z.infer<typeof DependencyAttentionRowSchema>;
 export type DepsAnalyzeJob = z.infer<typeof DepsAnalyzeJobSchema>;
 export type DepsAnalyzeEnqueueResponse = z.infer<typeof DepsAnalyzeEnqueueResponseSchema>;
 export type ConfigInvalidStatus = z.infer<typeof ConfigInvalidStatusSchema>;
+export type OutboxEntryRow = z.infer<typeof OutboxEntryRowSchema>;
 
 // --- Skills inventory (T-89) ---
 //

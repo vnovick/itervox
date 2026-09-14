@@ -30,6 +30,8 @@ export default defineConfig({
             { label: 'Automations', slug: 'guides/automations' },
             { label: 'Skills Inventory', slug: 'guides/skills-inventory' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
+            { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
+            { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },
           ],
         },
         { label: 'CLI Reference', slug: 'cli' },

@@ -195,6 +195,7 @@ func pausedCleanup(state *State, keep func(ident string) bool) int {
 			continue
 		}
 		delete(state.PausedIdentifiers, ident)
+		clearPauseReason(state, ident)
 		delete(state.PausedSessions, ident)
 		delete(state.PausedSessions, issueID)
 		removed++

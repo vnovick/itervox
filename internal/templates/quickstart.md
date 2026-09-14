@@ -22,7 +22,7 @@ workspace:
   root: "/tmp/itervox-quickstart"
 server:
   bind: "127.0.0.1:8090"
-  allow_unauthenticated_lan: false
+  allow_unauthenticated: false
 ---
 
 # Quickstart prompt

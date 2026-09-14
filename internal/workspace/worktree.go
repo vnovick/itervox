@@ -100,7 +100,7 @@ func (m *Manager) resolveGitDir(ctx context.Context, root, branchName string) (s
 // When cfg.Workspace.CloneURL is set, a bare clone at <root>/.bare/ is used as
 // the git directory for all operations, avoiding lock contention with the user's
 // working copy.
-func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName string) (Workspace, error) {
+func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, requestedStart string) (Workspace, error) {
 	root := m.cfg.Workspace.Root
 	wtPath := worktreePath(root, identifier)
 
@@ -131,6 +131,17 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 		if startPoint == "" {
 			startPoint = "main"
 		}
+	}
+	// A stacked start point wins when it resolves. Verified rather than
+	// trusted: the blocker's branch may not exist here (not yet dispatched,
+	// worked on another machine, worktree cleared), and a `git worktree add`
+	// against a missing ref would fail the whole dispatch. Stacking is a
+	// review-ergonomics improvement, so it degrades to the normal base rather
+	// than blocking work.
+	if requestedStart != "" && m.refExists(ctx, gitDir, requestedStart) {
+		startPoint = requestedStart
+		slog.Info("workspace: stacking worktree on blocker branch",
+			"identifier", identifier, "branch", branchName, "base", startPoint)
 	}
 
 	// git -C <gitDir> worktree add <wtPath> -b <branchName> [startPoint]
@@ -225,4 +236,16 @@ func (m *Manager) removeWorktree(ctx context.Context, identifier, branchName str
 	}
 
 	return nil
+}
+
+// refExists reports whether ref resolves in the repository at gitDir.
+//
+// `git rev-parse --verify <ref>^{commit}` is the cheap, side-effect-free way
+// to ask: it exits non-zero for an unknown ref rather than creating anything.
+func (m *Manager) refExists(ctx context.Context, gitDir, ref string) bool {
+	if ref == "" {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", gitDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	return cmd.Run() == nil
 }

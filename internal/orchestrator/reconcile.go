@@ -181,7 +181,20 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				Type:    EventWorkerExited,
 				IssueID: id,
 				RunEntry: &RunEntry{
-					Issue:          entry.Issue,
+					Issue: entry.Issue,
+					// Kind MUST be carried through. The exit handler routes on
+					// it via runEligibleForAutoReview, which treats an empty
+					// Kind as "a plain worker finished" and queues an
+					// auto-review. Dropping it here meant a REVIEWER stopped
+					// by this very branch looked like a fresh worker success,
+					// so the handler dispatched another reviewer, which this
+					// branch stopped again — an unbounded re-dispatch loop
+					// that spawns agents (and burns tracker/API budget) for as
+					// long as the issue sits in a terminal state. Reproduced
+					// at 23-30 RunTurn calls per 1.5s against an expected 2.
+					Kind:           entry.Kind,
+					ProfileName:    entry.ProfileName,
+					BranchName:     entry.BranchName,
 					TerminalReason: TerminalCanceledByReconciliation,
 				},
 			}:

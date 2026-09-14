@@ -2,6 +2,8 @@ import { useState, useMemo } from 'react';
 import Badge from '../../../components/ui/badge/Badge';
 import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
 import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
+import { useItervoxStore } from '../../../store/itervoxStore';
+import { EMPTY_STATES } from '../../../utils/constants';
 import {
   orchDotClass,
   stateBadgeColor,
@@ -62,6 +64,13 @@ export function ListView({
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const cancelIssueMutation = useCancelIssue();
   const resumeIssueMutation = useResumeIssue();
+
+  // outbox #54 fast-follow: BoardView's DraggableCard has carried the
+  // "⟳ Syncing" badge since Task 4 — ListView rows had no equivalent
+  // marker (accepted-minor D on the final review). Same join-by-identifier
+  // against snapshot.outboxSyncing as BoardView.
+  const outboxSyncing = useItervoxStore((s) => s.snapshot?.outboxSyncing ?? EMPTY_STATES);
+  const syncingIdentifiers = useMemo(() => new Set(outboxSyncing), [outboxSyncing]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -183,9 +192,20 @@ export function ListView({
                   </div>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
-                  <Badge size="sm" color={stateBadgeColor(issue.state)}>
-                    {issue.state}
-                  </Badge>
+                  <div className="flex items-center gap-1.5">
+                    <Badge size="sm" color={stateBadgeColor(issue.state)}>
+                      {issue.state}
+                    </Badge>
+                    {syncingIdentifiers.has(issue.identifier) && (
+                      <span
+                        data-testid="issue-row-syncing-badge"
+                        title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+                        className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+                      >
+                        ⟳ Syncing
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
                   {(() => {

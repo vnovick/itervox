@@ -21,6 +21,7 @@ import {
   ISSUE_KEY,
 } from '../../queries/issues';
 import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
+import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants';
 
 export default function IssueDetailSlide() {
   const selectedIdentifier = useItervoxStore((s) => s.selectedIdentifier);
@@ -45,6 +46,14 @@ export default function IssueDetailSlide() {
   const runningRows = useItervoxStore((s) => s.snapshot?.running);
   const historyRows = useItervoxStore((s) => s.snapshot?.history);
   const automations = useItervoxStore((s) => s.snapshot?.automations);
+  // critical-path-ordering Task 5/6 — cycle/stale-blocker alerts, derived
+  // event-loop-side and surfaced read-only on the snapshot.
+  const dependencyAttention = useItervoxStore(
+    (s) => s.snapshot?.dependencyAttention ?? EMPTY_DEPENDENCY_ATTENTION,
+  );
+  // outbox #54 fast-follow: same join-by-identifier against
+  // snapshot.outboxSyncing BoardView's DraggableCard has used since Task 4.
+  const outboxSyncing = useItervoxStore((s) => s.snapshot?.outboxSyncing ?? EMPTY_STATES);
   const [replyText, setReplyText] = useState('');
 
   const close = useCallback(() => {
@@ -61,6 +70,7 @@ export default function IssueDetailSlide() {
 
   if (!selectedIdentifier || !issue) return null;
 
+  const issueAttention = dependencyAttention.find((row) => row.identifier === issue.identifier);
   const isInReview = issue.state.toLowerCase() === 'in review';
   const isProfileLocked = issue.state.toLowerCase().includes('progress');
 
@@ -74,6 +84,7 @@ export default function IssueDetailSlide() {
         profileDefs={profileDefs}
         defaultBackend={defaultBackend}
         automations={automations}
+        syncing={outboxSyncing.includes(issue.identifier)}
       />
 
       {/* Scrollable body */}
@@ -192,7 +203,7 @@ export default function IssueDetailSlide() {
           </div>
         )}
 
-        <IssueBlockerDetails issue={issue} />
+        <IssueBlockerDetails issue={issue} attention={issueAttention} />
 
         {/* Description */}
         <div>

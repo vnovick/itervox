@@ -87,6 +87,139 @@ func TestRenderHeartbeatFallsBackToRetryError(t *testing.T) {
 	assert.Contains(t, content, "- Last error: agent failed")
 }
 
+// TestHeartbeatCountsInferredGatedBlocked is the #50 M2 regression test: an
+// issue blocked ONLY by a gating inferred dependency edge — no
+// DependencyAudit row for it at all — must still count toward the
+// heartbeat's "Blocked" line. Before this fix, heartbeatDependencyCounts
+// read only DependencyAudit rows and silently dropped inferred-only
+// blockers, understating how many issues are actually held.
+func TestHeartbeatCountsInferredGatedBlocked(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	snap := server.StateSnapshot{
+		// No DependencyAudit row for ENG-9 — it is blocked solely by a
+		// gating inferred edge.
+		DependencyGraphEdges: []server.DependencyGraphEdgeRow{
+			{
+				ID:               "ENG-8->ENG-9",
+				SourceIdentifier: "ENG-8",
+				TargetIdentifier: "ENG-9",
+				Origin:           "inferred",
+				Gating:           true,
+			},
+		},
+	}
+
+	content := renderHeartbeat(snap, heartbeatOptions{}, now)
+
+	assert.Contains(t, content, "- Blocked: 1")
+}
+
+// TestHeartbeatBlockedCountDedupsTrackerAndInferredUnion locks the "dedup by
+// identifier" half of the #50 M2 fix: an issue that is both a
+// DependencyAudit "blocked" row AND the target of a gating inferred edge
+// must count once, and a non-gating inferred edge must not inflate the
+// count at all.
+func TestHeartbeatBlockedCountDedupsTrackerAndInferredUnion(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	snap := server.StateSnapshot{
+		DependencyAudit: []server.DependencyAuditRow{
+			{Identifier: "ENG-1", Status: "blocked"},
+		},
+		DependencyGraphEdges: []server.DependencyGraphEdgeRow{
+			// Same target as the audit row above — must not double count.
+			{ID: "ENG-0->ENG-1", SourceIdentifier: "ENG-0", TargetIdentifier: "ENG-1", Origin: "inferred", Gating: true},
+			// A distinct inferred-only blocked target — must be counted.
+			{ID: "ENG-2->ENG-3", SourceIdentifier: "ENG-2", TargetIdentifier: "ENG-3", Origin: "inferred", Gating: true},
+			// Non-gating inferred edge — must NOT be counted.
+			{ID: "ENG-4->ENG-5", SourceIdentifier: "ENG-4", TargetIdentifier: "ENG-5", Origin: "inferred", Gating: false},
+		},
+	}
+
+	content := renderHeartbeat(snap, heartbeatOptions{}, now)
+
+	assert.Contains(t, content, "- Blocked: 2")
+}
+
+// TestRenderHeartbeatIncludesCyclesAndAttentionWhenNonZero locks the
+// critical-path-ordering Task 5 extension to the dependency summary: cycle
+// and attention counts appear as their own lines once non-zero.
+func TestRenderHeartbeatIncludesCyclesAndAttentionWhenNonZero(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	snap := server.StateSnapshot{
+		DependencyCycles: []server.DependencyCycleRow{
+			{Members: []string{"ENG-1", "ENG-2"}, Kind: "tracker", DetectedAt: now},
+		},
+		DependencyAttention: []server.DependencyAttentionRow{
+			{Identifier: "ENG-1", Blockers: []string{"ENG-2"}, BlockedSince: now, Kind: "cycle"},
+		},
+	}
+
+	content := renderHeartbeat(snap, heartbeatOptions{}, now)
+
+	assert.Contains(t, content, "- Cycles: 1")
+	assert.Contains(t, content, "- Attention: 1")
+}
+
+// TestRenderHeartbeatOmitsCyclesAndAttentionWhenZero pins the opposite side:
+// no cycles/attention entries means no lines at all, matching the rest of
+// the heartbeat's non-zero-only conventions.
+func TestRenderHeartbeatOmitsCyclesAndAttentionWhenZero(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+
+	content := renderHeartbeat(server.StateSnapshot{}, heartbeatOptions{}, now)
+
+	assert.NotContains(t, content, "- Cycles:")
+	assert.NotContains(t, content, "- Attention:")
+}
+
+// TestRenderHeartbeatIncludesOutboxCountsWhenNonZero locks the outbox
+// Task 4 extension: pending count always shown once the outbox has any
+// entries, degraded count only shown once at least one entry crossed the
+// threshold.
+func TestRenderHeartbeatIncludesOutboxCountsWhenNonZero(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	snap := server.StateSnapshot{
+		OutboxEntries: []server.OutboxEntryRow{
+			{ID: "e1", Kind: "update_state", Identifier: "ENG-1", Degraded: false},
+			{ID: "e2", Kind: "update_state", Identifier: "ENG-2", Degraded: true},
+		},
+	}
+
+	content := renderHeartbeat(snap, heartbeatOptions{}, now)
+
+	assert.Contains(t, content, "- Outbox pending: 2")
+	assert.Contains(t, content, "- Outbox degraded: 1")
+}
+
+// TestRenderHeartbeatOmitsOutboxDegradedWhenNoneDegraded verifies the
+// pending line still renders (outbox not empty) but the degraded line is
+// suppressed when nothing is degraded.
+func TestRenderHeartbeatOmitsOutboxDegradedWhenNoneDegraded(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	snap := server.StateSnapshot{
+		OutboxEntries: []server.OutboxEntryRow{
+			{ID: "e1", Kind: "update_state", Identifier: "ENG-1"},
+		},
+	}
+
+	content := renderHeartbeat(snap, heartbeatOptions{}, now)
+
+	assert.Contains(t, content, "- Outbox pending: 1")
+	assert.NotContains(t, content, "- Outbox degraded:")
+}
+
+// TestRenderHeartbeatOmitsOutboxLinesWhenEmpty pins the zero-entries case:
+// no outbox lines at all, matching the rest of the heartbeat's
+// non-zero-only conventions.
+func TestRenderHeartbeatOmitsOutboxLinesWhenEmpty(t *testing.T) {
+	now := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+
+	content := renderHeartbeat(server.StateSnapshot{}, heartbeatOptions{}, now)
+
+	assert.NotContains(t, content, "- Outbox pending:")
+	assert.NotContains(t, content, "- Outbox degraded:")
+}
+
 // gaps_11 G-15 / todolist6 P0-D — degraded startup is surfaced in the
 // heartbeat as `Daemon: degraded` plus a `Last startup error:` line.
 func TestRenderHeartbeatDegradedIncludesLastStartupError(t *testing.T) {

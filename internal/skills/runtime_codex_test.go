@@ -43,6 +43,7 @@ func TestParseCodexRuntime_HistoryAndSessions(t *testing.T) {
 	}
 	if snap == nil {
 		t.Fatal("expected non-nil snapshot")
+		return
 	}
 	// history + session both contributed; counts should be doubled vs. single file.
 	if snap.ToolCallCount["Read"] != 4 {

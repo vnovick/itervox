@@ -239,6 +239,8 @@ interface ColumnProps {
   retryAttemptByIdentifier?: Record<string, number>;
   /** G: snapshot's max_retries for the "↻ retry N/M" denominator. 0 = unlimited. */
   maxRetries?: number;
+  /** outbox Task 4: identifiers with a pending write-ahead-outbox entry (snapshot.outboxSyncing). */
+  syncingIdentifiers?: ReadonlySet<string>;
   defaultBackend?: string;
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
@@ -275,6 +277,7 @@ export default function BoardColumn({
   onHeaderClick,
   isUnassigned,
   columnProfileDef,
+  syncingIdentifiers,
 }: ColumnProps) {
   const { setNodeRef } = useDroppable({ id: state });
 
@@ -336,6 +339,7 @@ export default function BoardColumn({
             inputRequiredStaleByIdentifier={inputRequiredStaleByIdentifier}
             retryAttemptByIdentifier={retryAttemptByIdentifier}
             maxRetries={maxRetries}
+            syncingIdentifiers={syncingIdentifiers}
             defaultBackend={defaultBackend}
             onProfileChange={onProfileChange}
             onDispatch={onDispatch}

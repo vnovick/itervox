@@ -26,7 +26,7 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `-workflow` | string | `WORKFLOW.md` | Path to your `WORKFLOW.md` configuration file |
-| `-logs-dir` | string | `~/.itervox/logs/<kind>/<project>` | Directory for rotating log files |
+| `-logs-dir` | string | `~/.itervox/logs/<kind>/<slug>-<project>` (or `~/.itervox/logs/workflow/<project>` when no `project_slug` is set) | Directory for rotating log files |
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 
@@ -190,7 +190,7 @@ itervox -h
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ITERVOX_DRY_RUN` | `""` | Set to `"1"` to enable dry-run mode. The orchestrator logs dispatch decisions but does **not** start agent workers. Useful for verifying configuration and dispatch logic without consuming API tokens. |
-| `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/health`). Requests must include `Authorization: Bearer <token>`. When unset and `server.host` is non-loopback, Itervox auto-generates an ephemeral token at startup (printed in the log) unless `server.allow_unauthenticated_lan: true`. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
+| `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The auto-generated token, and the dashboard URL that carries it, are printed to stderr once. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
 
 ### Auto-loading
 
@@ -209,7 +209,7 @@ When the daemon starts, it writes `.itervox/HEARTBEAT.md` beside the active `WOR
 
 ## Logging
 
-**Location:** `~/.itervox/logs/<tracker_kind>/<project_slug>/itervox.log`
+**Location:** `~/.itervox/logs/<kind>/<slug>-<project>/itervox.log` (or `~/.itervox/logs/workflow/<project>/itervox.log` when no `project_slug` is set)
 
 The path is derived from the `tracker.kind` and `tracker.project_slug` fields in `WORKFLOW.md`. You can override it with the `-logs-dir` flag.
 

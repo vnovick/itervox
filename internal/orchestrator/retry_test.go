@@ -65,7 +65,7 @@ type alwaysFailRunner struct {
 	callCount atomic.Int64
 }
 
-func (r *alwaysFailRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *alwaysFailRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.callCount.Add(1)
 	return agent.TurnResult{
 		Failed:       true,

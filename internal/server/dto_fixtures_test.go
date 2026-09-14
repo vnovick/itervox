@@ -148,6 +148,19 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			TargetState:      "Todo",
 			Resolved:         false,
 			SourceKnown:      true,
+			Origin:           "tracker",
+			Gating:           true,
+		},
+		"DependencyCycleRow.json": DependencyCycleRow{
+			Members:    []string{"ENG-1", "ENG-2"},
+			Kind:       "tracker",
+			DetectedAt: at,
+		},
+		"DependencyAttentionRow.json": DependencyAttentionRow{
+			Identifier:   "ENG-1",
+			Blockers:     []string{"ENG-2"},
+			BlockedSince: at.Add(-3 * time.Hour),
+			Kind:         "cycle",
 		},
 		"IssueStatusChangeRow.json": IssueStatusChangeRow{
 			FromState:    "Todo",
@@ -159,6 +172,17 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			Backend:      "claude",
 			WorkerHost:   "local",
 			At:           at,
+		},
+		"OutboxEntryRow.json": OutboxEntryRow{
+			ID:            "entry-1",
+			Kind:          "update_state",
+			Identifier:    "ENG-1",
+			TargetState:   "Done",
+			Attempts:      2,
+			LastError:     "tracker: 500 internal server error",
+			Degraded:      false,
+			EnqueuedAt:    at,
+			NextAttemptAt: at.Add(20 * time.Second),
 		},
 	}
 

@@ -1,0 +1,47 @@
+[Unit]
+Description=Itervox autonomous agent daemon
+Documentation=https://itervox.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+
+# MUST be the repo root. The daemon resolves .itervox/.env relative to its
+# working directory, and that file carries LINEAR_API_KEY / ITERVOX_API_TOKEN /
+# ANTHROPIC_API_KEY into the process environment (and therefore into every
+# agent subprocess it spawns).
+WorkingDirectory=@WORKDIR@
+
+ExecStart=/usr/local/bin/itervox --workflow WORKFLOW.md
+
+# No controlling terminal. The Bubbletea TUI's TTY-ownership guard detects this,
+# logs "statusui: refusing to start TUI", and the daemon continues headless.
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+Restart=always
+RestartSec=5s
+
+# SIGTERM begins a graceful drain: in-flight agents are allowed to finish.
+# Agent turns routinely run for minutes, so give the drain real headroom
+# before systemd escalates to SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+# Modest hardening only. Agents run arbitrary project build and test commands
+# inside git worktrees, so aggressive sandboxing (ProtectSystem=strict,
+# ReadOnlyPaths, PrivateDevices) breaks them in ways that are tedious to debug.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+PrivateTmp=false
+
+# Worktrees plus per-worktree dependency trees open a lot of files.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

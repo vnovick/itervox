@@ -27,6 +27,7 @@ export default function IssueDetailHeader({
   profileDefs,
   defaultBackend,
   automations,
+  syncing,
 }: {
   issue: TrackerIssue;
   runningRows: RunningRow[] | undefined;
@@ -35,6 +36,11 @@ export default function IssueDetailHeader({
   defaultBackend: string;
   /** T-9: configured automations are used to detect stale automation IDs. */
   automations?: AutomationDef[];
+  /** outbox #54 fast-follow: true when issue.identifier is a member of
+   * snapshot.outboxSyncing — same join-by-identifier BoardView's
+   * DraggableCard has used since Task 4 (accepted-minor D on the final
+   * review: ListView/IssueDetailSlide had no equivalent marker). */
+  syncing?: boolean;
 }) {
   const runningRow = runningRows?.find((r) => r.identifier === issue.identifier);
   const runningBackend = runningRow?.backend;
@@ -95,6 +101,15 @@ export default function IssueDetailHeader({
         >
           {formatOrchestratorState(issue.orchestratorState)}
         </Badge>
+        {syncing && (
+          <span
+            data-testid="issue-detail-syncing-badge"
+            title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+            className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+          >
+            ⟳ Syncing
+          </span>
+        )}
         {latestAutomationId && (
           <button
             type="button"

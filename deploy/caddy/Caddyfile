@@ -1,0 +1,27 @@
+# Caddy fronts itervox with automatic Let's Encrypt TLS.
+#
+# Itervox itself has no TLS — there is no ListenAndServeTLS anywhere in
+# internal/server/ — so something has to terminate it for a public URL.
+#
+# ⚠️  A loopback bind behind this proxy installs NO auth middleware unless
+#     ITERVOX_API_TOKEN is set explicitly. The daemon only auto-generates a
+#     token for non-loopback binds and cannot tell it is publicly reachable.
+#     See https://github.com/vnovick/itervox/issues/48
+#
+# Prefer a private tunnel (GCP IAP / AWS SSM / Azure Bastion) over this file.
+
+@DOMAIN@ {
+	reverse_proxy 127.0.0.1:8090 {
+		# The dashboard is SSE-driven. Disable response buffering and let
+		# streams stay open indefinitely, otherwise the live board freezes
+		# and silently reconnects on a loop.
+		flush_interval -1
+	}
+
+	encode gzip
+
+	log {
+		output file /var/log/caddy/itervox.log
+		format json
+	}
+}

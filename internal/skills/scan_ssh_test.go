@@ -48,6 +48,7 @@ func TestHostScanner_RefreshErrorPreservesCacheAsStale(t *testing.T) {
 	got := s.Get("h1")
 	if got == nil {
 		t.Fatal("expected cached entry to survive failed Refresh")
+		return
 	}
 	if !got.Stale {
 		t.Errorf("expected Stale=true after failed Refresh, got %+v", got)
@@ -64,6 +65,7 @@ func TestHostScanner_TTLExpiry(t *testing.T) {
 	got := s.Get("h1")
 	if got == nil {
 		t.Fatal("expected entry to remain in cache (Stale=true)")
+		return
 	}
 	if !got.Stale {
 		t.Errorf("expected Stale=true after TTL expiry")

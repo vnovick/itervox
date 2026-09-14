@@ -71,7 +71,7 @@ func (r *CountingFailRunner) CallCount() int64 {
 
 // RunTurn fails every turn with non-zero tokens (so the orchestrator
 // treats it as a real failure, not a clean session-end empty result).
-func (r *CountingFailRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *CountingFailRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.calls.Add(1)
 	return agent.TurnResult{
 		Failed:       true,

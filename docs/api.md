@@ -11,14 +11,20 @@ Non-streaming endpoints return JSON. Streaming endpoints use Server-Sent Events
 
 ### Dashboard / API bearer auth
 
-When Itervox binds to a non-loopback address, it secures all `/api/v1/*`
-routes except `/health` with bearer-token auth.
+By default, on every bind — including loopback (`127.0.0.1`, `localhost`,
+`::1`) — Itervox secures all `/api/v1/*` routes except `/api/v1/health` with
+bearer-token auth. Bind address is not treated as a security boundary: a
+loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
+one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
-- If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated_lan` is
-  `false`, Itervox auto-generates an ephemeral token at startup.
-- Loopback binds (`127.0.0.1`, `localhost`, `::1`) do not require auth.
-- `GET /health` is always auth-exempt.
+- If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
+  `false` (the default), Itervox auto-generates an ephemeral token at
+  startup and prints the tokened dashboard URL to stderr once.
+- `server.allow_unauthenticated: true` disables auth entirely, on every
+  bind. Renamed from `server.allow_unauthenticated_lan`, which still parses
+  as a deprecated alias.
+- `GET /api/v1/health` is always auth-exempt — the only auth-exempt route.
 
 ```bash
 curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
@@ -65,7 +71,7 @@ JSON errors use the typed envelope below:
 
 ## Health
 
-### `GET /health`
+### `GET /api/v1/health`
 
 Auth-exempt liveness probe.
 
@@ -249,6 +255,7 @@ surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 |---|---|---|---|---|
 | `POST` | `/deps/analyze` | — | `{"jobID":"<uuid>","status":"queued"}` | Starts an async analyzer job over the snapshot's dependency graph |
 | `GET`  | `/deps/analyze/{jobID}` | — | `{"jobID":"<uuid>","status":"running\|completed\|failed","result":{...}}` | Polled by the dashboard until status is terminal |
+| `DELETE` | `/deps/analyze/{jobID}` | — | `204 No Content` | Cancels the running analyzer job. `404` when no running job matches the ID; `503` when the analyzer is not configured |
 
 `Inventory` is a direct inventory/recommendation snapshot, not a complete
 normalized capability graph in v0.2.0. The response includes `ScanTime`,
@@ -442,6 +449,49 @@ Denials on these routes use codes such as:
 - `unauthorized`
 - `agent_action_denied`
 - `not_supported`
+
+---
+
+## Environment contract for agent runs
+
+Every agent turn itervox spawns — every backend, local or SSH — carries:
+
+| Variable | Value | Meaning |
+|---|---|---|
+| `ITERVOX_AGENT` | `1` | This process is an itervox agent run, not an interactive session. |
+
+Set on every turn. Presence is the signal; the value carries no meaning.
+
+**This is not authentication.** Any process can set an environment variable.
+`ITERVOX_AGENT` lets a repository owner express "I trust itervox runs"; it
+proves nothing by itself. Branch protection on your remote is what actually
+prevents a forced or protected-branch push.
+
+`ITERVOX_AGENT` is distinct from the agent-action bridge variables documented
+above (`ITERVOX_RUN_ID`, `ITERVOX_ACTION_TOKEN`, `ITERVOX_ISSUE_IDENTIFIER`,
+`ITERVOX_DAEMON_URL`, `ITERVOX_CREATE_ISSUE_STATE`), which are set only when a
+profile declares `allowed_actions` and the daemon action bridge is live for a
+**local** worker. `ITERVOX_AGENT` has no such precondition — it is set
+unconditionally, on every backend, including SSH remote workers. Do not use
+the action-bridge variables to detect an itervox run; use `ITERVOX_AGENT`.
+
+### Letting itervox commit in a repo that denies git writes
+
+If your repository denies `git commit` / `git push`, itervox's workers are
+blocked from the one thing they exist to do. Two different guards are in
+play, and they behave differently:
+
+- A `deny` **rule** in `.claude/settings.json` is already bypassed — itervox
+  passes `--dangerously-skip-permissions` on every invocation.
+- A `PreToolUse` **hook** returning `permissionDecision: "deny"` is **not**
+  bypassed — hooks run regardless of permission mode. This is the case that
+  actually blocks itervox, and the one the reference hook below handles.
+
+Copy [`docs/examples/git-write-guard.example.mjs`](examples/git-write-guard.example.mjs)
+into your own repository's `.claude/hooks/` and register it as a
+`PreToolUse(Bash)` hook in your own `.claude/settings.json` to allow itervox
+runs while still denying interactive `git commit` / `git push`, and still
+refusing force-pushes and pushes to `main`/`master` in both cases.
 
 ---
 
