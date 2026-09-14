@@ -45,6 +45,16 @@ jobs:
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
           go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
 
+      - name: Verify the tag has a CHANGELOG section
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md has no '## [$VERSION]' section."
+            echo "The GitHub release body is generated from it — write the section before tagging."
+            exit 1
+          fi
+          echo "Found CHANGELOG section for $VERSION"
+
       - name: Verify
         run: make verify
 
@@ -92,12 +102,31 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: web/pnpm-lock.yaml
 
+      # The GitHub release body comes from CHANGELOG.md, not from git log.
+      # goreleaser's generated changelog is a poor substitute here: its filters
+      # key on a trailing colon, so `chore: <big change>` is dropped while
+      # `chore <trivial change>` survives — the release notes ended up omitting
+      # the largest commit and including an uninformative one.
+      - name: Build release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" {inside=1; next}
+            inside && /^## \[/ {exit}
+            inside {print}
+          ' CHANGELOG.md > "${RUNNER_TEMP}/release-notes.md"
+          if [ ! -s "${RUNNER_TEMP}/release-notes.md" ]; then
+            echo "ERROR: extracted release notes are empty for $VERSION"
+            exit 1
+          fi
+          echo "Release notes: $(wc -l < "${RUNNER_TEMP}/release-notes.md") lines"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: ${{ env.GORELEASER_VERSION }}
-          args: release --clean
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

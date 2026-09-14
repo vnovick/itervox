@@ -9,7 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [0.2.1] — 2026-08-22
+## [0.2.1] — 2026-09-14
 
 Dependency autonomy, a write-ahead outbox for tracker writes, and the security and ops fixes that accumulated alongside them. Itervox now only picks up issues that are not blocked, orders work by what unblocks the most downstream effort, detects dependency cycles, keeps its dependency analysis fresh on its own, and captures far more real dependencies from both trackers — while making roughly 10x fewer tracker requests on the hot paths.
 

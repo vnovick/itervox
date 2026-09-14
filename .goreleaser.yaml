@@ -38,7 +38,8 @@ changelog:
     exclude:
       - '^docs:'
       - '^test:'
-      - '^chore:'
+      # No trailing colon: `chore foo` and `chore: foo` are both noise.
+      - '^chore'
       - Merge pull request
       - Merge branch
 
