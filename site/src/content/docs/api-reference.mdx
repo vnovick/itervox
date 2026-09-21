@@ -453,6 +453,12 @@ Discard is the operator remedy for a stuck entry: an entry enqueued with no
 observed from-state baseline (currently only the issue-discard path) is exempt
 from supersede-reconciliation and will not clear on its own.
 
+Pending entries appear on the state snapshot as `outboxEntries[]`, each with
+`id`, `kind`, `identifier`, `targetState`, `attempts`, `lastError`, `degraded`,
+`enqueuedAt`, `nextAttemptAt`, and — when the last attempt was deferred by a
+tracker rate limit — `rateLimitedUntil` (RFC 3339). Rate-limit deferrals do not
+increase `attempts` and never set `degraded`.
+
 ---
 
 ## Projects (Linear only)

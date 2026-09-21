@@ -1088,7 +1088,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		flusherDone = make(chan struct{})
 		go func() {
 			defer close(flusherDone)
-			<-startOutboxFlusher(ctx, ob, tr, orch)
+			<-startOutboxFlusher(ctx, ob, tr, orch, cfg.Tracker.Kind)
 		}()
 	}
 

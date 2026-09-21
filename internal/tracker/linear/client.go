@@ -463,13 +463,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	}
 
 	// Step 2: update the issue.
-	const mutation = `
-mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
-  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
-    success
-  }
-}`
-	resp, err := c.graphql(ctx, mutation, map[string]any{
+	resp, err := c.graphql(ctx, mutationUpdateIssueState, map[string]any{
 		"issueId": issueID,
 		"stateId": stateID,
 	})
@@ -575,19 +569,136 @@ mutation ItervoxCreateComment($issueId: String!, $body: String!) {
 			if success, _ := cc["success"].(bool); success {
 				comment := &domain.Comment{Body: body}
 				if rawComment, ok := cc["comment"].(map[string]any); ok {
-					comment.ID, _ = rawComment["id"].(string)
-					comment.Body, _ = rawComment["body"].(string)
-					comment.CreatedAt = tracker.ParseTime(rawComment["createdAt"])
-					if user, ok := rawComment["user"].(map[string]any); ok {
-						comment.AuthorID, _ = user["id"].(string)
-						comment.AuthorName, _ = user["name"].(string)
-					}
+					parseCommentInto(comment, rawComment)
 				}
 				return comment, nil
 			}
 		}
 	}
 	return nil, fmt.Errorf("linear_create_comment: unexpected response: %v", resp)
+}
+
+// CreateCommentWithKey implements tracker.IdempotentCommenter by sending key
+// as the comment's own Linear id. Per Linear's schema, CommentCreateInput.id
+// is "The identifier in UUID v4 format. If none is provided, the backend will
+// generate one." Sending it makes the mutation replayable: a retry that
+// carries the same id either creates the one comment or collides with the
+// comment the earlier attempt already created, and FindCommentByKey resolves
+// which happened.
+//
+// Unlike the GitHub adapter, no body marker is used — the key lives in
+// Linear's own identifier, so the comment body the human reads is unchanged.
+func (c *Client) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	const mutation = `
+mutation ItervoxCreateCommentWithKey($id: String!, $issueId: String!, $body: String!) {
+  commentCreate(input: {id: $id, issueId: $issueId, body: $body}) {
+    comment {
+      id
+      body
+      createdAt
+      user { id name }
+    }
+    success
+  }
+}`
+	vars := map[string]any{"id": key, "issueId": issueID, "body": body}
+	resp, err := c.graphql(ctx, mutation, vars)
+	if err != nil {
+		return nil, err
+	}
+	if data, ok := resp["data"].(map[string]any); ok {
+		if cc, ok := data["commentCreate"].(map[string]any); ok {
+			if success, _ := cc["success"].(bool); success {
+				comment := &domain.Comment{Body: body}
+				if rawComment, ok := cc["comment"].(map[string]any); ok {
+					parseCommentInto(comment, rawComment)
+				}
+				return comment, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("linear_create_comment_with_key: unexpected response: %v", resp)
+}
+
+// FindCommentByKey implements tracker.IdempotentCommenter.
+//
+// It queries comments(filter: {id: {eq: $key}}) rather than comment(id: $key)
+// deliberately: the single-comment field returns non-null Comment!, so a
+// missing id surfaces as a GraphQL error that cannot be told apart from a
+// transport failure. The contract requires (nil, false, nil) to mean
+// "definitely absent", so the lookup must use a query whose empty result is
+// unambiguous — a filtered collection returns an empty nodes list.
+//
+// includeArchived: true is required: Query.comments hides archived comments
+// by default, so an archived comment would read as absent, and every
+// re-create carrying the same id would then collide with it forever.
+//
+// issueID is accepted for interface parity and to scope the query; a Linear
+// comment id is globally unique, so the filter alone is sufficient.
+func (c *Client) FindCommentByKey(ctx context.Context, _ string, key string) (*domain.Comment, bool, error) {
+	const query = `
+query ItervoxFindCommentByKey($key: ID!) {
+  comments(filter: {id: {eq: $key}}, first: 1, includeArchived: true) {
+    nodes {
+      id
+      body
+      createdAt
+      user { id name }
+    }
+  }
+}`
+	resp, err := c.graphql(ctx, query, map[string]any{"key": key})
+	if err != nil {
+		return nil, false, fmt.Errorf("linear_find_comment_by_key: %w", err)
+	}
+	// A non-empty top-level errors array means a sub-field errored even
+	// though the envelope otherwise parses and data looks well-formed. That
+	// makes the answer unknown, not absent — the flusher must not treat it
+	// as permission to post.
+	if graphqlErrs, ok := resp["errors"].([]any); ok && len(graphqlErrs) > 0 {
+		return nil, false, fmt.Errorf("linear_find_comment_by_key: graphql errors: %v", graphqlErrs)
+	}
+	data, ok := resp["data"].(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("linear_find_comment_by_key: unexpected response: %v", resp)
+	}
+	comments, ok := data["comments"].(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("linear_find_comment_by_key: unexpected response: %v", resp)
+	}
+	// Only a present, well-typed, empty array means absent. A missing or
+	// null nodes field must not collapse to the same zero value as an empty
+	// array — that would turn "unknown" into a false not-found and let the
+	// flusher re-post a duplicate comment.
+	nodes, ok := comments["nodes"].([]any)
+	if !ok {
+		return nil, false, fmt.Errorf("linear_find_comment_by_key: missing or invalid nodes: %v", comments)
+	}
+	if len(nodes) == 0 {
+		return nil, false, nil // definitively absent
+	}
+	rawComment, ok := nodes[0].(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("linear_find_comment_by_key: unexpected node shape: %v", nodes[0])
+	}
+	comment := &domain.Comment{}
+	parseCommentInto(comment, rawComment)
+	return comment, true, nil
+}
+
+// parseCommentInto fills comment from a raw Linear comment node. Extracted so
+// CreateComment, CreateCommentWithKey and FindCommentByKey decode the same
+// shape one way instead of three.
+func parseCommentInto(comment *domain.Comment, raw map[string]any) {
+	comment.ID, _ = raw["id"].(string)
+	if body, ok := raw["body"].(string); ok && body != "" {
+		comment.Body = body
+	}
+	comment.CreatedAt = tracker.ParseTime(raw["createdAt"])
+	if user, ok := raw["user"].(map[string]any); ok {
+		comment.AuthorID, _ = user["id"].(string)
+		comment.AuthorName, _ = user["name"].(string)
+	}
 }
 
 // CreateIssue creates a follow-up issue in the same team/project context as
@@ -991,8 +1102,23 @@ func extractNodes(issuesBlock map[string]any) ([]domain.Issue, error) {
 	return result, nil
 }
 
+// withOperationIntent classifies a GraphQL operation for the shared
+// rate-limit gate. Every Linear call is an HTTP POST, so the method says
+// nothing; the operation type does. Deriving it here — once, from the
+// document itself — means a newly added query or mutation is classified
+// correctly without anyone remembering to tag it. Anything that is not
+// recognisably a mutation is treated as a read: the worst case of a
+// misclassified mutation is the 250ms read grace, never starvation.
+func withOperationIntent(ctx context.Context, query string) context.Context {
+	if strings.HasPrefix(strings.TrimSpace(query), "mutation") {
+		return tracker.WithWriteIntent(ctx)
+	}
+	return tracker.WithReadIntent(ctx)
+}
+
 // graphql executes a GraphQL query and returns the decoded response body.
 func (c *Client) graphql(ctx context.Context, query string, variables map[string]any) (map[string]any, error) {
+	ctx = withOperationIntent(ctx, query)
 	payload := map[string]any{
 		"query":     query,
 		"variables": variables,
@@ -1012,7 +1138,7 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	// Rate limits are waited out, not surfaced as failures: a 429 used to
 	// fail every call the moment the budget ran out, including the writes
 	// that would have drained the queue (#42).
-	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "linear")
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "linear", tracker.LinearRateLimitClassifier)
 	if err != nil {
 		return nil, fmt.Errorf("linear_api_request: %w", err)
 	}
@@ -1091,3 +1217,9 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 // to the per-issue fallback — restoring exactly the request volume issue #42
 // was filed about, with no test failing.
 var _ tracker.DetailBatcher = (*Client)(nil)
+
+// Compile-time proof the Linear adapter satisfies the optional idempotent
+// commenter interface. Without it, a signature drift on CreateCommentWithKey
+// or FindCommentByKey would silently demote the outbox flusher to
+// non-idempotent posting, with no test failing.
+var _ tracker.IdempotentCommenter = (*Client)(nil)

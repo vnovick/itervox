@@ -485,3 +485,210 @@ func TestNew_KeepsValidPersistedEntriesUntouched(t *testing.T) {
 	assert.Equal(t, "In Progress", got[0].FromState, "FromState must survive a restart")
 	assert.Equal(t, outbox.KindCreateComment, got[1].Kind)
 }
+
+func TestEnqueueAssignsCommentKeyUUIDv4(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1", Body: "hello",
+	}))
+
+	entries := o.Snapshot()
+	require.Len(t, entries, 1)
+	key := entries[0].CommentKey
+	// UUID v4: 8-4-4-4-12 hex, version nibble 4, variant nibble in [89ab].
+	assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, key)
+}
+
+func TestEnqueueDoesNotAssignCommentKeyToUpdateState(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "A", Identifier: "ENG-1", TargetState: "Done",
+	}))
+
+	assert.Empty(t, o.Snapshot()[0].CommentKey,
+		"only comment entries carry an idempotency key")
+}
+
+func TestEnqueuePreservesCallerSuppliedCommentKey(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1",
+		Body: "hello", CommentKey: "11111111-1111-4111-8111-111111111111",
+	}))
+
+	assert.Equal(t, "11111111-1111-4111-8111-111111111111", o.Snapshot()[0].CommentKey)
+}
+
+// fakeRateLimitErr is a local stand-in for *tracker.RateLimitedError.
+// internal/outbox must not import internal/tracker (see the package doc and
+// CLAUDE.md's package dependency order), so these tests exercise the
+// structural `rateLimited` interface directly instead.
+type fakeRateLimitErr struct{ resetAt time.Time }
+
+func (e *fakeRateLimitErr) Error() string               { return "rate limited" }
+func (e *fakeRateLimitErr) RateLimitResetAt() time.Time { return e.resetAt }
+
+func TestOutboxRateLimitDefersToReset(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := o.Snapshot()[0]
+
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(30 * time.Minute)
+	o.MarkFailed(entry.ID, &fakeRateLimitErr{resetAt: reset}, now)
+
+	got := o.Snapshot()[0]
+	assert.False(t, got.NextAttemptAt.Before(reset),
+		"a rate-limited entry must not retry before the published reset")
+	assert.True(t, got.RateLimitedUntil.Equal(reset))
+	assert.Equal(t, 0, got.Attempts, "a rate limit is not a delivery failure")
+	assert.Equal(t, 1, got.RateLimitedAttempts)
+}
+
+func TestRateLimitedAttemptsDoNotDegrade(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := o.Snapshot()[0]
+
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	for i := range 6 {
+		o.MarkFailed(entry.ID, &fakeRateLimitErr{resetAt: now.Add(time.Minute)},
+			now.Add(time.Duration(i)*time.Minute))
+	}
+
+	got := o.Snapshot()[0]
+	assert.False(t, got.Degraded(), "six rate-limit deferrals are not an operator error")
+	assert.Equal(t, 6, got.RateLimitedAttempts)
+}
+
+func TestOrdinaryFailureStillDegrades(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "A", Identifier: "ENG-1", TargetState: "Done",
+	}))
+	entry := o.Snapshot()[0]
+
+	now := time.Now()
+	for i := range 5 {
+		o.MarkFailed(entry.ID, errors.New("boom"), now.Add(time.Duration(i)*time.Second))
+	}
+
+	assert.True(t, o.Snapshot()[0].Degraded(), "real failures must still raise the badge")
+}
+
+// TestOutboxRateLimitWithoutResetUsesBackoff pins decision 5: a zero ResetAt
+// (the tracker published no reset — e.g. a 429 with no Retry-After/reset
+// header at all) must not produce a weird deferral. resetAt.Add(jitter) sits
+// in year 1 and never beats the ordinary backoff, so NextAttemptAt is just
+// backoffFor(Attempts+1), and RateLimitedUntil stays zero rather than
+// recording a meaningless instant.
+func TestOutboxRateLimitWithoutResetUsesBackoff(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := o.Snapshot()[0]
+
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	o.MarkFailed(entry.ID, &fakeRateLimitErr{resetAt: time.Time{}}, now)
+
+	got := o.Snapshot()[0]
+	assert.Equal(t, now.Add(10*time.Second), got.NextAttemptAt,
+		"a zero ResetAt must fall back to ordinary backoff, not a year-1 deferral")
+	assert.True(t, got.RateLimitedUntil.IsZero())
+	assert.Equal(t, 0, got.Attempts)
+	assert.Equal(t, 1, got.RateLimitedAttempts)
+}
+
+// TestOutboxRateLimitDetectedThroughWrapping pins decision 4: adapters wrap
+// rate-limit errors with fmt.Errorf("...: %w", err) before they reach
+// MarkFailed. errors.As against the locally declared rateLimited interface
+// must still find the *fakeRateLimitErr underneath that wrapping.
+func TestOutboxRateLimitDetectedThroughWrapping(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := o.Snapshot()[0]
+
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(30 * time.Minute)
+	wrapped := fmt.Errorf("linear_api_request: %w", &fakeRateLimitErr{resetAt: reset})
+	o.MarkFailed(entry.ID, wrapped, now)
+
+	got := o.Snapshot()[0]
+	assert.Equal(t, 0, got.Attempts, "the rate-limit branch must be taken through the wrapping")
+	assert.Equal(t, 1, got.RateLimitedAttempts)
+}
+
+func TestLegacyEntryBackfillsCommentKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outbox.json")
+	// An outbox.json written by a build that predates CommentKey.
+	legacy := `[{"id":"1-aa","kind":"create_comment","issue_id":"A","identifier":"ENG-1",` +
+		`"body":"hello","enqueued_at":"2026-08-06T12:00:00Z","attempts":2,` +
+		`"next_attempt_at":"2026-08-06T12:01:00Z"}]`
+	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o600))
+
+	o := mustNew(t, path)
+
+	entries := o.Snapshot()
+	require.Len(t, entries, 1, "a legacy entry must load, not be dropped")
+	assert.NotEmpty(t, entries[0].CommentKey, "load must backfill a key")
+	assert.Equal(t, 2, entries[0].Attempts, "backfill must not reset delivery state")
+}
+
+// TestOutboxDoesNotPersistZeroRateLimitedUntil pins the omitzero tags: a
+// time.Time is a struct, so plain omitempty never omits it and every entry
+// that was never rate-limited carried "rate_limited_until":
+// "0001-01-01T00:00:00Z" on disk.
+func TestOutboxDoesNotPersistZeroRateLimitedUntil(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.json")
+	o := mustNew(t, path)
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "i1", Identifier: "ENG-1", TargetState: "Done",
+	}))
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "rate_limited_until")
+	assert.NotContains(t, string(raw), "rate_limited_attempts")
+}
+
+// TestRateLimitThenOrdinaryFailureClearsRateLimitedUntil pins the transition
+// out of a rate limit: an ordinary failure after a rate-limited one clears
+// RateLimitedUntil (no limit is in effect any more) but keeps the historical
+// RateLimitedAttempts count, and charges exactly one ordinary attempt.
+func TestRateLimitThenOrdinaryFailureClearsRateLimitedUntil(t *testing.T) {
+	o := mustNew(t, "")
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "i1", Identifier: "ENG-1", Body: "hi",
+	}))
+	id := o.Snapshot()[0].ID
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	o.MarkFailed(id, &fakeRateLimitErr{resetAt: now.Add(10 * time.Minute)}, now)
+	require.False(t, o.Snapshot()[0].RateLimitedUntil.IsZero(), "precondition: the rate limit was recorded")
+
+	o.MarkFailed(id, errors.New("boom"), now.Add(11*time.Minute))
+
+	got := o.Snapshot()[0]
+	assert.True(t, got.RateLimitedUntil.IsZero(), "an ordinary failure clears RateLimitedUntil")
+	assert.Equal(t, 1, got.Attempts)
+	assert.Equal(t, 1, got.RateLimitedAttempts)
+}

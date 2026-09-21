@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +18,7 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/tracker/linear"
 )
 
 // recordingFlusherTracker wraps MemoryTracker so flusher tests can inject
@@ -75,6 +80,19 @@ func (r *recordingFlusherTracker) CreateComment(ctx context.Context, issueID, bo
 	r.callOrder = append(r.callOrder, "comment:"+issueID)
 	r.mu.Unlock()
 	return r.MemoryTracker.CreateComment(ctx, issueID, body)
+}
+
+// CreateCommentWithKey overrides the embedded MemoryTracker's method (which
+// recordingFlusherTracker would otherwise inherit, making every instance
+// satisfy tracker.IdempotentCommenter transparently) so call-order tests
+// keep observing every comment delivery — deliverComment's first-attempt
+// path (Task 5) calls this directly instead of CreateComment once a tracker
+// implements IdempotentCommenter.
+func (r *recordingFlusherTracker) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	r.mu.Lock()
+	r.callOrder = append(r.callOrder, "comment:"+issueID)
+	r.mu.Unlock()
+	return r.MemoryTracker.CreateCommentWithKey(ctx, issueID, key, body)
 }
 
 func (r *recordingFlusherTracker) CallOrder() []string {
@@ -299,7 +317,7 @@ func TestStartOutboxFlusherStopsOnCtxCancel(t *testing.T) {
 	refresher := &fakeRefresher{}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	startOutboxFlusher(ctx, ob, tr, refresher)
+	startOutboxFlusher(ctx, ob, tr, refresher, "memory")
 
 	// Let a few ticks run against an empty outbox (harmless no-ops).
 	time.Sleep(30 * time.Millisecond)
@@ -325,10 +343,10 @@ func TestStartOutboxFlusherNilSafe(t *testing.T) {
 	defer cancel()
 
 	assert.NotPanics(t, func() {
-		startOutboxFlusher(ctx, nil, newRecordingFlusherTracker(nil), &fakeRefresher{})
+		startOutboxFlusher(ctx, nil, newRecordingFlusherTracker(nil), &fakeRefresher{}, "memory")
 	})
 	assert.NotPanics(t, func() {
-		startOutboxFlusher(ctx, newTestOutbox(t), nil, &fakeRefresher{})
+		startOutboxFlusher(ctx, newTestOutbox(t), nil, &fakeRefresher{}, "memory")
 	})
 }
 
@@ -530,7 +548,7 @@ func TestOutboxFlusherAbsentReconcileDoesNotBlockDelivery(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	startOutboxFlusher(ctx, ob, tr, refresher)
+	startOutboxFlusher(ctx, ob, tr, refresher, "memory")
 
 	// Let the first tick fire: stale-1's delivery attempt fails (expected),
 	// and the absent-issue reconciler's first-ever call fires immediately
@@ -675,4 +693,262 @@ func TestAbsentIssueReconcileKeepsWhenOurOwnWriteBumpedUpdatedAt(t *testing.T) {
 	pending := ob.PendingFor("id-a")
 	require.Len(t, pending, 1, "the completion transition must survive our own UpdatedAt bump")
 	assert.Equal(t, "Done", pending[0].TargetState)
+}
+
+// mustNewOutbox is a local helper — cmd/itervox's existing outbox tests call
+// outbox.New(path) inline, so this does not exist yet. Add it once at the top
+// of outbox_flusher_test.go; later tasks reuse it.
+func mustNewOutbox(t *testing.T, path string) *outbox.Outbox {
+	t.Helper()
+	ob, err := outbox.New(path)
+	require.NoError(t, err)
+	require.NotNil(t, ob)
+	return ob
+}
+
+// countingCommenter records what the flusher asked of the tracker. It wraps a
+// real MemoryTracker rather than faking one, so the create path exercises the
+// same code a production adapter would.
+type countingCommenter struct {
+	tracker.Tracker
+	mu        sync.Mutex
+	creates   int
+	finds     int
+	findErr   error
+	findFound bool
+	found     *domain.Comment
+}
+
+func (c *countingCommenter) CreateCommentWithKey(_ context.Context, _, _, _ string) (*domain.Comment, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.creates++
+	return &domain.Comment{ID: "c1"}, nil
+}
+
+func (c *countingCommenter) FindCommentByKey(_ context.Context, _, _ string) (*domain.Comment, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.finds++
+	return c.found, c.findFound, c.findErr
+}
+
+func TestFlusherFirstAttemptPostsWithoutLookup(t *testing.T) {
+	dir := t.TempDir()
+	ob := mustNewOutbox(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "i1", Identifier: "ENG-1", Body: "hello",
+	}))
+	tr := &countingCommenter{Tracker: tracker.NewMemoryTracker(nil, nil, nil)}
+
+	now := time.Now()
+	runOutboxFlusherTick(context.Background(), ob, tr, nil, now)
+
+	assert.Equal(t, 0, tr.finds, "a first attempt must not spend a lookup")
+	assert.Equal(t, 1, tr.creates)
+	assert.Empty(t, ob.Snapshot(), "a delivered entry is removed")
+}
+
+func TestFlusherRetryFindsExistingCommentByKey(t *testing.T) {
+	dir := t.TempDir()
+	ob := mustNewOutbox(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "i1", Identifier: "ENG-1", Body: "hello",
+	}))
+	// Simulate a first attempt that failed after the tracker accepted it.
+	entry := ob.Snapshot()[0]
+	ob.MarkFailed(entry.ID, errors.New("timeout"), time.Now())
+
+	tr := &countingCommenter{
+		Tracker:   tracker.NewMemoryTracker(nil, nil, nil),
+		findFound: true,
+		found:     &domain.Comment{ID: "c1"},
+	}
+
+	runOutboxFlusherTick(context.Background(), ob, tr, nil, time.Now().Add(time.Hour))
+
+	assert.Equal(t, 1, tr.finds)
+	assert.Equal(t, 0, tr.creates, "the comment already landed — it must NOT be posted again")
+	assert.Empty(t, ob.Snapshot(), "the entry is marked flushed, not retried")
+}
+
+// TestFlusherSkipsTickWhileGateClosed proves the flusher skips a whole tick
+// while the shared rate-limit gate is open for adapter: every request that
+// tick would send is already known to fail, so none should be sent, and a
+// skipped tick must not count as an attempt (the entry stays untouched, not
+// backed off).
+func TestFlusherSkipsTickWhileGateClosed(t *testing.T) {
+	dir := t.TempDir()
+	ob := mustNewOutbox(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "i1", Identifier: "ENG-1", Body: "hello",
+	}))
+	tr := &countingCommenter{Tracker: tracker.NewMemoryTracker(nil, nil, nil)}
+
+	tracker.SharedRateLimitGate().RecordUntil("linear", time.Now().Add(time.Minute))
+	t.Cleanup(func() { tracker.SharedRateLimitGate().Clear("linear") })
+
+	runOutboxFlusherTickForAdapter(context.Background(), ob, tr, nil, time.Now(), "linear")
+
+	assert.Equal(t, 0, tr.creates,
+		"a closed gate means every request is known to fail — send none")
+	assert.Len(t, ob.Snapshot(), 1, "the entry stays pending, untouched")
+	assert.Equal(t, 0, ob.Snapshot()[0].Attempts, "a skipped tick is not an attempt")
+}
+
+// TestFlusherLooksUpAfterRateLimitDeferral pins the defense-in-depth dedupe
+// gate: deliverComment must run its idempotency lookup after ANY prior
+// attempt, rate-limited ones included, not just after Attempts > 0. A
+// rate-limited attempt increments RateLimitedAttempts instead of Attempts, so
+// a dedupe gate keyed on Attempts alone would blind-post on the very next
+// try and duplicate a comment that may have already landed on the tracker
+// before the rate limit was recorded. See the recorded ruling in
+// task-8-brief's "Decisions the brief cannot know" — the outbox itself has no
+// way to know whether the tracker call that produced a rate-limited response
+// landed before or after the limit was hit, so it must always look up on any
+// second-or-later attempt.
+func TestFlusherLooksUpAfterRateLimitDeferral(t *testing.T) {
+	dir := t.TempDir()
+	ob := mustNewOutbox(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "i1", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := ob.Snapshot()[0]
+	ob.MarkFailed(entry.ID, &tracker.RateLimitedError{Adapter: "linear", ResetAt: time.Now().Add(-time.Second)}, time.Now().Add(-time.Minute))
+
+	got := ob.Snapshot()[0]
+	require.Equal(t, 0, got.Attempts, "a rate limit must not be recorded as a delivery attempt")
+	require.Equal(t, 1, got.RateLimitedAttempts)
+
+	tr := &countingCommenter{
+		Tracker:   tracker.NewMemoryTracker(nil, nil, nil),
+		findFound: true,
+		found:     &domain.Comment{ID: "c1"},
+	}
+
+	runOutboxFlusherTick(context.Background(), ob, tr, nil, time.Now().Add(time.Hour))
+
+	assert.Equal(t, 1, tr.finds, "a rate-limited deferral must still trigger the dedupe lookup on retry")
+	assert.Equal(t, 0, tr.creates, "the comment may already have landed — must not blind-post")
+	assert.Empty(t, ob.Snapshot(), "the entry is marked flushed via the dedupe hit, not retried")
+}
+
+func TestFlusherNeverPostsBlindOnLookupError(t *testing.T) {
+	dir := t.TempDir()
+	ob := mustNewOutbox(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "i1", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := ob.Snapshot()[0]
+	ob.MarkFailed(entry.ID, errors.New("timeout"), time.Now())
+
+	tr := &countingCommenter{
+		Tracker: tracker.NewMemoryTracker(nil, nil, nil),
+		findErr: errors.New("tracker unreachable"),
+	}
+
+	runOutboxFlusherTick(context.Background(), ob, tr, nil, time.Now().Add(time.Hour))
+
+	assert.Equal(t, 0, tr.creates, "an unknown lookup result must defer, never post")
+	require.Len(t, ob.Snapshot(), 1, "the entry stays pending")
+	assert.Equal(t, 2, ob.Snapshot()[0].Attempts)
+}
+
+// TestFlusherLinearRateLimitDefersWithRealTimings is the final review's C1
+// probe made permanent, with REAL constants throughout (outboxFlushCallTimeout,
+// the tracker's real backoff base, the real linear.Client): nothing is shrunk,
+// because the bug only existed in how the real timings interact. Linear
+// answers every request with its RATELIMITED 400 and a reset 20 minutes out.
+//
+// Before the fix the in-call backoff (2+4+8+16 = 30s) hit the flusher's 30s
+// call deadline first, so the call returned context.DeadlineExceeded instead
+// of *tracker.RateLimitedError: the entry was charged an ORDINARY attempt,
+// RateLimitedUntil was never set, and the second entry then blocked in the
+// gate and was charged too — about a minute for one tick.
+//
+// Now: the first call fails fast with the typed error after one request, the
+// entry is deferred as rate-limited, and the per-entry gate check (I1) stops
+// the tick so the second entry is never touched.
+func TestFlusherLinearRateLimitDefersWithRealTimings(t *testing.T) {
+	t.Cleanup(func() { tracker.SharedRateLimitGate().Clear("linear") })
+
+	var reqs atomic.Int32
+	reset := time.Now().Add(20 * time.Minute)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reqs.Add(1)
+		w.Header().Set("X-RateLimit-Requests-Remaining", "0")
+		w.Header().Set("X-RateLimit-Requests-Reset", strconv.FormatInt(reset.UnixMilli(), 10))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"rate limited","extensions":{"code":"RATELIMITED"}}]}`))
+	}))
+	defer srv.Close()
+
+	ob := mustNewOutbox(t, filepath.Join(t.TempDir(), "outbox.json"))
+	for _, id := range []string{"i1", "i2"} {
+		require.NoError(t, ob.Enqueue(outbox.Entry{
+			Kind: outbox.KindCreateComment, IssueID: id, Identifier: "ENG-" + id, Body: "hi",
+		}))
+	}
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+
+	start := time.Now()
+	runOutboxFlusherTickForAdapter(context.Background(), ob, c, nil, time.Now(), "linear")
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 3*time.Second, "a rate limit must defer the tick, not burn the call deadline")
+	assert.EqualValues(t, 1, reqs.Load(), "exactly one request: the one that discovered the limit")
+
+	byIssue := map[string]outbox.Entry{}
+	for _, e := range ob.Snapshot() {
+		byIssue[e.IssueID] = e
+	}
+	require.Len(t, byIssue, 2)
+	first, second := byIssue["i1"], byIssue["i2"]
+	assert.Equal(t, 1, first.RateLimitedAttempts, "the rate limit must be recorded as a rate limit")
+	assert.Equal(t, 0, first.Attempts, "a rate limit must not be charged as an ordinary attempt")
+	assert.True(t, first.RateLimitedUntil.Equal(time.UnixMilli(reset.UnixMilli())),
+		"RateLimitedUntil must be the published reset, got %s want %s", first.RateLimitedUntil, reset)
+	assert.Equal(t, 0, second.Attempts, "the tick must stop once the gate opens")
+	assert.Equal(t, 0, second.RateLimitedAttempts, "the tick must stop once the gate opens")
+}
+
+// gateOpeningCommenter wraps countingCommenter so its first create opens the
+// shared "linear" gate and fails — the shape of a mid-tick rate-limit
+// discovery, without a network.
+type gateOpeningCommenter struct {
+	*countingCommenter
+}
+
+func (g *gateOpeningCommenter) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	_, _ = g.countingCommenter.CreateCommentWithKey(ctx, issueID, key, body)
+	tracker.SharedRateLimitGate().RecordUntil("linear", time.Now().Add(time.Minute))
+	return nil, errors.New("simulated failure that opened the gate")
+}
+
+// TestFlusherStopsTickWhenGateOpensMidTick pins I1: the gate is re-checked
+// before EACH entry, so once one delivery opens it the rest of the tick's due
+// entries are left untouched rather than each blocking in the gate and being
+// charged an attempt with nothing sent.
+func TestFlusherStopsTickWhenGateOpensMidTick(t *testing.T) {
+	t.Cleanup(func() { tracker.SharedRateLimitGate().Clear("linear") })
+
+	ob := mustNewOutbox(t, filepath.Join(t.TempDir(), "outbox.json"))
+	for _, id := range []string{"i1", "i2"} {
+		require.NoError(t, ob.Enqueue(outbox.Entry{
+			Kind: outbox.KindCreateComment, IssueID: id, Identifier: "ENG-" + id, Body: "hi",
+		}))
+	}
+	inner := &countingCommenter{Tracker: tracker.NewMemoryTracker(nil, nil, nil)}
+	tr := &gateOpeningCommenter{countingCommenter: inner}
+
+	runOutboxFlusherTickForAdapter(context.Background(), ob, tr, nil, time.Now(), "linear")
+
+	assert.Equal(t, 1, inner.creates, "the second entry's create must never be called")
+	byIssue := map[string]outbox.Entry{}
+	for _, e := range ob.Snapshot() {
+		byIssue[e.IssueID] = e
+	}
+	assert.Equal(t, 1, byIssue["i1"].Attempts, "the first entry's failure is recorded")
+	assert.Equal(t, 0, byIssue["i2"].Attempts, "the second entry must be untouched")
+	assert.Equal(t, 0, byIssue["i2"].RateLimitedAttempts, "the second entry must be untouched")
 }

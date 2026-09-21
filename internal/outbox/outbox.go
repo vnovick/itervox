@@ -19,8 +19,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -72,11 +74,33 @@ type Entry struct {
 	FromState string `json:"from_state,omitempty"`
 	// Body is set for KindCreateComment entries.
 	Body string `json:"body,omitempty"`
+	// CommentKey is the client-generated idempotency key for
+	// KindCreateComment entries: a UUIDv4 sent to the tracker as the
+	// comment's own id (Linear) or embedded as a hidden marker in the body
+	// (GitHub), so a retry can ask "did my earlier attempt land?" instead
+	// of guessing. Empty for KindUpdateState.
+	//
+	// Entry.ID is deliberately NOT reused: it is "<unixnano>-<hex>", which
+	// is not a UUIDv4 and Linear's CommentCreateInput.id rejects it.
+	CommentKey string `json:"comment_key,omitempty"`
 
 	EnqueuedAt    time.Time `json:"enqueued_at"`
 	Attempts      int       `json:"attempts"`
 	LastError     string    `json:"last_error,omitempty"`
 	NextAttemptAt time.Time `json:"next_attempt_at"`
+
+	// RateLimitedAttempts counts deferrals caused by tracker rate limiting,
+	// kept separate from Attempts because a rate limit is the tracker asking
+	// us to wait, not a broken write. Folding the two together would light
+	// the degraded badge during every busy hour and teach operators to ignore
+	// the one signal that means a write is genuinely stuck.
+	RateLimitedAttempts int `json:"rate_limited_attempts,omitzero"`
+	// RateLimitedUntil is the tracker-published instant this entry is waiting
+	// for, surfaced to the dashboard. Zero when the last failure was not a
+	// rate limit. omitzero (Go 1.24+), not omitempty: time.Time is a struct,
+	// which omitempty never omits, so every never-rate-limited entry used to
+	// persist "0001-01-01T00:00:00Z".
+	RateLimitedUntil time.Time `json:"rate_limited_until,omitzero"`
 }
 
 // Degraded reports whether this entry has failed enough consecutive times
@@ -141,6 +165,19 @@ func New(path string) (*Outbox, error) {
 				"path", path, "id", e.ID, "identifier", e.Identifier, "kind", e.Kind, "error", err)
 			continue
 		}
+		if e.Kind == KindCreateComment && e.CommentKey == "" {
+			// Written by a build that predates CommentKey. Backfill so every
+			// comment entry in memory has one; this key cannot match posts
+			// made by earlier attempts of THIS entry (they carried no key),
+			// which is the one-deploy duplicate window the design accepts.
+			key, err := NewCommentKey()
+			if err != nil {
+				slog.Warn("outbox: could not backfill comment key, entry keeps legacy behaviour",
+					"id", e.ID, "identifier", e.Identifier, "error", err)
+			} else {
+				e.CommentKey = key
+			}
+		}
 		o.entries = append(o.entries, e)
 	}
 	return o, nil
@@ -171,6 +208,14 @@ func (o *Outbox) Enqueue(e Entry) error {
 	e.Attempts = 0
 	e.LastError = ""
 	e.NextAttemptAt = now
+
+	if e.Kind == KindCreateComment && e.CommentKey == "" {
+		key, err := NewCommentKey()
+		if err != nil {
+			return err
+		}
+		e.CommentKey = key
+	}
 
 	o.entries = append(o.entries, e)
 	if err := o.persistLocked(); err != nil {
@@ -246,12 +291,42 @@ func (o *Outbox) MarkFlushed(id string) {
 	}
 }
 
-// MarkFailed records a failed flush attempt: increments Attempts, sets
-// LastError, and schedules NextAttemptAt via exponential backoff
-// (10s * 2^(attempts-1), capped at 5 minutes), then persists. There is no
-// terminal give-up — the entry keeps retrying indefinitely; Entry.Degraded
-// becomes true once Attempts reaches 5, but MarkFailed never removes the
-// entry. Unknown ids are a no-op.
+// rateLimited is satisfied by *tracker.RateLimitedError. Declared here rather
+// than imported because internal/outbox must keep depending on nothing but
+// internal/atomicfs and the stdlib — importing internal/tracker would invert
+// the package dependency order documented in CLAUDE.md. The coupling is a
+// method name, checked with errors.As.
+type rateLimited interface {
+	error
+	RateLimitResetAt() time.Time
+}
+
+// MarkFailed records a failed flush attempt and persists.
+//
+// Two distinct outcomes, told apart via errors.As against the rateLimited
+// interface (which reaches through any fmt.Errorf("...: %w", err) wrapping
+// an adapter applies):
+//
+//   - A rate limit (err implements rateLimited): NOT a delivery failure —
+//     the tracker asked us to wait. Attempts is left alone (so
+//     Entry.Degraded, which reads only Attempts, never trips from busy-hour
+//     throttling), while LastError IS overwritten with the rate-limit
+//     message so the operator sees why the entry is waiting;
+//     RateLimitedAttempts increments instead, RateLimitedUntil is set to the
+//     tracker's published reset, and NextAttemptAt is deferred to the tracker's
+//     published reset instant (plus jitter, so a large backlog does not
+//     resume in lockstep and immediately re-exhaust the budget) rather than
+//     the exponential backoff schedule — except NextAttemptAt never moves
+//     earlier than the backoff would have put it, so a rate limit can never
+//     make an entry retry SOONER than an ordinary failure would have.
+//   - Anything else: the existing behaviour — Attempts increments,
+//     NextAttemptAt follows exponential backoff (10s * 2^(attempts-1),
+//     capped at 5 minutes), and RateLimitedUntil is cleared (a rate limit is
+//     not currently in effect).
+//
+// There is no terminal give-up in either case — the entry keeps retrying
+// indefinitely; Entry.Degraded becomes true once Attempts reaches 5, but
+// MarkFailed never removes the entry. Unknown ids are a no-op.
 func (o *Outbox) MarkFailed(id string, err error, now time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -261,11 +336,27 @@ func (o *Outbox) MarkFailed(id string, err error, now time.Time) {
 		return
 	}
 	e := &o.entries[idx]
-	e.Attempts++
-	e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
-	if err != nil {
-		e.LastError = err.Error()
+
+	var rl rateLimited
+	if errors.As(err, &rl) {
+		e.RateLimitedAttempts++
+		resetAt := rl.RateLimitResetAt()
+		e.RateLimitedUntil = resetAt
+		next := now.Add(backoffFor(e.Attempts + 1))
+		if jittered := resetAt.Add(rateLimitJitter()); jittered.After(next) {
+			next = jittered
+		}
+		e.NextAttemptAt = next
+		e.LastError = rl.Error()
+	} else {
+		e.Attempts++
+		e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
+		e.RateLimitedUntil = time.Time{}
+		if err != nil {
+			e.LastError = err.Error()
+		}
 	}
+
 	if perr := o.persistLocked(); perr != nil {
 		slog.Warn("outbox: failed to persist after mark-failed", "id", id, "error", perr)
 	}
@@ -387,6 +478,24 @@ func newEntryID(now time.Time) string {
 	return fmt.Sprintf("%d-%s", now.UnixNano(), hex.EncodeToString(buf))
 }
 
+// NewCommentKey returns a random UUIDv4 string, used as the idempotency key
+// for comment entries. Exported so tracker adapters and their tests can
+// build keys in the same shape without depending on a UUID module — the
+// repo has no uuid dependency and this is the only place one is needed.
+//
+// crypto/rand.Read does not fail on supported platforms; a failure here is
+// fatal to idempotency (a duplicate key would make two distinct comments
+// look like one), so it returns an error rather than a fallback value.
+func NewCommentKey() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("outbox: generate comment key: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
 // backoffFor computes the retry delay for the given (post-increment)
 // attempts count: 10s * 2^(attempts-1), capped at 5 minutes.
 func backoffFor(attempts int) time.Duration {
@@ -404,4 +513,19 @@ func backoffFor(attempts int) time.Duration {
 		return backoffCap
 	}
 	return d
+}
+
+// rateLimitJitterMax bounds the random spread applied on top of a published
+// reset instant.
+const rateLimitJitterMax = 5 * time.Second
+
+// rateLimitJitter returns a random delay in [0, rateLimitJitterMax). Without
+// it, every deferred entry would become due at the same instant and the fleet
+// would re-exhaust the budget the moment it returned.
+func rateLimitJitter() time.Duration {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(rateLimitJitterMax)))
+	if err != nil {
+		return rateLimitJitterMax / 2 // deterministic fallback; never panic a daemon
+	}
+	return time.Duration(n.Int64())
 }

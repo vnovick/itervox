@@ -57,6 +57,13 @@ export interface LiveOpsStripModel {
   // panel (Retry or Discard).
   outboxPendingCount: number;
   outboxDegradedCount: number;
+  // trackerRateLimitedUntil is the latest `rateLimitedUntil` (ISO string)
+  // across outboxEntries that is still in the future, or null when nothing
+  // is currently rate limited. Task 9 — this reads the outbox's view of the
+  // rate limit, not tracker.SharedRateLimitGate() (process state with no
+  // snapshot field); an open gate with an empty outbox therefore shows
+  // nothing, which is acceptable since there is no pending write to act on.
+  trackerRateLimitedUntil: string | null;
 }
 
 export function liveOpsStripModel(
@@ -86,6 +93,7 @@ export function liveOpsStripModel(
       attentionCount: 0,
       outboxPendingCount: 0,
       outboxDegradedCount: 0,
+      trackerRateLimitedUntil: null,
     };
   }
 
@@ -141,7 +149,26 @@ export function liveOpsStripModel(
     attentionCount: (snapshot.dependencyAttention ?? []).length,
     outboxPendingCount: (snapshot.outboxEntries ?? []).length,
     outboxDegradedCount: (snapshot.outboxEntries ?? []).filter((row) => row.degraded).length,
+    trackerRateLimitedUntil: latestFutureRateLimitedUntil(snapshot.outboxEntries ?? [], now),
   };
+}
+
+// latestFutureRateLimitedUntil picks the latest outboxEntries[].rateLimitedUntil
+// that is strictly after `now`, returning it as the original ISO string (or
+// null when none qualify). Kept pure — no Date.now() — so the derivation is
+// stable given the same (snapshot, now) inputs. Task 9.
+function latestFutureRateLimitedUntil(
+  entries: readonly { rateLimitedUntil?: string }[],
+  now: number,
+): string | null {
+  let latest: { iso: string; ms: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.rateLimitedUntil) continue;
+    const ms = new Date(entry.rateLimitedUntil).getTime();
+    if (!Number.isFinite(ms) || ms <= now) continue;
+    if (!latest || ms > latest.ms) latest = { iso: entry.rateLimitedUntil, ms };
+  }
+  return latest?.iso ?? null;
 }
 
 // depsChipLabel renders the deps chip's base "N blocked"/"unresolved" text
@@ -251,9 +278,26 @@ export function LiveOpsStrip() {
         {model.outboxPendingCount > 0 && (
           <OpsChip label={outboxChipLabel(model)} danger={model.outboxDegradedCount > 0} />
         )}
+        {/* Task 9 — fleet-level indicator, mirroring the per-row rate-limited
+            chip in OutboxList. Hidden when nothing is currently rate
+            limited (same "compact when healthy" convention as the other
+            conditional tiles above). */}
+        {model.trackerRateLimitedUntil && (
+          <OpsChip
+            warning
+            label={`Tracker rate limited until ${formatHHMM(model.trackerRateLimitedUntil)}`}
+            title={`Tracker rate limited until ${new Date(model.trackerRateLimitedUntil).toLocaleString()}`}
+          />
+        )}
       </div>
     </section>
   );
+}
+
+// formatHHMM matches the per-row rate-limited chip's time format in
+// OutboxList.tsx (toLocaleTimeString with hour/minute only).
+function formatHHMM(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 // outboxChipLabel renders the outbox tile's text: "Outbox N pending" plus a

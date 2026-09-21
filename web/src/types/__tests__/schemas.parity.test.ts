@@ -250,8 +250,14 @@ describe('OutboxEntryRowSchema and StateSnapshot outbox fields (write-ahead-outb
       degraded: false,
       enqueuedAt: '2026-05-25T12:00:00Z',
       nextAttemptAt: '2026-05-25T12:05:00Z',
+      // Task 9 — rateLimitedUntil is additive (omitempty on the Go wire);
+      // a row that carries it must still parse and round-trip the value.
+      rateLimitedUntil: '2026-09-16T12:00:00Z',
     });
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.rateLimitedUntil).toBe('2026-09-16T12:00:00Z');
+    }
   });
 
   it('parses a create_comment entry row missing targetState', () => {

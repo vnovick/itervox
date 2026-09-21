@@ -3,6 +3,7 @@ import { QueueSearchInput } from '../../../components/itervox/QueueSearchInput';
 import type { OutboxEntryRow } from '../../../types/schemas';
 import { useDiscardOutboxEntry, useRetryOutboxEntry } from '../../../queries/outbox';
 import { queuedAge } from './automationQueueModel';
+import { isFutureInstant } from './outboxListModel';
 
 // OutboxList follows AutomationQueueList's pattern (write-ahead-outbox
 // design, "Surfaces" / Task 4): a durable-queue panel with local search and
@@ -86,6 +87,7 @@ function OutboxItem({
 }) {
   const retryMutation = useRetryOutboxEntry();
   const discardMutation = useDiscardOutboxEntry();
+  const showRateLimited = isFutureInstant(row.rateLimitedUntil);
 
   return (
     <div
@@ -108,13 +110,33 @@ function OutboxItem({
       <div className="text-theme-text-secondary truncate text-xs">{row.targetState ?? '—'}</div>
       <div className="text-theme-text-secondary text-xs">{row.attempts}</div>
       <div className="min-w-0">
-        {row.degraded && (
-          <span
-            data-testid={`outbox-degraded-badge-${row.id}`}
-            className="bg-theme-danger-soft text-theme-danger inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
-          >
-            degraded
-          </span>
+        {/* The degraded badge and the rate-limited chip are independent: a
+            stuck entry keeps its red badge even while it waits out a limit,
+            and the chip only shows while the window is still in the future. */}
+        {(row.degraded || showRateLimited) && (
+          <div className="flex flex-wrap gap-1">
+            {row.degraded && (
+              <span
+                data-testid={`outbox-degraded-badge-${row.id}`}
+                className="bg-theme-danger-soft text-theme-danger inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
+              >
+                degraded
+              </span>
+            )}
+            {showRateLimited && row.rateLimitedUntil && (
+              <span
+                data-testid={`outbox-rate-limited-badge-${row.id}`}
+                className="bg-theme-warning-soft text-theme-warning inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
+                title={`Tracker rate limited until ${new Date(row.rateLimitedUntil).toLocaleString()}`}
+              >
+                rate limited until{' '}
+                {new Date(row.rateLimitedUntil).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            )}
+          </div>
         )}
         {row.lastError && (
           <div className="text-theme-muted mt-0.5 truncate text-[11px]" title={row.lastError}>

@@ -103,6 +103,19 @@ enqueued with no observed from-state baseline (currently only the issue-discard
 path) is exempt from supersede-reconciliation, so **Discard is the operator
 remedy for a stuck entry**.
 
+**Comments are never posted twice.** Each queued comment carries a unique key.
+If an attempt fails, the next retry first asks the tracker whether that comment
+already landed, and marks the entry delivered instead of re-posting it. If the
+tracker cannot answer, the entry waits for the next retry rather than posting
+blind. On Linear the key is the comment's own id; on GitHub it is a hidden
+marker in the comment body.
+
+**Rate-limited entries are not failures.** When a write is rejected by a rate
+limit, the entry waits until the tracker's published reset (plus a few seconds
+of jitter) and shows an amber **rate limited until HH:MM** chip. These
+deferrals do not count toward the **degraded** badge, which is reserved for
+writes that are genuinely failing.
+
 **GitHub note:** GitHub Issues does not have built-in workflow states. Itervox simulates states using labels. Create labels in your repository settings that match the values you configure (e.g. create a label named `todo`, another named `in-review`).
 
 ```yaml
@@ -162,6 +175,22 @@ never mistaken for a hung daemon.
 
 Adapters that do not report rate-limit counters are unaffected: the check fails
 open and polls as before.
+
+**When a tracker actually rate-limits a request**, Itervox records the window
+once and every caller — agents, the poller, and the outbox — respects it:
+
+- **Linear** reports a rate limit as HTTP 400 with a `RATELIMITED` error code,
+  and publishes the reset time in `X-RateLimit-Requests-Reset` /
+  `X-RateLimit-Complexity-Reset`. **GitHub** uses 429 or 403: `Retry-After` for
+  secondary limits, and `X-RateLimit-Reset` once the hourly budget is spent.
+- Writes are admitted ahead of reads when the window lifts. On Linear, where
+  every request is a POST, requests are classified from the GraphQL operation:
+  mutations are writes, queries are reads.
+- If the reset is more than 60 seconds away, calls return a rate-limit error
+  immediately instead of waiting and retrying into a closed window. The outbox
+  holds its writes until the reset and skips flushing until then.
+- A recorded window is capped at 2 hours, so a malformed reset header cannot
+  stall tracker writes indefinitely.
 
 ---
 

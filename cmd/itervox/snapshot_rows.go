@@ -524,15 +524,16 @@ func outboxEntryRows(entries []outbox.Entry) []server.OutboxEntryRow {
 	rows := make([]server.OutboxEntryRow, 0, len(entries))
 	for _, e := range entries {
 		rows = append(rows, server.OutboxEntryRow{
-			ID:            e.ID,
-			Kind:          string(e.Kind),
-			Identifier:    e.Identifier,
-			TargetState:   e.TargetState,
-			Attempts:      e.Attempts,
-			LastError:     e.LastError,
-			Degraded:      e.Degraded(),
-			EnqueuedAt:    e.EnqueuedAt,
-			NextAttemptAt: e.NextAttemptAt,
+			ID:               e.ID,
+			Kind:             string(e.Kind),
+			Identifier:       e.Identifier,
+			TargetState:      e.TargetState,
+			Attempts:         e.Attempts,
+			LastError:        e.LastError,
+			Degraded:         e.Degraded(),
+			EnqueuedAt:       e.EnqueuedAt,
+			NextAttemptAt:    e.NextAttemptAt,
+			RateLimitedUntil: nilIfZero(e.RateLimitedUntil),
 		})
 	}
 	return rows

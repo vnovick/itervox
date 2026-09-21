@@ -990,6 +990,11 @@ type OutboxEntryRow struct {
 	Degraded      bool      `json:"degraded,omitempty"`
 	EnqueuedAt    time.Time `json:"enqueuedAt"`
 	NextAttemptAt time.Time `json:"nextAttemptAt"`
+	// RateLimitedUntil is the tracker-published instant this entry is waiting
+	// for, when the last delivery attempt was deferred by a rate limit. A
+	// pointer so a never-rate-limited entry omits the field entirely rather
+	// than serialising a zero time (same posture as DepsAnalyzeJobRow).
+	RateLimitedUntil *time.Time `json:"rateLimitedUntil,omitempty"`
 }
 
 // DepsAnalyzeJobRow is the wire shape returned by the deps-analyze status

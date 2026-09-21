@@ -213,6 +213,88 @@ describe('liveOpsStripModel', () => {
     expect(model.outboxPendingCount).toBe(2);
     expect(model.outboxDegradedCount).toBe(1);
   });
+
+  // Task 9 — trackerRateLimitedUntil is the latest future rateLimitedUntil
+  // across outbox entries, computed against the injectable `now` so the
+  // derivation stays pure (no Date.now() inside the model).
+  it('returns the latest future rateLimitedUntil across outbox entries', () => {
+    const now = new Date('2026-05-25T12:00:00Z');
+    const earlierFuture = '2026-05-25T12:05:00Z';
+    const laterFuture = '2026-05-25T12:10:00Z';
+    const past = '2026-05-25T11:00:00Z';
+
+    const model = liveOpsStripModel(
+      makeSnapshot({
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'update_state',
+            identifier: 'ENG-1',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T11:00:00Z',
+            nextAttemptAt: '2026-05-25T12:05:00Z',
+            rateLimitedUntil: earlierFuture,
+          },
+          {
+            id: 'e2',
+            kind: 'update_state',
+            identifier: 'ENG-2',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T11:00:00Z',
+            nextAttemptAt: '2026-05-25T12:10:00Z',
+            rateLimitedUntil: laterFuture,
+          },
+          {
+            id: 'e3',
+            kind: 'update_state',
+            identifier: 'ENG-3',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T10:00:00Z',
+            nextAttemptAt: '2026-05-25T11:00:00Z',
+            rateLimitedUntil: past,
+          },
+        ],
+      }),
+      now.getTime(),
+    );
+
+    expect(model.trackerRateLimitedUntil).toBe(laterFuture);
+  });
+
+  it('returns null when every rateLimitedUntil is in the past or absent', () => {
+    const now = new Date('2026-05-25T12:00:00Z');
+
+    const model = liveOpsStripModel(
+      makeSnapshot({
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'update_state',
+            identifier: 'ENG-1',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T10:00:00Z',
+            nextAttemptAt: '2026-05-25T11:00:00Z',
+            rateLimitedUntil: '2026-05-25T11:00:00Z',
+          },
+          {
+            id: 'e2',
+            kind: 'update_state',
+            identifier: 'ENG-2',
+            attempts: 1,
+            enqueuedAt: '2026-05-25T10:00:00Z',
+            nextAttemptAt: '2026-05-25T10:00:00Z',
+          },
+        ],
+      }),
+      now.getTime(),
+    );
+
+    expect(model.trackerRateLimitedUntil).toBeNull();
+  });
+
+  it('returns null for a null snapshot', () => {
+    expect(liveOpsStripModel(null).trackerRateLimitedUntil).toBeNull();
+  });
 });
 
 describe('LiveOpsStrip', () => {

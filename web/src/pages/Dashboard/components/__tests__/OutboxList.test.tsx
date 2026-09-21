@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OutboxList } from '../OutboxList';
 import type { OutboxEntryRow } from '../../../../types/schemas';
 
@@ -36,8 +36,13 @@ function row(overrides: Partial<OutboxEntryRow> = {}): OutboxEntryRow {
     degraded: overrides.degraded,
     enqueuedAt: overrides.enqueuedAt ?? '2026-05-20T10:00:00.000Z',
     nextAttemptAt: overrides.nextAttemptAt ?? '2026-05-20T10:00:00.000Z',
+    rateLimitedUntil: overrides.rateLimitedUntil,
   };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 beforeEach(() => {
   retryMutateSpy.mockReset();
@@ -78,6 +83,68 @@ describe('OutboxList', () => {
     );
     expect(screen.getByTestId('outbox-degraded-badge-e1')).toBeInTheDocument();
     expect(screen.queryByTestId('outbox-degraded-badge-e2')).not.toBeInTheDocument();
+  });
+
+  // The spec keeps the rate-limited chip "separate from the red degraded
+  // badge": a stuck entry must not lose its red badge just because it is
+  // also waiting out a limit, so both render together when both apply.
+  // Assertions are on testids only — never on locale-formatted time text,
+  // which varies with the CI machine's timezone.
+  it('renders the rate-limited chip alongside the degraded badge', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-16T11:00:00Z'));
+    render(
+      withQueryClient(
+        <OutboxList
+          entries={[
+            row({
+              id: 'e1',
+              kind: 'create_comment',
+              identifier: 'ENG-1',
+              attempts: 5,
+              enqueuedAt: '2026-09-16T10:00:00Z',
+              nextAttemptAt: '2026-09-16T12:00:05Z',
+              rateLimitedUntil: '2026-09-16T12:00:00Z',
+              degraded: true,
+            }),
+          ]}
+          onSelectIssue={vi.fn()}
+        />,
+      ),
+    );
+
+    expect(screen.getByTestId('outbox-rate-limited-badge-e1')).toBeInTheDocument();
+    expect(screen.getByTestId('outbox-degraded-badge-e1')).toBeInTheDocument();
+  });
+
+  it('shows no rate-limited chip once rateLimitedUntil is in the past', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-16T13:00:00Z'));
+    render(
+      withQueryClient(
+        <OutboxList
+          entries={[row({ id: 'e1', rateLimitedUntil: '2026-09-16T12:00:00Z' })]}
+          onSelectIssue={vi.fn()}
+        />,
+      ),
+    );
+
+    expect(screen.getByTestId('outbox-card-e1')).toBeInTheDocument();
+    expect(screen.queryByTestId('outbox-rate-limited-badge-e1')).not.toBeInTheDocument();
+  });
+
+  it('shows no rate-limited chip for an unparseable rateLimitedUntil', () => {
+    render(
+      withQueryClient(
+        <OutboxList
+          entries={[row({ id: 'e1', rateLimitedUntil: 'not-a-date' })]}
+          onSelectIssue={vi.fn()}
+        />,
+      ),
+    );
+
+    expect(screen.getByTestId('outbox-card-e1')).toBeInTheDocument();
+    expect(screen.queryByTestId('outbox-rate-limited-badge-e1')).not.toBeInTheDocument();
   });
 
   it('calls onSelectIssue when the identifier button is clicked', () => {

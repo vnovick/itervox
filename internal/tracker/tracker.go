@@ -47,6 +47,27 @@ type DetailBatcher interface {
 	FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
 }
 
+// IdempotentCommenter is an optional interface implemented by tracker
+// adapters that can post a comment under a caller-supplied idempotency key
+// and later answer whether a comment with that key exists. Callers should
+// type-assert Tracker to IdempotentCommenter rather than asserting the
+// concrete adapter type, and MUST fall back to Tracker.CreateComment when
+// the assertion fails.
+//
+// This is what makes a comment retry safe. Without it, a create whose
+// response is lost is indistinguishable from a create that never happened,
+// so the write-ahead outbox had to choose between dropping writes and
+// duplicating them.
+//
+// Contract for implementers: FindCommentByKey returns (nil, false, nil) for
+// "definitely not present" and a non-nil error ONLY when the answer is
+// unknown. Callers treat an error as "do not post" — reporting not-found on
+// a failed lookup would reintroduce the duplicate this interface prevents.
+type IdempotentCommenter interface {
+	CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error)
+	FindCommentByKey(ctx context.Context, issueID, key string) (*domain.Comment, bool, error)
+}
+
 // ProjectManager is an optional interface implemented by tracker adapters that
 // support listing available projects and scoping fetches to a project subset at
 // runtime. Callers should type-assert Tracker to ProjectManager rather than

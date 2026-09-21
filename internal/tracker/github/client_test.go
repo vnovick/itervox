@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -726,4 +727,259 @@ func TestGHCreateIssue(t *testing.T) {
 	assert.Equal(t, []any{"todo"}, gotBody["labels"])
 	assert.Equal(t, "#7", issue.Identifier)
 	assert.Equal(t, "todo", issue.State)
+}
+
+func TestGitHubCreateCommentWithKeyEmbedsMarker(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		gotBody = payload["body"]
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":99,"created_at":"2026-09-16T10:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, err := c.CreateCommentWithKey(context.Background(), "42", "k1", "hello")
+
+	require.NoError(t, err)
+	assert.Contains(t, gotBody, "hello")
+	assert.Contains(t, gotBody, "<!-- itervox:ck:k1 -->")
+}
+
+func TestGitHubFindCommentByKeyAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+func TestGitHubFindCommentByKeyErrorIsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.Error(t, err)
+	assert.False(t, found)
+}
+
+// ghFindKeyScript configures newGHCommentsServer's fixture behavior for the
+// FindCommentByKey tail-scan tests below.
+type ghFindKeyScript struct {
+	// hasKey is the page number carrying the marker comment; 0 = no page has it.
+	hasKey int
+	// lastPage is the rel="last" page number page 1's response advertises
+	// via its Link header; 0 = no Link header at all.
+	lastPage int
+	// failPage, if nonzero, makes that page number return HTTP 500.
+	failPage int
+	// badLastLink, when true, makes page 1's Link header carry a rel="last"
+	// entry whose page query parameter cannot be parsed.
+	badLastLink bool
+	// zeroLastPage, when true, makes page 1's Link header carry a rel="last"
+	// entry whose page query parameter is "0" — syntactically parseable by
+	// strconv.Atoi but not a legal page number.
+	zeroLastPage bool
+	// nextOnly, when true, makes page 1's Link header carry ONLY a
+	// rel="next" entry — more pages exist, but their extent is unknown.
+	nextOnly bool
+}
+
+// newGHCommentsServer starts an httptest server that plays back script and
+// records every requested "page" query value (in request order) into the
+// returned slice pointer, so tests can assert exactly which pages were
+// fetched — the whole point of the ordering regression tests below.
+func newGHCommentsServer(t *testing.T, script ghFindKeyScript) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var pages []string
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		mu.Lock()
+		pages = append(pages, page)
+		mu.Unlock()
+
+		pageNum, _ := strconv.Atoi(page)
+		if script.failPage != 0 && pageNum == script.failPage {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if pageNum == 1 {
+			switch {
+			case script.badLastLink:
+				w.Header().Set("Link", `<https://x/?page=abc>; rel="last"`)
+			case script.nextOnly:
+				w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/issues/42/comments?per_page=100&page=2>; rel="next"`, srv.URL))
+			case script.zeroLastPage:
+				w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/issues/42/comments?per_page=100&page=0>; rel="last"`, srv.URL))
+			case script.lastPage > 0:
+				w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/issues/42/comments?per_page=100&page=%d>; rel="last"`,
+					srv.URL, script.lastPage))
+			}
+		}
+		if script.hasKey != 0 && pageNum == script.hasKey {
+			_, _ = w.Write([]byte(`[{"id":2,"body":"hi\n\n<!-- itervox:ck:k1 -->","created_at":"2026-09-16T10:00:00Z"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":1,"body":"unrelated","created_at":"2026-09-16T10:00:00Z"}]`))
+	}))
+	return srv, &pages
+}
+
+func TestGitHubFindCommentByKeySinglePageFound(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{hasKey: 1})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	got, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, "2", got.ID)
+	assert.Equal(t, []string{"1"}, *pages)
+}
+
+// TestGitHubFindCommentByKeyScansFromEnd is the regression test for the
+// brief's page-ordering bug: GitHub orders comments by ascending ID with no
+// sort/direction parameter, so page 1 is the OLDEST page. A key that only
+// exists on the last page must still be found, and the scan must reach it
+// by going straight to the last page rather than walking forward from 1.
+func TestGitHubFindCommentByKeyScansFromEnd(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{hasKey: 5, lastPage: 5})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	got, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, "2", got.ID)
+	assert.Equal(t, []string{"1", "5"}, *pages)
+}
+
+func TestGitHubFindCommentByKeyScansSecondToLastPage(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{hasKey: 4, lastPage: 5})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	got, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, "2", got.ID)
+	assert.Equal(t, []string{"1", "5", "4"}, *pages)
+}
+
+func TestGitHubFindCommentByKeyTwoPagesDoesNotRefetchFirst(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{lastPage: 2})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	got, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.NoError(t, err)
+	assert.False(t, found)
+	assert.Nil(t, got)
+	assert.Equal(t, []string{"1", "2"}, *pages, "page 1 must not be fetched twice")
+}
+
+func TestGitHubFindCommentByKeyTailPageErrorIsUnknown(t *testing.T) {
+	srv, _ := newGHCommentsServer(t, ghFindKeyScript{lastPage: 5, failPage: 5})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.Error(t, err)
+	assert.False(t, found)
+}
+
+func TestGitHubFindCommentByKeyUnparseableLastLinkIsUnknown(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{badLastLink: true})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.Error(t, err)
+	assert.False(t, found)
+	assert.Equal(t, []string{"1"}, *pages, "an unparseable last link must not trigger further page fetches")
+}
+
+// TestGitHubFindCommentByKeyNonPositiveLastPageIsUnknown guards against a
+// rel="last" page number that strconv.Atoi parses successfully (so it isn't
+// caught by the "unparseable" path) but that isn't a legal page number
+// (page=0 here). An implementation that accepts it as ok=true would then
+// have its tail-scan loop's `page > 1` guard skip every page, silently
+// collapsing an ambiguous response into "definitely absent".
+func TestGitHubFindCommentByKeyNonPositiveLastPageIsUnknown(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{zeroLastPage: true})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.Error(t, err)
+	assert.False(t, found)
+	assert.Equal(t, []string{"1"}, *pages, "a non-positive last page must not trigger further page fetches")
+}
+
+// TestGitHubFindCommentByKeyNextWithoutLastIsUnknown pins I2: a Link header
+// that says more pages exist (rel="next") but omits rel="last" gives the
+// tail scan nothing to bound itself by. Reporting "absent" there would let
+// the flusher blind-post a duplicate of a comment sitting on a later page, so
+// the answer must be an error ("unknown"), with no further pages fetched.
+func TestGitHubFindCommentByKeyNextWithoutLastIsUnknown(t *testing.T) {
+	srv, pages := newGHCommentsServer(t, ghFindKeyScript{nextOnly: true})
+	defer srv.Close()
+
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	_, found, err := c.FindCommentByKey(context.Background(), "42", "k1")
+
+	require.Error(t, err, `rel="next" without rel="last" is unknown, never a false not-found`)
+	assert.False(t, found)
+	assert.Equal(t, []string{"1"}, *pages, "only page 1 may be requested")
+}
+
+func TestParseLastPage(t *testing.T) {
+	tests := []struct {
+		name       string
+		linkHeader string
+		wantPage   int
+		wantOK     bool
+		wantErr    bool
+	}{
+		{name: "empty header", linkHeader: "", wantPage: 0, wantOK: false, wantErr: false},
+		{name: "only rel=next", linkHeader: `<https://api.github.com/x?page=2>; rel="next"`, wantPage: 0, wantOK: false, wantErr: false},
+		{name: "valid last page", linkHeader: `<https://api.github.com/x?page=7>; rel="last"`, wantPage: 7, wantOK: true, wantErr: false},
+		{name: "non-numeric page", linkHeader: `<https://api.github.com/x?page=abc>; rel="last"`, wantPage: 0, wantOK: false, wantErr: true},
+		{name: "zero page", linkHeader: `<https://api.github.com/x?page=0>; rel="last"`, wantPage: 0, wantOK: false, wantErr: true},
+		{name: "negative page", linkHeader: `<https://api.github.com/x?page=-3>; rel="last"`, wantPage: 0, wantOK: false, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, ok, err := ghclient.ParseLastPage(tt.linkHeader)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantPage, page)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
 }

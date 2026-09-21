@@ -194,6 +194,31 @@ func (m *MemoryTracker) CreateComment(_ context.Context, issueID, body string) (
 	return comment, nil
 }
 
+// CreateCommentWithKey implements IdempotentCommenter. The key is stored as
+// a body marker, exactly as the GitHub adapter does, so tests exercise the
+// same shape the real fallback path uses.
+func (m *MemoryTracker) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	return m.CreateComment(ctx, issueID, MarkCommentKey(body, key))
+}
+
+// FindCommentByKey implements IdempotentCommenter.
+func (m *MemoryTracker) FindCommentByKey(_ context.Context, issueID, key string) (*domain.Comment, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.issues {
+		if m.issues[i].ID != issueID {
+			continue
+		}
+		for j := range m.issues[i].Comments {
+			if CommentHasKey(m.issues[i].Comments[j].Body, key) {
+				found := m.issues[i].Comments[j]
+				return &found, true, nil
+			}
+		}
+	}
+	return nil, false, nil
+}
+
 // CreateIssue creates a new in-memory issue for tests and local/demo flows.
 func (m *MemoryTracker) CreateIssue(_ context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
 	m.mu.Lock()

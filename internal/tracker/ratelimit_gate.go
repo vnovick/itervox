@@ -85,6 +85,61 @@ func (g *RateLimitGate) Record(adapter string, retryAfter time.Duration) {
 	g.gates[adapter] = until
 }
 
+// maxRecordedWindow bounds how far ahead RecordUntil will hold a gate open.
+// Both vendors' published rate-limit windows are at most about an hour, so two
+// hours is comfortably past any real reset; the bound exists so that a reset
+// header in the wrong unit (microseconds read as milliseconds) or a badly
+// skewed clock cannot wedge delivery indefinitely. Fail open, as the gate
+// always does: the worst case of clamping a genuine reset is one early probe
+// that re-learns the real window.
+const maxRecordedWindow = 2 * time.Hour
+
+// RecordUntil marks adapter's budget as exhausted until an instant the tracker
+// itself published, rather than a duration this process guessed.
+//
+// Unlike Record, the instant is NOT capped by MaxRateLimitWait. That cap
+// exists to bound how long a single caller BLOCKS; it must not shorten the
+// gate itself, or callers would be admitted while the tracker is still
+// rejecting them — Wait applies its own cap per call, so a long reset degrades
+// individual calls without wedging the daemon.
+//
+// It IS, however, clamped to now+maxRecordedWindow so the gate fails open
+// against a bogus far-future reset (see maxRecordedWindow).
+//
+// As with Record, a later reset always wins and an earlier one never shortens
+// an open gate.
+func (g *RateLimitGate) RecordUntil(adapter string, until time.Time) {
+	if g == nil || until.IsZero() {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.nowFn()
+	if !until.After(now) {
+		return
+	}
+	if limit := now.Add(maxRecordedWindow); until.After(limit) {
+		slog.Warn("tracker: rate-limit reset beyond sane bound, clamping",
+			"adapter", adapter, "reset", until, "clamped_to", limit)
+		until = limit
+	}
+	if existing, ok := g.gates[adapter]; ok && existing.After(until) {
+		return
+	}
+	g.gates[adapter] = until
+}
+
+// Clear removes adapter's gate. Exported for tests that must not leak a
+// closed gate into unrelated cases through the process-wide shared gate.
+func (g *RateLimitGate) Clear(adapter string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.gates, adapter)
+}
+
 // Wait blocks until adapter's recorded window has passed, or returns
 // immediately when no window is open.
 //

@@ -162,3 +162,88 @@ func TestGateWaitRespectsContextCancellation(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled,
 		"a cancelled context must abandon the wait rather than block shutdown")
 }
+
+// TestRecordUntilIsNotCappedByMaxRateLimitWait pins that RecordUntil records
+// the tracker-published reset instant verbatim, even when it is far beyond
+// MaxRateLimitWait — that cap bounds a single caller's block, not the gate
+// itself.
+func TestRecordUntilIsNotCappedByMaxRateLimitWait(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	g := NewRateLimitGate()
+	g.nowFn = func() time.Time { return now }
+
+	g.RecordUntil("linear", now.Add(30*time.Minute))
+
+	until, open := g.OpenUntil("linear")
+	require.True(t, open)
+	assert.WithinDuration(t, now.Add(30*time.Minute), until, time.Second,
+		"RecordUntil must not be clamped to MaxRateLimitWait")
+}
+
+// TestRecordUntilNeverShortensAnExistingGate pins the same never-shorten
+// invariant Record has: a later, shorter observation must not let callers
+// back in before the tracker is ready.
+func TestRecordUntilNeverShortensAnExistingGate(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	g := NewRateLimitGate()
+	g.nowFn = func() time.Time { return now }
+
+	g.RecordUntil("linear", now.Add(30*time.Minute))
+	g.RecordUntil("linear", now.Add(1*time.Minute))
+
+	until, open := g.OpenUntil("linear")
+	require.True(t, open)
+	assert.WithinDuration(t, now.Add(30*time.Minute), until, time.Second,
+		"a shorter, later observation must not shorten an open gate")
+}
+
+// TestWriteAdmittedBeforeReadAfterGateLifts is the fix for D2: the brief's
+// admission-order test called g.Wait(write) then g.Wait(read) back to back on
+// a real clock, so the write's own (real) sleep consumed the 50ms window and
+// the read observed 0 wait — write < read failed every run. Here the clock is
+// frozen via testGate, so neither Wait call can consume the window; both
+// requested waits are captured without sleeping, and the read's must exceed
+// the write's by exactly writeFirstGrace.
+func TestWriteAdmittedBeforeReadAfterGateLifts(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	g, waits := testGate(&now)
+	g.RecordUntil("linear", now.Add(50*time.Millisecond))
+
+	require.NoError(t, g.Wait(context.Background(), "linear", true))  // write
+	require.NoError(t, g.Wait(context.Background(), "linear", false)) // read
+
+	require.Len(t, *waits, 2)
+	assert.Equal(t, 50*time.Millisecond, (*waits)[0])
+	assert.Equal(t, 50*time.Millisecond+writeFirstGrace, (*waits)[1])
+	assert.Equal(t, writeFirstGrace, (*waits)[1]-(*waits)[0],
+		"a read yields exactly writeFirstGrace to queued writes when the gate lifts")
+}
+
+// TestRecordUntilIgnoresPastInstants pins that a stale/past reset does not
+// open (or leave open) a gate.
+func TestRecordUntilIgnoresPastInstants(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	g := NewRateLimitGate()
+	g.nowFn = func() time.Time { return now }
+
+	g.RecordUntil("linear", now.Add(-1*time.Minute))
+
+	_, open := g.OpenUntil("linear")
+	assert.False(t, open, "a past instant must not open a gate")
+}
+
+// TestRecordUntilClampsFarFutureReset pins the fail-open bound on a
+// tracker-published reset: a microsecond-scale or clock-skewed header that
+// decodes to a reset 100 hours out must not wedge delivery for days. The gate
+// clamps it to now+maxRecordedWindow (2h), comfortably past either vendor's
+// real window (about 1h at most).
+func TestRecordUntilClampsFarFutureReset(t *testing.T) {
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	g, _ := testGate(&now)
+
+	g.RecordUntil("linear", now.Add(100*time.Hour))
+
+	until, open := g.OpenUntil("linear")
+	require.True(t, open)
+	assert.Equal(t, now.Add(2*time.Hour), until, "a far-future reset must be clamped to now+2h")
+}

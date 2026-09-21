@@ -7,6 +7,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+Tracker writes can no longer post a comment twice, and a Linear rate limit is now recognised as one instead of failing as a generic error.
+
+### Upgrade notes
+
+> 1. **During a long tracker rate-limit window, tracker calls now fail immediately instead of waiting.** When Linear or GitHub publishes a reset more than 60 seconds away, calls on that tracker return a rate-limit error without sending anything until the reset, instead of blocking up to 60s and retrying into a closed window. Polling skips those ticks and logs the reset time; the outbox holds its writes until the reset. The outcome for every caller is unchanged, only faster — but expect "rate limited until HH:MM" in logs and the dashboard where you previously saw slow failures.
+> 2. **`.itervox/outbox.json` entries written by this version carry a `comment_key`.** Older builds ignore it. Entries written by an older build are given a key when loaded; a comment that had already failed at least once before the upgrade keeps the old duplicate risk for that one retry.
+
+### Added
+
+- **Idempotent tracker comments.** Every outbox comment carries a client-generated UUIDv4 key. On a retry, the flusher first asks the tracker whether a comment with that key already exists and marks the entry delivered instead of posting it again; an unanswerable lookup defers the entry rather than posting blind. Linear sends the key as the comment's own id (`CommentCreateInput.id`) and looks it up by id, archived comments included; GitHub embeds it as a hidden `<!-- itervox:ck:<key> -->` marker and scans the newest comments on the issue (GitHub returns issue comments oldest-first).
+- **Rate-limited outbox entries wait for the tracker's published reset.** A write rejected by a rate limit is deferred to the reset instant plus up to 5s of jitter, is counted separately from real failures (`rate_limited_attempts`), and never raises the **degraded** badge. The flusher skips its tick — and stops mid-tick — while a rate-limit window is open, so it sends no requests that are known to fail.
+- **Rate-limit visibility in the dashboard.** Outbox rows show an amber **rate limited until HH:MM** chip alongside (not instead of) the degraded badge, and the LiveOps strip shows one fleet-level **Tracker rate limited until HH:MM** chip. The snapshot's `outboxEntries[]` rows gain an optional `rateLimitedUntil` (RFC 3339) field.
+
+### Fixed
+
+- **Duplicate tracker comments.** A comment the tracker accepted but whose response was lost or timed out was re-posted on every retry.
+- **Linear rate limits were not recognised.** Linear signals a rate limit as HTTP 400 with a `RATELIMITED` GraphQL error code, not a 429, so it failed as a plain 400: no retry, no fleet-wide coordination, and the outbox retried blind on its own backoff. Linear's `X-RateLimit-*-Reset` headers (epoch milliseconds) are now honoured.
+- **"Writes go first" had no effect on Linear.** Every Linear call is an HTTP POST, so reads and writes looked identical to the rate-limit gate. Linear requests are now classified from the GraphQL operation type, so comments and state changes are admitted ahead of polling reads when a rate limit lifts.
+- **A GitHub secondary rate limit could stall GitHub calls for up to an hour.** GitHub sends `X-RateLimit-Reset` on every response; it was being used even for a secondary limit, where `Retry-After` governs. The reset is now honoured only once `X-RateLimit-Remaining` reaches 0.
+- **A success on the last in-call retry was reported as a rate limit.** The retry helper now classifies the final response instead of assuming it failed.
+- **Rate-limit windows are capped at 2 hours** on the fleet-wide gate, so a malformed reset header cannot stop tracker writes indefinitely.
+
+### Known limitations
+
+- **GitHub only:** if the daemon is killed after GitHub accepts a comment but before the attempt is recorded, the comment can be posted again after restart. Linear is not affected — a re-sent comment with the same id is rejected and then found by lookup.
+- The 2-hour cap applies to the fleet-wide gate but not yet to the reset instant stored on an individual outbox entry, so a malformed reset header can still hold that one entry longer.
+- A tracker's published reset is treated as a hard window: no requests are sent to that tracker until it passes.
+
 ---
 
 ## [0.2.1] — 2026-09-14

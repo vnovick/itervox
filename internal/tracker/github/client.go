@@ -493,7 +493,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
+		resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 		if err != nil {
 			slog.Warn("github_update_state: remove label request failed (ignored)",
 				"label", label, "issue_id", issueID, "error", err)
@@ -520,7 +520,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return fmt.Errorf("github_update_state: %w", err)
 	}
@@ -567,7 +567,7 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
@@ -619,7 +619,7 @@ func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateNa
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return nil, fmt.Errorf("github_create_issue: %w", err)
 	}
@@ -651,7 +651,7 @@ func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github")
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return nil, "", fmt.Errorf("github_api_request: %w", err)
 	}
@@ -858,3 +858,193 @@ func ParseNextLink(linkHeader string) (string, error) {
 	}
 	return m[1], nil
 }
+
+// linkLastRe matches the rel="last" entry in a GitHub Link header.
+var linkLastRe = regexp.MustCompile(`<([^>]+)>;\s*rel="last"`)
+
+// ParseLastPage extracts the "page" query parameter from the rel="last"
+// entry of a GitHub Link header.
+//
+// Returns (0, false, nil) when linkHeader is empty or has no rel="last"
+// entry — meaning the page that produced this header was itself the last
+// page. Returns a non-nil error when a rel="last" entry IS present but its
+// URL, or the "page" query parameter on it, cannot be parsed: an
+// unparseable last-page link must not collapse to "no more pages", because
+// FindCommentByKey's tail scan relies on knowing whether a later page
+// exists at all.
+func ParseLastPage(linkHeader string) (page int, ok bool, err error) {
+	if linkHeader == "" {
+		return 0, false, nil
+	}
+	m := linkLastRe.FindStringSubmatch(linkHeader)
+	if m == nil {
+		return 0, false, nil
+	}
+	parsed, parseErr := url.Parse(m[1])
+	if parseErr != nil {
+		return 0, false, fmt.Errorf("github_parse_last_page: parse url: %w", parseErr)
+	}
+	pageStr := parsed.Query().Get("page")
+	n, convErr := strconv.Atoi(pageStr)
+	if convErr != nil {
+		return 0, false, fmt.Errorf("github_parse_last_page: parse page %q: %w", pageStr, convErr)
+	}
+	if n < 1 {
+		// Syntactically parseable but not a legal page number. Treating this
+		// as ok=true would let FindCommentByKey's tail-scan loop skip every
+		// page (its `page > 1` guard excludes anything <= 1) and silently
+		// report "definitely absent" for what is actually an ambiguous
+		// response — exactly the collapse this interface's contract forbids.
+		return 0, false, fmt.Errorf("github_parse_last_page: page %d is not a positive page number", n)
+	}
+	return n, true, nil
+}
+
+// githubKeyScanPerPage is the page size FindCommentByKey requests. GitHub's
+// issue-comments endpoint accepts up to 100 per page, and a larger page
+// shrinks the residual duplicate window documented on FindCommentByKey.
+const githubKeyScanPerPage = 100
+
+// githubKeyScanTailPages bounds how many pages FindCommentByKey reads from
+// the end of the thread (beyond page 1). Two is enough to cover a comment
+// that landed on the last page just before a page boundary shifted it onto
+// the prior page between the failed attempt and its retry, while keeping
+// the lookup's cost bounded instead of scanning an entire pathological
+// thread — see FindCommentByKey's doc comment for the residual this leaves.
+const githubKeyScanTailPages = 2
+
+// fetchCommentPage fetches one page of issueID's comments and returns the
+// decoded comments alongside the response's raw Link header. Extracted so
+// FindCommentByKey's up-to-three page reads (page 1, the last page, the
+// second-to-last page) share one request implementation instead of three
+// copies of the same plumbing.
+func (c *Client) fetchCommentPage(ctx context.Context, issueID string, page int) (comments []map[string]any, linkHeader string, err error) {
+	u := fmt.Sprintf("%s/repos/%s/%s/issues/%s/comments?per_page=%d&page=%d",
+		c.cfg.Endpoint, c.owner, c.repo, issueID, githubKeyScanPerPage, page)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
+	if err != nil {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: status %d", resp.StatusCode)
+	}
+	var raw []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: decode body: %w", err)
+	}
+	return raw, resp.Header.Get("Link"), nil
+}
+
+// findCommentWithKey scans comments for key's hidden marker and decodes the
+// first match. Shared by every page FindCommentByKey reads.
+func findCommentWithKey(comments []map[string]any, key string) (*domain.Comment, bool) {
+	for _, rawComment := range comments {
+		body, _ := rawComment["body"].(string)
+		if !tracker.CommentHasKey(body, key) {
+			continue
+		}
+		comment := &domain.Comment{Body: body}
+		if id, ok := tracker.ToIntVal(rawComment["id"]); ok {
+			comment.ID = strconv.Itoa(id)
+		}
+		comment.CreatedAt = tracker.ParseTime(rawComment["created_at"])
+		if user, ok := rawComment["user"].(map[string]any); ok {
+			comment.AuthorName, _ = user["login"].(string)
+		}
+		return comment, true
+	}
+	return nil, false
+}
+
+// CreateCommentWithKey implements tracker.IdempotentCommenter. GitHub has no
+// client-supplied comment id, so the key travels as a hidden HTML marker in
+// the body — invisible in GitHub's rendered markdown, and readable back by
+// FindCommentByKey.
+func (c *Client) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	return c.CreateComment(ctx, issueID, tracker.MarkCommentKey(body, key))
+}
+
+// FindCommentByKey implements tracker.IdempotentCommenter by scanning the
+// TAIL of the issue's comment thread for key's hidden marker.
+//
+// GitHub's REST docs for this endpoint say comments are ordered by
+// ascending ID, and the endpoint accepts only since/per_page/page — no
+// sort or direction. So page 1 is always the OLDEST page, not the newest.
+// A comment FindCommentByKey is looking for is, by construction, among the
+// newest on the issue, so scanning pages 1..N forward would read the wrong
+// end of a long thread: on an issue with more than one page of comments it
+// can exhaust the scan and report a false "absent" for a comment that is
+// actually there, which would make the outbox flusher post a duplicate —
+// exactly what this interface exists to prevent.
+//
+// The scan instead goes: page 1 (covers the common case where the whole
+// thread fits on one page), then, if the Link header's rel="last" says
+// there is more, up to githubKeyScanTailPages pages counting back from the
+// last page (never re-fetching page 1). Stops as soon as a match is found.
+//
+// Residual: a duplicate remains possible only if more than roughly
+// githubKeyScanPerPage other comments land on the issue between the failed
+// attempt and its retry, pushing the target comment off every page this
+// scans. That window is far larger than any realistic retry delay.
+//
+// Returns a non-nil error whenever the answer is unknown — transport
+// failure, non-200, an undecodable body, a rel="last" link whose page
+// number can't be parsed, or a rel="next" link with no rel="last" to bound
+// the tail scan. The caller treats an error as "do not post", so
+// collapsing an unknown result to "absent" here would reintroduce the
+// duplicate this path exists to prevent.
+func (c *Client) FindCommentByKey(ctx context.Context, issueID, key string) (*domain.Comment, bool, error) {
+	firstPage, linkHeader, err := c.fetchCommentPage(ctx, issueID, 1)
+	if err != nil {
+		return nil, false, err
+	}
+	if comment, found := findCommentWithKey(firstPage, key); found {
+		return comment, true, nil
+	}
+
+	lastPage, hasLast, err := ParseLastPage(linkHeader)
+	if err != nil {
+		return nil, false, fmt.Errorf("github_find_comment_by_key: parse last page link: %w", err)
+	}
+	if !hasLast {
+		// rel="next" without rel="last": more pages exist but their extent
+		// is unknown, so the tail cannot be located. That is "unknown", not
+		// "absent" — a false not-found here would blind-post a duplicate of
+		// a comment sitting on a later page.
+		if linkNextRe.MatchString(linkHeader) {
+			return nil, false, errors.New(`github_find_comment_by_key: link header has rel="next" without rel="last"; cannot bound the scan`)
+		}
+		// No rel="next" and no rel="last": page 1 was the entire thread.
+		return nil, false, nil
+	}
+
+	pagesToScan := make([]int, 0, githubKeyScanTailPages)
+	for page := lastPage; page > 1 && len(pagesToScan) < githubKeyScanTailPages; page-- {
+		pagesToScan = append(pagesToScan, page)
+	}
+	for _, page := range pagesToScan {
+		comments, _, err := c.fetchCommentPage(ctx, issueID, page)
+		if err != nil {
+			return nil, false, err
+		}
+		if comment, found := findCommentWithKey(comments, key); found {
+			return comment, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// var _ tracker.IdempotentCommenter = (*Client)(nil) pins CreateCommentWithKey
+// and FindCommentByKey to the interface signature so a drift here fails at
+// compile time instead of silently demoting the outbox flusher to
+// CreateComment for GitHub.
+var _ tracker.IdempotentCommenter = (*Client)(nil)

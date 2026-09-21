@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -135,7 +136,11 @@ func (r *absentIssueReconciler) finish() {
 // ob and tr must be non-nil; a nil ob or tr is a caller error (cmd/itervox
 // only calls this when cfg.Tracker.Outbox gated construction succeeded) and
 // this no-ops defensively rather than panicking a daemon goroutine.
-func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher) <-chan struct{} {
+//
+// adapter identifies tr in tracker.SharedRateLimitGate() (e.g.
+// cfg.Tracker.Kind) — the tick checks that adapter's gate before each entry
+// and stops as soon as it is open (see runOutboxFlusherTickGated).
+func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, adapter string) <-chan struct{} {
 	done := make(chan struct{})
 	if ob == nil || tr == nil {
 		close(done)
@@ -162,7 +167,7 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 				return
 			case <-ticker.C:
 				now := time.Now()
-				runOutboxFlusherTick(ctx, ob, tr, orch, now)
+				runOutboxFlusherTickForAdapter(ctx, ob, tr, orch, now, adapter)
 				// Fire-and-forget, on its own goroutine — never inline here.
 				// See absentReconcileInterval's doc for why: an inline call
 				// would let a slow-but-succeeding FetchIssueStatesByIDs (up
@@ -185,6 +190,20 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 	return done
 }
 
+// runOutboxFlusherTickForAdapter performs one flusher tick for adapter's
+// tracker, stopping as soon as adapter's rate-limit gate is open — before the
+// first entry or between any two entries.
+//
+// Stopping is the point: with a gate open, every request this tick would send
+// is already known to fail, and sending them anyway burns the budget the
+// outbox exists to protect and floods the log with retries that teach an
+// operator nothing. The remaining entries stay pending and untouched — a
+// skipped delivery is deliberately NOT an attempt, so it neither advances
+// backoff nor moves an entry toward the degraded badge.
+func runOutboxFlusherTickForAdapter(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, now time.Time, adapter string) {
+	runOutboxFlusherTickGated(ctx, ob, tr, orch, now, adapter)
+}
+
 // runOutboxFlusherTick performs one flusher tick: it delivers every entry
 // ob.Due(now) returns, sequentially, stopping early if ctx is cancelled
 // mid-tick. Extracted from startOutboxFlusher's goroutine body so tests can
@@ -193,14 +212,36 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 // ticker — same convention as cmd/itervox/deps_auto_analyze.go's
 // runDepsAutoAnalyzeTick.
 //
+// Delegates to runOutboxFlusherTickGated with adapter "" — a key no gate is
+// ever recorded under, so the per-entry gate check never fires. Production
+// goes through runOutboxFlusherTickForAdapter with the real adapter key.
+//
 // Sequential, not concurrent: ob.Due already returns at most one entry per
 // issue (the FIFO head), so cross-issue delivery could in principle run in
 // parallel, but the spec is explicit ("for each entry (sequentially...)")
 // and a single in-flight tracker call at a time keeps flusher behavior easy
 // to reason about and trivially serializes with any other tracker caller.
 func runOutboxFlusherTick(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, now time.Time) {
+	runOutboxFlusherTickGated(ctx, ob, tr, orch, now, "")
+}
+
+// runOutboxFlusherTickGated is the tick loop. It re-checks adapter's shared
+// rate-limit gate before EACH entry, not once per tick: the first delivery of
+// a tick is often the one that discovers the limit, and checking only up
+// front would send every later due entry into the gate to block (up to
+// MaxRateLimitWait) or fail — each charged as an attempt with nothing sent.
+// With a backlog of ~200 issues after an outage that turned one tick into
+// hours. Once the gate is open the tick stops, logged once at Debug, and the
+// remaining entries are left exactly as they were for a later tick.
+func runOutboxFlusherTickGated(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, now time.Time, adapter string) {
+	gate := tracker.SharedRateLimitGate()
 	for _, entry := range ob.Due(now) {
 		if ctx.Err() != nil {
+			return
+		}
+		if until, open := gate.OpenUntil(adapter); open {
+			slog.Debug("outbox flusher: rate-limit gate open, stopping tick",
+				"adapter", adapter, "until", until, "next_id", entry.ID)
 			return
 		}
 		flushOutboxEntry(ctx, ob, tr, orch, entry, now)
@@ -222,7 +263,7 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 	case outbox.KindUpdateState:
 		flushErr = tr.UpdateIssueState(callCtx, entry.IssueID, entry.TargetState)
 	case outbox.KindCreateComment:
-		_, flushErr = tr.CreateComment(callCtx, entry.IssueID, entry.Body)
+		flushErr = deliverComment(callCtx, tr, entry)
 	default:
 		// validateEntry (internal/outbox) rejects unknown kinds at BOTH
 		// doors into the outbox — Enqueue and New's load path — so this is
@@ -241,8 +282,25 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 			"id", entry.ID, "issue_id", entry.IssueID, "kind", entry.Kind)
 	}
 
+	if errors.Is(flushErr, errCommentAlreadyDelivered) {
+		// Not a failure: the write landed on an earlier attempt. Fall through
+		// to MarkFlushed so the entry leaves the queue instead of retrying
+		// forever against a comment that already exists.
+		flushErr = nil
+	}
 	if flushErr != nil {
 		ob.MarkFailed(entry.ID, flushErr, now)
+		// Mirror MarkFailed's branch: a rate limit bumps RateLimitedAttempts
+		// and leaves Attempts alone, so logging attempts+1 for it would
+		// misreport a deferral as a delivery failure.
+		var rlErr *tracker.RateLimitedError
+		if errors.As(flushErr, &rlErr) {
+			slog.Info("outbox flusher: rate limited, deferring",
+				"id", entry.ID, "issue_id", entry.IssueID, "identifier", entry.Identifier,
+				"kind", entry.Kind, "reset_at", rlErr.ResetAt,
+				"rate_limited_attempts", entry.RateLimitedAttempts+1)
+			return
+		}
 		slog.Warn("outbox flusher: flush failed, will retry",
 			"id", entry.ID, "issue_id", entry.IssueID, "identifier", entry.Identifier,
 			"kind", entry.Kind, "attempts", entry.Attempts+1, "error", flushErr)
@@ -253,6 +311,75 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 	if entry.Kind == outbox.KindUpdateState && orch != nil {
 		orch.Refresh()
 	}
+}
+
+// errCommentAlreadyDelivered signals that a retry's comment was found already
+// present on the tracker, so the entry must be marked flushed rather than
+// posted again. It never escapes deliverComment's caller.
+var errCommentAlreadyDelivered = errors.New("outbox flusher: comment already delivered")
+
+// deliverComment posts entry's comment, using the tracker's idempotency
+// capability when it has one.
+//
+// The rule, in order:
+//
+//  1. First attempt (Attempts == 0 AND RateLimitedAttempts == 0): post. The
+//     overwhelmingly common case must not pay for a lookup.
+//  2. Retry with an IdempotentCommenter: look the key up FIRST. A comment
+//     that is already there means the earlier attempt landed and its response
+//     was lost — the entry is done, and posting again would duplicate it.
+//     The lookup runs after ANY prior attempt, rate-limited ones included —
+//     not just entry.Attempts > 0 — because a rate-limited outcome increments
+//     RateLimitedAttempts instead of Attempts (see internal/outbox.MarkFailed),
+//     and the outbox has no way to know whether the tracker call that came
+//     back rate-limited landed before or after the limit was hit. Gating the
+//     lookup on Attempts alone would let any future misclassification of a
+//     landed write as "rate limited" silently disable dedupe and blind-post a
+//     duplicate on the very next retry.
+//  3. A lookup that ERRORS defers the entry instead of posting. "Unknown" is
+//     precisely the state in which a blind post duplicates; treating it as
+//     not-found would defeat the whole mechanism.
+//  4. A tracker without the capability keeps the pre-existing behaviour,
+//     including its duplicate risk.
+//
+// Residual (GitHub only): GitHub's key is a body marker, and the lookup runs
+// only once an attempt has been recorded. A hard crash after GitHub accepts
+// the POST but before MarkFailed/MarkFlushed persists leaves the entry on disk
+// with Attempts == 0 and RateLimitedAttempts == 0, so on restart rule 1 posts
+// again without a lookup and the comment is duplicated. Linear is immune: the
+// key is the comment's own id, so a re-sent create collides with the comment
+// that already landed, the collision fails the attempt, and the retry's lookup
+// then finds it and marks the entry flushed.
+func deliverComment(ctx context.Context, tr tracker.Tracker, entry outbox.Entry) error {
+	ic, ok := tr.(tracker.IdempotentCommenter)
+	if !ok || entry.CommentKey == "" {
+		_, err := tr.CreateComment(ctx, entry.IssueID, entry.Body)
+		return err
+	}
+	if entry.Attempts+entry.RateLimitedAttempts > 0 {
+		existing, found, err := ic.FindCommentByKey(ctx, entry.IssueID, entry.CommentKey)
+		if err != nil {
+			return fmt.Errorf("outbox flusher: comment lookup failed, deferring: %w", err)
+		}
+		if found {
+			slog.Info("outbox flusher: comment already delivered, skipping re-post",
+				"id", entry.ID, "identifier", entry.Identifier,
+				"comment_key", entry.CommentKey, "reason", "dedupe_hit",
+				"comment_id", commentID(existing),
+				"attempts", entry.Attempts, "rate_limited_attempts", entry.RateLimitedAttempts)
+			return errCommentAlreadyDelivered
+		}
+	}
+	_, err := ic.CreateCommentWithKey(ctx, entry.IssueID, entry.CommentKey, entry.Body)
+	return err
+}
+
+// commentID is a nil-safe accessor for logging.
+func commentID(c *domain.Comment) string {
+	if c == nil {
+		return ""
+	}
+	return c.ID
 }
 
 // runAbsentIssueReconcileTick batch-fetches current tracker state for every
@@ -273,10 +400,11 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 // the operator remedy is the Outbox panel's Discard / DELETE
 // /api/v1/outbox/{id}.
 //
-// create_comment entries are never examined here, for the same reason
-// reconcilePendingOutboxEntries skips them: there is no reliable dedupe
-// signal for "was this comment already posted" to read back off a polled
-// issue.
+// create_comment entries are never examined here: they need no reconciliation
+// against polled tracker state because they are deduplicated at DELIVERY time
+// instead, by Entry.CommentKey (see deliverComment) — a stronger guarantee
+// than reconciliation could give, since it prevents the duplicate rather than
+// detecting it afterwards.
 //
 // Called from its own fire-and-forget goroutine (see startOutboxFlusher and
 // absentIssueReconciler), never inline on the flusher's delivery ticker —

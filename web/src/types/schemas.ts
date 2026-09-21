@@ -406,6 +406,10 @@ export const OutboxEntryRowSchema = z.object({
   attempts: z.number(),
   lastError: z.string().optional(),
   degraded: z.boolean().optional(),
+  // RateLimitedUntil mirrors server.OutboxEntryRow.RateLimitedUntil
+  // (*time.Time, omitempty) — the tracker-published instant this entry is
+  // waiting for when the last delivery attempt was deferred by a rate limit.
+  rateLimitedUntil: z.string().optional(),
   enqueuedAt: z.string(),
   nextAttemptAt: z.string(),
 });

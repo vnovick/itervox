@@ -245,3 +245,15 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
     }
   }
 }`
+
+// mutationUpdateIssueState transitions an issue to a resolved state UUID.
+// Package-level (rather than local to UpdateIssueState, like the client's
+// other mutations) solely so intent_internal_test.go can exercise
+// withOperationIntent against a real mutation document without reaching into
+// an unexported function's local scope.
+const mutationUpdateIssueState = `
+mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
+  }
+}`

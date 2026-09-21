@@ -1581,3 +1581,148 @@ func TestFetchCandidateIssuesCancelledContext(t *testing.T) {
 	_, err := client.FetchCandidateIssues(ctx)
 	require.Error(t, err)
 }
+
+// ---------------------------------------------------------------------------
+// IdempotentCommenter — CreateCommentWithKey / FindCommentByKey
+// ---------------------------------------------------------------------------
+
+func TestLinearCreateCommentWithKeySendsID(t *testing.T) {
+	var gotVars map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		gotVars = body.Variables
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"commentCreate":{"success":true,"comment":{
+			"id":"11111111-1111-4111-8111-111111111111","body":"hello",
+			"createdAt":"2026-09-16T10:00:00.000Z","user":{"id":"u1","name":"Itervox"}}}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	got, err := c.CreateCommentWithKey(context.Background(), "i1",
+		"11111111-1111-4111-8111-111111111111", "hello")
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "11111111-1111-4111-8111-111111111111", gotVars["id"],
+		"the key must be sent as the comment's own id")
+	assert.Equal(t, "hello", gotVars["body"], "the body must not carry a marker on Linear")
+}
+
+func TestLinearFindCommentByKeyAbsentIsNotAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"comments":{"nodes":[]}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	got, found, err := c.FindCommentByKey(context.Background(), "i1", "k1")
+
+	require.NoError(t, err, "an empty result set is a definitive not-found, never an error")
+	assert.False(t, found)
+	assert.Nil(t, got)
+}
+
+// TestLinearFindCommentByKeyIncludesArchived pins M3: Linear's comments
+// query hides archived comments unless includeArchived is set, so without it
+// an archived comment reads as absent — and every re-create with the same id
+// then collides with it forever.
+func TestLinearFindCommentByKeyIncludesArchived(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		gotQuery = body.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"comments":{"nodes":[]}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	_, _, err := c.FindCommentByKey(context.Background(), "i1", "k1")
+
+	require.NoError(t, err)
+	assert.Contains(t, gotQuery, "includeArchived: true",
+		"an archived comment must be found, not read as absent")
+}
+
+func TestLinearFindCommentByKeyPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"comments":{"nodes":[{
+			"id":"11111111-1111-4111-8111-111111111111","body":"hello",
+			"createdAt":"2026-09-16T10:00:00.000Z","user":{"id":"u1","name":"Itervox"}}]}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	got, found, err := c.FindCommentByKey(context.Background(), "i1",
+		"11111111-1111-4111-8111-111111111111")
+
+	require.NoError(t, err)
+	require.True(t, found)
+	require.NotNil(t, got)
+	assert.Equal(t, "11111111-1111-4111-8111-111111111111", got.ID)
+}
+
+func TestLinearFindCommentByKeyTransportErrorIsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	_, found, err := c.FindCommentByKey(context.Background(), "i1", "k1")
+
+	require.Error(t, err, "an unreachable tracker must be an error, never a false not-found")
+	assert.False(t, found)
+}
+
+func TestLinearFindCommentByKeyMissingNodesIsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"comments":{}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	_, found, err := c.FindCommentByKey(context.Background(), "i1", "k1")
+
+	require.Error(t, err, "a missing nodes field is unknown, never a false not-found")
+	assert.False(t, found)
+}
+
+func TestLinearFindCommentByKeyNullNodesIsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"comments":{"nodes":null}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	_, found, err := c.FindCommentByKey(context.Background(), "i1", "k1")
+
+	require.Error(t, err, "a null nodes field is unknown, never a false not-found")
+	assert.False(t, found)
+}
+
+func TestLinearFindCommentByKeyGraphQLErrorsIsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}],"data":{"comments":{"nodes":[]}}}`))
+	}))
+	defer srv.Close()
+
+	c := linear.NewClient(linear.ClientConfig{APIKey: "k", Endpoint: srv.URL})
+	_, found, err := c.FindCommentByKey(context.Background(), "i1", "k1")
+
+	require.Error(t, err, "a non-empty top-level errors array is unknown, even with well-formed data")
+	assert.False(t, found)
+}

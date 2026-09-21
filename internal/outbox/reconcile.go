@@ -41,10 +41,13 @@ import "time"
 // check rather than an assumption.
 //
 // This function only implements the drop rules for KindUpdateState entries.
-// create_comment entries are never reconciled this way (no reliable dedupe
-// signal exists for "was this comment already posted" — the caller is
-// responsible for filtering to KindUpdateState before calling this at all;
-// ReconcileVerdict does not itself check e.Kind).
+// create_comment entries are not reconciled against polled tracker state —
+// they are deduplicated at DELIVERY time instead, by Entry.CommentKey (see
+// cmd/itervox/outbox_flusher.go's deliverComment), which is a stronger
+// guarantee than reconciliation could give: it prevents the duplicate rather
+// than detecting it afterwards. The caller is still responsible for filtering
+// to KindUpdateState before calling this; ReconcileVerdict does not check
+// e.Kind itself.
 func ReconcileVerdict(e Entry, polledState string, polledUpdatedAt *time.Time) (drop bool, reason string) {
 	switch {
 	case polledState == e.TargetState:

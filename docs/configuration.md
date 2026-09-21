@@ -52,7 +52,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `working_state` | string | no | `"In Progress"` | State assigned when an agent starts. Empty string disables the transition |
 | `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched |
 | `failed_state` | string | no | `""` | State assigned when max retries are exhausted. When empty, failed issues are paused instead |
-| `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry |
+| `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry. Comments carry an idempotency key, so a retry checks whether the earlier attempt landed before posting again (never a duplicate; an unanswerable lookup defers). A write rejected by a tracker rate limit waits for the published reset, shows a "rate limited until HH:MM" chip, and does not count toward the degraded badge |
 
 ---
 
@@ -61,7 +61,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
-| `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. |
+| `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. Separately, when the tracker actually rate-limits a request (Linear: HTTP 400 `RATELIMITED`; GitHub: 429/403), the published reset is recorded once for every caller, writes are admitted ahead of reads when it lifts (Linear requests are classified by GraphQL operation), calls fail fast when the reset is more than 60s away, and a recorded window is capped at 2 hours. |
 
 ---
 
