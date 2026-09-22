@@ -868,8 +868,9 @@ type StateSnapshot struct {
 	// DefaultBackend is the configured default runner backend ("claude" or "codex").
 	// Used by the frontend to show the correct badge on non-running issues.
 	DefaultBackend string `json:"defaultBackend,omitempty"`
-	// InlineInput indicates whether agent input-required signals are posted as
-	// tracker comments (true) or queued in the dashboard UI (false).
+	// InlineInput reports whether the tracker is the only human reply channel
+	// for input-required agents (agent.inline_input). The dashboard hides its
+	// reply box when true.
 	InlineInput bool `json:"inlineInput,omitempty"`
 	// Automations is the configured set of lightweight cron or event-driven helper rules.
 	Automations []AutomationDef `json:"automations,omitempty"`

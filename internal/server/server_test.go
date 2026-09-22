@@ -1745,6 +1745,33 @@ func TestHandleDismissInput_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+func TestProvideInputRejectedWhenInlineInput(t *testing.T) {
+	snap := baseSnap()
+	snap.InlineInput = true
+	cfg := makeTestConfig(snap)
+	called := false
+	cfg.Client = &server.FuncClient{
+		ProvideInputFn: func(string, string) bool { called = true; return true },
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "inline_input_enabled")
+	assert.False(t, called, "the reply must not reach the orchestrator")
+}
+
+func TestProvideInputAllowedWhenInlineInputOff(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ProvideInputFn: func(string, string) bool { return true }}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestHandleAgentComment_Success(t *testing.T) {
 	store := agentactions.NewStore()
 	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionComment}, "", time.Minute)
@@ -1899,6 +1926,34 @@ func TestHandleAgentProvideInput_ForbiddenWithoutPermission(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.False(t, called)
 	assert.Contains(t, w.Body.String(), "agent_action_denied")
+}
+
+func TestAgentActionProvideInputAllowedWhenInlineInput(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionProvideInput}, "", time.Minute)
+	require.NoError(t, err)
+
+	var called bool
+	snap := baseSnap()
+	snap.InlineInput = true
+	cfg := makeTestConfig(snap)
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		ProvideInputFn: func(string, string) bool {
+			called = true
+			return true
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/provide-input", bytes.NewBufferString(`{"message":"continue"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called, "agent-actions provide-input must reach the orchestrator even when inline_input is on")
 }
 
 func TestHandleAgentMoveState_MissingTokenReturns401(t *testing.T) {

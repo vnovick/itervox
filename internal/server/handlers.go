@@ -741,6 +741,16 @@ func (s *Server) handleSetIssueBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
+	// agent.inline_input makes the tracker the only HUMAN reply channel: the
+	// operator answers by commenting on the issue, and the dashboard reply box
+	// is hidden. The token-gated agent-actions route (handleAgentProvideInput)
+	// is deliberately NOT gated — that is an automation policy, not a human
+	// channel, and gating it would silently break auto-resume automations.
+	if s.snapshot().InlineInput {
+		writeError(w, http.StatusConflict, "inline_input_enabled",
+			"agent.inline_input is on: reply by commenting on the issue in the tracker")
+		return
+	}
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		Message string `json:"message"`

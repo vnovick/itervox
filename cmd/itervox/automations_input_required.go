@@ -211,6 +211,9 @@ func inputRequiredReplayKey(entry *orchestrator.InputRequiredEntry) string {
 	if entry == nil {
 		return ""
 	}
+	if entry.QuestionCommentKey != "" {
+		return "comment-key:" + entry.QuestionCommentKey
+	}
 	if entry.QuestionCommentID != "" {
 		return "comment:" + entry.QuestionCommentID
 	}

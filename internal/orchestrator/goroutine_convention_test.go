@@ -26,12 +26,15 @@ import (
 //     closure whose semantics are caller-controlled (T-49).
 //
 // G-08 (gaps_280426_2).
+//
+// T3 (input_required_outbox_plan final fix wave) extended this guard to also
+// scan automation_rate_limited.go, after finding a second untracked `go
+// o.saveAutoSwitchedToDisk(...)` goroutine there with the exact same shape
+// as the one T-49-era work fixed in event_loop.go. The scan loops over a
+// file list so a future file with the same class of goroutine is one line
+// to add, not a second copy of this test.
 func TestEventLoopGoroutinesAreWaitgroupTracked(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "event_loop.go", nil, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parse event_loop.go: %v", err)
-	}
+	files := []string{"event_loop.go", "automation_rate_limited.go"}
 
 	knownWGs := map[string]struct{}{
 		"autoClearWg": {},
@@ -39,6 +42,27 @@ func TestEventLoopGoroutinesAreWaitgroupTracked(t *testing.T) {
 		"commentWg":   {},
 	}
 
+	var violations []string
+
+	for _, filename := range files {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, filename, nil, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("parse %s: %v", filename, err)
+		}
+		violations = append(violations, checkGoroutinesTracked(fset, f, filename, knownWGs)...)
+	}
+
+	if len(violations) > 0 {
+		t.Fatalf("untracked goroutines (%d):\n  - %s",
+			len(violations), strings.Join(violations, "\n  - "))
+	}
+}
+
+// checkGoroutinesTracked walks filename's AST looking for `go` statements not
+// preceded (lexically, within the same function body) by an Add(1) call on
+// one of knownWGs. Returns one violation string per offending goroutine.
+func checkGoroutinesTracked(fset *token.FileSet, f *ast.File, filename string, knownWGs map[string]struct{}) []string {
 	var violations []string
 
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -113,8 +137,5 @@ func TestEventLoopGoroutinesAreWaitgroupTracked(t *testing.T) {
 		return true
 	})
 
-	if len(violations) > 0 {
-		t.Fatalf("untracked goroutines in event_loop.go (%d):\n  - %s",
-			len(violations), strings.Join(violations, "\n  - "))
-	}
+	return violations
 }

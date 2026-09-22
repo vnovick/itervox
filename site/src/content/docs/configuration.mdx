@@ -95,7 +95,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
-| `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. Load-time only (no runtime setter). |
+| `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Load-time only (no runtime setter). |
 
 **Outbox visibility:** pending and degraded entries appear in the dashboard's
 Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
@@ -302,7 +302,7 @@ headroom the dashboard already reports.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `inline_input` | bool | `false` | When `true`, agent input-required signals are posted as tracker comments; the user replies in the tracker and moves the issue back to an active state to continue. When `false` (default), the dashboard shows a reply UI that posts the response as a tracker comment before resuming. |
+| `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker is not treated as the answer — reply again once the question comment appears. Runtime-editable from Settings → General. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
@@ -831,5 +831,7 @@ The fallback is backup behavior, not the recommended path:
 - The fallback is heuristic and tuned for common English phrasing.
 - The explicit marker makes prompt and skill behavior easier to reason about.
 
-When the user replies from the dashboard or tracker, Itervox resumes the same
-agent session with that reply as the next user message.
+When the user replies from the dashboard or tracker, Itervox resumes the
+agent with that reply as the next user message — normally in the same
+session; after a daemon restart that had to rebuild the entry from tracker
+comments, a fresh session starts with the question and the reply as context.

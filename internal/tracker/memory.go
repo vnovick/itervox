@@ -194,6 +194,27 @@ func (m *MemoryTracker) CreateComment(_ context.Context, issueID, body string) (
 	return comment, nil
 }
 
+// AddHumanComment appends a comment authored by a human (not the tracker's own
+// bot identity). For tests that exercise reply detection, which skips comments
+// by the question's author.
+func (m *MemoryTracker) AddHumanComment(issueID, body string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextCommentID++
+	for i := range m.issues {
+		if m.issues[i].ID != issueID {
+			continue
+		}
+		m.issues[i].Comments = append(m.issues[i].Comments, domain.Comment{
+			ID:         "memory-comment-" + strconv.Itoa(m.nextCommentID),
+			Body:       body,
+			AuthorID:   "human-1",
+			AuthorName: "Human",
+		})
+		return
+	}
+}
+
 // CreateCommentWithKey implements IdempotentCommenter. The key is stored as
 // a body marker, exactly as the GitHub adapter does, so tests exercise the
 // same shape the real fallback path uses.

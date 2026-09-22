@@ -317,3 +317,56 @@ func TestOrchestratorSetWriteSinkOverridesDefault(t *testing.T) {
 	assert.EqualValues(t, 0, tr.updateCalls.Load())
 	assert.Len(t, ob.Snapshot(), 1)
 }
+
+func TestOutboxWriteSinkCreateKeyedCommentPreservesKey(t *testing.T) {
+	ob, err := outbox.New(t.TempDir() + "/outbox.json")
+	require.NoError(t, err)
+	sink := NewOutboxWriteSink(ob)
+
+	const key = "11111111-1111-4111-8111-111111111111"
+	require.NoError(t, sink.CreateKeyedComment(context.Background(), "id1", "ENG-1", key, "hello"))
+
+	entries := ob.Snapshot()
+	require.Len(t, entries, 1)
+	assert.Equal(t, outbox.KindCreateComment, entries[0].Kind)
+	assert.Equal(t, key, entries[0].CommentKey, "the caller's key must survive Enqueue")
+	assert.Equal(t, "hello", entries[0].Body)
+}
+
+func TestDirectSinkCreateKeyedCommentUsesIdempotentCommenter(t *testing.T) {
+	issues := []domain.Issue{{ID: "id1", Identifier: "ENG-1", State: "In Progress"}}
+	mt := tracker.NewMemoryTracker(issues, []string{"In Progress"}, []string{"Done"})
+	sink := NewDirectWriteSink(mt)
+
+	require.NoError(t, sink.CreateKeyedComment(context.Background(), "id1", "ENG-1", "k1", "hello"))
+
+	got, found, err := mt.FindCommentByKey(context.Background(), "id1", "k1")
+	require.NoError(t, err)
+	require.True(t, found, "the direct sink must post under the key when the tracker supports it")
+	assert.Contains(t, got.Body, "hello")
+}
+
+func TestDirectSinkCreateKeyedCommentEmptyKeyFallsBack(t *testing.T) {
+	issues := []domain.Issue{{ID: "id1", Identifier: "ENG-1", State: "In Progress"}}
+	mt := tracker.NewMemoryTracker(issues, []string{"In Progress"}, []string{"Done"})
+	sink := NewDirectWriteSink(mt)
+
+	require.NoError(t, sink.CreateKeyedComment(context.Background(), "id1", "ENG-1", "", "hello"))
+
+	detail, err := mt.FetchIssueDetail(context.Background(), "id1")
+	require.NoError(t, err)
+	require.Len(t, detail.Comments, 1)
+	assert.Equal(t, "hello", detail.Comments[0].Body, "no key -> no marker")
+}
+
+func TestSinkEnqueuesLocally(t *testing.T) {
+	ob, err := outbox.New(t.TempDir() + "/outbox.json")
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, nil, nil)
+
+	o := &Orchestrator{tracker: mt}
+	assert.False(t, o.sinkEnqueuesLocally(), "the default direct sink performs network I/O")
+
+	o.SetWriteSink(NewOutboxWriteSink(ob))
+	assert.True(t, o.sinkEnqueuesLocally())
+}

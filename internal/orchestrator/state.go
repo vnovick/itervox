@@ -44,10 +44,6 @@ const (
 	// dispatch a reviewer worker through the event loop so state mutations
 	// happen in the single event-loop goroutine.
 	EventDispatchReviewer EventType = "DispatchReviewer"
-	// EventInputRequiredCommentRecorded is sent after the tracker successfully
-	// creates the input-required question comment so the event loop can persist
-	// the exact tracker comment ID and author identity locally.
-	EventInputRequiredCommentRecorded EventType = "InputRequiredCommentRecorded"
 	// EventDispatchAutomation is sent by cron automations to dispatch a helper
 	// worker through the event loop using a selected profile plus extra
 	// automation instructions.
@@ -80,7 +76,6 @@ type OrchestratorEvent struct { //nolint:revive
 	Message            string                   // user-provided text for EventProvideInput
 	ReviewerProfile    string                   // profile name for EventDispatchReviewer
 	InputRequiredEntry *InputRequiredEntry      // used by TerminalInputRequired
-	Comment            *domain.Comment          // used by EventInputRequiredCommentRecorded
 	Issue              *domain.Issue            // used by EventDispatchAutomation
 	Automation         *AutomationDispatch      // used by EventDispatchAutomation
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
@@ -151,15 +146,21 @@ type ResumeContext struct {
 // for human input. Stored in State.InputRequiredIssues until the user provides
 // input (via ProvideInput) or dismisses it (via DismissInput).
 type InputRequiredEntry struct {
-	IssueID            string
-	Identifier         string
-	SessionID          string // for --resume
-	Context            string // what the agent was waiting for (from FailureText/ResultText)
-	BranchName         string // actual branch/worktree checkout to reuse on resume
-	Backend            string // which runner was used
-	Command            string // agent command (for resume on same runner)
-	WorkerHost         string // SSH host (for resume on same host)
-	ProfileName        string // active profile
+	IssueID     string
+	Identifier  string
+	SessionID   string // for --resume
+	Context     string // what the agent was waiting for (from FailureText/ResultText)
+	BranchName  string // actual branch/worktree checkout to reuse on resume
+	Backend     string // which runner was used
+	Command     string // agent command (for resume on same runner)
+	WorkerHost  string // SSH host (for resume on same host)
+	ProfileName string // active profile
+	// QuestionCommentKey is the idempotency key the agent's question was (or
+	// will be) posted under. It identifies the question BEFORE delivery: on
+	// Linear it is the comment's id, on GitHub a hidden body marker. When set
+	// it is authoritative — reply detection never falls back to the legacy
+	// id/prefix match, because that could pick up a previous round's question.
+	QuestionCommentKey string
 	QuestionCommentID  string // exact tracker comment ID for the agent question
 	QuestionAuthorID   string // exact tracker author ID for the agent question
 	QuestionAuthorName string // display author for the agent question
@@ -177,16 +178,22 @@ type InputRequiredEntry struct {
 // daemon restart between "reply accepted" and "resumed worker produced output"
 // can continue the same agent session and host/backend selection.
 type PendingInputResumeEntry struct {
-	IssueID            string
-	Identifier         string
-	SessionID          string
-	Context            string
-	UserMessage        string
-	BranchName         string
-	Backend            string
-	Command            string
-	WorkerHost         string
-	ProfileName        string
+	IssueID     string
+	Identifier  string
+	SessionID   string
+	Context     string
+	UserMessage string
+	BranchName  string
+	Backend     string
+	Command     string
+	WorkerHost  string
+	ProfileName string
+	// QuestionCommentKey is the idempotency key the agent's question was (or
+	// will be) posted under. It identifies the question BEFORE delivery: on
+	// Linear it is the comment's id, on GitHub a hidden body marker. When set
+	// it is authoritative — reply detection never falls back to the legacy
+	// id/prefix match, because that could pick up a previous round's question.
+	QuestionCommentKey string
 	QuestionCommentID  string
 	QuestionAuthorID   string
 	QuestionAuthorName string

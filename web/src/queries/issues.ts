@@ -450,6 +450,22 @@ export function useClearIssueSubLogs() {
   });
 }
 
+/**
+ * Thrown by `useProvideInput`'s mutationFn on `409 inline_input_enabled` —
+ * `agent.inline_input` was turned on (possibly from another tab) after this
+ * issue's reply box was rendered, and the tracker is now the only reply
+ * channel. Typed so `onError` can refresh the snapshot instead of leaving
+ * the panel showing a stale reply box, and so the toast reads as an
+ * operator-facing notice rather than the raw `provideInput failed: 409`
+ * developer string.
+ */
+export class InlineInputEnabledError extends Error {
+  constructor() {
+    super('Inline input is on — reply by commenting on this issue in your tracker.');
+    this.name = 'InlineInputEnabledError';
+  }
+}
+
 export function useProvideInput() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -462,12 +478,19 @@ export function useProvideInput() {
           body: JSON.stringify({ message }),
         },
       );
+      if (res.status === 409) throw new InlineInputEnabledError();
       if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
     },
     onSuccess: (_data, { identifier }) => {
       refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
+      if (err instanceof InlineInputEnabledError) {
+        // Another tab (or the operator) flipped agent.inline_input on since
+        // this panel last saw a snapshot — refresh so the reply box is
+        // replaced by the inline notice instead of staying stale.
+        void useItervoxStore.getState().refreshSnapshot();
+      }
       toastApiError(err, 'Failed to send input to agent.');
     },
   });

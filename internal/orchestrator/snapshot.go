@@ -309,6 +309,7 @@ type inputRequiredDisk struct {
 	Command            string `json:"command"`
 	WorkerHost         string `json:"worker_host,omitempty"`
 	ProfileName        string `json:"profile_name,omitempty"`
+	QuestionCommentKey string `json:"question_comment_key,omitempty"`
 	QuestionCommentID  string `json:"question_comment_id,omitempty"`
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
@@ -334,6 +335,7 @@ type pendingInputResumeDisk struct {
 	Command            string `json:"command"`
 	WorkerHost         string `json:"worker_host,omitempty"`
 	ProfileName        string `json:"profile_name,omitempty"`
+	QuestionCommentKey string `json:"question_comment_key,omitempty"`
 	QuestionCommentID  string `json:"question_comment_id,omitempty"`
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
 	QuestionAuthorName string `json:"question_author_name,omitempty"`
@@ -381,6 +383,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
@@ -401,6 +404,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
@@ -471,6 +475,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
@@ -491,6 +496,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,

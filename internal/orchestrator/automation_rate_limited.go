@@ -216,7 +216,14 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 			profilesCopy := maps.Clone(state.IssueProfiles)
 			backendsCopy := maps.Clone(state.IssueBackends)
 			switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
-			go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
+			// Local file write — safe to call synchronously from the event
+			// loop, same reasoning as the twin call site in event_loop.go
+			// (search for "Local file write — safe to call synchronously"):
+			// this was an untracked `go` goroutine that
+			// TestEventLoopGoroutinesAreWaitgroupTracked's automation_rate_limited.go
+			// coverage now catches. Making it synchronous is the fix, not
+			// adding an unrelated Add(1).
+			o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
 			// Gap §6.1 audit-trail: post a managed comment on the issue
 			// summarising the swap so operators see "Itervox swapped
 			// claude-coder → codex-coder due to rate-limit" without

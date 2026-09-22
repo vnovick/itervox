@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
 )
@@ -480,11 +481,85 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 // question comments. Used to identify and skip own comments when detecting user replies.
 const itervoxCommentPrefix = "🤖 **Agent needs your input**"
 
-func buildInputRequiredComment(entry *InputRequiredEntry) string {
+func buildInputRequiredComment(entry *InputRequiredEntry, inlineInput bool) string {
 	if entry == nil {
 		return ""
 	}
-	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._", entry.Context)
+	footer := "_Reply in the tracker or via the Itervox dashboard to continue._"
+	if inlineInput {
+		// The dashboard reply box is hidden in inline mode; do not send the
+		// human looking for it.
+		footer = "_Reply to this comment to continue._"
+	}
+	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n%s", entry.Context, footer)
+}
+
+// postInputRequiredComment delivers one comment of the input-required
+// conversation (what: "question" or "reply") under key.
+//
+// With an outbox-backed sink the call only enqueues to a local file, so it
+// runs synchronously HERE, on the event loop. That is deliberate: the event
+// loop is the one serialised writer, so the question is always enqueued before
+// any reply, and the outbox's per-issue FIFO then delivers them in that order.
+// Two goroutines racing to enqueue would hand the FIFO an arbitrary order.
+//
+// With a direct sink (tracker.outbox: false) the call is network I/O, which
+// must never run on the event loop, so it stays a commentWg-tracked goroutine.
+// Ordering between question and reply is not guaranteed on that path.
+func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) {
+	if o.sinkEnqueuesLocally() {
+		if err := o.writeSink().CreateKeyedComment(context.Background(), issueID, identifier, key, body); err != nil {
+			slog.Warn("orchestrator: failed to enqueue input-required comment",
+				"identifier", identifier, "what", what, "error", err)
+		}
+		return
+	}
+	o.commentWg.Add(1)
+	go func() {
+		defer o.commentWg.Done()
+		postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
+		defer cancel()
+		if err := o.writeSink().CreateKeyedComment(postCtx, issueID, identifier, key, body); err != nil {
+			slog.Warn("orchestrator: failed to post input-required comment",
+				"identifier", identifier, "what", what, "error", err)
+		}
+	}()
+}
+
+// newInputRequiredCommentKey returns a fresh idempotency key, or "" when the
+// comment cannot be posted under one — the comment is then posted without a
+// key and reply detection falls back to the legacy id/prefix match.
+//
+// "" is returned when:
+//   - the active sink does NOT enqueue locally (the direct sink). A key on
+//     the entry is authoritative — findTrackedQuestionComment never falls
+//     back once one is recorded. That is only safe when a durable outbox
+//     Retry stands behind the post: an outbox entry that fails to deliver is
+//     retried until it either lands under its key or is dropped, and either
+//     way the entry's key still matches what eventually reaches the tracker
+//     (or the entry is explicitly abandoned). The direct sink has no retry —
+//     a single failed CreateCommentWithKey attempt would strand the entry
+//     with a key the tracker will never carry, and reply detection would
+//     wait forever. So on the direct path the question/reply is always
+//     posted keyless, exactly as it was before keys existed.
+//   - key generation fails.
+//   - the tracker cannot key comments at all (no tracker.IdempotentCommenter).
+//     A key the tracker will never carry would make reply detection wait
+//     forever for a comment that was posted without it.
+func (o *Orchestrator) newInputRequiredCommentKey(identifier string) string {
+	if !o.sinkEnqueuesLocally() {
+		return ""
+	}
+	if _, ok := o.tracker.(tracker.IdempotentCommenter); !ok {
+		return ""
+	}
+	key, err := outbox.NewCommentKey()
+	if err != nil {
+		slog.Warn("orchestrator: could not generate input-required comment key",
+			"identifier", identifier, "error", err)
+		return ""
+	}
+	return key
 }
 
 func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string) *PendingInputResumeEntry {
@@ -502,33 +577,12 @@ func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string)
 		Command:            entry.Command,
 		WorkerHost:         entry.WorkerHost,
 		ProfileName:        entry.ProfileName,
+		QuestionCommentKey: entry.QuestionCommentKey,
 		QuestionCommentID:  entry.QuestionCommentID,
 		QuestionAuthorID:   entry.QuestionAuthorID,
 		QuestionAuthorName: entry.QuestionAuthorName,
 		QueuedAt:           time.Now(),
 	}
-}
-
-func withRecordedQuestionComment(entry *InputRequiredEntry, comment *domain.Comment) *InputRequiredEntry {
-	if entry == nil || comment == nil {
-		return entry
-	}
-	cp := *entry
-	cp.QuestionCommentID = comment.ID
-	cp.QuestionAuthorID = comment.AuthorID
-	cp.QuestionAuthorName = comment.AuthorName
-	return &cp
-}
-
-func withRecordedPendingQuestionComment(entry *PendingInputResumeEntry, comment *domain.Comment) *PendingInputResumeEntry {
-	if entry == nil || comment == nil {
-		return entry
-	}
-	cp := *entry
-	cp.QuestionCommentID = comment.ID
-	cp.QuestionAuthorID = comment.AuthorID
-	cp.QuestionAuthorName = comment.AuthorName
-	return &cp
 }
 
 func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequiredEntry {
@@ -545,6 +599,7 @@ func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequire
 		Command:            entry.Command,
 		WorkerHost:         entry.WorkerHost,
 		ProfileName:        entry.ProfileName,
+		QuestionCommentKey: entry.QuestionCommentKey,
 		QuestionCommentID:  entry.QuestionCommentID,
 		QuestionAuthorID:   entry.QuestionAuthorID,
 		QuestionAuthorName: entry.QuestionAuthorName,
@@ -561,7 +616,29 @@ func findLatestItervoxQuestionComment(comments []domain.Comment) (int, domain.Co
 	return -1, domain.Comment{}, false
 }
 
+// findTrackedQuestionComment locates the agent's question among comments.
+//
+// A QuestionCommentKey is AUTHORITATIVE: the question is the comment whose id
+// equals the key (Linear sends the key as the comment id) or whose body
+// carries the key's hidden marker (GitHub). If no comment matches, the
+// question is still pending in the outbox and the answer is "not found" —
+// falling through to the prefix match would select an OLDER question from a
+// previous input-required round on the same issue, and the human reply under
+// that old question would resume the agent with a stale answer.
+//
+// Entries without a key (persisted before keys existed, or keyless because key
+// generation failed) keep the legacy resolution: recorded comment id, then the
+// latest comment with the Itervox question prefix.
 func findTrackedQuestionComment(comments []domain.Comment, entry *InputRequiredEntry) (int, domain.Comment, bool) {
+	if entry != nil && entry.QuestionCommentKey != "" {
+		key := entry.QuestionCommentKey
+		for i, comment := range comments {
+			if comment.ID == key || tracker.CommentHasKey(comment.Body, key) {
+				return i, comment, true
+			}
+		}
+		return -1, domain.Comment{}, false
+	}
 	if entry != nil && entry.QuestionCommentID != "" {
 		for i, comment := range comments {
 			if comment.ID == entry.QuestionCommentID {
@@ -586,6 +663,17 @@ func findReplyAfterQuestion(comments []domain.Comment, questionIdx int, question
 	for i := questionIdx + 1; i < len(comments); i++ {
 		comment := comments[i]
 		if strings.HasPrefix(comment.Body, itervoxCommentPrefix) {
+			continue
+		}
+		if tracker.IsManagedComment(comment) {
+			// Everything Itervox writes (including the dashboard's own reply,
+			// posted through the outbox) carries the managed-comment marker;
+			// human comments never do. sameCommentAuthor alone is not enough:
+			// it returns false when BOTH comments have empty author fields —
+			// which is exactly what a Linear OAuth-application comment looks
+			// like (`user: null`) — so without this check Itervox's own reply
+			// would be read as the human answer and the agent would
+			// self-resume on its own comment.
 			continue
 		}
 		if sameCommentAuthor(comment, question) {
@@ -716,6 +804,17 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 		}
 		questionIdx, questionComment, ok := findTrackedQuestionComment(detailed.Comments, entry)
 		if !ok {
+			// The key is authoritative (see findTrackedQuestionComment): if the
+			// question hasn't landed on the tracker yet, a human reply written
+			// in that window lands BELOW where the question will appear and is
+			// never treated as the answer (docs/configuration.md, "known
+			// limitations"). Debug level because this fires on every tick the
+			// question is still in flight — normally one flusher tick (~5s),
+			// longer while the tracker is rate-limiting.
+			if entry.QuestionCommentKey != "" {
+				slog.Debug("orchestrator: input-required question not on the tracker yet, waiting",
+					"identifier", identifier, "comment_key", entry.QuestionCommentKey)
+			}
 			continue // no question comment found — wait
 		}
 		replyComment, replied := findReplyAfterQuestion(detailed.Comments, questionIdx, questionComment)
@@ -1252,36 +1351,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
-		// Post the user's reply as a tracker comment so the conversation
-		// is visible in Linear/GitHub alongside the agent's question.
-		// T-44 (02.G-01): tracked via commentWg so Run waits for the post
-		// to finish on shutdown — otherwise the comment can be dropped if
-		// the daemon exits before the (postRunTimeout-bounded) tracker
-		// API call returns.
-		o.commentWg.Add(1)
-		go func(issueID, ident, msg string) {
-			defer o.commentWg.Done()
-			postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
-			defer cancel()
-			if _, err := o.tracker.CreateComment(postCtx, issueID, tracker.MarkManagedComment(msg)); err != nil {
-				slog.Warn("orchestrator: failed to post user input as tracker comment",
-					"identifier", ident, "error", err)
-			}
-		}(entry.IssueID, ev.Identifier, ev.Message)
+		// Post the user's reply so the conversation is visible in the
+		// tracker. Enqueued after the question (see postInputRequiredComment).
+		o.postInputRequiredComment(entry.IssueID, ev.Identifier,
+			o.newInputRequiredCommentKey(ev.Identifier), tracker.MarkManagedComment(ev.Message), "reply")
 		state = o.processPendingInputResumes(ctx, state, time.Now())
 		if o.OnStateChange != nil {
 			o.OnStateChange()
-		}
-
-	case EventInputRequiredCommentRecorded:
-		if ev.Comment == nil || ev.Identifier == "" {
-			return state
-		}
-		if entry, ok := state.InputRequiredIssues[ev.Identifier]; ok {
-			state.InputRequiredIssues[ev.Identifier] = withRecordedQuestionComment(entry, ev.Comment)
-		}
-		if pending, ok := state.PendingInputResumes[ev.Identifier]; ok {
-			state.PendingInputResumes[ev.Identifier] = withRecordedPendingQuestionComment(pending, ev.Comment)
 		}
 
 	case EventDismissInput:
@@ -1581,7 +1657,19 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				profilesCopy := maps.Clone(state.IssueProfiles)
 				backendsCopy := maps.Clone(state.IssueBackends)
 				switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
-				go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
+				// Local file write — safe to call synchronously from the event
+				// loop, consistent with the other saveXToDisk calls in this
+				// file (savePausedToDisk, savePauseReasonsToDisk,
+				// saveInputRequiredToDisk). Was previously fired via `go`,
+				// making it an untracked goroutine; that only escaped
+				// TestEventLoopGoroutinesAreWaitgroupTracked because an
+				// unrelated `o.commentWg.Add(1)` earlier in this same
+				// function (the now-removed input-required question-comment
+				// goroutine) lexically preceded it. Removing that goroutine
+				// in Task 3 of input_required_outbox_plan exposed this call
+				// as genuinely untracked; making it synchronous is the fix,
+				// not re-adding an unrelated Add(1).
+				o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
 			// Auto-clear workspace if configured.
@@ -1676,34 +1764,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Post the agent's question as a tracker comment so it's visible
 			// in Linear/GitHub. The dashboard shows a reply UI; user replies
 			// are also posted as tracker comments before resuming the agent.
-			// T-44 (02.G-01): tracked via commentWg so Run waits for the post
-			// AND the recorded-comment event to finish on shutdown.
-			commentText := tracker.MarkManagedComment(buildInputRequiredComment(entry))
-			o.commentWg.Add(1)
-			go func(issueID, ident string) {
-				defer o.commentWg.Done()
-				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
-				defer cancel()
-				comment, err := o.tracker.CreateComment(postCtx, issueID, commentText)
-				if err != nil {
-					slog.Warn("orchestrator: failed to post input-required comment", "identifier", ident, "error", err)
-					return
-				}
-				if comment == nil {
-					return
-				}
-				sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer sendCancel()
-				select {
-				case o.events <- OrchestratorEvent{
-					Type:       EventInputRequiredCommentRecorded,
-					Identifier: ident,
-					Comment:    comment,
-				}:
-				case <-sendCtx.Done():
-					slog.Warn("orchestrator: input-required comment event lost", "identifier", ident)
-				}
-			}(entry.IssueID, issue.Identifier)
+			// Record the question's key on the entry BEFORE storing it, so
+			// reply detection can find the question by key no matter when
+			// the outbox delivers it.
+			entry.QuestionCommentKey = o.newInputRequiredCommentKey(issue.Identifier)
+			o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
+				tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg())), "question")
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Pass liveEntry so the B1 self-reentry guard can suppress dispatch
 			// when the exiting worker was itself an input_required automation.

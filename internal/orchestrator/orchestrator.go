@@ -367,6 +367,15 @@ func (o *Orchestrator) writeSink() WriteSink {
 	return NewDirectWriteSink(o.tracker)
 }
 
+// sinkEnqueuesLocally reports whether the active write sink only enqueues to
+// the local outbox (a file write) rather than calling the tracker. The event
+// loop may call such a sink synchronously; a direct sink performs network I/O
+// and must be called from a goroutine instead.
+func (o *Orchestrator) sinkEnqueuesLocally() bool {
+	_, ok := o.writeSink().(*outboxWriteSink)
+	return ok
+}
+
 // SetWriteSink overrides the orchestrator's write path for completion/
 // failed-state transitions and worker-exit outcome comments (see
 // write_sink.go's WriteSink doc comment). cmd/itervox calls this to route

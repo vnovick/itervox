@@ -52,7 +52,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `working_state` | string | no | `"In Progress"` | State assigned when an agent starts. Empty string disables the transition |
 | `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched |
 | `failed_state` | string | no | `""` | State assigned when max retries are exhausted. When empty, failed issues are paused instead |
-| `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry. Comments carry an idempotency key, so a retry checks whether the earlier attempt landed before posting again (never a duplicate; an unanswerable lookup defers). A write rejected by a tracker rate limit waits for the published reset, shows a "rate limited until HH:MM" chip, and does not count toward the degraded badge |
+| `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry. Comments carry an idempotency key, so a retry checks whether the earlier attempt landed before posting again (never a duplicate; an unanswerable lookup defers). A write rejected by a tracker rate limit waits for the published reset, shows a "rate limited until HH:MM" chip, and does not count toward the degraded badge. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position |
 
 ---
 
@@ -81,7 +81,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). `0`/negative values fall back to the default; use `max_retries` to control retry count |
 | `max_retries` | int | `5` | Maximum retry attempts before moving to `failed_state`. `0` means unlimited |
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |
-| `inline_input` | bool | `false` | When `true`, agent input-required signals post as tracker comments instead of waiting in the dashboard UI |
+| `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker is not treated as the answer — reply again once the question comment appears. Runtime-editable from Settings → General. |
 | `rate_limit_error_patterns` | []string | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). WORKFLOW.md only |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue's profile/backend within `switch_window_hours`. `0` for unlimited. Runtime-editable |
 | `switch_window_hours` | int | `6` | Rolling window (hours) for the `max_switches_per_issue_per_window` cap. Runtime-editable |
@@ -458,8 +458,12 @@ The `GET /api/v1/health` endpoint is auth-exempt so external probes (load balanc
 
 Agents request human input by emitting a literal sentinel token in their
 output: `<!-- itervox:needs-input -->`. The orchestrator detects this and
-either pauses for a dashboard reply (`agent.inline_input: false`, default) or
-posts the question as a tracker comment (`inline_input: true`). The prompt
+always posts the question as a tracker comment; a comment on the issue
+resumes the agent — except one written by the bot's own author (skipped as
+self-reply detection) or one that lands before the question comment itself
+has reached the tracker (see "Known limitations" in `CHANGELOG.md`).
+`agent.inline_input` only controls whether the dashboard
+also offers a reply box — see the `inline_input` row above. The prompt
 template that teaches agents how to emit the sentinel is appended
 automatically — see `internal/templates/human_input.md`. The canonical
 constant is `agent.InputRequiredSentinel` in `internal/agent/events.go`; the

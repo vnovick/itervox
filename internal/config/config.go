@@ -420,13 +420,16 @@ type AgentConfig struct {
 	// DepsAnalyzerChunkSize caps how many issues go into one analyzer turn.
 	// Startup-only; see DepsAnalyzerTimeoutMs.
 	DepsAnalyzerChunkSize int
-	// InlineInput controls whether agent input-required signals are posted as
-	// tracker comments (true) or queued in the dashboard UI (false).
-	// When true, the issue moves to the completion state with a question comment;
-	// the user replies in the tracker and moves the issue back to continue.
-	// When false (default), the dashboard shows a reply UI and posts the user's
-	// response as a tracker comment before resuming the agent.
-	// Default: false.
+	// InlineInput makes the tracker the only human reply channel for
+	// input-required agents. The agent's question is always posted to the
+	// tracker as a comment, and a comment on the issue always resumes the
+	// agent — normally in the same session; after a daemon restart that had
+	// to rebuild the entry from tracker comments, a fresh session starts with
+	// the question and the reply as context. When false (default) the
+	// dashboard ALSO offers a reply box. When true the dashboard reply box is
+	// hidden and POST /api/v1/issues/{id}/provide-input returns 409 —
+	// operators answer in Linear/GitHub. Automation replies (agent-actions
+	// provide-input) are unaffected. Default: false.
 	InlineInput bool
 	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
 	// automation can swap an issue to a different profile / backend within

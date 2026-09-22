@@ -77,6 +77,7 @@ function makeWrapper() {
 function setupDefaultMocks(
   selectedIdentifier: string | null,
   issueOverride?: Partial<typeof baseIssue>,
+  snapshotOverride?: Record<string, unknown>,
 ) {
   const setSelectedIdentifier = vi.fn();
   const issue = issueOverride ? { ...baseIssue, ...issueOverride } : baseIssue;
@@ -85,7 +86,7 @@ function setupDefaultMocks(
     selector({
       selectedIdentifier,
       setSelectedIdentifier,
-      snapshot: { availableProfiles: [] },
+      snapshot: { availableProfiles: [], ...snapshotOverride },
     }),
   );
   mockUseIssues.mockReturnValue(castMock({ data: [issue] }));
@@ -519,6 +520,25 @@ describe('IssueDetailSlide', () => {
     expect(screen.getByPlaceholderText(/Type your reply/)).toBeInTheDocument();
     expect(screen.getByText('Reply & Resume Agent')).toBeInTheDocument();
     expect(screen.getByText('Dismiss')).toBeInTheDocument();
+  });
+
+  it('hides the reply box and keeps Dismiss when inline input is on', () => {
+    setupDefaultMocks('ENG-10', { orchestratorState: 'input_required' }, { inlineInput: true });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    expect(screen.getByTestId('input-required-inline-notice')).toBeInTheDocument();
+    expect(screen.queryByText('Reply & Resume Agent')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Type your reply/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Dismiss')).toBeInTheDocument();
+  });
+
+  it('keeps the reply box when inline input is off', () => {
+    setupDefaultMocks('ENG-10', { orchestratorState: 'input_required' }, { inlineInput: false });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    expect(screen.getByText('Reply & Resume Agent')).toBeInTheDocument();
+    expect(screen.queryByTestId('input-required-inline-notice')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /reply to the agent/i })).toBeInTheDocument();
   });
 
   it('shows error markdown in input_required state when error is present', async () => {

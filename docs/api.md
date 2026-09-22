@@ -180,7 +180,11 @@ Useful top-level fields include:
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 
 `provide-input` / `dismiss-input` return `404 not_found` when the issue is not
-currently in `input_required`.
+currently in `input_required`. `provide-input` returns `409 inline_input_enabled`
+when `agent.inline_input: true` — the tracker is the only reply channel in that
+mode. The `409` is checked first: in inline mode the route refuses regardless
+of the request body or the issue's state. The agent-action `provide-input` route
+(`POST /agent-actions/{identifier}/provide-input`) is unaffected.
 
 ---
 

@@ -52,6 +52,12 @@ type WriteSink interface {
 	// CreateComment posts body on issueID (identifier is its human-readable
 	// key).
 	CreateComment(ctx context.Context, issueID, identifier, body string) error
+	// CreateKeyedComment posts body on issueID under a caller-chosen
+	// idempotency key, so the caller can find the comment later BY THAT KEY
+	// without waiting for delivery: on Linear the key becomes the comment's
+	// own id, on GitHub a hidden body marker. key should come from
+	// outbox.NewCommentKey (a UUIDv4). An empty key degrades to CreateComment.
+	CreateKeyedComment(ctx context.Context, issueID, identifier, key, body string) error
 }
 
 // directWriteSink is the pre-outbox write path: synchronous tracker calls.
@@ -128,6 +134,17 @@ func (s *directWriteSink) CreateComment(ctx context.Context, issueID, _ string, 
 	return err
 }
 
+// CreateKeyedComment posts under key when the tracker can (IdempotentCommenter),
+// otherwise — or when key is empty — it is exactly CreateComment.
+func (s *directWriteSink) CreateKeyedComment(ctx context.Context, issueID, _ string, key, body string) error {
+	if ic, ok := s.tracker.(tracker.IdempotentCommenter); ok && key != "" {
+		_, err := ic.CreateCommentWithKey(ctx, issueID, key, body)
+		return err
+	}
+	_, err := s.tracker.CreateComment(ctx, issueID, body)
+	return err
+}
+
 // outboxWriteSink routes writes through a durable outbox.Outbox: Enqueue
 // persists the entry and returns immediately; the flusher (a later task)
 // delivers it to the tracker and owns retry/backoff, so there is no inline
@@ -171,5 +188,18 @@ func (s *outboxWriteSink) CreateComment(_ context.Context, issueID, identifier, 
 		IssueID:    issueID,
 		Identifier: identifier,
 		Body:       body,
+	})
+}
+
+// CreateKeyedComment enqueues a durable create_comment entry carrying the
+// caller's key. Enqueue preserves a caller-supplied CommentKey and only
+// generates one when it is empty, so an empty key here is still safe.
+func (s *outboxWriteSink) CreateKeyedComment(_ context.Context, issueID, identifier, key, body string) error {
+	return s.outbox.Enqueue(outbox.Entry{
+		Kind:       outbox.KindCreateComment,
+		IssueID:    issueID,
+		Identifier: identifier,
+		Body:       body,
+		CommentKey: key,
 	})
 }

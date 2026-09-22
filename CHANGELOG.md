@@ -19,6 +19,11 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 - **Idempotent tracker comments.** Every outbox comment carries a client-generated UUIDv4 key. On a retry, the flusher first asks the tracker whether a comment with that key already exists and marks the entry delivered instead of posting it again; an unanswerable lookup defers the entry rather than posting blind. Linear sends the key as the comment's own id (`CommentCreateInput.id`) and looks it up by id, archived comments included; GitHub embeds it as a hidden `<!-- itervox:ck:<key> -->` marker and scans the newest comments on the issue (GitHub returns issue comments oldest-first).
 - **Rate-limited outbox entries wait for the tracker's published reset.** A write rejected by a rate limit is deferred to the reset instant plus up to 5s of jitter, is counted separately from real failures (`rate_limited_attempts`), and never raises the **degraded** badge. The flusher skips its tick — and stops mid-tick — while a rate-limit window is open, so it sends no requests that are known to fail.
 - **Rate-limit visibility in the dashboard.** Outbox rows show an amber **rate limited until HH:MM** chip alongside (not instead of) the degraded badge, and the LiveOps strip shows one fleet-level **Tracker rate limited until HH:MM** chip. The snapshot's `outboxEntries[]` rows gain an optional `rateLimitedUntil` (RFC 3339) field.
+- **Input-required questions and replies go through the write-ahead outbox.** The agent's question and the operator's dashboard reply are now queued durably like every other tracker write: they survive a restart, are never posted twice, wait out tracker rate limits, and the question is always delivered before the reply.
+
+### Changed
+
+- **`agent.inline_input: true` now does what it says.** The tracker becomes the only place a human can reply to an input-required agent: the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Replying on the issue resumes the agent. Previously the setting had no effect.
 
 ### Fixed
 
@@ -28,12 +33,15 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 - **A GitHub secondary rate limit could stall GitHub calls for up to an hour.** GitHub sends `X-RateLimit-Reset` on every response; it was being used even for a secondary limit, where `Retry-After` governs. The reset is now honoured only once `X-RateLimit-Remaining` reaches 0.
 - **A success on the last in-call retry was reported as a rate limit.** The retry helper now classifies the final response instead of assuming it failed.
 - **Rate-limit windows are capped at 2 hours** on the fleet-wide gate, so a malformed reset header cannot stop tracker writes indefinitely.
+- **A human reply to an *earlier* question on the same issue could resume an agent that had asked a new question whose comment had not reached the tracker yet.** Questions are now matched by a unique key rather than by position whenever the outbox is enabled.
 
 ### Known limitations
 
 - **GitHub only:** if the daemon is killed after GitHub accepts a comment but before the attempt is recorded, the comment can be posted again after restart. Linear is not affected — a re-sent comment with the same id is rejected and then found by lookup.
 - The 2-hour cap applies to the fleet-wide gate but not yet to the reset instant stored on an individual outbox entry, so a malformed reset header can still hold that one entry longer.
 - A tracker's published reset is treated as a hard window: no requests are sent to that tracker until it passes.
+- With `tracker.outbox: false`, input-required questions and replies are posted with a single direct attempt (not queued), and replies are matched to the most recent question by position.
+- A tracker comment written before the agent's question has reached the tracker is not treated as the answer — reply again once the question appears. The window is normally a few seconds, longer while the tracker is rate-limiting.
 
 ---
 
