@@ -329,7 +329,7 @@ edges factor into automation dispatch gating. See the deps-analyzer agent pass
 | `staleness_hours` | int | `168` | How long an inferred edge is trusted before it is considered stale and stops gating; non-positive values fall back to the default |
 | `ordering` | string | `"critical_path"` | Dispatch ordering strategy for eligible issues. One of `critical_path` (default), `critical_path_strict`, or `simple`. See [Ordering modes](#ordering-modes) below. An unrecognized value falls back to the default with a `slog.Warn` |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it becomes eligible for the `blockers_resolved`/attention automation surface (`state.DependencyAttention`, kind `stale_blocker`). **`0` is a meaningful, explicit value that disables the escalation** — it is not treated as "absent"; only a negative value falls back to the default (with a `slog.Warn`) |
-| `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. When `true`, the daemon periodically re-runs the deps-analyzer pass in the background (fingerprint-scoped to changed issues) without an operator clicking "Analyze dependencies". Set `false` to make analysis strictly manual (dashboard button, API, or CLI) |
+| `analysis_mode` | string | `"auto"` | How the LLM dependency analyzer is triggered. `auto`: on the scheduler's debounce/min-interval rules. `manual`: only via the Deps tab's Analyze button or `POST /api/v1/deps/analyze`. The blocker audit is unaffected. Runtime-editable from Settings → Dependencies. `auto_analyze` (bool) is a deprecated alias: `false` = `manual`. Changing the mode from the dashboard leaves the old `auto_analyze` line in `WORKFLOW.md`; delete it by hand to stop the "both set" warning on every reload |
 | `stacked_prs` | bool | `false` | Branch an issue's worktree from its blocker's branch instead of `workspace.base_branch`, when the issue has exactly one live blocker that carries an identifier. Best-effort: several live blockers give no unambiguous base, and a blocker branch missing locally falls back to `base_branch` rather than failing the dispatch. The PR base is not yet set from the blocker (#60) |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between consecutive scheduled analysis passes. Parsed via `positiveIntField`; non-positive values fall back to the default — there is no meaningful zero here (the analyzer must not run every tick) |
 | `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before a scheduled analysis pass starts, so analysis waits for state to settle instead of racing an in-flight dispatch. Parsed via `positiveIntField`; non-positive values fall back to the default |
@@ -341,7 +341,7 @@ dependencies:
   staleness_hours: 168
   ordering: critical_path
   escalate_blocked_after_hours: 48
-  auto_analyze: true
+  analysis_mode: auto
   auto_analyze_min_interval_minutes: 60
   auto_analyze_debounce_minutes: 5
 ```

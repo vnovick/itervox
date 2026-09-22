@@ -86,6 +86,7 @@ func evaluateAutoAnalyze(
 	snap server.StateSnapshot,
 	sidecar *depsanalysis.Sidecar,
 	cfg *config.Config,
+	mode string,
 	profileResolves bool,
 	jobRunning bool,
 	activeStates []string,
@@ -93,10 +94,11 @@ func evaluateAutoAnalyze(
 ) (fire bool, next autoAnalyzeState) {
 	next = st
 
-	if cfg == nil || !cfg.Dependencies.AutoAnalyze {
-		// Kill switch: short-circuit before touching any other state so a
-		// disabled scheduler never accumulates a changeFirstSeen/fingerprint
-		// history that would let it fire the instant it's re-enabled.
+	if cfg == nil || mode != config.DepsAnalysisModeAuto {
+		// Manual mode (or unset): short-circuit before touching any other
+		// state so a disabled scheduler never accumulates a
+		// changeFirstSeen/fingerprint history that would let it fire the
+		// instant it is switched back to auto.
 		return false, next
 	}
 
@@ -307,9 +309,10 @@ func startDepsAutoAnalyze(
 	snapshot func() server.StateSnapshot,
 	sidecarCache *depsanalysis.SidecarCache,
 	cfg *config.Config,
+	mode func() string,
 	activeStates func() []string,
 ) {
-	if svc == nil || resolveProfile == nil || snapshot == nil || sidecarCache == nil || cfg == nil || activeStates == nil {
+	if svc == nil || resolveProfile == nil || snapshot == nil || sidecarCache == nil || cfg == nil || mode == nil || activeStates == nil {
 		return
 	}
 	go func() {
@@ -321,7 +324,7 @@ func startDepsAutoAnalyze(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				runDepsAutoAnalyzeTick(svc, resolveProfile, snapshot, sidecarCache, cfg, activeStates, &state, time.Now())
+				runDepsAutoAnalyzeTick(svc, resolveProfile, snapshot, sidecarCache, cfg, mode, activeStates, &state, time.Now())
 			}
 		}
 	}()
@@ -337,6 +340,7 @@ func runDepsAutoAnalyzeTick(
 	snapshot func() server.StateSnapshot,
 	sidecarCache *depsanalysis.SidecarCache,
 	cfg *config.Config,
+	mode func() string,
 	activeStates func() []string,
 	state *autoAnalyzeState,
 	now time.Time,
@@ -348,7 +352,7 @@ func runDepsAutoAnalyzeTick(
 	active := activeStates()
 
 	prevWarned := state.warnedNoProfile
-	fire, next := evaluateAutoAnalyze(*state, snap, sidecar, cfg, resolves, jobRunning, active, now)
+	fire, next := evaluateAutoAnalyze(*state, snap, sidecar, cfg, mode(), resolves, jobRunning, active, now)
 	if next.warnedNoProfile && !prevWarned {
 		slog.Warn("deps auto-analyze: configured profile does not resolve; auto-analyze paused until fixed",
 			"profile", profile)

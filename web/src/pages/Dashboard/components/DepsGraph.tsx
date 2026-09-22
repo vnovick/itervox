@@ -14,6 +14,7 @@ import {
   useSetDepsOverride,
   type DepsJobUpdate,
 } from '../../../queries/deps';
+import { useItervoxStore } from '../../../store/itervoxStore';
 import type {
   DependencyCycleRow,
   DependencyGraphEdge,
@@ -447,6 +448,12 @@ function DepsToolbar({
 }) {
   const analyzeDeps = useAnalyzeDeps();
   const cancelDeps = useCancelAnalyzeDeps();
+  // deps-analysis-mode Task 3 — passive "manual" chip: whenever the daemon
+  // reports dependencies.analysis_mode: manual, the scheduler will never
+  // start an analysis pass on its own. Read narrowly (not the whole
+  // snapshot) so this component doesn't re-render on unrelated snapshot
+  // ticks.
+  const depsAnalysisMode = useItervoxStore((s) => s.snapshot?.depsAnalysisMode ?? 'auto');
 
   // Addendum (cancel UI) — the mutation only resolves the final job at its
   // terminal status; the running job's ID and live chunk progress are
@@ -583,6 +590,15 @@ function DepsToolbar({
         >
           {isRunning ? 'Analyzing…' : 'Analyze dependencies'}
         </button>
+        {depsAnalysisMode === 'manual' && (
+          <span
+            data-testid="deps-analysis-mode-manual"
+            className="bg-theme-warning-soft text-theme-warning rounded px-1.5 py-0.5 text-[10px] font-medium"
+            title="Automatic dependency analysis is off (dependencies.analysis_mode: manual). Use the button to run it."
+          >
+            manual
+          </span>
+        )}
         {showAutoBadge && (
           <span
             data-testid="deps-analyze-trigger-auto"

@@ -13,6 +13,7 @@ import {
   OutboxEntryRowSchema,
   StateSnapshotSchema,
 } from '../schemas';
+import { makeSnapshot } from '../../test/fixtures/snapshots';
 import { AUTOMATION_TRIGGER_TYPES } from '../automationTriggers';
 
 // Regression guard for the "Board/Deps go Offline" class of bug: the daemon
@@ -322,5 +323,80 @@ describe('OutboxEntryRowSchema and StateSnapshot outbox fields (write-ahead-outb
       expect(result.data.outboxEntries).toBeUndefined();
       expect(result.data.outboxSyncing).toBeUndefined();
     }
+  });
+});
+
+// deps-analysis-mode Task 3 — StateSnapshot.DepsAnalysisMode is additive
+// (omitempty on the wire, "auto" | "manual"). The full-snapshot fixture must
+// still parse with the field present, and an unrecognized value must fail
+// the parse rather than silently coercing — unlike DepsAnalyzeJobSchema's
+// `trigger` field above, this one has no safe single fallback (it drives a
+// runtime-editable Settings control), so the contract is reject-and-surface,
+// not catch-and-default.
+describe('StateSnapshot depsAnalysisMode parity (deps-analysis-mode Task 3)', () => {
+  it('parses the full-snapshot fixture with depsAnalysisMode: "auto"', () => {
+    const result = StateSnapshotSchema.safeParse(makeSnapshot());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.depsAnalysisMode).toBe('auto');
+    }
+  });
+
+  it('parses depsAnalysisMode: "manual"', () => {
+    const result = StateSnapshotSchema.safeParse(makeSnapshot({ depsAnalysisMode: 'manual' }));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.depsAnalysisMode).toBe('manual');
+    }
+  });
+
+  it('parses an old snapshot missing depsAnalysisMode entirely (omitempty / older daemon)', () => {
+    const result = StateSnapshotSchema.safeParse({
+      generatedAt: '2026-05-25T12:00:00Z',
+      counts: { running: 0, retrying: 0, paused: 0 },
+      running: [],
+      retrying: [],
+      paused: [],
+      maxConcurrentAgents: 1,
+      maxRetries: 5,
+      maxSwitchesPerIssuePerWindow: 2,
+      switchWindowHours: 6,
+      rateLimits: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.depsAnalysisMode).toBeUndefined();
+    }
+  });
+
+  it('rejects an unrecognized depsAnalysisMode value', () => {
+    const result = StateSnapshotSchema.safeParse({
+      ...makeSnapshot(),
+      depsAnalysisMode: 'sometimes',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // Same "Board/Deps go Offline" class of bug as the agent action parity
+  // guard above: if Go ever gains a third DepsAnalysisMode constant, the
+  // Zod enum would reject the whole snapshot and every dashboard panel
+  // would silently freeze. Guard the constant set directly against Go.
+  it('Zod depsAnalysisMode enum covers every Go DepsAnalysisMode constant', () => {
+    // vitest runs with cwd = the web/ package root.
+    const goPath = resolve(process.cwd(), '../internal/config/config.go');
+    const src = readFileSync(goPath, 'utf8');
+    const goModes = [...src.matchAll(/DepsAnalysisMode\w+\s*=\s*"([a-z_]+)"/g)].map((m) =>
+      String(m[1]),
+    );
+    expect(goModes).toHaveLength(2);
+    const zodValues = StateSnapshotSchema.shape.depsAnalysisMode.unwrap()
+      .options as readonly string[];
+    for (const mode of goModes) {
+      expect(
+        zodValues,
+        `Zod depsAnalysisMode enum is missing "${mode}" — add it or the whole snapshot fails to parse`,
+      ).toContain(mode);
+    }
+    expect(zodValues).toHaveLength(goModes.length);
   });
 });

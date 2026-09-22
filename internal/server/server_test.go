@@ -1329,6 +1329,44 @@ func TestHandleSetAutoClearWorkspace_InvalidReviewerCombinationReturns400(t *tes
 	assert.Contains(t, w.Body.String(), "auto_review")
 }
 
+// ─── handleSetDepsAnalysisMode ───────────────────────────────────────────────
+
+func TestHandleSetDepsAnalysisMode_Manual(t *testing.T) {
+	var got string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetDepsAnalysisModeFn: func(mode string) error { got = mode; return nil }}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/settings/deps-analysis-mode", `{"mode":"manual"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "manual", got)
+	assert.Contains(t, w.Body.String(), `"mode":"manual"`)
+}
+
+func TestHandleSetDepsAnalysisMode_Invalid400(t *testing.T) {
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetDepsAnalysisModeFn: func(string) error { called = true; return nil }}
+	srv := server.New(cfg)
+
+	for _, body := range []string{`{"mode":"sometimes"}`, `{"mode":""}`, `{}`} {
+		w := postJSON(t, srv, "/api/v1/settings/deps-analysis-mode", body)
+		assert.Equal(t, http.StatusBadRequest, w.Code, body)
+	}
+	assert.False(t, called, "an invalid mode must be rejected before reaching the client")
+}
+
+func TestHandleSetDepsAnalysisMode_ClientError500(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetDepsAnalysisModeFn: func(string) error { return errors.New("disk full") }}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/settings/deps-analysis-mode", `{"mode":"auto"}`)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 // ─── handleClearAllWorkspaces ────────────────────────────────────────────────
 
 func TestHandleClearAllWorkspaces_Returns202(t *testing.T) {

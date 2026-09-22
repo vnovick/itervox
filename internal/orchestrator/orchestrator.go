@@ -681,6 +681,28 @@ func (o *Orchestrator) AutoClearWorkspaceCfg() bool {
 	return o.cfg.Workspace.AutoClearWorkspace
 }
 
+// DepsAnalysisModeCfg returns dependencies.analysis_mode under cfgMu. The
+// deps auto-analyze scheduler reads the mode through this accessor on every
+// tick, which is what makes a runtime change take effect without a restart
+// and without a data race against SetDepsAnalysisModeCfg.
+func (o *Orchestrator) DepsAnalysisModeCfg() string {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Dependencies.AnalysisMode
+}
+
+// SetDepsAnalysisModeCfg updates dependencies.analysis_mode at runtime.
+// Safe to call from any goroutine (HTTP handlers). Rejects unknown modes.
+func (o *Orchestrator) SetDepsAnalysisModeCfg(mode string) error {
+	if err := config.ValidateDepsAnalysisMode(mode); err != nil {
+		return err
+	}
+	o.cfgMu.Lock()
+	o.cfg.Dependencies.AnalysisMode = mode
+	o.cfgMu.Unlock()
+	return nil
+}
+
 func (o *Orchestrator) SetInlineInputCfg(enabled bool) {
 	o.cfgMu.Lock()
 	o.cfg.Agent.InlineInput = enabled

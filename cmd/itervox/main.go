@@ -1023,6 +1023,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			name, p, ok := orch.ResolveDepsAnalyzerProfileCfg()
 			return name, ok && config.ProfileEnabled(p)
 		}, snap, depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath))), cfg,
+			orch.DepsAnalysisModeCfg,
 			func() []string {
 				active, _, _ := orch.TrackerStatesCfg()
 				return active

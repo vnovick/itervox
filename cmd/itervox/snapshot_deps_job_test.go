@@ -90,3 +90,30 @@ func TestBuildSnapFunc_DepsAnalyzeJob(t *testing.T) {
 	require.NotNil(t, terminal.DepsAnalyzeJob, "the last job must still be visible once it goes terminal")
 	assert.Equal(t, string(depsanalysis.JobSucceeded), terminal.DepsAnalyzeJob.Status)
 }
+
+// TestSnapshotCarriesDepsAnalysisMode pins that the snapshot's
+// DepsAnalysisMode field reflects the live orchestrator config (read via
+// DepsAnalysisModeCfg, under cfgMu), not the config snapshot passed at
+// construction — this is what lets the dashboard (Task 3) observe a
+// runtime SetDepsAnalysisMode call without a daemon restart.
+func TestSnapshotCarriesDepsAnalysisMode(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:   []string{"Todo"},
+			TerminalStates: []string{"Done"},
+		},
+		Dependencies: config.DependenciesConfig{
+			AnalysisMode: config.DepsAnalysisModeAuto,
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+
+	ob, err := outbox.New("")
+	require.NoError(t, err)
+	snap := buildSnapFunc(orch, mt, cfg, "sess-1", logbuffer.New(), t.TempDir()+"/WORKFLOW.md", nil, ob)
+
+	require.NoError(t, orch.SetDepsAnalysisModeCfg(config.DepsAnalysisModeManual))
+
+	assert.Equal(t, "manual", snap().DepsAnalysisMode)
+}

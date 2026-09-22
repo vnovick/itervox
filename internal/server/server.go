@@ -353,6 +353,9 @@ type OrchestratorClient interface {
 	DeleteProfile(name string) error
 	SetAutomations(automations []AutomationDef) error
 	SetAutoClearWorkspace(enabled bool) error
+	// SetDepsAnalysisMode updates dependencies.analysis_mode ("auto" |
+	// "manual") at runtime, persisting to WORKFLOW.md first.
+	SetDepsAnalysisMode(mode string) error
 	ClearAllWorkspaces() error
 	FetchLogIdentifiers() []string
 	UpdateTrackerStates(active, terminal []string, completion string) error
@@ -443,6 +446,7 @@ func (noopClient) UpsertProfile(string, ProfileDef, string) error         { retu
 func (noopClient) DeleteProfile(string) error                             { return errNotConfigured }
 func (noopClient) SetAutomations([]AutomationDef) error                   { return errNotConfigured }
 func (noopClient) SetAutoClearWorkspace(bool) error                       { return errNotConfigured }
+func (noopClient) SetDepsAnalysisMode(string) error                       { return errNotConfigured }
 func (noopClient) ClearAllWorkspaces() error                              { return errNotConfigured }
 func (noopClient) FetchLogIdentifiers() []string                          { return nil }
 func (noopClient) UpdateTrackerStates([]string, []string, string) error   { return errNotConfigured }
@@ -496,6 +500,7 @@ type FuncClient struct {
 	DeleteProfileFn                   func(string) error
 	SetAutomationsFn                  func([]AutomationDef) error
 	SetAutoClearWorkspaceFn           func(bool) error
+	SetDepsAnalysisModeFn             func(string) error
 	ClearAllWorkspacesFn              func() error
 	FetchLogIdentifiersFn             func() []string
 	UpdateTrackerStatesFn             func([]string, []string, string) error
@@ -727,6 +732,12 @@ func (c *FuncClient) SetAutoClearWorkspace(enabled bool) error {
 	}
 	return errNotConfigured
 }
+func (c *FuncClient) SetDepsAnalysisMode(mode string) error {
+	if c.SetDepsAnalysisModeFn != nil {
+		return c.SetDepsAnalysisModeFn(mode)
+	}
+	return errNotConfigured
+}
 func (c *FuncClient) ClearAllWorkspaces() error {
 	if c.ClearAllWorkspacesFn != nil {
 		return c.ClearAllWorkspacesFn()
@@ -877,6 +888,10 @@ type StateSnapshot struct {
 	// AutoClearWorkspace indicates whether workspace directories are
 	// automatically deleted after a task succeeds.
 	AutoClearWorkspace bool `json:"autoClearWorkspace,omitempty"`
+	// DepsAnalysisMode reports dependencies.analysis_mode ("auto" |
+	// "manual") — whether the LLM dependency analyzer is scheduled
+	// automatically or only runs on explicit operator triggers.
+	DepsAnalysisMode string `json:"depsAnalysisMode,omitempty"`
 	// CurrentAppSessionID is the ID of the current daemon invocation.
 	// All history rows produced during this run share this ID.
 	CurrentAppSessionID string `json:"currentAppSessionId,omitempty"`
@@ -1491,6 +1506,7 @@ func (s *Server) routes() {
 			r.Post("/settings/workers", s.handleSetWorkers)
 			r.Delete("/workspaces", s.handleClearAllWorkspaces)
 			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
+			r.Post("/settings/deps-analysis-mode", s.handleSetDepsAnalysisMode)
 			r.Get("/settings/models", s.handleListModels)
 			r.Post("/settings/models/refresh", s.handleRefreshModels)
 			r.Get("/settings/reviewer", s.handleGetReviewer)

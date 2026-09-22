@@ -1303,6 +1303,28 @@ func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoClearWorkspace": *body.Enabled})
 }
 
+// handleSetDepsAnalysisMode updates dependencies.analysis_mode at runtime.
+// POST /api/v1/settings/deps-analysis-mode  {"mode":"auto"|"manual"}
+func (s *Server) handleSetDepsAnalysisMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	mode := strings.TrimSpace(body.Mode)
+	if err := config.ValidateDepsAnalysisMode(mode); err != nil {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", err.Error(), "mode")
+		return
+	}
+	if err := s.client.SetDepsAnalysisMode(mode); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": mode})
+}
+
 // handleUpdateTrackerStates updates active/terminal/completion states in-memory and in WORKFLOW.md.
 // PUT /api/v1/settings/tracker/states
 // Body: {"activeStates": [...], "terminalStates": [...], "completionState": "..."}

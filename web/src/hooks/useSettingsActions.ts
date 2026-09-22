@@ -205,6 +205,14 @@ const actions = {
       'Failed to update auto-clear setting.',
     ),
 
+  setDepsAnalysisMode: async (mode: 'auto' | 'manual'): Promise<boolean> =>
+    settingsFetch(
+      '/api/v1/settings/deps-analysis-mode',
+      'POST',
+      { mode },
+      'Failed to update dependency analysis mode.',
+    ),
+
   setProjectFilter: async (slugs: string[] | null): Promise<boolean> =>
     settingsFetch('/api/v1/projects/filter', 'PUT', { slugs }, 'Failed to update project filter.'),
 

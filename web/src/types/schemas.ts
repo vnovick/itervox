@@ -451,6 +451,11 @@ export const StateSnapshotSchema = z.object({
   completionState: z.string().optional(),
   backlogStates: z.array(z.string()).optional(),
   autoClearWorkspace: z.boolean().optional(),
+  // deps-analysis-mode Task 1/3 — mirrors server.StateSnapshot.DepsAnalysisMode
+  // (omitempty on the wire). "auto" | "manual"; absent from snapshots emitted
+  // by daemons predating this field, in which case Settings/the Deps tab
+  // treat it as "auto" (the pre-existing default behaviour).
+  depsAnalysisMode: z.enum(['auto', 'manual']).optional(),
   currentAppSessionId: z.string().optional(),
   sshHosts: z.array(SSHHostInfoSchema).optional(),
   dispatchStrategy: z.string().optional(),

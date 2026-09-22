@@ -568,7 +568,7 @@ Tracker-declared blockers (`issue.BlockedBy`) always hard-block dispatch and are
 | `staleness_hours` | int | `168` | How long an inferred edge is trusted before it stops gating. Non-positive values fall back to the default. |
 | `ordering` | string | `"critical_path"` | Dispatch ordering strategy. One of `critical_path`, `critical_path_strict`, or `simple` — see [Ordering modes](#ordering-modes). An unrecognized value falls back to the default with a warning. |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it surfaces as needing attention. **An explicit `0` disables escalation** and is preserved as a meaningful value; only a negative value falls back to the default. |
-| `auto_analyze` | bool | `true` | Kill switch for scheduled incremental dependency analysis. Set `false` to make analysis strictly manual (dashboard, API, or CLI). |
+| `analysis_mode` | string | `"auto"` | How the LLM dependency analyzer is triggered. `auto`: on the scheduler's debounce/min-interval rules. `manual`: only via the Deps tab's Analyze button or `POST /api/v1/deps/analyze`. The blocker audit is unaffected. Runtime-editable from Settings → Dependencies. `auto_analyze` (bool) is a deprecated alias: `false` = `manual`. Changing the mode from the dashboard leaves the old `auto_analyze` line in `WORKFLOW.md`; delete it by hand to stop the "both set" warning on every reload. |
 | `stacked_prs` | bool | `false` | Branch an issue's worktree from its single live blocker's branch. Does not set the PR base — see below. |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between scheduled analysis passes. Non-positive values fall back to the default — the analyzer must not run every tick. |
 | `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before analysis starts, so it waits for state to settle rather than racing an in-flight dispatch. |
@@ -580,7 +580,7 @@ dependencies:
   staleness_hours: 168
   ordering: critical_path
   escalate_blocked_after_hours: 48
-  auto_analyze: true
+  analysis_mode: auto
   auto_analyze_min_interval_minutes: 60
   auto_analyze_debounce_minutes: 5
 ```

@@ -2,6 +2,7 @@ import PageMeta from '../../components/common/PageMeta';
 import { GeneralCard } from './GeneralCard';
 import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
+import { DependenciesCard } from './DependenciesCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
 import { SkillsCard } from './SkillsCard';
@@ -16,6 +17,7 @@ export default function Settings() {
     terminalStates,
     completionState,
     autoClearWorkspace,
+    depsAnalysisMode,
     autoReview,
     inlineInput,
     trackerKind,
@@ -27,6 +29,7 @@ export default function Settings() {
     trackerStateOptions,
     updateTrackerStates,
     setAutoClearWorkspace,
+    setDepsAnalysisMode,
     setProjectFilter,
     setInlineInput,
     setMaxRetries,
@@ -96,6 +99,16 @@ export default function Settings() {
             autoReviewEnabled={autoReview}
             onToggle={setAutoClearWorkspace}
           />
+        </section>
+
+        <section aria-labelledby="section-dependencies">
+          <h2
+            id="section-dependencies"
+            className="mb-3 text-xs font-semibold tracking-widest uppercase"
+          >
+            Dependencies
+          </h2>
+          <DependenciesCard mode={depsAnalysisMode} onSetMode={setDepsAnalysisMode} />
         </section>
 
         <section aria-labelledby="section-retries">

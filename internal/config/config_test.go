@@ -1531,34 +1531,73 @@ func TestPreferHighOutdegreeAlias(t *testing.T) {
 	})
 }
 
-// TestDependenciesAutoAnalyzeDefaults asserts that when `dependencies:` is
-// absent entirely, AutoAnalyze defaults to true, AutoAnalyzeMinIntervalMinutes
-// defaults to 60, and AutoAnalyzeDebounceMinutes defaults to 5.
-func TestDependenciesAutoAnalyzeDefaults(t *testing.T) {
+// TestDependenciesAnalysisModeDefaultsToAuto asserts that when
+// `dependencies:` is absent entirely, AnalysisMode defaults to "auto",
+// AutoAnalyzeMinIntervalMinutes defaults to 60, and AutoAnalyzeDebounceMinutes
+// defaults to 5.
+func TestDependenciesAnalysisModeDefaultsToAuto(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 
-	assert.True(t, cfg.Dependencies.AutoAnalyze)
+	assert.Equal(t, config.DepsAnalysisModeAuto, cfg.Dependencies.AnalysisMode)
 	assert.Equal(t, config.DefaultDependenciesAutoAnalyzeMinIntervalMinutes, cfg.Dependencies.AutoAnalyzeMinIntervalMinutes)
 	assert.Equal(t, config.DefaultDependenciesAutoAnalyzeDebounceMinutes, cfg.Dependencies.AutoAnalyzeDebounceMinutes)
 }
 
-// TestDependenciesAutoAnalyzeParsed asserts that explicit
-// `dependencies.auto_analyze` values are respected, along with explicit
-// interval values. It also verifies that <=0 values fall back to defaults
-// (positiveIntField behavior: there is no meaningful zero for analyzer timing).
-func TestDependenciesAutoAnalyzeParsed(t *testing.T) {
-	t.Run("auto_analyze false respected", func(t *testing.T) {
-		path := workflowWithContent(t, minimal(
-			"dependencies:\n"+
-				"  auto_analyze: false\n"))
-		cfg, err := config.Load(path)
+// TestDependenciesAnalysisModeParsed asserts that explicit
+// `dependencies.analysis_mode` values are respected, and that an unrecognized
+// value falls back to "auto" rather than failing config load.
+func TestDependenciesAnalysisModeParsed(t *testing.T) {
+	t.Run("manual", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("dependencies:\n  analysis_mode: manual\n")))
 		require.NoError(t, err)
-
-		assert.False(t, cfg.Dependencies.AutoAnalyze)
+		assert.Equal(t, config.DepsAnalysisModeManual, cfg.Dependencies.AnalysisMode)
 	})
+	t.Run("auto", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("dependencies:\n  analysis_mode: auto\n")))
+		require.NoError(t, err)
+		assert.Equal(t, config.DepsAnalysisModeAuto, cfg.Dependencies.AnalysisMode)
+	})
+	t.Run("invalid value falls back to auto", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("dependencies:\n  analysis_mode: sometimes\n")))
+		require.NoError(t, err, "an invalid mode must not fail startup")
+		assert.Equal(t, config.DepsAnalysisModeAuto, cfg.Dependencies.AnalysisMode)
+	})
+}
 
+// TestDependenciesAutoAnalyzeAliasMapsToMode asserts that the deprecated
+// `dependencies.auto_analyze` bool still maps to AnalysisMode, and that
+// `analysis_mode` wins when both keys are present.
+func TestDependenciesAutoAnalyzeAliasMapsToMode(t *testing.T) {
+	t.Run("auto_analyze false -> manual", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("dependencies:\n  auto_analyze: false\n")))
+		require.NoError(t, err)
+		assert.Equal(t, config.DepsAnalysisModeManual, cfg.Dependencies.AnalysisMode)
+	})
+	t.Run("auto_analyze true -> auto", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("dependencies:\n  auto_analyze: true\n")))
+		require.NoError(t, err)
+		assert.Equal(t, config.DepsAnalysisModeAuto, cfg.Dependencies.AnalysisMode)
+	})
+	t.Run("both set -> analysis_mode wins", func(t *testing.T) {
+		cfg, err := config.Load(workflowWithContent(t, minimal("dependencies:\n  auto_analyze: true\n  analysis_mode: manual\n")))
+		require.NoError(t, err)
+		assert.Equal(t, config.DepsAnalysisModeManual, cfg.Dependencies.AnalysisMode)
+	})
+}
+
+func TestValidateDepsAnalysisMode(t *testing.T) {
+	assert.NoError(t, config.ValidateDepsAnalysisMode("auto"))
+	assert.NoError(t, config.ValidateDepsAnalysisMode("manual"))
+	assert.Error(t, config.ValidateDepsAnalysisMode(""))
+	assert.Error(t, config.ValidateDepsAnalysisMode("Auto"), "modes are exact lowercase tokens")
+}
+
+// TestDependenciesAutoAnalyzeIntervalsParsed asserts that explicit interval
+// values are respected, and that <=0 values fall back to defaults
+// (positiveIntField behavior: there is no meaningful zero for analyzer timing).
+func TestDependenciesAutoAnalyzeIntervalsParsed(t *testing.T) {
 	t.Run("explicit intervals respected", func(t *testing.T) {
 		path := workflowWithContent(t, minimal(
 			"dependencies:\n"+

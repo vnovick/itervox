@@ -72,4 +72,27 @@ describe('useSettingsPageData', () => {
     expect(result.current.switchWindowHours).toBe(6);
     expect(result.current.automationProfileOptions).toEqual([]);
   });
+
+  // deps-analysis-mode Task 3 — pin the older-daemon fallback: a snapshot
+  // that predates the field (omitempty on the wire) must resolve to 'auto',
+  // and a snapshot carrying 'manual' must pass it through unchanged.
+  it('falls back to depsAnalysisMode: "auto" when the snapshot lacks the field', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({ depsAnalysisMode: undefined }),
+    });
+
+    const { result } = renderHook(() => useSettingsPageData());
+
+    expect(result.current.depsAnalysisMode).toBe('auto');
+  });
+
+  it('passes through depsAnalysisMode: "manual" from the snapshot', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({ depsAnalysisMode: 'manual' }),
+    });
+
+    const { result } = renderHook(() => useSettingsPageData());
+
+    expect(result.current.depsAnalysisMode).toBe('manual');
+  });
 });

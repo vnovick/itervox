@@ -114,6 +114,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		}
 		profiles := orch.ProfilesCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
+		depsAnalysisMode := orch.DepsAnalysisModeCfg()
 		activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
 
 		var availableProfiles []string
@@ -211,6 +212,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			BacklogStates:                cfg.Tracker.BacklogStates,
 			PollIntervalMs:               cfg.Polling.IntervalMs,
 			AutoClearWorkspace:           autoClearWorkspace,
+			DepsAnalysisMode:             depsAnalysisMode,
 			CurrentAppSessionID:          appSessionID,
 			SSHHosts:                     sshHostInfos,
 			DispatchStrategy:             orch.DispatchStrategyCfg(),

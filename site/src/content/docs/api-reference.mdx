@@ -275,6 +275,7 @@ All settings endpoints persist back to `WORKFLOW.md`.
 | `POST` | `/settings/ssh-hosts` | `{"host":"builder-1","description":"GPU box"}` | `{"ok":true}` |
 | `DELETE` | `/settings/ssh-hosts/{host}` | — | `{"ok":true}` |
 | `PUT` | `/settings/dispatch-strategy` | `{"strategy":"round-robin" \| "least-loaded"}` | `{"ok":true}` |
+| `POST` | `/settings/deps-analysis-mode` | `{"mode":"auto" \| "manual"}` | `{"ok":true,"mode":"auto"}` |
 | `DELETE` | `/workspaces` | — | `202 {"ok":true}` |
 | `POST` | `/refresh` | — | `202 {"queued":true,"queued_at":"..."}` |
 | `POST` | `/automations/{id}/test` | `{"identifier":"ENG-42"}` (target issue identifier) | `{"ok":true}` |

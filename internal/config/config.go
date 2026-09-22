@@ -102,6 +102,24 @@ const (
 	DefaultDependenciesAutoAnalyzeDebounceMinutes    = 5
 )
 
+const (
+	// DepsAnalysisModeAuto schedules the LLM dependency analyzer automatically.
+	DepsAnalysisModeAuto = "auto"
+	// DepsAnalysisModeManual leaves the analyzer to explicit operator triggers.
+	DepsAnalysisModeManual = "manual"
+)
+
+// ValidateDepsAnalysisMode reports whether mode is an accepted
+// dependencies.analysis_mode value. Exact lowercase tokens only.
+func ValidateDepsAnalysisMode(mode string) error {
+	switch mode {
+	case DepsAnalysisModeAuto, DepsAnalysisModeManual:
+		return nil
+	}
+	return fmt.Errorf("config: dependencies.analysis_mode must be %q or %q, got %q",
+		DepsAnalysisModeAuto, DepsAnalysisModeManual, mode)
+}
+
 // DependenciesOrderingCriticalPath / DependenciesOrderingCriticalPathStrict /
 // DependenciesOrderingSimple are the accepted values for
 // dependencies.ordering. DefaultDependenciesOrdering is the config-loader
@@ -539,9 +557,14 @@ type DependenciesConfig struct {
 	// negative value falls back to DefaultDependenciesEscalateHours with a
 	// slog.Warn.
 	EscalateBlockedAfterHours int
-	// AutoAnalyze, when true, enables periodic dependency analysis.
-	// Default true.
-	AutoAnalyze bool
+	// AnalysisMode selects how the LLM dependency analyzer is triggered:
+	// "auto" (default) runs it on the scheduler's debounce/min-interval
+	// rules; "manual" never schedules it — the Deps tab's Analyze button and
+	// POST /api/v1/deps/analyze are the only triggers. The blocker audit (the
+	// tracker-declared dependency reads) is unaffected by this setting.
+	// Runtime-mutable under cfgMu (see CLAUDE.md); the scheduler reads it
+	// through Orchestrator.DepsAnalysisModeCfg, never off this struct.
+	AnalysisMode string
 	// AutoAnalyzeMinIntervalMinutes is the minimum gap between consecutive
 	// dependency analyses on the same issue. Parsed via positiveIntField;
 	// <=0 becomes the default. There is no meaningful zero here (unlike
@@ -817,8 +840,33 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		cfg.Dependencies.EscalateBlockedAfterHours = DefaultDependenciesEscalateHours
 	}
 
-	// auto_analyze: enable/disable periodic dependency analysis. Default true.
-	cfg.Dependencies.AutoAnalyze = boolField(deps, "auto_analyze", true)
+	// analysis_mode: "auto" (default) | "manual". The pre-v0.2.2 bool
+	// auto_analyze is a deprecated alias: false -> manual, true -> auto.
+	// analysis_mode wins when both are present (same precedence rule as
+	// server.allow_unauthenticated over its deprecated alias).
+	_, modeKeySet := deps["analysis_mode"]
+	_, legacyKeySet := deps["auto_analyze"]
+	switch {
+	case modeKeySet:
+		mode := strings.TrimSpace(strField(deps, "analysis_mode", DepsAnalysisModeAuto))
+		if err := ValidateDepsAnalysisMode(mode); err != nil {
+			slog.Warn("config: invalid dependencies.analysis_mode, using auto", "value", mode, "error", err)
+			mode = DepsAnalysisModeAuto
+		}
+		cfg.Dependencies.AnalysisMode = mode
+		if legacyKeySet {
+			slog.Warn("config: both dependencies.analysis_mode and deprecated dependencies.auto_analyze are set; using dependencies.analysis_mode")
+		}
+	case legacyKeySet:
+		slog.Warn("config: dependencies.auto_analyze is deprecated, use dependencies.analysis_mode: auto|manual instead")
+		if boolField(deps, "auto_analyze", true) {
+			cfg.Dependencies.AnalysisMode = DepsAnalysisModeAuto
+		} else {
+			cfg.Dependencies.AnalysisMode = DepsAnalysisModeManual
+		}
+	default:
+		cfg.Dependencies.AnalysisMode = DepsAnalysisModeAuto
+	}
 	cfg.Dependencies.StackedPRs = boolField(deps, "stacked_prs", false)
 	// auto_analyze_min_interval_minutes and auto_analyze_debounce_minutes:
 	// both parsed via positiveIntField (<=0 -> default). No meaningful zero

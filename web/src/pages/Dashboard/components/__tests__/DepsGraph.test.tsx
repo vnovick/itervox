@@ -11,6 +11,8 @@ import type {
   ProfileDef,
 } from '../../../../types/schemas';
 import type { DepsJobUpdate } from '../../../../queries/deps';
+import { useItervoxStore } from '../../../../store/itervoxStore';
+import { makeSnapshot } from '../../../../test/fixtures/snapshots';
 
 // gaps_11 G-14 — mock the analyze mutation so picker tests can assert the
 // payload without hitting the network. The disabled-reason logic under test
@@ -734,6 +736,40 @@ describe('DepsGraph', () => {
     it('hides the "auto" badge while idle, even before any job has run', () => {
       renderRunnable();
       expect(screen.queryByTestId('deps-analyze-trigger-auto')).toBeNull();
+    });
+  });
+
+  // deps-analysis-mode Task 3 — the toolbar shows a passive "manual" chip
+  // next to the Analyze button whenever the snapshot reports
+  // depsAnalysisMode: 'manual', so an operator can tell at a glance that the
+  // scheduler will not run analysis on its own. Seeded via the real store's
+  // setState (no store mock exists in this file) and reset in afterEach so
+  // other describe blocks in this file keep seeing snapshot: null.
+  describe('analysis mode chip', () => {
+    afterEach(() => {
+      useItervoxStore.setState({ snapshot: null });
+    });
+
+    it('shows the manual chip when the snapshot reports depsAnalysisMode: "manual"', () => {
+      useItervoxStore.setState({ snapshot: makeSnapshot({ depsAnalysisMode: 'manual' }) });
+      render(
+        withQueryClient(
+          <DepsGraph graphNodes={graphNodes} graphEdges={graphEdges} onSelectIssue={vi.fn()} />,
+        ),
+      );
+
+      expect(screen.getByTestId('deps-analysis-mode-manual')).toHaveTextContent(/manual/i);
+    });
+
+    it('hides the manual chip when the snapshot reports depsAnalysisMode: "auto"', () => {
+      useItervoxStore.setState({ snapshot: makeSnapshot({ depsAnalysisMode: 'auto' }) });
+      render(
+        withQueryClient(
+          <DepsGraph graphNodes={graphNodes} graphEdges={graphEdges} onSelectIssue={vi.fn()} />,
+        ),
+      );
+
+      expect(screen.queryByTestId('deps-analysis-mode-manual')).toBeNull();
     });
   });
 

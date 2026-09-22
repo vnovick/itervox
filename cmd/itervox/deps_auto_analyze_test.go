@@ -19,7 +19,7 @@ import (
 func autoAnalyzeTestCfg(debounceMin, floorMin int) *config.Config {
 	return &config.Config{
 		Dependencies: config.DependenciesConfig{
-			AutoAnalyze:                   true,
+			AnalysisMode:                  config.DepsAnalysisModeAuto,
 			AutoAnalyzeDebounceMinutes:    debounceMin,
 			AutoAnalyzeMinIntervalMinutes: floorMin,
 		},
@@ -86,18 +86,18 @@ func TestAutoAnalyzeFiresAfterDebounce(t *testing.T) {
 	var st autoAnalyzeState
 
 	now := base.Add(time.Minute)
-	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, now)
+	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now)
 	require.False(t, fire, "must not fire the instant a signal is first observed")
 	require.Equal(t, now, next.changeFirstSeen)
 	st = next
 
 	now2 := now.Add(4 * time.Minute) // 4 of 5 debounce minutes elapsed
-	fire, next = evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, now2)
+	fire, next = evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now2)
 	require.False(t, fire, "must not fire before the debounce window elapses")
 	st = next
 
 	now3 := now.Add(5 * time.Minute) // exactly the debounce window since first-seen
-	fire, _ = evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, now3)
+	fire, _ = evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now3)
 	require.True(t, fire, "must fire once the signal has been stable for the full debounce window")
 }
 
@@ -110,7 +110,7 @@ func TestAutoAnalyzeDebounceRestartsOnNewChanges(t *testing.T) {
 
 	now := base.Add(time.Minute)
 	snap1 := snapWithIdentifiers("ENG-001")
-	fire, next := evaluateAutoAnalyze(st, snap1, sidecar, cfg, true, false, nil, now)
+	fire, next := evaluateAutoAnalyze(st, snap1, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now)
 	require.False(t, fire)
 	require.Equal(t, now, next.changeFirstSeen)
 	st = next
@@ -120,7 +120,7 @@ func TestAutoAnalyzeDebounceRestartsOnNewChanges(t *testing.T) {
 	// than let the original changeFirstSeen carry the pass over the line.
 	now2 := now.Add(4 * time.Minute)
 	snap2 := snapWithIdentifiers("ENG-001", "ENG-002")
-	fire, next = evaluateAutoAnalyze(st, snap2, sidecar, cfg, true, false, nil, now2)
+	fire, next = evaluateAutoAnalyze(st, snap2, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now2)
 	require.False(t, fire)
 	require.Equal(t, now2, next.changeFirstSeen, "a changed signal set must restart changeFirstSeen")
 	st = next
@@ -128,13 +128,13 @@ func TestAutoAnalyzeDebounceRestartsOnNewChanges(t *testing.T) {
 	// 4 minutes after the restart: still short of a full debounce window
 	// measured from the restart.
 	now3 := now2.Add(4 * time.Minute)
-	fire, next = evaluateAutoAnalyze(st, snap2, sidecar, cfg, true, false, nil, now3)
+	fire, next = evaluateAutoAnalyze(st, snap2, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now3)
 	require.False(t, fire, "only 4 of 5 debounce minutes have elapsed since the restart")
 	st = next
 
 	// 5 minutes after the restart: fires.
 	now4 := now2.Add(5 * time.Minute)
-	fire, _ = evaluateAutoAnalyze(st, snap2, sidecar, cfg, true, false, nil, now4)
+	fire, _ = evaluateAutoAnalyze(st, snap2, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now4)
 	require.True(t, fire)
 }
 
@@ -149,26 +149,25 @@ func TestAutoAnalyzeRespectsFloor(t *testing.T) {
 	snap := snapWithIdentifiers("ENG-001")
 
 	changeAt := base.Add(time.Minute)
-	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, changeAt)
+	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, changeAt)
 	require.False(t, fire)
 	st = next
 
 	// The debounce window (5 min) elapses well before the floor (60 min
 	// since lastAutoRun == base).
 	afterDebounce := changeAt.Add(6 * time.Minute) // base+7m
-	fire, next = evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, afterDebounce)
+	fire, next = evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, afterDebounce)
 	require.False(t, fire, "debounce alone is not enough — the floor since lastAutoRun has not elapsed")
 	st = next
 
 	// Once 60 minutes have passed since lastAutoRun, it fires.
 	afterFloor := base.Add(61 * time.Minute)
-	fire, _ = evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, afterFloor)
+	fire, _ = evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, afterFloor)
 	require.True(t, fire)
 }
 
 func TestAutoAnalyzeKillSwitch(t *testing.T) {
 	cfg := autoAnalyzeTestCfg(5, 60)
-	cfg.Dependencies.AutoAnalyze = false
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	sidecar := sidecarWithAnalyzed(base)
 	snap := snapWithIdentifiers("ENG-001")
@@ -176,7 +175,7 @@ func TestAutoAnalyzeKillSwitch(t *testing.T) {
 	// Pretend the signal has already been stable for a long time and the
 	// floor is trivially satisfied — the kill switch alone must still block.
 	st := autoAnalyzeState{changeFirstSeen: base.Add(-time.Hour)}
-	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, base.Add(24*time.Hour))
+	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeManual, true, false, nil, base.Add(24*time.Hour))
 	require.False(t, fire)
 	require.Equal(t, st, next, "kill switch must short-circuit before touching any other state")
 }
@@ -187,7 +186,7 @@ func TestAutoAnalyzeNoProfileWarnsOnce(t *testing.T) {
 	snap := snapWithIdentifiers("ENG-001")
 
 	var st autoAnalyzeState
-	fire, next := evaluateAutoAnalyze(st, snap, nil, cfg, false /* profileResolves */, false, nil, base)
+	fire, next := evaluateAutoAnalyze(st, snap, nil, cfg, config.DepsAnalysisModeAuto, false /* profileResolves */, false, nil, base)
 	require.False(t, fire)
 	require.True(t, next.warnedNoProfile, "must latch true the first time the profile fails to resolve")
 	st = next
@@ -195,7 +194,7 @@ func TestAutoAnalyzeNoProfileWarnsOnce(t *testing.T) {
 	// A later tick with the profile still unresolved must not un-latch it —
 	// this is what lets the wrapper (runDepsAutoAnalyzeTick) log the warning
 	// exactly once by comparing prevWarned to next.warnedNoProfile.
-	fire, next = evaluateAutoAnalyze(st, snap, nil, cfg, false, false, nil, base.Add(time.Hour))
+	fire, next = evaluateAutoAnalyze(st, snap, nil, cfg, config.DepsAnalysisModeAuto, false, false, nil, base.Add(time.Hour))
 	require.False(t, fire)
 	require.True(t, next.warnedNoProfile)
 }
@@ -217,12 +216,12 @@ func TestAutoAnalyzeNilSidecarNonEmptyBacklogFires(t *testing.T) {
 	require.Empty(t, snap.DependencyAudit, "fixture must carry zero dependency-audit rows — this is the fresh-project case")
 
 	var st autoAnalyzeState
-	fire, next := evaluateAutoAnalyze(st, snap, nil /* sidecar */, cfg, true, false, nil, base)
+	fire, next := evaluateAutoAnalyze(st, snap, nil /* sidecar */, cfg, config.DepsAnalysisModeAuto, true, false, nil, base)
 	require.False(t, fire, "signal just observed — must debounce first")
 	require.Equal(t, base, next.changeFirstSeen)
 	st = next
 
-	fire, _ = evaluateAutoAnalyze(st, snap, nil, cfg, true, false, nil, base.Add(5*time.Minute))
+	fire, _ = evaluateAutoAnalyze(st, snap, nil, cfg, config.DepsAnalysisModeAuto, true, false, nil, base.Add(5*time.Minute))
 	require.True(t, fire, "nil sidecar + non-empty backlog is a signal (first-ever run) and must eventually fire, "+
 		"even with zero dependency-graph/audit rows")
 }
@@ -245,12 +244,12 @@ func TestAutoAnalyzeUpdatedAtChangeTriggers(t *testing.T) {
 
 	var st autoAnalyzeState
 	now := changedAt.Add(time.Minute)
-	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, now)
+	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now)
 	require.False(t, fire, "signal just observed — must debounce first")
 	require.Equal(t, now, next.changeFirstSeen)
 	st = next
 
-	fire, _ = evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, nil, now.Add(5*time.Minute))
+	fire, _ = evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, nil, now.Add(5*time.Minute))
 	require.True(t, fire, "an UpdatedAt newer than sidecar.GeneratedAt is a signal even with an unchanged identifier set")
 }
 
@@ -266,7 +265,7 @@ func TestAutoAnalyzeSkipsWhileJobRunning(t *testing.T) {
 		changeFirstSeen:   base.Add(-time.Hour),
 		signalFingerprint: "ENG-001",
 	}
-	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, true /* jobRunning */, nil, base)
+	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, true /* jobRunning */, nil, base)
 	require.False(t, fire, "must not fire while a job is already in flight")
 	require.Equal(t, st.changeFirstSeen, next.changeFirstSeen, "jobRunning must not disturb the debounce clock")
 }
@@ -297,7 +296,7 @@ func TestAutoAnalyzeTerminalAnalyzedEntriesDoNotSignal(t *testing.T) {
 	now := base
 	for i := 0; i < 5; i++ { // span several debounce/floor windows — a quiescent sequence
 		now = now.Add(90 * time.Minute)
-		fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, activeStates, now)
+		fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, activeStates, now)
 		require.Falsef(t, fire, "a terminal Analyzed entry absent from candidates must never signal (round %d)", i)
 		st = next
 	}
@@ -321,12 +320,12 @@ func TestAutoAnalyzeCompletionFiresOnce(t *testing.T) {
 
 	var st autoAnalyzeState
 	now := base.Add(time.Minute)
-	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, activeStates, now)
+	fire, next := evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, activeStates, now)
 	require.False(t, fire, "must debounce before firing")
 	st = next
 
 	now2 := now.Add(6 * time.Minute) // past the 5-minute debounce
-	fire, next = evaluateAutoAnalyze(st, snap, sidecar, cfg, true, false, activeStates, now2)
+	fire, next = evaluateAutoAnalyze(st, snap, sidecar, cfg, config.DepsAnalysisModeAuto, true, false, activeStates, now2)
 	require.True(t, fire, "a completed issue still recorded active in the sidecar must fire exactly once")
 	st = next
 
@@ -337,7 +336,7 @@ func TestAutoAnalyzeCompletionFiresOnce(t *testing.T) {
 
 	for i, delta := range []time.Duration{2 * time.Hour, 4 * time.Hour, 6 * time.Hour} {
 		later := now2.Add(delta)
-		fire, next = evaluateAutoAnalyze(st, snap, postPass, cfg, true, false, activeStates, later)
+		fire, next = evaluateAutoAnalyze(st, snap, postPass, cfg, config.DepsAnalysisModeAuto, true, false, activeStates, later)
 		require.Falsef(t, fire, "must never fire again once the sidecar records the completed state (round %d)", i)
 		st = next
 	}
@@ -382,11 +381,11 @@ func TestAutoAnalyzeWrapperEnqueuesOnFire(t *testing.T) {
 	resolveProfile := func() (string, bool) { return "deps-analyzer", true }
 
 	var state autoAnalyzeState
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, noActiveStates, &state, base)
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, noActiveStates, &state, base)
 	require.Empty(t, fake.calls, "must not enqueue before the debounce window elapses")
 
 	later := base.Add(2 * time.Minute) // past both the 1-min debounce and 1-min floor
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, noActiveStates, &state, later)
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, noActiveStates, &state, later)
 	require.Len(t, fake.calls, 1)
 	assert.Equal(t, fakeAutoAnalyzeCall{profile: "deps-analyzer", mode: "auto", trigger: "auto"}, fake.calls[0])
 	assert.False(t, state.lastAutoRun.IsZero(), "wrapper must record lastAutoRun after a successful enqueue")
@@ -405,8 +404,8 @@ func TestAutoAnalyzeWrapperDoesNotRecordLastAutoRunOnEnqueueError(t *testing.T) 
 	resolveProfile := func() (string, bool) { return "deps-analyzer", true }
 
 	var state autoAnalyzeState
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, noActiveStates, &state, base)
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, noActiveStates, &state, base.Add(2*time.Minute))
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, noActiveStates, &state, base)
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, noActiveStates, &state, base.Add(2*time.Minute))
 
 	require.Len(t, fake.calls, 1)
 	require.True(t, state.lastAutoRun.IsZero(), "a failed enqueue must not consume the floor window")
@@ -432,9 +431,79 @@ func TestAutoAnalyzeWrapperThreadsActiveStates(t *testing.T) {
 	activeStates := func() []string { return []string{"In Progress", "Todo"} }
 
 	var state autoAnalyzeState
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, activeStates, &state, base)
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, activeStates, &state, base.Add(2*time.Minute))
-	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, activeStates, &state, base.Add(4*time.Minute))
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, activeStates, &state, base)
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, activeStates, &state, base.Add(2*time.Minute))
+	runDepsAutoAnalyzeTick(fake, resolveProfile, snapshot, sidecarCache, cfg, func() string { return config.DepsAnalysisModeAuto }, activeStates, &state, base.Add(4*time.Minute))
 
 	require.Empty(t, fake.calls, "a terminal Analyzed entry must never fire through the wrapper path")
+}
+
+// ─── dependencies.analysis_mode — manual short-circuit ─────────────────────
+
+// autoAnalyzeChangedFixture builds a snapshot + sidecar pair that represents
+// "changes present": two candidate identifiers, only one of which the
+// sidecar has already analyzed, so the other is an unambiguous rule-1
+// change-signal — mirrors TestAutoAnalyzeFiresAfterDebounce's fixture.
+func autoAnalyzeChangedFixture(t *testing.T) (server.StateSnapshot, *depsanalysis.Sidecar) {
+	t.Helper()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sidecar := sidecarWithAnalyzed(base, "ENG-001") // ENG-002 unseen -> signal
+	snap := snapWithIdentifiers("ENG-001", "ENG-002")
+	return snap, sidecar
+}
+
+// TestAutoAnalyzeManualModeNeverFires proves manual mode short-circuits
+// before touching any debounce/fingerprint bookkeeping — the same kill-switch
+// property TestAutoAnalyzeKillSwitch exercises for cfg == nil.
+func TestAutoAnalyzeManualModeNeverFires(t *testing.T) {
+	cfg := autoAnalyzeTestCfg(0, 0) // no debounce, no floor: would fire immediately in auto
+	snap, sidecar := autoAnalyzeChangedFixture(t)
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	fire, next := evaluateAutoAnalyze(autoAnalyzeState{}, snap, sidecar, cfg, config.DepsAnalysisModeManual, true, false, nil, now)
+
+	assert.False(t, fire)
+	assert.True(t, next.changeFirstSeen.IsZero(), "manual mode must not accumulate debounce state")
+	assert.Empty(t, next.signalFingerprint)
+}
+
+// TestAutoAnalyzeModeChangeHonouredWithoutRestart proves
+// runDepsAutoAnalyzeTick reads the mode through a closure on every call, so
+// flipping the closure's return value between ticks flips the decision with
+// no daemon restart. It uses the same debounce=1/floor=1 shape as
+// TestAutoAnalyzeWrapperEnqueuesOnFire so the fire timing matches
+// evaluateAutoAnalyze's real positiveOrDefault semantics (an unmodified
+// concern of this task — a passed-in 0 falls back to the config-loader
+// default, it is not a literal "no debounce").
+func TestAutoAnalyzeModeChangeHonouredWithoutRestart(t *testing.T) {
+	mode := config.DepsAnalysisModeManual
+	svc := &fakeAutoAnalyzeEnqueuer{}
+	changedSnapshotFn := func() server.StateSnapshot {
+		return snapWithIdentifiers("ENG-001")
+	}
+	resolveProfile := func() (string, bool) { return "deps-analyzer", true }
+	cache := depsanalysis.NewSidecarCache(filepath.Join(t.TempDir(), "deps-sidecar.json"))
+	cfg := autoAnalyzeTestCfg(1, 1)
+	var st autoAnalyzeState
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	// Manual: repeated ticks spanning well past what would be the debounce
+	// window must never enqueue, and must never accumulate
+	// changeFirstSeen/fingerprint state a later switch to auto could exploit
+	// to fire instantly.
+	runDepsAutoAnalyzeTick(svc, resolveProfile, changedSnapshotFn, cache, cfg, func() string { return mode }, noActiveStates, &st, now)
+	runDepsAutoAnalyzeTick(svc, resolveProfile, changedSnapshotFn, cache, cfg, func() string { return mode }, noActiveStates, &st, now.Add(10*time.Minute))
+	assert.Empty(t, svc.calls, "manual: nothing enqueued")
+	assert.True(t, st.changeFirstSeen.IsZero(), "manual ticks must not accumulate debounce state")
+
+	// Flip to auto with no restart: the very next tick observes the signal
+	// for the first time under auto and must debounce before firing.
+	mode = config.DepsAnalysisModeAuto
+	runDepsAutoAnalyzeTick(svc, resolveProfile, changedSnapshotFn, cache, cfg, func() string { return mode }, noActiveStates, &st, now.Add(11*time.Minute))
+	assert.Empty(t, svc.calls, "auto: must not fire the instant the signal is first observed post-switch")
+
+	// Once the debounce window elapses, it fires — the mode flip alone was
+	// enough, no daemon restart was needed.
+	runDepsAutoAnalyzeTick(svc, resolveProfile, changedSnapshotFn, cache, cfg, func() string { return mode }, noActiveStates, &st, now.Add(13*time.Minute))
+	assert.Len(t, svc.calls, 1, "auto: fires once the debounce window elapses")
 }

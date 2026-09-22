@@ -145,6 +145,7 @@ section stay easy to diff.
 - `cfg.Agent.SwitchRevertHours`
 - `cfg.Agent.SwitchWindowHours`
 - `cfg.Automations`
+- `cfg.Dependencies.AnalysisMode`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.CompletionState`
 - `cfg.Tracker.FailedState`

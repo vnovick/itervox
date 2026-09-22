@@ -13,6 +13,7 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 
 > 1. **During a long tracker rate-limit window, tracker calls now fail immediately instead of waiting.** When Linear or GitHub publishes a reset more than 60 seconds away, calls on that tracker return a rate-limit error without sending anything until the reset, instead of blocking up to 60s and retrying into a closed window. Polling skips those ticks and logs the reset time; the outbox holds its writes until the reset. The outcome for every caller is unchanged, only faster — but expect "rate limited until HH:MM" in logs and the dashboard where you previously saw slow failures.
 > 2. **`.itervox/outbox.json` entries written by this version carry a `comment_key`.** Older builds ignore it. Entries written by an older build are given a key when loaded; a comment that had already failed at least once before the upgrade keeps the old duplicate risk for that one retry.
+> 3. **`dependencies.auto_analyze` is deprecated.** It still parses (`false` → `manual`, `true` → `auto`) with a startup warning; `analysis_mode` wins when both are set. If you change the mode from the dashboard, the old `auto_analyze` line stays in `WORKFLOW.md`; delete it by hand to stop the "both set" warning on every reload.
 
 ### Added
 
@@ -25,6 +26,7 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 ### Changed
 
 - **`agent.inline_input: true` now does what it says.** The tracker becomes the only place a human can reply to an input-required agent: the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Replying on the issue resumes the agent. Previously the setting had no effect.
+- **Dependency analysis has a mode.** `dependencies.analysis_mode: auto | manual` replaces the load-time `auto_analyze` bool (kept as a deprecated alias). It is runtime-editable from Settings → Dependencies, shown in the snapshot (`depsAnalysisMode`) and as a chip on the Deps tab, and the scheduler honours a change within a minute without a restart.
 
 ### Fixed
 
