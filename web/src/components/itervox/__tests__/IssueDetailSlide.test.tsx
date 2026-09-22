@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
@@ -18,6 +18,7 @@ vi.mock('../../../queries/issues', () => ({
   useSetIssueBackend: vi.fn(),
   useProvideInput: vi.fn(),
   useDismissInput: vi.fn(),
+  usePostIssueComment: vi.fn(),
   ISSUES_KEY: ['issues'],
   ISSUE_KEY: (identifier: string) => ['issue', identifier],
 }));
@@ -44,6 +45,7 @@ const mockUseSetIssueProfile = vi.mocked(issueQueries.useSetIssueProfile);
 const mockUseSetIssueBackend = vi.mocked(issueQueries.useSetIssueBackend);
 const mockUseProvideInput = vi.mocked(issueQueries.useProvideInput);
 const mockUseDismissInput = vi.mocked(issueQueries.useDismissInput);
+const mockUsePostIssueComment = vi.mocked(issueQueries.usePostIssueComment);
 
 const baseIssue = {
   identifier: 'ENG-10',
@@ -111,6 +113,7 @@ function setupDefaultMocks(
   mockUseDismissInput.mockReturnValue(
     castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   );
+  mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
 
   return setSelectedIdentifier;
 }
@@ -361,6 +364,7 @@ describe('IssueDetailSlide', () => {
     mockUseDismissInput.mockReturnValue(
       castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
     );
+    mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(screen.getByTestId('issue-detail-syncing-badge')).toBeInTheDocument();
   });
@@ -417,6 +421,7 @@ describe('IssueDetailSlide', () => {
     mockUseDismissInput.mockReturnValue(
       castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
     );
+    mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     const reviewBtns = screen.getAllByText(/Review/);
     expect(reviewBtns.length).toBeGreaterThanOrEqual(1);
@@ -466,6 +471,7 @@ describe('IssueDetailSlide', () => {
     mockUseDismissInput.mockReturnValue(
       castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
     );
+    mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(screen.getByText('Agent Profile')).toBeInTheDocument();
     // Should show a select dropdown (not locked)
@@ -509,6 +515,7 @@ describe('IssueDetailSlide', () => {
     mockUseDismissInput.mockReturnValue(
       castMock({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
     );
+    mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(screen.getByText('locked while In Progress')).toBeInTheDocument();
   });
@@ -589,5 +596,37 @@ describe('IssueDetailSlide', () => {
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(await screen.findByText('Anonymous note')).toBeInTheDocument();
     expect(screen.getByText('Unknown')).toBeInTheDocument();
+  });
+
+  it('renders the comment composer for a normal issue', () => {
+    setupDefaultMocks('ENG-10', { orchestratorState: 'running' });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    expect(screen.getByTestId('issue-comment-composer')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /post a comment/i })).toBeInTheDocument();
+  });
+
+  it('hides the comment composer while the issue is input_required', () => {
+    setupDefaultMocks('ENG-10', { orchestratorState: 'input_required' });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    expect(screen.queryByTestId('issue-comment-composer')).not.toBeInTheDocument();
+  });
+
+  it('submits the composer through usePostIssueComment', () => {
+    const mutate = vi.fn();
+    setupDefaultMocks('ENG-10', { orchestratorState: 'running' });
+    mockUsePostIssueComment.mockReturnValue(castMock({ mutate, isPending: false }));
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    fireEvent.change(screen.getByRole('textbox', { name: /post a comment/i }), {
+      target: { value: '  ship it  ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /post comment/i }));
+
+    expect(mutate).toHaveBeenCalledWith(
+      { identifier: 'ENG-10', body: 'ship it' },
+      expect.anything(),
+    );
   });
 });

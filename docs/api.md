@@ -178,6 +178,7 @@ Useful top-level fields include:
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
 
 `provide-input` / `dismiss-input` return `404 not_found` when the issue is not
 currently in `input_required`. `provide-input` returns `409 inline_input_enabled`
@@ -185,6 +186,12 @@ when `agent.inline_input: true` — the tracker is the only reply channel in tha
 mode. The `409` is checked first: in inline mode the route refuses regardless
 of the request body or the issue's state. The agent-action `provide-input` route
 (`POST /agent-actions/{identifier}/provide-input`) is unaffected.
+
+Operator comments are plain comments (no managed marker): they can fire
+`tracker_comment_added` automations and are delivered through the write-ahead
+outbox when it is enabled. To answer an input-required agent, use
+`provide-input`. The body is required and capped at 10 KiB; an empty or
+oversize body returns `400 bad_request` with `field: "body"`.
 
 ---
 

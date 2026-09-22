@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func baseSnap() server.StateSnapshot {
@@ -2679,4 +2681,78 @@ func TestHandleSetFailedState_UnknownStateRejected(t *testing.T) {
 	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":"Garbage"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "Garbage")
+}
+
+func TestHandleIssueComment_Queued202(t *testing.T) {
+	var gotIdentifier, gotBody string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(_ context.Context, identifier, body string) (bool, error) {
+			gotIdentifier, gotBody = identifier, body
+			return true, nil
+		},
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", `{"body":"Looks good"}`)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Contains(t, w.Body.String(), `"queued":true`)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Equal(t, "Looks good", gotBody, "the handler passes the body through unmarked")
+}
+
+func TestHandleIssueComment_Direct200(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(context.Context, string, string) (bool, error) { return false, nil },
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", `{"body":"direct"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"ok":true`)
+}
+
+func TestHandleIssueComment_EmptyBody400(t *testing.T) {
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(context.Context, string, string) (bool, error) { called = true; return true, nil },
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", `{"body":"   "}`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.False(t, called)
+}
+
+func TestHandleIssueComment_NotFound404(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(_ context.Context, id, _ string) (bool, error) {
+			return false, fmt.Errorf("fetch issue %s: %w", id, tracker.ErrNotFound)
+		},
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-404/comment", `{"body":"x"}`)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_found")
+}
+
+func TestHandleIssueComment_TooLong400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(context.Context, string, string) (bool, error) { return true, nil },
+	}
+	srv := server.New(cfg)
+	body := `{"body":"` + strings.Repeat("a", 10*1024+1) + `"}`
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", body)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

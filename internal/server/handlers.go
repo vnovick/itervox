@@ -770,6 +770,49 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// maxOperatorCommentBytes bounds a dashboard comment. 10 KiB is far above
+// any real review note and keeps a pasted log from becoming a tracker
+// comment nobody can read.
+const maxOperatorCommentBytes = 10 * 1024
+
+// handleIssueComment posts a plain operator comment on an issue.
+// POST /api/v1/issues/{identifier}/comment  {"body":"..."}
+// 202 {"queued":true}  — accepted by the write-ahead outbox; delivered by the flusher
+// 200 {"ok":true}      — posted directly (tracker.outbox: false)
+func (s *Server) handleIssueComment(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	text := strings.TrimSpace(body.Body)
+	if text == "" {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "body is required", "body")
+		return
+	}
+	if len(text) > maxOperatorCommentBytes {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "body exceeds 10 KiB", "body")
+		return
+	}
+	queued, err := s.client.PostOperatorComment(r.Context(), identifier, text)
+	if err != nil {
+		if errors.Is(err, tracker.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "issue not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
+		return
+	}
+	if queued {
+		writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "identifier": identifier})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier})
+}
+
 func (s *Server) handleDismissInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	if ok := s.client.DismissInput(identifier); !ok {

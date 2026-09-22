@@ -258,6 +258,34 @@ func (a *orchestratorAdapter) CommentOnIssue(ctx context.Context, identifier, bo
 	return err
 }
 
+// PostOperatorComment posts a plain operator comment. With the outbox active
+// it only enqueues — Enqueue is a local file write and self-locking, so this
+// is safe on an HTTP-handler goroutine and never touches orchestrator.State.
+// The outbox assigns the comment's idempotency key, so the flusher can retry
+// without ever posting it twice. Deliberately NOT MarkManagedComment: see the
+// interface doc.
+func (a *orchestratorAdapter) PostOperatorComment(ctx context.Context, identifier, body string) (bool, error) {
+	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		// Every adapter's not-found error satisfies errors.Is(err,
+		// tracker.ErrNotFound); %w keeps that so the route can answer 404.
+		return false, fmt.Errorf("fetch issue: %w", err)
+	}
+	if issue == nil {
+		return false, fmt.Errorf("fetch issue %s: %w", identifier, tracker.ErrNotFound)
+	}
+	if a.ob != nil {
+		return true, a.ob.Enqueue(outbox.Entry{
+			Kind:       outbox.KindCreateComment,
+			IssueID:    issue.ID,
+			Identifier: issue.Identifier,
+			Body:       body,
+		})
+	}
+	_, err = a.tr.CreateComment(ctx, issue.ID, body)
+	return false, err
+}
+
 func (a *orchestratorAdapter) CreateIssue(
 	ctx context.Context,
 	identifier, title, body, stateName string,

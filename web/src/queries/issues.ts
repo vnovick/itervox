@@ -33,6 +33,32 @@ function toastApiError(err: unknown, fallback = 'Action failed — please try ag
 }
 
 /**
+ * Builds an `Error` from a failed `Response`, preferring the server's
+ * structured `{error:{code,message}}` envelope (see internal/server/handlers.go)
+ * over a generic `${op} failed: ${status}` message. Used by mutations whose
+ * server errors carry an operator-actionable message (e.g. `bad_request`
+ * field validation, `not_found`).
+ */
+async function apiErrorFromResponse(res: Response, op: string): Promise<Error> {
+  try {
+    const data = (await res.json()) as unknown;
+    if (
+      typeof data === 'object' &&
+      data !== null &&
+      'error' in data &&
+      typeof (data as { error: unknown }).error === 'object' &&
+      (data as { error: unknown }).error !== null
+    ) {
+      const { message } = (data as { error: { message?: unknown } }).error;
+      if (typeof message === 'string' && message !== '') return new Error(message);
+    }
+  } catch {
+    // Not JSON — fall through to the generic message.
+  }
+  return new Error(`${op} failed: ${String(res.status)}`);
+}
+
+/**
  * Returns an `onError` handler that rolls back optimistic query/snapshot updates
  * and surfaces the error to the user via a toast notification.
  * Used by all issue mutations that apply optimistic updates.
@@ -492,6 +518,48 @@ export function useProvideInput() {
         void useItervoxStore.getState().refreshSnapshot();
       }
       toastApiError(err, 'Failed to send input to agent.');
+    },
+  });
+}
+
+/**
+ * Posts a plain operator comment on the issue via
+ * `POST /api/v1/issues/{identifier}/comment`. Distinct from `useProvideInput`:
+ * this is not an input-required reply — it behaves like a comment typed
+ * directly in the tracker (can fire `tracker_comment_added` automations,
+ * delivered through the write-ahead outbox when enabled). Returns
+ * `{queued: true}` on `202` (outbox-accepted) or `{queued: false}` on `200`
+ * (posted directly).
+ */
+export function usePostIssueComment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      identifier,
+      body,
+    }: {
+      identifier: string;
+      body: string;
+    }): Promise<{ queued: boolean }> => {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/comment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      });
+      if (!res.ok) throw await apiErrorFromResponse(res, 'postComment');
+      return { queued: res.status === 202 };
+    },
+    onSuccess: ({ queued }, { identifier }) => {
+      useToastStore
+        .getState()
+        .addToast(
+          queued ? 'Comment queued — it will appear once delivered.' : 'Comment posted.',
+          'success',
+        );
+      refreshIssueViews(queryClient, identifier);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Failed to post comment.');
     },
   });
 }

@@ -20,6 +20,7 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 - **Rate-limited outbox entries wait for the tracker's published reset.** A write rejected by a rate limit is deferred to the reset instant plus up to 5s of jitter, is counted separately from real failures (`rate_limited_attempts`), and never raises the **degraded** badge. The flusher skips its tick — and stops mid-tick — while a rate-limit window is open, so it sends no requests that are known to fail.
 - **Rate-limit visibility in the dashboard.** Outbox rows show an amber **rate limited until HH:MM** chip alongside (not instead of) the degraded badge, and the LiveOps strip shows one fleet-level **Tracker rate limited until HH:MM** chip. The snapshot's `outboxEntries[]` rows gain an optional `rateLimitedUntil` (RFC 3339) field.
 - **Input-required questions and replies go through the write-ahead outbox.** The agent's question and the operator's dashboard reply are now queued durably like every other tracker write: they survive a restart, are never posted twice, wait out tracker rate limits, and the question is always delivered before the reply.
+- **Post a comment from the dashboard.** The issue detail slide has a comment composer; comments go through the write-ahead outbox (`POST /api/v1/issues/{id}/comment`, `202` when queued) and behave like comments typed in the tracker, though they are posted under Itervox's tracker identity.
 
 ### Changed
 

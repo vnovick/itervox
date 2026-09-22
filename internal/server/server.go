@@ -309,6 +309,17 @@ type OrchestratorClient interface {
 	FetchSubLogs(ctx context.Context, identifier string) ([]domain.IssueLogEntry, error)
 	DispatchReviewer(identifier string) error
 	CommentOnIssue(ctx context.Context, identifier, body string) error
+	// PostOperatorComment posts a plain (non-managed) comment authored by the
+	// dashboard operator. It returns queued=true when the comment was accepted
+	// by the write-ahead outbox and will be delivered by the flusher, or
+	// queued=false when it was posted to the tracker directly (tracker.outbox:
+	// false). The body is NOT marked managed: an operator comment behaves like
+	// one typed in the tracker, so it may fire tracker_comment_added
+	// automations and, on trackers that do not attribute it to the same author
+	// as the agent's question, may count as the answer to an input-required
+	// agent — the dashboard's reply box / provide-input is the intended way to
+	// answer an agent.
+	PostOperatorComment(ctx context.Context, identifier, body string) (queued bool, err error)
 	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
 	UpdateIssueState(ctx context.Context, identifier, stateName string) error
 	SetWorkers(n int) error
@@ -405,6 +416,9 @@ func (noopClient) FetchSubLogs(context.Context, string) ([]domain.IssueLogEntry,
 }
 func (noopClient) DispatchReviewer(string) error                        { return errNotConfigured }
 func (noopClient) CommentOnIssue(context.Context, string, string) error { return errNotConfigured }
+func (noopClient) PostOperatorComment(context.Context, string, string) (bool, error) {
+	return false, errNotConfigured
+}
 func (noopClient) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
 	return nil, errNotConfigured
 }
@@ -459,6 +473,7 @@ type FuncClient struct {
 	ClearSessionSublogFn              func(string, string) error
 	DispatchReviewerFn                func(string) error
 	CommentOnIssueFn                  func(context.Context, string, string) error
+	PostOperatorCommentFn             func(context.Context, string, string) (bool, error)
 	CreateIssueFn                     func(context.Context, string, string, string, string) (*domain.Issue, error)
 	UpdateIssueStateFn                func(context.Context, string, string) error
 	SetWorkersFn                      func(int) error
@@ -575,6 +590,12 @@ func (c *FuncClient) CommentOnIssue(ctx context.Context, identifier, body string
 		return c.CommentOnIssueFn(ctx, identifier, body)
 	}
 	return errNotConfigured
+}
+func (c *FuncClient) PostOperatorComment(ctx context.Context, identifier, body string) (bool, error) {
+	if c.PostOperatorCommentFn != nil {
+		return c.PostOperatorCommentFn(ctx, identifier, body)
+	}
+	return false, errNotConfigured
 }
 func (c *FuncClient) CreateIssue(ctx context.Context, identifier, title, body, state string) (*domain.Issue, error) {
 	if c.CreateIssueFn != nil {
@@ -1456,6 +1477,7 @@ func (s *Server) routes() {
 			r.Post("/issues/{identifier}/backend", s.handleSetIssueBackend)
 			r.Post("/issues/{identifier}/provide-input", s.handleProvideInput)
 			r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
+			r.Post("/issues/{identifier}/comment", s.handleIssueComment)
 			r.Post("/issues/{identifier}/deps-override", s.handleSetDepsOverride)
 			r.Delete("/issues/{identifier}/deps-override", s.handleClearDepsOverride)
 			r.Post("/outbox/{id}/retry", s.handleRetryOutboxEntry)

@@ -6,6 +6,7 @@ import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { IssueStatusChanges } from './IssueStatusChanges';
 import { InputRequiredPanel } from './InputRequiredPanel';
+import { IssueCommentComposer } from './IssueCommentComposer';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import {
@@ -296,6 +297,13 @@ export default function IssueDetailSlide() {
               </div>
             );
           })()}
+
+        {/* Operator comment composer — always available except while the
+            issue is input_required, where the reply box below is the
+            answer channel for the agent's question instead. */}
+        {issue.orchestratorState !== 'input_required' && (
+          <IssueCommentComposer identifier={issue.identifier} />
+        )}
 
         {/* Input Required — reply UI (extracted, Task 5 size-budget) */}
         <InputRequiredPanel
