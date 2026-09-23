@@ -176,3 +176,76 @@ func TestInlineQuestionBodyAsksForTrackerReply(t *testing.T) {
 	assert.NotContains(t, on, "dashboard", "inline mode must not point the human at a reply box that is hidden")
 	assert.Contains(t, on, "Reply to this comment")
 }
+
+// The question is still in the outbox (never flushed) when a human replies.
+// The reply is created after the entry was queued, so it is the answer: the
+// agent must not wait for the question to land and the human to reply again.
+func TestEarlyTrackerReplyMatchedByTimestampWhileQuestionInFlight(t *testing.T) {
+	orch, ob, state, issue := inputRequiredHarness(t)
+	state.Running[issue.ID] = &RunEntry{Issue: issue, StartedAt: time.Now()}
+	state = orch.handleEvent(context.Background(), state, exitNeedingInput(issue))
+	require.Len(t, ob.Snapshot(), 1, "question queued, not delivered")
+
+	mt := orch.tracker.(*tracker.MemoryTracker)
+	mt.AddHumanCommentAt(issue.ID, "use foo.go", time.Now().Add(time.Second))
+
+	state = orch.checkTrackerReplies(context.Background(), state)
+
+	assert.NotContains(t, state.InputRequiredIssues, "ENG-1")
+	resume := state.PendingInputResumes["ENG-1"]
+	require.NotNil(t, resume, "a reply written after the question was queued is the answer")
+	assert.Equal(t, "use foo.go", resume.UserMessage)
+}
+
+// The reply landed BEFORE the question did, so once the question is delivered
+// it sits below the reply. Position-only matching would never see it.
+func TestEarlyTrackerReplyBeforeDeliveredQuestionIsMatched(t *testing.T) {
+	orch, _, state, issue := inputRequiredHarness(t)
+	state.Running[issue.ID] = &RunEntry{Issue: issue, StartedAt: time.Now()}
+	state = orch.handleEvent(context.Background(), state, exitNeedingInput(issue))
+	key := state.InputRequiredIssues["ENG-1"].QuestionCommentKey
+	require.NotEmpty(t, key)
+
+	mt := orch.tracker.(*tracker.MemoryTracker)
+	mt.AddHumanCommentAt(issue.ID, "use foo.go", time.Now().Add(time.Second))
+	_, err := mt.CreateCommentWithKey(context.Background(), issue.ID, key, itervoxCommentPrefix+"\n\nWhich file?")
+	require.NoError(t, err, "question delivered after the reply")
+
+	state = orch.checkTrackerReplies(context.Background(), state)
+
+	resume := state.PendingInputResumes["ENG-1"]
+	require.NotNil(t, resume, "a reply above the delivered question is still the answer")
+	assert.Equal(t, "use foo.go", resume.UserMessage)
+}
+
+// A comment created before the question was queued is not a reply to it,
+// even though the question has not landed yet.
+func TestCommentBeforeQuestionQueuedIsNotAnEarlyReply(t *testing.T) {
+	orch, _, state, issue := inputRequiredHarness(t)
+	state.Running[issue.ID] = &RunEntry{Issue: issue, StartedAt: time.Now()}
+	state = orch.handleEvent(context.Background(), state, exitNeedingInput(issue))
+
+	mt := orch.tracker.(*tracker.MemoryTracker)
+	mt.AddHumanCommentAt(issue.ID, "old remark", time.Now().Add(-time.Minute))
+
+	state = orch.checkTrackerReplies(context.Background(), state)
+
+	assert.Contains(t, state.InputRequiredIssues, "ENG-1", "still waiting")
+	assert.NotContains(t, state.PendingInputResumes, "ENG-1")
+}
+
+// A comment whose creation time the tracker did not report is ambiguous:
+// "unknown" is not "after", so it must wait for the positional match.
+func TestEarlyReplyWithUnknownTimestampWaits(t *testing.T) {
+	orch, _, state, issue := inputRequiredHarness(t)
+	state.Running[issue.ID] = &RunEntry{Issue: issue, StartedAt: time.Now()}
+	state = orch.handleEvent(context.Background(), state, exitNeedingInput(issue))
+
+	mt := orch.tracker.(*tracker.MemoryTracker)
+	mt.AddHumanComment(issue.ID, "no timestamp") // CreatedAt nil
+
+	state = orch.checkTrackerReplies(context.Background(), state)
+
+	assert.Contains(t, state.InputRequiredIssues, "ENG-1", "unknown time is not 'after'")
+	assert.NotContains(t, state.PendingInputResumes, "ENG-1")
+}

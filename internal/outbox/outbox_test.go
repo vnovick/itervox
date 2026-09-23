@@ -692,3 +692,30 @@ func TestRateLimitThenOrdinaryFailureClearsRateLimitedUntil(t *testing.T) {
 	assert.Equal(t, 1, got.Attempts)
 	assert.Equal(t, 1, got.RateLimitedAttempts)
 }
+
+// TestOutboxRateLimitResetClampedToMaxWindow pins the per-entry counterpart
+// of the tracker gate's 2-hour bound: a reset instant far beyond any real
+// vendor window (a header in the wrong unit, a skewed clock) must not hold a
+// single entry hostage for days. The entry fails open at now+2h, exactly as
+// the fleet-wide gate does.
+func TestOutboxRateLimitResetClampedToMaxWindow(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	require.NoError(t, o.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "A", Identifier: "ENG-1", Body: "hello",
+	}))
+	entry := o.Snapshot()[0]
+
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	bogus := now.Add(48 * time.Hour)
+	o.MarkFailed(entry.ID, &fakeRateLimitErr{resetAt: bogus}, now)
+
+	got := o.Snapshot()[0]
+	limit := now.Add(2 * time.Hour)
+	assert.True(t, got.RateLimitedUntil.Equal(limit),
+		"stored reset must be clamped to now+2h, got %s", got.RateLimitedUntil)
+	assert.False(t, got.NextAttemptAt.Before(limit), "retry no earlier than the clamped reset")
+	assert.False(t, got.NextAttemptAt.After(limit.Add(5*time.Second)),
+		"retry no later than the clamped reset plus jitter, got %s", got.NextAttemptAt)
+	assert.Equal(t, 1, got.RateLimitedAttempts)
+}

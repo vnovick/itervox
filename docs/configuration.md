@@ -81,7 +81,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). `0`/negative values fall back to the default; use `max_retries` to control retry count |
 | `max_retries` | int | `5` | Maximum retry attempts before moving to `failed_state`. `0` means unlimited |
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |
-| `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker is not treated as the answer — reply again once the question comment appears. Runtime-editable from Settings → General. |
+| `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `rate_limit_error_patterns` | []string | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). WORKFLOW.md only |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue's profile/backend within `switch_window_hours`. `0` for unlimited. Runtime-editable |
 | `switch_window_hours` | int | `6` | Rolling window (hours) for the `max_switches_per_issue_per_window` cap. Runtime-editable |
@@ -460,8 +460,10 @@ Agents request human input by emitting a literal sentinel token in their
 output: `<!-- itervox:needs-input -->`. The orchestrator detects this and
 always posts the question as a tracker comment; a comment on the issue
 resumes the agent — except one written by the bot's own author (skipped as
-self-reply detection) or one that lands before the question comment itself
-has reached the tracker (see "Known limitations" in `CHANGELOG.md`).
+self-reply detection). With the outbox enabled a reply that lands before the
+question comment itself has reached the tracker still counts, matched by its
+creation time; with `tracker.outbox: false` replies are matched by position
+below the question only.
 `agent.inline_input` only controls whether the dashboard
 also offers a reply box — see the `inline_input` row above. The prompt
 template that teaches agents how to emit the sentinel is appended

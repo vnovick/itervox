@@ -341,6 +341,11 @@ func (o *Outbox) MarkFailed(id string, err error, now time.Time) {
 	if errors.As(err, &rl) {
 		e.RateLimitedAttempts++
 		resetAt := rl.RateLimitResetAt()
+		if limit := now.Add(maxRateLimitedWindow); resetAt.After(limit) {
+			slog.Warn("outbox: rate-limit reset beyond sane bound, clamping",
+				"id", id, "reset", resetAt, "clamped_to", limit)
+			resetAt = limit
+		}
 		e.RateLimitedUntil = resetAt
 		next := now.Add(backoffFor(e.Attempts + 1))
 		if jittered := resetAt.Add(rateLimitJitter()); jittered.After(next) {
@@ -518,6 +523,16 @@ func backoffFor(attempts int) time.Duration {
 // rateLimitJitterMax bounds the random spread applied on top of a published
 // reset instant.
 const rateLimitJitterMax = 5 * time.Second
+
+// maxRateLimitedWindow bounds how far ahead a single entry's RateLimitedUntil
+// (and therefore its NextAttemptAt) may be pushed by a tracker's published
+// reset. It mirrors the fleet-wide gate's bound in internal/tracker
+// (maxRecordedWindow, also 2h): both vendors' windows are at most about an
+// hour, so a reset further out than this is a header in the wrong unit or a
+// skewed clock, and clamping fails open with one early probe that re-learns
+// the real window. Without it the gate would reopen after 2h while the entry
+// it was protecting stayed parked for days.
+const maxRateLimitedWindow = 2 * time.Hour
 
 // rateLimitJitter returns a random delay in [0, rateLimitJitterMax). Without
 // it, every deferred entry would become due at the same instant and the fleet

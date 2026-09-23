@@ -35,16 +35,16 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 - **"Writes go first" had no effect on Linear.** Every Linear call is an HTTP POST, so reads and writes looked identical to the rate-limit gate. Linear requests are now classified from the GraphQL operation type, so comments and state changes are admitted ahead of polling reads when a rate limit lifts.
 - **A GitHub secondary rate limit could stall GitHub calls for up to an hour.** GitHub sends `X-RateLimit-Reset` on every response; it was being used even for a secondary limit, where `Retry-After` governs. The reset is now honoured only once `X-RateLimit-Remaining` reaches 0.
 - **A success on the last in-call retry was reported as a rate limit.** The retry helper now classifies the final response instead of assuming it failed.
-- **Rate-limit windows are capped at 2 hours** on the fleet-wide gate, so a malformed reset header cannot stop tracker writes indefinitely.
+- **Rate-limit windows are capped at 2 hours**, both on the fleet-wide gate and on the reset instant stored on each outbox entry, so a malformed reset header can neither stop tracker writes nor park a single entry for longer than that.
 - **A human reply to an *earlier* question on the same issue could resume an agent that had asked a new question whose comment had not reached the tracker yet.** Questions are now matched by a unique key rather than by position whenever the outbox is enabled.
+- **A reply written before the agent's question reached the tracker was never treated as the answer.** With the outbox enabled, a comment created after the question was queued now resumes the agent whether the question has landed yet or not, and even if it ends up ordered above the question. Previously the operator had to reply again once the question appeared.
 
 ### Known limitations
 
 - **GitHub only:** if the daemon is killed after GitHub accepts a comment but before the attempt is recorded, the comment can be posted again after restart. Linear is not affected — a re-sent comment with the same id is rejected and then found by lookup.
-- The 2-hour cap applies to the fleet-wide gate but not yet to the reset instant stored on an individual outbox entry, so a malformed reset header can still hold that one entry longer.
 - A tracker's published reset is treated as a hard window: no requests are sent to that tracker until it passes.
 - With `tracker.outbox: false`, input-required questions and replies are posted with a single direct attempt (not queued), and replies are matched to the most recent question by position.
-- A tracker comment written before the agent's question has reached the tracker is not treated as the answer — reply again once the question appears. The window is normally a few seconds, longer while the tracker is rate-limiting.
+- A tracker comment is matched to an in-flight question by its creation time, so it must carry one. Both Linear and GitHub report it; a comment without a timestamp waits until the question comment appears and the reply is below it.
 
 ---
 

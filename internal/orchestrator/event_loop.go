@@ -684,6 +684,42 @@ func findReplyAfterQuestion(comments []domain.Comment, questionIdx int, question
 	return domain.Comment{}, false
 }
 
+// findReplySince returns the earliest human comment created strictly after
+// since — the answer to a question that was QUEUED at since but may not have
+// reached the tracker yet. Position cannot find such a reply: while the
+// question is in the outbox there is no question to be "after", and once it
+// lands (trackers order comments by creation time) the early reply sits ABOVE
+// it, where findReplyAfterQuestion never looks.
+//
+// Only comments with a reported CreatedAt qualify. An unknown time is not
+// "after": it is ambiguous, and an ambiguous comment waits for the positional
+// match rather than resuming the agent on a guess. CreatedAt is the tracker's
+// clock and since is ours; the comparison is strict, so skew can only delay a
+// genuine early reply until the positional match catches it, never promote
+// an older comment (which would need skew wider than the gap between the
+// previous round's reply and this question). The same exclusions as
+// findReplyAfterQuestion apply (Itervox prefix, managed marker, and the
+// question's own author when the question is known — pass a zero Comment
+// when it is not, which disables the author check).
+func findReplySince(comments []domain.Comment, since time.Time, question domain.Comment) (domain.Comment, bool) {
+	if since.IsZero() {
+		return domain.Comment{}, false
+	}
+	for _, comment := range comments {
+		if comment.CreatedAt == nil || !comment.CreatedAt.After(since) {
+			continue
+		}
+		if strings.HasPrefix(comment.Body, itervoxCommentPrefix) || tracker.IsManagedComment(comment) {
+			continue
+		}
+		if sameCommentAuthor(comment, question) {
+			continue
+		}
+		return comment, true
+	}
+	return domain.Comment{}, false
+}
+
 // recoverInputRequired fetches the full issue detail (with comments) and checks
 // if the latest comment is an unresolved Itervox input-required question.
 // If so, returns an InputRequiredEntry reconstructed from the comment,
@@ -803,21 +839,34 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 			o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, time.Now())
 		}
 		questionIdx, questionComment, ok := findTrackedQuestionComment(detailed.Comments, entry)
-		if !ok {
-			// The key is authoritative (see findTrackedQuestionComment): if the
-			// question hasn't landed on the tracker yet, a human reply written
-			// in that window lands BELOW where the question will appear and is
-			// never treated as the answer (docs/configuration.md, "known
-			// limitations"). Debug level because this fires on every tick the
-			// question is still in flight — normally one flusher tick (~5s),
-			// longer while the tracker is rate-limiting.
+		var replyComment domain.Comment
+		var replied bool
+		if ok {
+			replyComment, replied = findReplyAfterQuestion(detailed.Comments, questionIdx, questionComment)
+		}
+		if !replied && entry.QuestionCommentKey != "" {
+			// A keyed entry's QueuedAt was stamped by the worker the moment
+			// it saw the sentinel, at or just before the question entered
+			// the outbox — so a human comment created after that instant was
+			// written after the agent asked, and is a reply to THIS question
+			// even if the question has not landed yet (or landed below it).
+			// Keyless entries (direct sink, legacy files, recoverInputRequired
+			// rebuilds) have a QueuedAt that says nothing about delivery, so
+			// they keep the positional match only.
+			replyComment, replied = findReplySince(detailed.Comments, entry.QueuedAt, questionComment)
+		}
+		if !ok && !replied {
+			// The key is authoritative (see findTrackedQuestionComment): the
+			// question is still in the outbox and nothing has been written
+			// since it was queued. Debug level because this fires on every
+			// tick the question is in flight — normally one flusher tick
+			// (~5s), longer while the tracker is rate-limiting.
 			if entry.QuestionCommentKey != "" {
 				slog.Debug("orchestrator: input-required question not on the tracker yet, waiting",
 					"identifier", identifier, "comment_key", entry.QuestionCommentKey)
 			}
 			continue // no question comment found — wait
 		}
-		replyComment, replied := findReplyAfterQuestion(detailed.Comments, questionIdx, questionComment)
 		if !replied || strings.TrimSpace(replyComment.Body) == "" {
 			continue // no reply yet
 		}

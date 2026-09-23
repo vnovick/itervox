@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
 )
@@ -198,6 +199,18 @@ func (m *MemoryTracker) CreateComment(_ context.Context, issueID, body string) (
 // bot identity). For tests that exercise reply detection, which skips comments
 // by the question's author.
 func (m *MemoryTracker) AddHumanComment(issueID, body string) {
+	m.addHumanComment(issueID, body, nil)
+}
+
+// AddHumanCommentAt is AddHumanComment with a known creation time, for tests
+// that exercise timestamp-based reply matching (a reply written before the
+// agent's question reached the tracker). AddHumanComment leaves CreatedAt nil,
+// which real adapters never do but which tests use to mean "time unknown".
+func (m *MemoryTracker) AddHumanCommentAt(issueID, body string, at time.Time) {
+	m.addHumanComment(issueID, body, &at)
+}
+
+func (m *MemoryTracker) addHumanComment(issueID, body string, at *time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextCommentID++
@@ -210,6 +223,7 @@ func (m *MemoryTracker) AddHumanComment(issueID, body string) {
 			Body:       body,
 			AuthorID:   "human-1",
 			AuthorName: "Human",
+			CreatedAt:  at,
 		})
 		return
 	}
