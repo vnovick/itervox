@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
 )
@@ -25,9 +26,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.loadHistoryFromDisk()
 	state := NewState(o.cfg)
 	state = o.loadPausedFromDisk(state)
+	state = o.loadPauseReasonsFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
 	state = o.loadInputRequiredFromDisk(state)
 	state = o.loadAutomationQueueFromDisk(state)
+	state = o.loadDepsOverridesFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	tick := time.NewTimer(0)
 	defer tick.Stop()
@@ -69,6 +72,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
 	o.commentWg.Wait()
+	o.depsRefreshWg.Wait()
 	return loopErr
 }
 
@@ -83,6 +87,15 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state.ActiveStates = append([]string{}, o.cfg.Tracker.ActiveStates...)
 	state.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
 	o.cfgMu.RUnlock()
+
+	// Gap D (Task 6 review): run the dependency-refresh watchdog before the
+	// candidate fetch, not just inside reconcileDependencyRefresh further
+	// down. onTick returns early below when FetchCandidateIssues errors,
+	// which would otherwise skip reconcileDependencyRefresh — and with it the
+	// watchdog — for exactly the tracker-outage scenario the watchdog exists
+	// to recover from. Safe to also run again inside reconcileDependencyRefresh
+	// on the success path below; it is idempotent.
+	o.reclaimStuckDependencyRefresh(&state, now)
 
 	// 1. Revert expired auto-switch overrides before retries or fresh
 	// dispatch can reuse a stale fallback profile/backend.
@@ -99,16 +112,91 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
 
 	// 4. Fetch candidates and dispatch eligible issues.
+	//
+	// #42-E — write priority. When the tracker budget has fallen into the
+	// write reserve, skip the polling reads for this tick so the remaining
+	// requests are available for WRITES: state transitions, comments, and the
+	// resume-path detail fetch below. Reads and writes drew on one budget, so
+	// the polling loops exhausted the hour early and then every operation
+	// that would have drained the queue failed — and those loops scale with
+	// the number of stuck issues, which is what made it self-sustaining.
+	//
+	// Skipping the tick is safe: dispatch simply does not advance until the
+	// budget resets, whereas continuing to poll guarantees the writes fail.
+	shedReads := shouldShedPollingReads(o.tracker, o.rateLimitReservePercent())
+	if shedReads {
+		logReadShedding(o.tracker)
+		// processPendingInputResumes still runs below: its FetchIssueDetail is
+		// the read that UNSTICKS the backlog, and starving it is precisely
+		// the deadlock #42 documents.
+		state = o.processPendingInputResumes(ctx, state, now)
+		return state
+	}
 	issues, err := o.tracker.FetchCandidateIssues(ctx)
 	if err != nil {
 		slog.Warn("orchestrator: fetch candidates failed", "error", err)
 		return state
 	}
+
+	// outbox Task 3 — reconcile pending write-ahead-outbox entries against
+	// this tick's freshly polled issues, then overlay each surviving
+	// pending update_state entry's TargetState onto its issue in `issues`.
+	// Must run BEFORE ReconcileInferredDeps/CandidateSeen/BuildTickGraph
+	// and the dispatch-eligibility loop below, all of which read `issues`:
+	// this is what keeps a completed-but-unflushed issue out of the ready
+	// set (never re-dispatched) and lets its dependents' blockers resolve
+	// optimistically. See outbox_overlay.go for the full rationale
+	// (including why reconciliation runs before the overlay) and
+	// docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md's
+	// "Overlay"/"Reconciliation" sections. Nil-safe: o.outbox is nil
+	// whenever cfg.Tracker.Outbox is false (the kill switch), in which
+	// case this returns an empty set and mutates nothing.
+	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
+
+	// unified-dependency-graph Task 4 — recompute the inferred-dependency
+	// gating layer against this tick's candidate set before the audit/dispatch
+	// loop below reads it. Pure function; the sidecar read is a local mtime
+	// stat via o.sidecarEdges(), nil-safe when no sidecar path is configured.
+	// state.DepsOverrides (Task 6) carries operator dismissals through so
+	// overridden targets report Overridden=true / Gating=false here too —
+	// this is a superset recompute of the same-tick patch the
+	// EventSetDepsOverride handler applies, so the two never disagree once a
+	// tick has run.
+	state.InferredDeps = ReconcileInferredDeps(o.sidecarEdges(), issues, state.DepsOverrides, o.cfg, state, now)
+
+	// analyzer-autonomy Task 4 fix round — snapshot "what tracker polling saw
+	// this tick" right where issues is in hand, alongside InferredDeps/
+	// BuildTickGraph. Pure function, no state read; see candidate_seen.go.
+	state.CandidateSeen = candidateSeenRows(issues)
+
+	// critical-path-ordering Task 3 — build the tick graph once, right after
+	// InferredDeps is reconciled, so both dispatch ordering (below) and Task
+	// 4's cycle/attention alerting reuse the same graph value instead of
+	// recomputing it. tickGraph itself is not consumed yet outside this tick;
+	// Task 4 wires ExtractCycles / attention surfacing off of it here.
+	tickGraph := BuildTickGraph(issues, state.InferredDeps, state)
+
+	// critical-path-ordering Task 4 — cycles and attention items are
+	// event-loop-owned derived state: recomputed every tick from the graph
+	// just built above, never persisted, no events raised. prev = the
+	// previous tick's state.DependencyCycles, which is how ExtractCycles
+	// carries DetectedAt forward for a repeating member set.
+	//
+	// wave-2 polish Task 4 — ComputeGraphMetrics and ExtractCycles each ran
+	// their own Tarjan SCC pass over the identical tickGraph; they're fused
+	// here into one ComputeTickGraphAnalysis call that computes the SCC
+	// decomposition once and feeds both consumers from it. See
+	// ComputeTickGraphAnalysis's doc comment.
+	tickGraphMetrics, cycles := ComputeTickGraphAnalysis(tickGraph, state.DependencyCycles, now)
+	state.DependencyCycles = cycles
+	state.DependencyAttention = DeriveDependencyAttention(tickGraph, state.DependencyCycles, state, o.cfg, now)
+
 	for i := range issues {
 		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issues[i], now)
 	}
-	o.auditBlockersResolvedAutomationSources(ctx, &state, now)
-	o.refreshKnownDependencyAudits(ctx, &state, now)
+	// Dependency-audit tracker fetches run off-loop. This call selects a batch
+	// and returns immediately; results arrive as EventDependencyAuditRefreshed.
+	o.reconcileDependencyRefresh(ctx, &state, now)
 
 	// v0.2.0 audit P1-1 — build a lookup table over the candidate fetch so
 	// drainAutomationQueue can reuse the snapshots instead of issuing a
@@ -152,6 +240,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 				continue
 			}
 			delete(state.PausedIdentifiers, issue.Identifier)
+			clearPauseReason(&state, issue.Identifier)
 			// Keep PausedSessions so that auto-resume from a tracker state change
 			// can also reuse the captured session ID. Dispatch will consume it.
 			slog.Info("orchestrator: auto-resumed issue re-activated in tracker",
@@ -172,7 +261,13 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 
 	// Check for tracker comment replies to input-required issues.
 	// If a user replied via Linear/GitHub, auto-resume the agent.
-	state = o.checkTrackerReplies(ctx, state)
+	// checkTrackerReplies is a polling read: it re-fetches issues nobody has
+	// necessarily touched, looking for a reply. processPendingInputResumes is
+	// not — its fetch is the one that lets a queued resume proceed — so it
+	// runs regardless of the reserve.
+	if !shedReads {
+		state = o.checkTrackerReplies(ctx, state)
+	}
 	state = o.processPendingInputResumes(ctx, state, now)
 	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
 
@@ -185,12 +280,26 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	)
 
 	dispatched := 0
-	// P2 — when prefer_high_outdegree is enabled, sort with the outdegree
-	// tiebreaker so foundation issues that unblock siblings dispatch first.
-	o.cfgMu.RLock()
-	preferOutdegree := o.cfg.Agent.PreferHighOutdegreeSort
-	o.cfgMu.RUnlock()
-	sorted := SortForDispatchWithOutdegree(issues, preferOutdegree)
+	// critical-path-ordering Task 3 — dependencies.ordering is read-only
+	// config (validated/defaulted at load time in internal/config), so no
+	// cfgMu is needed here. "simple" keeps legacy priority/created_at/
+	// identifier order; "critical_path" (the default) and
+	// "critical_path_strict" both sort by fan-out/chain-length via the tick
+	// graph built above, differing only in whether the priority band
+	// outranks that graph leverage (critical_path) or is outranked by it
+	// (critical_path_strict).
+	var sorted []domain.Issue
+	switch o.cfg.Dependencies.Ordering {
+	case config.DependenciesOrderingSimple:
+		sorted = SortForDispatch(issues)
+	case config.DependenciesOrderingCriticalPathStrict:
+		sorted = SortForDispatchCriticalPathStrict(issues, tickGraphMetrics)
+	default:
+		// Includes the "critical_path" default. Config validation already
+		// normalizes unrecognized values, so this arm is only reachable for
+		// critical_path itself or a State assembled outside the loader.
+		sorted = SortForDispatchCriticalPath(issues, tickGraphMetrics)
+	}
 	for _, issue := range sorted {
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("orchestrator: no slots available, stopping dispatch",
@@ -236,6 +345,12 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			"slots_remaining", AvailableSlots(state),
 		)
 	}
+
+	// Record which constraint was binding on this tick. Must run AFTER the
+	// dispatch loop so issues started above count as running rather than as
+	// waiting on capacity. Pure function; the only mutation is this
+	// assignment, on the event-loop goroutine.
+	state.DispatchPressure = observeDispatchPressure(state.DispatchPressure, state, issues, o.cfg)
 	// Gap §1.1 + §1.2 — opportunistic janitor for the rate-limit
 	// switch-history + cooldown maps. Cheap: one pass per tick over
 	// typically <100 entries, and short-circuits when the cap is 0.
@@ -366,11 +481,85 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 // question comments. Used to identify and skip own comments when detecting user replies.
 const itervoxCommentPrefix = "🤖 **Agent needs your input**"
 
-func buildInputRequiredComment(entry *InputRequiredEntry) string {
+func buildInputRequiredComment(entry *InputRequiredEntry, inlineInput bool) string {
 	if entry == nil {
 		return ""
 	}
-	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._", entry.Context)
+	footer := "_Reply in the tracker or via the Itervox dashboard to continue._"
+	if inlineInput {
+		// The dashboard reply box is hidden in inline mode; do not send the
+		// human looking for it.
+		footer = "_Reply to this comment to continue._"
+	}
+	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n%s", entry.Context, footer)
+}
+
+// postInputRequiredComment delivers one comment of the input-required
+// conversation (what: "question" or "reply") under key.
+//
+// With an outbox-backed sink the call only enqueues to a local file, so it
+// runs synchronously HERE, on the event loop. That is deliberate: the event
+// loop is the one serialised writer, so the question is always enqueued before
+// any reply, and the outbox's per-issue FIFO then delivers them in that order.
+// Two goroutines racing to enqueue would hand the FIFO an arbitrary order.
+//
+// With a direct sink (tracker.outbox: false) the call is network I/O, which
+// must never run on the event loop, so it stays a commentWg-tracked goroutine.
+// Ordering between question and reply is not guaranteed on that path.
+func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) {
+	if o.sinkEnqueuesLocally() {
+		if err := o.writeSink().CreateKeyedComment(context.Background(), issueID, identifier, key, body); err != nil {
+			slog.Warn("orchestrator: failed to enqueue input-required comment",
+				"identifier", identifier, "what", what, "error", err)
+		}
+		return
+	}
+	o.commentWg.Add(1)
+	go func() {
+		defer o.commentWg.Done()
+		postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
+		defer cancel()
+		if err := o.writeSink().CreateKeyedComment(postCtx, issueID, identifier, key, body); err != nil {
+			slog.Warn("orchestrator: failed to post input-required comment",
+				"identifier", identifier, "what", what, "error", err)
+		}
+	}()
+}
+
+// newInputRequiredCommentKey returns a fresh idempotency key, or "" when the
+// comment cannot be posted under one — the comment is then posted without a
+// key and reply detection falls back to the legacy id/prefix match.
+//
+// "" is returned when:
+//   - the active sink does NOT enqueue locally (the direct sink). A key on
+//     the entry is authoritative — findTrackedQuestionComment never falls
+//     back once one is recorded. That is only safe when a durable outbox
+//     Retry stands behind the post: an outbox entry that fails to deliver is
+//     retried until it either lands under its key or is dropped, and either
+//     way the entry's key still matches what eventually reaches the tracker
+//     (or the entry is explicitly abandoned). The direct sink has no retry —
+//     a single failed CreateCommentWithKey attempt would strand the entry
+//     with a key the tracker will never carry, and reply detection would
+//     wait forever. So on the direct path the question/reply is always
+//     posted keyless, exactly as it was before keys existed.
+//   - key generation fails.
+//   - the tracker cannot key comments at all (no tracker.IdempotentCommenter).
+//     A key the tracker will never carry would make reply detection wait
+//     forever for a comment that was posted without it.
+func (o *Orchestrator) newInputRequiredCommentKey(identifier string) string {
+	if !o.sinkEnqueuesLocally() {
+		return ""
+	}
+	if _, ok := o.tracker.(tracker.IdempotentCommenter); !ok {
+		return ""
+	}
+	key, err := outbox.NewCommentKey()
+	if err != nil {
+		slog.Warn("orchestrator: could not generate input-required comment key",
+			"identifier", identifier, "error", err)
+		return ""
+	}
+	return key
 }
 
 func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string) *PendingInputResumeEntry {
@@ -388,33 +577,12 @@ func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string)
 		Command:            entry.Command,
 		WorkerHost:         entry.WorkerHost,
 		ProfileName:        entry.ProfileName,
+		QuestionCommentKey: entry.QuestionCommentKey,
 		QuestionCommentID:  entry.QuestionCommentID,
 		QuestionAuthorID:   entry.QuestionAuthorID,
 		QuestionAuthorName: entry.QuestionAuthorName,
 		QueuedAt:           time.Now(),
 	}
-}
-
-func withRecordedQuestionComment(entry *InputRequiredEntry, comment *domain.Comment) *InputRequiredEntry {
-	if entry == nil || comment == nil {
-		return entry
-	}
-	cp := *entry
-	cp.QuestionCommentID = comment.ID
-	cp.QuestionAuthorID = comment.AuthorID
-	cp.QuestionAuthorName = comment.AuthorName
-	return &cp
-}
-
-func withRecordedPendingQuestionComment(entry *PendingInputResumeEntry, comment *domain.Comment) *PendingInputResumeEntry {
-	if entry == nil || comment == nil {
-		return entry
-	}
-	cp := *entry
-	cp.QuestionCommentID = comment.ID
-	cp.QuestionAuthorID = comment.AuthorID
-	cp.QuestionAuthorName = comment.AuthorName
-	return &cp
 }
 
 func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequiredEntry {
@@ -431,6 +599,7 @@ func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequire
 		Command:            entry.Command,
 		WorkerHost:         entry.WorkerHost,
 		ProfileName:        entry.ProfileName,
+		QuestionCommentKey: entry.QuestionCommentKey,
 		QuestionCommentID:  entry.QuestionCommentID,
 		QuestionAuthorID:   entry.QuestionAuthorID,
 		QuestionAuthorName: entry.QuestionAuthorName,
@@ -447,7 +616,29 @@ func findLatestItervoxQuestionComment(comments []domain.Comment) (int, domain.Co
 	return -1, domain.Comment{}, false
 }
 
+// findTrackedQuestionComment locates the agent's question among comments.
+//
+// A QuestionCommentKey is AUTHORITATIVE: the question is the comment whose id
+// equals the key (Linear sends the key as the comment id) or whose body
+// carries the key's hidden marker (GitHub). If no comment matches, the
+// question is still pending in the outbox and the answer is "not found" —
+// falling through to the prefix match would select an OLDER question from a
+// previous input-required round on the same issue, and the human reply under
+// that old question would resume the agent with a stale answer.
+//
+// Entries without a key (persisted before keys existed, or keyless because key
+// generation failed) keep the legacy resolution: recorded comment id, then the
+// latest comment with the Itervox question prefix.
 func findTrackedQuestionComment(comments []domain.Comment, entry *InputRequiredEntry) (int, domain.Comment, bool) {
+	if entry != nil && entry.QuestionCommentKey != "" {
+		key := entry.QuestionCommentKey
+		for i, comment := range comments {
+			if comment.ID == key || tracker.CommentHasKey(comment.Body, key) {
+				return i, comment, true
+			}
+		}
+		return -1, domain.Comment{}, false
+	}
 	if entry != nil && entry.QuestionCommentID != "" {
 		for i, comment := range comments {
 			if comment.ID == entry.QuestionCommentID {
@@ -472,6 +663,53 @@ func findReplyAfterQuestion(comments []domain.Comment, questionIdx int, question
 	for i := questionIdx + 1; i < len(comments); i++ {
 		comment := comments[i]
 		if strings.HasPrefix(comment.Body, itervoxCommentPrefix) {
+			continue
+		}
+		if tracker.IsManagedComment(comment) {
+			// Everything Itervox writes (including the dashboard's own reply,
+			// posted through the outbox) carries the managed-comment marker;
+			// human comments never do. sameCommentAuthor alone is not enough:
+			// it returns false when BOTH comments have empty author fields —
+			// which is exactly what a Linear OAuth-application comment looks
+			// like (`user: null`) — so without this check Itervox's own reply
+			// would be read as the human answer and the agent would
+			// self-resume on its own comment.
+			continue
+		}
+		if sameCommentAuthor(comment, question) {
+			continue
+		}
+		return comment, true
+	}
+	return domain.Comment{}, false
+}
+
+// findReplySince returns the earliest human comment created strictly after
+// since — the answer to a question that was QUEUED at since but may not have
+// reached the tracker yet. Position cannot find such a reply: while the
+// question is in the outbox there is no question to be "after", and once it
+// lands (trackers order comments by creation time) the early reply sits ABOVE
+// it, where findReplyAfterQuestion never looks.
+//
+// Only comments with a reported CreatedAt qualify. An unknown time is not
+// "after": it is ambiguous, and an ambiguous comment waits for the positional
+// match rather than resuming the agent on a guess. CreatedAt is the tracker's
+// clock and since is ours; the comparison is strict, so skew can only delay a
+// genuine early reply until the positional match catches it, never promote
+// an older comment (which would need skew wider than the gap between the
+// previous round's reply and this question). The same exclusions as
+// findReplyAfterQuestion apply (Itervox prefix, managed marker, and the
+// question's own author when the question is known — pass a zero Comment
+// when it is not, which disables the author check).
+func findReplySince(comments []domain.Comment, since time.Time, question domain.Comment) (domain.Comment, bool) {
+	if since.IsZero() {
+		return domain.Comment{}, false
+	}
+	for _, comment := range comments {
+		if comment.CreatedAt == nil || !comment.CreatedAt.After(since) {
+			continue
+		}
+		if strings.HasPrefix(comment.Body, itervoxCommentPrefix) || tracker.IsManagedComment(comment) {
 			continue
 		}
 		if sameCommentAuthor(comment, question) {
@@ -556,21 +794,79 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 	if len(state.InputRequiredIssues) == 0 {
 		return state
 	}
-	for identifier, entry := range state.InputRequiredIssues {
-		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
-		if err != nil {
-			slog.Warn("orchestrator: tracker-reply check failed",
-				"identifier", identifier, "error", err)
+	// Bounded, least-recently-checked-first. Ranging over the whole map cost
+	// one tracker request per input-required issue per tick, so this loop's
+	// request rate scaled with the backlog it exists to clear (issue #42).
+	selected := selectTrackerReplyCheckBatch(state.InputRequiredIssues, trackerReplyCheckPerTickBudget)
+	// Collapse the whole tick's reads into one request where the tracker can
+	// do it (issue #42: this loop was ~15% of the measured budget). A tracker
+	// without DetailBatcher returns nil here and every entry below takes the
+	// unchanged per-issue path.
+	replyIDs := make([]string, 0, len(selected))
+	for _, identifier := range selected {
+		if e := state.InputRequiredIssues[identifier]; e != nil {
+			replyIDs = append(replyIDs, e.IssueID)
+		}
+	}
+	prefetched := tracker.PrefetchDetails(ctx, o.tracker, replyIDs)
+
+	for _, identifier := range selected {
+		entry := state.InputRequiredIssues[identifier]
+		if entry == nil {
 			continue
+		}
+		// Stamp before the fetch, not after: a failing fetch must still
+		// advance this entry's place in the queue, or a permanently
+		// unreachable issue would monopolise the budget every tick and
+		// starve every other entry — the exact starvation the ordering is
+		// here to prevent.
+		entry.LastReplyCheckAt = time.Now()
+		detailed := prefetched[entry.IssueID]
+		if detailed == nil {
+			// Not in the batch — either the tracker cannot batch, or this id
+			// was absent from the response. Absence is NOT deletion, so
+			// confirm with an authoritative single fetch rather than
+			// treating it as gone.
+			var err error
+			detailed, err = o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+			if err != nil {
+				slog.Warn("orchestrator: tracker-reply check failed",
+					"identifier", identifier, "error", err)
+				continue
+			}
 		}
 		if detailed != nil {
 			o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, time.Now())
 		}
 		questionIdx, questionComment, ok := findTrackedQuestionComment(detailed.Comments, entry)
-		if !ok {
+		var replyComment domain.Comment
+		var replied bool
+		if ok {
+			replyComment, replied = findReplyAfterQuestion(detailed.Comments, questionIdx, questionComment)
+		}
+		if !replied && entry.QuestionCommentKey != "" {
+			// A keyed entry's QueuedAt was stamped by the worker the moment
+			// it saw the sentinel, at or just before the question entered
+			// the outbox — so a human comment created after that instant was
+			// written after the agent asked, and is a reply to THIS question
+			// even if the question has not landed yet (or landed below it).
+			// Keyless entries (direct sink, legacy files, recoverInputRequired
+			// rebuilds) have a QueuedAt that says nothing about delivery, so
+			// they keep the positional match only.
+			replyComment, replied = findReplySince(detailed.Comments, entry.QueuedAt, questionComment)
+		}
+		if !ok && !replied {
+			// The key is authoritative (see findTrackedQuestionComment): the
+			// question is still in the outbox and nothing has been written
+			// since it was queued. Debug level because this fires on every
+			// tick the question is in flight — normally one flusher tick
+			// (~5s), longer while the tracker is rate-limiting.
+			if entry.QuestionCommentKey != "" {
+				slog.Debug("orchestrator: input-required question not on the tracker yet, waiting",
+					"identifier", identifier, "comment_key", entry.QuestionCommentKey)
+			}
 			continue // no question comment found — wait
 		}
-		replyComment, replied := findReplyAfterQuestion(detailed.Comments, questionIdx, questionComment)
 		if !replied || strings.TrimSpace(replyComment.Body) == "" {
 			continue // no reply yet
 		}
@@ -596,6 +892,23 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		identifiers = append(identifiers, identifier)
 	}
 	slices.Sort(identifiers)
+
+	// Which entries may spend a tracker request this tick, least-recently-
+	// attempted first. Computed once, before the loop, so the cheap
+	// bookkeeping below stays unbudgeted.
+	fetchAllowed := make(map[string]struct{}, trackerReplyCheckPerTickBudget)
+	resumeIDs := make([]string, 0, trackerReplyCheckPerTickBudget)
+	for _, identifier := range selectPendingResumeFetchBatch(state.PendingInputResumes, trackerReplyCheckPerTickBudget) {
+		fetchAllowed[identifier] = struct{}{}
+		if e := state.PendingInputResumes[identifier]; e != nil {
+			resumeIDs = append(resumeIDs, e.IssueID)
+		}
+	}
+	// One request for the whole budgeted set where the tracker supports it
+	// (issue #42: this loop was ~11% of the measured budget). Prefetching
+	// exactly the fetchAllowed set — not every pending entry — keeps the
+	// budget's meaning intact: entries this tick will not read are not read.
+	resumePrefetched := tracker.PrefetchDetails(ctx, o.tracker, resumeIDs)
 
 	for _, identifier := range identifiers {
 		if AvailableSlots(state) <= 0 {
@@ -625,11 +938,37 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			continue
 		}
 
-		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
-		if err != nil {
-			slog.Warn("orchestrator: pending input resume detail fetch failed",
-				"identifier", identifier, "error", err)
+		// Bound the tracker requests this loop can spend per tick. The
+		// AvailableSlots check above already caps the SUCCESS path, but a
+		// fetch that fails costs a request without consuming a slot — so
+		// when the tracker is the thing that is failing, every pending entry
+		// was retried every tick. That is the self-sustaining half of issue
+		// #42: the resume path needs a successful read to drain the backlog,
+		// and its own retries were consuming the budget that read needed.
+		//
+		// Membership, not a counter: a plain per-tick count still spent the
+		// whole budget on the same lexically-first entries every tick, so a
+		// permanently unfetchable issue at the head starved everything
+		// behind it. The bookkeeping above this point stays unbudgeted — it
+		// costs no tracker request.
+		if _, mayFetch := fetchAllowed[identifier]; !mayFetch {
 			continue
+		}
+		// Stamp before the fetch so a failing entry still yields its place;
+		// otherwise it would monopolise the budget forever.
+		entry.LastResumeAttemptAt = now
+		detailed := resumePrefetched[entry.IssueID]
+		if detailed == nil {
+			// Absent from the batch is not proof the issue is gone — confirm
+			// authoritatively before acting on it, since the branches below
+			// delete state on terminal/non-active.
+			var err error
+			detailed, err = o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+			if err != nil {
+				slog.Warn("orchestrator: pending input resume detail fetch failed",
+					"identifier", identifier, "error", err)
+				continue
+			}
 		}
 		if detailed == nil {
 			continue
@@ -965,12 +1304,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// Runs in the event loop goroutine — safe to mutate state maps directly.
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			clearPauseReason(&state, ev.Identifier)
 			// Force-reanalyze starts fresh — drop any captured session so dispatch
 			// runs runWorker without --resume.
 			delete(state.PausedSessions, ev.Identifier)
 			state.ForceReanalyze[ev.Identifier] = struct{}{}
 			// Persist immediately so a crash between ticks doesn't re-pause the issue.
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			slog.Info("orchestrator: issue un-paused for forced re-analysis",
 				"identifier", ev.Identifier)
 			if o.OnStateChange != nil {
@@ -981,7 +1322,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventResumeIssue:
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			clearPauseReason(&state, ev.Identifier)
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			slog.Info("orchestrator: issue resumed", "identifier", ev.Identifier)
 			if o.OnStateChange != nil {
 				o.OnStateChange()
@@ -991,9 +1334,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventTerminatePaused:
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			clearPauseReason(&state, ev.Identifier)
 			// Terminate discards the issue entirely; drop any captured session.
 			delete(state.PausedSessions, ev.Identifier)
 			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+			o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			slog.Info("orchestrator: paused issue terminated (claim released)", "identifier", ev.Identifier)
 			// Move the issue back to Backlog (or first active state if no backlog
 			// is configured) to remove the in-progress label and prevent it from
@@ -1037,7 +1382,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// automatically re-dispatched until the user explicitly resumes it.
 		state = CancelRetry(state, ev.IssueID)
 		state.PausedIdentifiers[ev.Identifier] = ev.IssueID
+		setPauseReason(&state, ev.Identifier, PauseReasonUserCancelled)
 		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+		o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 		slog.Info("orchestrator: retry-queue issue cancelled and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -1053,36 +1400,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
-		// Post the user's reply as a tracker comment so the conversation
-		// is visible in Linear/GitHub alongside the agent's question.
-		// T-44 (02.G-01): tracked via commentWg so Run waits for the post
-		// to finish on shutdown — otherwise the comment can be dropped if
-		// the daemon exits before the (postRunTimeout-bounded) tracker
-		// API call returns.
-		o.commentWg.Add(1)
-		go func(issueID, ident, msg string) {
-			defer o.commentWg.Done()
-			postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
-			defer cancel()
-			if _, err := o.tracker.CreateComment(postCtx, issueID, tracker.MarkManagedComment(msg)); err != nil {
-				slog.Warn("orchestrator: failed to post user input as tracker comment",
-					"identifier", ident, "error", err)
-			}
-		}(entry.IssueID, ev.Identifier, ev.Message)
+		// Post the user's reply so the conversation is visible in the
+		// tracker. Enqueued after the question (see postInputRequiredComment).
+		o.postInputRequiredComment(entry.IssueID, ev.Identifier,
+			o.newInputRequiredCommentKey(ev.Identifier), tracker.MarkManagedComment(ev.Message), "reply")
 		state = o.processPendingInputResumes(ctx, state, time.Now())
 		if o.OnStateChange != nil {
 			o.OnStateChange()
-		}
-
-	case EventInputRequiredCommentRecorded:
-		if ev.Comment == nil || ev.Identifier == "" {
-			return state
-		}
-		if entry, ok := state.InputRequiredIssues[ev.Identifier]; ok {
-			state.InputRequiredIssues[ev.Identifier] = withRecordedQuestionComment(entry, ev.Comment)
-		}
-		if pending, ok := state.PendingInputResumes[ev.Identifier]; ok {
-			state.PendingInputResumes[ev.Identifier] = withRecordedPendingQuestionComment(pending, ev.Comment)
 		}
 
 	case EventDismissInput:
@@ -1093,7 +1417,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
+		setPauseReason(&state, ev.Identifier, PauseReasonUserDismissedInput)
 		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+		o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 		slog.Info("orchestrator: input-required issue dismissed and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -1155,6 +1481,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			appendIssueStatusChange(&state, *ev.StatusChange)
 		}
 
+	case EventDependencyAuditRefreshed:
+		o.applyDependencyRefreshResult(ctx, &state, ev.DependencyRefresh, time.Now())
+
+	case EventSetDepsOverride:
+		state = o.applyDepsOverrideEvent(state, ev)
+
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
@@ -1199,6 +1531,17 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 		if wasCancelledByUser {
 			state.PausedIdentifiers[issue.Identifier] = issue.ID
+			// The worker signals a FAILED COMPLETION TRANSITION through the
+			// same cancelled-IDs set it uses for a real user cancel, because
+			// both must stop the dispatch loop. They are not the same event:
+			// the transition failure means the agent's work succeeded and only
+			// the tracker write did not, which is recoverable without a human.
+			// #42-F.
+			reason := PauseReasonUserCancelled
+			if o.takeTransitionFailed(issue.Identifier) {
+				reason = PauseReasonTransitionFailed
+			}
+			setPauseReason(&state, issue.Identifier, reason)
 			// Capture session info so resume can continue the same agent session
 			// via --resume / `exec resume` instead of starting from scratch.
 			// Only meaningful when the agent has actually established a session
@@ -1278,13 +1621,49 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// T-21: clear reviewer-injected profile overrides only. A user-set
 			// override (via SetIssueProfile HTTP) is left intact even on a
 			// reviewer-Kind completion, since the user never asked us to forget it.
-			if liveEntry != nil && liveEntry.Kind == "reviewer" {
+			// #58 defect 1 — the reviewer's identity must survive a missing
+			// live entry.
+			//
+			// With tracker.completion_state set, a successful worker moves the
+			// issue terminal, so ReconcileTrackerStates deletes the run from
+			// state.Running BEFORE the run's own exit event arrives. liveEntry
+			// is then nil, the `liveEntry.Kind == "reviewer"` guard never
+			// fires, and the chain never advances — the quorum stayed open
+			// forever, which is why multi-reviewer fan-out was gated off.
+			//
+			// reviewerInjectedProfiles is written at reviewer dispatch and is
+			// NOT touched by reconciliation, so it still identifies the run.
+			// Recovering from it is strictly narrower than failing open: it
+			// says "this exact issue had a reviewer profile injected", not
+			// "we could not prove otherwise" — the distinction that made
+			// runEligibleForAutoReview fail closed.
+			finishedKind, finishedProfile := "", ""
+			if liveEntry != nil {
+				finishedKind, finishedProfile = liveEntry.Kind, liveEntry.ProfileName
+			}
+			o.issueProfilesMu.Lock()
+			if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
+				if finishedKind == "" {
+					finishedKind = "reviewer"
+				}
+				if finishedProfile == "" {
+					finishedProfile = o.issueProfiles[issue.Identifier]
+				}
+			}
+			o.issueProfilesMu.Unlock()
+
+			if finishedKind == "reviewer" {
 				o.issueProfilesMu.Lock()
 				if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
 					delete(o.issueProfiles, issue.Identifier)
 					delete(o.reviewerInjectedProfiles, issue.Identifier)
 				}
 				o.issueProfilesMu.Unlock()
+				// #58 — collect this reviewer's verdict and either dispatch
+				// the next reviewer in the chain or close the quorum. Must
+				// run AFTER the profile-override cleanup above so the next
+				// reviewer's dispatch installs its own override cleanly.
+				state = o.advanceReviewChainForIssue(ctx, state, issue, finishedProfile, now)
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -1310,7 +1689,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			if ev.RunEntry != nil && ev.RunEntry.PRURL != "" {
 				successArgs = append(successArgs, "pr_url", ev.RunEntry.PRURL)
 			}
-			slog.Info("orchestrator: worker succeeded, claim released", successArgs...)
+			o.logger().Info("orchestrator: worker succeeded, claim released", successArgs...)
 			// Gap §1.3 — clear the rate_limited auto-switch override on
 			// successful exit so the next dispatch reverts to the
 			// natural profile. Operator-set overrides (not marked in
@@ -1327,7 +1706,19 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				profilesCopy := maps.Clone(state.IssueProfiles)
 				backendsCopy := maps.Clone(state.IssueBackends)
 				switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
-				go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
+				// Local file write — safe to call synchronously from the event
+				// loop, consistent with the other saveXToDisk calls in this
+				// file (savePausedToDisk, savePauseReasonsToDisk,
+				// saveInputRequiredToDisk). Was previously fired via `go`,
+				// making it an untracked goroutine; that only escaped
+				// TestEventLoopGoroutinesAreWaitgroupTracked because an
+				// unrelated `o.commentWg.Add(1)` earlier in this same
+				// function (the now-removed input-required question-comment
+				// goroutine) lexically preceded it. Removing that goroutine
+				// in Task 3 of input_required_outbox_plan exposed this call
+				// as genuinely untracked; making it synchronous is the fix,
+				// not re-adding an unrelated Add(1).
+				o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
 			// Auto-clear workspace if configured.
@@ -1346,7 +1737,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			autoReview := o.cfg.Agent.AutoReview
 			o.cfgMu.RUnlock()
 			reviewerWillRun := autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry)
-			if autoClear && !reviewerWillRun {
+			// #58 defect 2 — runEligibleForAutoReview answers "would a FRESH
+			// review start?", not "is a review in progress?". For a reviewer's
+			// own exit it is false by design (that is what stops review
+			// loops), so with a multi-reviewer chain the workspace was cleared
+			// out from under the NEXT reviewer, which then had no worktree to
+			// read a verdict from. advanceReviewChainForIssue ran just above
+			// and deletes ReviewChainIndex when the quorum closes, so a still
+			// present index means another reviewer is genuinely pending.
+			if autoClear && !reviewerWillRun && !reviewChainInFlight(state, issue.Identifier) {
 				// Use the actual worktree branch propagated via sendExitWithBranch.
 				// PR-continuation runs use prCtx.Branch, which differs from
 				// issue.BranchName; re-deriving the branch here would delete the
@@ -1362,6 +1761,16 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Only trigger when the completed worker was NOT itself a reviewer
 			// (prevents infinite review loops).
 			if reviewerWillRun {
+				// #58 — start a fresh chain. ResetReviewChain clears any
+				// verdicts from a previous review of this issue so a re-review
+				// is judged on its own evidence, and seeds the index so
+				// advanceReviewChainForIssue knows a chain is in flight. When
+				// the chain has a single entry this is inert bookkeeping and
+				// the reviewer behaves exactly as before.
+				if chain := o.reviewerChainCfg(); len(chain) > 1 {
+					ResetReviewChain(&state, issue.Identifier)
+					reviewerProfile = chain[0]
+				}
 				o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
 			}
 
@@ -1404,34 +1813,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Post the agent's question as a tracker comment so it's visible
 			// in Linear/GitHub. The dashboard shows a reply UI; user replies
 			// are also posted as tracker comments before resuming the agent.
-			// T-44 (02.G-01): tracked via commentWg so Run waits for the post
-			// AND the recorded-comment event to finish on shutdown.
-			commentText := tracker.MarkManagedComment(buildInputRequiredComment(entry))
-			o.commentWg.Add(1)
-			go func(issueID, ident string) {
-				defer o.commentWg.Done()
-				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
-				defer cancel()
-				comment, err := o.tracker.CreateComment(postCtx, issueID, commentText)
-				if err != nil {
-					slog.Warn("orchestrator: failed to post input-required comment", "identifier", ident, "error", err)
-					return
-				}
-				if comment == nil {
-					return
-				}
-				sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer sendCancel()
-				select {
-				case o.events <- OrchestratorEvent{
-					Type:       EventInputRequiredCommentRecorded,
-					Identifier: ident,
-					Comment:    comment,
-				}:
-				case <-sendCtx.Done():
-					slog.Warn("orchestrator: input-required comment event lost", "identifier", ident)
-				}
-			}(entry.IssueID, issue.Identifier)
+			// Record the question's key on the entry BEFORE storing it, so
+			// reply detection can find the question by key no matter when
+			// the outbox delivers it.
+			entry.QuestionCommentKey = o.newInputRequiredCommentKey(issue.Identifier)
+			o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
+				tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg())), "question")
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Pass liveEntry so the B1 self-reentry guard can suppress dispatch
 			// when the exiting worker was itself an input_required automation.
@@ -1538,7 +1925,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 							"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 							"queued", rateLimitedQueued)
 					} else if failedState != "" {
-						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
+						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState, issue.State)
 						// New semantics (v0.2.0): clear workspace when the
 						// issue reaches a terminal tracker state. FailedState
 						// is terminal — no retries remain and no rate-limited
@@ -1557,7 +1944,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 						}
 					} else {
 						state.PausedIdentifiers[issue.Identifier] = issue.ID
+						setPauseReason(&state, issue.Identifier, PauseReasonRetriesExhausted)
 						o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+						o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 					}
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {
@@ -1601,7 +1990,7 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 		attempts, lastErr)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(comment)); err != nil {
+	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(comment)); err != nil {
 		slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
 	}
 }
@@ -1610,10 +1999,19 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 // the issue to a caller-specified target state instead of computing backlog/active.
 // Returns the (potentially mutated) state. No-op when issueID or targetState is empty.
 //
-// Uses context.Background() intentionally: the tracker state transition must
-// complete even during graceful shutdown to avoid leaving issues in an
-// inconsistent state. The timeout ensures the goroutine is bounded.
-func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identifier, targetState string) State {
+// Uses a bounded (15s) context, not context.Background(), for the
+// o.writeSink().UpdateIssueState call: directWriteSink's between-attempt
+// backoff wait watches this ctx (see write_sink.go), and the daemon's
+// default shutdown grace is 30s — an unbounded ctx combined with the
+// direct sink's up-to-4-attempt/2s+4s+8s-backoff retry loop could run
+// ~74s worst case (see fix-round §1 in task-2-report.md), well past that
+// grace period, risking a force-exit mid-retry that loses this
+// transition + the RecordIssueStatusChange/EventDiscardComplete below.
+// Restoring the original 15s bound keeps this goroutine's worst case
+// bounded regardless of which sink is active — the outbox sink ignores
+// ctx entirely (Enqueue is synchronous, in-process), so the bound is a
+// no-op there and only matters for the direct sink.
+func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identifier, targetState, fromState string) State {
 	if issueID == "" || targetState == "" {
 		return state
 	}
@@ -1622,7 +2020,20 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 	go func() {
 		defer o.discardWg.Done()
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
+		// fromState is the tracker state observed when this transition was
+		// decided. It is what lets reconciliation tell a human's later move
+		// apart from the outbox's own writes.
+		//
+		// Passing "" here was NOT the safe default it looked like: an entry
+		// with no baseline is exempt from rule 2 entirely, so it can never be
+		// superseded — and this is the failed-state path, whose entries retry
+		// with no terminal give-up. An operator who moved a stuck issue out
+		// of the failed state would have had that move overwritten. Empty
+		// stays permitted for callers that genuinely cannot observe the
+		// state; this caller can.
+		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, fromState)
+		updateCancel()
+		if err != nil {
 			slog.Warn("orchestrator: failed to transition issue to failed state",
 				"identifier", identifier, "target_state", targetState, "error", err)
 		} else {
@@ -1634,7 +2045,6 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 				Source:     StatusSourceWorkerLifecycle,
 			})
 		}
-		updateCancel()
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer sendCancel()
 		select {
@@ -1754,8 +2164,26 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 }
 
 func runEligibleForAutoReview(liveEntry *RunEntry) bool {
+	// A nil liveEntry means state.Running no longer holds this run, so we
+	// cannot establish that what just finished was a reviewable worker. It
+	// must fail CLOSED.
+	//
+	// It used to return true, and that was an unbounded agent-spawn loop.
+	// ReconcileTrackerStates deletes the Running entry when an issue reaches
+	// a terminal state — which is exactly what tracker.completion_state makes
+	// the worker do on success — and the stopped run's own goroutine then
+	// delivers its real EventWorkerExited a moment later, by which point the
+	// entry is gone. Failing open told the handler "a plain worker
+	// succeeded", so it dispatched a reviewer; reconciliation stopped that
+	// reviewer for the same reason; its exit arrived nil too; repeat. The
+	// issue sits terminal, so nothing ever breaks the cycle.
+	//
+	// Measured on a 50ms poll: 30 RunTurn calls in 1.5s against an expected
+	// 2. On a real tracker each iteration is a billed agent run plus tracker
+	// writes. Failing closed costs at most one skipped review on a run we
+	// have no record of; failing open costs the fleet.
 	if liveEntry == nil {
-		return true
+		return false
 	}
 	return liveEntry.Kind == "" || liveEntry.Kind == "worker"
 }

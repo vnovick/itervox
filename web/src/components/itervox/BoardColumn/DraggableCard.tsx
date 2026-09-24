@@ -27,6 +27,7 @@ export default function DraggableCard({
   inputRequiredStaleByIdentifier,
   retryAttemptByIdentifier,
   maxRetries,
+  syncingIdentifiers,
 }: {
   issue: TrackerIssue;
   /** True when THIS card is being dragged */
@@ -50,6 +51,8 @@ export default function DraggableCard({
   retryAttemptByIdentifier?: Record<string, number>;
   /** G: snapshot's max_retries; "M" denominator for the retry pill. 0 = unlimited. */
   maxRetries?: number;
+  /** outbox Task 4: identifiers with a pending write-ahead-outbox entry (snapshot.outboxSyncing). */
+  syncingIdentifiers?: ReadonlySet<string>;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [measuredHeight, setMeasuredHeight] = useState(72);
@@ -113,6 +116,7 @@ export default function DraggableCard({
         inputRequiredAgeMinutes={inputRequiredStaleByIdentifier?.[issue.identifier]?.ageMinutes}
         retryAttempt={retryAttemptByIdentifier?.[issue.identifier]}
         maxRetries={maxRetries}
+        syncing={syncingIdentifiers?.has(issue.identifier)}
       />
     </div>
   );

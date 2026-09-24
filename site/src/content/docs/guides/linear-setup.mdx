@@ -162,3 +162,5 @@ The default is 30 seconds (`30000` ms). For faster feedback during development y
 polling:
   interval_ms: 10000  # poll every 10 seconds
 ```
+
+If Linear does rate-limit Itervox (it answers with HTTP 400 and a `RATELIMITED` error), Itervox reads Linear's published reset time and stops sending requests until then. Queued comments and state changes wait in the outbox, show a **rate limited until HH:MM** chip in the dashboard, and are delivered once the window lifts — never dropped and never posted twice. When the window lifts, writes go ahead of polling reads.

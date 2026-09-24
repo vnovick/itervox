@@ -34,6 +34,7 @@ func TestParseClaudeRuntime_AggregatesCounts(t *testing.T) {
 	}
 	if snap == nil {
 		t.Fatal("expected non-nil snapshot")
+		return
 	}
 	if snap.CapabilityLoads["Read"] != 1 || snap.CapabilityLoads["ctx7"] != 1 || snap.CapabilityLoads["my-skill"] != 1 {
 		t.Errorf("unexpected capability loads: %v", snap.CapabilityLoads)

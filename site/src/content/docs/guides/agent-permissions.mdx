@@ -1,0 +1,180 @@
+---
+title: Agent Permissions & Repo Rules
+description: How Itervox runs Claude Code and Codex, why it bypasses approval prompts, and how to enforce your repository's rules with PreToolUse hooks and branch protection.
+sidebar:
+  order: 10
+---
+
+Itervox runs agents **non-interactively**. There is no human at the keyboard to
+answer an approval prompt, so by default every turn is dispatched with approvals
+bypassed:
+
+| Backend | Flags Itervox passes |
+|---|---|
+| Claude Code | `--output-format stream-json --verbose --dangerously-skip-permissions` |
+| Codex | `exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check` |
+
+That reads alarming, and it is worth being precise about what it does and does
+not mean.
+
+## What the flag actually changes
+
+An approval flag controls one thing: **whether the agent stops to ask a human.**
+It does not decide whether the agent follows your repository's conventions.
+
+Removing it would not make agents honor your rules — it would make a headless
+run **hang** on the first tool call that needs approval, until the turn timeout
+kills it and the issue fails. Nothing is listening to say yes.
+
+So "run without the dangerous flag" and "make agents honor repo rules" are two
+separate problems. The second is the one worth solving, and you can solve it
+today without touching the first.
+
+## What enforces, and what only suggests
+
+:::caution[`CLAUDE.md` is not a control]
+Instructions in `CLAUDE.md` or `AGENTS.md` steer a model. They do not constrain
+it, in any permission mode. Treat them as documentation, and put anything that
+*must* hold into one of the layers below.
+:::
+
+In descending order of strength:
+
+**1. `PreToolUse` hooks — not bypassed.** This is the important one. A deny
+**hook**, unlike a deny **rule** in `settings.json`, is *not* bypassed by
+`--dangerously-skip-permissions`. A hook that exits non-zero blocks the tool
+call outright. This is where "never force-push", "never touch `infra/` without
+a plan", "no `rm -rf`" belong.
+
+**2. Branch protection on your remote.** The only layer that makes a bad push
+genuinely impossible rather than merely difficult.
+
+**3. Your gates.** `make verify`, lefthook, CI. An agent can talk itself past a
+convention; it cannot talk itself past a red build. Set
+`hooks.after_run_required: true` so a failing `after_run` fails the unit
+instead of being logged and ignored.
+
+**4. `CLAUDE.md`.** Useful for steering. Not a fence.
+
+## Where the rules live: your repo, not Itervox
+
+Hooks belong in the **repository Itervox is working on**, not in Itervox
+itself — they encode your policy about your code, and Itervox has no business
+shipping them. Concretely, in the target repo:
+
+- `.claude/hooks/<your-hook>.mjs`
+- registered in `.claude/settings.json` under `hooks.PreToolUse`
+
+Itervox's side of the contract is one environment variable.
+
+### Telling an Itervox run apart from a human
+
+Itervox exports `ITERVOX_AGENT=1` into **every** agent turn. That exists for a
+specific problem: a repo that denies `git commit` and `git push` by default
+would otherwise block the daemon's own workers, whose entire job is to commit a
+branch and open a PR.
+
+So a hook can apply different policy to each. Note the ordering — the rules
+that must hold for *everyone* are checked **before** the marker is consulted:
+
+```js
+// 1. Unconditional. These apply to humans and agents alike.
+if (isPush && /--force|--force-with-lease|\s-[A-Za-z]*f\b/.test(cmd)) {
+  deny("force-push rewrites published history and is never automatic.");
+}
+if (isPush && /\b(main|master)\b\s*$/.test(cmd)) {
+  deny("pushing straight to main bypasses review. Open a PR.");
+}
+
+// 2. Only now does the marker matter: the daemon is allowed to commit
+//    and push its feature branch, an interactive session is not.
+if (process.env.ITERVOX_AGENT === "1") process.exit(0);
+
+deny("git commit/push is denied in interactive sessions.");
+```
+
+Putting the unconditional rules first is the whole point. If you check the
+marker at the top and exit early, you have written a hook that trusts an
+environment variable any process can set.
+
+:::danger[The marker is not authentication]
+`ITERVOX_AGENT=1` is a **convenience marker**. Any process can set it. It lets a
+repo owner express *"I trust Itervox runs"* — it proves nothing on its own.
+Branch protection on the remote is what actually stops a forced or
+protected-branch push.
+:::
+
+### A worked example to copy
+
+Itervox ships one at
+[`docs/examples/git-write-guard.example.mjs`](https://github.com/vnovick/itervox/blob/main/docs/examples/git-write-guard.example.mjs).
+Copy it into your repo's `.claude/hooks/` and adapt it.
+
+Read its header comments before relying on it. It is deliberately honest about
+its own limits — the matchers are simple string tests, not a shell parser, and
+they miss spellings that still reach git:
+
+```bash
+git -C /repo push          # path flag before the subcommand
+X=git; $X push             # command built from a variable
+bash -c "git push"         # git invoked from a nested shell
+```
+
+It is a guardrail, not a sandbox. Use it to stop accidents, and rely on branch
+protection to stop anything determined.
+
+## If you want a real sandbox
+
+Hooks constrain *what an agent may call*. They do not confine what a process
+does once it is running. If you need containment rather than guardrails:
+
+- **Codex** supports it directly. Swapping
+  `--dangerously-bypass-approvals-and-sandbox` for
+  `--sandbox workspace-write --ask-for-approval never` keeps the run
+  non-interactive while confining filesystem writes to the workspace.
+- **Claude Code** would need `--permission-mode acceptEdits` plus an explicit
+  `--allowedTools` list. Workable, but you must enumerate every tool your agents
+  need, and anything missing fails the run rather than prompting.
+
+This is configurable per profile via `permission_mode`:
+
+```yaml
+agent:
+  profiles:
+    cautious:
+      command: codex
+      permission_mode: sandbox   # bypass (default) | sandbox
+```
+
+| Mode | Claude | Codex |
+|---|---|---|
+| `bypass` *(default)* | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+| `sandbox` | `--permission-mode acceptEdits` | `--sandbox workspace-write --ask-for-approval never` |
+
+Both modes stay non-interactive — that is not optional, since a run that pauses
+for approval hangs until the turn timeout. An unrecognised value warns and falls
+back to `bypass`, which is what the profile was already running.
+
+:::caution[`sandbox` means different things to each backend]
+Codex genuinely confines filesystem writes to the workspace. Claude has no
+equivalent sandbox — `acceptEdits` bounds what the agent is asked to confirm,
+not what the process can reach.
+
+If you need real containment on the Claude side, run the daemon itself in a
+container. The mode name should not be read as promising more than the backend
+delivers.
+:::
+
+## Recommended setup
+
+1. Add a `PreToolUse` hook to the target repo for the handful of things that
+   must never happen. Start from the example above.
+2. Turn on branch protection for your default branch. This is the only
+   non-negotiable one.
+3. Set `hooks.after_run_required: true` so a failing verification gate fails
+   the unit.
+4. Put conventions in `CLAUDE.md` — and assume they are advisory.
+
+Steps 2 and 3 are worth more than any flag change. A protected branch and a
+gate that fails loudly constrain outcomes; an approval prompt with nobody to
+answer it only constrains progress.

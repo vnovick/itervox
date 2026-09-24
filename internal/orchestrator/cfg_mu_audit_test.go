@@ -54,6 +54,7 @@ var AllowedMutableCfgFields = map[string]struct{}{
 	"Agent.SwitchRevertHours":            {},
 	"Agent.SwitchWindowHours":            {},
 	"Automations":                        {},
+	"Dependencies.AnalysisMode":          {},
 	"Tracker.ActiveStates":               {},
 	"Tracker.CompletionState":            {},
 	"Tracker.FailedState":                {},

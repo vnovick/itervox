@@ -333,6 +333,46 @@ func PatchAgentStringField(path, key, value string) error {
 	return writeFrontMatter(path, frontLines, bodyLines)
 }
 
+// PatchDependenciesStringField sets or removes a string key under the
+// dependencies: block of the YAML front matter. Unlike the agent: patchers,
+// the dependencies: block is OPTIONAL — the scaffold never emits it — so
+// when it is absent the block header is created at the end of the front
+// matter. Appending the key without a header would land it under whatever
+// block came last.
+func PatchDependenciesStringField(path, key, value string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("workflow patch dependencies: read %s: %w", path, err)
+	}
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	frontLines, bodyLines := splitFrontMatter(content)
+	if frontLines == nil {
+		return fmt.Errorf("workflow patch dependencies: no front matter in %s", path)
+	}
+
+	blockLine := findBlockHeader(frontLines, "dependencies")
+	if blockLine < 0 && value != "" {
+		// splitFrontMatter's frontLines never includes the closing "---"
+		// delimiter (see splitFrontMatter), so appending the header here
+		// lands it at the end of the front matter, not after it.
+		frontLines = append(frontLines, "dependencies:")
+		blockLine = len(frontLines) - 1
+	}
+	indent := detectBlockIndent(frontLines, blockLine)
+	keyPrefix := indent + key + ": "
+	keyFound := findKeyInBlock(frontLines, blockLine, key)
+
+	switch {
+	case keyFound >= 0 && value == "":
+		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
+	case keyFound >= 0:
+		frontLines[keyFound] = keyPrefix + strconv.Quote(value)
+	case value != "":
+		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyPrefix+strconv.Quote(value))
+	}
+	return writeFrontMatter(path, frontLines, bodyLines)
+}
+
 // PatchAgentStringSliceField sets or removes a string-slice key under the
 // agent: block of the YAML front matter. Empty values remove the key.
 func PatchAgentStringSliceField(path, key string, values []string) error {

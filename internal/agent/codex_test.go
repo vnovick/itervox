@@ -111,7 +111,8 @@ func TestCodexRunnerFreshTurn(t *testing.T) {
 		nil, "hello", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "tid-1", result.SessionID)
 	assert.Equal(t, "done", result.LastText)
@@ -140,7 +141,8 @@ func TestCodexRunnerResumeTurn(t *testing.T) {
 		&sessionID, "continue", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "resumed", result.LastText)
 	assert.Equal(t, 20, result.InputTokens)
@@ -174,7 +176,8 @@ func TestMultiRunnerDispatchesToCodex(t *testing.T) {
 		nil, "hi", dir, fakeCodex, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "mtr-1", result.SessionID)
 	assert.Equal(t, "codex here", result.LastText)
@@ -201,7 +204,8 @@ func TestCodexRunnerLogsSubagentEvents(t *testing.T) {
 		nil, "hi", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(log.info, "\n"), "codex: subagent")
 }
@@ -228,7 +232,8 @@ func TestMultiRunnerDispatchesToHintedBackend(t *testing.T) {
 		nil, "hi", dir, command, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "hint-1", result.SessionID)
 
@@ -320,7 +325,8 @@ func TestMultiRunnerStripsBackendHintFromPrompt(t *testing.T) {
 		nil, "@@itervox-backend=codex actual prompt text", dir, fakeCodex, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "strip-1", result.SessionID)
 
@@ -337,7 +343,8 @@ func TestCodexRunnerStartupFailure(t *testing.T) {
 		nil, "test", t.TempDir(), "/nonexistent/path/to/codex", "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.Error(t, err)
 	assert.True(t, result.Failed)
 	assert.Contains(t, err.Error(), "codex:")
@@ -360,7 +367,8 @@ func TestCodexRunnerWithNonExeCommand(t *testing.T) {
 		nil, "test", dir, fakeWrapper, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "shell-1", result.SessionID)
 }
@@ -509,7 +517,8 @@ func TestCodexRunnerLogsActionStarted(t *testing.T) {
 		nil, "build it", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.Contains(t, allInfo, "codex: action_started", "in-progress action_started must be logged")
@@ -541,7 +550,8 @@ func TestCodexShellNonZeroExitInDescription(t *testing.T) {
 		nil, "run bad cmd", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.Contains(t, allInfo, "exit:127", "non-zero exit code should appear in action log description")
@@ -567,7 +577,8 @@ func TestCodexShellZeroExitNoExitSuffix(t *testing.T) {
 		nil, "echo ok", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.NotContains(t, allInfo, "exit:0", "zero exit should not appear in action log")
@@ -593,7 +604,8 @@ func TestCodexShellDetailLoggedAtInfoLevel(t *testing.T) {
 		nil, "build", dir, fakeExe, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
 	assert.Contains(t, allInfo, "codex: action_detail", "action_detail must be logged at INFO level")
@@ -622,7 +634,8 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 		nil, "hi", dir, "@@itervox-backend=unsupported "+fakeClaude, "",
 		"",
 		30000, 60000,
-	)
+
+		agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "warn-1", result.SessionID)
 }

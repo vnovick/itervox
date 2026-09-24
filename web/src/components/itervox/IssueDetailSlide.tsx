@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import MarkdownPanel from './MarkdownPanel';
 import IssueDetailHeader from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { IssueStatusChanges } from './IssueStatusChanges';
+import { InputRequiredPanel } from './InputRequiredPanel';
+import { IssueCommentComposer } from './IssueCommentComposer';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import {
@@ -21,6 +23,7 @@ import {
   ISSUE_KEY,
 } from '../../queries/issues';
 import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
+import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants';
 
 export default function IssueDetailSlide() {
   const selectedIdentifier = useItervoxStore((s) => s.selectedIdentifier);
@@ -45,7 +48,15 @@ export default function IssueDetailSlide() {
   const runningRows = useItervoxStore((s) => s.snapshot?.running);
   const historyRows = useItervoxStore((s) => s.snapshot?.history);
   const automations = useItervoxStore((s) => s.snapshot?.automations);
-  const [replyText, setReplyText] = useState('');
+  // critical-path-ordering Task 5/6 — cycle/stale-blocker alerts, derived
+  // event-loop-side and surfaced read-only on the snapshot.
+  const dependencyAttention = useItervoxStore(
+    (s) => s.snapshot?.dependencyAttention ?? EMPTY_DEPENDENCY_ATTENTION,
+  );
+  // outbox #54 fast-follow: same join-by-identifier against
+  // snapshot.outboxSyncing BoardView's DraggableCard has used since Task 4.
+  const outboxSyncing = useItervoxStore((s) => s.snapshot?.outboxSyncing ?? EMPTY_STATES);
+  const inlineInput = useItervoxStore((s) => s.snapshot?.inlineInput ?? false);
 
   const close = useCallback(() => {
     setSelectedIdentifier(null);
@@ -61,6 +72,7 @@ export default function IssueDetailSlide() {
 
   if (!selectedIdentifier || !issue) return null;
 
+  const issueAttention = dependencyAttention.find((row) => row.identifier === issue.identifier);
   const isInReview = issue.state.toLowerCase() === 'in review';
   const isProfileLocked = issue.state.toLowerCase().includes('progress');
 
@@ -74,6 +86,7 @@ export default function IssueDetailSlide() {
         profileDefs={profileDefs}
         defaultBackend={defaultBackend}
         automations={automations}
+        syncing={outboxSyncing.includes(issue.identifier)}
       />
 
       {/* Scrollable body */}
@@ -192,7 +205,7 @@ export default function IssueDetailSlide() {
           </div>
         )}
 
-        <IssueBlockerDetails issue={issue} />
+        <IssueBlockerDetails issue={issue} attention={issueAttention} />
 
         {/* Description */}
         <div>
@@ -285,66 +298,20 @@ export default function IssueDetailSlide() {
             );
           })()}
 
-        {/* Input Required — reply UI */}
-        {issue.orchestratorState === 'input_required' && (
-          <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
-              <h4 className="text-sm font-semibold text-orange-400">Agent needs your input</h4>
-            </div>
-            {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
-            <textarea
-              value={replyText}
-              onChange={(e) => {
-                setReplyText(e.target.value);
-              }}
-              placeholder="Type your reply… (will be posted as a comment to the tracker)"
-              rows={4}
-              className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
-            />
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  if (!replyText.trim()) return;
-                  provideInputMutation.mutate(
-                    { identifier: issue.identifier, message: replyText.trim() },
-                    {
-                      onSuccess: () => {
-                        setReplyText('');
-                      },
-                    },
-                  );
-                }}
-                disabled={provideInputMutation.isPending || !replyText.trim()}
-                className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {provideInputMutation.isPending ? 'Sending…' : 'Reply & Resume Agent'}
-              </button>
-              <button
-                onClick={() => {
-                  dismissInputMutation.mutate(issue.identifier);
-                }}
-                disabled={dismissInputMutation.isPending}
-                className="text-theme-text-secondary bg-theme-bg-soft rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-              >
-                {dismissInputMutation.isPending ? 'Dismissing…' : 'Dismiss'}
-              </button>
-            </div>
-          </div>
+        {/* Operator comment composer — always available except while the
+            issue is input_required, where the reply box below is the
+            answer channel for the agent's question instead. */}
+        {issue.orchestratorState !== 'input_required' && (
+          <IssueCommentComposer identifier={issue.identifier} />
         )}
 
-        {issue.orchestratorState === 'pending_input_resume' && (
-          <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
-              <h4 className="text-sm font-semibold text-orange-400">Reply received</h4>
-            </div>
-            <p className="text-theme-text-secondary text-sm">
-              Itervox has your reply and is waiting to resume the agent.
-            </p>
-            {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
-          </div>
-        )}
+        {/* Input Required — reply UI (extracted, Task 5 size-budget) */}
+        <InputRequiredPanel
+          issue={issue}
+          inlineInput={inlineInput}
+          provideInputMutation={provideInputMutation}
+          dismissInputMutation={dismissInputMutation}
+        />
       </div>
 
       {/* Sticky action footer */}

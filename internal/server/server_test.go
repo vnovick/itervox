@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func baseSnap() server.StateSnapshot {
@@ -1327,6 +1329,44 @@ func TestHandleSetAutoClearWorkspace_InvalidReviewerCombinationReturns400(t *tes
 	assert.Contains(t, w.Body.String(), "auto_review")
 }
 
+// ─── handleSetDepsAnalysisMode ───────────────────────────────────────────────
+
+func TestHandleSetDepsAnalysisMode_Manual(t *testing.T) {
+	var got string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetDepsAnalysisModeFn: func(mode string) error { got = mode; return nil }}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/settings/deps-analysis-mode", `{"mode":"manual"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "manual", got)
+	assert.Contains(t, w.Body.String(), `"mode":"manual"`)
+}
+
+func TestHandleSetDepsAnalysisMode_Invalid400(t *testing.T) {
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetDepsAnalysisModeFn: func(string) error { called = true; return nil }}
+	srv := server.New(cfg)
+
+	for _, body := range []string{`{"mode":"sometimes"}`, `{"mode":""}`, `{}`} {
+		w := postJSON(t, srv, "/api/v1/settings/deps-analysis-mode", body)
+		assert.Equal(t, http.StatusBadRequest, w.Code, body)
+	}
+	assert.False(t, called, "an invalid mode must be rejected before reaching the client")
+}
+
+func TestHandleSetDepsAnalysisMode_ClientError500(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetDepsAnalysisModeFn: func(string) error { return errors.New("disk full") }}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/settings/deps-analysis-mode", `{"mode":"auto"}`)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 // ─── handleClearAllWorkspaces ────────────────────────────────────────────────
 
 func TestHandleClearAllWorkspaces_Returns202(t *testing.T) {
@@ -1745,6 +1785,33 @@ func TestHandleDismissInput_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+func TestProvideInputRejectedWhenInlineInput(t *testing.T) {
+	snap := baseSnap()
+	snap.InlineInput = true
+	cfg := makeTestConfig(snap)
+	called := false
+	cfg.Client = &server.FuncClient{
+		ProvideInputFn: func(string, string) bool { called = true; return true },
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "inline_input_enabled")
+	assert.False(t, called, "the reply must not reach the orchestrator")
+}
+
+func TestProvideInputAllowedWhenInlineInputOff(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ProvideInputFn: func(string, string) bool { return true }}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestHandleAgentComment_Success(t *testing.T) {
 	store := agentactions.NewStore()
 	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionComment}, "", time.Minute)
@@ -1899,6 +1966,34 @@ func TestHandleAgentProvideInput_ForbiddenWithoutPermission(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.False(t, called)
 	assert.Contains(t, w.Body.String(), "agent_action_denied")
+}
+
+func TestAgentActionProvideInputAllowedWhenInlineInput(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionProvideInput}, "", time.Minute)
+	require.NoError(t, err)
+
+	var called bool
+	snap := baseSnap()
+	snap.InlineInput = true
+	cfg := makeTestConfig(snap)
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		ProvideInputFn: func(string, string) bool {
+			called = true
+			return true
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/provide-input", bytes.NewBufferString(`{"message":"continue"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called, "agent-actions provide-input must reach the orchestrator even when inline_input is on")
 }
 
 func TestHandleAgentMoveState_MissingTokenReturns401(t *testing.T) {
@@ -2624,4 +2719,78 @@ func TestHandleSetFailedState_UnknownStateRejected(t *testing.T) {
 	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":"Garbage"}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "Garbage")
+}
+
+func TestHandleIssueComment_Queued202(t *testing.T) {
+	var gotIdentifier, gotBody string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(_ context.Context, identifier, body string) (bool, error) {
+			gotIdentifier, gotBody = identifier, body
+			return true, nil
+		},
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", `{"body":"Looks good"}`)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Contains(t, w.Body.String(), `"queued":true`)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Equal(t, "Looks good", gotBody, "the handler passes the body through unmarked")
+}
+
+func TestHandleIssueComment_Direct200(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(context.Context, string, string) (bool, error) { return false, nil },
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", `{"body":"direct"}`)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"ok":true`)
+}
+
+func TestHandleIssueComment_EmptyBody400(t *testing.T) {
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(context.Context, string, string) (bool, error) { called = true; return true, nil },
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", `{"body":"   "}`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.False(t, called)
+}
+
+func TestHandleIssueComment_NotFound404(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(_ context.Context, id, _ string) (bool, error) {
+			return false, fmt.Errorf("fetch issue %s: %w", id, tracker.ErrNotFound)
+		},
+	}
+	srv := server.New(cfg)
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-404/comment", `{"body":"x"}`)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_found")
+}
+
+func TestHandleIssueComment_TooLong400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		PostOperatorCommentFn: func(context.Context, string, string) (bool, error) { return true, nil },
+	}
+	srv := server.New(cfg)
+	body := `{"body":"` + strings.Repeat("a", 10*1024+1) + `"}`
+
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", body)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

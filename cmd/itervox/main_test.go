@@ -34,7 +34,7 @@ type captureRunner struct {
 	workerHost string
 }
 
-func (c *captureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, workerHost, _ string, _, _ int) (agent.TurnResult, error) {
+func (c *captureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, workerHost, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	c.command = command
 	c.workerHost = workerHost
 	return agent.TurnResult{}, nil
@@ -267,7 +267,7 @@ func TestCommandResolverRunnerSkipsResolutionForSSHWorkers(t *testing.T) {
 		},
 	}
 
-	_, err := runner.RunTurn(context.Background(), nil, nil, nil, "prompt", ".", "claude --model sonnet", "ssh://host", "", 0, 0)
+	_, err := runner.RunTurn(context.Background(), nil, nil, nil, "prompt", ".", "claude --model sonnet", "ssh://host", "", 0, 0, agent.PermissionBypass)
 
 	require.NoError(t, err)
 	assert.Equal(t, "claude --model sonnet", inner.command)
@@ -306,7 +306,7 @@ func TestInitExistingWorkflowMessageMentionsUpdate(t *testing.T) {
 }
 
 func TestGenerateWorkflow_UsesSchema2ProfileFiles(t *testing.T) {
-	content := generateWorkflow("github", "codex", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"})
+	content := generateWorkflow("github", "codex", repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"}, filepath.Join(t.TempDir(), "WORKFLOW.md"))
 
 	assert.Contains(t, content, "itervox_schema_version: 2")
 	for _, profile := range []string{"implementer", "reviewer", "input-responder"} {
@@ -2205,6 +2205,71 @@ func TestOrchestratorAdapterSetAutoClearWorkspace_DoesNotMutateRuntimeWhenPersis
 
 	require.Error(t, err)
 	assert.False(t, orch.AutoClearWorkspaceCfg())
+}
+
+func TestOrchestratorAdapterSetDepsAnalysisMode_PersistsThenUpdatesRuntime(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	require.NoError(t, adapter.SetDepsAnalysisMode("manual"))
+	assert.Equal(t, "manual", adapter.orch.DepsAnalysisModeCfg())
+	reloaded, loadErr := config.Load(adapter.workflowPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, config.DepsAnalysisModeManual, reloaded.Dependencies.AnalysisMode, "the patched file must round-trip through config.Load")
+	require.NotNil(t, reloaded.Server.Port, "unrelated blocks must be untouched")
+}
+
+func TestOrchestratorAdapterSetDepsAnalysisMode_DoesNotMutateRuntimeWhenPersistFails(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:   []string{"Todo"},
+			TerminalStates: []string{"Done"},
+		},
+		Agent: config.AgentConfig{
+			Command: "claude",
+		},
+		Dependencies: config.DependenciesConfig{
+			AnalysisMode: config.DepsAnalysisModeAuto,
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: filepath.Join(t.TempDir(), "missing", "WORKFLOW.md"),
+		notify:       func() {},
+	}
+
+	err := adapter.SetDepsAnalysisMode("manual")
+
+	require.Error(t, err)
+	assert.Equal(t, config.DepsAnalysisModeAuto, adapter.orch.DepsAnalysisModeCfg(), "runtime must not change when the file write fails")
 }
 
 func TestOrchestratorAdapterUpdateTrackerStates_DoesNotMutateRuntimeWhenPersistFails(t *testing.T) {

@@ -8,6 +8,7 @@ import {
   useCancelIssue,
   useClearAllWorkspaces,
   useClearIssueLogs,
+  usePostIssueComment,
   useProvideInput,
   useTriggerAIReview,
   useUpdateIssueState,
@@ -221,6 +222,140 @@ describe('mutation refresh behavior', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['logs'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sublogs'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: logIdentifiersKey() });
+  });
+});
+
+// ─── useProvideInput — 409 inline_input_enabled ────────────────────────────────
+
+describe('useProvideInput inline-input conflict', () => {
+  it('shows the inline-input message, not the raw status string, on 409', async () => {
+    const qc = freshClient();
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 409 });
+
+    const { result } = renderHook(() => useProvideInput(), {
+      wrapper: createWrapper(qc),
+    });
+
+    act(() => {
+      result.current.mutate({ identifier: 'ABC-9', message: 'continue' });
+    });
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts.length).toBeGreaterThan(0);
+    expect(toasts[0].message).not.toMatch(/provideInput failed: 409/);
+    expect(toasts[0].message).toMatch(/inline input is on/i);
+  });
+
+  it('refreshes the snapshot on 409 so the panel flips to the inline notice', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 409 });
+
+    const { result } = renderHook(() => useProvideInput(), {
+      wrapper: createWrapper(qc),
+    });
+
+    act(() => {
+      result.current.mutate({ identifier: 'ABC-9', message: 'continue' });
+    });
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    expect(refreshSpy).toHaveBeenCalled();
+  });
+
+  it('still produces the generic failure behavior on a 500', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+
+    const { result } = renderHook(() => useProvideInput(), {
+      wrapper: createWrapper(qc),
+    });
+
+    act(() => {
+      result.current.mutate({ identifier: 'ABC-9', message: 'continue' });
+    });
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts.length).toBeGreaterThan(0);
+    // Unchanged from before this fix: non-409 failures still surface the
+    // generic thrown-error message, not the inline-input notice.
+    expect(toasts[0].message).toMatch(/provideInput failed: 500/);
+    // refreshSnapshot is only called by the 409 conflict path, not on a
+    // generic failure — the reply box does not need to disappear here.
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── usePostIssueComment ────────────────────────────────────────────────────
+
+describe('usePostIssueComment', () => {
+  it('toasts "queued" on 202 and invalidates the issue caches', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 202, json: () => Promise.resolve({ queued: true }) });
+
+    const { result } = renderHook(() => usePostIssueComment(), { wrapper: createWrapper(qc) });
+    await act(async () => {
+      await result.current.mutateAsync({ identifier: 'ABC-9', body: 'nice' });
+    });
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts.at(-1)?.message).toMatch(/queued/i);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ISSUE_KEY('ABC-9') });
+    expect(refreshSpy).toHaveBeenCalled();
+  });
+
+  it('toasts "posted" on 200', async () => {
+    const qc = freshClient();
+    const refreshSpy = vi
+      .spyOn(useItervoxStore.getState(), 'refreshSnapshot')
+      .mockResolvedValue(undefined);
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+    const { result } = renderHook(() => usePostIssueComment(), { wrapper: createWrapper(qc) });
+    await act(async () => {
+      await result.current.mutateAsync({ identifier: 'ABC-9', body: 'nice' });
+    });
+    expect(useToastStore.getState().toasts.at(-1)?.message).toMatch(/posted/i);
+    expect(refreshSpy).toHaveBeenCalled();
+  });
+
+  it('surfaces the server error message on failure', async () => {
+    const qc = freshClient();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: () => Promise.resolve({ error: { code: 'not_found', message: 'issue not found' } }),
+    });
+    const { result } = renderHook(() => usePostIssueComment(), { wrapper: createWrapper(qc) });
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ identifier: 'NOPE-1', body: 'x' }),
+      ).rejects.toThrow();
+    });
+    expect(useToastStore.getState().toasts.at(-1)?.message).toMatch(/issue not found/i);
   });
 });
 

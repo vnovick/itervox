@@ -5,15 +5,40 @@ sidebar:
   order: 7
 ---
 
-Itervox v0.2.0 treats dependencies as dispatch eligibility and observable audit state. It does not implement a full DAG scheduler and it does not mutate tracker state from the core audit path.
+Itervox treats dependencies as dispatch eligibility and observable audit state. It does not implement a full DAG scheduler and it does not mutate tracker state from the core audit path.
 
 ## Dependency sources
 
-Linear blockers come from native issue relations: inverse relations of type `blocks`.
+### Linear
 
-GitHub blockers are text-derived from the issue body using references like `blocked by #123`. GitHub comments are not parsed for blocker relationships in v0.2.0.
+Blockers come from native issue relations — inverse relations of type `blocks` — **and from sub-issues**: a parent with open children is blocked by them.
 
-The dependency audit exposes source labels such as `tracker_relation` and `issue_text` so operators can see where blocker data came from.
+:::caution[Parent ↔ child 2-cycle]
+A board where a parent also carries a `blocks` relation on its own child ("spec work first") now forms a genuine cycle: both issues are held and a cycle alert is raised. That is the correct rendering of a contradictory model, but a board using that pattern goes from working to wedged on upgrade. Remove the relation, or restructure.
+:::
+
+### GitHub
+
+Blockers are text-derived from the issue body. GitHub comments are **not** parsed.
+
+Matched phrases: `blocked by`, `blocked on`, `depends on`, `depends upon`, `requires`, `waiting on`, `waiting for` — each followed by one or more `#123` references.
+
+| Form | Example | Captured |
+|---|---|---|
+| List separators | `depends on #3, #4 and #5` / `depends on #3 & #4` | `#3 #4 #5` |
+| Optional colon | `Depends on: #3` | `#3` |
+| Bullet list across newlines | `Depends on:`<br/>`- #3`<br/>`- #4` | `#3 #4` |
+| Cross-repo mid-list | `depends on #3, foo/bar#4, #5` | `#3 #5` |
+
+A blank line, or a non-bullet non-reference line, ends the list. Only same-repo `#N` references become blocker edges — a cross-repo reference is recognized and skipped, never matched as a blocker itself.
+
+Casual phrasing such as `requires #5 to be reviewed` also matches. That is deliberate: under-capturing a real dependency is worse than occasionally holding an issue an operator can unblock explicitly.
+
+A 51st sub-issue (Linear `children(first: 50)`) is invisible and **fails open** — the parent stays dispatchable rather than being held on data itervox cannot see.
+
+### Audit source labels
+
+The dependency audit exposes labels such as `tracker_relation` and `issue_text` so operators can see where blocker data came from.
 
 ## Eligibility
 

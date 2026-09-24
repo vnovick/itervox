@@ -21,7 +21,7 @@ func TestRunTurnFirstTurnBuildsPromptFlag(t *testing.T) {
 		{Type: "system", SessionID: "sess-1"},
 		{Type: "result", SessionID: "sess-1"},
 	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "do the thing", dir, "claude", "", "", 30000, 60000)
+	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "do the thing", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "sess-1", result.SessionID)
 	assert.False(t, result.Failed)
@@ -34,7 +34,7 @@ func TestRunTurnContinuationUsesResume(t *testing.T) {
 		{Type: "system", SessionID: "sess-1"},
 		{Type: "result", SessionID: "sess-1"},
 	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, &sessionID, "continue", dir, "claude", "", "", 30000, 60000)
+	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, &sessionID, "continue", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "sess-1", result.SessionID)
 }
@@ -45,7 +45,7 @@ func TestRunTurnFailedOnErrorResult(t *testing.T) {
 		{Type: "system", SessionID: "sess-1"},
 		{Type: "result", SessionID: "sess-1", IsError: true},
 	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "prompt", dir, "claude", "", "", 30000, 60000)
+	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "prompt", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.True(t, result.Failed)
 }
@@ -56,7 +56,7 @@ func TestRunTurnInputRequiredSetsFlag(t *testing.T) {
 		{Type: "system", SessionID: "sess-1"},
 		{Type: "result", SessionID: "sess-1", IsError: true, IsInputRequired: true},
 	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "prompt", dir, "claude", "", "", 30000, 60000)
+	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "prompt", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.True(t, result.Failed)
 	assert.True(t, result.InputRequired)
@@ -69,7 +69,7 @@ func TestRunTurnTokensAccumulated(t *testing.T) {
 		{Type: "assistant", Usage: agent.UsageSnapshot{InputTokens: 100, OutputTokens: 50}},
 		{Type: "result", SessionID: "sess-1"},
 	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "prompt", dir, "claude", "", "", 30000, 60000)
+	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "prompt", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, 100, result.InputTokens)
 	assert.Equal(t, 50, result.OutputTokens)

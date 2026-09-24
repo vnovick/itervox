@@ -440,7 +440,7 @@ agent:
 | `reviewer_profile` | `""` | Profile used for code review dispatch |
 | `auto_review` | `false` | Auto-dispatch reviewer after a successful worker run |
 | `reviewer_prompt` | *(built-in)* | Legacy fallback reviewer template when no `reviewer_profile` is set |
-| `inline_input` | `false` | Post input-required questions as tracker comments |
+| `inline_input` | `false` | `true` hides the dashboard reply box — the tracker is the only place to reply |
 | `max_switches_per_issue_per_window` | `2` | Rate-limit switch cap for `rate_limited` automations |
 | `switch_window_hours` | `6` | Rolling window for the switch cap |
 | `switch_revert_hours` | `0` | TTL after which auto-applied switches revert to the original profile/backend (`0` disables) |

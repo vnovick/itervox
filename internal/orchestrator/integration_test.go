@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,7 +30,7 @@ type succeedOnceRunner struct {
 	calls atomic.Int32
 }
 
-func (r *succeedOnceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *succeedOnceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	n := r.calls.Add(1)
 	if n == 1 {
 		return agent.TurnResult{
@@ -212,7 +213,7 @@ type inputRequiredResumeStallRunner struct {
 	workerHosts    []string
 }
 
-func (r *inputRequiredResumeStallRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *inputRequiredResumeStallRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	sid := ""
@@ -241,7 +242,7 @@ func (r *inputRequiredResumeStallRunner) RunTurn(ctx context.Context, _ agent.Lo
 	return agent.TurnResult{Failed: true}, ctx.Err()
 }
 
-func (r *inputRequiredResumeRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *inputRequiredResumeRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	sid := ""
@@ -484,7 +485,14 @@ func TestInputRequiredResumeReusesWorkspaceWithoutRerunningBeforeRun(t *testing.
 		calls, sessionIDs, prompts, workspacePaths, commands, _ := runner.snapshot()
 		issues, err := mt.FetchIssueStatesByIDs(ctx, []string{"id1"})
 		require.NoError(t, err)
-		if calls >= 2 && len(issues) > 0 && issues[0].State == "Done" {
+		// RunHistory is part of the readiness condition, not just the
+		// assertions below. `calls` increments inside RunTurn on the runner
+		// goroutine, while the history entry is recorded later by the event
+		// loop when it processes EventWorkerExited — so under load this loop
+		// could observe calls==2 and a Done issue while history still held
+		// only the first run, then fail on require.Len(history, 2). Waiting
+		// for the thing being asserted removes that race.
+		if calls >= 2 && len(issues) > 0 && issues[0].State == "Done" && len(orch.RunHistory()) >= 2 {
 			require.Len(t, sessionIDs, 2)
 			require.Len(t, prompts, 2)
 			require.Len(t, workspacePaths, 2)
@@ -900,18 +908,22 @@ func TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionComment
 	for {
 		snap := orch1.Snapshot()
 		comments := ct.commentsFor("id1")
+		// commentTracker is not a tracker.IdempotentCommenter, so the question
+		// is posted without a key and QuestionCommentID is never recorded back
+		// onto the entry automatically (input_required_outbox_plan Task 3
+		// removed the callback that used to do that). This test seeds
+		// question_comment_id onto the persisted file below instead, to
+		// exercise the exact-id resolution branch deliberately. The readiness
+		// signal here is simply "the question landed on the tracker".
 		if _, ok := snap.InputRequiredIssues["ENG-1"]; ok && len(comments) > 0 {
-			data, readErr := os.ReadFile(irFile)
-			if readErr == nil && strings.Contains(string(data), `"question_comment_id":"`) {
-				questionComment = comments[0]
-				require.NotEmpty(t, questionComment.ID)
-				require.NotEmpty(t, questionComment.AuthorID)
-				break
-			}
+			questionComment = comments[0]
+			require.NotEmpty(t, questionComment.ID)
+			require.NotEmpty(t, questionComment.AuthorID)
+			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("question comment metadata was not persisted; snap=%+v comments=%+v", orch1.Snapshot(), comments)
+			t.Fatalf("question comment was not posted; snap=%+v comments=%+v", orch1.Snapshot(), comments)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
@@ -922,8 +934,46 @@ func TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionComment
 		t.Fatal("orch1 did not exit within 2s of cancel")
 	}
 
+	// Decoy: a second 🤖-prefixed comment from a DIFFERENT author, landing
+	// after the real question but before the follow-up/reply. A prefix
+	// fallback (findLatestItervoxQuestionComment) would pick THIS as "the
+	// question" — it's the latest comment with the itervoxCommentPrefix at
+	// this point. Its author differs from the real question's author, so if
+	// it were mistakenly used, sameCommentAuthor would fail to filter the
+	// "same bot author" follow-up below, and that follow-up (not the human's
+	// reply) would be treated as the answer. Seeding QuestionCommentID (fix
+	// round 1, item c) below must prevent that: exact-id resolution ignores
+	// this decoy entirely.
+	ct.addComment("id1", "🤖 **Agent needs your input**\n\nA stale duplicate question from a decoy source.",
+		"decoy-bot", "Decoy Bot")
 	ct.addComment("id1", "Follow-up from the same bot author.", questionComment.AuthorID, questionComment.AuthorName)
 	ct.addComment("id1", "Approved via tracker comment from a human.", "human-user-1", "Alice")
+
+	// Seed the persisted entry's question_comment_id with the REAL question's
+	// exact tracker comment id. Task 3 no longer records this automatically
+	// (the callback that used to do so was removed — see
+	// TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionCommentID's
+	// earlier wait-condition comment above), so orch2 would otherwise resolve
+	// the question by the itervoxCommentPrefix fallback and land on the decoy
+	// above. Editing the on-disk JSON directly (rather than importing
+	// orchestrator's unexported disk-format structs from this _test package)
+	// mirrors the field names saveInputRequiredToDisk actually writes.
+	rawFile, err := os.ReadFile(irFile)
+	require.NoError(t, err)
+	var diskState map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rawFile, &diskState))
+	var awaiting map[string]map[string]any
+	require.NoError(t, json.Unmarshal(diskState["awaiting"], &awaiting))
+	entryDisk, ok := awaiting["ENG-1"]
+	require.True(t, ok, "orch1 must have persisted an awaiting entry for ENG-1")
+	entryDisk["question_comment_id"] = questionComment.ID
+	awaiting["ENG-1"] = entryDisk
+	awaitingBytes, err := json.Marshal(awaiting)
+	require.NoError(t, err)
+	diskState["awaiting"] = awaitingBytes
+	seededBytes, err := json.Marshal(diskState)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(irFile, seededBytes, 0o644))
 
 	cfg2 := baseConfig()
 	cfg2.Polling.IntervalMs = 20

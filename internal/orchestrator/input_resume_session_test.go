@@ -15,7 +15,7 @@ import (
 
 type blockedRunner struct{}
 
-func (r *blockedRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *blockedRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	<-ctx.Done()
 	return agent.TurnResult{Failed: true}, ctx.Err()
 }

@@ -741,6 +741,16 @@ func (s *Server) handleSetIssueBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
+	// agent.inline_input makes the tracker the only HUMAN reply channel: the
+	// operator answers by commenting on the issue, and the dashboard reply box
+	// is hidden. The token-gated agent-actions route (handleAgentProvideInput)
+	// is deliberately NOT gated — that is an automation policy, not a human
+	// channel, and gating it would silently break auto-resume automations.
+	if s.snapshot().InlineInput {
+		writeError(w, http.StatusConflict, "inline_input_enabled",
+			"agent.inline_input is on: reply by commenting on the issue in the tracker")
+		return
+	}
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		Message string `json:"message"`
@@ -758,6 +768,49 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// maxOperatorCommentBytes bounds a dashboard comment. 10 KiB is far above
+// any real review note and keeps a pasted log from becoming a tracker
+// comment nobody can read.
+const maxOperatorCommentBytes = 10 * 1024
+
+// handleIssueComment posts a plain operator comment on an issue.
+// POST /api/v1/issues/{identifier}/comment  {"body":"..."}
+// 202 {"queued":true}  — accepted by the write-ahead outbox; delivered by the flusher
+// 200 {"ok":true}      — posted directly (tracker.outbox: false)
+func (s *Server) handleIssueComment(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	text := strings.TrimSpace(body.Body)
+	if text == "" {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "body is required", "body")
+		return
+	}
+	if len(text) > maxOperatorCommentBytes {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "body exceeds 10 KiB", "body")
+		return
+	}
+	queued, err := s.client.PostOperatorComment(r.Context(), identifier, text)
+	if err != nil {
+		if errors.Is(err, tracker.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "issue not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
+		return
+	}
+	if queued {
+		writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "identifier": identifier})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier})
 }
 
 func (s *Server) handleDismissInput(w http.ResponseWriter, r *http.Request) {
@@ -1248,6 +1301,28 @@ func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoClearWorkspace": *body.Enabled})
+}
+
+// handleSetDepsAnalysisMode updates dependencies.analysis_mode at runtime.
+// POST /api/v1/settings/deps-analysis-mode  {"mode":"auto"|"manual"}
+func (s *Server) handleSetDepsAnalysisMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	mode := strings.TrimSpace(body.Mode)
+	if err := config.ValidateDepsAnalysisMode(mode); err != nil {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", err.Error(), "mode")
+		return
+	}
+	if err := s.client.SetDepsAnalysisMode(mode); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": mode})
 }
 
 // handleUpdateTrackerStates updates active/terminal/completion states in-memory and in WORKFLOW.md.

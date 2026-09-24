@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -638,6 +639,37 @@ func TestPatchAgentStringFieldNoFrontMatterErrors(t *testing.T) {
 func TestPatchAgentStringFieldMissingFileErrors(t *testing.T) {
 	err := workflow.PatchAgentStringField("/no/such/file.md", "backend", "codex")
 	require.Error(t, err)
+}
+
+// --- PatchDependenciesStringField ---
+
+func TestPatchDependenciesStringFieldCreatesBlock(t *testing.T) {
+	// The scaffold never emits a dependencies: block, so the common case is
+	// a file without one. The patcher must CREATE the header — appending an
+	// indented key with no header would land it under the previous block.
+	f := writeTmp(t, "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\nserver:\n  port: 8090\n---\nbody\n")
+
+	require.NoError(t, workflow.PatchDependenciesStringField(f, "analysis_mode", "manual"))
+
+	got, _ := os.ReadFile(f)
+	assert.Contains(t, string(got), "dependencies:\n  analysis_mode: \"manual\"\n")
+	assertValidWorkflowYAML(t, string(got))
+	cfg, err := config.Load(f)
+	require.NoError(t, err)
+	assert.Equal(t, config.DepsAnalysisModeManual, cfg.Dependencies.AnalysisMode, "the patched file must round-trip through config.Load")
+	require.NotNil(t, cfg.Server.Port, "the server block must be untouched")
+	assert.Equal(t, 8090, *cfg.Server.Port, "the server block must be untouched")
+}
+
+func TestPatchDependenciesStringFieldUpdatesInPlace(t *testing.T) {
+	f := writeTmp(t, "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\ndependencies:\n  analysis_mode: \"auto\"\n  stacked_prs: true\n---\nbody\n")
+
+	require.NoError(t, workflow.PatchDependenciesStringField(f, "analysis_mode", "manual"))
+
+	got, _ := os.ReadFile(f)
+	assert.Contains(t, string(got), "  analysis_mode: \"manual\"\n")
+	assert.Equal(t, 1, strings.Count(string(got), "analysis_mode:"), "updated in place, not duplicated")
+	assert.Contains(t, string(got), "  stacked_prs: true\n", "sibling keys survive")
 }
 
 func TestPatchAgentStringSliceFieldInsertWhenMissing(t *testing.T) {

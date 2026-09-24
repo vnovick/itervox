@@ -154,6 +154,25 @@ func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
 	return nil
 }
 
+// SetDepsAnalysisMode persists dependencies.analysis_mode to WORKFLOW.md and
+// then updates the running config, rolling the file back if the runtime
+// update is rejected — same two-phase shape as SetAutoClearWorkspace.
+func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {
+	if err := config.ValidateDepsAnalysisMode(mode); err != nil {
+		return err
+	}
+	prev := a.orch.DepsAnalysisModeCfg()
+	if err := workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", mode); err != nil {
+		return err
+	}
+	if err := a.orch.SetDepsAnalysisModeCfg(mode); err != nil {
+		_ = workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", prev)
+		return err
+	}
+	a.notify()
+	return nil
+}
+
 func (a *orchestratorAdapter) UpdateTrackerStates(active, terminal []string, completion string) error {
 	if err := persistTrackerStates(a.workflowPath, active, terminal, completion); err != nil {
 		return err
@@ -224,6 +243,10 @@ func (a *orchestratorAdapter) ProvideInput(identifier, message string) bool {
 
 func (a *orchestratorAdapter) DismissInput(identifier string) bool {
 	return a.orch.DismissInput(identifier)
+}
+
+func (a *orchestratorAdapter) SetDepsOverride(identifier string, enabled bool) bool {
+	return a.orch.SetDepsOverride(identifier, enabled)
 }
 
 func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {

@@ -43,6 +43,39 @@ func blockerRef(identifier string, state *string) domain.BlockerRef {
 
 func strPtr(v string) *string { return &v }
 
+// enableDependencyRefreshForTest arms the off-loop dependency-refresh config
+// fields that reconcileDependencyRefresh needs to actually launch a batch.
+// dependencyAuditConfig leaves them zero (selectDependencyRefreshBatch treats
+// batchSize<=0 as "refresh disabled"), which is fine for tests that only
+// exercise the inline candidate-state audit but not for tests that depend on
+// a row outside the active/candidate states being picked up by a refresh
+// batch — those must opt in explicitly.
+func enableDependencyRefreshForTest(cfg *config.Config) {
+	cfg.Agent.DependencyAuditRefreshBatchSize = 100
+	cfg.Agent.DependencyAuditRefreshTimeoutMs = 5000
+}
+
+// applyOffLoopDependencyRefresh waits for the dependency-refresh batch that
+// onTick just launched (via reconcileDependencyRefresh) and folds its result
+// back into state, the same way the real event loop's
+// EventDependencyAuditRefreshed handler does. Before Task 6 this refresh ran
+// synchronously inside onTick (refreshKnownDependencyAudits /
+// auditBlockersResolvedAutomationSources); it is now off-loop, so any test
+// asserting on a row that only a refresh batch (not the inline candidate
+// audit) can reach must call this after onTick and before checking state.
+func applyOffLoopDependencyRefresh(t *testing.T, o *Orchestrator, state *State) {
+	t.Helper()
+	require.True(t, state.DepsRefreshInFlight, "expected onTick to have launched a refresh batch")
+	o.depsRefreshWg.Wait()
+	select {
+	case ev := <-o.events:
+		require.Equal(t, EventDependencyAuditRefreshed, ev.Type)
+		o.applyDependencyRefreshResult(t.Context(), state, ev.DependencyRefresh, time.Now())
+	default:
+		t.Fatal("expected a dependency refresh result on o.events after depsRefreshWg.Wait()")
+	}
+}
+
 func TestDependencyAuditClassifiesNoBlockersAsUnblocked(t *testing.T) {
 	state := NewState(dependencyAuditConfig())
 	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
@@ -144,6 +177,41 @@ func TestDependencyAuditPreservesBlockerMetadataAndSources(t *testing.T) {
 	require.Equal(t, "#10", *entry.BlockedBy[1].Identifier)
 	require.Equal(t, "closed", *entry.BlockedBy[1].State)
 	require.Equal(t, "https://example.com/#10", *entry.BlockedBy[1].URL)
+}
+
+// TestDependencySourceForBlockerSubIssue pins the sub_issue provenance
+// label (wave-2 polish plan Task 3, item 3 / gh issue #53): a BlockerRef
+// tagged Origin == "sub_issue" by internal/tracker/linear/normalize.go must
+// map to DependencySourceSubIssue, not the generic DependencySourceTrackerRelation
+// used for explicit "blocks" relations.
+func TestDependencySourceForBlockerSubIssue(t *testing.T) {
+	ident := "ENG-2"
+	subIssue := domain.BlockerRef{Identifier: &ident, Origin: "sub_issue"}
+	require.Equal(t, DependencySourceSubIssue, dependencySourceForBlocker(subIssue))
+
+	relation := domain.BlockerRef{Identifier: &ident}
+	require.Equal(t, DependencySourceTrackerRelation, dependencySourceForBlocker(relation))
+
+	textIdent := "#7"
+	textRef := domain.BlockerRef{Identifier: &textIdent}
+	require.Equal(t, DependencySourceIssueText, dependencySourceForBlocker(textRef))
+}
+
+// TestDependencyAuditSourcesIncludesSubIssue pins the same behavior through
+// the full auditIssueDependencies path (not just the unit function), so the
+// Sources slice surfaced on DependencyAuditEntry — and from there through
+// cmd/itervox/snapshot_rows.go to the dashboard — carries the sub_issue
+// label end to end.
+func TestDependencyAuditSourcesIncludesSubIssue(t *testing.T) {
+	state := NewState(dependencyAuditConfig())
+	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	subRef := blockerRef("ENG-2", strPtr("Todo"))
+	subRef.Origin = "sub_issue"
+	issue := dependencyIssue(subRef)
+
+	entry := auditIssueDependencies(&state, issue, now)
+
+	require.Equal(t, []DependencyAuditSource{DependencySourceSubIssue}, entry.Sources)
 }
 
 func TestDependencyAuditOnTickAuditsFetchedIssues(t *testing.T) {
@@ -254,6 +322,7 @@ func TestAutomationQueueDrainDropsDeletedIssueBeforeDispatch(t *testing.T) {
 
 func TestBlockersResolvedAutomationQueuesOnAuditTransition(t *testing.T) {
 	cfg := dependencyAuditConfig()
+	enableDependencyRefreshForTest(cfg)
 	cfg.Agent.MaxConcurrentAgents = 1
 	cfg.Agent.Profiles = map[string]config.AgentProfile{"pm": {AllowedActions: []string{config.AgentActionMoveState}}}
 	issue := dependencyIssue(blockerRef("ENG-0", strPtr("Done")))
@@ -282,6 +351,7 @@ func TestBlockersResolvedAutomationQueuesOnAuditTransition(t *testing.T) {
 	}
 
 	out := o.onTick(t.Context(), state)
+	applyOffLoopDependencyRefresh(t, o, &out)
 
 	require.Len(t, out.AutomationQueue, 1)
 	var queued *AutomationQueueEntry
@@ -331,6 +401,7 @@ func TestBlockersResolvedAutomationHonorsStateFilter(t *testing.T) {
 
 func TestDependencyAuditRefreshesKnownRowsOutsideCandidateStates(t *testing.T) {
 	cfg := dependencyAuditConfig()
+	enableDependencyRefreshForTest(cfg)
 	cfg.Tracker.ActiveStates = []string{"Todo"}
 	cfg.Agent.Profiles = map[string]config.AgentProfile{"default": {}}
 	issue := dependencyIssue(blockerRef("ENG-0", strPtr("Done")))
@@ -352,6 +423,7 @@ func TestDependencyAuditRefreshesKnownRowsOutsideCandidateStates(t *testing.T) {
 	}
 
 	out := o.onTick(t.Context(), state)
+	applyOffLoopDependencyRefresh(t, o, &out)
 
 	entry := out.DependencyAudit[issue.ID]
 	require.NotNil(t, entry)
@@ -365,6 +437,7 @@ func TestDependencyAuditRefreshesKnownRowsOutsideCandidateStates(t *testing.T) {
 
 func TestKnownDependencyAuditRefreshDispatchesUnscopedBlockersResolvedAutomation(t *testing.T) {
 	cfg := dependencyAuditConfig()
+	enableDependencyRefreshForTest(cfg)
 	cfg.Tracker.ActiveStates = []string{"Todo"}
 	cfg.Agent.MaxConcurrentAgents = 1
 	cfg.Agent.Profiles = map[string]config.AgentProfile{"pm": {AllowedActions: []string{config.AgentActionMoveState}}}
@@ -392,6 +465,7 @@ func TestKnownDependencyAuditRefreshDispatchesUnscopedBlockersResolvedAutomation
 	}
 
 	out := o.onTick(t.Context(), state)
+	applyOffLoopDependencyRefresh(t, o, &out)
 
 	require.Len(t, out.AutomationQueue, 1)
 	var queued *AutomationQueueEntry
@@ -406,6 +480,7 @@ func TestKnownDependencyAuditRefreshDispatchesUnscopedBlockersResolvedAutomation
 
 func TestKnownDependencyAuditRefreshMigratesIdentifierKeyToIssueID(t *testing.T) {
 	cfg := dependencyAuditConfig()
+	enableDependencyRefreshForTest(cfg)
 	cfg.Tracker.ActiveStates = []string{"Todo"}
 	issue := dependencyIssue(blockerRef("ENG-0", strPtr("Done")))
 	issue.State = "Backlog"
@@ -423,6 +498,7 @@ func TestKnownDependencyAuditRefreshMigratesIdentifierKeyToIssueID(t *testing.T)
 	}
 
 	out := o.onTick(t.Context(), state)
+	applyOffLoopDependencyRefresh(t, o, &out)
 
 	require.NotContains(t, out.DependencyAudit, issue.Identifier)
 	entry := out.DependencyAudit[issue.ID]

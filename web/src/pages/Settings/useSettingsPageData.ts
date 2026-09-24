@@ -17,6 +17,7 @@ export function useSettingsPageData() {
     completionState,
     backlogStates,
     autoClearWorkspace,
+    depsAnalysisMode,
     inlineInput,
     maxRetries,
     failedState,
@@ -29,6 +30,7 @@ export function useSettingsPageData() {
       completionState: s.snapshot?.completionState ?? '',
       backlogStates: s.snapshot?.backlogStates ?? EMPTY_STATES,
       autoClearWorkspace: s.snapshot?.autoClearWorkspace ?? false,
+      depsAnalysisMode: s.snapshot?.depsAnalysisMode ?? 'auto',
       inlineInput: s.snapshot?.inlineInput ?? false,
       // G: server-side default is 5 (matches Go cfg.Agent.MaxRetries default).
       maxRetries: s.snapshot?.maxRetries ?? 5,
@@ -99,6 +101,7 @@ export function useSettingsPageData() {
     completionState,
     backlogStates,
     autoClearWorkspace,
+    depsAnalysisMode,
     inlineInput,
     maxRetries,
     failedState,

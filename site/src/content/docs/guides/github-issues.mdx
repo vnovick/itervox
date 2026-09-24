@@ -224,3 +224,5 @@ hooks:
 ### Rate limits
 
 The GitHub API allows up to 5 000 authenticated requests per hour for fine-grained tokens. With the default 30-second polling interval and a small number of concurrent agents, you are well within limits. Lower `interval_ms` only if you need near-real-time dispatch.
+
+If GitHub does rate-limit Itervox, it honours `Retry-After` for secondary limits and `X-RateLimit-Reset` once the hourly budget is spent. Queued comments and label changes wait for the reset and show a **rate limited until HH:MM** chip in the dashboard's Outbox panel — they are never dropped and never posted twice.

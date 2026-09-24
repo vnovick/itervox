@@ -15,6 +15,7 @@ import { HeroStats } from './components/HeroStats';
 import { LiveOpsStrip } from './components/LiveOpsStrip';
 import { AutomationQueueList } from './components/AutomationQueueList';
 import { AutomationQueueDetailPanel } from './components/AutomationQueueDetailPanel';
+import { OutboxList } from './components/OutboxList';
 import { DashboardIssuesPanel } from './components/DashboardIssuesPanel';
 
 // v0.2.0 audit P2-9 — typed empty arrays now live in `utils/constants.ts`
@@ -32,6 +33,8 @@ import {
   EMPTY_DEPS_EDGES,
   EMPTY_AUTOMATION_QUEUE,
   EMPTY_DEPENDENCY_AUDIT,
+  EMPTY_DEPENDENCY_CYCLES,
+  EMPTY_OUTBOX_ENTRIES,
 } from '../../utils/constants';
 
 export default function Dashboard() {
@@ -55,9 +58,12 @@ export default function Dashboard() {
     dependencyGraphEdges,
     depsAnalyzerProfile,
     depsLastAnalyzedAt,
+    depsAnalyzeJob,
     automationQueue,
     automationQueueBackpressure,
     dependencyAudit,
+    dependencyCycles,
+    outboxEntries,
   } = useItervoxStore(
     useShallow((s) => ({
       availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
@@ -78,9 +84,12 @@ export default function Dashboard() {
       dependencyGraphEdges: s.snapshot?.dependencyGraphEdges ?? EMPTY_DEPS_EDGES,
       depsAnalyzerProfile: s.snapshot?.depsAnalyzerProfile,
       depsLastAnalyzedAt: s.snapshot?.depsLastAnalyzedAt,
+      depsAnalyzeJob: s.snapshot?.depsAnalyzeJob,
       automationQueue: s.snapshot?.automationQueue ?? EMPTY_AUTOMATION_QUEUE,
       automationQueueBackpressure: s.snapshot?.automationQueueBackpressure,
       dependencyAudit: s.snapshot?.dependencyAudit ?? EMPTY_DEPENDENCY_AUDIT,
+      dependencyCycles: s.snapshot?.dependencyCycles ?? EMPTY_DEPENDENCY_CYCLES,
+      outboxEntries: s.snapshot?.outboxEntries ?? EMPTY_OUTBOX_ENTRIES,
     })),
   );
   const backlogStateSet = useMemo(() => new Set(backlogStates), [backlogStates]);
@@ -206,6 +215,8 @@ export default function Dashboard() {
           onSelectQueue={handleQueueSelect}
         />
 
+        <OutboxList entries={outboxEntries} onSelectIssue={handleIssueSelect} />
+
         {apiOffline && (
           <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-[var(--radius-md)] border p-4 text-sm">
             <p className="mb-1 font-semibold">Cannot reach the Itervox API</p>
@@ -240,8 +251,10 @@ export default function Dashboard() {
           defaultBackend={defaultBackend}
           dependencyGraphNodes={dependencyGraphNodes}
           dependencyGraphEdges={dependencyGraphEdges}
+          dependencyCycles={dependencyCycles}
           depsAnalyzerProfile={depsAnalyzerProfile}
           depsLastAnalyzedAt={depsLastAnalyzedAt}
+          depsAnalyzeJob={depsAnalyzeJob}
           onIssueSelect={handleIssueSelect}
           onStateChange={handleStateChange}
           onProfileChange={handleProfileChange}

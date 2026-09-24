@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
 )
@@ -18,6 +19,15 @@ type MemoryTracker struct {
 	injectedError  error
 	nextCommentID  int
 	nextIssueID    int
+
+	// detailBatchCalls counts FetchIssueDetailsByIDs invocations so tests can
+	// assert N issues cost one call, not N.
+	detailBatchCalls int
+
+	// detailCalls counts per-issue FetchIssueDetail invocations. Batching is
+	// only proven when this reaches ZERO for a batched path — a batch that
+	// happens alongside N per-issue calls has saved nothing.
+	detailCalls int
 }
 
 // NewMemoryTracker constructs a MemoryTracker with the given issues and state config.
@@ -91,6 +101,54 @@ func (m *MemoryTracker) FetchIssuesByStates(ctx context.Context, stateNames []st
 	return result, nil
 }
 
+// FetchIssueDetailsByIDs returns issues matching the given IDs with full
+// detail. MemoryTracker stores whole domain.Issue values, so comments are
+// already present — it satisfies tracker.DetailBatcher so orchestrator tests
+// can exercise the batched path rather than only the per-issue fallback.
+//
+// It also counts calls via detailBatchCalls so a test can assert that N issues
+// cost ONE call, which is the entire point of the batching and the only thing
+// that distinguishes it from a loop.
+func (m *MemoryTracker) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	if len(issueIDs) == 0 {
+		return []domain.Issue{}, nil
+	}
+	m.mu.Lock()
+	m.detailBatchCalls++
+	m.mu.Unlock()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.injectedError != nil {
+		return nil, m.injectedError
+	}
+	idSet := make(map[string]bool, len(issueIDs))
+	for _, id := range issueIDs {
+		idSet[id] = true
+	}
+	var result []domain.Issue
+	for _, issue := range m.issues {
+		if idSet[issue.ID] {
+			result = append(result, issue)
+		}
+	}
+	return result, nil
+}
+
+// DetailCalls reports how many times per-issue FetchIssueDetail was invoked.
+func (m *MemoryTracker) DetailCalls() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.detailCalls
+}
+
+// DetailBatchCalls reports how many times FetchIssueDetailsByIDs was invoked.
+func (m *MemoryTracker) DetailBatchCalls() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.detailBatchCalls
+}
+
 // FetchIssueStatesByIDs returns issues matching the given IDs.
 func (m *MemoryTracker) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	if len(issueIDs) == 0 {
@@ -135,6 +193,65 @@ func (m *MemoryTracker) CreateComment(_ context.Context, issueID, body string) (
 		break
 	}
 	return comment, nil
+}
+
+// AddHumanComment appends a comment authored by a human (not the tracker's own
+// bot identity). For tests that exercise reply detection, which skips comments
+// by the question's author.
+func (m *MemoryTracker) AddHumanComment(issueID, body string) {
+	m.addHumanComment(issueID, body, nil)
+}
+
+// AddHumanCommentAt is AddHumanComment with a known creation time, for tests
+// that exercise timestamp-based reply matching (a reply written before the
+// agent's question reached the tracker). AddHumanComment leaves CreatedAt nil,
+// which real adapters never do but which tests use to mean "time unknown".
+func (m *MemoryTracker) AddHumanCommentAt(issueID, body string, at time.Time) {
+	m.addHumanComment(issueID, body, &at)
+}
+
+func (m *MemoryTracker) addHumanComment(issueID, body string, at *time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextCommentID++
+	for i := range m.issues {
+		if m.issues[i].ID != issueID {
+			continue
+		}
+		m.issues[i].Comments = append(m.issues[i].Comments, domain.Comment{
+			ID:         "memory-comment-" + strconv.Itoa(m.nextCommentID),
+			Body:       body,
+			AuthorID:   "human-1",
+			AuthorName: "Human",
+			CreatedAt:  at,
+		})
+		return
+	}
+}
+
+// CreateCommentWithKey implements IdempotentCommenter. The key is stored as
+// a body marker, exactly as the GitHub adapter does, so tests exercise the
+// same shape the real fallback path uses.
+func (m *MemoryTracker) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	return m.CreateComment(ctx, issueID, MarkCommentKey(body, key))
+}
+
+// FindCommentByKey implements IdempotentCommenter.
+func (m *MemoryTracker) FindCommentByKey(_ context.Context, issueID, key string) (*domain.Comment, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.issues {
+		if m.issues[i].ID != issueID {
+			continue
+		}
+		for j := range m.issues[i].Comments {
+			if CommentHasKey(m.issues[i].Comments[j].Body, key) {
+				found := m.issues[i].Comments[j]
+				return &found, true, nil
+			}
+		}
+	}
+	return nil, false, nil
 }
 
 // CreateIssue creates a new in-memory issue for tests and local/demo flows.
@@ -183,6 +300,10 @@ func (m *MemoryTracker) SetIssueBranch(_ context.Context, issueID, branchName st
 
 // FetchIssueDetail returns the issue from storage if it exists, else an error.
 func (m *MemoryTracker) FetchIssueDetail(_ context.Context, issueID string) (*domain.Issue, error) {
+	m.mu.Lock()
+	m.detailCalls++
+	m.mu.Unlock()
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, issue := range m.issues {
@@ -258,3 +379,8 @@ func issueNumericSuffix(value, prefix string) int {
 	}
 	return suffix
 }
+
+// Compile-time proof MemoryTracker satisfies DetailBatcher. Without this a
+// signature drift would silently demote every test to the per-issue fallback,
+// and the batching tests would still pass while asserting nothing.
+var _ DetailBatcher = (*MemoryTracker)(nil)

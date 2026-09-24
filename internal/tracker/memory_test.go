@@ -333,3 +333,23 @@ func TestMemoryTrackerFetchIssueByIdentifierDeepCopies(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, second.BlockedBy, 1, "store BlockedBy should be unaffected by caller mutation")
 }
+
+func TestMemoryTrackerFindCommentByKey(t *testing.T) {
+	issues := []domain.Issue{{ID: "i1", Identifier: "ENG-1", State: "Todo"}}
+	m := tracker.NewMemoryTracker(issues, []string{"Todo"}, []string{"Done"})
+
+	var ic tracker.IdempotentCommenter = m // compile-time proof of the capability
+
+	_, found, err := ic.FindCommentByKey(context.Background(), "i1", "k1")
+	require.NoError(t, err)
+	assert.False(t, found, "absent key must report not-found, not error")
+
+	created, err := ic.CreateCommentWithKey(context.Background(), "i1", "k1", "hello")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	got, found, err := ic.FindCommentByKey(context.Background(), "i1", "k1")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, created.ID, got.ID, "lookup must return the comment the create produced")
+}

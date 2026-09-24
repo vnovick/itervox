@@ -222,6 +222,7 @@ export function makeSnapshot(overrides?: MakeSnapshotOverrides): StateSnapshot {
     completionState: 'Done',
     backlogStates: ['Backlog'],
     autoClearWorkspace: false,
+    depsAnalysisMode: 'auto',
     currentAppSessionId: 'app-sess-fixture',
     sshHosts: [],
     dispatchStrategy: 'fifo',

@@ -33,6 +33,32 @@ function toastApiError(err: unknown, fallback = 'Action failed — please try ag
 }
 
 /**
+ * Builds an `Error` from a failed `Response`, preferring the server's
+ * structured `{error:{code,message}}` envelope (see internal/server/handlers.go)
+ * over a generic `${op} failed: ${status}` message. Used by mutations whose
+ * server errors carry an operator-actionable message (e.g. `bad_request`
+ * field validation, `not_found`).
+ */
+async function apiErrorFromResponse(res: Response, op: string): Promise<Error> {
+  try {
+    const data = (await res.json()) as unknown;
+    if (
+      typeof data === 'object' &&
+      data !== null &&
+      'error' in data &&
+      typeof (data as { error: unknown }).error === 'object' &&
+      (data as { error: unknown }).error !== null
+    ) {
+      const { message } = (data as { error: { message?: unknown } }).error;
+      if (typeof message === 'string' && message !== '') return new Error(message);
+    }
+  } catch {
+    // Not JSON — fall through to the generic message.
+  }
+  return new Error(`${op} failed: ${String(res.status)}`);
+}
+
+/**
  * Returns an `onError` handler that rolls back optimistic query/snapshot updates
  * and surfaces the error to the user via a toast notification.
  * Used by all issue mutations that apply optimistic updates.
@@ -450,6 +476,22 @@ export function useClearIssueSubLogs() {
   });
 }
 
+/**
+ * Thrown by `useProvideInput`'s mutationFn on `409 inline_input_enabled` —
+ * `agent.inline_input` was turned on (possibly from another tab) after this
+ * issue's reply box was rendered, and the tracker is now the only reply
+ * channel. Typed so `onError` can refresh the snapshot instead of leaving
+ * the panel showing a stale reply box, and so the toast reads as an
+ * operator-facing notice rather than the raw `provideInput failed: 409`
+ * developer string.
+ */
+export class InlineInputEnabledError extends Error {
+  constructor() {
+    super('Inline input is on — reply by commenting on this issue in your tracker.');
+    this.name = 'InlineInputEnabledError';
+  }
+}
+
 export function useProvideInput() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -462,13 +504,62 @@ export function useProvideInput() {
           body: JSON.stringify({ message }),
         },
       );
+      if (res.status === 409) throw new InlineInputEnabledError();
       if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
     },
     onSuccess: (_data, { identifier }) => {
       refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
+      if (err instanceof InlineInputEnabledError) {
+        // Another tab (or the operator) flipped agent.inline_input on since
+        // this panel last saw a snapshot — refresh so the reply box is
+        // replaced by the inline notice instead of staying stale.
+        void useItervoxStore.getState().refreshSnapshot();
+      }
       toastApiError(err, 'Failed to send input to agent.');
+    },
+  });
+}
+
+/**
+ * Posts a plain operator comment on the issue via
+ * `POST /api/v1/issues/{identifier}/comment`. Distinct from `useProvideInput`:
+ * this is not an input-required reply — it behaves like a comment typed
+ * directly in the tracker (can fire `tracker_comment_added` automations,
+ * delivered through the write-ahead outbox when enabled). Returns
+ * `{queued: true}` on `202` (outbox-accepted) or `{queued: false}` on `200`
+ * (posted directly).
+ */
+export function usePostIssueComment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      identifier,
+      body,
+    }: {
+      identifier: string;
+      body: string;
+    }): Promise<{ queued: boolean }> => {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/comment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      });
+      if (!res.ok) throw await apiErrorFromResponse(res, 'postComment');
+      return { queued: res.status === 202 };
+    },
+    onSuccess: ({ queued }, { identifier }) => {
+      useToastStore
+        .getState()
+        .addToast(
+          queued ? 'Comment queued — it will appear once delivered.' : 'Comment posted.',
+          'success',
+        );
+      refreshIssueViews(queryClient, identifier);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Failed to post comment.');
     },
   });
 }

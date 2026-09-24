@@ -11,3 +11,8 @@ func SetValidateCLIShellFallback(v bool) (prev bool) {
 	validateCLIShellFallback = v
 	return prev
 }
+
+// ItervoxAgentEnv / ItervoxAgentExportPrefix expose the marker helpers to the
+// blackbox agent_test package.
+func ItervoxAgentEnv(extra ...string) []string { return itervoxAgentEnv(extra...) }
+func ItervoxAgentExportPrefix() string         { return itervoxAgentExportPrefix() }

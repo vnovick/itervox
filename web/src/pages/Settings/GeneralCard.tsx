@@ -65,13 +65,13 @@ export function GeneralCard({ inlineInput, onSetInlineInput }: GeneralCardProps)
             <span className="text-theme-text-secondary mt-0.5 block text-xs leading-relaxed">
               When an agent needs human input mid-run:
               <br />
-              <span className="font-semibold">Off (default):</span> the question surfaces in the
-              dashboard&rsquo;s &ldquo;Resuming&rdquo; panel — you reply from the dashboard, the
-              agent resumes.
+              <span className="font-semibold">Off (default):</span> the question is posted on the
+              tracker issue and also shown in the dashboard&rsquo;s &ldquo;Resuming&rdquo; panel —
+              reply from either place and the agent resumes.
               <br />
-              <span className="font-semibold">On:</span> the daemon posts the question as a comment
-              on the tracker issue and moves the issue to the completion state. You reply in the
-              tracker (Linear / GitHub) and move the issue back to active to resume.
+              <span className="font-semibold">On:</span> the tracker is the only place to reply. The
+              dashboard reply box is hidden; comment on the issue in Linear / GitHub and the agent
+              resumes.
             </span>
             {error && (
               <span role="alert" className="text-theme-danger mt-1 block text-xs">

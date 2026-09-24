@@ -3,6 +3,7 @@ import { render } from '@testing-library/react';
 import Settings from '../index';
 
 const workspaceCardMock = vi.fn(() => <div data-testid="workspace-card" />);
+const dependenciesCardMock = vi.fn(() => <div data-testid="dependencies-card" />);
 
 vi.mock('../../../components/common/PageMeta', () => ({
   default: () => null,
@@ -32,6 +33,10 @@ vi.mock('../WorkspaceCard', () => ({
   WorkspaceCard: (props: unknown) => workspaceCardMock(props),
 }));
 
+vi.mock('../DependenciesCard', () => ({
+  DependenciesCard: (props: unknown) => dependenciesCardMock(props),
+}));
+
 vi.mock('../../../components/ui/button/ConfirmButton', () => ({
   ConfirmButton: () => <button type="button">confirm</button>,
 }));
@@ -47,6 +52,7 @@ vi.mock('../useSettingsPageData', () => ({
     terminalStates: ['Done'],
     completionState: 'Done',
     autoClearWorkspace: false,
+    depsAnalysisMode: 'auto',
     autoReview: true,
     inlineInput: false,
     trackerKind: 'linear',
@@ -58,6 +64,7 @@ vi.mock('../useSettingsPageData', () => ({
     trackerStateOptions: ['Todo', 'In Progress', 'Done', 'Backlog'],
     updateTrackerStates: vi.fn().mockResolvedValue(true),
     setAutoClearWorkspace: vi.fn().mockResolvedValue(true),
+    setDepsAnalysisMode: vi.fn().mockResolvedValue(true),
     setProjectFilter: vi.fn().mockResolvedValue(true),
     setInlineInput: vi.fn().mockResolvedValue(true),
     setMaxRetries: vi.fn().mockResolvedValue(true),
@@ -70,6 +77,7 @@ vi.mock('../useSettingsPageData', () => ({
 describe('Settings page', () => {
   beforeEach(() => {
     workspaceCardMock.mockClear();
+    dependenciesCardMock.mockClear();
   });
 
   it('passes the live autoReview flag through to WorkspaceCard', () => {
@@ -79,6 +87,17 @@ describe('Settings page', () => {
     expect(workspaceCardMock.mock.calls[0][0]).toEqual(
       expect.objectContaining({
         autoReviewEnabled: true,
+      }),
+    );
+  });
+
+  it('renders the Dependencies section with the live mode', () => {
+    render(<Settings />);
+
+    expect(dependenciesCardMock).toHaveBeenCalled();
+    expect(dependenciesCardMock.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        mode: 'auto',
       }),
     );
   });

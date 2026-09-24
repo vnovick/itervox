@@ -46,6 +46,35 @@ type rateLimitSnapshot struct {
 	reset     *time.Time
 }
 
+// blockerStateCacheTTL bounds how long a successfully fetched blocker state
+// is reused before populateBlockerStates re-fetches it from GitHub.
+//
+// Set well within the dependency-audit refresh interval's freshness
+// expectations (config.DefaultDependencyAuditRefreshIntervalMs, 10 minutes
+// by default) so a cached read never outlives the audit's own staleness
+// budget; it also bounds the worst-case delay before an unblock (a closed
+// blocker) is observed by a dependent issue. Not configurable — YAGNI until
+// an operator actually needs a different value; this is a single
+// bandwidth-vs-freshness tradeoff with one obviously correct default.
+//
+// Staleness compounds with the dependency-audit refresh path rather than
+// replacing it: a watched-but-inactive issue is only re-evaluated on that
+// path's own interval (10 minutes by default), so the worst case for
+// observing blockers_resolved through that path is roughly TTL + refresh
+// interval — about 15 minutes, up from ~10 minutes pre-cache. The fail
+// direction is safe: a stale cache entry can only read as "still blocked"
+// (state unchanged since the last successful fetch), never as a false
+// unblock, so the extra delay costs latency, not correctness.
+const blockerStateCacheTTL = 5 * time.Minute
+
+// blockerCacheEntry is a cached populateBlockerStates result for one blocker
+// issue. Only successful fetches are stored — see populateBlockerStates.
+type blockerCacheEntry struct {
+	state     string
+	url       string
+	fetchedAt time.Time
+}
+
 // Client is the GitHub Issues REST tracker adapter.
 type Client struct {
 	cfg           ClientConfig
@@ -54,6 +83,29 @@ type Client struct {
 	repo          string
 	rateMu        sync.RWMutex
 	lastRateLimit *rateLimitSnapshot
+
+	// blockerCacheMu guards blockerCache, the TTL cache of blocker states
+	// used by populateBlockerStates (see blockerStateCacheTTL). It is keyed
+	// by blocker issue ID and lives for the process lifetime, capped by TTL
+	// per entry rather than by eviction.
+	//
+	// A FAILED fetch is never stored here: populateBlockerStates only calls
+	// storeBlockerState for a SUCCESSFUL GET (its result's ok == true), so a
+	// transient GitHub error (network blip, rate limit, 5xx) re-fetches on
+	// the very next poll instead of suppressing state resolution for the
+	// whole TTL window. Success is judged by whether the GET returned an
+	// issue, not by whether that issue resolved to a non-empty state — an
+	// open, unlabeled blocker (deriveState returns "") is a valid, cacheable
+	// answer, and the common case for "depends on #N" references to
+	// untriaged prerequisites; treating it as "no cache entry" would defeat
+	// the cache for exactly that population.
+	blockerCacheMu sync.RWMutex
+	blockerCache   map[string]blockerCacheEntry
+
+	// now returns the current time. Defaults to time.Now; overridable in
+	// tests (see export_test.go) to exercise blockerStateCacheTTL expiry
+	// without sleeping.
+	now func() time.Time
 }
 
 // NewClient creates a new GitHub Client.
@@ -63,11 +115,34 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 	owner, repo, _ := strings.Cut(cfg.ProjectSlug, "/")
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: httpTimeout},
-		owner:      owner,
-		repo:       repo,
+		cfg:          cfg,
+		httpClient:   &http.Client{Timeout: httpTimeout},
+		owner:        owner,
+		repo:         repo,
+		blockerCache: make(map[string]blockerCacheEntry),
+		now:          time.Now,
 	}
+}
+
+// lookupBlockerState returns the cached state for blocker id if it was
+// fetched successfully within blockerStateCacheTTL. ok is false on a cache
+// miss or an expired entry.
+func (c *Client) lookupBlockerState(id string) (blockerCacheEntry, bool) {
+	c.blockerCacheMu.RLock()
+	defer c.blockerCacheMu.RUnlock()
+	entry, ok := c.blockerCache[id]
+	if !ok || c.now().Sub(entry.fetchedAt) >= blockerStateCacheTTL {
+		return blockerCacheEntry{}, false
+	}
+	return entry, true
+}
+
+// storeBlockerState caches a successfully fetched blocker state. Callers
+// must not call this for a failed fetch — see blockerCacheMu's doc comment.
+func (c *Client) storeBlockerState(id, state, url string) {
+	c.blockerCacheMu.Lock()
+	defer c.blockerCacheMu.Unlock()
+	c.blockerCache[id] = blockerCacheEntry{state: state, url: url, fetchedAt: c.now()}
 }
 
 // FetchCandidateIssues fetches open issues filtered by active-state labels, paginated.
@@ -217,6 +292,19 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	}
 	return out, nil
 }
+
+// The GitHub adapter deliberately does NOT implement tracker.DetailBatcher
+// (issue #62's "decide explicitly" acceptance).
+//
+// GitHub's REST API has no multi-issue endpoint, so a batch method here could
+// only be a fan-out of per-issue calls — exactly what FetchIssueStatesByIDs
+// above already is. Worse, FetchIssueDetail costs TWO requests (issue body,
+// then comments), so a "batch" of N would cost 2N while presenting itself to
+// callers as one cheap call, hiding the very cost issue #42 was about.
+//
+// Callers type-assert and fall back to per-issue FetchIssueDetail, which is
+// honest about the cost. If GitHub's GraphQL v4 API is adopted for reads later,
+// implementing DetailBatcher there would be a real win; against REST it is not.
 
 // FetchIssueDetail returns a single issue with its full comment thread.
 // issueID is the numeric issue number as a string (e.g. "42").
@@ -405,7 +493,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		resp, err := c.httpClient.Do(req)
+		resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 		if err != nil {
 			slog.Warn("github_update_state: remove label request failed (ignored)",
 				"label", label, "issue_id", issueID, "error", err)
@@ -432,7 +520,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return fmt.Errorf("github_update_state: %w", err)
 	}
@@ -479,7 +567,7 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
@@ -531,7 +619,7 @@ func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateNa
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return nil, fmt.Errorf("github_create_issue: %w", err)
 	}
@@ -563,7 +651,7 @@ func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
 	if err != nil {
 		return nil, "", fmt.Errorf("github_api_request: %w", err)
 	}
@@ -666,36 +754,73 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 		id    string
 		state string
 		url   string
+		// ok is true iff the GET succeeded, independent of state. A fetch
+		// can succeed and still yield state == "" — deriveState returns ""
+		// for an open issue with no active/terminal label, which is the
+		// COMMON case for "depends on #N" references to untriaged
+		// prerequisites. ok, not state, is what must gate the cache write:
+		// keying on state alone would conflate "successfully learned this
+		// blocker has no resolvable state" with "the fetch failed", and
+		// re-fetch that (very common) population on every single poll —
+		// exactly the amplification this cache exists to remove. See
+		// storeBlockerState.
+		ok bool
 	}
-	ch := make(chan result, len(ids))
-	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
-		issue, err := c.fetchSingleIssue(ctx, id)
-		if err != nil {
-			// D4 fail-safe: ALL fetch errors — including 404, which GitHub returns
-			// for permission loss and transferred issues, not just deletion — leave
-			// State nil so the orchestrator treats the dependency as unmet. A
-			// genuinely deleted blocker surfaces as a permanent "unknown" row in the
-			// Deps dashboard; the operator resolves it by removing the reference.
-			slog.Error("github: blocker state fetch failed — dependents stay blocked until resolved",
-				"blocker_id", id, "error", err)
-			ch <- result{id: id}
-			return
-		}
-		if issue == nil {
-			ch <- result{id: id}
-			return
-		}
-		url := ""
-		if issue.URL != nil {
-			url = *issue.URL
-		}
-		ch <- result{id: id, state: issue.State, url: url}
-	})
-	close(ch)
 
+	// Serve whatever is already fresh in the cache; only the remainder needs
+	// a live GET. This is what keeps the widened phrase matcher's larger ID
+	// set from re-hitting GitHub every poll — see blockerStateCacheTTL.
 	resultMap := make(map[string]result, len(ids))
-	for r := range ch {
-		resultMap[r.id] = r
+	var toFetch []string
+	for _, id := range ids {
+		if entry, ok := c.lookupBlockerState(id); ok {
+			resultMap[id] = result{id: id, state: entry.state, url: entry.url, ok: true}
+			continue
+		}
+		toFetch = append(toFetch, id)
+	}
+
+	if len(toFetch) > 0 {
+		ch := make(chan result, len(toFetch))
+		boundedDo(ctx, toFetch, func(ctx context.Context, _ int, id string) {
+			issue, err := c.fetchSingleIssue(ctx, id)
+			if err != nil {
+				// D4 fail-safe: ALL fetch errors — including 404, which GitHub returns
+				// for permission loss and transferred issues, not just deletion — leave
+				// State nil so the orchestrator treats the dependency as unmet. A
+				// genuinely deleted blocker surfaces as a permanent "unknown" row in the
+				// Deps dashboard; the operator resolves it by removing the reference.
+				slog.Error("github: blocker state fetch failed — dependents stay blocked until resolved",
+					"blocker_id", id, "error", err)
+				ch <- result{id: id}
+				return
+			}
+			if issue == nil {
+				ch <- result{id: id}
+				return
+			}
+			url := ""
+			if issue.URL != nil {
+				url = *issue.URL
+			}
+			ch <- result{id: id, state: issue.State, url: url, ok: true}
+		})
+		close(ch)
+
+		for r := range ch {
+			resultMap[r.id] = r
+			// Cache every SUCCESSFUL fetch, including one that resolved to
+			// an empty state (open, unlabeled blocker) — that empty state
+			// is itself the correct, stable answer until the blocker is
+			// labeled or closed, and re-deriving it every poll is exactly
+			// the amplification being fixed here. Only a FAILED fetch
+			// (r.ok == false) is left uncached, so a transient GitHub error
+			// re-resolves on the very next poll instead of being pinned
+			// for the full TTL — see blockerCacheMu.
+			if r.ok {
+				c.storeBlockerState(r.id, r.state, r.url)
+			}
+		}
 	}
 
 	for i := range issues {
@@ -733,3 +858,193 @@ func ParseNextLink(linkHeader string) (string, error) {
 	}
 	return m[1], nil
 }
+
+// linkLastRe matches the rel="last" entry in a GitHub Link header.
+var linkLastRe = regexp.MustCompile(`<([^>]+)>;\s*rel="last"`)
+
+// ParseLastPage extracts the "page" query parameter from the rel="last"
+// entry of a GitHub Link header.
+//
+// Returns (0, false, nil) when linkHeader is empty or has no rel="last"
+// entry — meaning the page that produced this header was itself the last
+// page. Returns a non-nil error when a rel="last" entry IS present but its
+// URL, or the "page" query parameter on it, cannot be parsed: an
+// unparseable last-page link must not collapse to "no more pages", because
+// FindCommentByKey's tail scan relies on knowing whether a later page
+// exists at all.
+func ParseLastPage(linkHeader string) (page int, ok bool, err error) {
+	if linkHeader == "" {
+		return 0, false, nil
+	}
+	m := linkLastRe.FindStringSubmatch(linkHeader)
+	if m == nil {
+		return 0, false, nil
+	}
+	parsed, parseErr := url.Parse(m[1])
+	if parseErr != nil {
+		return 0, false, fmt.Errorf("github_parse_last_page: parse url: %w", parseErr)
+	}
+	pageStr := parsed.Query().Get("page")
+	n, convErr := strconv.Atoi(pageStr)
+	if convErr != nil {
+		return 0, false, fmt.Errorf("github_parse_last_page: parse page %q: %w", pageStr, convErr)
+	}
+	if n < 1 {
+		// Syntactically parseable but not a legal page number. Treating this
+		// as ok=true would let FindCommentByKey's tail-scan loop skip every
+		// page (its `page > 1` guard excludes anything <= 1) and silently
+		// report "definitely absent" for what is actually an ambiguous
+		// response — exactly the collapse this interface's contract forbids.
+		return 0, false, fmt.Errorf("github_parse_last_page: page %d is not a positive page number", n)
+	}
+	return n, true, nil
+}
+
+// githubKeyScanPerPage is the page size FindCommentByKey requests. GitHub's
+// issue-comments endpoint accepts up to 100 per page, and a larger page
+// shrinks the residual duplicate window documented on FindCommentByKey.
+const githubKeyScanPerPage = 100
+
+// githubKeyScanTailPages bounds how many pages FindCommentByKey reads from
+// the end of the thread (beyond page 1). Two is enough to cover a comment
+// that landed on the last page just before a page boundary shifted it onto
+// the prior page between the failed attempt and its retry, while keeping
+// the lookup's cost bounded instead of scanning an entire pathological
+// thread — see FindCommentByKey's doc comment for the residual this leaves.
+const githubKeyScanTailPages = 2
+
+// fetchCommentPage fetches one page of issueID's comments and returns the
+// decoded comments alongside the response's raw Link header. Extracted so
+// FindCommentByKey's up-to-three page reads (page 1, the last page, the
+// second-to-last page) share one request implementation instead of three
+// copies of the same plumbing.
+func (c *Client) fetchCommentPage(ctx context.Context, issueID string, page int) (comments []map[string]any, linkHeader string, err error) {
+	u := fmt.Sprintf("%s/repos/%s/%s/issues/%s/comments?per_page=%d&page=%d",
+		c.cfg.Endpoint, c.owner, c.repo, issueID, githubKeyScanPerPage, page)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := tracker.DoWithRateLimitRetry(ctx, c.httpClient, req, "github", tracker.GitHubRateLimitClassifier)
+	if err != nil {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: status %d", resp.StatusCode)
+	}
+	var raw []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, "", fmt.Errorf("github_find_comment_by_key: decode body: %w", err)
+	}
+	return raw, resp.Header.Get("Link"), nil
+}
+
+// findCommentWithKey scans comments for key's hidden marker and decodes the
+// first match. Shared by every page FindCommentByKey reads.
+func findCommentWithKey(comments []map[string]any, key string) (*domain.Comment, bool) {
+	for _, rawComment := range comments {
+		body, _ := rawComment["body"].(string)
+		if !tracker.CommentHasKey(body, key) {
+			continue
+		}
+		comment := &domain.Comment{Body: body}
+		if id, ok := tracker.ToIntVal(rawComment["id"]); ok {
+			comment.ID = strconv.Itoa(id)
+		}
+		comment.CreatedAt = tracker.ParseTime(rawComment["created_at"])
+		if user, ok := rawComment["user"].(map[string]any); ok {
+			comment.AuthorName, _ = user["login"].(string)
+		}
+		return comment, true
+	}
+	return nil, false
+}
+
+// CreateCommentWithKey implements tracker.IdempotentCommenter. GitHub has no
+// client-supplied comment id, so the key travels as a hidden HTML marker in
+// the body — invisible in GitHub's rendered markdown, and readable back by
+// FindCommentByKey.
+func (c *Client) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	return c.CreateComment(ctx, issueID, tracker.MarkCommentKey(body, key))
+}
+
+// FindCommentByKey implements tracker.IdempotentCommenter by scanning the
+// TAIL of the issue's comment thread for key's hidden marker.
+//
+// GitHub's REST docs for this endpoint say comments are ordered by
+// ascending ID, and the endpoint accepts only since/per_page/page — no
+// sort or direction. So page 1 is always the OLDEST page, not the newest.
+// A comment FindCommentByKey is looking for is, by construction, among the
+// newest on the issue, so scanning pages 1..N forward would read the wrong
+// end of a long thread: on an issue with more than one page of comments it
+// can exhaust the scan and report a false "absent" for a comment that is
+// actually there, which would make the outbox flusher post a duplicate —
+// exactly what this interface exists to prevent.
+//
+// The scan instead goes: page 1 (covers the common case where the whole
+// thread fits on one page), then, if the Link header's rel="last" says
+// there is more, up to githubKeyScanTailPages pages counting back from the
+// last page (never re-fetching page 1). Stops as soon as a match is found.
+//
+// Residual: a duplicate remains possible only if more than roughly
+// githubKeyScanPerPage other comments land on the issue between the failed
+// attempt and its retry, pushing the target comment off every page this
+// scans. That window is far larger than any realistic retry delay.
+//
+// Returns a non-nil error whenever the answer is unknown — transport
+// failure, non-200, an undecodable body, a rel="last" link whose page
+// number can't be parsed, or a rel="next" link with no rel="last" to bound
+// the tail scan. The caller treats an error as "do not post", so
+// collapsing an unknown result to "absent" here would reintroduce the
+// duplicate this path exists to prevent.
+func (c *Client) FindCommentByKey(ctx context.Context, issueID, key string) (*domain.Comment, bool, error) {
+	firstPage, linkHeader, err := c.fetchCommentPage(ctx, issueID, 1)
+	if err != nil {
+		return nil, false, err
+	}
+	if comment, found := findCommentWithKey(firstPage, key); found {
+		return comment, true, nil
+	}
+
+	lastPage, hasLast, err := ParseLastPage(linkHeader)
+	if err != nil {
+		return nil, false, fmt.Errorf("github_find_comment_by_key: parse last page link: %w", err)
+	}
+	if !hasLast {
+		// rel="next" without rel="last": more pages exist but their extent
+		// is unknown, so the tail cannot be located. That is "unknown", not
+		// "absent" — a false not-found here would blind-post a duplicate of
+		// a comment sitting on a later page.
+		if linkNextRe.MatchString(linkHeader) {
+			return nil, false, errors.New(`github_find_comment_by_key: link header has rel="next" without rel="last"; cannot bound the scan`)
+		}
+		// No rel="next" and no rel="last": page 1 was the entire thread.
+		return nil, false, nil
+	}
+
+	pagesToScan := make([]int, 0, githubKeyScanTailPages)
+	for page := lastPage; page > 1 && len(pagesToScan) < githubKeyScanTailPages; page-- {
+		pagesToScan = append(pagesToScan, page)
+	}
+	for _, page := range pagesToScan {
+		comments, _, err := c.fetchCommentPage(ctx, issueID, page)
+		if err != nil {
+			return nil, false, err
+		}
+		if comment, found := findCommentWithKey(comments, key); found {
+			return comment, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// var _ tracker.IdempotentCommenter = (*Client)(nil) pins CreateCommentWithKey
+// and FindCommentByKey to the interface signature so a drift here fails at
+// compile time instead of silently demoting the outbox flusher to
+// CreateComment for GitHub.
+var _ tracker.IdempotentCommenter = (*Client)(nil)

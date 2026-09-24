@@ -559,12 +559,12 @@ type countingTrackingRunner struct {
 	workerHost []string
 }
 
-func (r *countingTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *countingTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.callCount++
 	r.workerHost = append(r.workerHost, workerHost)
 	r.mu.Unlock()
-	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, agent.PermissionBypass)
 	select {
 	case r.done <- struct{}{}:
 	default:
@@ -585,11 +585,11 @@ type workerHostTrackingRunner struct {
 	workerHosts []string
 }
 
-func (r *workerHostTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *workerHostTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.workerHosts = append(r.workerHosts, workerHost)
 	r.mu.Unlock()
-	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, agent.PermissionBypass)
 	select {
 	case r.done <- struct{}{}:
 	default:
@@ -610,11 +610,11 @@ type commandTrackingRunner struct {
 	commands []string
 }
 
-func (r *commandTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *commandTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.commands = append(r.commands, command)
 	r.mu.Unlock()
-	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, agent.PermissionBypass)
 	select {
 	case r.done <- struct{}{}:
 	default:
@@ -675,3 +675,159 @@ func (t *noCandidateTracker) SetIssueBranch(ctx context.Context, issueID, branch
 // Needed for the strings.Split usage in log assertions.
 var _ = strings.Split
 var _ = bytes.Buffer{}
+
+// TestMultiReviewerConfigFallsBackToSingleReviewer pins that reviewer
+// fan-out is DISABLED for this release and, critically, that a config which
+// requests it degrades to the working single-reviewer path instead of
+// misbehaving.
+//
+// Three reproduced failures gate the feature (see
+// orchestrator.ReviewerProfileChain). The one this test guards is the worst:
+// with tracker.completion_state set — the realistic configuration — the
+// worker moves the issue terminal before the reviewer finishes,
+// ReconcileTrackerStates stops the reviewer, and because that is not a
+// TerminalSucceeded exit the chain never advances, so chain[0] is
+// re-dispatched forever. Measured before the gate: 10+ RunTurn calls in ~1s,
+// against 2 for a single-reviewer config that was otherwise identical.
+//
+// The assertion is therefore an upper bound on dispatches, not a lower one:
+// a regression here shows up as runaway agent spawning, which on a real
+// tracker means real API spend and real duplicated work.
+// TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping is issue #58's
+// end-to-end acceptance, and the test that the two gated lifecycle defects
+// made impossible to pass.
+//
+// The configuration is exactly the one that reproduced them:
+// tracker.completion_state makes a successful worker move its issue terminal,
+// so ReconcileTrackerStates deletes the run from state.Running BEFORE its exit
+// event arrives (defect 1: the chain never advanced), and
+// workspace.auto_clear_workspace would clear the worktree the next reviewer
+// still needs (defect 2).
+//
+// Both bounds matter. The upper bound alone would pass on a runaway loop's
+// opposite — zero dispatches — and the lower bound alone would pass on the
+// unbounded agent-spawn loop that runEligibleForAutoReview fails closed
+// against. Exactly 3 means: one worker, both reviewers, nothing re-dispatched.
+func TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping(t *testing.T) {
+	wsDir := t.TempDir()
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Tracker.CompletionState = "Done"
+	cfg.Workspace.AutoClearWorkspace = true
+	cfg.Agent.AutoReview = true
+	cfg.Agent.ReviewerProfile = "security"
+	cfg.Agent.ReviewerProfiles = []string{"security", "correctness"}
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"security":    {Command: "claude", Prompt: "Security review."},
+		"correctness": {Command: "claude", Prompt: "Correctness review."},
+	}
+
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	done := make(chan struct{}, 8)
+	runner := &countingTrackingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: done,
+	}
+	wsp := &recordingWorkspaceProvider{path: wsDir}
+	orch := orchestrator.New(cfg, mt, runner, wsp)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	// Wait for the worker and BOTH reviewers in the chain.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Fatalf("run %d did not complete", i+1)
+		}
+	}
+	// Give the event loop room to keep re-dispatching if the chain is live:
+	// the runaway loop produced several extra RunTurn calls in this window.
+	time.Sleep(600 * time.Millisecond)
+	calls := runner.CallCount()
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	// Both bounds, for the same reason as above: an upper bound alone passes
+	// on zero dispatches and would not prove the reviewer ran at all.
+	assert.Equal(t, 3, calls,
+		"one worker plus both reviewers, and no re-dispatch loop")
+	assert.Len(t, orchestrator.ReviewerProfileChain(cfg), 2,
+		"the reviewer chain must carry every configured profile — #58 ungated")
+
+	// #58 defect 2: the worktree must survive until the quorum CLOSES. Without
+	// the reviewChainInFlight guard the clear fires on each reviewer's exit,
+	// so the second reviewer reads a verdict from a workspace that was already
+	// torn down. Exactly one clear is the difference between the two.
+	assert.EqualValues(t, 1, wsp.removeCalls.Load(),
+		"the workspace must be cleared once, after the chain closes — not once per reviewer")
+}
+
+// TestAutoReviewDoesNotLoopWhenReconciliationStopsTheReviewer pins the
+// fail-closed rule in runEligibleForAutoReview against an unbounded
+// agent-spawn loop. This is the ORDINARY single-reviewer configuration, not
+// fan-out.
+//
+// Setting tracker.completion_state makes a successful worker move its issue
+// to a terminal state. ReconcileTrackerStates then stops any run still
+// registered for that issue and deletes it from state.Running — and the
+// stopped run's own goroutine delivers its real EventWorkerExited a moment
+// later, by which point the live entry is gone. runEligibleForAutoReview
+// used to answer "yes, reviewable" for that nil entry, so the handler read
+// it as a fresh worker success and dispatched a reviewer; reconciliation
+// stopped that reviewer for the same reason; its exit was nil too. The issue
+// stays terminal, so nothing breaks the cycle.
+//
+// Measured before the fix: 23-30 RunTurn calls in 1.5s against an expected
+// 2. On a real tracker every iteration is a billed agent run plus tracker
+// writes, so the assertion is an upper bound — a regression shows up as
+// runaway spend, not a wrong value.
+func TestAutoReviewDoesNotLoopWhenReconciliationStopsTheReviewer(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Tracker.CompletionState = "Done"
+	cfg.Workspace.AutoClearWorkspace = true
+	cfg.Agent.AutoReview = true
+	cfg.Agent.ReviewerProfile = "security"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"security": {Command: "claude", Prompt: "Security review."},
+	}
+
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	runner := &countingTrackingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}, 64),
+	}
+	wsp := &recordingWorkspaceProvider{path: t.TempDir()}
+	orch := orchestrator.New(cfg, mt, runner, wsp)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	// Long enough for many poll ticks: the loop reached 20+ dispatches here.
+	time.Sleep(1500 * time.Millisecond)
+	calls := runner.CallCount()
+	cancel()
+	time.Sleep(150 * time.Millisecond)
+
+	// Both bounds. An upper bound alone is satisfied by zero dispatches, so
+	// the fixture would never have to route through the auto-review path the
+	// test is named for — the test could pass while proving nothing.
+	assert.Equal(t, 2, calls,
+		"exactly one worker and one reviewer — a nil live run entry must not be read as a reviewable worker success")
+}

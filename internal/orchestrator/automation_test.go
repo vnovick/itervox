@@ -361,7 +361,7 @@ type automationCommandCaptureRunner struct {
 	command string
 }
 
-func (r *automationCommandCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *automationCommandCaptureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.command = command
 	r.mu.Unlock()

@@ -1911,7 +1911,7 @@ type resumeTestRunner struct {
 	prompts    []string
 }
 
-func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	callNum := r.calls

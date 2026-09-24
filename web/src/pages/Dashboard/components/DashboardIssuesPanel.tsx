@@ -9,8 +9,10 @@ import { useItervoxStore } from '../../../store/itervoxStore';
 import { useToastStore } from '../../../store/toastStore';
 import { useUIStore } from '../../../store/uiStore';
 import type {
+  DependencyCycleRow,
   DependencyGraphEdge,
   DependencyGraphNode,
+  DepsAnalyzeJob,
   ProfileDef,
   StateSnapshot,
   TrackerIssue,
@@ -33,8 +35,10 @@ interface DashboardIssuesPanelProps {
   defaultBackend?: string;
   dependencyGraphNodes: DependencyGraphNode[];
   dependencyGraphEdges: DependencyGraphEdge[];
+  dependencyCycles?: DependencyCycleRow[];
   depsAnalyzerProfile?: string;
   depsLastAnalyzedAt?: string;
+  depsAnalyzeJob?: DepsAnalyzeJob;
   onIssueSelect: (identifier: string) => void;
   onStateChange: (identifier: string, newState: string) => void;
   onProfileChange: (identifier: string, profile: string) => void;
@@ -54,8 +58,10 @@ export function DashboardIssuesPanel({
   defaultBackend,
   dependencyGraphNodes,
   dependencyGraphEdges,
+  dependencyCycles,
   depsAnalyzerProfile,
   depsLastAnalyzedAt,
+  depsAnalyzeJob,
   onIssueSelect,
   onStateChange,
   onProfileChange,
@@ -181,8 +187,10 @@ export function DashboardIssuesPanel({
         defaultBackend={defaultBackend}
         dependencyGraphNodes={dependencyGraphNodes}
         dependencyGraphEdges={dependencyGraphEdges}
+        dependencyCycles={dependencyCycles}
         depsAnalyzerProfile={depsAnalyzerProfile}
         depsLastAnalyzedAt={depsLastAnalyzedAt}
+        depsAnalyzeJob={depsAnalyzeJob}
         onIssueSelect={onIssueSelect}
         onStateChange={onStateChange}
         onProfileChange={onProfileChange}
