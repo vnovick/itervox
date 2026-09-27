@@ -23,6 +23,7 @@ import (
 func runDoctor(args []string) {
 	workflowPath := "WORKFLOW.md"
 	clearStartupError := false
+	deploy := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -33,22 +34,46 @@ func runDoctor(args []string) {
 			workflowPath = strings.TrimPrefix(a, "--workflow=")
 		case a == "--clear-startup-error":
 			clearStartupError = true
+		case a == "--deploy":
+			deploy = true
 		case a == "-h" || a == "--help":
-			fmt.Println("usage: itervox doctor [--workflow PATH] [--clear-startup-error]")
-			fmt.Println("  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
+			printDoctorUsage(os.Stdout)
 			return
+		default:
+			// CORE-063: an unknown flag used to be ignored silently, so a
+			// typo (or `--deploy` on an older binary) looked like a pass.
+			fmt.Fprintf(os.Stderr, "doctor: unknown flag %q\n", a)
+			printDoctorUsage(os.Stderr)
+			fatalExit(2)
 		}
 	}
 	if clearStartupError {
 		clearStartupErrorMarker(workflowPath)
 	}
+	if deploy {
+		// Probe with the credentials the daemon would have: it loads
+		// .itervox/.env next to WORKFLOW.md at startup (never overriding
+		// variables already set).
+		loadDotEnvFrom(filepath.Dir(workflowPath))
+	}
 	report, exitCode := runDoctorChecks(workflowPath, os.Stdout)
+	if deploy {
+		deployReport, deployCode := runDeployDoctor(workflowPath, defaultDeployProbeEnv())
+		report += deployReport
+		exitCode = max(exitCode, deployCode)
+	}
 	if _, err := io.WriteString(os.Stdout, report); err != nil {
 		fmt.Fprintf(os.Stderr, "doctor: write report: %v\n", err)
 	}
 	if exitCode != 0 {
 		fatalExit(exitCode)
 	}
+}
+
+func printDoctorUsage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy]")
+	_, _ = fmt.Fprintln(w, "  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
+	_, _ = fmt.Fprintln(w, "  --deploy               also probe agent credentials, gh auth, git push auth (dry-run), the tracker API and the daemon's /api/v1/ready; exits 1 on any [fail]")
 }
 
 // DoctorReport is the structured outcome of `itervox doctor`. Exposed for

@@ -1,0 +1,14 @@
+# deadcode allowlist (CORE-110/112). One entry per line: <file> <func as
+# deadcode prints it> | <reason>. Only symbols that MUST stay in a production
+# file belong here; a test-only helper used by its own package's tests goes in
+# a *_test.go file instead. Line numbers are deliberately not part of the key.
+internal/workflow/mutators.go MutateIntField | CORE-006 Mutate* family, kept for the settings writers (spec)
+internal/orchestrator/automation_pr_merged_dispatch.go Orchestrator.dispatchMatchingPRMergedAutomations | pr_merged ledger, topic 06 decides (spec)
+internal/orchestrator/automation_pr_merged_dispatch.go prMergedDedupKey | pr_merged ledger, topic 06 decides (spec)
+internal/agent/ssh.go SSHStrictHostDefault | read accessor used by cmd/itervox and internal/config tests (cross-package; cannot live in a _test.go)
+internal/metrics/counters.go TrackerRequestCount | counter reader used by internal/tracker tests (cross-package)
+internal/metrics/counters.go EventsDroppedCount | counter reader used by internal/orchestrator tests (cross-package)
+internal/metrics/counters.go ClientErrorCount | counter reader used by internal/server tests (cross-package)
+internal/tracker/ratelimit_gate.go RateLimitGate.Clear | used by cmd/itervox outbox flusher tests to reset the shared gate (cross-package)
+internal/tracker/ratelimit_retry.go HasWriteIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
+internal/tracker/ratelimit_retry.go HasReadIntent | used by internal/tracker/linear tests to assert request intent (cross-package)

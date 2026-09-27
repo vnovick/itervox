@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+/* CORE-098 — fonts are self-hosted; see src/fonts.ts (imported from main.tsx). */
 
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
@@ -20,16 +20,20 @@
   /* Text */
   --text: #fafafa;
   --text-secondary: #a1a1aa;
-  --muted: #71717a;
+  /* CORE-071: was #71717a (3.67:1 on --panel); now 5.25:1. */
+  --muted: #8b8b94;
 
   /* Borders */
   --line: rgba(255, 255, 255, 0.06);
   --line-strong: rgba(255, 255, 255, 0.12);
 
   /* Accent — indigo → teal */
-  --accent: #6366f1;
+  /* M5-close: #6366f1 gave white text 4.46:1; indigo-600 gives 6.3:1. */
+  --accent: #4f46e5;
   --accent-soft: rgba(99, 102, 241, 0.15);
-  --accent-strong: #818cf8;
+  --accent-strong: #a5b4fc;
+  /* Accent-coloured TEXT on panels (links, identifiers): AA on every surface. */
+  --accent-text: #a5b4fc;
   --teal: #14b8a6;
   --purple: #a855f7;
   --gradient-accent: linear-gradient(135deg, var(--accent), var(--teal));
@@ -40,8 +44,15 @@
   --success-strong: #4ade80;
   --warning: #f59e0b;
   --warning-soft: rgba(245, 158, 11, 0.15);
-  --danger: #ef4444;
+  /* M5-close: #ef4444 gave white text 3.8:1; red-600 is AA. */
+  --danger: #dc2626;
   --danger-soft: rgba(239, 68, 68, 0.15);
+  /* CORE-071: signal colours for TEXT. The base tokens stay for fills,
+     borders and dots; text reads these, which meet 4.5:1 on --panel and on
+     their own -soft tint composited over --panel (tokens.contrast.test.ts). */
+  --success-text: #22c55e;
+  --warning-text: #f59e0b;
+  --danger-text: #f87171;
 
   /* Extended palette */
   --teal-soft: rgba(20, 184, 166, 0.15);
@@ -81,7 +92,8 @@
   --panel: #ffffff;
   --text: #09090b;
   --text-secondary: #3f3f46;
-  --muted: #71717a;
+  /* CORE-071: #71717a was 4.40:1 on --bg-soft; now >= 4.87:1 on every surface. */
+  --muted: #6a6a73;
   --panel-strong: #fafafa;
   --panel-dark: #f4f4f5;
   --line: rgba(0, 0, 0, 0.06);
@@ -89,7 +101,9 @@
   --gradient-border: linear-gradient(135deg, rgba(79, 70, 229, 0.25), rgba(13, 148, 136, 0.25));
   --accent: #4f46e5;
   --accent-soft: rgba(79, 70, 229, 0.1);
-  --accent-strong: #6366f1;
+  /* M5-close: #6366f1 on accent-soft was 3.5:1; indigo-700 is AA. */
+  --accent-strong: #4338ca;
+  --accent-text: #4338ca;
   --success: #16a34a;
   --success-soft: rgba(22, 163, 74, 0.12);
   --success-strong: #22c55e;
@@ -97,6 +111,11 @@
   --warning-soft: rgba(217, 119, 6, 0.12);
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.12);
+  /* CORE-071: --success #16a34a (3.30:1) and --warning #d97706 (3.19:1) fail
+     as text on white; these pass on white and on the composited -soft tint. */
+  --success-text: #15703a;
+  --warning-text: #a14a0a;
+  --danger-text: #b91c1c;
   --teal-soft: rgba(20, 184, 166, 0.12);
   --purple-soft: rgba(168, 85, 247, 0.12);
   --accent-glow: rgba(79, 70, 229, 0.25);
@@ -174,6 +193,7 @@ body {
   --color-theme-accent: var(--accent);
   --color-theme-accent-soft: var(--accent-soft);
   --color-theme-accent-strong: var(--accent-strong);
+  --color-theme-accent-text: var(--accent-text);
   --color-theme-teal: var(--teal);
   --color-theme-teal-soft: var(--teal-soft);
   --color-theme-purple: var(--purple);
@@ -186,6 +206,9 @@ body {
   --color-theme-warning-soft: var(--warning-soft);
   --color-theme-danger: var(--danger);
   --color-theme-danger-soft: var(--danger-soft);
+  --color-theme-success-text: var(--success-text);
+  --color-theme-warning-text: var(--warning-text);
+  --color-theme-danger-text: var(--danger-text);
 
   /* Radii */
   --radius-sm: 6px;
@@ -241,6 +264,11 @@ body {
   --color-terminal-base: #111318;
   --color-terminal-header: #111814;
   --color-terminal-cursor: #4ade80;
+  --color-terminal-input: #080b10;
+  /* CORE-071: Logs placeholder / secondary-label text. Replaces #374151
+     (1.75-1.91:1) and #4b5563 (2.39-2.61:1) on the terminal surfaces. */
+  --color-terminal-dim: #7c8594;
+  --color-terminal-label: #8b93a3;
 
   --color-brand-25: #f2f7ff;
   --color-brand-50: #ecf3ff;
@@ -492,285 +520,6 @@ body {
   }
 }
 
-.tableCheckbox:checked ~ span span {
-  @apply opacity-100;
-}
-.tableCheckbox:checked ~ span {
-  @apply border-brand-500 bg-brand-500;
-}
-
-.jvectormap-container {
-  @apply !bg-gray-50 dark:!bg-gray-900;
-}
-.jvectormap-region.jvectormap-element {
-  @apply hover:!fill-brand-500 dark:hover:!fill-brand-500 !fill-gray-300 dark:!fill-gray-700;
-}
-.jvectormap-marker.jvectormap-element {
-  @apply !stroke-gray-200 dark:!stroke-gray-800;
-}
-.jvectormap-tip {
-  @apply !bg-brand-500 !border-none !px-2 !py-1;
-}
-.jvectormap-zoomin,
-.jvectormap-zoomout {
-  @apply !hidden;
-}
-
-.stocks-slider-outer .swiper-button-next:after,
-.stocks-slider-outer .swiper-button-prev:after {
-  @apply hidden;
-}
-
-.stocks-slider-outer .swiper-button-next,
-.stocks-slider-outer .swiper-button-prev {
-  @apply static! mt-0 h-8 w-9 rounded-full border border-gray-200 !text-gray-700 transition hover:bg-gray-100 dark:border-white/[0.03] dark:bg-gray-800 dark:!text-gray-400 dark:hover:bg-white/[0.05] dark:hover:!text-white/90;
-}
-
-.stocks-slider-outer .swiper-button-next.swiper-button-disabled,
-.stocks-slider-outer .swiper-button-prev.swiper-button-disabled {
-  @apply bg-white opacity-50 dark:bg-gray-900;
-}
-
-.stocks-slider-outer .swiper-button-next svg,
-.stocks-slider-outer .swiper-button-prev svg {
-  @apply !h-auto !w-auto;
-}
-
-.fc .fc-view-harness {
-  @apply custom-scrollbar max-w-full overflow-x-auto;
-}
-.fc-dayGridMonth-view.fc-view.fc-daygrid {
-  @apply min-w-[718px];
-}
-.fc .fc-scrollgrid-section > * {
-  border-right-width: 0;
-  border-bottom-width: 0;
-}
-.fc .fc-scrollgrid {
-  border-left-width: 0;
-}
-.fc .fc-toolbar.fc-header-toolbar {
-  @apply flex-col gap-4 px-6 pt-6 sm:flex-row;
-}
-.fc-button-group {
-  @apply gap-2;
-}
-.fc-button-group .fc-button {
-  @apply flex h-10 w-10 items-center justify-center !rounded-lg border border-gray-200 bg-transparent hover:border-gray-200 hover:bg-gray-50 focus:shadow-none active:!border-gray-200 active:!bg-transparent active:!shadow-none dark:border-gray-800 dark:hover:border-gray-800 dark:hover:bg-gray-900 dark:active:border-gray-800!;
-}
-
-.fc-button-group .fc-button.fc-prev-button:before {
-  @apply mt-1 inline-block;
-  content: url("data:image/svg+xml,%3Csvg width='25' height='24' viewBox='0 0 25 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M16.0068 6L9.75684 12.25L16.0068 18.5' stroke='%23344054' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E%0A");
-}
-.fc-button-group .fc-button.fc-next-button:before {
-  @apply mt-1 inline-block;
-  content: url("data:image/svg+xml,%3Csvg width='25' height='24' viewBox='0 0 25 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9.50684 19L15.7568 12.75L9.50684 6.5' stroke='%23344054' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E%0A");
-}
-.dark .fc-button-group .fc-button.fc-prev-button:before {
-  content: url("data:image/svg+xml,%3Csvg width='25' height='24' viewBox='0 0 25 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M16.0068 6L9.75684 12.25L16.0068 18.5' stroke='%2398A2B3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E%0A");
-}
-.dark .fc-button-group .fc-button.fc-next-button:before {
-  content: url("data:image/svg+xml,%3Csvg width='25' height='24' viewBox='0 0 25 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9.50684 19L15.7568 12.75L9.50684 6.5' stroke='%2398A2B3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E%0A");
-}
-.fc-button-group .fc-button .fc-icon {
-  @apply hidden;
-}
-.fc-addEventButton-button {
-  @apply !bg-brand-500 hover:!bg-brand-600 !rounded-lg !border-0 !px-4 !py-2.5 !text-sm !font-medium focus:!shadow-none;
-}
-.fc-toolbar-title {
-  @apply !text-lg !font-medium text-gray-800 dark:text-white/90;
-}
-.fc-header-toolbar.fc-toolbar .fc-toolbar-chunk:last-child {
-  @apply rounded-lg bg-gray-100 p-0.5 dark:bg-gray-900;
-}
-.fc-header-toolbar.fc-toolbar .fc-toolbar-chunk:last-child .fc-button {
-  @apply !h-auto !w-auto rounded-md !border-0 bg-transparent !px-5 !py-2 text-sm font-medium text-gray-500 hover:text-gray-700 focus:!shadow-none dark:text-gray-400;
-}
-.fc-header-toolbar.fc-toolbar .fc-toolbar-chunk:last-child .fc-button.fc-button-active {
-  @apply bg-white text-gray-900 dark:bg-gray-800 dark:text-white;
-}
-.fc-theme-standard th {
-  @apply !border-x-0 border-t !border-gray-200 bg-gray-50 !text-left dark:!border-gray-800 dark:bg-gray-900;
-}
-.fc-theme-standard td,
-.fc-theme-standard .fc-scrollgrid {
-  @apply !border-gray-200 dark:!border-gray-800;
-}
-.fc .fc-col-header-cell-cushion {
-  @apply !px-5 !py-4 text-sm font-medium text-gray-400 uppercase;
-}
-.fc .fc-daygrid-day.fc-day-today {
-  @apply bg-transparent;
-}
-.fc .fc-daygrid-day {
-  @apply p-2;
-}
-.fc .fc-daygrid-day.fc-day-today .fc-scrollgrid-sync-inner {
-  @apply rounded-sm bg-gray-100 dark:bg-white/[0.03];
-}
-.fc .fc-daygrid-day-number {
-  @apply !p-3 text-sm font-medium text-gray-700 dark:text-gray-400;
-}
-.fc .fc-daygrid-day-top {
-  @apply !flex-row;
-}
-.fc .fc-day-other .fc-daygrid-day-top {
-  opacity: 1;
-}
-.fc .fc-day-other .fc-daygrid-day-top .fc-daygrid-day-number {
-  @apply text-gray-400 dark:text-white/30;
-}
-.event-fc-color {
-  @apply rounded-lg py-2.5 pr-3 pl-4;
-}
-.event-fc-color .fc-event-title {
-  @apply p-0 text-sm font-normal text-gray-700;
-}
-.fc-daygrid-event-dot {
-  @apply mr-3 ml-0 h-5 w-1 rounded-sm border-none;
-}
-.fc-event {
-  @apply focus:shadow-none;
-}
-.fc-daygrid-event.fc-event-start {
-  @apply !ml-3;
-}
-.event-fc-color.fc-bg-success {
-  @apply border-success-50 bg-success-50;
-}
-.event-fc-color.fc-bg-danger {
-  @apply border-error-50 bg-error-50;
-}
-.event-fc-color.fc-bg-primary {
-  @apply border-brand-50 bg-brand-50;
-}
-.event-fc-color.fc-bg-warning {
-  @apply border-orange-50 bg-orange-50;
-}
-.event-fc-color.fc-bg-success .fc-daygrid-event-dot {
-  @apply bg-success-500;
-}
-.event-fc-color.fc-bg-danger .fc-daygrid-event-dot {
-  @apply bg-error-500;
-}
-.event-fc-color.fc-bg-primary .fc-daygrid-event-dot {
-  @apply bg-brand-500;
-}
-.event-fc-color.fc-bg-warning .fc-daygrid-event-dot {
-  @apply bg-orange-500;
-}
-.fc-direction-ltr .fc-timegrid-slot-label-frame {
-  @apply px-3 py-1.5 text-left text-sm font-medium text-gray-500 dark:text-gray-400;
-}
-.fc .fc-timegrid-axis-cushion {
-  @apply text-sm font-medium text-gray-500 dark:text-gray-400;
-}
-
-.input-date-icon::-webkit-inner-spin-button,
-.input-date-icon::-webkit-calendar-picker-indicator {
-  opacity: 0;
-  -webkit-appearance: none;
-}
-
-.swiper-button-prev svg,
-.swiper-button-next svg {
-  @apply !h-auto !w-auto;
-}
-
-.carouselTwo .swiper-button-next:after,
-.carouselTwo .swiper-button-prev:after,
-.carouselFour .swiper-button-next:after,
-.carouselFour .swiper-button-prev:after {
-  @apply hidden;
-}
-.carouselTwo .swiper-button-next.swiper-button-disabled,
-.carouselTwo .swiper-button-prev.swiper-button-disabled,
-.carouselFour .swiper-button-next.swiper-button-disabled,
-.carouselFour .swiper-button-prev.swiper-button-disabled {
-  @apply bg-white/60 !opacity-100;
-}
-.carouselTwo .swiper-button-next,
-.carouselTwo .swiper-button-prev,
-.carouselFour .swiper-button-next,
-.carouselFour .swiper-button-prev {
-  @apply shadow-slider-navigation h-10 w-10 rounded-full border-[0.5px] border-white/10 bg-white/90 !text-gray-700 backdrop-blur-[10px];
-}
-
-.carouselTwo .swiper-button-prev,
-.carouselFour .swiper-button-prev {
-  @apply !left-3 sm:!left-4;
-}
-
-.carouselTwo .swiper-button-next,
-.carouselFour .swiper-button-next {
-  @apply !right-3 sm:!right-4;
-}
-
-.carouselThree .swiper-pagination,
-.carouselFour .swiper-pagination {
-  @apply shadow-slider-navigation !bottom-3 !left-1/2 inline-flex !w-auto -translate-x-1/2 items-center gap-1.5 rounded-[40px] border-[0.5px] border-white/10 bg-white/60 px-2 py-1.5 backdrop-blur-[10px] sm:!bottom-5;
-}
-
-.carouselThree .swiper-pagination-bullet,
-.carouselFour .swiper-pagination-bullet {
-  @apply shadow-theme-xs !m-0 h-2.5 w-2.5 bg-white opacity-100 duration-200 ease-in-out;
-}
-
-.carouselThree .swiper-pagination-bullet-active,
-.carouselFour .swiper-pagination-bullet-active {
-  @apply w-6.5 rounded-xl;
-}
-
-.form-check-input:checked ~ span {
-  @apply border-brand-500 bg-brand-500 dark:border-brand-500 border-[6px];
-}
-
-.taskCheckbox:checked ~ .box span {
-  @apply bg-brand-500 opacity-100;
-}
-.taskCheckbox:checked ~ p {
-  @apply text-gray-400 line-through;
-}
-.taskCheckbox:checked ~ .box {
-  @apply border-brand-500 bg-brand-500 dark:border-brand-500;
-}
-
-.task {
-  transition: all 0.2s ease; /* Smooth transition for visual effects */
-}
-
-.task {
-  border-radius: 0.75rem;
-  box-shadow:
-    0px 1px 3px 0px rgba(16, 24, 40, 0.1),
-    0px 1px 2px 0px rgba(16, 24, 40, 0.06);
-  opacity: 0.8;
-  cursor: grabbing; /* Changes the cursor to indicate dragging */
-}
-
-.custom-calendar .fc-h-event {
-  background-color: transparent;
-  border: none;
-  color: black;
-}
-.fc.fc-media-screen {
-  @apply min-h-screen;
-}
-
-.simplebar-scrollbar::before {
-  @apply !rounded-full !bg-gray-200 !opacity-100 dark:!bg-gray-700;
-}
-
-.dark .simplebar-scrollbar::before {
-  @apply !bg-gray-700;
-}
-
-.simplebar-scrollbar.simplebar-visible:before {
-  @apply opacity-100;
-}
-
 /* ── Styled scrollbars ───────────────────────────────────────────────────── */
 
 /* Webkit (Chrome, Safari, Edge) */
@@ -844,4 +593,71 @@ body {
 }
 .slide-panel-right {
   animation: slide-in-right 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ─── CORE-024: global keyboard-focus ring ────────────────────────────────── */
+/* Many interactive elements across the app use `focus:outline-none` /
+   `outline-none` without a replacement ring (12 of 20 sites at last count),
+   so keyboard users lose visible focus on those specific elements even
+   though the browser default outline still applies elsewhere. This single
+   rule restores a consistent, visible ring on every focusable element when
+   focus arrives via keyboard (`:focus-visible` — not on a mouse click),
+   without needing to touch each of those 20 call sites individually. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* M5-close (axe color-contrast) — the dashboard still uses a few Tailwind
+   palette text colours tuned for the dark theme (-300/-400 shades). On the
+   light theme's white/tinted panels they measured 1.3–2.3:1. Remap them to
+   the matching -800 shade (≥ 7:1 on white and on their own /15 tints) while
+   the light theme is active, instead of editing every call site. */
+[data-theme='light'] .text-orange-300,
+[data-theme='light'] .text-orange-400 {
+  color: #9a3412;
+}
+[data-theme='light'] .text-amber-200,
+[data-theme='light'] .text-amber-300,
+[data-theme='light'] .text-amber-400 {
+  color: #92400e;
+}
+[data-theme='light'] .text-yellow-200,
+[data-theme='light'] .text-yellow-400 {
+  color: #854d0e;
+}
+[data-theme='light'] .text-emerald-300,
+[data-theme='light'] .text-emerald-400 {
+  color: #065f46;
+}
+[data-theme='light'] .text-green-300,
+[data-theme='light'] .text-green-400 {
+  color: #166534;
+}
+[data-theme='light'] .text-sky-300 {
+  color: #075985;
+}
+[data-theme='light'] .text-red-300,
+[data-theme='light'] .text-red-400 {
+  color: #991b1b;
+}
+[data-theme='light'] .text-blue-300,
+[data-theme='light'] .text-blue-400 {
+  color: #1e40af;
+}
+[data-theme='light'] .text-purple-300,
+[data-theme='light'] .text-purple-400 {
+  color: #6b21a8;
+}
+
+/* ─── CORE-024: respect prefers-reduced-motion ────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
 }

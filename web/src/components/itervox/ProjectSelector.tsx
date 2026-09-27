@@ -75,7 +75,7 @@ export function ProjectSelector() {
           style={{
             background: 'rgba(245,158,11,0.08)',
             border: '1px solid rgba(245,158,11,0.2)',
-            color: 'var(--warning)',
+            color: 'var(--warning-text)',
           }}
         >
           <span className="mt-px flex-shrink-0">⚠</span>

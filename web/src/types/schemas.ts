@@ -10,6 +10,14 @@
  */
 import { z } from 'zod';
 import { AUTOMATION_TRIGGER_TYPES } from './automationTriggers';
+import {
+  extraKeys,
+  type AutomationExtraKeys,
+  type AutomationUnknownFields,
+  type JsonValue,
+  type RawAutomationPolicy,
+  type RawAutomationTrigger,
+} from './configRoundTrip';
 
 /**
  * Optional timestamp schema. Belt-and-braces guard against the v0.2.0
@@ -37,6 +45,66 @@ const optionalSafeInt = z
   .lte(Number.MAX_SAFE_INTEGER)
   .gte(-Number.MAX_SAFE_INTEGER)
   .optional();
+
+/**
+ * CORE-047 — closed snapshot enums must degrade, not reject.
+ *
+ * A strict `z.enum()` rejects the WHOLE snapshot when the daemon emits a value
+ * this bundle does not know (a new Go mode/status), which freezes the
+ * production dashboard. The single policy for every closed enum on the
+ * snapshot wire: `tolerantEnum` parses known values as-is and replaces an
+ * unknown one with a documented fallback (the same `.catch()` pattern the
+ * dependency-graph enums already used), notifying the fallback listener so
+ * the drift is still reported (CORE-048). Lists of enum values
+ * (`tolerantEnumList`) drop unknown members instead — a fallback member would
+ * invent a permission or capability that was never granted.
+ *
+ * Form-side schemas (profileForm/automationForm) keep strict enums: there an
+ * unknown value is a user-input error, not wire drift.
+ */
+export type SchemaFallbackListener = (label: string, value: unknown) => void;
+let schemaFallbackListener: SchemaFallbackListener | null = null;
+
+/** Registers (or clears, with null) the listener told about every enum fallback. */
+export function setSchemaFallbackListener(fn: SchemaFallbackListener | null): void {
+  schemaFallbackListener = fn;
+}
+
+function noteSchemaFallback(label: string, value: unknown): void {
+  try {
+    schemaFallbackListener?.(label, value);
+  } catch {
+    // A reporting failure must never break the parse.
+  }
+}
+
+function tolerantEnum<const T extends readonly [string, ...string[]]>(
+  label: string,
+  values: T,
+  fallback: T[number],
+) {
+  return z.enum(values).catch((ctx) => {
+    noteSchemaFallback(label, ctx.value);
+    return fallback;
+  });
+}
+
+function tolerantEnumList<const T extends readonly [string, ...string[]]>(
+  label: string,
+  values: T,
+) {
+  const known = new Set<string>(values);
+  return z.array(z.string()).transform((items) => {
+    const kept = items.filter((v) => known.has(v)) as T[number][];
+    if (kept.length !== items.length) {
+      noteSchemaFallback(
+        label,
+        items.filter((v) => !known.has(v)),
+      );
+    }
+    return kept;
+  });
+}
 
 export const CommentRowSchema = z.object({
   author: z.string(),
@@ -78,7 +146,12 @@ export const HistoryRowSchema = z.object({
   tokens: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
-  status: z.enum(['succeeded', 'failed', 'cancelled', 'stalled', 'input_required']),
+  // Unknown → 'cancelled': the neutral terminal status (not a red 'failed').
+  status: tolerantEnum(
+    'history.status',
+    ['succeeded', 'failed', 'cancelled', 'stalled', 'input_required'],
+    'cancelled',
+  ),
   workerHost: z.string().optional(),
   backend: z.string().optional(),
   sessionId: z.string().optional(),
@@ -117,18 +190,58 @@ export const SSHHostInfoSchema = z.object({
 });
 
 // Keep in sync with internal/config/agent_actions.go (the Go source of truth).
-// A value the daemon emits that is missing here fails StateSnapshotSchema.parse
-// and silently nulls the whole snapshot — Board/Deps/LiveOps go "Offline".
-export const AllowedAgentActionSchema = z.enum([
+// A value the daemon emits that is missing here is dropped from the snapshot's
+// action lists (tolerantEnumList, CORE-047) rather than rejecting the snapshot.
+const AGENT_ACTIONS = [
   'comment',
   'comment_pr',
   'create_issue',
   'merge_pr',
   'move_state',
   'provide_input',
-]);
+] as const;
+// Strict: used by the profile form. Snapshot fields use tolerantEnumList.
+export const AllowedAgentActionSchema = z.enum(AGENT_ACTIONS);
 
-export const ProfileDefSchema = z.object({
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// CORE-047 round 2: profileDefs round-trip through upsertProfile, so unknown
+// allowed actions are kept raw in `unknownAllowedActions` (and re-sent by
+// upsertProfile) instead of being dropped by tolerantEnumList.
+const PROFILE_KNOWN_KEYS = [
+  'command',
+  'prompt',
+  'soul',
+  'instructions',
+  'soulFile',
+  'instructionsFile',
+  'backend',
+  'enabled',
+  'allowedActions',
+  'createIssueState',
+];
+
+function captureProfileUnknowns(input: unknown): unknown {
+  if (!isRecord(input)) return input;
+  if (!Array.isArray(input.allowedActions)) {
+    const extra = extraKeys(input, PROFILE_KNOWN_KEYS);
+    return extra ? { ...input, unknownKeys: extra } : input;
+  }
+  const known = new Set<string>(AGENT_ACTIONS);
+  const unknown = input.allowedActions.filter(
+    (a): a is string => typeof a === 'string' && !known.has(a),
+  );
+  const out: Record<string, unknown> =
+    unknown.length > 0 ? { ...input, unknownAllowedActions: unknown } : { ...input };
+  // Keys this bundle does not know at all (z.object would strip them).
+  const extra = extraKeys(input, PROFILE_KNOWN_KEYS);
+  if (extra) out.unknownKeys = extra;
+  return out;
+}
+
+const ProfileDefCoreSchema = z.object({
   command: z.string(),
   prompt: z.string().optional(),
   soul: z.string().optional(),
@@ -137,9 +250,15 @@ export const ProfileDefSchema = z.object({
   instructionsFile: z.string().optional(),
   backend: z.string().optional(),
   enabled: z.boolean().optional(),
-  allowedActions: z.array(AllowedAgentActionSchema).optional(),
+  allowedActions: tolerantEnumList('profileDefs.allowedActions', AGENT_ACTIONS).optional(),
   createIssueState: z.string().optional(),
+  // Client-only: raw allowed actions this bundle does not know (round 2).
+  unknownAllowedActions: z.array(z.string()).optional(),
+  // Client-only: keys this bundle does not know, re-sent by upsertProfile.
+  unknownKeys: z.custom<Record<string, JsonValue>>(isRecord).optional(),
 });
+
+export const ProfileDefSchema = z.preprocess(captureProfileUnknowns, ProfileDefCoreSchema);
 
 export const ModelOptionSchema = z.object({
   id: z.string(),
@@ -147,14 +266,16 @@ export const ModelOptionSchema = z.object({
 });
 
 export const AutomationTriggerSchema = z.object({
-  type: z.enum(AUTOMATION_TRIGGER_TYPES),
+  // Unknown → 'cron' for rendering only; the raw trigger is kept in
+  // AutomationDef.unknownFields and restored on save.
+  type: tolerantEnum('automations.trigger.type', AUTOMATION_TRIGGER_TYPES, 'cron'),
   cron: z.string().optional(),
   timezone: z.string().optional(),
   state: z.string().optional(),
 });
 
 export const AutomationFilterSchema = z.object({
-  matchMode: z.enum(['all', 'any']).optional(),
+  matchMode: tolerantEnum('automations.filter.matchMode', ['all', 'any'], 'all').optional(),
   states: z.array(z.string()).optional(),
   labelsAny: z.array(z.string()).optional(),
   identifierRegex: z.string().optional(),
@@ -174,12 +295,60 @@ export const AutomationPolicySchema = z.object({
   //  - cooldownMinutes >= 0
   // and rejects all three on non-rate_limited triggers.
   switchToProfile: z.string().optional(),
-  switchToBackend: z.enum(['', 'claude', 'codex']).optional(),
+  switchToBackend: tolerantEnum(
+    'automations.policy.switchToBackend',
+    ['', 'claude', 'codex'],
+    '',
+  ).optional(),
   cooldownMinutes: z.number().int().nonnegative().optional(),
   moveToState: z.string().optional(),
 });
 
-export const AutomationDefSchema = z.object({
+// CORE-047 round 2: the automation list round-trips through
+// PUT /settings/automations, so the raw values behind every fallback are kept
+// in `unknownFields` and restored by automationDefToWire (configRoundTrip.ts).
+const AUTOMATION_KNOWN_KEYS = {
+  top: ['id', 'enabled', 'profile', 'instructions', 'trigger', 'filter', 'policy'],
+  trigger: Object.keys(AutomationTriggerSchema.shape),
+  filter: Object.keys(AutomationFilterSchema.shape),
+  policy: Object.keys(AutomationPolicySchema.shape),
+} as const;
+
+function captureAutomationUnknowns(input: unknown): unknown {
+  if (!isRecord(input)) return input;
+  const unknown: AutomationUnknownFields = {};
+  const trigger = input.trigger;
+  if (isRecord(trigger) && typeof trigger.type === 'string') {
+    if (!(AUTOMATION_TRIGGER_TYPES as readonly string[]).includes(trigger.type)) {
+      unknown.trigger = { ...trigger } as unknown as RawAutomationTrigger;
+      if (isRecord(input.policy)) unknown.policy = { ...input.policy } as RawAutomationPolicy;
+    }
+  }
+  const filter = input.filter;
+  if (isRecord(filter) && typeof filter.matchMode === 'string') {
+    if (!['all', 'any'].includes(filter.matchMode)) unknown.matchMode = filter.matchMode;
+  }
+  const policy = input.policy;
+  if (isRecord(policy) && typeof policy.switchToBackend === 'string') {
+    if (!['', 'claude', 'codex'].includes(policy.switchToBackend)) {
+      unknown.switchToBackend = policy.switchToBackend;
+    }
+  }
+  const extra: AutomationExtraKeys = {};
+  const top = extraKeys(input, AUTOMATION_KNOWN_KEYS.top);
+  if (top) extra.top = top;
+  for (const section of ['trigger', 'filter', 'policy'] as const) {
+    const obj = input[section];
+    // An unknown trigger already keeps its raw trigger and policy whole.
+    if (unknown.trigger && section !== 'filter') continue;
+    const found = isRecord(obj) ? extraKeys(obj, AUTOMATION_KNOWN_KEYS[section]) : undefined;
+    if (found) extra[section] = found;
+  }
+  if (Object.keys(extra).length > 0) unknown.extra = extra;
+  return Object.keys(unknown).length > 0 ? { ...input, unknownFields: unknown } : input;
+}
+
+const AutomationDefCoreSchema = z.object({
   id: z.string(),
   enabled: z.boolean(),
   profile: z.string(),
@@ -187,7 +356,11 @@ export const AutomationDefSchema = z.object({
   trigger: AutomationTriggerSchema,
   filter: AutomationFilterSchema.optional(),
   policy: AutomationPolicySchema.optional(),
+  // Client-only: raw values this bundle does not know (round 2).
+  unknownFields: z.custom<AutomationUnknownFields>(isRecord).optional(),
 });
+
+export const AutomationDefSchema = z.preprocess(captureAutomationUnknowns, AutomationDefCoreSchema);
 
 // ConfigInvalidStatusSchema mirrors server.ConfigInvalidStatus (Go) — wire
 // shape for a current WORKFLOW.md validation failure. The dashboard renders
@@ -203,7 +376,11 @@ export const ConfigInvalidStatusSchema = z.object({
 export const InputRequiredEntrySchema = z.object({
   identifier: z.string(),
   sessionId: z.string(),
-  state: z.enum(['input_required', 'pending_input_resume']),
+  state: tolerantEnum(
+    'inputRequired.state',
+    ['input_required', 'pending_input_resume'],
+    'input_required',
+  ),
   context: z.string(),
   backend: z.string().optional(),
   profile: z.string().optional(),
@@ -259,7 +436,7 @@ export const AutomationQueueRowSchema = z.object({
   issueState: z.string().optional(),
   profile: z.string(),
   backend: z.string().optional(),
-  status: z.enum(['queued', 'blocked', 'dispatching']),
+  status: tolerantEnum('automationQueue.status', ['queued', 'blocked', 'dispatching'], 'queued'),
   reason: z.string(),
   reasonDetail: z.string().optional(),
   queuedAt: z.string(),
@@ -280,7 +457,7 @@ export const AutomationQueueRowSchema = z.object({
 export const DependencyAuditRowSchema = z.object({
   identifier: z.string(),
   issueState: z.string(),
-  status: z.enum(['unknown', 'blocked', 'unblocked']),
+  status: tolerantEnum('dependencyAudit.status', ['unknown', 'blocked', 'unblocked'], 'unknown'),
   sources: z.array(z.string()).optional(),
   blockedBy: z.array(BlockerRefSchema).optional(),
   unresolvedBlockers: z.array(BlockerRefSchema).optional(),
@@ -302,7 +479,7 @@ export const DependencyAuditRowSchema = z.object({
 // 'mixed' (the least-specific classification) rather than throwing.
 export const DependencyCycleRowSchema = z.object({
   members: z.array(z.string()),
-  kind: z.enum(['tracker', 'inferred', 'mixed']).catch('mixed'),
+  kind: tolerantEnum('dependencyCycles.kind', ['tracker', 'inferred', 'mixed'], 'mixed'),
   detectedAt: z.string(),
 });
 
@@ -313,7 +490,7 @@ export const DependencyAttentionRowSchema = z.object({
   identifier: z.string(),
   blockers: z.array(z.string()),
   blockedSince: z.string(),
-  kind: z.enum(['cycle', 'stale_blocker']).catch('stale_blocker'),
+  kind: tolerantEnum('dependencyAttention.kind', ['cycle', 'stale_blocker'], 'stale_blocker'),
 });
 
 export const DependencyGraphNodeSchema = z.object({
@@ -321,7 +498,11 @@ export const DependencyGraphNodeSchema = z.object({
   identifier: z.string(),
   title: z.string().optional(),
   state: z.string().optional(),
-  status: z.enum(['unknown', 'blocked', 'unblocked']).optional(),
+  status: tolerantEnum(
+    'dependencyGraphNodes.status',
+    ['unknown', 'blocked', 'unblocked'],
+    'unknown',
+  ).optional(),
   running: z.boolean(),
   queued: z.boolean(),
   terminal: z.boolean(),
@@ -364,7 +545,13 @@ export const DependencyGraphEdgeSchema = z.object({
 export const DepsAnalyzeJobSchema = z.object({
   jobId: z.string(),
   profile: z.string().optional(),
-  status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']),
+  // Unknown → 'failed': a terminal state, so the Cancel affordance and the
+  // running spinner never stick on a job this bundle cannot interpret.
+  status: tolerantEnum(
+    'depsAnalyzeJob.status',
+    ['queued', 'running', 'succeeded', 'failed', 'cancelled'],
+    'failed',
+  ),
   queuedAt: z.string(),
   startedAt: optionalTimeString,
   finishedAt: optionalTimeString,
@@ -383,7 +570,7 @@ export const DepsAnalyzeJobSchema = z.object({
   // DepsAnalyzeJobRow.Trigger, `omitempty`); an older daemon predating the
   // field, or any unrecognized value, falls back to 'manual' rather than
   // failing the whole job-status parse.
-  trigger: z.enum(['manual', 'auto']).optional().catch('manual'),
+  trigger: tolerantEnum('depsAnalyzeJob.trigger', ['manual', 'auto'], 'manual').optional(),
 });
 
 // The POST /api/v1/deps/analyze 202 body — partial shape that overlaps with
@@ -412,6 +599,89 @@ export const OutboxEntryRowSchema = z.object({
   rateLimitedUntil: z.string().optional(),
   enqueuedAt: z.string(),
   nextAttemptAt: z.string(),
+  // CORE-044 — server.OutboxEntryRow.LastFailedAt (*time.Time, omitempty):
+  // when the entry's most recent real delivery failure happened. Absent until
+  // the first failure and on snapshots from older daemons.
+  lastFailedAt: optionalTimeString,
+});
+
+// TrackerErrorRowSchema mirrors server.TrackerErrorRow (CORE-044): the most
+// recent tracker failure the event loop observed. op is "poll" or
+// "update_state"; kind is "outage" or "rate_limited". Kept as plain strings
+// (not enums) so a future op/kind never fails the whole snapshot parse.
+/** The Go DepsAnalysisMode constants this bundle knows (parity-tested). */
+export const DEPS_ANALYSIS_MODES = ['auto', 'manual'] as const;
+
+export const TrackerErrorRowSchema = z.object({
+  at: z.string(),
+  op: z.string(),
+  kind: z.string(),
+  message: z.string(),
+  resetAt: optionalTimeString,
+  consecutiveFailures: optionalSafeInt,
+});
+
+// FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
+// daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
+// tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
+// plain string so a future kind never fails the snapshot parse (CORE-047).
+// message is redacted daemon-side.
+export const TotalsSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsdEstimated: z.number().nonnegative().nullable(),
+  costCoverage: z
+    .object({
+      claudeRuns: z.number().int().nonnegative(),
+      codexRuns: z.number().int().nonnegative(),
+    })
+    .optional(),
+});
+
+export const FailureRowSchema = z.object({
+  kind: z.string(),
+  identifier: z.string().optional(),
+  source: z.string().optional(),
+  message: z.string(),
+  occurredAt: z.string(),
+  recordedAt: z.string(),
+  count: z.number().int().nonnegative(),
+});
+
+// CORE-055 — BackendHealthRowSchema mirrors server.BackendHealthRow: one
+// AGENT backend circuit breaker (CORE-053). Unrelated to rateLimits (the
+// tracker API budget) and outboxEntries[].rateLimitedUntil (tracker
+// writes). limitedUntil is nullable and always present on the wire: null
+// means healthy or "reset unknown" (retryAt then carries the cooldown end).
+// An unknown future status degrades to 'warning' — visible, never 'healthy'.
+export const BACKEND_HEALTH_STATUSES = ['healthy', 'warning', 'limited', 'probing'] as const;
+export const BackendHealthRowSchema = z.object({
+  backend: z.string(),
+  host: z.string().optional(),
+  status: tolerantEnum('backendHealth.status', BACKEND_HEALTH_STATUSES, 'warning'),
+  kind: z.string().optional(),
+  limitType: z.string().optional(),
+  limitedUntil: z.string().nullable().optional(),
+  retryAt: optionalTimeString,
+  since: optionalTimeString,
+  probeIssue: z.string().optional(),
+  heldIssues: z.number().int().nonnegative().optional(),
+  reroutedIssues: z.number().int().nonnegative().optional(),
+});
+
+// CORE-055 — AutoSwitchRowSchema mirrors server.AutoSwitchRow: an issue's
+// automatic override (rate_limited automation or backend_fallback) and its
+// provenance. Describes the NEXT dispatch, never the running session.
+// source is a plain string ("automation" | "backend_fallback" | "unknown").
+export const AutoSwitchRowSchema = z.object({
+  identifier: z.string(),
+  source: z.string(),
+  fromBackend: z.string().optional(),
+  fromProfile: z.string().optional(),
+  toBackend: z.string().optional(),
+  toProfile: z.string().optional(),
+  reason: z.string().optional(),
+  switchedAt: optionalTimeString,
 });
 
 export const StateSnapshotSchema = z.object({
@@ -423,6 +693,10 @@ export const StateSnapshotSchema = z.object({
   retrying: z.array(RetryRowSchema),
   paused: z.array(z.string()),
   pausedWithPR: z.record(z.string(), z.string()).optional(),
+  // M6-close BH-M6-3 — why each paused issue is paused: 'user_cancelled' |
+  // 'user_dismissed_input' | 'retries_exhausted' | 'transition_failed'
+  // (open set; unknown values are opaque). Absent on older daemons.
+  pauseReasons: z.record(z.string(), z.string()).optional(),
   maxConcurrentAgents: z.number(),
   // G: per-issue retry budget. 0 means "unlimited" (matches Go semantics).
   // Required (no Zod default) per gap §10.3 — a server bug that omits the
@@ -443,19 +717,25 @@ export const StateSnapshotSchema = z.object({
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),
   availableModels: z.record(z.string(), z.array(ModelOptionSchema)).optional(),
-  supportedAgentActions: z.array(AllowedAgentActionSchema).optional(),
+  supportedAgentActions: tolerantEnumList('supportedAgentActions', AGENT_ACTIONS).optional(),
   reviewerProfile: z.string().optional(),
   autoReview: z.boolean().optional(),
   activeStates: z.array(z.string()).optional(),
   terminalStates: z.array(z.string()).optional(),
   completionState: z.string().optional(),
+  // CORE-070 — tracker.working_state (the state an issue is moved to when an
+  // agent picks it up). Read-only after startup. Absent from daemons that do
+  // not publish it; IssueDetailSlide then falls back to the config default.
+  workingState: z.string().optional(),
   backlogStates: z.array(z.string()).optional(),
   autoClearWorkspace: z.boolean().optional(),
   // deps-analysis-mode Task 1/3 — mirrors server.StateSnapshot.DepsAnalysisMode
   // (omitempty on the wire). "auto" | "manual"; absent from snapshots emitted
   // by daemons predating this field, in which case Settings/the Deps tab
   // treat it as "auto" (the pre-existing default behaviour).
-  depsAnalysisMode: z.enum(['auto', 'manual']).optional(),
+  // CORE-047: unknown → 'auto' (the absent-field default) instead of
+  // rejecting the whole snapshot.
+  depsAnalysisMode: tolerantEnum('depsAnalysisMode', DEPS_ANALYSIS_MODES, 'auto').optional(),
   currentAppSessionId: z.string().optional(),
   sshHosts: z.array(SSHHostInfoSchema).optional(),
   dispatchStrategy: z.string().optional(),
@@ -509,6 +789,25 @@ export const StateSnapshotSchema = z.object({
   // most recent reload tick failed and the daemon is exponentially backing
   // off retries on the last-valid config (T-26).
   configInvalid: ConfigInvalidStatusSchema.optional(),
+  // CORE-044 — most recent tracker failure (poll outage/rate limit, or a
+  // failed failed-state move). Absent when none is recorded and on snapshots
+  // from daemons predating the field.
+  lastTrackerError: TrackerErrorRowSchema.optional(),
+  // CORE-046 — bounded ring of recent failures, oldest recorded first.
+  // Always an array on a current daemon; absent on older daemons.
+  recentFailures: z.array(FailureRowSchema).optional(),
+  // CORE-091 — daemon-session cumulative token and estimated-cost totals
+  // (reset on daemon restart, not persisted). costUsdEstimated is null until a
+  // Claude run reports total_cost_usd; Codex reports no cost, so
+  // costCoverage says which runs the estimate covers. Optional: daemons
+  // without the Go half (M6-W3 handoff) omit it and the tile hides.
+  totals: TotalsSchema.optional(),
+  // CORE-175 — optional daemon features the dashboard may use; an absent
+  // entry hides the matching UI (older daemons omit the whole field).
+  capabilities: z.array(z.string()).optional(),
+  // CORE-175 — per-issue failure acknowledgements (event-loop state): the
+  // attention inbox hides worker_failed/stalled entries with occurredAt <= upTo.
+  failureAcks: z.array(z.object({ identifier: z.string(), upTo: z.string() })).optional(),
   // critical-path-ordering Task 4/5/6 — this tick's cycle-detection output
   // and derived operator-attention entries. Both omitempty on the wire:
   // absent on snapshots from daemons predating this feature, and on ticks
@@ -525,6 +824,10 @@ export const StateSnapshotSchema = z.object({
   // feature.
   outboxEntries: z.array(OutboxEntryRowSchema).optional(),
   outboxSyncing: z.array(z.string()).optional(),
+  // CORE-055 — agent backend breakers and auto-switch provenance. Both
+  // optional/omitempty: absent on daemons predating CORE-053/055.
+  backendHealth: z.array(BackendHealthRowSchema).optional(),
+  autoSwitches: z.array(AutoSwitchRowSchema).optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -580,14 +883,11 @@ export const TrackerIssueSchema = z.object({
   state: z.string(),
   description: z.string().optional(), // omitempty — absent when ""
   url: z.string().optional(), // omitempty — absent when ""
-  orchestratorState: z.enum([
+  orchestratorState: tolerantEnum(
+    'issues.orchestratorState',
+    ['idle', 'running', 'retrying', 'paused', 'input_required', 'pending_input_resume'],
     'idle',
-    'running',
-    'retrying',
-    'paused',
-    'input_required',
-    'pending_input_resume',
-  ]),
+  ),
   turnCount: z.number().optional(), // omitempty — absent when 0
   tokens: z.number().optional(), // omitempty — absent when 0
   elapsedMs: z.number().optional(), // omitempty — absent when 0
@@ -603,6 +903,9 @@ export const TrackerIssueSchema = z.object({
   ineligibleReason: z.string().optional(),
   agentProfile: z.string().optional(),
   agentBackend: z.string().optional(),
+  // CORE-055 — set when agentProfile/agentBackend come from an automatic
+  // switch rather than an operator pin.
+  autoSwitch: AutoSwitchRowSchema.optional(),
 });
 
 // Inferred TypeScript types — re-exported from itervox.ts for backward compatibility.
@@ -613,9 +916,12 @@ export type HistoryRow = z.infer<typeof HistoryRowSchema>;
 export type RetryRow = z.infer<typeof RetryRowSchema>;
 export type Counts = z.infer<typeof CountsSchema>;
 export type RateLimitInfo = z.infer<typeof RateLimitInfoSchema>;
+export type Totals = z.infer<typeof TotalsSchema>;
 export type ProfileDef = z.infer<typeof ProfileDefSchema>;
 export type AutomationDef = z.infer<typeof AutomationDefSchema>;
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
+export type BackendHealthRow = z.infer<typeof BackendHealthRowSchema>;
+export type AutoSwitchRow = z.infer<typeof AutoSwitchRowSchema>;
 export type LogEventType = z.infer<typeof LogEventTypeSchema>;
 export type IssueLogEntry = z.infer<typeof IssueLogEntrySchema>;
 export type BlockerDetail = z.infer<typeof BlockerDetailSchema>;
@@ -633,6 +939,7 @@ export type DepsAnalyzeJob = z.infer<typeof DepsAnalyzeJobSchema>;
 export type DepsAnalyzeEnqueueResponse = z.infer<typeof DepsAnalyzeEnqueueResponseSchema>;
 export type ConfigInvalidStatus = z.infer<typeof ConfigInvalidStatusSchema>;
 export type OutboxEntryRow = z.infer<typeof OutboxEntryRowSchema>;
+export type FailureRow = z.infer<typeof FailureRowSchema>;
 
 // --- Skills inventory (T-89) ---
 //

@@ -12,6 +12,8 @@ import {
   type DragOverEvent,
 } from '@dnd-kit/core';
 import IssueCard from './IssueCard';
+import { BOARD_DND_ACCESSIBILITY } from './BoardColumn/boardAnnouncements';
+import { columnKeyboardCoordinates } from './BoardColumn/columnKeyboardCoordinates';
 import BoardColumn from './BoardColumn';
 import { AgentInfoModal } from './AgentInfoModal';
 import type { TrackerIssue, ProfileDef } from '../../types/schemas';
@@ -48,7 +50,7 @@ export default function AgentQueueView({
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: columnKeyboardCoordinates }),
   );
 
   const backlogSet = useMemo(() => new Set(backlogStates), [backlogStates]);
@@ -116,6 +118,7 @@ export default function AgentQueueView({
     <>
       <DndContext
         sensors={sensors}
+        accessibility={BOARD_DND_ACCESSIBILITY}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
         onDragEnd={onDragEnd}

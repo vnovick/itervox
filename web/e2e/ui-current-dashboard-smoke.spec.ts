@@ -45,8 +45,15 @@ test.describe('T-63 dashboard smoke', () => {
       // Dashboard root visible — h1 from Dashboard/index.tsx.
       await expect(page.getByRole('heading', { name: 'Autonomous agentic harness' })).toBeVisible();
 
-      // Hero stat labels — five tiles regardless of scenario.
-      for (const label of ['Running', 'Paused', 'Retrying', 'Input Required', 'Capacity']) {
+      // Hero stat labels — status-model labels (CORE-076) regardless of scenario.
+      for (const label of [
+        'Running',
+        'Paused',
+        'Retrying',
+        'Needs input',
+        'Resuming',
+        'Capacity',
+      ]) {
         await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
       }
 

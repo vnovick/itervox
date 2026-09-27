@@ -117,6 +117,7 @@ describe('AutomationActivityCard (T-2)', () => {
     const history = [makeHistoryRow({ identifier: 'TIPRD-25', automationId: 'r' })];
     renderCard({ automation, running: [], history });
     const link = screen.getByTestId('automation-run-logs-link');
-    expect(link.getAttribute('href')).toBe('/logs?identifier=TIPRD-25');
+    // CORE-085 — the Logs selection is in the path.
+    expect(link.getAttribute('href')).toBe('/logs/TIPRD-25');
   });
 });

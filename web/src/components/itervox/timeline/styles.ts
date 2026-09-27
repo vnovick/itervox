@@ -61,7 +61,7 @@ interface BadgeStyle {
 
 const BADGE_STYLES: Record<string, BadgeStyle> = {
   succeeded: { background: 'var(--success-soft)', color: 'var(--success-strong)' },
-  failed: { background: 'var(--danger-soft)', color: 'var(--danger)' },
+  failed: { background: 'var(--danger-soft)', color: 'var(--danger-text)' },
   stalled: { background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' },
   input_required: { background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' },
 };

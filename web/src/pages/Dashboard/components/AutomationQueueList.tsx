@@ -81,7 +81,7 @@ export function AutomationQueueList({
       {saturated && backpressure && (
         <div
           role="alert"
-          className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger border-b px-4 py-3 text-sm"
+          className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger-text border-b px-4 py-3 text-sm"
         >
           <strong>Automation intake paused:</strong> queue is full at {backpressure.length}/
           {backpressure.maxLength}. Existing queued automations will continue draining as workers
@@ -92,7 +92,7 @@ export function AutomationQueueList({
       {runningAutomations.length > 0 && (
         <div data-testid="automation-running-section">
           <div className="border-theme-line text-theme-muted bg-theme-bg-soft flex items-center gap-2 border-b px-4 py-2 text-[10px] font-semibold tracking-[0.06em] uppercase">
-            <span className="bg-theme-success-soft text-theme-success rounded px-1.5 py-0.5 text-[10px]">
+            <span className="bg-theme-success-soft text-theme-success-text rounded px-1.5 py-0.5 text-[10px]">
               Running
             </span>
             <span>{runningAutomations.length} active</span>

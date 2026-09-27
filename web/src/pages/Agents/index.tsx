@@ -1,5 +1,5 @@
 import PageMeta from '../../components/common/PageMeta';
-import { CapacityCard } from '../Settings/CapacityCard';
+import { Link } from 'react-router';
 import { ModelsCard } from '../Settings/ModelsCard';
 import { ProfilesCard } from '../Settings/ProfilesCard';
 import { ReviewerCard } from '../Settings/ReviewerCard';
@@ -32,7 +32,7 @@ export default function Agents() {
           <p className="text-theme-muted mt-1 text-sm">
             Manage agent profiles, reviewer behavior, and execution capacity. Profiles remain synced
             with{' '}
-            <code className="bg-theme-bg-soft text-theme-accent mx-1 rounded px-1.5 py-0.5 font-mono text-xs">
+            <code className="bg-theme-bg-soft text-theme-accent-text mx-1 rounded px-1.5 py-0.5 font-mono text-xs">
               WORKFLOW.md
             </code>
             .
@@ -74,15 +74,17 @@ export default function Agents() {
               />
             </section>
 
-            <section aria-labelledby="section-capacity">
-              <h2
-                id="section-capacity"
-                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+            {/* CORE-093 — Capacity moved to Settings, next to Retries. */}
+            <p className="text-theme-muted text-xs">
+              Max concurrent agents is set under{' '}
+              <Link
+                to="/settings#section-capacity"
+                className="text-theme-accent-text underline underline-offset-2"
               >
-                Capacity
-              </h2>
-              <CapacityCard />
-            </section>
+                Settings → Capacity
+              </Link>
+              .
+            </p>
 
             <section aria-labelledby="section-models">
               <h2

@@ -28,6 +28,11 @@ type heartbeatOptions struct {
 	// per write via the writer's startupError getter so the line disappears
 	// once the marker is cleared (gaps_11 G-15 / todolist6 P0-D).
 	StartupError string
+	// LastCrash is set for the first boot after the previous run crashed
+	// (detected by armCrashOutput, CORE-007). Rendered as a single
+	// "- Last crash:" line carrying ONLY the crash timestamp and the
+	// crash.log path — never panic text, which bypasses log redaction.
+	LastCrash crashReport
 }
 
 type heartbeatWriter struct {
@@ -206,6 +211,18 @@ func renderHeartbeat(snap server.StateSnapshot, opts heartbeatOptions, now time.
 		fmt.Fprintf(&b, "- Attention: %d\n", n)
 	}
 
+	// CORE-055 — agent backend circuit breakers (not the tracker budget).
+	b.WriteString("\n## Backends\n")
+	if len(snap.BackendHealth) == 0 {
+		b.WriteString("- none reported\n")
+	}
+	for _, r := range snap.BackendHealth {
+		b.WriteString(heartbeatBackendLine(r) + "\n")
+	}
+	if n := len(snap.AutoSwitches); n > 0 {
+		fmt.Fprintf(&b, "- Auto-switched issues: %d\n", n)
+	}
+
 	b.WriteString("\n## Attention\n")
 	fmt.Fprintf(&b, "- Input required: %d\n", len(snap.InputRequired))
 	fmt.Fprintf(&b, "- Retry queue: %d\n", len(snap.Retrying))
@@ -223,6 +240,10 @@ func renderHeartbeat(snap server.StateSnapshot, opts heartbeatOptions, now time.
 		}
 	}
 	fmt.Fprintf(&b, "- Last error: %s\n", heartbeatLastError(snap))
+	if !opts.LastCrash.At.IsZero() {
+		fmt.Fprintf(&b, "- Last crash: %s (full dump: %s)\n",
+			opts.LastCrash.At.UTC().Format(time.RFC3339), opts.LastCrash.Path)
+	}
 	return b.String()
 }
 
@@ -280,9 +301,20 @@ func outboxDegradedCount(entries []server.OutboxEntryRow) int {
 	return count
 }
 
+// heartbeatLastError picks the single most operator-relevant error, in
+// priority order: an invalid WORKFLOW.md, the last tracker failure (CORE-044:
+// a poll outage or rate limit, or a failed failed-state move), the degraded
+// outbox entry that failed most recently (a stuck tracker write), then the
+// retry queue and the automation queue.
 func heartbeatLastError(snap server.StateSnapshot) string {
 	if snap.ConfigInvalid != nil && strings.TrimSpace(snap.ConfigInvalid.Error) != "" {
 		return snap.ConfigInvalid.Error
+	}
+	if e := snap.LastTrackerError; e != nil {
+		return formatTrackerErrorLine(e)
+	}
+	if e := newestDegradedOutboxEntry(snap.OutboxEntries); e != nil {
+		return fmt.Sprintf("outbox %s %s degraded: %s", e.Kind, e.Identifier, e.LastError)
 	}
 	for _, row := range snap.Retrying {
 		if strings.TrimSpace(row.Error) != "" {
@@ -295,6 +327,50 @@ func heartbeatLastError(snap server.StateSnapshot) string {
 		}
 	}
 	return "none"
+}
+
+// formatTrackerErrorLine renders a TrackerErrorRow as one HEARTBEAT line,
+// e.g. "tracker poll outage (3 consecutive) at <RFC3339>: <message>".
+func formatTrackerErrorLine(e *server.TrackerErrorRow) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tracker %s %s", e.Op, e.Kind)
+	if e.ConsecutiveFailures > 1 {
+		fmt.Fprintf(&b, " (%d consecutive)", e.ConsecutiveFailures)
+	}
+	if e.ResetAt != nil {
+		fmt.Fprintf(&b, " until %s", e.ResetAt.UTC().Format(time.RFC3339))
+	}
+	fmt.Fprintf(&b, " at %s: %s", e.At.UTC().Format(time.RFC3339), singleLine(e.Message))
+	return b.String()
+}
+
+// newestDegradedOutboxEntry returns the degraded entry with the greatest
+// LastFailedAt, or nil when none is degraded.
+func newestDegradedOutboxEntry(entries []server.OutboxEntryRow) *server.OutboxEntryRow {
+	var best *server.OutboxEntryRow
+	for i := range entries {
+		e := &entries[i]
+		if !e.Degraded {
+			continue
+		}
+		if best == nil || failedAt(e).After(failedAt(best)) {
+			best = e
+		}
+	}
+	return best
+}
+
+func failedAt(e *server.OutboxEntryRow) time.Time {
+	if e.LastFailedAt == nil {
+		return time.Time{}
+	}
+	return *e.LastFailedAt
+}
+
+// singleLine keeps a multi-line error from breaking HEARTBEAT's one-line
+// list item.
+func singleLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func writeHeartbeat(path string, content string) error {

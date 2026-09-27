@@ -60,7 +60,6 @@ beforeEach(() => {
     logs: [],
     sseConnected: false,
     selectedIdentifier: null,
-    tokenSamples: [],
   });
   useToastStore.setState({ toasts: [], _timers: new Map() });
 });

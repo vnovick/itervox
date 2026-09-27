@@ -1,10 +1,13 @@
-.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit e2e
+.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.25.13, even on machines where /usr/local/go is an older version.
 # Must stay in sync with the `go` directive in go.mod.
 export GOTOOLCHAIN := go1.25.13
 GO_PACKAGES := ./cmd/... ./internal/...
+# Explicit go test timeout: internal/agent alone takes ~8-9 min under -race
+# (SSH process-group tests), too close to go test's 10-minute default.
+GO_TEST_TIMEOUT ?= 20m
 
 all: build verify
 
@@ -29,7 +32,7 @@ build: web-deps web-build
 # internal/server/web/dist (gitignored), so on a fresh checkout every Go
 # compile step fails with "pattern web/dist: no matching files found" until
 # the frontend is built. Order is load-bearing — verify runs serially.
-verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit verify-track-b-docs
+verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
@@ -57,6 +60,19 @@ release-hooks-clean:
 # Guard against new os.Exit() outside cmd/itervox/exit.go — see CLAUDE.md.
 no-os-exit:
 	@bash scripts/check-no-os-exit.sh
+
+# no-bare-go (CORE-008) fails on any production `go` statement that neither
+# defers orchestrator.RecoverGoroutine / failFastOnPanic nor appears on the
+# reasoned allowlist inside the script (e.g. orch.Run, which is never wrapped).
+no-bare-go:
+	@bash scripts/check-no-bare-go.sh
+
+# deadcode (CORE-110/112) fails on any production-unreachable Go function
+# (golang.org/x/tools/cmd/deadcode, pinned in the script) that is not on the
+# reasoned scripts/deadcode-allowlist.txt, and on a stale allowlist entry.
+# DEADCODE=/path/to/deadcode uses a local binary instead of `go run`.
+deadcode:
+	@bash scripts/check-deadcode.sh
 
 # size-budget enforces hard caps on a small set of files we don't want growing
 # unchecked. Caps reflect the 2026-04-28 working-tree LOC + a small headroom;
@@ -97,12 +113,16 @@ lint-go:
 
 lint: lint-go
 
+# -tags sshmatrix runs the slow SSH login-shell matrix in internal/agent
+# (CORE-172), which a plain `go test ./...` skips to stay under go test's
+# default 10-minute package timeout. CI passes the same tag.
+GO_TEST_TAGS ?= sshmatrix
 test:
-	go test -race $(GO_PACKAGES) -count=1
+	go test -race -timeout $(GO_TEST_TIMEOUT) -tags $(GO_TEST_TAGS) $(GO_PACKAGES) -count=1
 
 # Run tests with coverage and generate an HTML report (coverage.html).
 coverage:
-	go test -coverprofile=coverage.out $(GO_PACKAGES)
+	go test -timeout $(GO_TEST_TIMEOUT) -coverprofile=coverage.out $(GO_PACKAGES)
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 	@go tool cover -func=coverage.out | tail -1
@@ -178,6 +198,58 @@ verify-track-b-docs:
 
 dev:
 	cd web && pnpm dev
+
+# Shell tests for the deploy/ scripts (CORE-061 fetch-secrets, CORE-062
+# bootstrap data disk + HOME relocation, CORE-107 upgrade rollback + cleanup
+# retention, CORE-113 heartbeat exporter, watchdog and alert-rule family
+# names). Cloud CLIs, curl, blkid/mount/mkfs and systemctl are stubbed on
+# PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
+.PHONY: deploy-test
+deploy-test:
+	bash deploy/lib/fetch-secrets_test.sh
+	bash deploy/bootstrap_test.sh
+	bash deploy/aws/provision_test.sh
+	bash deploy/docker/healthcheck_test.sh
+	bash deploy/upgrade_test.sh
+	bash deploy/cleanup_test.sh
+	bash deploy/monitoring/heartbeat-metrics_test.sh
+	bash deploy/monitoring/itervox-watchdog_test.sh
+	bash deploy/monitoring/rules_names_test.sh
+
+# Deploy lint (CORE-105). Same targets as .github/workflows/deploy-lint.yml;
+# each tool runs from a pinned image, so only docker is needed.
+SHELLCHECK_IMAGE ?= koalaman/shellcheck:v0.10.0
+HADOLINT_IMAGE   ?= hadolint/hadolint:v2.12.0
+ACTIONLINT_IMAGE ?= rhysd/actionlint:1.7.7
+PROMETHEUS_IMAGE ?= prom/prometheus:v3.1.0
+SMOKE_IMAGE      ?= itervox:deploy-smoke
+
+.PHONY: deploy-lint deploy-shellcheck deploy-hadolint deploy-actionlint deploy-promtool deploy-tofu deploy-smoke
+deploy-lint: deploy-shellcheck deploy-hadolint deploy-actionlint deploy-promtool deploy-tofu
+
+deploy-shellcheck:
+	@files=$$(find deploy -name '*.sh' -type f | sort); printf 'shellcheck %s\n' $$files; \
+	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $$files
+
+deploy-hadolint:
+	@echo "hadolint deploy/docker/Dockerfile"
+	docker run --rm -i $(HADOLINT_IMAGE) < deploy/docker/Dockerfile
+
+deploy-actionlint:
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(ACTIONLINT_IMAGE) -color=false .github/workflows/deploy-lint.yml
+
+deploy-promtool:
+	docker run --rm -v "$(CURDIR)/deploy/monitoring:/w:ro" -w /w --entrypoint promtool $(PROMETHEUS_IMAGE) check rules prometheus-rules.yml
+	docker run --rm -v "$(CURDIR)/deploy/monitoring:/w:ro" -w /w --entrypoint promtool $(PROMETHEUS_IMAGE) test rules prometheus-rules.test.yml
+
+deploy-tofu:
+	bash deploy/terraform/validate.sh
+
+# Builds the image, requires /api/v1/health and /api/v1/ready to answer 200,
+# then removes the image again (the container is removed by the script).
+deploy-smoke:
+	docker build -f deploy/docker/Dockerfile -t $(SMOKE_IMAGE) .
+	bash deploy/docker/smoke_test.sh $(SMOKE_IMAGE); rc=$$?; docker rmi $(SMOKE_IMAGE) >/dev/null; exit $$rc
 
 # Run end-to-end Playwright flows. Builds the binary first since e2e specs
 # spawn `./itervox` and rely on the embedded web/dist. Not part of `make

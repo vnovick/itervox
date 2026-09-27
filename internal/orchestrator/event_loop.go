@@ -8,12 +8,14 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/metrics"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -23,18 +25,34 @@ import (
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.started.Store(true) // guard SetHistoryFile / SetHistoryKey against post-Run calls
 	o.runCtx.Store(&ctx)
+	loopExited := make(chan struct{})
+	o.loopExited.Store(&loopExited)
 	o.loadHistoryFromDisk()
 	state := NewState(o.cfg)
+	// CORE-046: the ring survives a WORKFLOW.md reload via cmd/itervox.
+	state.RecentFailures = o.seedFailures
+	o.seedFailures = nil
+	// M6-close V3: the acks for that ring come with it.
+	state.FailureAcks = o.seedFailureAcks
+	o.seedFailureAcks = nil
+	pruneFailureAcks(&state)
 	state = o.loadPausedFromDisk(state)
 	state = o.loadPauseReasonsFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
+	state = o.loadBackendHealthFromDisk(state)
 	state = o.loadInputRequiredFromDisk(state)
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
+	state = o.loadPendingReviewsFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
+	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
+	// the loop; the shutdown flush below lands the final storeSnap's versions.
+	o.startPersistence()
 	tick := time.NewTimer(0)
 	defer tick.Stop()
 
+	// CORE-043: the loop is live from here; /ready's startup grace ends.
+	o.markLoopIdle()
 	var loopErr error
 	for {
 		// Prioritize cancellation over any pending tick/event/refresh. Without
@@ -49,25 +67,65 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			loopErr = err
 			break
 		}
+		// M4-close D2: a drain requested before this iteration (for example
+		// before the first, immediate tick) closes admission before the
+		// select can pick a tick over the queued EventDrain.
+		if !state.Draining && o.drainRequested.Load() {
+			o.syncDrainRequest(&state)
+			o.storeSnap(state)
+		}
 		select {
 		case <-ctx.Done():
 			loopErr = ctx.Err()
 		case <-tick.C:
+			o.markLoopBusy()
 			state = o.onTick(ctx, state)
 			o.storeSnap(state)
 			tick.Reset(time.Duration(state.PollIntervalMs) * time.Millisecond)
 		case <-o.refresh:
 			// Immediate re-poll triggered by the web dashboard refresh button.
+			o.markLoopBusy()
 			state = o.onTick(ctx, state)
 			o.storeSnap(state)
 			tick.Reset(time.Duration(state.PollIntervalMs) * time.Millisecond)
 		case ev := <-o.events:
+			o.markLoopBusy()
 			state = o.handleEvent(ctx, state, ev)
 			o.storeSnap(state)
 		}
+		// CORE-057: a drain ends once no worker is left running.
+		o.observeDrained(state)
+		// CORE-043: an iteration (tick or event, including storeSnap) ended.
+		o.markLoopIdle()
 		if loopErr != nil {
 			break
 		}
+	}
+	// CORE-026 / M4-close D1: one bound covers both the exit collection
+	// below and the worker join after it.
+	grace := o.workerJoinGraceOrDefault()
+	deadline := time.Now().Add(grace)
+	// M4-close D1: the ctx cancel that ended the loop also cancelled every
+	// worker (their contexts derive from ctx), which SIGKILLs the agents.
+	// Keep consuming their EventWorkerExited — and nothing else — until no
+	// worker is left running or the deadline passes, so a forced stop still
+	// records the killed turn (history, retry, pause, partial handoff) and
+	// the flush below persists it.
+	state = o.collectExitsAfterCancel(ctx, state, deadline)
+	// CORE-038: synchronous shutdown flush, after the loop's final storeSnap
+	// and before the worker join / cleanup WaitGroups. Workers only send
+	// events (never write ledgers) and no event is processed after the loop
+	// exits, so nothing the joins do can produce a newer ledger version. A
+	// reload awaits Run's return (cmd/itervox joinRun) before the next
+	// generation loads these files, so it reads exactly what this wrote.
+	o.stopPersistence()
+	close(loopExited)
+	// CORE-026: join the agent workers first — they are the long pole (the
+	// agent's kill window, post-run tracker writes) — bounded, so a stuck
+	// worker cannot hold shutdown or reload. See worker_join.go.
+	if still := o.workersWg.Wait(max(time.Until(deadline), minWorkerJoinAfterCollect)); len(still) > 0 {
+		slog.Warn("orchestrator: worker join grace expired; returning with workers still running",
+			"grace", grace.String(), "identifiers", still)
 	}
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
@@ -100,6 +158,13 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// 1. Revert expired auto-switch overrides before retries or fresh
 	// dispatch can reuse a stale fallback profile/backend.
 	o.revertExpiredAutoSwitchesForTick(&state, now)
+	// CORE-053/054: half-open expired breakers, free stale probe
+	// reservations, then switch backend_fallback overrides back at reset.
+	advanced := advanceBackendHealth(&state, now)
+	if pruned := o.pruneOrphanBreakers(&state); advanced || pruned { // BH-M3-6
+		o.saveBackendHealthToDisk(&state)
+	}
+	o.revertBackendFallbackSwitches(&state, now)
 
 	// 2. Fire any retries whose DueAt has passed.
 	state = o.fireRetries(ctx, state, now)
@@ -126,6 +191,9 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	shedReads := shouldShedPollingReads(o.tracker, o.rateLimitReservePercent())
 	if shedReads {
 		logReadShedding(o.tracker)
+		// BH-M2-6: no poll this tick — say so, or /ready keeps reporting
+		// the last real poll's result for as long as shedding lasts.
+		o.publishPollShedding(state)
 		// processPendingInputResumes still runs below: its FetchIssueDetail is
 		// the read that UNSTICKS the backlog, and starving it is precisely
 		// the deadlock #42 documents.
@@ -134,9 +202,10 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	}
 	issues, err := o.tracker.FetchCandidateIssues(ctx)
 	if err != nil {
-		slog.Warn("orchestrator: fetch candidates failed", "error", err)
+		state = o.recordPollFailure(state, err, now)
 		return state
 	}
+	state = o.recordPollSuccess(state, now)
 
 	// outbox Task 3 — reconcile pending write-ahead-outbox entries against
 	// this tick's freshly polled issues, then overlay each surviving
@@ -269,6 +338,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		state = o.checkTrackerReplies(ctx, state)
 	}
 	state = o.processPendingInputResumes(ctx, state, now)
+	// M4-close BH-M4-2: reviews refused by a drain run before new work.
+	o.resumePendingReviews(ctx, &state, now)
 	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
 
 	slots := AvailableSlots(state)
@@ -279,7 +350,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		"max_concurrent", state.MaxConcurrentAgents,
 	)
 
-	dispatched := 0
+	dispatched, held := 0, 0
 	// critical-path-ordering Task 3 — dependencies.ordering is read-only
 	// config (validated/defaulted at load time in internal/config), so no
 	// cfgMu is needed here. "simple" keeps legacy priority/created_at/
@@ -308,6 +379,10 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			)
 			break
 		}
+		// CORE-053: the tick re-evaluates every backend hold through the
+		// dispatch gate (the target may have changed: a pin, a reroute, a
+		// reset); dispatch records the hold again when it still applies.
+		clearBackendHold(&state, issue.Identifier)
 		if !IsEligible(issue, state, o.cfg) {
 			reason := IneligibleReason(issue, state, o.cfg)
 			slog.Info("orchestrator: issue not eligible, skipping",
@@ -334,13 +409,21 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			}
 			continue
 		}
+		_, wasRunning := state.Running[issue.ID]
 		state = o.dispatch(ctx, state, issue, 0)
-		dispatched++
+		// CORE-173 b: a hold (or any other refusal) is not a dispatch.
+		if _, running := state.Running[issue.ID]; running && !wasRunning {
+			dispatched++
+		} else if _, isHeld := state.BackendLimitedHolds[issue.Identifier]; isHeld {
+			held++
+		}
 	}
+	o.forgetLoggedHolds(state)
 	if dispatched > 0 || len(issues) > 0 {
 		slog.Info("orchestrator: dispatch complete",
 			"fetched", len(issues),
 			"dispatched", dispatched,
+			"held", held,
 			"running", len(state.Running),
 			"slots_remaining", AvailableSlots(state),
 		)
@@ -350,11 +433,15 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// dispatch loop so issues started above count as running rather than as
 	// waiting on capacity. Pure function; the only mutation is this
 	// assignment, on the event-loop goroutine.
-	state.DispatchPressure = observeDispatchPressure(state.DispatchPressure, state, issues, o.cfg)
+	if !state.Draining { // CORE-057: a drain is neither slot- nor dependency-bound
+		state.DispatchPressure = observeDispatchPressure(state.DispatchPressure, state, issues, o.cfg)
+	}
 	// Gap §1.1 + §1.2 — opportunistic janitor for the rate-limit
 	// switch-history + cooldown maps. Cheap: one pass per tick over
 	// typically <100 entries, and short-circuits when the cap is 0.
-	o.PruneRateLimitedMaps(now)
+	if o.pruneRateLimitedMaps(&state, now) > 0 {
+		o.saveAutoSwitchedToDisk(&state)
+	}
 
 	// v0.2.0 audit P0-1 + P0-2 — bound long-lived runtime maps so a daemon
 	// observing 10k+ issues over months does not pay snapshot/SSE bandwidth
@@ -369,8 +456,21 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// and also sweep ledgers for identifiers absent from
 	// the tracker entirely (deleted / hard-trashed / archived issues).
 	// Running workers are not cancelled — they complete naturally.
-	terminalCounts := pruneTerminalRuntimeLedgers(&state, buildTerminalIdentifierSet(&state))
+	terminalIdents := buildTerminalIdentifierSet(&state)
+	terminalCounts := pruneTerminalRuntimeLedgers(&state, terminalIdents)
 	absentCounts := pruneAbsentTrackerIssues(&state, currentActive, prevActive)
+	// CORE-109 — a discard marker whose completion event was lost.
+	discardsExpired := expireDiscardMarkers(&state, now)
+	// CORE-175 — acks whose failures left the RecentFailures ring.
+	pruneFailureAcks(&state)
+	// M6-close CORE-091 c — cost baselines of sessions nothing can resume.
+	pruneSessionCost(&state)
+	untracked := untrackedIdentifierPredicate(terminalIdents, currentActive, prevActive)
+	// CORE-034 — review ledgers for untracked issues, never mid-chain.
+	reviewRemoved := pruneReviewLedgers(&state, untracked, o.reviewMidChainPredicate(&state))
+	// CORE-035 — free the log rings of untracked, idle issues whatever their
+	// last outcome (the worker frees only on success).
+	logBufsEvicted := o.evictIdleLogBuffers(&state, untracked)
 	ledger := LedgerJanitorCounts{
 		InputRequired: terminalCounts.InputRequired + absentCounts.InputRequired,
 		Retry:         terminalCounts.Retry + absentCounts.Retry,
@@ -382,7 +482,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 
 	if statusRemoved > 0 || prevRemoved > 0 || auditRemoved > 0 ||
 		ledger.InputRequired > 0 || ledger.Retry > 0 || ledger.Queue > 0 ||
-		ledger.Paused > 0 || ledger.Profile > 0 || ledger.Backend > 0 {
+		ledger.Paused > 0 || ledger.Profile > 0 || ledger.Backend > 0 || reviewRemoved > 0 || logBufsEvicted > 0 ||
+		discardsExpired > 0 {
 		slog.Debug("orchestrator: janitor pass",
 			"status_history_removed", statusRemoved,
 			"prev_states_removed", prevRemoved,
@@ -393,6 +494,9 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			"paused_removed", ledger.Paused,
 			"profile_removed", ledger.Profile,
 			"backend_removed", ledger.Backend,
+			"review_entries_removed", reviewRemoved,
+			"log_buffers_evicted", logBufsEvicted,
+			"discard_markers_expired", discardsExpired,
 		)
 	}
 	return state
@@ -473,6 +577,14 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 
 		delete(state.RetryAttempts, issueID)
 		state = o.dispatch(ctx, state, refreshed[0], entry.Attempt)
+		// CORE-053: a retry the backend gate held keeps its attempt and its
+		// claim; it is due again when the breaker can admit it.
+		if hold, held := state.BackendLimitedHolds[entry.Identifier]; held {
+			if _, running := state.Running[issueID]; !running {
+				state = ScheduleRetry(state, issueID, entry.Attempt, entry.Identifier,
+					"backend limited: "+describeHold(hold), now, holdRetryDelay(state, hold, now))
+			}
+		}
 	}
 	return state
 }
@@ -491,7 +603,33 @@ func buildInputRequiredComment(entry *InputRequiredEntry, inlineInput bool) stri
 		// human looking for it.
 		footer = "_Reply to this comment to continue._"
 	}
-	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n%s", entry.Context, footer)
+	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n%s", boundInputRequiredContext(entry.Context), footer)
+}
+
+// maxInputRequiredCommentBytes bounds the agent text in an input-required
+// question comment (CORE-123). The explicit result.InputRequired path passes
+// the agent's text through verbatim, and the question is a never-give-up
+// outbox entry at the head of the issue's FIFO: a body the tracker rejects as
+// too large (GitHub caps a comment at 65,536 characters and answers 422)
+// would block the reply and the completion transition behind it. 8 KiB is
+// well under every tracker's limit and still twice the 4,000-byte cap the
+// sentinel/fallback paths already apply (trimInputRequiredContext).
+const maxInputRequiredCommentBytes = 8 * 1024
+
+// boundInputRequiredContext keeps the TAIL of an over-long context — the
+// question is normally the last thing the agent wrote — cut forward to a rune
+// boundary, behind a note pointing at the dashboard, which shows the full
+// text for the session (InputRequiredEntry.Context is not truncated).
+func boundInputRequiredContext(text string) string {
+	if len(text) <= maxInputRequiredCommentBytes {
+		return text
+	}
+	const note = "_… earlier text truncated; the full text is in the Itervox dashboard._\n\n"
+	cut := len(text) - (maxInputRequiredCommentBytes - len(note))
+	for cut < len(text) && !utf8.RuneStart(text[cut]) {
+		cut++
+	}
+	return note + text[cut:]
 }
 
 // postInputRequiredComment delivers one comment of the input-required
@@ -506,24 +644,27 @@ func buildInputRequiredComment(entry *InputRequiredEntry, inlineInput bool) stri
 // With a direct sink (tracker.outbox: false) the call is network I/O, which
 // must never run on the event loop, so it stays a commentWg-tracked goroutine.
 // Ordering between question and reply is not guaranteed on that path.
-func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) {
+//
+// Returns the enqueue error on the outbox path, so the caller can recover
+// (CORE-121); the direct path reports its outcome only in the log and returns
+// nil.
+func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) error {
 	if o.sinkEnqueuesLocally() {
 		if err := o.writeSink().CreateKeyedComment(context.Background(), issueID, identifier, key, body); err != nil {
-			slog.Warn("orchestrator: failed to enqueue input-required comment",
-				"identifier", identifier, "what", what, "error", err)
+			return fmt.Errorf("orchestrator: enqueue input-required %s: %w", what, err)
 		}
-		return
+		return nil
 	}
-	o.commentWg.Add(1)
-	go func() {
-		defer o.commentWg.Done()
+	// CORE-008: one-shot tracker write — recovered, nothing to reconcile.
+	goSafe(&o.commentWg, "input-required-comment", identifier, func() {
 		postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 		defer cancel()
 		if err := o.writeSink().CreateKeyedComment(postCtx, issueID, identifier, key, body); err != nil {
 			slog.Warn("orchestrator: failed to post input-required comment",
 				"identifier", identifier, "what", what, "error", err)
 		}
-	}()
+	}, o.withPanicFailure("input-required-comment", identifier, nil))
+	return nil
 }
 
 // newInputRequiredCommentKey returns a fresh idempotency key, or "" when the
@@ -785,6 +926,7 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 		// starve every other entry — the exact starvation the ordering is
 		// here to prevent.
 		entry.LastReplyCheckAt = time.Now()
+		o.warnIfQuestionStuck(identifier, entry)
 		detailed := prefetched[entry.IssueID]
 		if detailed == nil {
 			// Not in the batch — either the tracker cannot batch, or this id
@@ -862,7 +1004,8 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	resumePrefetched := tracker.PrefetchDetails(ctx, o.tracker, resumeIDs)
 
 	for _, identifier := range identifiers {
-		if AvailableSlots(state) <= 0 {
+		o.syncDrainRequest(&state)      // M4-close D2
+		if AvailableSlots(state) <= 0 { // 0 while draining (CORE-057)
 			break
 		}
 		entry := state.PendingInputResumes[identifier]
@@ -905,6 +1048,15 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		if _, mayFetch := fetchAllowed[identifier]; !mayFetch {
 			continue
 		}
+		// CORE-053: the resumed session belongs to entry.Backend on
+		// entry.WorkerHost (never rerouted: a session id cannot cross
+		// backends). While that breaker is closed to it, keep the reply and
+		// spend no tracker request.
+		resumeKey := BackendHealthKey(entry.Backend, entry.WorkerHost)
+		if blocked, until := backendKeyBlocked(state, resumeKey, identifier, now); blocked {
+			setBackendHold(&state, identifier, BackendHold{Key: resumeKey, Until: until})
+			continue
+		}
 		// Stamp before the fetch so a failing entry still yields its place;
 		// otherwise it would monopolise the budget forever.
 		entry.LastResumeAttemptAt = now
@@ -943,6 +1095,11 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			branchName := entry.BranchName
 			resumeIssue.BranchName = &branchName
 		}
+		if !admitBackendKey(&state, resumeKey, identifier, now) {
+			continue
+		}
+		clearBackendHold(&state, identifier)
+		o.saveBackendHealthToDisk(&state)
 		workerCtx, workerCancel := context.WithCancel(ctx)
 		state.Claimed[entry.IssueID] = struct{}{}
 		state.Running[entry.IssueID] = &RunEntry{
@@ -958,17 +1115,24 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
-		runnerCommand := resolveResumeCommand(inputRequiredEntryFromPending(entry), o.cfg, &o.cfgMu)
+		runnerCommand := o.resumeRunnerCommand(inputRequiredEntryFromPending(entry))
+		o.workersWg.Add(resumeIssue.Identifier)
 		go o.runWorker(workerCtx, resumeIssue, 0, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, false, &ResumeContext{
 			SessionID:    entry.SessionID,
 			UserMessage:  entry.UserMessage,
 			InputContext: entry.Context,
-		}, nil)
+		}, nil, nil)
 	}
 	return state
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.Issue, attempt int) State {
+	o.syncDrainRequest(&state) // M4-close D2
+	if state.Draining {        // CORE-057: no new worker while draining
+		slog.Info("orchestrator: dispatch refused, daemon is draining",
+			"issue_identifier", issue.Identifier, "attempt", attempt)
+		return state
+	}
 	workerCtx, workerCancel := context.WithCancel(ctx)
 
 	// Check if this issue has been queued for forced re-analysis (bypasses open-PR guard).
@@ -995,7 +1159,8 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 
 	// Resolve the issue's profile (clearing it if not found / disabled), then
 	// compute the effective (cmd, runnerCmd, backend) via the shared helper.
-	// The same logic powers reviewer dispatch — see resolveBackendForIssue.
+	// The same resolver powers reviewer and automation dispatch — see
+	// resolveDispatchTarget (CORE-115).
 	profileName := o.issueProfileForDispatch(state, issue.Identifier)
 	var profilePtr *config.AgentProfile
 	if profileName != "" {
@@ -1017,9 +1182,51 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	}
 	issueBackend := o.issueBackendForDispatch(state, issue.Identifier)
 
-	agentCommand, runnerCommand, backend := resolveBackendForIssue(
-		agentCommand, defaultBackend, profilePtr, issueBackend,
-	)
+	// CORE-053/054: the backend circuit breaker gates the resolved target
+	// (CORE-115 resolver inside gateDispatch) before anything is claimed.
+	// A limited target is rerouted through agent.backend_fallback, or the
+	// issue is held with the backend_limited reason. A reviewer retry
+	// (reviewer profile injected) reroutes per run; an implementer reroute
+	// is a sticky, cap-counted switch.
+	now := time.Now()
+	reviewerRun := o.isReviewerInjected(issue.Identifier)
+	req := gateRequest{
+		identifier: issue.Identifier,
+		in: dispatchTargetInput{
+			DefaultCommand: agentCommand,
+			DefaultBackend: defaultBackend,
+			Profile:        profilePtr,
+			IssueBackend:   issueBackend,
+		},
+		profileName:  profileName,
+		host:         workerHost,
+		hosts:        hosts,
+		allowReroute: o.operatorPinnedBackend(issue.Identifier) == "",
+	}
+	if !reviewerRun {
+		req.rerouteAllowed = func() bool { return o.allowRateLimitSwitch(&state, issue.ID, now) }
+	}
+	gate := o.gateDispatch(&state, req, now)
+	if gate.held {
+		workerCancel()
+		o.logDispatchHeld(issue.Identifier, gate.hold)
+		return state
+	}
+	target := gate.target
+	workerHost = gate.host
+	if gate.rerouted {
+		profileName = gate.profileName
+		if !reviewerRun {
+			o.recordFallbackSwitch(&state, issue, gate, now)
+		} else {
+			o.issueProfilesMu.Lock()
+			o.issueProfiles[issue.Identifier] = profileName
+			o.issueProfilesMu.Unlock()
+		}
+	}
+	o.saveBackendHealthToDisk(&state)
+	agentCommand, runnerCommand, backend := target.Command, target.RunnerCommand, target.Backend
+	o.logRefusedBackend(issue.Identifier, "worker", target)
 	if profilePtr != nil {
 		slog.Info("orchestrator: using profile",
 			"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
@@ -1069,13 +1276,37 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	// ID, pass it through so the agent continues the same session via --resume.
 	var resumeCtx *ResumeContext
 	if entry, ok := state.PausedSessions[issue.Identifier]; ok && entry != nil {
-		resumeCtx = &ResumeContext{SessionID: entry.SessionID}
+		// CORE-033: a session id only resumes on the backend that created it.
+		// Compare against the backend MultiRunner will actually select for
+		// runnerCommand; an empty stored backend (legacy disk entry) or any
+		// backend outside {claude, codex} is a mismatch, because MultiRunner
+		// silently falls back to its default runner for those.
+		if resolved := agent.BackendFromCommand(runnerCommand); resumeBackendMatches(entry.Backend, resolved) {
+			resumeCtx = &ResumeContext{SessionID: entry.SessionID}
+		} else if entry.SessionID != "" {
+			slog.Info("orchestrator: paused session belongs to a different backend, starting a fresh session",
+				"identifier", issue.Identifier, "stored_backend", entry.Backend, "resolved_backend", resolved)
+		}
 		// Consume the entry — once dispatched, the session info is no longer
 		// needed (the worker now owns the session via its RunEntry).
 		delete(state.PausedSessions, issue.Identifier)
 	}
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil)
+	o.workersWg.Add(issue.Identifier)
+	switchNotice := o.backendSwitchNotice(&state, issue.Identifier, backend, profileName, nil) // CORE-101
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil, switchNotice)
 	return state
+}
+
+// resumeBackendMatches reports whether a session paused on stored may be
+// resumed by the runner for resolved (CORE-033). Only an exact match on a
+// backend MultiRunner routes explicitly counts.
+func resumeBackendMatches(stored, resolved string) bool {
+	switch stored {
+	case "claude", "codex":
+		return stored == resolved
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
@@ -1102,6 +1333,16 @@ func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) s
 // using the specified profile. The reviewer enters the regular worker queue with
 // Kind="reviewer" and gets full retry/pause/resume support.
 func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *State, issue domain.Issue, profileName string, now time.Time) {
+	o.syncDrainRequest(state) // M4-close D2
+	if state.Draining {       // CORE-057
+		// M4-close BH-M4-2: keep the review, not just a log line. The
+		// marker is persisted and resumePendingReviews dispatches it once
+		// admission reopens (after the restart); the worktree is kept for it.
+		o.recordPendingReview(state, issue, profileName, now)
+		slog.Warn("orchestrator: reviewer not started, daemon is draining; recorded as a pending review for the restart",
+			"issue_identifier", issue.Identifier, "profile", profileName)
+		return
+	}
 	// Resolve the reviewer profile's command and backend.
 	o.cfgMu.RLock()
 	profile, ok := o.cfg.Agent.Profiles[profileName]
@@ -1122,20 +1363,54 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		return
 	}
 
-	o.issueBackendsMu.RLock()
-	issueBackend := o.issueBackends[issue.Identifier]
-	o.issueBackendsMu.RUnlock()
-
-	_, runnerCommand, backend := resolveBackendForIssue(
-		defaultCommand, defaultBackend, &profile, issueBackend,
-	)
+	// Same per-issue backend lookup as worker and automation dispatch
+	// (operator pin, else auto-switch) and the same resolver (CORE-115).
+	issueBackend := o.issueBackendForDispatch(*state, issue.Identifier)
+	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
+	// CORE-053/054: gate the reviewer's target. A limited reviewer backend
+	// is rerouted through the reviewer's own profile_map entry (per run: no
+	// per-issue override, so the implementer's profile is untouched), or the
+	// review is held: the reviewer profile is installed for the next
+	// dispatch and a retry is scheduled for when the breaker can admit it,
+	// exactly like a failed reviewer turn's retry.
+	gate := o.gateDispatch(state, gateRequest{
+		identifier: issue.Identifier,
+		in: dispatchTargetInput{
+			DefaultCommand: defaultCommand,
+			DefaultBackend: defaultBackend,
+			Profile:        &profile,
+			IssueBackend:   issueBackend,
+		},
+		profileName:  profileName,
+		host:         workerHost,
+		hosts:        hosts,
+		allowReroute: o.operatorPinnedBackend(issue.Identifier) == "",
+	}, now)
+	if gate.held {
+		o.issueProfilesMu.Lock()
+		o.issueProfiles[issue.Identifier] = profileName
+		o.reviewerInjectedProfiles[issue.Identifier] = struct{}{}
+		o.issueProfilesMu.Unlock()
+		*state = ScheduleRetry(*state, issue.ID, 0, issue.Identifier,
+			"backend limited: "+describeHold(gate.hold), now, holdRetryDelay(*state, gate.hold, now))
+		o.logger().Info("orchestrator: reviewer held, backend limited",
+			"identifier", issue.Identifier, "profile", profileName, "hold", describeHold(gate.hold))
+		return
+	}
+	o.saveBackendHealthToDisk(state)
+	target := gate.target
+	workerHost = gate.host
+	if gate.rerouted {
+		profileName = gate.profileName
+	}
+	runnerCommand, backend := target.RunnerCommand, target.Backend
+	o.logRefusedBackend(issue.Identifier, "reviewer", target)
 	if issueBackend != "" {
 		slog.Info("orchestrator: using per-issue backend override for reviewer",
 			"identifier", issue.Identifier, "backend", issueBackend)
 	}
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
-	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
 	if o.DryRun {
 		workerCancel()
@@ -1160,6 +1435,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	o.workerCancelsMu.Lock()
 	o.workerCancels[issue.Identifier] = workerCancel
 	o.workerCancelsMu.Unlock()
+	o.clearPendingReview(state, issue.Identifier) // M4-close BH-M4-2: the review is running
 
 	slog.Info("orchestrator: dispatching reviewer",
 		"issue_identifier", issue.Identifier, "profile", profileName, "backend", backend, "worker_host", workerHost)
@@ -1173,7 +1449,8 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	o.reviewerInjectedProfiles[issue.Identifier] = struct{}{}
 	o.issueProfilesMu.Unlock()
 
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, nil)
+	o.workersWg.Add(issue.Identifier)
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, nil, nil)
 }
 
 func (o *Orchestrator) selectWorkerHost(hosts []string, dispatchStrategy string, state State) string {
@@ -1226,6 +1503,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	switch ev.Type {
 	case EventWorkerUpdate:
 		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil {
+			// CORE-091: fold the update into the session totals before the
+			// entry takes the new counts.
+			state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			if ev.RunEntry.CostUSD != nil {
+				c := *ev.RunEntry.CostUSD
+				entry.CostUSD = &c
+			}
 			now := time.Now()
 			entry.LastEventAt = &now
 			if ev.RunEntry.TurnCount > 0 {
@@ -1248,6 +1532,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			if entry.PendingInputResume && (ev.RunEntry.TurnCount > 0 || ev.RunEntry.TotalTokens > 0 || ev.RunEntry.LastMessage != "") {
 				delete(state.PendingInputResumes, entry.Issue.Identifier)
 				entry.PendingInputResume = false
+			}
+			// CORE-053: an advisory api_retry rate_limit/overloaded signal
+			// forwarded mid-turn counts against the run's breaker; repeated
+			// ones open it (the run itself keeps going).
+			if ev.Limit != nil && o.recordBackendThrottle(&state, entry.Backend, entry.WorkerHost, entry.Issue.Identifier, ev.Limit, now) {
+				o.saveBackendHealthToDisk(&state)
+				if o.OnStateChange != nil {
+					o.OnStateChange()
+				}
 			}
 		}
 
@@ -1353,8 +1646,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
 		// Post the user's reply so the conversation is visible in the
 		// tracker. Enqueued after the question (see postInputRequiredComment).
-		o.postInputRequiredComment(entry.IssueID, ev.Identifier,
-			o.newInputRequiredCommentKey(ev.Identifier), tracker.MarkManagedComment(ev.Message), "reply")
+		// A failed reply enqueue only loses the tracker mirror: the resume
+		// is already queued above and the reply's key is never stored.
+		if err := o.postInputRequiredComment(entry.IssueID, ev.Identifier,
+			o.newInputRequiredCommentKey(ev.Identifier), tracker.MarkManagedComment(ev.Message), "reply"); err != nil {
+			slog.Warn("orchestrator: input-required reply not mirrored to the tracker; the agent resumes anyway",
+				"identifier", ev.Identifier, "error", err)
+		}
 		state = o.processPendingInputResumes(ctx, state, time.Now())
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -1376,8 +1674,39 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.OnStateChange()
 		}
 
+	case EventInputQuestionFallback:
+		state = o.handleInputQuestionFallback(state, ev)
+
+	case EventAckFailures: // CORE-175
+		applyFailureAck(&state, ev.Identifier, ev.AckUpTo)
+		if o.OnStateChange != nil {
+			o.OnStateChange()
+		}
+
 	case EventDiscardComplete:
-		delete(state.DiscardingIdentifiers, ev.Identifier)
+		// CORE-109: only the completion of the discard that set the current
+		// marker releases it. A late completion of an older discard (its
+		// marker expired and a new discard started) is ignored; its tracker
+		// write outcome is still recorded below.
+		if marker, ok := state.DiscardingIdentifiers[ev.Identifier]; ok {
+			if marker.Gen == ev.DiscardGen {
+				delete(state.DiscardingIdentifiers, ev.Identifier)
+			} else {
+				slog.Info("orchestrator: stale discard completion ignored",
+					"identifier", ev.Identifier, "completion_gen", ev.DiscardGen, "marker_gen", marker.Gen)
+			}
+		}
+		// CORE-044: a failed tracker move reported by the discard goroutine.
+		state = recordTrackerWriteFailure(state, TrackerErrorOpUpdateState, ev.Error, time.Now())
+		if ev.Error != nil {
+			// CORE-046: the same failure in the RecentFailures ring.
+			appendRecentFailure(&state, FailureRecord{
+				Kind:       FailureKindTrackerWrite,
+				Identifier: ev.Identifier,
+				Source:     TrackerErrorOpUpdateState,
+				Message:    ev.Error.Error(),
+			}, time.Now())
+		}
 		slog.Info("orchestrator: discard complete, issue released", "identifier", ev.Identifier)
 
 	case EventDispatchReviewer:
@@ -1438,6 +1767,18 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventSetDepsOverride:
 		state = o.applyDepsOverrideEvent(state, ev)
 
+	case EventDrain:
+		o.applyDrain(&state)
+
+	case EventFailureRecorded:
+		// CORE-046: an off-loop producer's failure (RecordFailure).
+		if ev.Failure != nil {
+			appendRecentFailure(&state, *ev.Failure, time.Now())
+		}
+
+	case EventClearBackendBreaker:
+		o.applyClearBackendBreaker(&state, ev.Identifier)
+
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
@@ -1448,6 +1789,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// claim and retry already managed by the reconcile function.
 			return state
 		}
+		// CORE-045: one count per processed worker exit, by terminal reason.
+		metrics.WorkerExit(string(ev.RunEntry.TerminalReason))
 
 		// Remove the cancel func from the concurrent-safe map now that the worker
 		// has exited — CancelIssue will no longer find a cancel to invoke. Use
@@ -1462,6 +1805,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		attempt := 0
 		if ev.RunEntry.RetryAttempt != nil {
 			attempt = *ev.RunEntry.RetryAttempt
+		}
+		// CORE-053: a probe that the backend served closes its breaker.
+		if settleBackendProbe(&state, liveEntry, issue.Identifier, ev.RunEntry.TerminalReason) {
+			o.saveBackendHealthToDisk(&state)
 		}
 
 		// Check if this exit was caused by a user kill (CancelIssue → pause)
@@ -1545,6 +1892,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Info("orchestrator: issue terminated by user (claim released)",
 				"issue_id", ev.IssueID, "identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "cancelled")
+			o.abandonReviewerRun(&state, liveEntry, issue.Identifier) // CORE-157
 
 			// Move the issue to backlog so the working-state label is cleared and
 			// the issue is not immediately re-dispatched on the next poll cycle.
@@ -1645,18 +1993,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// successful exit so the next dispatch reverts to the
 			// natural profile. Operator-set overrides (not marked in
 			// AutoSwitchedIdentifiers) are preserved.
-			if _, autoSwitched := state.AutoSwitchedIdentifiers[issue.Identifier]; autoSwitched {
-				delete(state.IssueProfiles, issue.Identifier)
-				delete(state.IssueBackends, issue.Identifier)
-				delete(state.AutoSwitchedIdentifiers, issue.Identifier)
-				delete(state.AutoSwitchedAt, issue.Identifier) // §6.2 keep maps in sync
+			// CORE-054: a backend_fallback switch follows its switch_back
+			// policy instead (at_reset: never on success — that flapped the
+			// next dispatch back onto the still-limited backend).
+			if _, autoSwitched := state.AutoSwitchedIdentifiers[issue.Identifier]; autoSwitched && o.clearAutoSwitchOnSuccess(state, issue.Identifier, now) {
+				clearAutoSwitch(&state, issue.Identifier) // §6.2 keeps the maps in sync
 				// Gap §5.3 — persist the cleared state so a restart
 				// after the successful exit doesn't reload the stale
 				// override.
-				autoSwitchedCopy := maps.Clone(state.AutoSwitchedIdentifiers)
-				profilesCopy := maps.Clone(state.IssueProfiles)
-				backendsCopy := maps.Clone(state.IssueBackends)
-				switchedAtCopy := maps.Clone(state.AutoSwitchedAt)
 				// Local file write — safe to call synchronously from the event
 				// loop, consistent with the other saveXToDisk calls in this
 				// file (savePausedToDisk, savePauseReasonsToDisk,
@@ -1669,7 +2013,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// in Task 3 of input_required_outbox_plan exposed this call
 				// as genuinely untracked; making it synchronous is the fix,
 				// not re-adding an unrelated Add(1).
-				o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy, switchedAtCopy)
+				o.saveAutoSwitchedToDisk(&state)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
 			// Auto-clear workspace if configured.
@@ -1731,6 +2075,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// in the run-history ring buffer. Use ev.RunEntry (not liveEntry, which
 			// is nil because ReconcileStalls already deleted it from state.Running).
 			o.recordHistory(ev.RunEntry, issue, now, "stalled")
+			o.recordWorkerFailure(&state, ev, attempt, now) // CORE-046
+			// CORE-157: a stall normally schedules a retry inline (the retry
+			// re-runs the reviewer, so the marker must stay); only a stall
+			// with no retry pending abandons the reviewer run.
+			if _, retryPending := state.RetryAttempts[ev.IssueID]; !retryPending {
+				o.abandonReviewerRun(&state, liveEntry, issue.Identifier)
+			}
 			// Mark any in-flight handoff file as .partial.md so subsequent
 			// agents can see the stalled worker's partial deliverable without
 			// confusing it for a clean handoff. Filesystem-driven (no need
@@ -1768,8 +2119,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// reply detection can find the question by key no matter when
 			// the outbox delivers it.
 			entry.QuestionCommentKey = o.newInputRequiredCommentKey(issue.Identifier)
-			o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
-				tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg())), "question")
+			questionBody := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))
+			if err := o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
+				questionBody, "question"); err != nil {
+				// CORE-121: the key stays until a keyless direct post is
+				// confirmed (EventInputQuestionFallback).
+				o.postQuestionKeyless(entry.IssueID, issue.Identifier, entry.QuestionCommentKey, questionBody, err)
+			}
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Pass liveEntry so the B1 self-reentry guard can suppress dispatch
 			// when the exiting worker was itself an input_required automation.
@@ -1778,172 +2134,354 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "input_required")
 
+		case TerminalRateLimited:
+			// CORE-051: a quota limit is classified on the first failure. The
+			// rate_limited fallback is evaluated now, without consuming a retry;
+			// with no eligible fallback it falls through to the failed path.
+			state = o.handleFailedExit(ctx, state, ev, liveEntry, now)
 		default: // TerminalFailed (and any other unhandled terminal reasons)
-			// context.Canceled means the worker was stopped by the orchestrator
-			// (stall timeout, reload, shutdown) — not a real failure. Release the
-			// claim so the issue can be dispatched fresh on the next poll cycle.
-			if ev.Error != nil && errors.Is(ev.Error, context.Canceled) {
-				// ORCH-2: a reconcile kill path (e.g. ReconcileStalls) may have
-				// already re-claimed this issue via ScheduleRetry before this
-				// late exit arrived. Only release the claim when no pending
-				// retry owns it — otherwise we'd orphan the retry's claim and
-				// let the next poll cycle dispatch the issue fresh at attempt 0
-				// while the retry later fires and overwrites state.Running.
-				if _, retryPending := state.RetryAttempts[ev.IssueID]; !retryPending {
-					delete(state.Claimed, ev.IssueID)
-					slog.Info("orchestrator: worker context cancelled, claim released for re-dispatch",
-						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
-				} else {
-					slog.Info("orchestrator: worker context cancelled, claim retained for pending retry",
-						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
-				}
-				// Not recorded — the issue will be re-dispatched.
-			} else {
-				// Mark any in-flight handoff file as .partial.md so subsequent
-				// agents (this attempt's retry, the reviewer, or a downstream
-				// pipeline profile) see the failed worker's partial deliverable
-				// distinctly from a clean handoff. No-op if the agent never
-				// wrote a handoff this turn.
-				o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
-				errMsg := ""
-				if ev.Error != nil {
-					errMsg = ev.Error.Error()
-				}
-				nextAttempt := attempt + 1
-				// Read through the cfgMu-guarded getters: G surfaces these fields
-				// to a runtime PUT /api/v1/settings handler that writes under
-				// cfgMu.Lock. Direct reads here would be a data race once the UI
-				// is in use even if no -race test exercises the interleave today.
-				maxRetries := o.MaxRetriesCfg()
-				if maxRetries > 0 && nextAttempt > maxRetries {
-					// Max retries exhausted — recover via rate_limited auto-switch
-					// when possible, otherwise move to failed state or pause.
-					slog.Warn("worker: max retries exhausted",
-						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
-						"attempts", attempt, "max_retries", maxRetries)
-					if o.logBuf != nil {
-						o.logBuf.Add(issue.Identifier, makeBufLine("ERROR",
-							fmt.Sprintf("worker: max retries exhausted (%d/%d)", attempt, maxRetries)))
-					}
-					o.commentMaxRetriesExhausted(issue, attempt, errMsg)
-					delete(state.Claimed, ev.IssueID)
-
-					rateLimitedQueued := 0
-					// Gap §5.1 — use the operator-configurable patterns list
-					// when present; otherwise fall back to defaults.
-					o.cfgMu.RLock()
-					rlPatterns := append([]string(nil), o.cfg.Agent.RateLimitErrorPatterns...)
-					transportPatterns := append([]string(nil), o.cfg.Agent.TransportErrorPatterns...)
-					o.cfgMu.RUnlock()
-					// todolist4 A.4 — classify the exhausted-retry exit as a
-					// transport failure so the dashboard can surface a
-					// distinct paused_transport tile instead of conflating
-					// it with the generic failure path.
-					if IsTransportFailure(errMsg, transportPatterns) {
-						state.TransportFailureCount++
-					}
-					if IsRateLimitFailureWithPatterns(errMsg, rlPatterns) {
-						failedProfile := ""
-						failedBackend := ""
-						inputTokens := 0
-						outputTokens := 0
-						if liveEntry != nil {
-							failedProfile = liveEntry.ProfileName
-							failedBackend = liveEntry.Backend
-							inputTokens = liveEntry.InputTokens
-							outputTokens = liveEntry.OutputTokens
-						}
-						if failedProfile == "" {
-							failedProfile = o.issueProfileForDispatch(state, issue.Identifier)
-						}
-						rateLimitedQueued = o.dispatchMatchingRateLimitedAutomations(
-							ctx, &state, issue, now,
-							failedProfile, failedBackend, errMsg, nextAttempt,
-							inputTokens, outputTokens,
-						)
-					}
-
-					failedState := o.FailedStateCfg()
-					// `run_failed` automations are operator
-					// safety nets and must fire on every retry-exhaustion, even when
-					// a `rate_limited` recovery was queued. The failed-state
-					// transition decision is independent: when a recovery is queued
-					// we defer the tracker move so the recovery worker can finish
-					// the issue normally.
-					o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
-					if rateLimitedQueued > 0 {
-						slog.Info("orchestrator: rate_limited recovery queued, deferring failed-state transition",
-							"issue_id", issue.ID, "issue_identifier", issue.Identifier,
-							"queued", rateLimitedQueued)
-					} else if failedState != "" {
-						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState, issue.State)
-						// New semantics (v0.2.0): clear workspace when the
-						// issue reaches a terminal tracker state. FailedState
-						// is terminal — no retries remain and no rate-limited
-						// recovery is queued — so the workspace will not be
-						// reused. The success path clears in the
-						// TerminalSucceeded branch above.
-						o.cfgMu.RLock()
-						autoClearOnFailure := o.cfg.Workspace.AutoClearWorkspace
-						o.cfgMu.RUnlock()
-						if autoClearOnFailure {
-							bn := ev.RunEntry.BranchName
-							if bn == "" {
-								bn = workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
-							}
-							o.scheduleWorkspaceClear(issue.Identifier, bn)
-						}
-					} else {
-						state.PausedIdentifiers[issue.Identifier] = issue.ID
-						setPauseReason(&state, issue.Identifier, PauseReasonRetriesExhausted)
-						o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
-						o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
-					}
-					o.recordHistory(liveEntry, issue, now, "failed")
-				} else {
-					backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
-					state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
-					// liveEntry may be nil when a reconcile kill path already
-					// removed the entry and the worker's exit event arrived
-					// late (ORCH-1) — never dereference it unguarded.
-					turnCount, inTok, outTok := 0, 0, 0
-					if liveEntry != nil {
-						turnCount, inTok, outTok = liveEntry.TurnCount, liveEntry.InputTokens, liveEntry.OutputTokens
-					}
-					slog.Info("orchestrator: worker failed, retry scheduled",
-						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
-						"attempt", nextAttempt, "backoff_ms", backoff,
-						"turns", turnCount, "input_tokens", inTok, "output_tokens", outTok)
-					o.recordHistory(liveEntry, issue, now, "failed")
-				}
-			}
+			state = o.handleFailedExit(ctx, state, ev, liveEntry, now)
 		}
 	}
 	return state
 }
 
+// handleFailedExit handles a TerminalFailed or TerminalRateLimited worker
+// exit on the event loop: claim release for an orchestrator cancellation,
+// else the rate_limited first-failure fallback (TerminalRateLimited only,
+// CORE-051), then a retry — delayed by the vendor's limit hint when the exit
+// carries one — or, once retries are exhausted, the rate_limited recovery /
+// failed state / pause.
+func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev OrchestratorEvent, liveEntry *RunEntry, now time.Time) State {
+	issue := ev.RunEntry.Issue
+	attempt := 0
+	if ev.RunEntry.RetryAttempt != nil {
+		attempt = *ev.RunEntry.RetryAttempt
+	}
+	// context.Canceled means the worker was stopped by the orchestrator
+	// (stall timeout, reload, shutdown) — not a real failure. Release the
+	// claim so the issue can be dispatched fresh on the next poll cycle.
+	if ev.Error != nil && errors.Is(ev.Error, context.Canceled) {
+		// ORCH-2: a reconcile kill path (e.g. ReconcileStalls) may have
+		// already re-claimed this issue via ScheduleRetry before this
+		// late exit arrived. Only release the claim when no pending
+		// retry owns it — otherwise we'd orphan the retry's claim and
+		// let the next poll cycle dispatch the issue fresh at attempt 0
+		// while the retry later fires and overwrites state.Running.
+		if _, retryPending := state.RetryAttempts[ev.IssueID]; !retryPending {
+			delete(state.Claimed, ev.IssueID)
+			slog.Info("orchestrator: worker context cancelled, claim released for re-dispatch",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+			// CORE-157: nothing will re-run this reviewer; the fresh
+			// re-dispatch must resolve the implementer profile.
+			o.abandonReviewerRun(&state, liveEntry, issue.Identifier)
+		} else {
+			slog.Info("orchestrator: worker context cancelled, claim retained for pending retry",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+		}
+		if o.stoppingAfterCancel {
+			// M4-close D1: a forced stop killed this turn. The next start
+			// re-dispatches it from the tracker, but the run itself must
+			// not vanish: record it, and mark any handoff it wrote as
+			// partial so the next agent does not mistake it for finished
+			// work. Both are persisted by the Run shutdown flush.
+			o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
+			o.recordHistory(liveEntry, issue, now, "cancelled")
+		}
+		// Otherwise not recorded — the issue will be re-dispatched.
+	} else {
+		o.recordWorkerFailure(&state, ev, attempt, now) // CORE-046
+		// Mark any in-flight handoff file as .partial.md so subsequent
+		// agents (this attempt's retry, the reviewer, or a downstream
+		// pipeline profile) see the failed worker's partial deliverable
+		// distinctly from a clean handoff. No-op if the agent never
+		// wrote a handoff this turn.
+		o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
+		errMsg := ""
+		if ev.Error != nil {
+			errMsg = ev.Error.Error()
+		}
+		nextAttempt := attempt + 1
+		// CORE-051: a quota limit is classified on the FIRST failure. The
+		// rate_limited fallback is evaluated now — through the same
+		// dispatchMatchingRateLimitedAutomations, so the per-issue switch
+		// cap, cooldown, cap-comment dedupe and the self-switch guard
+		// (CORE-032) all apply — and a dispatched fallback consumes no
+		// retry. Reviewers keep their normal path (CORE-031). When nothing
+		// is dispatched the exit falls through to the retry path below.
+		limitSwitchTried := false
+		if ev.RunEntry.TerminalReason == TerminalRateLimited {
+			limitSwitchTried = true
+			// CORE-053: open the breaker for the run's (backend, host) so no
+			// other issue rediscovers the limit.
+			failedProfile, failedBackend := "", ""
+			if liveEntry != nil {
+				failedProfile, failedBackend = liveEntry.ProfileName, liveEntry.Backend
+				if o.recordBackendLimit(&state, liveEntry.Backend, liveEntry.WorkerHost, issue.Identifier, ev.Limit, now) {
+					o.saveBackendHealthToDisk(&state)
+				}
+			}
+			if liveEntry != nil && o.backendFallbackCovers(issue.Identifier, failedProfile, failedBackend) {
+				// CORE-054 precedence: a profile agent.backend_fallback maps
+				// is handled by the fallback alone — the rate_limited rules
+				// are not evaluated for this exit. Re-dispatch at the same
+				// attempt (no retry consumed): the gate reroutes it, or holds
+				// it with backend_limited when every target is limited.
+				delete(state.Claimed, ev.IssueID)
+				state = o.dispatch(ctx, state, issue, attempt)
+				o.recordHistory(liveEntry, issue, now, "failed")
+				if _, running := state.Running[ev.IssueID]; running {
+					o.logger().Warn("orchestrator: vendor limit, backend_fallback rerouted without consuming a retry",
+						"issue_id", issue.ID, "issue_identifier", issue.Identifier, "attempt", attempt,
+						"backend", state.Running[ev.IssueID].Backend, "profile", state.Running[ev.IssueID].ProfileName)
+				} else {
+					o.logger().Warn("orchestrator: vendor limit, every backend limited; issue held",
+						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+						"hold", describeHold(state.BackendLimitedHolds[issue.Identifier]))
+				}
+				return state
+			}
+			if o.exitedRunIsReviewer(liveEntry, issue.Identifier) {
+				slog.Info("orchestrator: rate-limited reviewer run, skipping rate_limited switch",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+			} else {
+				delete(state.Claimed, ev.IssueID)
+				if queued := o.dispatchRateLimitedFallback(ctx, &state, issue, liveEntry, now, errMsg, nextAttempt, nil); queued > 0 {
+					o.logger().Warn("orchestrator: vendor limit on first failure, rate_limited fallback dispatched without consuming a retry",
+						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+						"attempt", attempt, "queued", queued, "limit_type", limitTypeOf(ev.Limit))
+					o.recordHistory(liveEntry, issue, now, "failed")
+					return state
+				}
+				slog.Info("orchestrator: vendor limit on first failure, no eligible rate_limited fallback; retrying",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+			}
+		}
+		// Read through the cfgMu-guarded getters: G surfaces these fields
+		// to a runtime PUT /api/v1/settings handler that writes under
+		// cfgMu.Lock. Direct reads here would be a data race once the UI
+		// is in use even if no -race test exercises the interleave today.
+		maxRetries := o.MaxRetriesCfg()
+		if maxRetries > 0 && nextAttempt > maxRetries {
+			// Max retries exhausted — recover via rate_limited auto-switch
+			// when possible, otherwise move to failed state or pause.
+			// Error (CORE-044): the issue is now parked (failed state,
+			// pause, or a rate_limited recovery) and a human should know.
+			o.logger().Error("worker: max retries exhausted",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+				"attempts", attempt, "max_retries", maxRetries)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLine("ERROR",
+					fmt.Sprintf("worker: max retries exhausted (%d/%d)", attempt, maxRetries)))
+			}
+			// CORE-103: posted after the rate_limited evaluation below, so an
+			// accepted switch can carry it in its own comment instead.
+			exhausted := &retriesExhaustedNote{body: maxRetriesExhaustedBody(attempt, errMsg)}
+			delete(state.Claimed, ev.IssueID)
+
+			rateLimitedQueued := 0
+			// Gap §5.1 / CORE-100 — rate-limit patterns and their mode are
+			// read together by isRateLimitFailureCfg below.
+			o.cfgMu.RLock()
+			transportPatterns := append([]string(nil), o.cfg.Agent.TransportErrorPatterns...)
+			o.cfgMu.RUnlock()
+			// todolist4 A.4 — classify the exhausted-retry exit as a
+			// transport failure so the dashboard can surface a
+			// distinct paused_transport tile instead of conflating
+			// it with the generic failure path.
+			if IsTransportFailure(errMsg, transportPatterns) {
+				state.TransportFailureCount++
+			}
+			// A structured quota limit counts too (CORE-051); but when this
+			// very exit already evaluated the fallback above, it is not
+			// evaluated twice.
+			rateLimited := (o.isRateLimitFailureCfg(errMsg) || ev.Limit.Terminal()) && !limitSwitchTried
+			if rateLimited && o.exitedRunIsReviewer(liveEntry, issue.Identifier) {
+				// CORE-031: rate_limited rules switch the issue to an
+				// IMPLEMENTER profile and dispatch Kind="worker"; doing
+				// that for a reviewer would replace the review with an
+				// implementation run. Reviewers keep their normal
+				// terminal handling below (claim released, history
+				// "failed", failed_state/pause) with no profile rewrite,
+				// until reviewers get their own switch target (CORE-054).
+				slog.Info("orchestrator: rate-limited reviewer run, skipping rate_limited switch",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+				rateLimited = false
+			}
+			if rateLimited {
+				rateLimitedQueued = o.dispatchRateLimitedFallback(ctx, &state, issue, liveEntry, now, errMsg, nextAttempt, exhausted)
+			}
+			if !exhausted.folded {
+				o.commentMaxRetriesExhausted(issue, exhausted.body)
+			}
+
+			failedState := o.FailedStateCfg()
+			// `run_failed` automations are operator
+			// safety nets and must fire on every retry-exhaustion, even when
+			// a `rate_limited` recovery was queued. The failed-state
+			// transition decision is independent: when a recovery is queued
+			// we defer the tracker move so the recovery worker can finish
+			// the issue normally.
+			o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
+			if rateLimitedQueued > 0 {
+				slog.Info("orchestrator: rate_limited recovery queued, deferring failed-state transition",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+					"queued", rateLimitedQueued)
+			} else if failedState != "" {
+				state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState, issue.State)
+				// New semantics (v0.2.0): clear workspace when the
+				// issue reaches a terminal tracker state. FailedState
+				// is terminal — no retries remain and no rate-limited
+				// recovery is queued — so the workspace will not be
+				// reused. The success path clears in the
+				// TerminalSucceeded branch above.
+				o.cfgMu.RLock()
+				autoClearOnFailure := o.cfg.Workspace.AutoClearWorkspace
+				o.cfgMu.RUnlock()
+				if autoClearOnFailure {
+					bn := ev.RunEntry.BranchName
+					if bn == "" {
+						bn = workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
+					}
+					o.scheduleWorkspaceClear(issue.Identifier, bn)
+				}
+			} else {
+				state.PausedIdentifiers[issue.Identifier] = issue.ID
+				setPauseReason(&state, issue.Identifier, PauseReasonRetriesExhausted)
+				o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
+				o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
+			}
+			// CORE-157: retries are exhausted, so a reviewer run is
+			// abandoned. Runs after the exitedRunIsReviewer read above,
+			// which needs the marker.
+			o.abandonReviewerRun(&state, liveEntry, issue.Identifier)
+			o.recordHistory(liveEntry, issue, now, "failed")
+		} else {
+			backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
+			// CORE-051: honour the vendor's delay (a quota reset time or an
+			// api_retry delay) when it is longer than the backoff, capped
+			// so a misparsed reset cannot park the issue for days. Never
+			// shorter than the backoff, so a limit never tight-loops —
+			// including with max_retries: 0.
+			backoff = max(backoff, vendorRetryDelayMs(ev.Limit, now))
+			state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
+			// liveEntry may be nil when a reconcile kill path already
+			// removed the entry and the worker's exit event arrived
+			// late (ORCH-1) — never dereference it unguarded.
+			turnCount, inTok, outTok := 0, 0, 0
+			if liveEntry != nil {
+				turnCount, inTok, outTok = liveEntry.TurnCount, liveEntry.InputTokens, liveEntry.OutputTokens
+			}
+			// Warn, not Info (CORE-044): a failed agent run is a real
+			// failure even when a retry is scheduled.
+			o.logger().Warn("orchestrator: worker failed, retry scheduled",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
+				"attempt", nextAttempt, "backoff_ms", backoff,
+				"turns", turnCount, "input_tokens", inTok, "output_tokens", outTok)
+			o.recordHistory(liveEntry, issue, now, "failed")
+		}
+	}
+	return state
+}
+
+// abandonReviewerRun is the non-success counterpart of the TerminalSucceeded
+// reviewer cleanup (CORE-157). Call it only on an exit after which nothing
+// will re-run this reviewer: retries exhausted, cancelled or stalled with no
+// retry pending, or hard-terminated by the user. It clears the reviewer
+// profile override and its reviewerInjectedProfiles marker (under
+// issueProfilesMu) so the next dispatch of the issue resolves the implementer
+// profile, and closes the multi-reviewer chain, which can no longer advance.
+//
+// Deliberately NOT called for: a failure that schedules a retry (the retry is
+// the reviewer — exitedRunIsReviewer relies on the marker surviving it),
+// TerminalCanceledByReconciliation (reconcile emits it BEFORE a fan-out
+// reviewer's own success exit, which still needs the marker — #58 defect 1),
+// TerminalInputRequired and a user pause (the reviewer session is suspended
+// and resumes under the same profile), and the hand-off between reviewers of a
+// chain (advanceReviewChainForIssue re-installs the marker for the next one).
+// No-op when the exited run was not a reviewer.
+func (o *Orchestrator) abandonReviewerRun(state *State, liveEntry *RunEntry, identifier string) {
+	if !o.exitedRunIsReviewer(liveEntry, identifier) {
+		return
+	}
+	o.issueProfilesMu.Lock()
+	if _, injected := o.reviewerInjectedProfiles[identifier]; injected {
+		delete(o.issueProfiles, identifier)
+		delete(o.reviewerInjectedProfiles, identifier)
+	}
+	o.issueProfilesMu.Unlock()
+	delete(state.ReviewChainIndex, identifier)
+	slog.Info("orchestrator: reviewer run abandoned, reviewer profile override cleared",
+		"issue_identifier", identifier)
+}
+
+// exitedRunIsReviewer reports whether the run that just exited was a
+// reviewer. liveEntry.Kind alone is not enough: a reviewer's retries go
+// through fireRetries → dispatch(), whose RunEntry carries no Kind, so the
+// durable signal is reviewerInjectedProfiles — written at reviewer dispatch,
+// cleared only when the reviewer succeeds, untouched by reconciliation (the
+// same source the TerminalSucceeded path uses, #58). Read under
+// issueProfilesMu, which guards that map.
+func (o *Orchestrator) exitedRunIsReviewer(liveEntry *RunEntry, identifier string) bool {
+	if liveEntry != nil && liveEntry.Kind == "reviewer" {
+		return true
+	}
+	o.issueProfilesMu.RLock()
+	_, injected := o.reviewerInjectedProfiles[identifier]
+	o.issueProfilesMu.RUnlock()
+	return injected
+}
+
 func shouldDrainAutomationQueueAfterEvent(eventType EventType) bool {
 	switch eventType {
-	case EventWorkerExited, EventResumeIssue, EventProvideInput, EventDismissInput, EventDiscardComplete:
+	case EventWorkerExited, EventResumeIssue, EventProvideInput, EventDismissInput, EventDiscardComplete,
+		EventClearBackendBreaker: // automations held behind the cleared breaker may start
 		return true
 	default:
 		return false
 	}
 }
 
-// commentMaxRetriesExhausted posts a comment on the issue explaining that
-// the maximum number of retries has been exhausted.
-// Uses context.Background() intentionally: this notification must be delivered
-// even during graceful shutdown so the issue owner knows why retries stopped.
-func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts int, lastErr string) {
-	comment := fmt.Sprintf(
+// maxRetriesExhaustedBody is the max-retries-exhausted comment text.
+// CORE-167: the comment is public and lastErr is agent failure text, so it
+// is redacted here — once, for both the standalone comment and the copy
+// folded into a rate_limited switch comment (CORE-103).
+func maxRetriesExhaustedBody(attempts int, lastErr string) string {
+	return fmt.Sprintf(
 		"Itervox: maximum retries exhausted (%d attempts). Last error:\n\n%s\n\nRetries have stopped for this run. Itervox may move the issue to failed state, pause it, or let a matching automation recover it.",
-		attempts, lastErr)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(comment)); err != nil {
-		slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
+		attempts, logging.RedactString(lastErr))
+}
+
+// commentMaxRetriesExhausted posts the max-retries-exhausted comment
+// (CORE-103), in the postInputRequiredComment shape:
+//
+//   - outbox sink: a local, in-process Enqueue, done synchronously HERE on
+//     the event loop — the entry is durable (and ordered after anything the
+//     loop enqueued before it) by the time the EventWorkerExited handler
+//     returns;
+//   - direct sink (tracker.outbox: false): network I/O, which must never run
+//     on the event loop, so it runs in a commentWg-tracked goSafe goroutine
+//     bounded by 15 s.
+//
+// Both use a context not derived from the loop's ctx on purpose: the
+// notification must be delivered even during graceful shutdown so the issue
+// owner knows why retries stopped.
+func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, body string) {
+	comment := tracker.MarkManagedComment(body)
+	if o.sinkEnqueuesLocally() {
+		if err := o.writeSink().CreateComment(context.Background(), issue.ID, issue.Identifier, comment); err != nil {
+			slog.Warn("worker: failed to enqueue max-retries comment", "issue_id", issue.ID, "error", err)
+		}
+		return
 	}
+	// CORE-008: one-shot tracker write — recovered, nothing to reconcile.
+	goSafe(&o.commentWg, "max-retries-comment", issue.Identifier, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, comment); err != nil {
+			slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
+		}
+	}, o.withPanicFailure("max-retries-comment", issue.Identifier, nil))
 }
 
 // asyncDiscardAndTransitionTo is like asyncDiscardAndTransition but transitions
@@ -1966,10 +2504,10 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 	if issueID == "" || targetState == "" {
 		return state
 	}
-	state.DiscardingIdentifiers[identifier] = struct{}{}
-	o.discardWg.Add(1)
-	go func() {
-		defer o.discardWg.Done()
+	gen := markDiscarding(&state, identifier, time.Now())
+	// CORE-008: a panic in the tracker write must still publish
+	// EventDiscardComplete, or identifier stays in DiscardingIdentifiers.
+	goSafe(&o.discardWg, "discard-transition-to", identifier, func() {
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		// fromState is the tracker state observed when this transition was
 		// decided. It is what lets reconciliation tell a human's later move
@@ -1985,7 +2523,10 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, fromState)
 		updateCancel()
 		if err != nil {
-			slog.Warn("orchestrator: failed to transition issue to failed state",
+			// Error, not Warn (CORE-044): retries are exhausted and the
+			// move that would have parked the issue did not land, so the
+			// issue is stranded until an operator acts.
+			slog.Error("orchestrator: failed to transition issue to failed state",
 				"identifier", identifier, "target_state", targetState, "error", err)
 		} else {
 			slog.Info("orchestrator: issue transitioned to failed state",
@@ -1998,13 +2539,18 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 		}
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer sendCancel()
+		// CORE-044: the write's error rides back on the completion event —
+		// this goroutine must never touch State, and the completion event is
+		// delivered with a bounded wait, so a failure cannot be dropped the
+		// way a separate non-blocking event could.
 		select {
-		case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
+		case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier, Error: err, DiscardGen: gen}:
 		case <-sendCtx.Done():
+			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
 				"identifier", identifier)
 		}
-	}()
+	}, o.withPanicFailure("discard-transition-to", identifier, o.discardCompleteOnPanic(identifier, gen)))
 	return state
 }
 
@@ -2036,12 +2582,12 @@ func (o *Orchestrator) asyncDiscardAndTransition(state State, issueID, identifie
 		return state
 	}
 
-	state.DiscardingIdentifiers[identifier] = struct{}{}
-	o.discardWg.Add(1)
-	go func() {
-		defer o.discardWg.Done()
+	gen := markDiscarding(&state, identifier, time.Now())
+	// CORE-008: see asyncDiscardAndTransitionTo.
+	goSafe(&o.discardWg, "discard-transition", identifier, func() {
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
+		err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState)
+		if err != nil {
 			slog.Warn("orchestrator: failed to transition discarded issue",
 				"identifier", identifier, "target_state", targetState, "error", err)
 		} else {
@@ -2056,13 +2602,18 @@ func (o *Orchestrator) asyncDiscardAndTransition(state State, issueID, identifie
 		updateCancel()
 		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer sendCancel()
+		// CORE-044: the write's error rides back on the completion event —
+		// this goroutine must never touch State, and the completion event is
+		// delivered with a bounded wait, so a failure cannot be dropped the
+		// way a separate non-blocking event could.
 		select {
-		case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
+		case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier, Error: err, DiscardGen: gen}:
 		case <-sendCtx.Done():
+			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
 				"identifier", identifier)
 		}
-	}()
+	}, o.withPanicFailure("discard-transition", identifier, o.discardCompleteOnPanic(identifier, gen)))
 	return state
 }
 
@@ -2218,9 +2769,9 @@ func (o *Orchestrator) scheduleWorkspaceClear(identifier, branchName string) {
 	wm := o.workspace
 	id := identifier
 	bn := branchName
-	o.autoClearWg.Add(1)
-	go func() {
-		defer o.autoClearWg.Done()
+	// CORE-008: one-shot workspace removal — recovered, nothing to reconcile
+	// (no state tracks an in-flight clear).
+	goSafe(&o.autoClearWg, "workspace-auto-clear", id, func() {
 		rmCtx, rmCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
 		defer rmCancel()
 		if err := wm.RemoveWorkspace(rmCtx, id, bn); err != nil {
@@ -2230,53 +2781,50 @@ func (o *Orchestrator) scheduleWorkspaceClear(identifier, branchName string) {
 			slog.Info("orchestrator: workspace auto-cleared",
 				"identifier", id)
 		}
-	}()
+	}, o.withPanicFailure("workspace-auto-clear", id, nil))
 }
 
 // buildSubAgentContext generates a "## Available Sub-Agents" section that is
 // appended to the rendered prompt when agent teams mode is active.
 // activeProfile is excluded from the list so the agent doesn't try to spawn itself.
 // Returns an empty string when there are no other profiles to list.
-// resolveResumeCommand builds the runner command for a resumed input-required
-// worker. It resolves an empty entry.Command by checking the profile first,
-// then falling back to cfg.Agent.Command. The backend hint is applied so that
-// MultiRunner routes to the correct runner (CodexRunner vs ClaudeRunner).
-//
-// Without this, an entry persisted with an empty Command and Backend="codex"
-// would fall back to cfg.Agent.Command (the claude binary) and the CodexRunner
-// would receive the wrong binary on resume.
-func resolveResumeCommand(entry *InputRequiredEntry, cfg *config.Config, cfgMu *sync.RWMutex) string {
-	cmd := entry.Command
-	if cmd == "" {
-		// Resolution order:
-		// 1. Profile's explicit command (most specific)
-		// 2. Backend name as the binary (e.g. "codex" → the codex binary)
-		// 3. cfg.Agent.Command (global default, always claude)
-		cfgMu.RLock()
-		if entry.ProfileName != "" {
-			if profile, ok := cfg.Agent.Profiles[entry.ProfileName]; ok && profile.Command != "" {
-				cmd = profile.Command
-			}
+// resumeRunnerCommand builds the runner command for a resumed input-required
+// worker through the shared resolver (CORE-115): it snapshots the profile
+// command and agent.command under cfgMu, then resolveResumeTarget decides
+// (the stored backend is authoritative because the resumed session belongs
+// to it). The backend hint makes MultiRunner route to the right runner.
+func (o *Orchestrator) resumeRunnerCommand(entry *InputRequiredEntry) string {
+	o.cfgMu.RLock()
+	profileCommand := ""
+	if entry.ProfileName != "" {
+		if profile, ok := o.cfg.Agent.Profiles[entry.ProfileName]; ok {
+			profileCommand = profile.Command
 		}
-		if cmd == "" && entry.Backend != "" && entry.Backend != "claude" {
-			// The backend name IS the binary name (codex → "codex").
-			// Without this, a backend-only profile would fall through to
-			// cfg.Agent.Command (claude) and CodexRunner would receive
-			// the wrong binary.
-			cmd = entry.Backend
-		}
-		if cmd == "" {
-			cmd = cfg.Agent.Command
-		}
-		cfgMu.RUnlock()
+	}
+	defaultCommand := o.cfg.Agent.Command
+	o.cfgMu.RUnlock()
+	target := resolveResumeTarget(entry.Command, entry.Backend, profileCommand, defaultCommand)
+	if entry.Command == "" {
 		slog.Info("orchestrator: resume entry had empty command, resolved from config",
-			"identifier", entry.Identifier, "resolved_command", cmd,
+			"identifier", entry.Identifier, "resolved_command", target.Command,
 			"backend", entry.Backend, "profile", entry.ProfileName)
 	}
-	if entry.Backend != "" {
-		cmd = agent.CommandWithBackendHint(cmd, entry.Backend)
+	o.logRefusedBackend(entry.Identifier, "resume", target)
+	return target.RunnerCommand
+}
+
+// logRefusedBackend surfaces a refused backend request (CORE-115) at Warn,
+// in the daemon log and the issue's log buffer.
+func (o *Orchestrator) logRefusedBackend(identifier, path string, target dispatchTarget) {
+	if target.Reason == "" {
+		return
 	}
-	return cmd
+	o.logger().Warn("orchestrator: backend request refused, command/backend mismatch",
+		"identifier", identifier, "dispatch", path, "reason", target.Reason,
+		"backend", target.Backend)
+	if o.logBuf != nil {
+		o.logBuf.Add(identifier, makeBufLine("WARN", "orchestrator: "+target.Reason))
+	}
 }
 
 func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile string, backend string) string {
@@ -2345,6 +2893,8 @@ func StartupTerminalCleanup(ctx context.Context, tr tracker.Tracker, terminalSta
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// CORE-008: best-effort startup sweep; done still closes on a panic.
+		defer RecoverGoroutine("startup-terminal-cleanup", "", nil)
 		cleanupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		issues, err := tr.FetchIssuesByStates(cleanupCtx, terminalStates)

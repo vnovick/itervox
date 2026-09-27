@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -101,7 +102,7 @@ type Orchestrator struct {
 	// fails the build if a new `o.cfg.X = ...` assignment is added without
 	// being added to the allowlist. Browse it for the full enumeration.
 	// Quick reference (kept loosely in sync; trust the audit test):
-	// cfg.Agent.{MaxConcurrentAgents, Profiles, MaxRetries,
+	// cfg.Agent.{AvailableModels, MaxConcurrentAgents, Profiles, MaxRetries,
 	// MaxSwitchesPerIssuePerWindow, SwitchWindowHours, SwitchRevertHours,
 	// RateLimitErrorPatterns, SSHHosts, SSHHostDescriptions, DispatchStrategy,
 	// ReviewerProfile, AutoReview, InlineInput};
@@ -132,6 +133,10 @@ type Orchestrator struct {
 	// original (rate-limited) profile, looping back into the same failure.
 	autoSwitchedMu   sync.RWMutex
 	autoSwitchedFile string
+	// backendHealthFile is where State.BackendHealth is persisted
+	// (CORE-053), next to autoSwitchedFile. Guarded by autoSwitchedMu; set
+	// before Run.
+	backendHealthFile string
 
 	// inputRequiredMu guards inputRequiredFile.
 	inputRequiredMu   sync.RWMutex
@@ -147,10 +152,58 @@ type Orchestrator struct {
 	// unified-dependency-graph Task 6.
 	depsOverridesMu   sync.RWMutex
 	depsOverridesFile string // optional path for persisting DepsOverrides across restarts
+	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
+	// Set before Run; read-only afterwards.
+	pendingReviewsFile string
 	// daemonInstanceID stamps the queue persistence envelope so a reader can
 	// distinguish state written by this daemon from state inherited from
 	// another (todolist4 A.2). Set once at construction; reads are lock-free.
 	daemonInstanceID string
+
+	// persistWriteFile is a test seam for writeLedgerFile (CORE-037): nil in
+	// production, where every ledger write goes through atomicfs.WriteFile.
+	// Set only before Run (tests), never mutated afterwards.
+	persistWriteFile func(path string, data []byte, perm fs.FileMode) error
+	// persistRetryInterval overrides defaultPersistRetryInterval (tests).
+	persistRetryInterval time.Duration
+
+	// CORE-038: one serialized, dirty-checked writer per ledger, created
+	// lazily by ledger(). See persist_ledger.go.
+	persistOnce        sync.Once
+	ledgers            [numLedgers]*ledgerWriter
+	persistWriteErrors atomic.Int64
+
+	// CORE-046: RecordFailure sends dropped because the event channel was
+	// full, and the ring a previous run() generation left (SeedRecentFailures,
+	// applied once at the top of Run).
+	failureEventsDropped atomic.Int64
+	seedFailures         []FailureRecord
+	seedFailureAcks      map[string]time.Time // M6-close V3 (CORE-175 acks across reload)
+
+	// CORE-043: readiness signals, written only by the event loop and read
+	// lock-free by the /ready probe (see readiness.go).
+	loopIdleNano    atomic.Int64
+	tickStartedNano atomic.Int64
+	lastPollOK      atomic.Bool
+	pollRateLimited atomic.Bool
+	pollShedding    atomic.Bool
+	// draining mirrors State.Draining for off-loop readers (CORE-057).
+	// Event loop only writes it (applyDrain).
+	draining atomic.Bool
+	// drainRequested is set by RequestDrain BEFORE it sends EventDrain
+	// (M4-close D2). The loop consults it at every admission point via
+	// syncDrainRequest, so a drain requested while EventDrain still waits in
+	// the queue (e.g. before the first tick) cannot lose the race against a
+	// tick that would admit work. Only the loop turns it into State.Draining.
+	drainRequested atomic.Bool
+	// stoppingAfterCancel is true while Run collects worker exits after its
+	// ctx was cancelled (M4-close D1, collectExitsAfterCancel). Event loop
+	// goroutine only; plain bool.
+	stoppingAfterCancel bool
+	// drained is closed by the event loop once a drain has no running
+	// worker left (observeDrained).
+	drained           drainSignal
+	pollFailuresCount atomic.Int32
 
 	// workerCancelsMu guards workerCancels, which is written by dispatch (event
 	// loop goroutine) and read by cancelRunningWorker (any goroutine).
@@ -158,6 +211,13 @@ type Orchestrator struct {
 	// omit WorkerCancel to avoid sharing cancel funcs across goroutines unsafely.
 	workerCancelsMu sync.Mutex
 	workerCancels   map[string]context.CancelFunc // identifier → cancel func
+
+	// loggedHolds is log-dedupe bookkeeping for the "dispatch held" line
+	// (CORE-173 b): the hold last logged at Info per identifier. Read and
+	// written ONLY on the event-loop goroutine (dispatch / onTick); it is not
+	// State because it changes no decision and is never persisted or
+	// snapshotted.
+	loggedHolds map[string]BackendHold
 
 	// userCancelledMu guards userCancelledIDs, which is written by CancelIssue
 	// (any goroutine) and read by handleEvent (event loop goroutine).
@@ -232,24 +292,10 @@ type Orchestrator struct {
 	// dependency audit observes a blocked issue becoming unblocked.
 	blockersResolvedAutomations []BlockersResolvedAutomation
 
-	// switchHistoryMu guards switchHistory which records every successful
-	// rate_limited switch so the per-issue cap (cfg.Agent.MaxSwitchesPerIssuePerWindow
-	// over cfg.Agent.SwitchWindowHours) can reject further switches once
-	// the cap is reached.
-	switchHistoryMu sync.Mutex
-	switchHistory   map[string][]time.Time // issueID → fire timestamps
-
-	// rateLimitCooldownMu guards rateLimitCooldown which records the time
-	// until which a (issueID, profile) tuple is muted from re-firing the
-	// rate_limited rule.
-	rateLimitCooldownMu sync.Mutex
-	rateLimitCooldown   map[string]time.Time // key="<issueID>|<profile>" → until
-
-	// rateLimitCapCommentMu guards rateLimitCapCommentUntil, which deduplicates
-	// managed tracker comments when a per-issue rate_limited switch cap blocks
-	// repeated recovery attempts within the same rolling window.
-	rateLimitCapCommentMu    sync.Mutex
-	rateLimitCapCommentUntil map[string]time.Time // issueID → next time a cap comment may be posted
+	// The per-issue rate_limited switch bookkeeping (switch history,
+	// cooldowns, cap-comment dedupe) used to live here behind three mutexes.
+	// It is event-loop State now: State.SwitchHistory, RateLimitCooldowns,
+	// RateLimitCapCommentUntil (CORE-052).
 
 	// agentLogDir, when non-empty, is passed to RunTurn as CLAUDE_CODE_LOG_DIR
 	// so Claude Code writes full session logs (including sub-agents) to disk.
@@ -308,9 +354,22 @@ type Orchestrator struct {
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup
 
+	// workersWg joins every runWorker goroutine before Run returns, bounded
+	// by workerJoinGrace (CORE-026, worker_join.go). Added on the event loop
+	// at each `go o.runWorker` site; Done is runWorker's outermost defer.
+	workersWg       workerGroup
+	workerJoinGrace time.Duration
+
 	// runCtx is the context passed to Run. Stored atomically so DispatchReviewer
 	// can read it safely from any goroutine without a mutex.
 	runCtx atomic.Pointer[context.Context]
+
+	// loopExited is closed by Run once its event loop has exited AND the
+	// shutdown ledger flush has landed: from then on no event is processed
+	// and no storeSnap can submit a newer ledger version, so a goroutine
+	// that must correct a ledger synchronously at shutdown (BH5) can do so
+	// without being overwritten. Nil until Run starts.
+	loopExited atomic.Pointer[chan struct{}]
 
 	// started is set to true at the beginning of Run. It guards SetHistoryFile
 	// and SetHistoryKey: calling either after Run starts is a programming error
@@ -662,14 +721,22 @@ func (o *Orchestrator) SetAutoClearWorkspaceCfg(enabled bool) error {
 // ClearHistory wipes the in-memory completed-run ring buffer and deletes the
 // on-disk history file. Safe to call from any goroutine.
 func (o *Orchestrator) ClearHistory() {
+	// CORE-151: the removal goes through the history ledger, submitted under
+	// historyMu like addCompletedRun's writes, so it is ordered after every
+	// history version accepted before it — including one already mid-write —
+	// and cannot be overwritten by it. Outside Run the removal happens before
+	// this returns; while Run is live the ledger worker applies it
+	// immediately after any in-flight write, and Run's shutdown flush
+	// guarantees it before exit.
 	o.historyMu.Lock()
 	o.completedRuns = nil
 	path := o.historyFile
+	if path != "" {
+		o.ledger(ledgerHistory).submitRemove(path)
+	}
 	o.historyMu.Unlock()
 	if path != "" {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			slog.Warn("orchestrator: failed to remove history file", "path", path, "error", err)
-		}
+		o.ledger(ledgerHistory).settle()
 	}
 }
 
@@ -715,10 +782,34 @@ func (o *Orchestrator) InlineInputCfg() bool {
 	return o.cfg.Agent.InlineInput
 }
 
-// AvailableModelsCfg returns the available models from the config.
-// Read-only after startup — no lock needed.
+// AvailableModelsCfg returns a copy of agent.available_models under cfgMu.
+// The dashboard model refresh replaces it at runtime (CORE-160,
+// SetAvailableModelsCfg).
 func (o *Orchestrator) AvailableModelsCfg() map[string][]config.ModelOption {
-	return o.cfg.Agent.AvailableModels
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return cloneModelOptions(o.cfg.Agent.AvailableModels)
+}
+
+// SetAvailableModelsCfg replaces agent.available_models in memory under
+// cfgMu (CORE-160). The caller persists WORKFLOW.md first as a self-write, so
+// the refresh needs no reload.
+func (o *Orchestrator) SetAvailableModelsCfg(models map[string][]config.ModelOption) {
+	cp := cloneModelOptions(models)
+	o.cfgMu.Lock()
+	o.cfg.Agent.AvailableModels = cp
+	o.cfgMu.Unlock()
+}
+
+func cloneModelOptions(in map[string][]config.ModelOption) map[string][]config.ModelOption {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]config.ModelOption, len(in))
+	for k, v := range in {
+		out[k] = append([]config.ModelOption(nil), v...)
+	}
+	return out
 }
 
 // ReviewerCfg returns the reviewer profile name and auto-review flag under cfgMu.

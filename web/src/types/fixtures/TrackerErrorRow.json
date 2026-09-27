@@ -1,0 +1,8 @@
+{
+  "at": "2026-05-25T12:00:00Z",
+  "op": "poll",
+  "kind": "rate_limited",
+  "message": "tracker: linear rate limited",
+  "resetAt": "2026-05-25T12:10:00Z",
+  "consecutiveFailures": 2
+}

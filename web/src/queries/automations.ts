@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query';
-import { authedFetch } from '../auth/authedFetch';
+import { apiRequest } from '../auth/apiRequest';
 import { useToastStore } from '../store/toastStore';
 
 interface TestAutomationInput {
@@ -17,18 +17,11 @@ interface TestAutomationInput {
 export function useTestAutomation() {
   return useMutation({
     mutationFn: async ({ automationId, identifier }: TestAutomationInput) => {
-      const res = await authedFetch(
-        `/api/v1/automations/${encodeURIComponent(automationId)}/test`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identifier }),
-        },
-      );
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(body || `test fire failed (${String(res.status)})`);
-      }
+      await apiRequest(`/api/v1/automations/${encodeURIComponent(automationId)}/test`, {
+        op: 'test fire',
+        method: 'POST',
+        json: { identifier },
+      });
     },
     onError: (err) => {
       const message = err instanceof Error ? err.message : 'Test fire failed.';

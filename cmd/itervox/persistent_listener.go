@@ -38,7 +38,10 @@ func newPersistentListener(raw net.Listener) *persistentListener {
 		closed:   make(chan struct{}),
 		pumpDone: make(chan struct{}),
 	}
-	go p.pump()
+	go func() {
+		defer failFastOnPanic("http-accept-pump")
+		p.pump()
+	}()
 	return p
 }
 

@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { Modal } from './index';
 import { ModalFooter } from './ModalFooter';
 
@@ -42,9 +43,19 @@ export function ConfirmModal({
   isPending = false,
   pendingLabel,
 }: ConfirmModalProps) {
+  const titleId = useId();
   return (
-    <Modal isOpen={isOpen} onClose={onClose} showCloseButton={false} padded className="max-w-sm">
-      <p className="text-theme-text text-sm font-semibold">{title}</p>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      showCloseButton={false}
+      padded
+      className="max-w-sm"
+      ariaLabelledBy={titleId}
+    >
+      <p id={titleId} className="text-theme-text text-sm font-semibold">
+        {title}
+      </p>
       {description && <p className="text-theme-muted mt-1 text-xs">{description}</p>}
       <ModalFooter>
         <button

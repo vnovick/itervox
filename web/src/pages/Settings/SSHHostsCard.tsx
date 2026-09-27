@@ -81,7 +81,7 @@ export function SSHHostsCard() {
                   disabled={removingHost === h.host}
                   className="ml-4 flex-shrink-0 text-[12px] transition-opacity"
                   style={{
-                    color: 'var(--danger)',
+                    color: 'var(--danger-text)',
                     background: 'transparent',
                     border: 'none',
                     cursor: removingHost === h.host ? 'wait' : 'pointer',

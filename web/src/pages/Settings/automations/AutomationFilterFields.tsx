@@ -1,6 +1,7 @@
 import { TagInput } from '../../../components/itervox/TagInput';
 import { fieldLabelCls, fieldSurfaceCls, helperTextCls, inputCls, selectCls } from '../formStyles';
 import type { AutomationFormValues } from './automationForm';
+import { InputRequiredFilterFields } from './InputRequiredFilterFields';
 
 // AutomationFilterFields renders the bottom-half filter grid of the automation
 // editor: match-mode, states, labels, identifier regex, optional batch limit,
@@ -38,9 +39,13 @@ export function AutomationFilterFields({
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <div className={fieldSurfaceCls}>
         <div>
-          <label className={fieldLabelCls}>How to combine multiple filters</label>
+          <label htmlFor="automation-match-mode" className={fieldLabelCls}>
+            How to combine multiple filters
+          </label>
           <select
+            id="automation-match-mode"
             value={values.matchMode}
+            disabled={values.unknownFields?.matchMode !== undefined}
             onChange={(event) => {
               onMatchModeChange(event.target.value as AutomationFormValues['matchMode']);
             }}
@@ -59,8 +64,11 @@ export function AutomationFilterFields({
         </div>
 
         <div>
-          <label className={fieldLabelCls}>States</label>
+          <label htmlFor="automation-filter-states" className={fieldLabelCls}>
+            States
+          </label>
           <TagInput
+            id="automation-filter-states"
             chips={values.states}
             onChange={onStatesChange}
             placeholder="+ Add state"
@@ -79,8 +87,11 @@ export function AutomationFilterFields({
         </div>
 
         <div>
-          <label className={fieldLabelCls}>Labels Any</label>
+          <label htmlFor="automation-filter-labels" className={fieldLabelCls}>
+            Labels Any
+          </label>
           <TagInput
+            id="automation-filter-labels"
             chips={values.labelsAny}
             onChange={onLabelsAnyChange}
             placeholder="+ Add label"
@@ -105,8 +116,11 @@ export function AutomationFilterFields({
         </div>
 
         <div>
-          <label className={fieldLabelCls}>Identifier Regex</label>
+          <label htmlFor="automation-identifier-regex" className={fieldLabelCls}>
+            Identifier Regex
+          </label>
           <input
+            id="automation-identifier-regex"
             value={values.identifierRegex}
             onChange={(event) => {
               onIdentifierRegexChange(event.target.value);
@@ -121,8 +135,11 @@ export function AutomationFilterFields({
 
         {supportsBatchLimit && (
           <div>
-            <label className={fieldLabelCls}>Limit</label>
+            <label htmlFor="automation-filter-limit" className={fieldLabelCls}>
+              Limit
+            </label>
             <input
+              id="automation-filter-limit"
               value={values.limit}
               onChange={(event) => {
                 onLimitChange(event.target.value);
@@ -139,41 +156,11 @@ export function AutomationFilterFields({
         )}
 
         {isInputRequired && (
-          <div>
-            <label className={fieldLabelCls}>Input Context Regex</label>
-            <input
-              value={values.inputContextRegex}
-              onChange={(event) => {
-                onInputContextRegexChange(event.target.value);
-              }}
-              placeholder="continue|branch"
-              className={`${inputCls} font-mono text-xs`}
-            />
-            <p className={helperTextCls}>
-              Match the blocked-agent question text before dispatching the helper profile.
-            </p>
-          </div>
-        )}
-
-        {isInputRequired && (
-          <div>
-            <label className={fieldLabelCls}>Max age (minutes)</label>
-            <input
-              data-testid="automation-max-age-minutes"
-              value={values.maxAgeMinutes}
-              onChange={(event) => {
-                onMaxAgeMinutesChange(event.target.value);
-              }}
-              inputMode="numeric"
-              placeholder="Blank = no age limit"
-              className={inputCls}
-            />
-            <p className={helperTextCls}>
-              Skip input-required entries that have been queued longer than this many minutes (gap
-              A). Stale entries are also flagged on the dashboard so an operator sees what has been
-              abandoned.
-            </p>
-          </div>
+          <InputRequiredFilterFields
+            values={values}
+            onInputContextRegexChange={onInputContextRegexChange}
+            onMaxAgeMinutesChange={onMaxAgeMinutesChange}
+          />
         )}
 
         <div className="border-theme-line bg-theme-bg-soft text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-3 text-[11px]">

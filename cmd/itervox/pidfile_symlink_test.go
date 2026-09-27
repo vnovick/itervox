@@ -83,6 +83,7 @@ func TestWarnIfDaemonRunning(t *testing.T) {
 	// A live daemon (this process stands in for one) must be reported.
 	_, _, _, err := claimPIDFile(wf)
 	require.NoError(t, err)
+	t.Cleanup(func() { removePIDFile(wf) }) // release the CORE-039 pid lock
 	out := capture(func() { warnIfDaemonRunning(wf, "`itervox deps analyze`") })
 	assert.Contains(t, out, "a daemon is running")
 	assert.Contains(t, out, "itervox deps analyze",
@@ -163,6 +164,7 @@ func TestOneShotCommandsWarnAboutALiveDaemon(t *testing.T) {
 			require.NoError(t, os.WriteFile(wf, []byte("---\n---\n"), 0o644))
 			_, _, _, err := claimPIDFile(wf) // this process stands in for a live daemon
 			require.NoError(t, err)
+			t.Cleanup(func() { removePIDFile(wf) }) // release the CORE-039 pid lock
 
 			out := capture(func() { warnIfDaemonRunning(wf, tc.action) })
 			assert.Contains(t, out, "a daemon is running")

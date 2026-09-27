@@ -1,5 +1,9 @@
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { act, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Profiler, type ReactElement } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useItervoxStore } from '../../../../store/itervoxStore';
 import {
   makeHistoryRow,
@@ -8,6 +12,9 @@ import {
   makeSnapshot,
 } from '../../../../test/fixtures/snapshots';
 import { LiveOpsStrip, liveOpsStripModel } from '../LiveOpsStrip';
+
+// CORE-086 — linked chips render router <Link>s, so every render needs a router.
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter });
 
 describe('liveOpsStripModel', () => {
   it('reports offline when no snapshot is available', () => {
@@ -104,7 +111,8 @@ describe('liveOpsStripModel', () => {
 
     const model = liveOpsStripModel(snapshot, now.getTime());
 
-    expect(model.status).toBe('live');
+    // CORE-076 — running>0 is 'active'; 'Live' is the SSE connection only.
+    expect(model.status).toBe('active');
     expect(model.capacityLabel).toBe('2/5');
     expect(model.queueLabel).toBe('2/10');
     expect(model.blockedQueueCount).toBe(1);
@@ -302,7 +310,7 @@ describe('LiveOpsStrip', () => {
     useItervoxStore.setState({ snapshot: null });
   });
 
-  it('renders live, waiting, and offline status labels', () => {
+  it('renders active, waiting, and offline status labels', () => {
     const { rerender } = render(<LiveOpsStrip />);
 
     expect(screen.getByText('Offline')).toBeInTheDocument();
@@ -315,7 +323,7 @@ describe('LiveOpsStrip', () => {
     useItervoxStore.setState({ snapshot: makeSnapshot({ running: [makeRunningRow()] }) });
     rerender(<LiveOpsStrip />);
 
-    expect(screen.getByText('Live')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
   it('renders the compact operational counters', () => {
@@ -363,8 +371,8 @@ describe('LiveOpsStrip', () => {
     expect(screen.getByText('Capacity 1/3')).toBeInTheDocument();
     expect(screen.getByText('Queue 1/3')).toBeInTheDocument();
     expect(screen.getByText('Blocked 0')).toBeInTheDocument();
-    expect(screen.getByText('Input 1')).toBeInTheDocument();
-    expect(screen.getByText('Retry 1')).toBeInTheDocument();
+    expect(screen.getByText('Needs input 1')).toBeInTheDocument();
+    expect(screen.getByText('Retrying 1')).toBeInTheDocument();
     expect(screen.getByText('Paused 1')).toBeInTheDocument();
     expect(screen.getByText('Automations 0 today')).toBeInTheDocument();
   });
@@ -556,7 +564,7 @@ describe('LiveOpsStrip', () => {
     });
     render(<LiveOpsStrip />);
     const chip = screen.getByText('1 need attention');
-    expect(chip.className).toContain('text-theme-warning');
+    expect(chip.className).toContain('text-theme-warning-text');
   });
 
   it('combines cycle and attention counts into a single tile', () => {
@@ -632,5 +640,409 @@ describe('LiveOpsStrip', () => {
     render(<LiveOpsStrip />);
     const chip = screen.getByText('Outbox 1 pending · 1 degraded');
     expect(chip.className).toContain('text-theme-danger');
+  });
+});
+
+// CORE-055 — agent backend health chips. Labelled by backend so they are
+// never read as the tracker's own "Tracker rate limited until" chip.
+function renderWithQuery(ui: ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
+describe('LiveOpsStrip limited backend chip (CORE-055)', () => {
+  const hhmm = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // The backend chip shows the date when the reset is not today (BH-M3-9).
+  const clock = (iso: string) =>
+    new Date(iso).toDateString() === new Date().toDateString()
+      ? hhmm(iso)
+      : new Date(iso).toLocaleString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+  beforeEach(() => {
+    useItervoxStore.setState({ snapshot: null });
+  });
+
+  // BH-M3-9: a reset that is not today shows its date.
+  it('limited backend with a reset on another day shows the date', () => {
+    const reset = new Date(Date.now() + 3 * 24 * 60 * 60_000).toISOString();
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        backendHealth: [
+          {
+            backend: 'claude',
+            status: 'limited',
+            limitedUntil: reset,
+            retryAt: reset,
+            heldIssues: 0,
+            reroutedIssues: 0,
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const expected = new Date(reset).toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    expect(screen.getByText(`Claude limited until ${expected}`)).toBeInTheDocument();
+  });
+
+  // M3-close V1: the operator can clear a breaker from the chip.
+  it('clears a limited backend breaker after confirmation', async () => {
+    const reset = new Date(Date.now() + 60 * 60_000).toISOString();
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({ queued: true }), { status: 202 })),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    useItervoxStore.setState({
+      refreshSnapshot: vi.fn().mockResolvedValue(undefined),
+      snapshot: makeSnapshot({
+        backendHealth: [
+          {
+            backend: 'codex',
+            host: 'build-1',
+            status: 'limited',
+            limitedUntil: reset,
+            retryAt: reset,
+            heldIssues: 0,
+            reroutedIssues: 0,
+          },
+        ],
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<LiveOpsStrip />);
+    await user.click(screen.getByRole('button', { name: 'Clear Codex@build-1' }));
+    await user.click(screen.getByRole('button', { name: 'Clear breaker?' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/backend-health/clear'),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ backend: 'codex', host: 'build-1' }),
+        }),
+      );
+    });
+  });
+
+  it('limited backend: names the backend and its limitedUntil time, distinct from the tracker chip', () => {
+    const reset = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        backendHealth: [
+          {
+            backend: 'claude',
+            status: 'limited',
+            kind: 'quota',
+            limitType: 'five_hour',
+            limitedUntil: reset,
+            retryAt: reset,
+            heldIssues: 2,
+            reroutedIssues: 1,
+          },
+          {
+            backend: 'codex',
+            status: 'healthy',
+            limitedUntil: null,
+            heldIssues: 0,
+            reroutedIssues: 0,
+          },
+        ],
+        autoSwitches: [{ identifier: 'ENG-3', source: 'backend_fallback', toBackend: 'codex' }],
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'comment',
+            identifier: 'ENG-9',
+            attempts: 1,
+            rateLimitedUntil: reset,
+            enqueuedAt: reset,
+            nextAttemptAt: reset,
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const chip = screen.getByText(`Claude limited until ${clock(reset)} · 2 held · 1 rerouted`);
+    expect(chip).toBeInTheDocument();
+    expect(screen.getByText(`Tracker rate limited until ${hhmm(reset)}`)).toBeInTheDocument();
+    expect(screen.queryByText(/^Codex/)).not.toBeInTheDocument();
+    expect(screen.getByText('Auto-switched 1')).toBeInTheDocument();
+  });
+
+  it('limited backend with an unknown reset says so instead of inventing a time', () => {
+    const retry = new Date(Date.now() + 15 * 60_000).toISOString();
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        backendHealth: [
+          {
+            backend: 'codex',
+            host: 'build-1',
+            status: 'limited',
+            kind: 'throttle',
+            limitedUntil: null,
+            retryAt: retry,
+            heldIssues: 0,
+            reroutedIssues: 0,
+          },
+          {
+            backend: 'claude',
+            status: 'probing',
+            limitedUntil: null,
+            probeIssue: 'ENG-7',
+            heldIssues: 1,
+            reroutedIssues: 0,
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    expect(
+      screen.getByText(`Codex@build-1 limited (reset unknown, retry ${clock(retry)})`),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Claude probing (ENG-7) · 1 held')).toBeInTheDocument();
+  });
+
+  it('shows no backend chip while every backend is healthy or the daemon predates the field', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        backendHealth: [
+          {
+            backend: 'claude',
+            status: 'healthy',
+            limitedUntil: null,
+            heldIssues: 0,
+            reroutedIssues: 0,
+          },
+        ],
+      }),
+    });
+    const { unmount } = renderWithQuery(<LiveOpsStrip />);
+    expect(screen.queryByText(/Claude/)).not.toBeInTheDocument();
+    unmount();
+    useItervoxStore.setState({ snapshot: makeSnapshot() });
+    renderWithQuery(<LiveOpsStrip />);
+    expect(screen.queryByText(/limited|probing/)).not.toBeInTheDocument();
+  });
+});
+
+// CORE-074 — LiveOpsStrip selects the branches its model reads (useShallow),
+// so a push whose only change is the per-build generatedAt stamp does not
+// re-render it; its clock comes from a coarse ticker instead of the push.
+describe('LiveOpsStrip (CORE-074)', () => {
+  it('does not re-render on a timestamp-only push', () => {
+    const snap = makeSnapshot({
+      running: [makeRunningRow({ identifier: 'DEMO-1' })],
+      retrying: [makeRetryRow()],
+      paused: ['DEMO-P'],
+    });
+    useItervoxStore.getState().setSnapshot(snap);
+    let commits = 0;
+    renderWithQuery(
+      <Profiler
+        id="strip"
+        onRender={() => {
+          commits += 1;
+        }}
+      >
+        <LiveOpsStrip />
+      </Profiler>,
+    );
+    const afterMount = commits;
+    act(() => {
+      const next = structuredClone(snap);
+      next.generatedAt = '2026-09-27T12:00:00Z';
+      useItervoxStore.getState().setSnapshot(next);
+    });
+    expect(useItervoxStore.getState().snapshot?.generatedAt).toBe('2026-09-27T12:00:00Z');
+    expect(commits).toBe(afterMount);
+
+    // A real change still re-renders.
+    act(() => {
+      const next = structuredClone(snap);
+      next.paused = ['DEMO-P', 'DEMO-Q'];
+      useItervoxStore.getState().setSnapshot(next);
+    });
+    expect(commits).toBeGreaterThan(afterMount);
+    expect(screen.getByText('Paused 2')).toBeInTheDocument();
+  });
+
+  it('rate-limited chip disappears when the ticker crosses rateLimitedUntil without a new snapshot', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-27T10:00:00Z'));
+      const until = '2026-09-27T10:00:45Z';
+      useItervoxStore.getState().setSnapshot(
+        makeSnapshot({
+          outboxEntries: [
+            {
+              id: 'rl',
+              kind: 'comment',
+              identifier: 'ENG-9',
+              attempts: 1,
+              rateLimitedUntil: until,
+              enqueuedAt: '2026-09-27T09:59:00Z',
+              nextAttemptAt: until,
+            },
+          ],
+        }),
+      );
+      renderWithQuery(<LiveOpsStrip />);
+      expect(screen.getByText(/^Tracker rate limited until/)).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(61_000);
+      });
+      expect(screen.queryByText(/^Tracker rate limited until/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// CORE-084 — the tracker API budget (snapshot.rateLimits) chip. Distinct from
+// the outbox-derived "Tracker rate limited until HH:MM" chip and from the
+// CORE-055 agent backend-health chips.
+describe('LiveOpsStrip tracker API budget (CORE-084)', () => {
+  const hhmm = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  beforeEach(() => {
+    useItervoxStore.setState({ snapshot: null });
+  });
+
+  it('shows rate limit chip with warning under 10%', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        rateLimits: { requestsLimit: 1500, requestsRemaining: 120 },
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const chip = screen.getByTestId('tracker-api-budget-chip');
+    expect(chip).toHaveTextContent('Tracker API budget 8%');
+    expect(chip.className).toContain('text-theme-warning-text');
+    expect(chip).toHaveAttribute('title', expect.stringContaining('120 of 1500 requests left'));
+  });
+
+  it('renders the budget chip without warning at or above 10%', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({ rateLimits: { requestsLimit: 1000, requestsRemaining: 100 } }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const chip = screen.getByTestId('tracker-api-budget-chip');
+    expect(chip).toHaveTextContent('Tracker API budget 10%');
+    expect(chip.className).not.toContain('text-theme-warning-text');
+  });
+
+  it('hides the chip when rateLimits is null', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ rateLimits: null }) });
+    renderWithQuery(<LiveOpsStrip />);
+    expect(screen.queryByTestId('tracker-api-budget-chip')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Tracker API budget/)).not.toBeInTheDocument();
+  });
+
+  it("renders 'Tracker API budget: unknown' when requestsLimit is 0", () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({ rateLimits: { requestsLimit: 0, requestsRemaining: 0 } }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const chip = screen.getByTestId('tracker-api-budget-chip');
+    expect(chip).toHaveTextContent('Tracker API budget: unknown');
+    expect(chip.textContent).not.toMatch(/NaN|Infinity|%/);
+  });
+
+  it('renders the tracker API budget chip alongside the rate-limited-until chip with distinct labels', () => {
+    const reset = new Date(Date.now() + 20 * 60_000).toISOString();
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        rateLimits: { requestsLimit: 1000, requestsRemaining: 50 },
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'comment',
+            identifier: 'ENG-9',
+            attempts: 1,
+            rateLimitedUntil: reset,
+            enqueuedAt: reset,
+            nextAttemptAt: reset,
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const budget = screen.getByTestId('tracker-api-budget-chip');
+    const until = screen.getByText(`Tracker rate limited until ${hhmm(reset)}`);
+    expect(budget).toHaveTextContent('Tracker API budget 5%');
+    expect(budget).not.toBe(until);
+    expect(budget.textContent).not.toBe(until.textContent);
+  });
+});
+
+// CORE-086 — chips with a natural destination link to it; the rest stay spans.
+describe('LiveOpsStrip chip links (CORE-086)', () => {
+  beforeEach(() => {
+    useItervoxStore.setState({ snapshot: null });
+  });
+
+  it('links non-zero attention chips to their dashboard sections', () => {
+    const reset = new Date(Date.now() + 20 * 60_000).toISOString();
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        retrying: [makeRetryRow()],
+        paused: ['DEMO-P'],
+        inputRequired: [
+          {
+            identifier: 'DEMO-I',
+            sessionId: 's',
+            state: 'input_required',
+            context: 'Need approval.',
+            queuedAt: reset,
+          },
+          {
+            identifier: 'DEMO-R',
+            sessionId: 't',
+            state: 'pending_input_resume',
+            context: 'Reply queued.',
+            queuedAt: reset,
+          },
+        ],
+        dependencyAudit: [
+          { identifier: 'DEMO-B', issueState: 'Backlog', status: 'blocked', wasBlocked: true },
+        ],
+        outboxEntries: [
+          {
+            id: 'e1',
+            kind: 'comment',
+            identifier: 'ENG-9',
+            attempts: 1,
+            enqueuedAt: reset,
+            nextAttemptAt: reset,
+          },
+        ],
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    const href = (name: RegExp) => screen.getByRole('link', { name }).getAttribute('href');
+    expect(href(/^Needs input 1$/)).toBe('/#attention-inbox');
+    expect(href(/^Resuming 1$/)).toBe('/#pending-resume');
+    expect(href(/^Retrying 1$/)).toBe('/#retry-queue');
+    expect(href(/^Paused 1$/)).toBe('/#running-sessions');
+    expect(href(/^Deps 1 blocked/)).toBe('/?view=deps');
+    expect(href(/^Outbox 1 pending/)).toBe('/#outbox');
+  });
+
+  it('keeps capacity, zero counts and historical counters as static spans', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot() });
+    renderWithQuery(<LiveOpsStrip />);
+    expect(screen.queryByRole('link', { name: /Capacity/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Retrying 0/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Automations/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Retrying 0').tagName).toBe('SPAN');
   });
 });

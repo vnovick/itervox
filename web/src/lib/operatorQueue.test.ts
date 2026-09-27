@@ -13,7 +13,7 @@ describe('buildOperatorQueueItems', () => {
   });
 
   // Each group derives independently. We verify the five groups in turn.
-  it('derives "Needs input" from snapshot.inputRequired (both sub-states)', () => {
+  it('splits snapshot.inputRequired into Needs input and Resuming', () => {
     const snap = makeSnapshot({
       inputRequired: [
         {
@@ -36,9 +36,15 @@ describe('buildOperatorQueueItems', () => {
       makeIssue({ identifier: 'ENG-1' }),
       makeIssue({ identifier: 'ENG-2' }),
     ]);
+    // CORE-076 — pending resumes moved to their own read-only group so the
+    // needs-input count matches the header, strip and hero tiles.
     const needsInput = result.groups.find((g) => g.group === 'needs_input');
-    expect(needsInput?.items).toHaveLength(2);
-    expect(needsInput?.items.map((i) => i.identifier).sort()).toEqual(['ENG-1', 'ENG-2']);
+    expect(needsInput?.items.map((i) => i.identifier)).toEqual(['ENG-1']);
+    const resuming = result.groups.find((g) => g.group === 'resuming');
+    expect(resuming?.items.map((i) => i.identifier)).toEqual(['ENG-2']);
+    expect(resuming?.items[0]?.meta).toBe('reply pending — resuming');
+    // Resuming rows are shown but never counted as attention.
+    expect(result.attention).toBe(1);
   });
 
   it('derives "Retrying" from snapshot.retrying', () => {
@@ -189,5 +195,96 @@ describe('buildOperatorQueueItems', () => {
     expect(a.groups.flatMap((g) => g.items.map((i) => i.id))).toEqual(
       b.groups.flatMap((g) => g.items.map((i) => i.id)),
     );
+  });
+});
+
+describe('buildOperatorQueueItems — CORE-077 attention groups', () => {
+  const AT = '2026-09-01T00:00:00Z';
+  const failure = (kind: string, identifier: string | undefined, occurredAt = AT) => ({
+    kind,
+    identifier,
+    message: `${kind} msg`,
+    occurredAt,
+    recordedAt: occurredAt,
+    count: 1,
+  });
+
+  it('adds failed/stalled worker failures once per issue, newest first, skipping issues already being handled', () => {
+    const snap = makeSnapshot({
+      running: [],
+      retrying: [{ identifier: 'ENG-R', attempt: 1, dueAt: AT }],
+      recentFailures: [
+        failure('worker_failed', 'ENG-1', '2026-09-01T00:00:00Z'),
+        failure('worker_stalled', 'ENG-1', '2026-09-01T01:00:00Z'),
+        failure('worker_failed', 'ENG-R'),
+        failure('tracker_poll', undefined),
+        failure('outbox', 'ENG-2'),
+      ],
+    });
+    const result = buildOperatorQueueItems(snap, []);
+    const failed = result.groups.find((g) => g.group === 'failed');
+    expect(failed?.items.map((i) => i.identifier)).toEqual(['ENG-1']);
+    expect(failed?.items[0]?.meta).toBe('Worker stalled');
+    expect(failed?.items[0]?.tone).toBe('danger');
+  });
+
+  it('drops a failure superseded by a later successful run', () => {
+    const snap = makeSnapshot({
+      recentFailures: [failure('worker_failed', 'ENG-1', '2026-09-01T00:00:00Z')],
+      history: [
+        {
+          identifier: 'ENG-1',
+          startedAt: '2026-09-01T00:10:00Z',
+          finishedAt: '2026-09-01T00:20:00Z',
+          elapsedMs: 1,
+          turnCount: 1,
+          tokens: 1,
+          inputTokens: 1,
+          outputTokens: 0,
+          status: 'succeeded',
+        },
+      ],
+    });
+    expect(
+      buildOperatorQueueItems(snap, []).groups.find((g) => g.group === 'failed'),
+    ).toBeUndefined();
+  });
+
+  it('adds limited agent backends and degraded outbox entries', () => {
+    const snap = makeSnapshot({
+      backendHealth: [
+        { backend: 'codex', host: 'build-1', status: 'limited', limitedUntil: null },
+        { backend: 'claude', status: 'probing', limitedUntil: null },
+      ],
+      outboxEntries: [
+        {
+          id: 'o1',
+          kind: 'state',
+          identifier: 'ENG-9',
+          attempts: 9,
+          degraded: true,
+          lastError: '502',
+          enqueuedAt: AT,
+          nextAttemptAt: AT,
+        },
+        {
+          id: 'o2',
+          kind: 'state',
+          identifier: 'ENG-8',
+          attempts: 1,
+          enqueuedAt: AT,
+          nextAttemptAt: AT,
+        },
+      ],
+    });
+    const result = buildOperatorQueueItems(snap, []);
+    const backend = result.groups.find((g) => g.group === 'backend_limited');
+    expect(backend?.items.map((i) => i.id)).toEqual(['backend:codex@build-1']);
+    expect(backend?.items[0]?.clickAction).toEqual({ type: 'none' });
+    const outbox = result.groups.find((g) => g.group === 'outbox');
+    expect(outbox?.items.map((i) => i.identifier)).toEqual(['ENG-9']);
+    expect(outbox?.items[0]?.subtitle).toBe('502');
+    expect(result.attention).toBe(2);
+    expect(result.total).toBe(2);
   });
 });

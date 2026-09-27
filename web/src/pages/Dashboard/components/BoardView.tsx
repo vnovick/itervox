@@ -13,6 +13,8 @@ import {
 } from '@dnd-kit/core';
 import { useShallow } from 'zustand/react/shallow';
 import IssueCard from '../../../components/itervox/IssueCard';
+import { BOARD_DND_ACCESSIBILITY } from '../../../components/itervox/BoardColumn/boardAnnouncements';
+import { columnKeyboardCoordinates } from '../../../components/itervox/BoardColumn/columnKeyboardCoordinates';
 import BoardColumn from '../../../components/itervox/BoardColumn';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import type { TrackerIssue, InputRequiredEntry } from '../../../types/schemas';
@@ -152,7 +154,7 @@ export function BoardView({
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: columnKeyboardCoordinates }),
   );
 
   const firstActiveState = activeStates[0] ?? '';
@@ -215,6 +217,7 @@ export function BoardView({
   return (
     <DndContext
       sensors={sensors}
+      accessibility={BOARD_DND_ACCESSIBILITY}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}

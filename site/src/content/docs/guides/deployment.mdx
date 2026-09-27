@@ -11,8 +11,8 @@ minutes, keeps git worktrees on a local filesystem, and serves long-lived SSE
 connections.
 
 That shape points at one conclusion: **one VM with a persistent disk and a
-systemd unit.** Not serverless, not scale-to-zero. See
-[Why not serverless](#why-not-serverless).
+systemd unit.** Not serverless, not scale-to-zero. See the
+[platform tier matrix](#platform-tier-matrix).
 
 The deployment is identical across GCP, AWS, and Azure — only the provisioning
 commands and the private-access primitive differ, which is why the per-cloud
@@ -31,10 +31,13 @@ heartbeat monitoring.
 # 1. Provision the VM (no public IP by default)
 ./deploy/gcp/provision.sh          # or aws/ or azure/
 
-# 2. On the VM: install deps, itervox, and the systemd unit
-sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.1
+# 2. On the VM: install deps, itervox, the systemd unit and the data disk
+#    (provision.sh prints the stable --data-disk path for your cloud)
+sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.1 \
+  --data-disk /dev/disk/by-id/google-itervox-data
 
-# 3. Fill in secrets, then start
+# 3. Fill in secrets, re-run the read-only deploy doctor until it reports no [fail], start
+sudo -H -u itervox bash -c 'cd /srv/itervox/yourproject && itervox doctor --deploy --workflow WORKFLOW.md'
 sudo systemctl enable --now itervox
 ```
 
@@ -69,6 +72,8 @@ ITERVOX_API_TOKEN=<64 hex chars>
 
 # agent credentials — without this every dispatch fails
 ANTHROPIC_API_KEY=sk-ant-xxxx
+# ...or the token `claude setup-token` prints (shown once, saved nowhere)
+# CLAUDE_CODE_OAUTH_TOKEN=
 ```
 
 `.itervox/.env` is gitignored. Prefer materializing it from your cloud's secret
@@ -85,10 +90,15 @@ The single most common failure mode for a headless deployment: the daemon
 starts, the dashboard comes up, and **every dispatch fails** because `claude`
 has no credentials.
 
-`claude` needs either `ANTHROPIC_API_KEY` in the environment, or a token minted
-once interactively via `claude setup-token` and persisted to the service
-account's home directory. Sort this out before debugging anything else — the
-symptom looks like an orchestrator problem and isn't.
+`claude` needs either `ANTHROPIC_API_KEY` in the environment, or a long-lived
+OAuth token minted once interactively via `claude setup-token` (run it anywhere
+you have a browser). `claude setup-token` **prints the token once and does not
+save it anywhere** — copy it into `.itervox/.env` as `CLAUDE_CODE_OAUTH_TOKEN`
+(see [Secrets](#secrets) above) so the daemon and the agents it spawns inherit
+it. Only an interactive `/login` run on the VM as the service account persists
+credentials to that account's `~/.claude` directory. Sort this out before
+debugging anything else — the symptom looks like an orchestrator problem and
+isn't.
 
 ## Dashboard authentication
 
@@ -110,11 +120,28 @@ openssl rand -hex 32   # put in .itervox/.env as ITERVOX_API_TOKEN
 Reach the dashboard once at `https://your-host/?token=<token>`. The frontend
 captures it, stores it, and strips it from the URL.
 
+The `?token=` URL is **not** in `journalctl` or any other log sink: under
+systemd stderr is not a terminal, so the daemon logs only `dashboard URL (token
+withheld from logs)` with the token-free URL and a `sha256:` fingerprint. If you
+did not pin `ITERVOX_API_TOKEN`, the auto-generated token is in
+`<logs-dir>/api-token` (mode 0600, rewritten on every start; the log line names
+the path — by default it sits next to `itervox.log` in
+`~/.itervox/logs/<kind>/<slug>-<project>/`, or
+`~/.itervox/logs/workflow/<project>/` when no `project_slug` is set).
+Set `ITERVOX_PRINT_TOKEN=1` to put the tokenised URL on stderr anyway;
+`--no-print-token` suppresses it everywhere.
+
 :::danger[`allow_unauthenticated: true` on a reachable host]
 This disables the bearer middleware entirely. Anyone who can reach the bind
 address — **including through a tunnel or reverse proxy** — has full API
 access: reading logs, dispatching agents, changing settings. Only use it on a
-host you are certain is unreachable.
+host you are certain is unreachable. The cross-origin and Host (DNS-rebinding)
+guards it installs instead only stop a malicious web page in your browser; they
+are not access control. The Host guard refuses any request addressed to a DNS
+name other than `localhost`, `server.host` or a name in `server.allowed_hosts`
+(403 `host_not_allowed`; IP addresses always pass, `GET /api/v1/health` and
+`GET /api/v1/ready` are exempt), so a proxy, tunnel or container-service **hostname** in front of an
+unauthenticated daemon must be listed in `server.allowed_hosts`.
 :::
 
 ## Exposing the dashboard
@@ -145,16 +172,21 @@ server:
   host: 127.0.0.1 # keep loopback; the tunnel or Caddy fronts it
 ```
 
-Pin the port. The default of `0` picks a random free port on every start, which
-makes any static proxy or health-check configuration meaningless.
+Pin the port. Omitting `server.port` defaults to 8090, but `itervox init` scaffolds
+`port: 0` (OS-assigned, a random free port on every start), which makes any static
+proxy or health-check configuration meaningless — pin it explicitly on a VM.
 
 :::caution[Health checks target `/api/v1/health`, not `/health`]
 The route is registered inside the `/api/v1` group; a bare `/health` hits the
 SPA catch-all and returns the dashboard HTML with a 200, so a naive probe looks
 healthy no matter what state the daemon is in.
 
-`/api/v1/health` is the one auth-exempt endpoint, so load balancers and uptime
-probes reach it without a token.
+`/api/v1/health` is a static auth-exempt liveness endpoint, so load balancers
+and uptime probes reach it without a token. For readiness use the also
+auth-exempt `/api/v1/ready`: 503 when the event loop is wedged, the tracker
+has failed three polls in a row, or the daemon is draining (`"draining": true`),
+and 200 with `degraded: true` while rate-limited. Never use `/ready` for
+liveness — see [below](#official-container-image).
 :::
 
 ## Running under systemd
@@ -166,9 +198,16 @@ a TTY-ownership guard detects the absence of a controlling terminal, logs
 A few unit settings are load-bearing and worth understanding before you edit
 them:
 
-- **`TimeoutStopSec=300`** — `SIGTERM` begins a graceful drain that lets
-  in-flight agents finish. Agent turns routinely run for minutes, so a short
-  stop timeout means systemd escalates to `SIGKILL` mid-run.
+- **`--shutdown-grace 240s`, `TimeoutStopSec=300`, `KillMode=mixed`** — `SIGTERM`
+  begins a drain that lets in-flight agent turns finish; systemd must wait at
+  least shutdown-grace + 35 s, and must signal only the daemon. See
+  [Stopping, restarts and upgrades](#stopping-restarts-and-upgrades).
+- **`ExecStartPre=/usr/local/bin/fetch-secrets.sh`** — optional secret-manager
+  fetch (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault) into
+  `/run/itervox/env`; configured in `/etc/itervox/secrets.env`, a no-op otherwise.
+- **`RequiresMountsFor=/srv/itervox`** — the service account's HOME
+  (`/srv/itervox/home`) and the checkout live on the data disk; the unit never
+  starts on an unmounted directory.
 - **`StandardInput=null`** — gives the TUI guard the "no terminal" signal it
   needs to fall back to headless cleanly.
 - **Deliberately modest hardening.** Agents run arbitrary project build and test
@@ -179,18 +218,22 @@ them:
   lot of files.
 
 :::tip[Structured logs for your cloud logging agent]
-Pass `--log-format=json` (or set `ITERVOX_LOG_FORMAT=json`) so the file sink
-emits JSON instead of logfmt, and your cloud metrics and alerts can query
-fields rather than regex unstructured text.
+Pass `--log-format=json` (or set `ITERVOX_LOG_FORMAT=json`) so both headless
+sinks — the rotating file and stderr, hence journald — emit redacted JSON
+instead of logfmt, and your cloud metrics and alerts can query fields rather
+than regex unstructured text.
 
 When there is no controlling terminal — which is always the case under systemd —
 the daemon **fans logs out to both stderr and the rotating file**, so
 `journalctl -u itervox` keeps working for the whole run, not just the startup
-banner. The file sink is at:
+banner (the tokenised dashboard URL is withheld from it — see Dashboard
+authentication above). The file sink is at:
 
 ```
-~/.itervox/logs/<kind>/<project>/itervox.log
+~/.itervox/logs/<kind>/<slug>-<project>/itervox.log
 ```
+
+(or `~/.itervox/logs/workflow/<project>/itervox.log` when no `project_slug` is set)
 
 Tail either one. Interactive runs send logs to the file only, so the TUI is not
 fighting the log stream for the terminal.
@@ -200,23 +243,164 @@ fighting the log stream for the terminal.
 `.itervox/HEARTBEAT.md` into cloud custom metrics, plus a logging and alerting
 guide.
 
-## Why not serverless
+## Stopping, restarts and upgrades
 
-Vercel, Cloud Run, Lambda, Container Apps — all a mismatch, and not a marginal
-one:
+`SIGTERM` starts a **drain**: the daemon stops admitting work, `/api/v1/ready`
+answers `503` with `"draining": true`, and in-flight agent turns get up to
+`--shutdown-grace` to finish. After that they are cancelled and the daemon
+allows up to 30 s more for the generation to stop. A second `SIGTERM` forces an
+immediate stop, so never send one early. An operator edit to `WORKFLOW.md`
+drains the same way before it is applied.
 
-| Requirement | Serverless reality |
+Whatever supervises the process must wait at least **shutdown-grace + 35 s**
+before it escalates to `SIGKILL`:
+
+| Supervisor | Setting (with the shipped `--shutdown-grace 240s`) |
 |---|---|
-| One process alive for days holding in-memory state | Instances are recycled; state is lost |
-| Subprocesses running for minutes | Request-scoped execution limits |
-| Persistent git worktrees on local disk | Ephemeral filesystem |
-| Long-lived SSE connections | Connection duration caps |
+| systemd (`deploy/systemd/itervox.service`) | `TimeoutStopSec=300`, plus `KillMode=mixed` so `SIGTERM` reaches the daemon only — the default `control-group` would signal every agent subprocess at once and abort the turns the drain protects |
+| `docker run` / `docker stop` | `--stop-timeout 300` / `docker stop -t 300` (Docker's default is 10 s) |
+| Docker Compose | `stop_grace_period: 300s` |
+| Kubernetes | `terminationGracePeriodSeconds: 300` |
+| `itervox stop` | `itervox stop --grace 275s` — its default `--grace 30s` SIGKILLs a daemon that is still draining |
 
-Vercel specifically runs serverless functions and static assets; there is no
-execution model there in which this daemon runs at all.
+Change `--shutdown-grace` and the supervisor timeout together.
 
-The one thing that *would* technically work is hosting `web/` as a static site
-pointed at a remote daemon's API. It isn't worth it — the Vite bundle is already
-embedded in the Go binary by design, so you would add CORS, a split deploy, and
-a second version to keep in lockstep, all to avoid serving assets the daemon
-already serves for free.
+## Upgrades, cleanup and backups
+
+On a `bootstrap.sh` install, `sudo itervox-upgrade.sh --version <tag>` downloads the
+release and `checksums.txt`, refuses a checksum mismatch **before** touching the service,
+swaps the binary atomically (keeping `itervox.prev`), restarts through the drain and
+rolls back automatically when `/api/v1/ready` does not answer 200. Exit `2` means it
+rolled back and the service is ready on the previous binary.
+
+`bootstrap.sh` also installs two timers it does **not** enable:
+
+- `itervox-cleanup.timer` prunes workspaces idle longer than
+  `ITERVOX_CLEANUP_WORKSPACE_DAYS` (default 14) and rotated/session logs older than
+  `ITERVOX_CLEANUP_LOG_DAYS` (default 30), set in `/etc/itervox/cleanup.env`. It keeps
+  every workspace that is running, retrying, paused, waiting for input, queued or
+  recorded in a continuation ledger, and removes nothing when the daemon is up but its
+  state cannot be read.
+- `itervox-watchdog.timer` restarts the unit after three consecutive `/api/v1/ready`
+  probes report a wedged event loop (`"loop_fresh": false`) — never during a drain or
+  a tracker outage.
+
+Back up the data disk (snapshots are scheduled by the OpenTofu modules) or, with the
+service stopped, `tar` everything under `--root`. The full procedure — what each state
+root holds, restore onto a new VM, and `git worktree repair` after a restore to a
+different path — is in
+[`docs/deploy-runbook.md`](https://github.com/vnovick/itervox/blob/main/docs/deploy-runbook.md).
+
+## Infrastructure as code (OpenTofu)
+
+[`deploy/terraform/`](https://github.com/vnovick/itervox/tree/main/deploy/terraform)
+has `gcp-vm`, `aws-ec2` and `azure-vm` modules that create what the `provision.sh`
+scripts do: a private VM with no public dashboard port, a separate persistent data disk
+(`prevent_destroy`, plus snapshot retention and — on Azure — a delete lock), NAT egress,
+a least-privilege identity limited to the secrets you list, and a first-boot script that
+verifies the release checksum and runs `bootstrap.sh --data-disk`. Each module has an
+`examples/basic` root module. CI runs `tofu fmt -check` and `tofu validate` on all of
+them; validation does not prove an apply, so plan against a sandbox account first.
+
+## Official container image
+
+`deploy/docker/Dockerfile` builds the web bundle and the Go binary with it
+embedded — the same thing `make build` does — and ships them on
+`debian:bookworm-slim` with git, gh, ssh and tini. Release tags publish it to
+`ghcr.io/vnovick/itervox`; you can also build it from the repo root:
+
+```bash
+docker build -f deploy/docker/Dockerfile -t itervox:dev .
+docker run -d --name itervox --stop-timeout 300 \
+  -p 127.0.0.1:8090:8090 -v itervox-data:/data \
+  -e ITERVOX_REPO=https://github.com/you/project.git \
+  -e ITERVOX_API_TOKEN -e GH_TOKEN -e LINEAR_API_KEY -e ANTHROPIC_API_KEY \
+  itervox:dev
+```
+
+- **Non-root, one volume.** It runs as uid 10001 with `HOME=/data`, so every
+  state root — `~/.itervox/workspaces`, `~/.itervox/logs/<project>/` (history,
+  queue, breakers, sessions, `api-token`), `~/.claude`, `~/.codex` and the
+  checkout in `/data/repo` — is on the `/data` volume.
+- **Clone once.** The entrypoint clones `ITERVOX_REPO` on the first start and
+  reuses the clone afterwards, fetching and fast-forwarding only (local commits
+  and edits are left alone). `GH_TOKEN` is handed to git through a credential
+  helper that reads it from the environment; it is never written to disk or
+  logged.
+- **Reachable port.** The image sets `ITERVOX_SERVER_HOST=0.0.0.0` (the daemon's
+  own default is `127.0.0.1`). The port is `server.port` from `WORKFLOW.md`,
+  overridden by `PORT` (Cloud Run, Heroku) or `ITERVOX_SERVER_PORT`.
+- **JSON logs.** `ITERVOX_LOG_FORMAT=json` makes stderr one redacted JSON object
+  per line.
+- **Signals.** tini is PID 1 and forwards `SIGTERM`; the default command passes
+  `--shutdown-grace 240s` (see the table above for the stop timeout).
+- **Health.** The image's `HEALTHCHECK` probes `/api/v1/health`, not `/ready` —
+  see the caution below.
+- **Agent CLIs** are not installed by default; build with
+  `--build-arg INSTALL_AGENT_CLIS=true`, or extend the image with your
+  project's toolchain and CLIs.
+
+`deploy/docker/docker-compose.yml` wires the same settings for Compose.
+
+:::caution[`/ready` is readiness, `/health` is liveness]
+Point load-balancer readiness at `/api/v1/ready` and restarts at
+`/api/v1/health`. `/ready` is `503` for the whole drain and after three failed
+tracker polls; a liveness probe on it (a Kubernetes `livenessProbe`, a Docker
+`HEALTHCHECK` under Swarm or autoheal) kills a draining daemon mid-turn and
+restart-loops it through a tracker outage that a restart cannot fix. Both
+routes are auth-exempt and exempt from the Host guard.
+:::
+
+## Platform tier matrix
+
+Itervox needs one process that stays up for days, a persistent filesystem for
+worktrees and state, long-lived SSE connections, and a stop timeout long enough
+to drain. Measured against that:
+
+### Supported
+
+| Platform | Notes |
+|---|---|
+| **GCP Compute Engine** | VM + systemd, persistent data disk. IAP TCP tunnelling for private access. `deploy/gcp/provision.sh`. |
+| **AWS EC2** | VM + systemd, persistent EBS data volume. SSM Session Manager (IAM-gated) for private access. `deploy/aws/provision.sh`. |
+| **Azure VM** | VM + systemd, persistent managed data disk. Tailscale or Bastion for private access. `deploy/azure/provision.sh`. |
+| **Official container image** on a host you control (Docker, Compose, a single-replica Kubernetes Deployment or StatefulSet with a persistent volume) | See [Official container image](#official-container-image). |
+
+### Experimental (untested by the maintainers)
+
+| Platform | What has to hold | Known limits |
+|---|---|---|
+| **Cloud Run services** | Exactly one instance (min = max = 1), CPU always allocated, a mounted volume for `/data` (an in-memory or GCS FUSE mount is not a good home for git worktrees). | Cloud Run gives a container only 10 s between `SIGTERM` and `SIGKILL`, so a drain cannot finish: every revision rollout or instance recycle cancels in-flight agent turns. Requests, SSE included, are capped at 60 min; the dashboard reconnects. Cloud Run *worker pools* have no HTTP ingress, so the dashboard is unreachable there. |
+| **Azure Container Apps** | min = max replicas = 1, a persistent Azure Files volume for `/data`, `terminationGracePeriodSeconds` ≥ shutdown-grace + 35 s (lower `--shutdown-grace` if the platform caps it). | Check the ingress request/idle timeouts against the SSE guidance below. |
+
+### Not supported
+
+| Platform | Why |
+|---|---|
+| AWS Lambda, Azure Functions, GCP Cloud Functions | Request-scoped execution with a hard cap, no process reuse, ephemeral filesystem. |
+| Vercel | See [Why Vercel is not suitable](/guides/deploy-vercel/). |
+| Anything that scales to zero or runs several replicas | Itervox is a single writer: two replicas double-dispatch, and scale-to-zero stops polling. |
+
+### Front-door timeouts and SSE
+
+Whatever sits in front of the daemon (a cloud load balancer, Caddy, a tunnel,
+Cloudflare) sees long-lived `text/event-stream` responses and must not cut them:
+
+- **Idle timeout.** The snapshot stream `GET /api/v1/events` sends a named
+  `keepalive` event after **25 s** of inactivity (`keepaliveInterval` in
+  `internal/server/handlers.go`), so an idle timeout of 60 s or more keeps it
+  open. The log streams (`/api/v1/logs`, `/api/v1/issues/{id}/log-stream`,
+  `/sublog-stream`) send no keepalive; a shorter idle timeout closes a quiet one
+  and the dashboard reconnects it.
+- **Response-duration cap.** An SSE response lasts as long as the tab is open.
+  Where the front door caps total response time (for example the GCP Application
+  Load Balancer's backend-service `timeoutSec`, 30 s by default), raise it — 3600 s
+  is a reasonable value; the dashboard reconnects when it is reached.
+- **Host names.** With a bearer token (the default) any Host is accepted. With
+  `server.allow_unauthenticated: true` the Host guard answers
+  `403 host_not_allowed` to every DNS name except `localhost`, `server.host` and
+  the names in `server.allowed_hosts` (IP addresses always pass; `/api/v1/health`
+  and `/api/v1/ready` are exempt), so list the proxy's public name, a tunnel name
+  or a container service name there.
+- **Draining.** Take the daemon out of rotation on `/api/v1/ready` so a drain
+  (`503`, `"draining": true`) stops new traffic without killing the process.

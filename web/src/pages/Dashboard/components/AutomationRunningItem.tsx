@@ -21,10 +21,10 @@ export function AutomationRunningItem({
     >
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="text-theme-accent min-w-0 truncate font-mono text-xs font-semibold">
+          <span className="text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold">
             {row.automationId ?? '—'}
           </span>
-          <span className="bg-theme-success-soft text-theme-success rounded px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="bg-theme-success-soft text-theme-success-text rounded px-1.5 py-0.5 text-[10px] font-medium">
             running
           </span>
         </div>
@@ -39,7 +39,7 @@ export function AutomationRunningItem({
           onClick={() => {
             onSelectIssue(row.identifier);
           }}
-          className="text-theme-text hover:text-theme-accent min-w-0 truncate font-mono text-xs font-semibold"
+          className="text-theme-text hover:text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold"
         >
           {row.identifier}
         </button>

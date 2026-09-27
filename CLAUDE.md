@@ -107,6 +107,25 @@ only the event loop mutates them.
   mutates dependency state directly.
 - Issue status history is bounded runtime-session history unless future work
   explicitly adds restart durability.
+- `RecentFailures` (CORE-046) is a bounded (100) event-loop ring. Off-loop
+  producers (ledger writer, outbox flusher, recovered panics, the
+  `/api/v1/client-errors` handler) call `Orchestrator.RecordFailure`, a
+  NON-blocking send of `EventFailureRecorded`; a dropped failure is counted,
+  never re-sent. Messages come from classified errors only (never agent
+  output or prompt text) and are redacted before truncation. Not persisted;
+  `cmd/itervox` carries it across `WORKFLOW.md` reloads via
+  `SeedRecentFailures`.
+- `BackendHealth` (CORE-053) is the per-(backend, worker host) circuit
+  breaker and `BackendLimitedHolds` the issues it refused (`backend_limited`).
+  Both are event-loop state; the gate (`gateDispatch`) runs after the
+  CORE-115 resolver in every admission path (dispatch, fireRetries, reviewer,
+  automation, pending-input resume). Open breakers persist to
+  `backend_health.json` via the ledger writer. `agent.backend_fallback` is
+  load-time config, NOT in the cfgMu allowlist.
+- `PendingReviews` (M4-close BH-M4-2) holds reviewer dispatches refused while
+  draining. It is event-loop state persisted to `pending_reviews.json` (ledger
+  writer) and re-dispatched by `resumePendingReviews` once admission reopens;
+  the marker is cleared when any reviewer for that issue starts.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -131,6 +150,7 @@ full field path** so the test allowlist (`AllowedMutableCfgFields`) and this doc
 section stay easy to diff.
 
 - `cfg.Agent.AutoReview`
+- `cfg.Agent.AvailableModels`
 - `cfg.Agent.DepsAnalyzerProfile`
 - `cfg.Agent.DispatchStrategy`
 - `cfg.Agent.InlineInput`
@@ -216,12 +236,26 @@ domain ─────┬── tracker (interface + adapters: linear, github, m
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
 
-workflow ──── config ──── workspace
+procgroup (stdlib only — own process group + group SIGKILL re-sent until
+           ESRCH; the one shared kill path for agent runners and hooks)
 
-agent (claude/codex subprocess runners — imports domain, config)
+metrics (stdlib only — process-wide counters + hand-written Prometheus text
+         exposition; a leaf imported by tracker, orchestrator, server,
+         logbuffer and depsanalysis. It imports NO internal package: the
+         View is injected by cmd/itervox from Snapshot(), never cfgMu)
 
-orchestrator (single-goroutine state machine — imports agent, config, domain,
-              logbuffer, prdetector, prompt, tracker, workspace)
+logging (stdlib only — RedactingHandler / RedactString; imported by agent,
+         orchestrator and cmd/itervox)
+
+workflow ──── config ──── workspace (hooks — also imports procgroup)
+
+agent (claude/codex subprocess runners — imports domain, config, procgroup,
+       logging)
+
+orchestrator (single-goroutine state machine — imports agent, agentactions,
+              atomicfs, config, depsanalysis, domain, logbuffer, logging,
+              metrics, outbox, prdetector, procgroup, prompt, tracker,
+              workspace)
 
 app (EnrichIssue business logic — imports domain, tracker)
 

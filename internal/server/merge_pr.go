@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 
@@ -36,12 +35,60 @@ type MergePRResponse struct {
 // "<identifier>:<pr-number>" so a re-dispatch + an external nudge can't
 // double-merge the same PR. Mirrors the existing PROpenedDispatched pattern
 // but lives outside orchestrator.State because merge_pr is server-side.
+//
+// CORE-161: check and reserve happen in ONE critical section (reserve), and
+// the outcome is recorded under the same mutex (commit / release), so two
+// concurrent requests for the same key cannot both pass the guard.
 type mergePRDedup struct {
-	mu     sync.Mutex
-	merged map[string]string // key -> merge commit
+	mu       sync.Mutex
+	merged   map[string]string   // key -> merge commit
+	inflight map[string]struct{} // keys with a merge attempt in progress
 }
 
-var defaultMergePRDedup = &mergePRDedup{merged: map[string]string{}}
+var defaultMergePRDedup = &mergePRDedup{merged: map[string]string{}, inflight: map[string]struct{}{}}
+
+// mergeReservation is the outcome of mergePRDedup.reserve.
+type mergeReservation int
+
+const (
+	mergeReserved mergeReservation = iota
+	mergeAlreadyDone
+	mergeInProgress
+)
+
+// reserve checks key and, when it is neither merged nor in flight, marks it
+// in flight — atomically. commit is the merge commit when already merged.
+func (d *mergePRDedup) reserve(key string) (mergeReservation, string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if commit, ok := d.merged[key]; ok {
+		return mergeAlreadyDone, commit
+	}
+	if _, busy := d.inflight[key]; busy {
+		return mergeInProgress, ""
+	}
+	if d.inflight == nil {
+		d.inflight = map[string]struct{}{}
+	}
+	d.inflight[key] = struct{}{}
+	return mergeReserved, ""
+}
+
+// commit records a successful merge and ends the reservation.
+func (d *mergePRDedup) commit(key, mergeCommit string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.inflight, key)
+	d.merged[key] = mergeCommit
+}
+
+// release ends a reservation whose merge did not happen (refusal or error),
+// so a later request can try again.
+func (d *mergePRDedup) release(key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.inflight, key)
+}
 
 // MergePRGate runs the precondition checks for a single merge attempt. It is
 // extracted from handleAgentMergePR so unit tests can exercise the policy
@@ -109,39 +156,57 @@ func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dedupKey := fmt.Sprintf("%s:%d", identifier, req.PR)
-	defaultMergePRDedup.mu.Lock()
-	if existing, alreadyMerged := defaultMergePRDedup.merged[dedupKey]; alreadyMerged {
-		defaultMergePRDedup.mu.Unlock()
+	switch state, existing := defaultMergePRDedup.reserve(dedupKey); state {
+	case mergeAlreadyDone:
 		writeJSON(w, http.StatusOK, MergePRResponse{
 			OK:            true,
 			MergeCommit:   existing,
 			AlreadyMerged: true,
 		})
 		return
+	case mergeInProgress:
+		// CORE-161: another request is merging this PR right now.
+		writeError(w, http.StatusConflict, "merge_in_progress",
+			fmt.Sprintf("a merge of PR #%d for %s is already in progress; retry to get its result", req.PR, identifier))
+		return
 	}
-	defaultMergePRDedup.mu.Unlock()
+
+	// Every path that does not commit — refusal, gh error, even a panic in
+	// the gate — releases the reservation.
+	committed := false
+	defer func() {
+		if !committed {
+			defaultMergePRDedup.release(dedupKey)
+		}
+	}()
 
 	gate := s.mergePRGate(req.Strategy)
-	mergeCommit, reason, err := gate.Merge(r.Context(), req.PR)
+	merged, err := gate.MergeResult(r.Context(), req.PR)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "merge_failed", err.Error())
 		return
 	}
-	if reason != "" {
-		writeError(w, http.StatusConflict, "merge_blocked", reason)
+	if merged.Reason != "" {
+		writeError(w, http.StatusConflict, "merge_blocked", merged.Reason)
 		return
 	}
-
-	defaultMergePRDedup.mu.Lock()
-	defaultMergePRDedup.merged[dedupKey] = mergeCommit
-	defaultMergePRDedup.mu.Unlock()
+	mergeCommit := merged.Commit
+	defaultMergePRDedup.commit(dedupKey, mergeCommit)
+	committed = true
 
 	// P1 — fire pr_merged automations on the daemon-side. Optional capability
 	// resolved via type assertion so non-orchestrator backends can no-op.
 	if emitter, ok := s.client.(PRMergedEmitter); ok {
-		if err := emitter.EmitPRMerged(r.Context(), identifier, "", req.PR, mergeCommit, ""); err != nil {
+		// CORE-108: the PR's url and base/head branches come from the
+		// gate's own `gh pr view`, so trigger.pr_url, pr_base_branch and
+		// pr_branch are populated for pr_merged rules.
+		if err := emitter.EmitPRMerged(r.Context(), identifier, merged.URL, req.PR, mergeCommit, merged.BaseRef, merged.HeadRef); err != nil {
 			// Log and continue — the merge itself succeeded; emitting the
-			// follow-up automation should never make the action fail.
+			// follow-up automation should never make the action fail. It
+			// used to vanish silently (M6-close BH-M6-2); the daemon adapter
+			// also records it in RecentFailures.
+			slog.Error("merge_pr: merged, but the pr_merged automations could not be dispatched",
+				"identifier", identifier, "pr", req.PR, "merge_commit", mergeCommit, "error", err)
 			writeJSON(w, http.StatusOK, MergePRResponse{
 				OK:          true,
 				MergeCommit: mergeCommit,
@@ -196,23 +261,34 @@ func (s *Server) mergePRGate(requestStrategy string) MergePRGate {
 	}
 }
 
-// Merge runs the gh-CLI gates and the actual merge. Returns (commit, "", nil)
-// on success; (_, reason, nil) on a precondition refusal; (_, _, err) only on
-// gh CLI invocation failures the operator should look at directly.
-func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) {
+// MergePRResult is the outcome of MergePRGate.MergeResult. Reason is
+// non-empty on a precondition refusal. URL, BaseRef and HeadRef come from
+// the gate's first `gh pr view` and feed the pr_merged automation bindings
+// trigger.pr_url, trigger.pr_base_branch and trigger.pr_branch (CORE-108).
+type MergePRResult struct {
+	Commit  string
+	Reason  string
+	URL     string
+	BaseRef string
+	HeadRef string
+}
+
+// MergeResult is Merge returning the PR's url and base/head branch as well.
+func (g MergePRGate) MergeResult(ctx context.Context, pr int) (MergePRResult, error) {
 	if g.GH == nil {
-		return "", "", fmt.Errorf("merge_pr: GH invoker not configured")
+		return MergePRResult{}, fmt.Errorf("merge_pr: GH invoker not configured")
 	}
 	switch g.Strategy {
 	case "squash", "rebase", "merge":
 	default:
-		return "", MergePRReasonInvalidStrategy + ":" + g.Strategy, nil
+		return MergePRResult{Reason: MergePRReasonInvalidStrategy + ":" + g.Strategy}, nil
 	}
 
-	// 1. PR view: labels + mergeable + mergeStateStatus + state
-	out, err := g.GH(ctx, "pr", "view", fmt.Sprint(pr), "--json", "labels,mergeable,mergeStateStatus,state")
+	// 1. PR view: labels + mergeable + mergeStateStatus + state, plus the
+	// url and base/head branch the pr_merged automation needs (CORE-108).
+	out, err := g.GH(ctx, "pr", "view", fmt.Sprint(pr), "--json", "labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName")
 	if err != nil {
-		return "", "", fmt.Errorf("gh pr view: %w", err)
+		return MergePRResult{}, fmt.Errorf("gh pr view: %w", err)
 	}
 	var view struct {
 		Labels []struct {
@@ -221,23 +297,27 @@ func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) 
 		Mergeable        string `json:"mergeable"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 		State            string `json:"state"`
+		URL              string `json:"url"`
+		BaseRefName      string `json:"baseRefName"`
+		HeadRefName      string `json:"headRefName"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil {
-		return "", "", fmt.Errorf("parse gh pr view: %w", err)
+		return MergePRResult{}, fmt.Errorf("parse gh pr view: %w", err)
 	}
+	refuse := func(reason string) (MergePRResult, error) { return MergePRResult{Reason: reason}, nil }
 	if strings.EqualFold(view.State, "MERGED") {
-		return "", MergePRReasonAlreadyMerged, nil
+		return refuse(MergePRReasonAlreadyMerged)
 	}
 	if strings.ToUpper(view.Mergeable) != "MERGEABLE" {
-		return "", MergePRReasonNotMergeable + ":" + view.Mergeable, nil
+		return refuse(MergePRReasonNotMergeable + ":" + view.Mergeable)
 	}
 	if strings.ToUpper(view.MergeStateStatus) != "CLEAN" {
-		return "", MergePRReasonNotMergeable + ":" + view.MergeStateStatus, nil
+		return refuse(MergePRReasonNotMergeable + ":" + view.MergeStateStatus)
 	}
 	for _, l := range view.Labels {
 		for _, blocked := range g.BlockLabels {
 			if strings.EqualFold(l.Name, blocked) {
-				return "", MergePRReasonBlockedLabel + ":" + l.Name, nil
+				return refuse(MergePRReasonBlockedLabel + ":" + l.Name)
 			}
 		}
 	}
@@ -256,10 +336,10 @@ func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) 
 				slog.Warn("merge_pr: merging with ZERO required checks (allow_unchecked_merge: true) — the CI gate is unarmed",
 					"pr", pr)
 			} else {
-				return "", MergePRReasonUnarmedGate + ": repository has no required checks — configure branch protection, or set agent.allow_unchecked_merge: true to merge anyway", nil
+				return refuse(MergePRReasonUnarmedGate + ": repository has no required checks — configure branch protection, or set agent.allow_unchecked_merge: true to merge anyway")
 			}
 		} else {
-			return "", MergePRReasonChecksFailed + ":" + detail, nil
+			return refuse(MergePRReasonChecksFailed + ":" + detail)
 		}
 	}
 
@@ -272,7 +352,7 @@ func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) 
 	strategyFlag := "--" + g.Strategy
 	mergeOut, err := g.GH(ctx, "pr", "merge", fmt.Sprint(pr), strategyFlag)
 	if err != nil {
-		return "", "", fmt.Errorf("gh pr merge: %w: %s", err, string(mergeOut))
+		return MergePRResult{}, fmt.Errorf("gh pr merge: %w: %s", err, string(mergeOut))
 	}
 	// gh's stdout includes a "Merged pull request #N (...)" line; the merge
 	// SHA isn't in that line on every version. Read it explicitly.
@@ -301,7 +381,12 @@ func (g MergePRGate) Merge(ctx context.Context, pr int) (string, string, error) 
 		}
 	}
 
-	return shaResp.MergeCommit.OID, "", nil
+	return MergePRResult{
+		Commit:  shaResp.MergeCommit.OID,
+		URL:     view.URL,
+		BaseRef: view.BaseRefName,
+		HeadRef: view.HeadRefName,
+	}, nil
 }
 
 func truncateForReason(s string) string {
@@ -312,17 +397,9 @@ func truncateForReason(s string) string {
 	return s[:237] + "…"
 }
 
-// validatedMergeStrategies is exposed for config validation tests.
-var validatedMergeStrategies = []string{"squash", "rebase", "merge"}
-
 // DefaultMergeBlockLabels is the default block-list applied by merge_pr when
 // the operator does not override agent.merge_block_labels. Kept in sync with
 // the default in internal/config/config.go.
 func DefaultMergeBlockLabels() []string {
 	return []string{"needs-human", "migration", "auth", "feature-flag", "breaking"}
-}
-
-// IsValidMergeStrategy reports whether s is one of the three accepted strategies.
-func IsValidMergeStrategy(s string) bool {
-	return slices.Contains(validatedMergeStrategies, strings.TrimSpace(s))
 }

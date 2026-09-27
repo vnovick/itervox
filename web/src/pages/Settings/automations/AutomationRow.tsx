@@ -1,9 +1,12 @@
 import type { AutomationDef } from '../../../types/schemas';
 import { automationTriggerSummary } from '../../../types/automationTriggers';
+import { unknownValueLabel } from '../../../types/configRoundTrip';
 
 function filterSummary(automation: AutomationDef): string {
   const parts: string[] = [];
-  if (automation.filter?.matchMode === 'any') parts.push('match any');
+  const rawMatchMode = automation.unknownFields?.matchMode;
+  if (rawMatchMode !== undefined) parts.push(unknownValueLabel('match mode', rawMatchMode));
+  else if (automation.filter?.matchMode === 'any') parts.push('match any');
   if (automation.filter?.states?.length)
     parts.push(`states: ${automation.filter.states.join(', ')}`);
   if (automation.filter?.labelsAny?.length)
@@ -48,7 +51,9 @@ export function AutomationRow({
           </span>
         </div>
         <p className="text-theme-text-secondary text-xs">
-          {automationTriggerSummary(automation.trigger)}
+          {automation.unknownFields?.trigger
+            ? unknownValueLabel('trigger', automation.unknownFields.trigger.type)
+            : automationTriggerSummary(automation.trigger)}
         </p>
         <p className="text-theme-muted text-xs">{filterSummary(automation)}</p>
         {automation.instructions && (
@@ -69,7 +74,7 @@ export function AutomationRow({
           onClick={() => {
             void onDelete();
           }}
-          className="border-theme-danger text-theme-danger rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80"
+          className="border-theme-danger text-theme-danger-text rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80"
         >
           Delete
         </button>

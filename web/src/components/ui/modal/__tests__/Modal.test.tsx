@@ -1,11 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { Modal } from '../index';
+import { SlidePanel } from '../../SlidePanel/SlidePanel';
 
 describe('Modal', () => {
   it('renders nothing when closed', () => {
     render(
-      <Modal isOpen={false} onClose={vi.fn()}>
+      <Modal isOpen={false} onClose={vi.fn()} ariaLabel="Test">
         Content
       </Modal>,
     );
@@ -14,7 +15,7 @@ describe('Modal', () => {
 
   it('renders children when open', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()}>
+      <Modal isOpen={true} onClose={vi.fn()} ariaLabel="Test">
         Content
       </Modal>,
     );
@@ -23,7 +24,7 @@ describe('Modal', () => {
 
   it('has role=dialog and aria-modal', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()}>
+      <Modal isOpen={true} onClose={vi.fn()} ariaLabel="Test">
         Test
       </Modal>,
     );
@@ -33,7 +34,7 @@ describe('Modal', () => {
 
   it('shows close button by default', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()}>
+      <Modal isOpen={true} onClose={vi.fn()} ariaLabel="Test">
         Test
       </Modal>,
     );
@@ -42,7 +43,7 @@ describe('Modal', () => {
 
   it('hides close button when showCloseButton=false', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()} showCloseButton={false}>
+      <Modal isOpen={true} onClose={vi.fn()} showCloseButton={false} ariaLabel="Test">
         Test
       </Modal>,
     );
@@ -52,7 +53,7 @@ describe('Modal', () => {
   it('calls onClose when close button clicked', () => {
     const onClose = vi.fn();
     render(
-      <Modal isOpen={true} onClose={onClose}>
+      <Modal isOpen={true} onClose={onClose} ariaLabel="Test">
         Test
       </Modal>,
     );
@@ -63,7 +64,7 @@ describe('Modal', () => {
   it('calls onClose on Escape key', () => {
     const onClose = vi.fn();
     render(
-      <Modal isOpen={true} onClose={onClose}>
+      <Modal isOpen={true} onClose={onClose} ariaLabel="Test">
         Test
       </Modal>,
     );
@@ -73,7 +74,7 @@ describe('Modal', () => {
 
   it('applies padded class when padded=true', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()} padded>
+      <Modal isOpen={true} onClose={vi.fn()} padded ariaLabel="Test">
         <span data-testid="inner">Padded</span>
       </Modal>,
     );
@@ -86,7 +87,7 @@ describe('Modal', () => {
 
   it('does not apply padding by default', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()}>
+      <Modal isOpen={true} onClose={vi.fn()} ariaLabel="Test">
         <span data-testid="inner">No pad</span>
       </Modal>,
     );
@@ -97,11 +98,64 @@ describe('Modal', () => {
 
   it('applies custom className', () => {
     render(
-      <Modal isOpen={true} onClose={vi.fn()} className="max-w-lg">
+      <Modal isOpen={true} onClose={vi.fn()} className="max-w-lg" ariaLabel="Test">
         Test
       </Modal>,
     );
     const dialog = screen.getByRole('dialog');
     expect(dialog.className).toContain('max-w-lg');
+  });
+
+  describe('CORE-067', () => {
+    afterEach(() => {
+      document.body.style.overflow = '';
+    });
+
+    it('exposes an accessible name', () => {
+      const { unmount } = render(
+        <Modal isOpen onClose={vi.fn()} ariaLabel="Add worker host">
+          body
+        </Modal>,
+      );
+      expect(screen.getByRole('dialog', { name: 'Add worker host' })).toBeInTheDocument();
+      unmount();
+
+      render(
+        <Modal isOpen onClose={vi.fn()} ariaLabelledBy="modal-heading">
+          <h2 id="modal-heading">Edit profile</h2>
+        </Modal>,
+      );
+      expect(screen.getByRole('dialog', { name: 'Edit profile' })).toBeInTheDocument();
+    });
+
+    it('mounted closed does not change body overflow', () => {
+      document.body.style.overflow = 'scroll';
+      const { unmount } = render(
+        <Modal isOpen={false} onClose={vi.fn()} ariaLabel="Closed">
+          x
+        </Modal>,
+      );
+      expect(document.body.style.overflow).toBe('scroll');
+      unmount();
+      expect(document.body.style.overflow).toBe('scroll');
+    });
+
+    it('closing over an open SlidePanel keeps body scroll locked', () => {
+      document.body.style.overflow = 'auto';
+      const tree = (modalOpen: boolean) => (
+        <>
+          <SlidePanel isOpen onClose={vi.fn()} title="Issue">
+            <p>panel</p>
+          </SlidePanel>
+          <Modal isOpen={modalOpen} onClose={vi.fn()} ariaLabel="Confirm">
+            <p>confirm</p>
+          </Modal>
+        </>
+      );
+      const { rerender } = render(tree(true));
+      expect(document.body.style.overflow).toBe('hidden');
+      rerender(tree(false));
+      expect(document.body.style.overflow).toBe('hidden');
+    });
   });
 });

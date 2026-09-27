@@ -3,6 +3,7 @@ import { useItervoxStore } from '../../../store/itervoxStore';
 import { useIssueLogs } from '../../../queries/logs';
 import { toTermLine } from '../../../utils/logFormatting';
 import type { IssueLogEntry } from '../../../types/schemas';
+import { usePrefersReducedMotion } from '../../../hooks/usePrefersReducedMotion';
 
 interface AgentLogPanelProps {
   identifier: string;
@@ -17,7 +18,11 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
         s.snapshot?.retrying.some((r) => r.identifier === identifier)
       ),
   );
-  const { data: liveEntries } = useIssueLogs(identifier, isLive);
+  // CORE-099 — when the caller already has the entries (Timeline streams the
+  // selected issue and passes a slice), subscribing here opened a second
+  // stream for the same issue. An empty identifier disables both the stream
+  // and the one-shot fetch.
+  const { data: liveEntries } = useIssueLogs(logSlice === undefined ? identifier : '', isLive);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -25,6 +30,12 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
 
   // logSlice is provided when viewing a specific subagent's logs; fall back to live entries
   const entries = useMemo(() => logSlice ?? liveEntries, [logSlice, liveEntries]);
+
+  // CORE-024 — scrollIntoView's `behavior` is an explicit argument, so the
+  // CSS `scroll-behavior: auto !important` under `prefers-reduced-motion:
+  // reduce` (index.css) cannot override it. Honor the preference in JS.
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const scrollBehavior: ScrollBehavior = prefersReducedMotion ? 'auto' : 'smooth';
 
   const onScroll = () => {
     if (!containerRef.current) return;
@@ -34,13 +45,13 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
   };
 
   useEffect(() => {
-    if (followRef.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [entries]);
+    if (followRef.current) bottomRef.current?.scrollIntoView({ behavior: scrollBehavior });
+  }, [entries, scrollBehavior]);
 
   const scrollToBottom = () => {
     followRef.current = true;
     setIsFollowing(true);
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: scrollBehavior });
   };
 
   return (
@@ -49,7 +60,7 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
         <div className="border-theme-line bg-theme-panel flex flex-shrink-0 justify-end border-b px-3 py-1">
           <button
             onClick={scrollToBottom}
-            className="text-theme-accent text-[10px] font-medium transition-colors hover:opacity-80"
+            className="text-theme-accent-text text-[10px] font-medium transition-colors hover:opacity-80"
           >
             ▼ Jump to live
           </button>

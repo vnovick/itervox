@@ -1,0 +1,25 @@
+[Unit]
+Description=Prune stale itervox workspaces and old logs (CORE-107)
+Documentation=https://itervox.dev
+After=itervox.service
+RequiresMountsFor=@ROOT@
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@WORKDIR@
+# Retention knobs live here, not in the unit (all optional):
+#   ITERVOX_CLEANUP_WORKSPACE_DAYS=14  ITERVOX_CLEANUP_LOG_DAYS=30
+#   ITERVOX_CLEANUP_GRACE_MINUTES=10   ITERVOX_CLEANUP_STATE_URL=http://127.0.0.1:8090/api/v1/state
+#   ITERVOX_CLEANUP_DRY_RUN=1          (log what would go, remove nothing)
+EnvironmentFile=-/etc/itervox/cleanup.env
+# The bearer token for GET /api/v1/state is read from @WORKDIR@/.itervox/.env
+# (ITERVOX_API_TOKEN) or from a secret-manager EnvironmentFile; the script
+# refuses to remove anything when the daemon is up and the state query fails.
+EnvironmentFile=-/run/itervox/env
+ExecStart=/usr/local/bin/itervox-cleanup.sh --workdir @WORKDIR@
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=full

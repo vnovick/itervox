@@ -1,0 +1,12 @@
+{
+  "backend": "claude",
+  "host": "build-1",
+  "status": "limited",
+  "kind": "quota",
+  "limitType": "five_hour",
+  "limitedUntil": "2026-05-25T12:10:00Z",
+  "retryAt": "2026-05-25T12:10:00Z",
+  "since": "2026-05-25T12:00:00Z",
+  "heldIssues": 2,
+  "reroutedIssues": 1
+}

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { z } from 'zod';
-import { authedFetch } from '../auth/authedFetch';
+import { apiRequest } from '../auth/apiRequest';
 
 const ProjectSchema = z.object({
   id: z.string(),
@@ -20,9 +20,8 @@ export function useProjects(enabled = true) {
   return useQuery({
     queryKey: PROJECTS_KEY,
     queryFn: async () => {
-      const res = await authedFetch('/api/v1/projects');
-      if (!res.ok) throw new Error(`fetch projects failed: ${String(res.status)}`);
-      return ProjectsResponseSchema.parse(await res.json()).projects;
+      const { data } = await apiRequest('/api/v1/projects', { op: 'fetch projects' });
+      return ProjectsResponseSchema.parse(data).projects;
     },
     enabled,
     staleTime: 60_000,

@@ -57,7 +57,8 @@ export function makeBlockedIssue(overrides?: DeepPartial<TrackerIssue>): Tracker
         url: 'https://example.com/issues/DEMO-1',
       },
     ],
-    ineligibleReason: 'blocked by DEMO-1',
+    // The machine format dispatch.go emits (IneligibleBlockedByPrefix).
+    ineligibleReason: 'blocked_by:DEMO-1',
     ...overrides,
   });
 }

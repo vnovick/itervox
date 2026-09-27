@@ -8,7 +8,6 @@ describe('uiStore', () => {
       dashboardViewMode: 'board',
       dashboardSearch: '',
       dashboardStateFilter: 'all',
-      dashboardSearchVisible: false,
       expandedRunningId: null,
       expandedPausedId: null,
       logsIssueSearch: '',
@@ -20,7 +19,24 @@ describe('uiStore', () => {
     expect(state.dashboardViewMode).toBe('board');
     expect(state.dashboardSearch).toBe('');
     expect(state.dashboardStateFilter).toBe('all');
-    expect(state.dashboardSearchVisible).toBe(false);
+    // CORE-083 — the store holds exactly these data fields (the never-read
+    // search-visibility flag is gone).
+    const dataKeys = Object.entries(state)
+      .filter(([, v]) => typeof v !== 'function')
+      .map(([k]) => k)
+      .sort();
+    expect(dataKeys).toEqual([
+      'automationsTab',
+      'commandPaletteOpen',
+      'dashboardSearch',
+      'dashboardStateFilter',
+      'dashboardViewMode',
+      'expandedPausedId',
+      'expandedRunningId',
+      'logsAutomationOnly',
+      'logsIssueSearch',
+      'timelineAutomationOnly',
+    ]);
     expect(state.expandedRunningId).toBeNull();
     expect(state.expandedPausedId).toBeNull();
     expect(state.logsIssueSearch).toBe('');
@@ -39,11 +55,6 @@ describe('uiStore', () => {
   it('sets dashboard state filter', () => {
     useUIStore.getState().setDashboardStateFilter('In Progress');
     expect(useUIStore.getState().dashboardStateFilter).toBe('In Progress');
-  });
-
-  it('toggles search visibility', () => {
-    useUIStore.getState().setDashboardSearchVisible(true);
-    expect(useUIStore.getState().dashboardSearchVisible).toBe(true);
   });
 
   it('sets logs issue search', () => {

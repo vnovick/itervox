@@ -2,11 +2,14 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 // Rate-limit retry bounds. Deliberately finite: a tracker stuck returning 429
@@ -79,20 +82,6 @@ func WithReadIntent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, requestIntentKey{}, intentRead)
 }
 
-// HasWriteIntent reports whether ctx was explicitly marked as a mutation via
-// WithWriteIntent. A nil context, an unset intent, or an explicit read intent
-// all report false.
-func HasWriteIntent(ctx context.Context) bool {
-	return intentOf(ctx) == intentWrite
-}
-
-// HasReadIntent reports whether ctx was explicitly marked as a read via
-// WithReadIntent. A nil context, an unset intent, or an explicit write intent
-// all report false.
-func HasReadIntent(ctx context.Context) bool {
-	return intentOf(ctx) == intentRead
-}
-
 func intentOf(ctx context.Context) requestIntent {
 	if ctx == nil {
 		return intentUnset
@@ -132,22 +121,32 @@ func isWriteRequest(req *http.Request) bool {
 
 // ParseRetryAfter interprets a Retry-After header, which RFC 9110 allows in
 // two forms: delay-seconds, or an HTTP-date. Returns 0 when absent or
-// unparseable, letting the caller fall back to its own backoff.
+// unparseable, letting the caller fall back to its own backoff. A delay is
+// clamped to maxRecordedWindow, the same bound the gate applies.
 //
 // now is injected so the HTTP-date branch is testable without sleeping.
 func ParseRetryAfter(header string, now time.Time) time.Duration {
 	if header == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(header); err == nil {
+	if secs, err := strconv.ParseInt(header, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		// ParseInt saturates to ±MaxInt64 on ErrRange, so a delay too large
+		// for int64 is handled as the huge positive delay it is.
 		if secs <= 0 {
 			return 0
+		}
+		// Clamp BEFORE multiplying: secs*time.Second overflows int64 from
+		// 9223372037 up, and the negative result read as "no Retry-After",
+		// re-sending into the window on the ~2s default ladder (BH1). The
+		// bound is the one the gate applies to every published reset.
+		if secs >= int64(maxRecordedWindow/time.Second) {
+			return maxRecordedWindow
 		}
 		return time.Duration(secs) * time.Second
 	}
 	if when, err := http.ParseTime(header); err == nil {
 		if d := when.Sub(now); d > 0 {
-			return d
+			return min(d, maxRecordedWindow)
 		}
 	}
 	return 0
@@ -206,6 +205,22 @@ func rateLimitBackoff(attempt int, retryAfter time.Duration) time.Duration {
 // alone is 30s, the outbox flusher's whole per-call deadline, so without this
 // rule a Linear rate limit never reached the outbox as a rate limit at all.
 func DoWithRateLimitRetry(ctx context.Context, client *http.Client, req *http.Request, adapter string, classify RateLimitClassifier) (*http.Response, error) {
+	resp, err := doWithRateLimitRetry(ctx, client, req, adapter, classify)
+	// CORE-045: one count per call (not per attempt), by final outcome. This
+	// is the single HTTP path both adapters share.
+	var rl *RateLimitedError
+	switch {
+	case err == nil:
+		metrics.TrackerRequest(adapter, metrics.TrackerOutcomeOK)
+	case errors.As(err, &rl):
+		metrics.TrackerRequest(adapter, metrics.TrackerOutcomeRateLimited)
+	default:
+		metrics.TrackerRequest(adapter, metrics.TrackerOutcomeError)
+	}
+	return resp, err
+}
+
+func doWithRateLimitRetry(ctx context.Context, client *http.Client, req *http.Request, adapter string, classify RateLimitClassifier) (*http.Response, error) {
 	isWrite := isWriteRequest(req)
 	// A window another caller already discovered that this call cannot wait
 	// out within one bounded wait or its own deadline: fail fast with the
@@ -230,7 +245,15 @@ func DoWithRateLimitRetry(ctx context.Context, client *http.Client, req *http.Re
 		}
 		now := time.Now()
 		retryAfter := ParseRetryAfter(resp.Header.Get("Retry-After"), now)
+		resetAt = publishedReset(adapter, now, resetAt, retryAfter)
 		wait := rateLimitBackoff(attempt, retryAfter)
+		if !resetAt.IsZero() {
+			// A published reset that fits the budget IS the wait: retrying
+			// earlier on the ladder re-sends inside the window this call is
+			// about to record on the shared gate (CORE-118). The fail-fast
+			// check below already bounds resetAt-now by the budget.
+			wait = max(wait, resetAt.Sub(now))
+		}
 		recordRateLimitWindow(adapter, resetAt, wait)
 		// Fail fast when the published reset or the next backoff cannot fit
 		// the budget: every further send is doomed, and waiting would only
@@ -272,10 +295,30 @@ func DoWithRateLimitRetry(ctx context.Context, client *http.Client, req *http.Re
 	if !limited {
 		return resp, nil
 	}
-	recordRateLimitWindow(adapter, resetAt, rateLimitBackoff(MaxRateLimitRetries,
-		ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())))
+	now := time.Now()
+	retryAfter := ParseRetryAfter(resp.Header.Get("Retry-After"), now)
+	resetAt = publishedReset(adapter, now, resetAt, retryAfter)
+	recordRateLimitWindow(adapter, resetAt, rateLimitBackoff(MaxRateLimitRetries, retryAfter))
 	drainAndClose(resp)
 	return nil, &RateLimitedError{Adapter: adapter, ResetAt: resetAt}
+}
+
+// publishedReset is the reset instant the tracker published for one
+// rate-limited response, bounded to maxRecordedWindow. The classifier's
+// header-derived reset wins; otherwise a Retry-After is itself a published
+// reset (GitHub's secondary limit sends only Retry-After), so it becomes
+// now+Retry-After rather than being folded into a backoff capped at
+// MaxRateLimitWait — that cap hid a 120s window behind a 60s re-send and left
+// the typed error with a zero ResetAt (CORE-119). Zero when neither is known.
+func publishedReset(adapter string, now, classified time.Time, retryAfter time.Duration) time.Time {
+	reset := classified
+	if reset.IsZero() && retryAfter > 0 {
+		reset = now.Add(retryAfter)
+	}
+	if reset.IsZero() {
+		return reset
+	}
+	return boundResetAt(adapter, now, reset)
 }
 
 // exceedsBudget reports whether waiting until `until` does not fit the
@@ -331,4 +374,18 @@ func drainAndClose(resp *http.Response) {
 	}
 	_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
 	_ = resp.Body.Close()
+}
+
+// HasWriteIntent reports whether ctx was explicitly marked as a mutation via
+// WithWriteIntent. A nil context, an unset intent, or an explicit read intent
+// all report false.
+func HasWriteIntent(ctx context.Context) bool {
+	return intentOf(ctx) == intentWrite
+}
+
+// HasReadIntent reports whether ctx was explicitly marked as a read via
+// WithReadIntent. A nil context, an unset intent, or an explicit write intent
+// all report false.
+func HasReadIntent(ctx context.Context) bool {
+	return intentOf(ctx) == intentRead
 }

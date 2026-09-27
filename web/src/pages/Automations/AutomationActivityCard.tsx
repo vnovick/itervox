@@ -1,5 +1,6 @@
 import { Link } from 'react-router';
 import { useMemo } from 'react';
+import { logsPath } from '../../hooks/useUrlState';
 import { Card } from '../../components/ui/Card/Card';
 import { Sparkline } from '../../components/itervox/Sparkline';
 import type { AutomationDef, HistoryRow, RunningRow } from '../../types/schemas';
@@ -96,8 +97,8 @@ export function AutomationActivityCard({
                 <span className="text-theme-muted">{formatElapsed(run.elapsedMs)}</span>
                 <span className="text-theme-muted ml-auto">{formatTimestamp(run.timestamp)}</span>
                 <Link
-                  to={`/logs?identifier=${encodeURIComponent(run.identifier)}`}
-                  className="text-theme-accent text-xs hover:underline"
+                  to={logsPath(run.identifier)}
+                  className="text-theme-accent-text text-xs hover:underline"
                   data-testid="automation-run-logs-link"
                 >
                   View

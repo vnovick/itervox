@@ -54,11 +54,11 @@ export function DetailChip({
     tone === 'accent'
       ? 'bg-theme-accent-soft text-theme-accent-strong'
       : tone === 'warning'
-        ? 'bg-theme-warning-soft text-theme-warning'
+        ? 'bg-theme-warning-soft text-theme-warning-text'
         : tone === 'danger'
-          ? 'bg-theme-danger-soft text-theme-danger'
+          ? 'bg-theme-danger-soft text-theme-danger-text'
           : tone === 'success'
-            ? 'bg-theme-success-soft text-theme-success'
+            ? 'bg-theme-success-soft text-theme-success-text'
             : 'bg-theme-bg-soft text-theme-text-secondary';
   return (
     <span

@@ -47,7 +47,7 @@ func TestMergePRGate_InvalidStrategy(t *testing.T) {
 
 func TestMergePRGate_BlockedLabelRefusesMerge(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[{"name":"migration"}],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 	})
@@ -69,7 +69,7 @@ func TestMergePRGate_BlockedLabelRefusesMerge(t *testing.T) {
 // labeled "Needs-Human" must trip a "needs-human" block-list entry.
 func TestMergePRGate_BlockedLabelMatchIsCaseInsensitive(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 8 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 8 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[{"name":"Needs-Human"}],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 	})
@@ -89,7 +89,7 @@ func TestMergePRGate_BlockedLabelMatchIsCaseInsensitive(t *testing.T) {
 
 func TestMergePRGate_NotMergeableRefusesMerge(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[],"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","state":"OPEN"}`),
 		},
 	})
@@ -105,7 +105,7 @@ func TestMergePRGate_NotMergeableRefusesMerge(t *testing.T) {
 
 func TestMergePRGate_RequiredChecksFailingRefusesMerge(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 		"pr checks 7 --required": {
@@ -125,7 +125,7 @@ func TestMergePRGate_RequiredChecksFailingRefusesMerge(t *testing.T) {
 
 func TestMergePRGate_HappyPathMergesAndReturnsCommit(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 		"pr checks 7 --required": {
@@ -164,7 +164,7 @@ func TestMergePRGate_HappyPathMergesAndReturnsCommit(t *testing.T) {
 // reported as a refusal reason.
 func TestMergePRGate_MergeSucceedsEvenIfBranchCleanupFails(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 		"pr checks 7 --required":                                   {out: []byte("all passing\n")},
@@ -201,8 +201,8 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // unprotected repos. Default: refuse with an actionable unarmed_gate reason.
 func TestMergePRGate_UnarmedRepoRefusedByDefault(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`)},
-		"pr checks 7 --required":                                   {out: []byte("no required checks reported on the 'main' branch\n"), err: errors.New("exit status 1")},
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`)},
+		"pr checks 7 --required": {out: []byte("no required checks reported on the 'main' branch\n"), err: errors.New("exit status 1")},
 	})
 	gate := MergePRGate{Strategy: "squash", GH: gh}
 	_, reason, err := gate.Merge(context.Background(), 7)
@@ -221,10 +221,10 @@ func TestMergePRGate_UnarmedRepoRefusedByDefault(t *testing.T) {
 func TestMergePRGate_UnarmedRepoMergesWithExplicitOptIn(t *testing.T) {
 	logs := captureSlog(t)
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`)},
-		"pr checks 7 --required":                                   {out: []byte("no required checks reported on the 'main' branch\n"), err: errors.New("exit status 1")},
-		"pr merge 7 --squash":                                      {out: []byte("Merged pull request #7\n")},
-		"pr view 7 --json mergeCommit":                             {out: []byte(`{"mergeCommit":{"oid":"abc1234"}}`)},
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`)},
+		"pr checks 7 --required":       {out: []byte("no required checks reported on the 'main' branch\n"), err: errors.New("exit status 1")},
+		"pr merge 7 --squash":          {out: []byte("Merged pull request #7\n")},
+		"pr view 7 --json mergeCommit": {out: []byte(`{"mergeCommit":{"oid":"abc1234"}}`)},
 	})
 	gate := MergePRGate{Strategy: "squash", GH: gh, AllowUnchecked: true}
 	commit, reason, err := gate.Merge(context.Background(), 7)
@@ -245,8 +245,8 @@ func TestMergePRGate_UnarmedRepoMergesWithExplicitOptIn(t *testing.T) {
 // A genuinely failing check is still checks_failed, not unarmed_gate.
 func TestMergePRGate_FailingChecksStillRefusedAsChecksFailed(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`)},
-		"pr checks 7 --required":                                   {out: []byte("X ci/test failing\n"), err: errors.New("exit status 8")},
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`)},
+		"pr checks 7 --required": {out: []byte("X ci/test failing\n"), err: errors.New("exit status 8")},
 	})
 	gate := MergePRGate{Strategy: "squash", GH: gh}
 	_, reason, err := gate.Merge(context.Background(), 7)
@@ -282,7 +282,7 @@ func TestExitErrorStderrIsPopulatedByOutputWhenUnset(t *testing.T) {
 
 func TestMergePRGate_AlreadyMergedIsIdempotent(t *testing.T) {
 	gh := fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"MERGED"}`),
 		},
 	})
@@ -299,13 +299,36 @@ func TestMergePRGate_AlreadyMergedIsIdempotent(t *testing.T) {
 // newMergeTestServer builds a whitebox *Server with the minimum required
 // Config fields filled in, so the gaps_11 G-3 merge-policy tests can drive
 // mergePRGate / handleAgentMergePR directly.
+// resetMergePRDedup empties the process-level merge_pr dedup ledger before
+// the test and again on cleanup. The ledger is intentionally process-global
+// in production (one daemon, one ledger), but a test that merges
+// "<identifier>:<pr>" would otherwise see its own previous iteration's entry
+// under -count=N and get the already_merged short-circuit instead of a real
+// gate run (CORE-148). The map is replaced under the ledger's mutex rather
+// than swapping the pointer, so this stays race-clean.
+func resetMergePRDedup(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		defaultMergePRDedup.mu.Lock()
+		defaultMergePRDedup.merged = map[string]string{}
+		defaultMergePRDedup.inflight = map[string]struct{}{}
+		defaultMergePRDedup.mu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
 func newMergeTestServer(t *testing.T, cfg Config) *Server {
 	t.Helper()
+	resetMergePRDedup(t)
 	if cfg.Snapshot == nil {
 		cfg.Snapshot = func() StateSnapshot { return StateSnapshot{} }
 	}
 	if cfg.RefreshChan == nil {
 		cfg.RefreshChan = make(chan struct{}, 1)
+	}
+	if cfg.AllowedHosts == nil {
+		cfg.AllowedHosts = testAllowedHosts
 	}
 	return New(cfg)
 }
@@ -331,7 +354,7 @@ func TestServerMergeGate_ConfiguredBlockLabelsEnforced(t *testing.T) {
 
 	// Custom label present → refused.
 	s.ghRun = fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[{"name":"do-not-merge"}],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 	})
@@ -346,7 +369,7 @@ func TestServerMergeGate_ConfiguredBlockLabelsEnforced(t *testing.T) {
 	// Default label "migration" — removed by the operator's override — must
 	// no longer block; the merge proceeds.
 	s.ghRun = fakeGH(map[string]fakeGHResponse{
-		"pr view 8 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 8 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[{"name":"migration"}],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 		"pr checks 8 --required": {
@@ -402,7 +425,7 @@ func TestHandleAgentMergePR_UsesConfiguredPolicy(t *testing.T) {
 		Client:           &FuncClient{},
 	})
 	s.ghRun = fakeGH(map[string]fakeGHResponse{
-		"pr view 7 --json labels,mergeable,mergeStateStatus,state": {
+		"pr view 7 --json labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName": {
 			out: []byte(`{"labels":[{"name":"needs-human"}],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN"}`),
 		},
 		"pr checks 7 --required": {
@@ -437,16 +460,5 @@ func TestHandleAgentMergePR_UsesConfiguredPolicy(t *testing.T) {
 	}
 	if resp.MergeCommit != "cafe123" {
 		t.Errorf("merge commit = %q; want cafe123", resp.MergeCommit)
-	}
-}
-
-func TestIsValidMergeStrategy(t *testing.T) {
-	for _, s := range []string{"squash", "rebase", "merge"} {
-		if !IsValidMergeStrategy(s) {
-			t.Errorf("expected %q to be valid", s)
-		}
-	}
-	if IsValidMergeStrategy("yolo") {
-		t.Error("expected yolo to be invalid")
 	}
 }

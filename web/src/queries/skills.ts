@@ -5,7 +5,7 @@
 // Skills/Analytics tab uses these.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { authedFetch } from '../auth/authedFetch';
+import { ApiError, apiRequest } from '../auth/apiRequest';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
 import { useToastStore } from '../store/toastStore';
 import {
@@ -32,18 +32,25 @@ function readErrorMessage(err: unknown): string {
   return 'Unexpected error';
 }
 
+/** GET that maps a 503 (not computed yet) to null; any other failure throws ApiError. */
+async function getOrNullOn503(path: string, op: string): Promise<unknown> {
+  try {
+    const { data } = await apiRequest(path, { op });
+    return data;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) return null;
+    throw err;
+  }
+}
+
 export function useSkillsInventory() {
   return useQuery({
     queryKey: SKILLS_INVENTORY_KEY,
     queryFn: async (): Promise<SkillsInventory | null> => {
-      const res = await authedFetch('/api/v1/skills/inventory');
-      if (res.status === 503) {
-        // Daemon hasn't completed first scan yet — treat as "no data" instead
-        // of a hard error.
-        return null;
-      }
-      if (!res.ok) throw new Error(`inventory fetch failed: ${String(res.status)}`);
-      return InventorySchema.parse(await res.json());
+      // A 503 means the daemon hasn't completed its first scan yet — "no
+      // data", not a hard error.
+      const data = await getOrNullOn503('/api/v1/skills/inventory', 'inventory fetch');
+      return data === null ? null : InventorySchema.parse(data);
     },
     staleTime: STALE_TIME_MS,
     retry: (failureCount, err) => {
@@ -59,9 +66,8 @@ export function useSkillsIssues() {
   return useQuery({
     queryKey: SKILLS_ISSUES_KEY,
     queryFn: async (): Promise<InventoryIssue[]> => {
-      const res = await authedFetch('/api/v1/skills/issues');
-      if (!res.ok) throw new Error(`issues fetch failed: ${String(res.status)}`);
-      const parsed = IssuesArraySchema.parse(await res.json());
+      const { data } = await apiRequest('/api/v1/skills/issues', { op: 'issues fetch' });
+      const parsed = IssuesArraySchema.parse(data);
       return parsed ?? [];
     },
     staleTime: STALE_TIME_MS,
@@ -76,9 +82,8 @@ export function useSkillsScan() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (): Promise<SkillsInventory> => {
-      const res = await authedFetch('/api/v1/skills/scan', { method: 'POST' });
-      if (!res.ok) throw new Error(`scan failed: ${String(res.status)}`);
-      return InventorySchema.parse(await res.json());
+      const { data } = await apiRequest('/api/v1/skills/scan', { op: 'scan', method: 'POST' });
+      return InventorySchema.parse(data);
     },
     onSuccess: (inv) => {
       qc.setQueryData(SKILLS_INVENTORY_KEY, inv);
@@ -107,10 +112,8 @@ export function useSkillsAnalytics() {
   return useQuery({
     queryKey: SKILLS_ANALYTICS_KEY,
     queryFn: async (): Promise<AnalyticsSnapshotData | null> => {
-      const res = await authedFetch('/api/v1/skills/analytics');
-      if (res.status === 503) return null;
-      if (!res.ok) throw new Error(`analytics fetch failed: ${String(res.status)}`);
-      return AnalyticsSnapshotSchema.parse(await res.json());
+      const data = await getOrNullOn503('/api/v1/skills/analytics', 'analytics fetch');
+      return data === null ? null : AnalyticsSnapshotSchema.parse(data);
     },
     staleTime: STALE_TIME_MS,
     retry: (failureCount, err) => {
@@ -124,9 +127,10 @@ export function useSkillsAnalyticsRecommendations() {
   return useQuery({
     queryKey: SKILLS_ANALYTICS_RECS_KEY,
     queryFn: async (): Promise<Recommendation[]> => {
-      const res = await authedFetch('/api/v1/skills/analytics/recommendations');
-      if (!res.ok) throw new Error(`analytics-recs fetch failed: ${String(res.status)}`);
-      const parsed = RecsArraySchema.parse(await res.json());
+      const { data } = await apiRequest('/api/v1/skills/analytics/recommendations', {
+        op: 'analytics-recs fetch',
+      });
+      const parsed = RecsArraySchema.parse(data);
       return parsed ?? [];
     },
     staleTime: STALE_TIME_MS,
@@ -141,15 +145,7 @@ export function useSkillsFix() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (req: FixRequest): Promise<void> => {
-      const res = await authedFetch('/api/v1/skills/fix', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(req),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `fix failed: ${String(res.status)}`);
-      }
+      await apiRequest('/api/v1/skills/fix', { op: 'fix', method: 'POST', json: req });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: SKILLS_INVENTORY_KEY });

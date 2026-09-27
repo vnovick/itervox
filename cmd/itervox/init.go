@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
-	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/templates"
@@ -116,6 +115,12 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.\n")
 	b.WriteString("  deps_analyzer_profile: " + initDepsAnalyzerProfileName + "    # Profile used by the dashboard \"Analyze dependencies\" button. Empty disables the button.\n")
 	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.\n")
+	b.WriteString("  # backend_fallback:                 # CORE-054: reroute when a backend hits its usage limit (docs/configuration.md).\n")
+	b.WriteString("  #   chain: [claude, codex]\n")
+	b.WriteString("  #   profile_map:                     # each target must exist, be enabled, and run that backend\n")
+	b.WriteString("  #     implementer: { codex: implementer-codex }\n")
+	b.WriteString("  #   switch_back: at_reset            # at_reset | on_success | manual\n")
+	b.WriteString("  #   min_dwell_minutes: 30\n")
 	b.WriteString("  reviewer_prompt: |\n")
 	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
 	b.WriteString("\n")
@@ -488,7 +493,7 @@ func runInit(args []string) {
 
 	content := generateWorkflow(*trackerKind, *runner, info, *output)
 
-	if err := atomicfs.WriteFile(*output, []byte(content), 0o644); err != nil {
+	if err := writeInitWorkflow(*output, []byte(content)); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", *output, err)
 		fatalExit(1)
 	}
@@ -563,12 +568,22 @@ func runInit(args []string) {
 	if *output != "WORKFLOW.md" {
 		runCmd = "itervox -workflow " + *output
 	}
+	nextStep := 2
 	if *trackerKind == "linear" {
-		fmt.Printf("  2. Run: %s\n", runCmd)
-		fmt.Printf("  3. Select a project via the TUI (press p) or the web dashboard\n")
+		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
+		nextStep++
+		fmt.Printf("  %d. Select a project via the TUI (press p) or the web dashboard\n", nextStep)
+		nextStep++
 	} else {
-		fmt.Printf("  2. Run: %s\n", runCmd)
+		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
+		nextStep++
 	}
+	// server.port: 0 above means the daemon binds an OS-assigned port, not
+	// the 8090 default — find the actual URL with one of these instead of
+	// guessing a port (CORE-022).
+	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url, press 'w' in the TUI to copy it, or run \"itervox doctor\"\n", nextStep)
+	nextStep++
+	fmt.Printf("  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
 }
 
 func existingWorkflowInitMessage(output string) string {

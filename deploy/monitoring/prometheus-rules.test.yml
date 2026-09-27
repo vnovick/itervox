@@ -1,0 +1,184 @@
+# CORE-113: promtool unit tests — one firing case per alert in
+# prometheus-rules.yml, plus the non-firing cases that matter (an idle-but-live
+# loop, a short outbox blip, a healthy heartbeat).
+#   promtool test rules deploy/monitoring/prometheus-rules.test.yml
+rule_files:
+  - prometheus-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="itervox",instance="vm-a:8090"}'
+        values: '0x15'
+      # Wedged loop: last iteration stamped at t=100s and never again.
+      - series: 'itervox_event_loop_last_idle_timestamp_seconds{instance="vm-a:8090"}'
+        values: '100x25'
+      # Live loop on another daemon: stamp tracks the clock.
+      - series: 'itervox_event_loop_last_idle_timestamp_seconds{instance="vm-b:8090"}'
+        values: '0+60x25'
+      - series: 'itervox_tracker_poll_consecutive_failures{instance="vm-a:8090"}'
+        values: '3x15'
+      - series: 'itervox_tracker_rate_limited_until_seconds{instance="vm-a:8090",adapter="linear"}'
+        values: '5000x15'
+      - series: 'itervox_goroutine_panics_total{instance="vm-a:8090"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1'
+      - series: 'itervox_events_dropped_total{instance="vm-a:8090"}'
+        values: '0 0 0 2 2 2 2 2 2 2 2'
+      - series: 'itervox_persist_write_errors_total{instance="vm-a:8090"}'
+        values: '0 0 0 0 1 1 1 1 1 1 1'
+      - series: 'itervox_worker_exits_total{instance="vm-a:8090",reason="failed"}'
+        values: '0 1 2 3 4 5 6 6 6 6 6'
+      - series: 'itervox_worker_exits_total{instance="vm-a:8090",reason="succeeded"}'
+        values: '0+10x10'
+      - series: 'itervox_client_errors_total{instance="vm-a:8090",kind="schema",outcome="accepted"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1'
+      - series: 'itervox_client_errors_total{instance="vm-a:8090",kind="schema",outcome="dropped"}'
+        values: '0 5 9 9 9 9 9 9 9 9 9'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ItervoxScrapeDown
+        exp_alerts:
+          - exp_labels: {severity: page, job: itervox, instance: "vm-a:8090"}
+            exp_annotations:
+              description: "The daemon is down, or the scrape token is wrong (a 401 also sets up=0). Check `systemctl status itervox`."
+              summary: "itervox /metrics unreachable on vm-a:8090"
+      - eval_time: 20m
+        alertname: ItervoxEventLoopStalled
+        exp_alerts:
+          - exp_labels: {severity: page, instance: "vm-a:8090"}
+            exp_annotations:
+              description: "No dispatch, retries or reconciliation are happening. The optional itervox-watchdog timer restarts the unit after 3 failed /ready probes."
+              summary: "itervox event loop has not finished an iteration for 10+ min on vm-a:8090"
+      - eval_time: 10m
+        alertname: ItervoxTrackerPollFailing
+        exp_alerts:
+          - exp_labels: {severity: page, instance: "vm-a:8090"}
+            exp_annotations:
+              description: "Rate-limited polls do not count. /api/v1/ready is 503 until a poll succeeds; a restart will not help."
+              summary: "3 consecutive tracker poll failures on vm-a:8090"
+      - eval_time: 10m
+        alertname: ItervoxTrackerRateLimitedLong
+        exp_alerts:
+          - exp_labels: {severity: warn, instance: "vm-a:8090", adapter: linear}
+            exp_annotations:
+              summary: "tracker linear rate-limited for another 1h 13m 20s"
+      - eval_time: 5m
+        alertname: ItervoxGoroutinePanic
+        exp_alerts:
+          - exp_labels: {severity: page, instance: "vm-a:8090"}
+            exp_annotations:
+              description: "The panic site is in the daemon log at level=ERROR."
+              summary: "itervox recovered a goroutine panic on vm-a:8090"
+      - eval_time: 5m
+        alertname: ItervoxEventsDropped
+        exp_alerts:
+          - exp_labels: {severity: warn, instance: "vm-a:8090"}
+            exp_annotations:
+              summary: "orchestrator events dropped on vm-a:8090"
+      - eval_time: 5m
+        alertname: ItervoxPersistWriteErrors
+        exp_alerts:
+          - exp_labels: {severity: page, instance: "vm-a:8090"}
+            exp_annotations:
+              description: "paused/input-required/queue state may not survive a restart."
+              summary: "runtime ledger writes failing on vm-a:8090 (disk full or read-only?)"
+      - eval_time: 10m
+        alertname: ItervoxWorkerFailureRate
+        exp_alerts:
+          - exp_labels: {severity: warn, instance: "vm-a:8090"}
+            exp_annotations:
+              summary: "6 failed/stalled agent runs in the last hour on vm-a:8090"
+      - eval_time: 5m
+        alertname: ItervoxDashboardClientErrors
+        exp_alerts:
+          - exp_labels: {severity: info, instance: "vm-a:8090", kind: schema, outcome: accepted}
+            exp_annotations:
+              description: "kind=\"schema\" means dashboard/daemon version drift."
+              summary: "dashboard reported schema errors on vm-a:8090"
+      # Before the rules' `for:` windows elapse nothing fires.
+      - eval_time: 3m
+        alertname: ItervoxTrackerPollFailing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'itervox_outbox_entries{instance="vm-a:8090",state="degraded"}'
+        values: '1x45'
+      - series: 'itervox_outbox_entries{instance="vm-a:8090",state="pending"}'
+        values: '4x45'
+      - series: 'itervox_outbox_entries{instance="vm-a:8090",state="rate_limited"}'
+        values: '0x45'
+      # A short degraded blip on another daemon does not page.
+      - series: 'itervox_outbox_entries{instance="vm-b:8090",state="degraded"}'
+        values: '1x10 0x35'
+      - series: 'itervox_input_required{instance="vm-a:8090"}'
+        values: '2x45'
+      - series: 'itervox_input_required{instance="vm-b:8090"}'
+        values: '0x45'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ItervoxOutboxBacklog
+        exp_alerts:
+          - exp_labels: {severity: warn, instance: "vm-a:8090", state: degraded}
+            exp_annotations:
+              description: "Tracker comments/state moves are queued. Check the dashboard Outbox panel; discard stuck entries."
+              summary: "tracker outbox not draining on vm-a:8090 (degraded=1)"
+      - eval_time: 40m
+        alertname: ItervoxInputRequired
+        exp_alerts:
+          - exp_labels: {severity: info, instance: "vm-a:8090"}
+            exp_annotations:
+              summary: "2 issue(s) waiting on a human reply for 30+ min on vm-a:8090"
+      - eval_time: 20m
+        alertname: ItervoxInputRequired
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'itervox_dispatch_eligible_waiting{instance="vm-a:8090"}'
+        values: '3x70'
+      - series: 'itervox_workers_running{instance="vm-a:8090"}'
+        values: '4x70'
+      - series: 'itervox_workers_max{instance="vm-a:8090"}'
+        values: '4x70'
+    alert_rule_test:
+      - eval_time: 1h5m
+        alertname: ItervoxSaturated
+        exp_alerts:
+          - exp_labels: {severity: info, instance: "vm-a:8090"}
+            exp_annotations:
+              description: "Raise agent.max_concurrent_agents or accept the queue."
+              summary: "all agent slots busy with eligible work waiting for 1h on vm-a:8090"
+
+  - interval: 1m
+    input_series:
+      - series: 'itervox_heartbeat_degraded{instance="vm-a"}'
+        values: '1x40'
+      - series: 'itervox_heartbeat_degraded{instance="vm-b"}'
+        values: '0x40'
+      - series: 'itervox_heartbeat_deps_cycles{instance="vm-a"}'
+        values: '1x40'
+      - series: 'itervox_heartbeat_backends_limited{instance="vm-a"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ItervoxDaemonDegraded
+        exp_alerts:
+          - exp_labels: {severity: page, instance: vm-a}
+            exp_annotations:
+              description: "HEARTBEAT.md says 'Daemon: degraded'; read its 'Last startup error' line and .itervox/STARTUP_ERROR.md."
+              summary: "itervox on vm-a came up with a startup error"
+      - eval_time: 35m
+        alertname: ItervoxDependencyCycle
+        exp_alerts:
+          - exp_labels: {severity: warn, instance: vm-a}
+            exp_annotations:
+              summary: "1 dependency cycle(s) are holding issues on vm-a"
+      - eval_time: 2h5m
+        alertname: ItervoxBackendLimited
+        exp_alerts:
+          - exp_labels: {severity: info, instance: vm-a}
+            exp_annotations:
+              summary: "an agent backend has been usage-limited for 2h+ on vm-a"

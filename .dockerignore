@@ -1,0 +1,50 @@
+# CORE-060: build context for deploy/docker/Dockerfile (context = repo root).
+# The image builds the web bundle and the Go binary itself, so every local
+# build output and dependency tree is excluded.
+
+.git/
+.github/
+.cursor/
+.codex/
+.claude/
+.plans/
+.superpowers/
+.itervox/
+planning/
+site/
+docs/
+
+# Node.js
+**/node_modules/
+web/coverage/
+web/test-results/
+web/playwright-report/
+web/.env*.local
+web/.cache/
+
+# Web bundle output (rebuilt inside the image)
+internal/server/web/dist/
+
+# Go / release outputs
+/itervox
+*.o
+*.so
+*.out
+*.a
+*.test
+coverage.out
+coverage.html
+dist/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Never ship local secrets into a build context
+**/.env
+**/.env.*

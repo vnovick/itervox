@@ -34,7 +34,7 @@ func emptyState() orchestrator.State {
 		IssueBackends:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),
 		PrevActiveIdentifiers: make(map[string]struct{}),
-		DiscardingIdentifiers: make(map[string]struct{}),
+		DiscardingIdentifiers: make(map[string]orchestrator.DiscardMarker),
 		InputRequiredIssues:   make(map[string]*orchestrator.InputRequiredEntry),
 		PendingInputResumes:   make(map[string]*orchestrator.PendingInputResumeEntry),
 		ActiveStates:          []string{"In Progress"},
@@ -388,5 +388,23 @@ func TestEnrichIssue(t *testing.T) {
 			}
 			tt.check(t, ti)
 		})
+	}
+}
+
+func TestEnrichIssue_AutoSwitch(t *testing.T) {
+	issue := domain.Issue{ID: "id-1", Identifier: "ENG-1", Title: "T", State: "In Progress"}
+	snap := orchestrator.State{
+		AutoSwitchedIdentifiers: map[string]struct{}{"ENG-1": {}},
+		IssueBackends:           map[string]string{"ENG-1": "codex"},
+		AutoSwitchInfo: map[string]orchestrator.AutoSwitchRecord{"ENG-1": {
+			Source: orchestrator.AutoSwitchSourceBackendFallback, FromBackend: "claude", ToBackend: "codex"}},
+	}
+	ti := EnrichIssue(issue, snap, time.Now(), &config.Config{})
+	if ti.AutoSwitch == nil || ti.AutoSwitch.Source != "backend_fallback" || ti.AutoSwitch.FromBackend != "claude" {
+		t.Fatalf("autoSwitch not surfaced: %+v", ti.AutoSwitch)
+	}
+	ti = EnrichIssue(issue, orchestrator.State{IssueBackends: map[string]string{"ENG-1": "codex"}}, time.Now(), &config.Config{})
+	if ti.AutoSwitch != nil {
+		t.Fatalf("an operator pin is not an auto switch")
 	}
 }

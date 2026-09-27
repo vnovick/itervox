@@ -1,11 +1,6 @@
 import { z } from 'zod';
 import { AllowedAgentActionSchema, type ProfileDef } from '../../../types/schemas';
-import {
-  buildCanonicalCommand,
-  draftFromProfileDef,
-  type AllowedAgentAction,
-  type SupportedBackend,
-} from '../profileCommands';
+import { buildCanonicalCommand, draftFromProfileDef } from '../profileCommands';
 import type { SuggestedProfile } from './suggestedProfiles';
 
 export const profileFormSchema = z
@@ -25,6 +20,8 @@ export const profileFormSchema = z
     instructionsFile: z.string(),
     allowedActions: z.array(AllowedAgentActionSchema),
     createIssueState: z.string(),
+    // CORE-047 round 2: read-only raw actions from a newer daemon.
+    unknownAllowedActions: z.array(z.string()).optional(),
   })
   .superRefine((values, ctx) => {
     if (values.allowedActions.includes('create_issue') && values.createIssueState.trim() === '') {
@@ -70,6 +67,7 @@ export function profileValuesFromDef(name: string, def: ProfileDef): ProfileForm
     instructionsFile: draft.instructionsFile,
     allowedActions: draft.allowedActions,
     createIssueState: draft.createIssueState,
+    unknownAllowedActions: def.unknownAllowedActions,
   };
 }
 
@@ -87,33 +85,5 @@ export function profileValuesFromSuggestion(suggestion: SuggestedProfile): Profi
     instructionsFile: '',
     allowedActions: suggestion.allowedActions,
     createIssueState: suggestion.createIssueState ?? '',
-  };
-}
-
-export function profileValuesWithName(
-  name: string,
-  enabled: boolean,
-  backend: SupportedBackend,
-  model: string,
-  command: string,
-  prompt: string,
-  soul: string,
-  instructions: string,
-  allowedActions: AllowedAgentAction[],
-  createIssueState: string,
-): ProfileFormValues {
-  return {
-    name,
-    enabled,
-    backend,
-    model,
-    command,
-    prompt,
-    soul,
-    instructions,
-    soulFile: '',
-    instructionsFile: '',
-    allowedActions,
-    createIssueState,
   };
 }

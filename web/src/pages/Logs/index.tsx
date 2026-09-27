@@ -1,17 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { useUIStore } from '../../store/uiStore';
 import { useClearIssueLogs, useIssues } from '../../queries/issues';
 import { useIssueLogs, useLogIdentifiers } from '../../queries/logs';
+import { useLogsUrlSelection } from '../../hooks/useUrlState';
 import { orchDotClass, formatOrchestratorState } from '../../utils/format';
 import { inputRequiredRowState } from '../../utils/inputRequired';
 import { Terminal } from '../../components/ui/Terminal/Terminal';
+import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { EMPTY_RUNNING, EMPTY_RETRYING } from '../../utils/constants';
 import { issueLogToTerminal } from '../../utils/logFormatting';
-import type { StateSnapshot } from '../../types/schemas';
+import type { StateSnapshot, TrackerIssue } from '../../types/schemas';
 import { SearchInput } from '../../components/itervox/SearchInput';
+import { Button } from '../../components/ui/button';
+import { Select } from '../../components/ui/Select';
+import { ToggleChip } from '../../components/ui/ToggleChip';
+import { Banner } from '../../components/ui/Banner';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { cn } from '../../components/ui/cn';
 
 // Logs page filter chip (T-4) treats every entry whose .message starts with
 // this prefix as an automation event. The Go side writes the same prefix via
@@ -34,14 +42,17 @@ type FilterChip = (typeof FILTER_CHIPS)[number];
 type InputRequiredRow = NonNullable<StateSnapshot['inputRequired']>[number];
 const EMPTY_INPUT_REQUIRED: readonly InputRequiredRow[] = [];
 const EMPTY_PAUSED: readonly string[] = [];
+const EMPTY_ISSUES: readonly TrackerIssue[] = [];
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Logs() {
-  const { data: issues = [] } = useIssues();
-  const logIdentifiers = useLogIdentifiers();
-  const { inputRequired, paused, running, retrying } = useItervoxStore(
+  const issuesQuery = useIssues();
+  const issues = issuesQuery.data ?? EMPTY_ISSUES;
+  const { data: logIdentifiers, settled: logIdentifiersSettled } = useLogIdentifiers();
+  const { hasSnapshot, inputRequired, paused, running, retrying } = useItervoxStore(
     useShallow((s) => ({
+      hasSnapshot: s.snapshot !== null,
       inputRequired: s.snapshot?.inputRequired ?? EMPTY_INPUT_REQUIRED,
       paused: s.snapshot?.paused ?? EMPTY_PAUSED,
       running: s.snapshot?.running ?? EMPTY_RUNNING,
@@ -94,14 +105,16 @@ export default function Logs() {
   // Sidebar uses the union of issue metadata, live orchestrator state, and log
   // identifiers so active issues remain visible even before the first log line.
   const sortedIssues = useMemo(() => {
+    // CORE-082 — attention first: an issue waiting on the operator sorts
+    // above running work.
     const order = (state: string) =>
-      state === 'running'
+      state === 'input_required'
         ? 0
-        : state === 'retrying'
+        : state === 'running'
           ? 1
-          : state === 'pending_input_resume'
+          : state === 'retrying'
             ? 2
-            : state === 'input_required'
+            : state === 'pending_input_resume'
               ? 3
               : state === 'paused'
                 ? 4
@@ -138,8 +151,6 @@ export default function Logs() {
     runningSet,
   ]);
 
-  const selectedId = useItervoxStore((s) => s.activeIssueId) ?? '';
-  const setSelectedId = useItervoxStore((s) => s.setActiveIssueId);
   const [activeChips, setActiveChips] = useState<Set<FilterChip>>(new Set(FILTER_CHIPS));
   const automationOnly = useUIStore((s) => s.logsAutomationOnly);
   const setAutomationOnly = useUIStore((s) => s.setLogsAutomationOnly);
@@ -163,19 +174,23 @@ export default function Logs() {
     );
   }, [issueSearch, sortedIssues]);
 
-  useEffect(() => {
-    if (!selectedId || !visibleIssues.find((i) => i.identifier === selectedId)) {
-      const first = visibleIssues[0];
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      if (first) setSelectedId(first.identifier);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedId intentionally omitted: effect only auto-selects first issue when the issue list changes, not on every selectedId transition
-  }, [visibleIssues]);
+  // CORE-085 — the selection lives in /logs/:identifier. The URL id wins over
+  // the first-row auto-select; it is only abandoned once issues, the snapshot
+  // and the log identifiers have loaded without it (the unfiltered union is
+  // checked, so a search that hides the row does not move the selection).
+  const settled =
+    (issuesQuery.isSuccess || issuesQuery.isError) && hasSnapshot && logIdentifiersSettled;
+  const visibleIds = useMemo(() => visibleIssues.map((i) => i.identifier), [visibleIssues]);
+  const { selectedId, select: setSelectedId } = useLogsUrlSelection({
+    union: allIdentifiers,
+    visible: visibleIds,
+    settled,
+  });
 
   const isLive =
     running.some((r) => r.identifier === selectedId) ||
     retrying.some((r) => r.identifier === selectedId);
-  const { data: entries, isLoading: loading } = useIssueLogs(selectedId, isLive);
+  const { data: entries, isLoading: loading, isError } = useIssueLogs(selectedId, isLive);
 
   const clearLogsMutation = useClearIssueLogs();
   const handleClearLogs = () => {
@@ -227,18 +242,28 @@ export default function Logs() {
   );
 
   const logEntries = useMemo(() => filteredEntries.map(issueLogToTerminal), [filteredEntries]);
+  const hiddenCount = entries.length - filteredEntries.length;
+
+  const selectIssue = (id: string) => {
+    setSelectedId(id);
+  };
 
   return (
     <>
       <PageMeta title="Itervox | Logs" description="Agent logs — all issues" />
-      <div className="flex h-[calc(100vh-64px)]">
-        {/* Sidebar */}
-        <div className="bg-terminal-base flex w-52 flex-shrink-0 flex-col border-r border-gray-800">
-          <div className="border-b border-gray-800 px-3 py-3">
-            <p className="font-mono text-[10px] font-semibold tracking-widest text-[#4b5563] uppercase">
+      {/* CORE-087 — below md the sidebar becomes a select above the terminal;
+          dvh so mobile browser chrome does not push the pane off-screen. */}
+      <div className="flex h-[calc(100dvh-64px)] min-h-0 flex-col md:flex-row">
+        {/* Sidebar (md and up) */}
+        <div
+          data-testid="logs-sidebar"
+          className="bg-theme-panel border-theme-line hidden w-52 flex-shrink-0 flex-col border-r md:flex"
+        >
+          <div className="border-theme-line border-b px-3 py-3">
+            <p className="text-theme-text-secondary font-mono text-[10px] font-semibold tracking-widest uppercase">
               Issues
             </p>
-            <p className="mt-0.5 font-mono text-[10px] text-[#374151]">
+            <p className="text-theme-muted mt-0.5 font-mono text-[10px]">
               {activeCount} active · {sortedIssues.length} total
             </p>
             <SearchInput
@@ -247,92 +272,116 @@ export default function Logs() {
               value={issueSearch}
               onChange={setIssueSearch}
               className="mt-3"
-              inputClassName="h-7 border-gray-800 bg-[#080b10] font-mono text-xs text-[#9ca3af] placeholder:text-[#374151] focus:border-[#1f2937]"
+              inputClassName="h-7 font-mono text-xs"
             />
             {issueSearch.trim() !== '' && (
-              <p className="mt-1 font-mono text-[10px] text-[#374151]">
+              <p className="text-theme-muted mt-1 font-mono text-[10px]">
                 {visibleIssues.length} match{visibleIssues.length === 1 ? '' : 'es'}
               </p>
             )}
           </div>
           <div className="flex-1 overflow-y-auto">
             {sortedIssues.length === 0 && (
-              <p className="px-3 py-4 font-mono text-xs text-[#374151]">No issues loaded</p>
+              <p className="text-theme-muted px-3 py-4 font-mono text-xs">No issues loaded</p>
             )}
             {sortedIssues.length > 0 && visibleIssues.length === 0 && (
-              <p className="px-3 py-4 font-mono text-xs text-[#374151]">No matching issues</p>
+              <p className="text-theme-muted px-3 py-4 font-mono text-xs">No matching issues</p>
             )}
-            {visibleIssues.map((issue) => (
-              <button
-                key={issue.identifier}
-                onClick={() => {
-                  setSelectedId(issue.identifier);
-                }}
-                className={`flex w-full items-center gap-2 border-b border-gray-900 px-3 py-2 text-left font-mono text-xs transition-colors ${
-                  selectedId === issue.identifier ? 'bg-[#1a1f2e]' : 'hover:bg-[#161a22]'
-                }`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${orchDotClass(issue.orchestratorState)}`}
-                />
-                <span
-                  className={`truncate ${
-                    selectedId === issue.identifier ? 'text-[#4ade80]' : 'text-[#9ca3af]'
-                  }`}
+            {visibleIssues.map((issue) => {
+              const active = selectedId === issue.identifier;
+              return (
+                <Button
+                  key={issue.identifier}
+                  variant="ghost"
+                  size="sm"
+                  aria-current={active ? 'true' : undefined}
+                  onClick={() => {
+                    selectIssue(issue.identifier);
+                  }}
+                  className={cn(
+                    'border-theme-line h-auto w-full justify-start gap-2 rounded-none border-b px-3 py-2 text-left font-mono',
+                    active && 'bg-theme-accent-soft text-theme-accent-strong',
+                  )}
                 >
-                  {issue.identifier}
-                </span>
-              </button>
-            ))}
+                  <span
+                    aria-hidden="true"
+                    className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${orchDotClass(issue.orchestratorState)}`}
+                  />
+                  <span className="truncate">{issue.identifier}</span>
+                </Button>
+              );
+            })}
           </div>
         </div>
 
+        {/* Issue picker (below md) */}
+        <div className="bg-theme-panel border-theme-line flex flex-shrink-0 items-center gap-2 border-b px-3 py-2 md:hidden">
+          <label
+            htmlFor="logs-issue-select"
+            className="text-theme-text-secondary font-mono text-[11px]"
+          >
+            Issue
+          </label>
+          <Select
+            id="logs-issue-select"
+            data-testid="logs-issue-select"
+            value={selectedId}
+            onChange={(event) => {
+              selectIssue(event.target.value);
+            }}
+            className="h-8 min-w-0 flex-1 font-mono text-xs"
+          >
+            {selectedId === '' && <option value="">Select an issue</option>}
+            {sortedIssues.map((issue) => (
+              <option key={issue.identifier} value={issue.identifier}>
+                {issue.identifier} — {formatOrchestratorState(issue.orchestratorState)}
+              </option>
+            ))}
+          </Select>
+        </div>
+
         {/* Terminal panel */}
-        <div className="bg-terminal-void flex flex-1 flex-col overflow-hidden">
-          {/* Terminal title bar */}
-          <div className="bg-terminal-header flex flex-shrink-0 items-center justify-between border-b border-[#1e2420] px-4 py-2">
-            <div className="flex items-center gap-3">
-              {/* Traffic light dots */}
-              <span className="flex gap-1.5">
-                <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-                <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
-                <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-              </span>
-              <span className="font-mono text-xs text-[#4b5563]">
+        <div className="bg-theme-bg flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {/* Title bar */}
+          <div className="bg-theme-panel border-theme-line flex flex-shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="text-theme-text-secondary truncate font-mono text-xs">
                 {selectedId ? (
                   <>
-                    <span className="text-[#4ade80]">{selectedId}</span>
+                    <span data-testid="logs-selected-id" className="text-theme-success-text">
+                      {selectedId}
+                    </span>
                     {selectedIssue && (
-                      <span className="ml-2 text-[#374151]">
+                      <span className="text-theme-muted ml-2">
                         — {formatOrchestratorState(selectedIssue.orchestratorState)}
                         {loading && <span className="ml-2">· refreshing…</span>}
                       </span>
                     )}
                   </>
                 ) : (
-                  <span className="text-[#374151]">select an issue</span>
+                  <span className="text-theme-muted">select an issue</span>
                 )}
               </span>
             </div>
             <div className="flex items-center gap-3">
               {entries.length > 0 && (
-                <span className="font-mono text-[10px] text-[#374151]">{entries.length} lines</span>
+                <span className="text-theme-muted font-mono text-[10px]">
+                  {entries.length} lines
+                </span>
               )}
               {entries.length > 0 && (
-                <button
-                  onClick={handleClearLogs}
-                  className="font-mono text-[10px] text-[#4b5563] transition-colors hover:text-[#ef4444]"
-                >
-                  ✕ clear
-                </button>
+                <ConfirmButton
+                  label="✕ clear"
+                  confirmLabel="Yes, clear"
+                  pendingLabel="Clearing…"
+                  isPending={clearLogsMutation.isPending}
+                  onConfirm={handleClearLogs}
+                />
               )}
               {entries.length > 0 && (
-                <button
-                  onClick={handleExport}
-                  className="font-mono text-[10px] text-[#4b5563] transition-colors hover:text-[#9ca3af]"
-                >
+                <Button variant="ghost" size="xs" onClick={handleExport} className="font-mono">
                   ↓ export
-                </button>
+                </Button>
               )}
             </div>
           </div>
@@ -341,32 +390,37 @@ export default function Logs() {
           {selectedId && (
             <div
               data-testid="logs-context-strip"
-              className="bg-terminal-header flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-[#1e2420] px-4 py-1.5"
+              className="bg-theme-panel border-theme-line text-theme-muted flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-1.5 font-mono text-[10px]"
             >
-              <span className="font-mono text-[10px] text-[#4b5563]">
+              <span>
                 state{' '}
-                <span className="text-[#9ca3af]">
+                <span className="text-theme-text-secondary">
                   {formatOrchestratorState(selectedIssue?.orchestratorState ?? 'idle')}
                 </span>
               </span>
               {selectedIssue?.branchName && (
-                <span className="font-mono text-[10px] text-[#4b5563]">
-                  branch <span className="text-[#9ca3af]">{selectedIssue.branchName}</span>
+                <span>
+                  branch{' '}
+                  <span className="text-theme-text-secondary">{selectedIssue.branchName}</span>
                 </span>
               )}
               {selectedIssue?.agentProfile && (
-                <span className="font-mono text-[10px] text-[#4b5563]">
-                  profile <span className="text-[#9ca3af]">{selectedIssue.agentProfile}</span>
+                <span>
+                  profile{' '}
+                  <span className="text-theme-text-secondary">{selectedIssue.agentProfile}</span>
                 </span>
               )}
               {runningRow?.workerHost && (
-                <span className="font-mono text-[10px] text-[#4b5563]">
-                  host <span className="text-[#9ca3af]">{runningRow.workerHost}</span>
+                <span>
+                  host <span className="text-theme-text-secondary">{runningRow.workerHost}</span>
                 </span>
               )}
               {runningRow?.sessionId && (
-                <span className="font-mono text-[10px] text-[#4b5563]">
-                  session <span className="text-[#9ca3af]">{runningRow.sessionId.slice(0, 8)}</span>
+                <span>
+                  session{' '}
+                  <span className="text-theme-text-secondary">
+                    {runningRow.sessionId.slice(0, 8)}
+                  </span>
                 </span>
               )}
             </div>
@@ -376,62 +430,69 @@ export default function Logs() {
           {selectedId && (
             <div
               data-testid="logs-filter-chips"
-              className="bg-terminal-header flex flex-shrink-0 items-center gap-2 border-b border-[#1e2420] px-4 py-1.5"
+              className="bg-theme-panel border-theme-line flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5"
             >
               {FILTER_CHIPS.map((chip) => (
-                <button
+                <ToggleChip
                   key={chip}
                   data-testid={`chip-${chip}`}
-                  onClick={() => {
+                  pressed={activeChips.has(chip)}
+                  onPressedChange={() => {
                     toggleChip(chip);
                   }}
-                  className={`rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
-                    activeChips.has(chip)
-                      ? 'bg-[#1a1f2e] text-[#9ca3af]'
-                      : 'text-[#374151] line-through'
-                  }`}
                 >
                   {chip}
-                </button>
+                </ToggleChip>
               ))}
-              <button
-                type="button"
+              <ToggleChip
                 // codex-B5: dedicated automation-only toggle. Renamed from
-                // `chip-automation` to `chip-automation-only` so the now-
-                // included FILTER_CHIPS 'automation' entry can keep the
-                // standard `chip-${name}` testid pattern without colliding.
+                // `chip-automation` to `chip-automation-only` so the
+                // FILTER_CHIPS 'automation' entry keeps the standard
+                // `chip-${name}` testid pattern without colliding.
                 data-testid="chip-automation-only"
-                aria-pressed={automationOnly}
-                onClick={() => {
-                  setAutomationOnly(!automationOnly);
-                }}
-                className={`rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
-                  automationOnly
-                    ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'text-[#374151] line-through'
-                }`}
+                pressed={automationOnly}
+                onPressedChange={setAutomationOnly}
+                className={cn(automationOnly && 'bg-theme-success-soft text-theme-success-text')}
                 title="Show only AUTOMATION FIRED entries"
               >
-                automation
-              </button>
-              <span className="ml-auto font-mono text-[10px] text-[#374151]">
+                automation only
+              </ToggleChip>
+              <span className="text-theme-muted ml-auto font-mono text-[10px]">
                 {filteredEntries.length} / {entries.length}
               </span>
             </div>
           )}
 
+          {/* CORE-082 — a failed fetch / dropped stream is an error, not "no
+              output yet". Lines already received stay visible below it. */}
+          {selectedId && isError && (
+            <Banner tone="danger" data-testid="logs-error-state" className="font-mono">
+              {isLive
+                ? '$ log stream lost — retrying automatically'
+                : '$ could not load logs for this issue'}
+            </Banner>
+          )}
+
           {/* Log output via Terminal (5.3) */}
-          <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {!selectedId ? (
-              <div className="flex flex-1 items-center justify-center font-mono text-xs text-[#374151]">
-                $ select an issue from the sidebar
-              </div>
-            ) : logEntries.length === 0 && !loading ? (
-              <div className="flex flex-1 items-center justify-center font-mono text-xs text-[#4b5563]">
-                $ waiting for agent output…
-              </div>
+              <EmptyState title="$ select an issue from the sidebar" className="font-mono" />
+            ) : logEntries.length === 0 && hiddenCount > 0 ? (
+              <EmptyState
+                data-testid="logs-filtered-empty"
+                className="font-mono"
+                title={`$ ${String(hiddenCount)} ${hiddenCount === 1 ? 'entry' : 'entries'} hidden by filters`}
+              />
+            ) : logEntries.length === 0 && isError ? null : logEntries.length === 0 && !loading ? (
+              <EmptyState title="$ waiting for agent output…" className="font-mono" />
             ) : (
-              <Terminal entries={logEntries} follow showTime={false} />
+              <Terminal
+                entries={logEntries}
+                follow
+                showTime={false}
+                // CORE-069: a different issue or filter is a new view.
+                resetKey={`${selectedId}|${[...activeChips].sort().join(',')}|${String(automationOnly)}`}
+              />
             )}
           </div>
         </div>

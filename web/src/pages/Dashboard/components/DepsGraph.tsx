@@ -288,7 +288,7 @@ function DepsCycleBanner({ cycles }: { cycles: readonly DependencyCycleRow[] }) 
   return (
     <div
       data-testid="deps-cycle-banner"
-      className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger flex flex-col gap-1.5 rounded-[var(--radius-md)] border px-3 py-2 text-xs"
+      className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger-text flex flex-col gap-1.5 rounded-[var(--radius-md)] border px-3 py-2 text-xs"
     >
       {cycles.map((cycle, index) => (
         <div
@@ -363,7 +363,7 @@ function DepsOverridePanel({
             ? `Restore inferred blockers for ${selectedIdentifier}`
             : `Dismiss inferred blockers for ${selectedIdentifier}`
         }
-        className="bg-theme-accent hover:bg-theme-accent-strong rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="bg-theme-accent rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         aria-label={isOverridden ? 'Restore inferred blockers' : 'Dismiss inferred blockers'}
       >
         {isOverridden ? 'Restore inferred blockers' : 'Dismiss inferred blockers'}
@@ -399,7 +399,7 @@ function DepsGraphCanvas({
   if (graphNodes.length === 0) {
     console.warn('DepsGraph: edges present but node metadata is empty — likely a server bug');
     return (
-      <div className="border-theme-line bg-theme-bg-soft text-theme-warning flex min-h-[280px] items-center justify-center rounded-[var(--radius-md)] border px-4 py-8 text-sm">
+      <div className="border-theme-line bg-theme-bg-soft text-theme-warning-text flex min-h-[280px] items-center justify-center rounded-[var(--radius-md)] border px-4 py-8 text-sm">
         Dependency edges present but no node metadata — likely a server bug.
       </div>
     );
@@ -585,7 +585,7 @@ function DepsToolbar({
             });
           }}
           title={disabledReason || `Run the ${selectedProfile ?? 'analyzer'} pass`}
-          className="bg-theme-accent hover:bg-theme-accent-strong rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          className="bg-theme-accent rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           aria-label="Analyze dependencies"
         >
           {isRunning ? 'Analyzing…' : 'Analyze dependencies'}
@@ -593,7 +593,7 @@ function DepsToolbar({
         {depsAnalysisMode === 'manual' && (
           <span
             data-testid="deps-analysis-mode-manual"
-            className="bg-theme-warning-soft text-theme-warning rounded px-1.5 py-0.5 text-[10px] font-medium"
+            className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px] font-medium"
             title="Automatic dependency analysis is off (dependencies.analysis_mode: manual). Use the button to run it."
           >
             manual
@@ -748,7 +748,7 @@ function GraphBadge({
 }) {
   const cls =
     tone === 'success'
-      ? 'bg-theme-success-soft text-theme-success'
+      ? 'bg-theme-success-soft text-theme-success-text'
       : tone === 'accent'
         ? 'bg-theme-accent-soft text-theme-accent-strong'
         : tone === 'muted'

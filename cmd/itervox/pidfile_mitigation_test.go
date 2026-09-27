@@ -48,6 +48,7 @@ func TestRequireNoLiveDaemonAllowsStalePidfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Cleanup(func() { removePIDFile(wf) }) // release the CORE-039 pid lock
 	livePid, _, _, err := claimPIDFile(wf)
 	if err != nil {
 		t.Errorf("stale pidfile must not block startup; got %v", err)
@@ -59,24 +60,13 @@ func TestRequireNoLiveDaemonAllowsStalePidfile(t *testing.T) {
 }
 
 // TestRequireNoLiveDaemonRefusesWhenPidAlive — when the previous daemon's PID
-// is still alive (our own PID is the easiest live-PID we can guarantee), the
-// helper must refuse to start.
+// is still alive, the helper must refuse to start. A real foreign process
+// stands in for it: since CORE-039 our own pid in the file is stale by
+// construction (the same-pid container restart), so it cannot be used here.
 func TestRequireNoLiveDaemonRefusesWhenPidAlive(t *testing.T) {
-	tmp := t.TempDir()
-	wf := filepath.Join(tmp, "WORKFLOW.md")
-	if err := os.WriteFile(wf, []byte("---\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pidDir := filepath.Join(tmp, ".itervox")
-	if err := os.MkdirAll(pidDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	livePID := os.Getpid()
-	contents := []byte(strings.TrimSpace("") +
-		stringFromInt(livePID) + "\t" + wf + "\n")
-	if err := os.WriteFile(filepath.Join(pidDir, "daemon.pid"), contents, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	wf := claimWorkflow(t)
+	livePID := startForeignProcess(t)
+	seedPIDFile(t, wf, stringFromInt(livePID)+"\t"+wf+"\n")
 
 	_, _, _, err := claimPIDFile(wf)
 	if err == nil {

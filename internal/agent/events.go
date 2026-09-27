@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // UsageSnapshot holds token counts from a stream-json usage payload.
@@ -33,6 +34,16 @@ type StreamEvent struct {
 	// InProgress indicates the action is still running (e.g. from item.started).
 	// Callers should log it differently from a completed action.
 	InProgress bool
+	// Subtype is the Claude stream-json "subtype" (system init, api_retry,
+	// ...). Empty for Codex events.
+	Subtype string
+	// Limit is a typed vendor limit signal carried by this line, nil when
+	// the line carries none (CORE-050).
+	Limit *LimitSignal
+	// CostUSD is Claude's `total_cost_usd` from a result event (CORE-091):
+	// a client-side ESTIMATE, cumulative for the session. nil when absent
+	// (and always for Codex, which reports no cost).
+	CostUSD *float64
 }
 
 type rawEvent struct {
@@ -43,6 +54,16 @@ type rawEvent struct {
 	Result    string          `json:"result"`
 	Message   json.RawMessage `json:"message"`
 	Usage     *UsageSnapshot  `json:"usage"`
+
+	// CORE-050 limit signals (see limit_signal.go for the ground truth).
+	RateLimitInfo json.RawMessage `json:"rate_limit_info"` // rate_limit_event
+	// flexNumber: a string or float here must never fail the whole line
+	// (M3-close V2 — readLines would skip it, dropping a result event).
+	RetryDelayMs   flexNumber      `json:"retry_delay_ms"`   // system/api_retry
+	ErrorStatus    flexNumber      `json:"error_status"`     // system/api_retry
+	Error          json.RawMessage `json:"error"`            // system/api_retry category
+	APIErrorStatus flexNumber      `json:"api_error_status"` // result
+	TotalCostUSD   flexNumber      `json:"total_cost_usd"`   // result (CORE-091)
 }
 
 // ParseLine parses a single newline-terminated (or bare) JSON line from
@@ -60,12 +81,20 @@ func ParseLine(line []byte) (StreamEvent, error) {
 
 	ev := StreamEvent{
 		Type:      raw.Type,
+		Subtype:   raw.Subtype,
 		SessionID: raw.SessionID,
 	}
 
 	switch raw.Type {
 	case "system":
-		// session_id populated above
+		// session_id populated above. api_retry is advisory (CORE-050): the
+		// CLI emits it before retrying, so it never ends the turn itself.
+		if raw.Subtype == "api_retry" {
+			ev.Limit = parseAPIRetry(raw)
+		}
+
+	case "rate_limit_event":
+		ev.Limit = parseRateLimitEvent([]byte(trimmed), raw.RateLimitInfo)
 
 	case "assistant":
 		if raw.Usage != nil {
@@ -108,7 +137,9 @@ func ParseLine(line []byte) (StreamEvent, error) {
 	case "result":
 		ev.IsError = raw.IsError || raw.Subtype == "error"
 		ev.ResultText = raw.Result
-		if ev.IsError {
+		ev.CostUSD = raw.TotalCostUSD.ptr()
+		ev.Limit = parseResultLimit(raw, ev.IsError, time.Now())
+		if ev.IsError && !ev.Limit.Terminal() {
 			ev.IsInputRequired = isInputRequiredMsg(raw.Result)
 		}
 	}
@@ -116,18 +147,63 @@ func ParseLine(line []byte) (StreamEvent, error) {
 	return ev, nil
 }
 
-// isInputRequiredMsg returns true when an error message indicates the agent
-// is blocked waiting for human input. Shared by all backend parsers.
+// pendingHumanAnswerPhrases state that the agent is waiting for a human's
+// answer. Neither CLI emits a structured input-request event; these are
+// matched in the text of an error result event (CORE-164). Each phrase is
+// addressed to a person ("your input", "human turn"); see isInputRequiredMsg.
+var pendingHumanAnswerPhrases = []string{
+	"human turn",
+	"needs your input",
+	"need your input",
+	"waiting for your input",
+	"waiting for your answer",
+	"awaiting your input",
+	"waiting for user input",
+}
+
+// cliConfigErrorMarkers name a non-interactive session, an approval or
+// sandbox policy, or a permission denial. Such an error is a configuration
+// problem that no reply to a tracker comment can fix, so it wins over a
+// pending-answer phrase and the turn stays Failed (retried). Taken from the
+// real claude/codex error strings in input_required_msg_test.go (CORE-166).
+var cliConfigErrorMarkers = []string{
+	"non-interactive",
+	"not an interactive",
+	"not a tty",
+	"not a terminal",
+	"raw mode",
+	"approval policy",
+	"approval_policy",
+	"ask-for-approval",
+	"not supported in exec mode",
+	"cannot ask",
+	"nothing on this machine",
+	"permission denied",
+}
+
+// isInputRequiredMsg returns true when an error message says the agent is
+// blocked waiting for a human answer. Shared by all backend parsers.
+//
+// CORE-166: once the worker let InputRequired win over Failed (CORE-164),
+// the old broad terms ("approval", "interactive", "user input", "requires
+// approval", "pending approval", "confirmation required", "waiting for
+// input") went live and matched real CLI configuration errors ("MCP tool
+// call requires approval, but approval policy is never", "This session is
+// non-interactive, …", "confirmation required, and this session cannot
+// ask"), parking the issue on a question nobody can answer instead of
+// retrying it.
 func isInputRequiredMsg(msg string) bool {
 	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "human turn") ||
-		strings.Contains(lower, "approval") ||
-		strings.Contains(lower, "waiting for input") ||
-		strings.Contains(lower, "requires approval") ||
-		strings.Contains(lower, "pending approval") ||
-		strings.Contains(lower, "interactive") ||
-		strings.Contains(lower, "user input") ||
-		strings.Contains(lower, "confirmation required")
+	if containsAny(lower, cliConfigErrorMarkers) {
+		return false
+	}
+	// A usage/rate limit is never a question for a human either: parking it
+	// as input-required would wait on a reply that cannot lift the limit
+	// (CORE-050/051). Limit wording wins over a pending-answer phrase.
+	if limitKindOfText(normalizeLimitText(msg)) != "" {
+		return false
+	}
+	return containsAny(lower, pendingHumanAnswerPhrases)
 }
 
 // InputRequiredSentinel is the literal token agents are instructed to emit

@@ -94,6 +94,21 @@ func (g *RateLimitGate) Record(adapter string, retryAfter time.Duration) {
 // that re-learns the real window.
 const maxRecordedWindow = 2 * time.Hour
 
+// boundResetAt clamps a tracker-published reset to now+maxRecordedWindow,
+// logging when it does. It is the single bound for every reset instant this
+// package hands out: RecordUntil applies it to the gate, and
+// DoWithRateLimitRetry applies it to the reset it puts in *RateLimitedError, so
+// the gate and the typed error can never disagree about the window (CORE-117).
+// A zero or in-bound reset is returned unchanged.
+func boundResetAt(adapter string, now, reset time.Time) time.Time {
+	if limit := now.Add(maxRecordedWindow); reset.After(limit) {
+		slog.Warn("tracker: rate-limit reset beyond sane bound, clamping",
+			"adapter", adapter, "reset", reset, "clamped_to", limit)
+		return limit
+	}
+	return reset
+}
+
 // RecordUntil marks adapter's budget as exhausted until an instant the tracker
 // itself published, rather than a duration this process guessed.
 //
@@ -118,26 +133,11 @@ func (g *RateLimitGate) RecordUntil(adapter string, until time.Time) {
 	if !until.After(now) {
 		return
 	}
-	if limit := now.Add(maxRecordedWindow); until.After(limit) {
-		slog.Warn("tracker: rate-limit reset beyond sane bound, clamping",
-			"adapter", adapter, "reset", until, "clamped_to", limit)
-		until = limit
-	}
+	until = boundResetAt(adapter, now, until)
 	if existing, ok := g.gates[adapter]; ok && existing.After(until) {
 		return
 	}
 	g.gates[adapter] = until
-}
-
-// Clear removes adapter's gate. Exported for tests that must not leak a
-// closed gate into unrelated cases through the process-wide shared gate.
-func (g *RateLimitGate) Clear(adapter string) {
-	if g == nil {
-		return
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.gates, adapter)
 }
 
 // Wait blocks until adapter's recorded window has passed, or returns
@@ -200,4 +200,15 @@ func (g *RateLimitGate) OpenUntil(adapter string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return until, true
+}
+
+// Clear removes adapter's gate. Exported for tests that must not leak a
+// closed gate into unrelated cases through the process-wide shared gate.
+func (g *RateLimitGate) Clear(adapter string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.gates, adapter)
 }

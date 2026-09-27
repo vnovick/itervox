@@ -1,11 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { useItervoxSSE } from './hooks/useItervoxSSE';
-import { useLogStream } from './hooks/useLogStream';
+import {
+  buildSnapshotInvalidationFingerprint,
+  useSnapshotInvalidation,
+} from './hooks/useSnapshotInvalidation';
 import { useItervoxStore } from './store/itervoxStore';
-import { ISSUES_KEY } from './queries/issues';
-import { logIdentifiersKey } from './queries/logs';
 import IssueDetailSlide from './components/itervox/IssueDetailSlide';
 import Toast from './components/common/Toast';
 import { PageErrorBoundary } from './components/common/PageErrorBoundary';
@@ -20,10 +20,14 @@ import {
 } from './components/layout/NavIcons';
 import { ThemeToggle } from './components/ui/ThemeToggle/ThemeToggle';
 import AppHeader from './layout/AppHeader';
-import { useFocusTrap } from './hooks/useFocusTrap';
+import { useDialogLayer } from './components/ui/dialog/useDialogLayer';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
-import { inputRequiredFingerprintValue } from './utils/inputRequired';
+import { useAttentionCount } from './hooks/useOperatorQueue';
+import { useIssueUrlSync } from './hooks/useUrlState';
 
+import { PageLoader } from './components/common/PageLoader';
+import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
+import { AttentionNotifier } from './components/itervox/AttentionNotifier';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Timeline = lazy(() => import('./pages/Timeline'));
@@ -32,13 +36,8 @@ const Automations = lazy(() => import('./pages/Automations'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 
-function PageLoader() {
-  return (
-    <div className="flex h-64 items-center justify-center">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent" />
-    </div>
-  );
-}
+/** Tailwind's `md` breakpoint (the drawer is `md:hidden`). */
+const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
 
 const NAV_ITEMS = [
   { to: '/', icon: <DashboardIcon />, label: 'Dashboard' },
@@ -50,13 +49,21 @@ const NAV_ITEMS = [
 ] as const;
 
 function SidebarContent() {
+  // CORE-078 — same count as the attention inbox and the page title.
+  const attention = useAttentionCount();
   return (
     <>
       {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
           aligns with the dashboard content row in the main column. */}
       <nav className="flex flex-1 flex-col gap-1">
         {NAV_ITEMS.map((item) => (
-          <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
+          <NavLink
+            key={item.to}
+            to={item.to}
+            icon={item.icon}
+            label={item.label}
+            badge={item.to === '/' ? attention : 0}
+          />
         ))}
       </nav>
 
@@ -66,28 +73,42 @@ function SidebarContent() {
   );
 }
 
-function AppShell() {
+// CORE-024 — exported (not just used internally) so a test can exercise the
+// mobile nav drawer's `inert` behavior without needing to also mount the SSE
+// hooks, routes and query client that the default App export wires up.
+export function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
-
-  useFocusTrap(drawerRef, mobileNavOpen);
 
   const closeMobileNav = useCallback(() => {
     setMobileNavOpen(false);
   }, []);
 
+  // M5-close BH-M5-6 — the drawer is md:hidden, so widening the window past
+  // md hid it while it stayed open (focus trap and scroll state included).
+  // Close it when the viewport crosses the breakpoint.
   useEffect(() => {
-    if (!mobileNavOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeMobileNav();
-      }
+    if (!mobileNavOpen || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(MD_BREAKPOINT_QUERY);
+    const onChange = (e: { matches: boolean }) => {
+      if (e.matches) setMobileNavOpen(false);
     };
-    document.addEventListener('keydown', handleKeyDown);
+    mq.addEventListener('change', onChange);
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
+      mq.removeEventListener('change', onChange);
     };
-  }, [mobileNavOpen, closeMobileNav]);
+  }, [mobileNavOpen]);
+
+  // CORE-067: the drawer joins the shared overlay stack — focus trap with
+  // restore, and Escape closes it only when it is the top-most dialog. No
+  // scroll lock: the drawer never locked the page and the content under it
+  // is not scrollable on the widths where it shows.
+  useDialogLayer({
+    isOpen: mobileNavOpen,
+    onClose: closeMobileNav,
+    containerRef: drawerRef,
+    lockScroll: false,
+  });
 
   return (
     <div className="flex min-h-screen">
@@ -96,12 +117,17 @@ function AppShell() {
         <SidebarContent />
       </aside>
 
-      {/* Mobile nav drawer — slides from left */}
+      {/* Mobile nav drawer — slides from left. CORE-024: while closed it
+          previously stayed in the tab order and the a11y tree (hidden only
+          via opacity-0/pointer-events-none), so `inert` now removes it from
+          both whenever it's not open — but only then, so the dialog focus trap above
+          keeps working while the drawer IS open. */}
       <div
         ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-label="Navigation"
+        inert={!mobileNavOpen}
         className={`fixed inset-0 z-50 transition-opacity duration-200 md:hidden ${
           mobileNavOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
         }`}
@@ -140,120 +166,77 @@ function AppShell() {
   );
 }
 
-export function buildSnapshotInvalidationFingerprint(
-  snapshot: ReturnType<typeof useItervoxStore.getState>['snapshot'],
-): string | null {
-  if (!snapshot) return null;
-  const sortStrings = (values: readonly string[]) => [...values].sort((a, b) => a.localeCompare(b));
-  return JSON.stringify({
-    running: sortStrings(snapshot.running.map((row) => row.identifier)),
-    retrying: sortStrings(snapshot.retrying.map((row) => row.identifier)),
-    paused: sortStrings(snapshot.paused),
-    pausedWithPR: snapshot.pausedWithPR ?? {},
-    inputRequired: sortStrings(
-      (snapshot.inputRequired ?? []).map((entry) => inputRequiredFingerprintValue(entry)),
-    ),
-  });
-}
+// CORE-075 — moved to hooks/useSnapshotInvalidation (memoized on snapshot
+// identity); re-exported for existing importers.
+export { buildSnapshotInvalidationFingerprint };
 
-/**
- * Invalidates the issues cache whenever the orchestrator's activity fingerprint
- * changes (sessions start, stop, pause, enter input-required, or pick up PR metadata).
- * This bridges the real-time SSE snapshot to the issues list so the kanban
- * board and issue detail refresh immediately instead of waiting for a stale query.
- */
-function useSnapshotInvalidation() {
-  const queryClient = useQueryClient();
-  const fingerprint = useItervoxStore((s) => buildSnapshotInvalidationFingerprint(s.snapshot));
-  const prevRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (fingerprint === null) return; // no snapshot yet
-    if (prevRef.current !== null && prevRef.current !== fingerprint) {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
-      void queryClient.invalidateQueries({ queryKey: ['issue'] });
-      void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
-    }
-    prevRef.current = fingerprint;
-  }, [fingerprint, queryClient]);
-}
-
-function AppWithSSE() {
-  useItervoxSSE();
-  useLogStream();
-  useSnapshotInvalidation();
-  useMultiTabWarning();
-
-  const refreshSnapshot = useItervoxStore((s) => s.refreshSnapshot);
-  useEffect(() => {
-    void refreshSnapshot();
-  }, [refreshSnapshot]);
-
+// CORE-087 — the route table, exported so a test can render it without the
+// SSE hooks. The catch-all 404 is inside AppShell so it keeps the sidebar and
+// header navigation.
+export function AppRouteTable() {
   return (
-    <>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route
-            index
-            element={
-              <Suspense fallback={<PageLoader />}>
-                <PageErrorBoundary>
-                  <Dashboard />
-                </PageErrorBoundary>
-              </Suspense>
-            }
-          />
-          <Route
-            path="/timeline"
-            element={
-              <Suspense fallback={<PageLoader />}>
-                <PageErrorBoundary>
-                  <Timeline />
-                </PageErrorBoundary>
-              </Suspense>
-            }
-          />
-          <Route
-            path="/logs"
-            element={
-              <Suspense fallback={<PageLoader />}>
-                <PageErrorBoundary>
-                  <Logs />
-                </PageErrorBoundary>
-              </Suspense>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <Suspense fallback={<PageLoader />}>
-                <PageErrorBoundary>
-                  <Settings />
-                </PageErrorBoundary>
-              </Suspense>
-            }
-          />
-          <Route
-            path="/agents"
-            element={
-              <Suspense fallback={<PageLoader />}>
-                <PageErrorBoundary>
-                  <Agents />
-                </PageErrorBoundary>
-              </Suspense>
-            }
-          />
-          <Route
-            path="/automations"
-            element={
-              <Suspense fallback={<PageLoader />}>
-                <PageErrorBoundary>
-                  <Automations />
-                </PageErrorBoundary>
-              </Suspense>
-            }
-          />
-        </Route>
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route
+          index
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Dashboard />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/timeline"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Timeline />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/logs/:identifier?"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Logs />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Settings />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/agents"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Agents />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/automations"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Automations />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
         <Route
           path="*"
           element={
@@ -264,8 +247,30 @@ function AppWithSSE() {
             </Suspense>
           }
         />
-      </Routes>
+      </Route>
+    </Routes>
+  );
+}
+
+function AppWithSSE() {
+  useItervoxSSE();
+  // CORE-075: the global log stream is opened by NarrativeFeed, not here.
+  useSnapshotInvalidation();
+  useMultiTabWarning();
+  // CORE-079 — ?issue= <-> the global IssueDetailSlide selection.
+  useIssueUrlSync();
+
+  const refreshSnapshot = useItervoxStore((s) => s.refreshSnapshot);
+  useEffect(() => {
+    void refreshSnapshot();
+  }, [refreshSnapshot]);
+
+  return (
+    <>
+      <AppRouteTable />
       <IssueDetailSlide />
+      <CommandPaletteHost />
+      <AttentionNotifier />
       <Toast />
     </>
   );

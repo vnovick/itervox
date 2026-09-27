@@ -8,18 +8,32 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 )
 
-// parseLastEventID reads a numeric Last-Event-ID header value. Empty,
-// negative, or non-numeric values resolve to 0 (replay from beginning) —
-// the conservative default that callers fall through to.
-func parseLastEventID(h string) int {
+// parseLogStreamCursor reads the "<epoch>-<seq>" Last-Event-ID format used by
+// handleIssueLogStream's resume-by-sequence contract (CORE-003; see
+// logbuffer.Buffer.GetSince's doc comment for the full semantics).
+//
+//   - An empty header means "first connect": (0, 0, false) — GetSince
+//     ignores epoch/cursor entirely in this case and just returns the
+//     current window.
+//   - A well-formed "<epoch>-<seq>" header returns (epoch, seq, true).
+//   - Any other non-empty header (malformed, or a bare integer from a
+//     pre-CORE-003 client reconnecting after a hot upgrade) returns
+//     (0, -1, true): hasCursor=true with a cursor value that can never be
+//     >= any real base, so GetSince always resolves it to a gap rather than
+//     risking a silent replay of a numbering scheme it cannot interpret.
+func parseLogStreamCursor(h string) (epoch uint32, cursor int64, hasCursor bool) {
 	if h == "" {
-		return 0
+		return 0, 0, false
 	}
-	n, err := strconv.Atoi(h)
-	if err != nil || n < 0 {
-		return 0
+	epochStr, seqStr, ok := strings.Cut(h, "-")
+	if ok {
+		e, errE := strconv.ParseUint(epochStr, 10, 32)
+		s, errS := strconv.ParseInt(seqStr, 10, 64)
+		if errE == nil && errS == nil && s >= 0 {
+			return uint32(e), s, true
+		}
 	}
-	return n
+	return 0, -1, true
 }
 
 // skipEntry returns true for internal lifecycle events that are noise in the timeline.

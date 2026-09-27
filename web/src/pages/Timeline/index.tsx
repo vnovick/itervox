@@ -284,7 +284,9 @@ export default function Timeline() {
         </span>
       </div>
 
-      <div className="flex" style={{ height: 'calc(100vh - 140px)', minHeight: 500 }}>
+      {/* CORE-087 — stacked below md (select above the detail pane); dvh
+          so mobile browser chrome does not push the pane off-screen. */}
+      <div className="flex h-[calc(100dvh-140px)] min-h-[420px] flex-col md:min-h-[500px] md:flex-row">
         <TimelineSidebar
           issueGroups={issueGroups}
           selectedId={selectedId}

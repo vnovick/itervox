@@ -32,6 +32,7 @@ vi.mock('@microsoft/fetch-event-source', () => ({
 // Must import AFTER vi.mock so the mocked dependency is used.
 // vi.mock is hoisted above imports by Vitest at runtime, so the order here is safe.
 import { openAuthedEventStream } from '../authedEventStream';
+import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../../utils/timings';
 
 beforeEach(() => {
   mockFetchEventSource.mockClear();
@@ -109,12 +110,45 @@ describe('openAuthedEventStream', () => {
     expect(onMessage).toHaveBeenCalledWith({ event: 'log', data: 'hello' });
   });
 
-  it('calls opts.onDisconnect on close', () => {
+  it('throws a retryable error from onclose on a clean close, without notifying directly', () => {
     const onDisconnect = vi.fn();
     openAuthedEventStream('/api/v1/events', { onMessage: () => undefined, onDisconnect });
     const call = mockFetchEventSource.mock.calls[0][0] as MockFetchEventSourceArgs;
-    call.onclose?.();
+    // onclose must throw so @microsoft/fetch-event-source's catch block
+    // routes into onerror and retries — see CORE-004. It must NOT call
+    // onDisconnect itself (onerror already does, so this would double-fire).
+    expect(() => call.onclose?.()).toThrow();
+    expect(onDisconnect).not.toHaveBeenCalled();
+  });
+
+  it('notifies onDisconnect exactly once when the onclose-thrown error reaches onerror', () => {
+    const onDisconnect = vi.fn();
+    openAuthedEventStream('/api/v1/events', { onMessage: () => undefined, onDisconnect });
+    const call = mockFetchEventSource.mock.calls[0][0] as MockFetchEventSourceArgs;
+    let thrown: unknown;
+    try {
+      call.onclose?.();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    // This is what @microsoft/fetch-event-source does internally: the
+    // rejection from onclose is handed to onerror.
+    call.onerror?.(thrown);
     expect(onDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('onclose after ctrl.abort() neither throws nor schedules a retry', () => {
+    const onDisconnect = vi.fn();
+    const close = openAuthedEventStream('/api/v1/events', {
+      onMessage: () => undefined,
+      onDisconnect,
+    });
+    const call = mockFetchEventSource.mock.calls[0][0] as MockFetchEventSourceArgs;
+    close(); // aborts ctrl.signal — a deliberate unmount/navigation close.
+    expect(call.signal?.aborted).toBe(true);
+    expect(() => call.onclose?.()).not.toThrow();
+    expect(onDisconnect).not.toHaveBeenCalled();
   });
 
   it('returns exponential backoff delays from onerror', () => {
@@ -136,6 +170,19 @@ describe('openAuthedEventStream', () => {
     expect(onDisconnect).toHaveBeenCalledTimes(3);
   });
 
+  // CORE-083 — the transport reads its policy from utils/timings, and the
+  // shared constants carry the live 1 s / 15 s values (not the stale 5 s / 30 s).
+  it('first reconnect delay is 1000ms and caps at 15000ms', () => {
+    expect(SSE_RECONNECT_BASE_MS).toBe(1000);
+    expect(SSE_RECONNECT_MAX_MS).toBe(15000);
+    openAuthedEventStream('/api/v1/events', { onMessage: () => undefined });
+    const call = mockFetchEventSource.mock.calls[0][0] as MockFetchEventSourceArgs;
+    const delays: (number | undefined)[] = [];
+    for (let i = 0; i < 10; i++) delays.push(call.onerror?.(new Error('boom')));
+    expect(delays[0]).toBe(SSE_RECONNECT_BASE_MS);
+    expect(Math.max(...delays.map((d) => d ?? 0))).toBe(SSE_RECONNECT_MAX_MS);
+  });
+
   it('caps backoff at 15s', () => {
     openAuthedEventStream('/api/v1/events', { onMessage: () => undefined });
     const call = mockFetchEventSource.mock.calls[0][0] as MockFetchEventSourceArgs;
@@ -153,5 +200,70 @@ describe('openAuthedEventStream', () => {
     expect(call.signal?.aborted).toBe(false);
     close();
     expect(call.signal?.aborted).toBe(true);
+  });
+});
+
+// ─── Reconnect-after-clean-close, driven against the REAL library ─────────────
+//
+// The tests above mock @microsoft/fetch-event-source, so they can only assert
+// what our wrapper calls — they cannot distinguish "onclose returns normally"
+// (bug: library resolves and the stream ends for good, lib/esm/fetch.js:62-64)
+// from "onclose throws" (fix: library's catch routes into onerror and
+// schedules a retry). This block unmocks the library and drives a stubbed
+// global fetch, so the assertion is against real library behavior.
+describe('openAuthedEventStream — reconnects after server close (real library)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock('@microsoft/fetch-event-source');
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    // Restore the file-level mock for every other test in this file.
+    vi.doMock('@microsoft/fetch-event-source', () => ({
+      fetchEventSource: (url: string, init: Omit<MockFetchEventSourceArgs, 'url'>) => {
+        mockFetchEventSource({ url, ...init });
+        return Promise.resolve();
+      },
+    }));
+  });
+
+  function cleanEventStreamResponse(): Response {
+    // A body that emits one message then ends the stream cleanly (no error) —
+    // exactly what a graceful proxy/LB close or a handler return looks like.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: hello\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('reconnects after server close', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(cleanEventStreamResponse()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { openAuthedEventStream: realOpenAuthedEventStream } =
+      await import('../authedEventStream');
+    const onDisconnect = vi.fn();
+    realOpenAuthedEventStream('/api/v1/events', { onMessage: () => undefined, onDisconnect });
+
+    // Drain the microtask queue so the first request's stream is read to
+    // completion and onclose (which now throws) runs.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // onDisconnect must fire exactly once for this clean close (via onerror,
+    // not directly from onclose — see the mocked tests above).
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+
+    // Advance past the 1s backoff so the library's retry timer fires.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

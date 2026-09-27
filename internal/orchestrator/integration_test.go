@@ -478,7 +478,7 @@ func TestInputRequiredResumeReusesWorkspaceWithoutRerunningBeforeRun(t *testing.
 		}
 	}
 
-	require.True(t, orch.ProvideInput("ENG-1", "Approved. Continue with the existing branch."))
+	require.NoError(t, orch.ProvideInput("ENG-1", "Approved. Continue with the existing branch."))
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -562,7 +562,7 @@ func TestInputRequiredCommentsAreMarkedManaged(t *testing.T) {
 		}
 	}
 
-	require.True(t, orch.ProvideInput("ENG-1", "Approved. Continue with the existing branch."))
+	require.NoError(t, orch.ProvideInput("ENG-1", "Approved. Continue with the existing branch."))
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -626,7 +626,7 @@ func TestInputRequiredResumeUsesCodexSessionAndUserReply(t *testing.T) {
 		}
 	}
 
-	require.True(t, orch.ProvideInput("ENG-1", "Use Codex resume and continue."))
+	require.NoError(t, orch.ProvideInput("ENG-1", "Use Codex resume and continue."))
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -705,7 +705,7 @@ func TestInputRequiredResumeRerunsSetupWhenWorkspaceIsRecreated(t *testing.T) {
 	}
 
 	require.NoError(t, os.RemoveAll(wsPath))
-	require.True(t, orch.ProvideInput("ENG-1", "Approved after restart. Recreate the workspace and continue."))
+	require.NoError(t, orch.ProvideInput("ENG-1", "Approved after restart. Recreate the workspace and continue."))
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -1078,7 +1078,7 @@ func TestProvideInputPendingResumeSurvivesRestartBeforeResumedTurnCompletes(t *t
 		}
 	}
 
-	require.True(t, orch1.ProvideInput("ENG-1", "Approved from dashboard before restart."))
+	require.NoError(t, orch1.ProvideInput("ENG-1", "Approved from dashboard before restart."))
 
 	deadline = time.After(3 * time.Second)
 	for {

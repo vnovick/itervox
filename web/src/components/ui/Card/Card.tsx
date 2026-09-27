@@ -9,7 +9,6 @@ interface CardProps {
   variant?: CardVariant;
   padding?: CardPadding;
   className?: string;
-  onClick?: React.MouseEventHandler<HTMLDivElement>;
 }
 
 const PADDING_CLASS: Record<CardPadding, string> = {
@@ -25,20 +24,13 @@ const VARIANT_STYLE: Record<CardVariant, React.CSSProperties> = {
   outline: { background: 'transparent', border: '1px solid var(--line-strong)' },
 };
 
-function CardRoot({
-  children,
-  variant = 'default',
-  padding = 'md',
-  className,
-  onClick,
-}: CardProps) {
+function CardRoot({ children, variant = 'default', padding = 'md', className }: CardProps) {
   return (
     <div
       data-variant={variant}
       data-padding={padding}
       className={['rounded-[var(--radius-md)]', PADDING_CLASS[padding], className ?? ''].join(' ')}
       style={VARIANT_STYLE[variant]}
-      onClick={onClick}
     >
       {children}
     </div>

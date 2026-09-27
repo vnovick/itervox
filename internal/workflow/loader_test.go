@@ -189,6 +189,292 @@ func TestPatchIntFieldConcurrent(t *testing.T) {
 	assert.True(t, matched, "expected file to contain one of the written values, got:\n%s", got)
 }
 
+// TestConcurrentPatchAndProfileSaveNoLostUpdate is CORE-006's headline
+// regression test: before the fix, patchBlockBoolField, PatchAgentStringField
+// and PatchDependenciesStringField each did an unlocked read-modify-write, so
+// two overlapping edits to the SAME file (one tab's Settings save racing
+// another's, or the TUI racing the dashboard) could have one rename clobber
+// the other's change. 60 rounds x 5 concurrent writers = 300 goroutines,
+// matching the original repro's "iters=300 lost_updates=300" scale. Every
+// writer sets an idempotent target value, so — with the lock — the exact
+// interleaving doesn't matter: the final file must contain ALL five edits
+// every time, not just the ones from whichever goroutine wrote last.
+//
+// NOTE (M0-close G9): this is a corruption/duplicate-header stress test, not
+// the lost-update coverage. Every write is an idempotent SET repeated across
+// rounds on one shared file, so a write lost in any round but the last is
+// healed by a later round before the final assertion; only a loss in the
+// final overlapping round is observable, which makes its lost-update signal
+// incidental (it does fail with a no-op lockForPath today, but nothing
+// guarantees it). Per-writer, one-write-per-key lost-update coverage is
+// TestPatchWritersDoNotLoseAnUpdateUnderInterleavedReadModifyWrite.
+func TestConcurrentPatchAndProfileSaveNoLostUpdate(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  command: claude\nworkspace:\n  root: /tmp/ws\n---\n\nBody.\n")
+
+	const rounds = 60
+	var wg sync.WaitGroup
+	errCh := make(chan error, rounds*5)
+	record := func(err error) {
+		if err != nil {
+			errCh <- err
+		}
+	}
+	for i := 0; i < rounds; i++ {
+		wg.Add(5)
+		go func() { defer wg.Done(); record(workflow.PatchAgentBoolField(f, "verbose", true)) }()
+		go func() { defer wg.Done(); record(workflow.PatchWorkspaceBoolField(f, "auto_clear", true)) }()
+		go func() { defer wg.Done(); record(workflow.PatchAgentStringField(f, "backend", "codex")) }()
+		go func() {
+			defer wg.Done()
+			record(workflow.PatchDependenciesStringField(f, "analysis_mode", "manual"))
+		}()
+		go func() {
+			defer wg.Done()
+			profiles := map[string]workflow.ProfileEntry{"reviewer": {Command: "claude --model opus"}}
+			record(workflow.PatchProfilesBlock(f, profiles))
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "verbose: true", "PatchAgentBoolField's edit must survive")
+	assert.Contains(t, got, "auto_clear: true", "PatchWorkspaceBoolField's edit must survive")
+	assert.Contains(t, got, `backend: "codex"`, "PatchAgentStringField's edit must survive")
+	assert.Contains(t, got, `analysis_mode: "manual"`, "PatchDependenciesStringField's edit must survive")
+	assert.Contains(t, got, "profiles:", "PatchProfilesBlock's edit must survive")
+	assert.Contains(t, got, "reviewer:")
+	assert.Equal(t, 1, strings.Count(got, "\ndependencies:"), "exactly one dependencies: header")
+	assertValidWorkflowYAML(t, got)
+}
+
+// TestPatchWritersDoNotLoseAnUpdateUnderInterleavedReadModifyWrite is the
+// deterministic-per-trial lost-update regression CORE-006 needs beyond
+// TestConcurrentPatchAndProfileSaveNoLostUpdate and
+// TestPatchDependenciesStringFieldConcurrent above. Those two stress tests
+// use idempotent SET operations repeated across many rounds on one shared
+// file: if an early round's write is lost, a LATER round setting the same
+// key to the same target value "heals" the file before the final
+// assertion — the test still passes with or without the per-path lock for
+// the lost-update failure mode specifically (it remains valid, real
+// coverage for a DIFFERENT defect: a torn write, a duplicate header, or
+// invalid YAML, which is what its `assertValidWorkflowYAML` and
+// `dependencies:` header-count assertions catch — see CORE-125).
+//
+// This test instead runs many independent TRIALS, each on a FRESH file,
+// each racing exactly ONE write by the row's writer against exactly one
+// write of a DIFFERENT key by a partner writer. Because each key is written
+// exactly once per trial, there is no later round to heal a lost update —
+// if either write is clobbered by the other's atomic rename, that trial's
+// assertion fails immediately. It is table-driven over EVERY WORKFLOW.md
+// writer that serializes through lockForPath (one row per distinct writer
+// function, M0-close G9): the previous version covered only the
+// PatchAgentBoolField/PatchDependenciesStringField pair, so e.g.
+// PatchIntField's own lockForPath call could be deleted with the whole
+// package suite still green.
+//
+// Forcing the two goroutines' read-modify-write windows to overlap
+// DETERMINISTICALLY would require an unexported test hook inside the
+// Patch* call path (e.g. a pause point between the read and the write) —
+// there is none, and this test intentionally does not add one to
+// production code. Within a single trial the race window is only a
+// handful of syscalls wide, so interleaving is not guaranteed on any one
+// trial; running many independent trials makes the cumulative probability
+// of observing at least one lost update overwhelming when the lock is
+// absent, while the locked implementation is unconditionally correct on
+// every trial, every run — not merely likely. See rounds.md for the
+// quoted FAIL from reverting `lockForPath` to a no-op and re-running this
+// exact test.
+func TestPatchWritersDoNotLoseAnUpdateUnderInterleavedReadModifyWrite(t *testing.T) {
+	const fixture = "---\ntracker:\n  kind: linear\n  active_states: [\"Todo\"]\n  terminal_states: [\"Done\"]\n" +
+		"agent:\n  command: claude\n  max_concurrent_agents: 1\nworkspace:\n  root: /tmp/ws\n---\n\nBody.\n"
+
+	type writer struct {
+		write func(path string) error
+		want  []string // substrings the file must contain after this write
+	}
+	deps := writer{
+		func(p string) error { return workflow.PatchDependenciesStringField(p, "analysis_mode", "manual") },
+		[]string{`analysis_mode: "manual"`},
+	}
+	boolW := writer{
+		func(p string) error { return workflow.PatchAgentBoolField(p, "verbose", true) },
+		[]string{"verbose: true"},
+	}
+	rows := []struct {
+		name    string
+		w       writer
+		partner writer
+	}{
+		{"PatchIntField", writer{
+			func(p string) error { return workflow.PatchIntField(p, "max_concurrent_agents", 7) },
+			[]string{"max_concurrent_agents: 7"}}, deps},
+		{"PatchAgentBoolField", boolW, deps},
+		{"PatchWorkspaceBoolField", writer{
+			func(p string) error { return workflow.PatchWorkspaceBoolField(p, "auto_clear", true) },
+			[]string{"auto_clear: true"}}, deps},
+		{"PatchAgentStringField", writer{
+			func(p string) error { return workflow.PatchAgentStringField(p, "backend", "codex") },
+			[]string{`backend: "codex"`}}, deps},
+		{"PatchDependenciesStringField", deps, boolW},
+		{"PatchAgentStringSliceField", writer{
+			func(p string) error {
+				return workflow.PatchAgentStringSliceField(p, "ssh_hosts", []string{"slice-host-g9"})
+			},
+			[]string{"slice-host-g9"}}, deps},
+		{"PatchAgentStringMapField", writer{
+			func(p string) error {
+				return workflow.PatchAgentStringMapField(p, "ssh_host_descriptions", map[string]string{"h1": "map-desc-g9"})
+			},
+			[]string{"map-desc-g9"}}, deps},
+		{"PatchProfilesBlock", writer{
+			func(p string) error {
+				return workflow.PatchProfilesBlock(p, map[string]workflow.ProfileEntry{"profile-g9": {Command: "claude --model opus"}})
+			},
+			[]string{"profile-g9:"}}, deps},
+		{"PatchAutomationsBlock", writer{
+			func(p string) error {
+				return workflow.PatchAutomationsBlock(p, []workflow.AutomationEntry{{
+					ID: "automation-g9", Enabled: true, Profile: "reviewer",
+					Trigger: workflow.AutomationTriggerEntry{Type: "cron", Cron: "0 9 * * 1-5"},
+				}})
+			},
+			[]string{"automation-g9"}}, deps},
+		{"PatchReviewerConfig", writer{
+			func(p string) error { return workflow.PatchReviewerConfig(p, "reviewer-g9", true) },
+			[]string{"reviewer-g9", "auto_review: true"}}, deps},
+		{"PatchTrackerStates", writer{
+			func(p string) error {
+				return workflow.PatchTrackerStates(p, []string{"Todo", "Active-G9"}, []string{"Done"}, "Done-G9")
+			},
+			[]string{"Active-G9", "Done-G9"}}, deps},
+		{"PatchAgentMaxRetries", writer{
+			func(p string) error { return workflow.PatchAgentMaxRetries(p, 4) },
+			[]string{"max_retries: 4"}}, deps},
+		{"PatchTrackerFailedState", writer{
+			func(p string) error { return workflow.PatchTrackerFailedState(p, "Failed-G9") },
+			[]string{"Failed-G9"}}, deps},
+		{"Doc.Save", writer{
+			func(p string) error { return workflow.NewDoc(p).SetAgentString("model", "doc-model-g9").Save() },
+			[]string{"doc-model-g9"}}, deps},
+	}
+
+	// 50 trials per row: each trial costs two fsync'd atomic writes, and a
+	// no-op lockForPath loses an update within the first few trials of every
+	// row (see rounds.md), so 50 keeps the falsification overwhelming while
+	// holding the -count=5 gate to a reasonable wall time.
+	const trials = 50
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			lost := 0
+			dir := t.TempDir()
+			for i := 0; i < trials; i++ {
+				// A fresh file per trial (one TempDir per row keeps the
+				// per-trial cost to a single file write).
+				f := filepath.Join(dir, fmt.Sprintf("WORKFLOW-%d.md", i))
+				require.NoError(t, os.WriteFile(f, []byte(fixture), 0o644))
+
+				var wg sync.WaitGroup
+				errs := make([]error, 2)
+				// start synchronizes both goroutines' launch as tightly as the
+				// Go scheduler allows, maximizing the chance their
+				// read-modify-write windows overlap within this trial.
+				start := make(chan struct{})
+				for j, w := range []writer{row.w, row.partner} {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						errs[j] = w.write(f)
+					}()
+				}
+				close(start)
+				wg.Wait()
+				require.NoError(t, errs[0], "trial %d: %s", i, row.name)
+				require.NoError(t, errs[1], "trial %d: partner of %s", i, row.name)
+
+				data, err := os.ReadFile(f)
+				require.NoError(t, err)
+				got := string(data)
+				for _, want := range append(append([]string{}, row.w.want...), row.partner.want...) {
+					if !strings.Contains(got, want) {
+						lost++
+						t.Errorf("trial %d: %q lost — one write clobbered the other's (row %s)\n%s", i, want, row.name, got)
+					}
+				}
+				assertValidWorkflowYAML(t, got)
+				if lost > 0 {
+					return // one quoted loss is proof enough; keep the output short
+				}
+			}
+		})
+	}
+}
+
+// TestPatchDependenciesStringFieldConcurrent mirrors TestPatchIntFieldConcurrent:
+// >=100 rounds racing the (formerly unlocked) dependencies writer against
+// PatchIntField and PatchAgentBoolField (both already locked before this
+// batch) on one file. All three edits must survive every round.
+//
+// NOTE (M0-close G9): this is a corruption/duplicate-header stress test, not
+// the lost-update coverage. Every write is an idempotent SET repeated across
+// rounds on one shared file, so a write lost in any round but the last is
+// healed by a later round before the final assertion; only a loss in the
+// final overlapping round is observable, which makes its lost-update signal
+// incidental (it does fail with a no-op lockForPath today, but nothing
+// guarantees it). Per-writer, one-write-per-key lost-update coverage is
+// TestPatchWritersDoNotLoseAnUpdateUnderInterleavedReadModifyWrite.
+func TestPatchDependenciesStringFieldConcurrent(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  max_concurrent_agents: 1\n  verbose: false\n---\n\nBody.\n")
+
+	const rounds = 100
+	var wg sync.WaitGroup
+	errCh := make(chan error, rounds*3)
+	for i := 0; i < rounds; i++ {
+		wg.Add(3)
+		go func(n int) {
+			defer wg.Done()
+			if err := workflow.PatchIntField(f, "max_concurrent_agents", n); err != nil {
+				errCh <- err
+			}
+		}(i + 1)
+		go func() {
+			defer wg.Done()
+			if err := workflow.PatchAgentBoolField(f, "verbose", true); err != nil {
+				errCh <- err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := workflow.PatchDependenciesStringField(f, "analysis_mode", "manual"); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "verbose: true", "PatchAgentBoolField's edit must survive")
+	assert.Contains(t, got, `analysis_mode: "manual"`, "PatchDependenciesStringField's edit must survive")
+	assert.Equal(t, 1, strings.Count(got, "\ndependencies:"), "exactly one dependencies: header")
+	assertValidWorkflowYAML(t, got)
+
+	cfg, err := config.Load(f)
+	require.NoError(t, err)
+	assert.Equal(t, config.DepsAnalysisModeManual, cfg.Dependencies.AnalysisMode, "the patched file must round-trip through config.Load")
+}
+
 func TestPatchProfilesBlock_Create(t *testing.T) {
 	// File with no profiles block — adds one under agent:
 	content := "---\nagent:\n  max_concurrent_agents: 3\n  command: claude\n---\n\nPrompt body.\n"
@@ -590,6 +876,23 @@ func TestPatchAgentBoolFieldSetFalsePreserves4SpaceIndent(t *testing.T) {
 	assertValidWorkflowYAML(t, got)
 }
 
+// TestPatchWorkspaceBoolFieldWritesWorkspaceBlock pins that
+// PatchWorkspaceBoolField targets the workspace: block, not agent: (CORE-006:
+// there is no MutateWorkspaceBoolField export — it must call the
+// package-private mutateBlockBoolField("workspace", ...) directly rather than
+// MutateAgentBoolField, which is hardcoded to agent:).
+func TestPatchWorkspaceBoolFieldWritesWorkspaceBlock(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  command: claude\nworkspace:\n  root: /tmp/ws\n---\n\nBody.\n")
+	require.NoError(t, workflow.PatchWorkspaceBoolField(f, "auto_clear", true))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "workspace:\n  root: /tmp/ws\n  auto_clear: true", "the key must land under workspace:, not agent:")
+	assert.NotContains(t, got, "agent:\n  command: claude\n  auto_clear")
+	assertValidWorkflowYAML(t, got)
+}
+
 func TestPatchAgentBoolFieldNoFrontMatterErrors(t *testing.T) {
 	f := writeTmp(t, "No front matter here.\n")
 	err := workflow.PatchAgentBoolField(f, "verbose", true)
@@ -670,6 +973,96 @@ func TestPatchDependenciesStringFieldUpdatesInPlace(t *testing.T) {
 	assert.Contains(t, string(got), "  analysis_mode: \"manual\"\n")
 	assert.Equal(t, 1, strings.Count(string(got), "analysis_mode:"), "updated in place, not duplicated")
 	assert.Contains(t, string(got), "  stacked_prs: true\n", "sibling keys survive")
+}
+
+// TestPatchDependenciesStringFieldCommentedHeader covers CORE-125's
+// header-tolerance fix: a "dependencies:" header with a trailing comment or
+// trailing whitespace is valid YAML but was not byte-equal to "dependencies:",
+// so the old exact-match findBlockHeader created a SECOND top-level header —
+// producing a duplicate-key YAML file that failed to load. The negative
+// fixture (a "dependencies:" line indented under another block) must NOT be
+// matched as the top-level header — a new top-level header is created
+// instead and the nested, unrelated block is left alone.
+func TestPatchDependenciesStringFieldCommentedHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name:   "trailing comment",
+			source: "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\ndependencies: # LLM analyzer\n  stacked_prs: true\n---\nbody\n",
+		},
+		{
+			name:   "trailing whitespace",
+			source: "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\ndependencies:   \n  stacked_prs: true\n---\nbody\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := writeTmp(t, tc.source)
+			require.NoError(t, workflow.PatchDependenciesStringField(f, "analysis_mode", "manual"))
+
+			got, err := os.ReadFile(f)
+			require.NoError(t, err)
+			body := string(got)
+			assert.Equal(t, 1, strings.Count(body, "\ndependencies:"), "must not append a duplicate top-level dependencies: header")
+			assert.Contains(t, body, "stacked_prs: true", "the pre-existing sibling key must survive")
+			assertValidWorkflowYAML(t, body)
+
+			cfg, err := config.Load(f)
+			require.NoError(t, err, "the patched file must round-trip through config.Load")
+			assert.Equal(t, config.DepsAnalysisModeManual, cfg.Dependencies.AnalysisMode)
+
+			wf, err := workflow.Load(f)
+			require.NoError(t, err, "the patched file must load through workflow.Load")
+			assert.Equal(t, map[string]any{"stacked_prs": true, "analysis_mode": "manual"}, wf.Config["dependencies"])
+		})
+	}
+
+	t.Run("negative: indented bare dependencies header under another block is not matched", func(t *testing.T) {
+		// "  dependencies:" here is a bare nested HEADER — a child mapping
+		// of "notes:", not the top-level block. This is exactly the line a
+		// naive strings.TrimSpace(line) == "dependencies:" match would
+		// wrongly accept (M0-close G11: the previous fixture,
+		// "  dependencies: see README", carried a value, so even the
+		// rejected TrimSpace matcher skipped it and the row proved
+		// nothing). The patcher must create its own top-level header and
+		// leave the nested block byte-for-byte alone.
+		const nested = "notes:\n  dependencies:\n    doc: see README\n"
+		f := writeTmp(t, "---\nitervox_schema_version: 2\n"+nested+"tracker:\n  kind: linear\n---\nbody\n")
+		require.NoError(t, workflow.PatchDependenciesStringField(f, "analysis_mode", "manual"))
+
+		got, err := os.ReadFile(f)
+		require.NoError(t, err)
+		body := string(got)
+		assert.Equal(t, 1, strings.Count(body, "\ndependencies:"), "exactly one top-level dependencies: header must be created")
+		assert.Contains(t, body, "\n"+nested, "the nested, unrelated block must be left untouched")
+
+		wf, err := workflow.Load(f)
+		require.NoError(t, err, "the patched file must load through workflow.Load")
+		assert.Equal(t, map[string]any{"analysis_mode": "manual"}, wf.Config["dependencies"],
+			"the edit lands in a new top-level dependencies block")
+		assert.Equal(t, map[string]any{"dependencies": map[string]any{"doc": "see README"}}, wf.Config["notes"],
+			"notes.dependencies is untouched — no analysis_mode injected into it")
+	})
+}
+
+// TestPatchDependenciesStringFieldRefusesUnparseableResult covers CORE-125's
+// write-time re-parse guard: a quoted "dependencies": key is intentionally
+// NOT recognised by findBlockHeader (a stated non-goal), so the patcher would
+// create a second, plain "dependencies:" header — which YAML treats as the
+// SAME key as the quoted one, producing an unparseable duplicate-key file.
+// The guard must refuse the write and leave the file byte-identical instead.
+func TestPatchDependenciesStringFieldRefusesUnparseableResult(t *testing.T) {
+	source := "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n\"dependencies\":\n  analysis_mode: \"auto\"\n---\nbody\n"
+	f := writeTmp(t, source)
+
+	err := workflow.PatchDependenciesStringField(f, "analysis_mode", "manual")
+	require.Error(t, err)
+
+	got, readErr := os.ReadFile(f)
+	require.NoError(t, readErr)
+	assert.Equal(t, source, string(got), "a refused write must leave the file byte-identical")
 }
 
 func TestPatchAgentStringSliceFieldInsertWhenMissing(t *testing.T) {

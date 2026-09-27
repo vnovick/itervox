@@ -126,7 +126,6 @@ internal/skills/
 ├── scan_hooks.go        # Claude hooks (flat + nested form)
 ├── scan_instructions.go # CLAUDE.md / AGENTS.md (recursive, capped)
 ├── scan_codex.go        # Codex 8-path scanner + .skill-lock provenance
-├── scan_ssh.go          # Per-host SSH cache (TTL, last-good)
 ├── runtime_claude.go    # Session-log JSONL parser
 ├── runtime_codex.go     # ~/.codex/history.jsonl + sessions/** parser
 ├── context_budget.go    # Per-profile cost estimator

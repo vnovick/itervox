@@ -32,9 +32,7 @@ test.describe('Notifications view (phase 4)', () => {
     await expect(page.getByRole('heading', { level: 2, name: /Ready for review/i })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: /Retrying · 1/i })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: /Paused · 1/i })).toBeVisible();
-    await expect(
-      page.getByRole('heading', { level: 2, name: /Config issues · 1/i }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: /Config issues · 1/i })).toBeVisible();
 
     // 4. Both review pills present.
     await expect(page.getByText(/✓ completed this session/i).first()).toBeVisible();
@@ -50,7 +48,8 @@ test.describe('Notifications view (phase 4)', () => {
   test('renders the "All caught up" empty state when nothing needs attention', async ({ page }) => {
     await bootApp(page, { scenario: emptyScenario, route: '/' });
     await page.getByRole('button', { name: /Notifications/i }).click();
-    await expect(page.getByText(/all caught up/i)).toBeVisible();
+    // Scoped: the attention inbox (CORE-077) shows its own caught-up line.
+    await expect(page.getByTestId('notifications-view').getByText(/all caught up/i)).toBeVisible();
   });
 
   // Gap §10.2 — config-row navigates to /settings.
@@ -58,7 +57,11 @@ test.describe('Notifications view (phase 4)', () => {
     await bootApp(page, { scenario: notificationsScenario, route: '/' });
     await page.getByRole('button', { name: /Notifications/i }).click();
     // The config row is rendered with the WORKFLOW.md error as title.
-    await page.getByText(/WORKFLOW\.md validation failed/i).click();
+    // Scoped: the attention inbox (CORE-077) lists the same config row.
+    await page
+      .getByTestId('notifications-view')
+      .getByText(/WORKFLOW\.md validation failed/i)
+      .click();
     await expect(page).toHaveURL(/\/settings$/);
   });
 });

@@ -1,7 +1,15 @@
-import { useRef, useEffect } from 'react';
-import { useFocusTrap } from '../../../hooks/useFocusTrap';
+import { useRef } from 'react';
+import { useDialogLayer } from '../dialog/useDialogLayer';
 
-interface ModalProps {
+/**
+ * Every Modal needs an accessible name (CORE-067): either a visible heading
+ * referenced by id, or a plain label when there is no heading.
+ */
+type ModalLabel =
+  | { ariaLabelledBy: string; ariaLabel?: never }
+  | { ariaLabel: string; ariaLabelledBy?: never };
+
+interface ModalBaseProps {
   isOpen: boolean;
   onClose: () => void;
   className?: string;
@@ -11,6 +19,8 @@ interface ModalProps {
   /** When true, adds standard p-6 padding to the content area. */
   padded?: boolean;
 }
+
+type ModalProps = ModalBaseProps & ModalLabel;
 
 export { ConfirmModal } from './ConfirmModal';
 export { ModalFooter } from './ModalFooter';
@@ -23,38 +33,15 @@ export const Modal: React.FC<ModalProps> = ({
   showCloseButton = true, // Default to true for backwards compatibility
   isFullscreen = false,
   padded = false,
+  ariaLabel,
+  ariaLabelledBy,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
 
-  useFocusTrap(modalRef, isOpen);
-
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape);
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [isOpen, onClose]);
-
-  useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'unset';
-    }
-
-    return () => {
-      document.body.style.overflow = 'unset';
-    };
-  }, [isOpen]);
+  // CORE-067: overlay stack (Escape closes only the top dialog, only the top
+  // dialog traps focus) and the ref-counted scroll lock, which is never
+  // touched while the Modal is closed.
+  useDialogLayer({ isOpen, onClose, containerRef: modalRef });
 
   if (!isOpen) return null;
 
@@ -65,15 +52,20 @@ export const Modal: React.FC<ModalProps> = ({
   return (
     <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto">
       {!isFullscreen && (
+        // Backdrop: a mouse shortcut to close; Escape closes via useDialogLayer.
         <div
+          role="presentation"
           className="fixed inset-0 h-full w-full bg-black/50 backdrop-blur-sm"
           onClick={onClose}
         ></div>
       )}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- event boundary: stops clicks inside the dialog from reaching a clickable ancestor in the React tree; Escape closes via useDialogLayer */}
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
         className={`${contentClasses} ${className ?? ''} border-theme-line bg-theme-bg-elevated border`}
         style={{ boxShadow: 'var(--shadow-lg)' }}
         onClick={(e) => {

@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { activateOnKey } from '../../../utils/activateOnKey';
 import { fmtMs } from '../../../utils/format';
 import type { NormalisedSession, SubagentSegment } from './types';
 import { clamp01 } from './types';
@@ -67,10 +68,16 @@ export const RunRow = memo(function RunRow({
   return (
     <>
       {/* Run row */}
+      {/* CORE-088 — was mouse-only (no keyboard path to a run's logs). */}
       <div
-        className="hover:bg-theme-bg-soft flex cursor-pointer items-center gap-2 rounded transition-colors"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={`Run #${String(runNumber)} at ${timeLabel}, ${fmtMs(session.elapsedMs)}`}
+        className="hover:bg-theme-bg-soft focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
         style={{ minHeight: ROW_MIN_HEIGHT, padding: '8px 0' }}
         onClick={onToggleExpand}
+        onKeyDown={activateOnKey(onToggleExpand)}
       >
         {/* Expand chevron */}
         <span
@@ -151,7 +158,11 @@ export const RunRow = memo(function RunRow({
         <div className="space-y-0.5 pb-1">
           {/* Main run bar (when expanded) */}
           <div
-            className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 transition-colors"
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedSubagentIdx === null}
+            aria-label="Main agent log"
+            className="focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:ring-2 focus-visible:outline-none"
             style={{
               paddingLeft: 24,
               background: selectedSubagentIdx === null ? 'var(--accent-soft)' : 'transparent',
@@ -159,6 +170,9 @@ export const RunRow = memo(function RunRow({
             onClick={() => {
               onSelectSubagent(null);
             }}
+            onKeyDown={activateOnKey(() => {
+              onSelectSubagent(null);
+            })}
           >
             <span className="text-theme-muted shrink-0 text-xs">◈</span>
             <span

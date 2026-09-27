@@ -1,4 +1,5 @@
-import { useEffect, useId, type ReactNode } from 'react';
+import { useId, useRef, type ReactNode } from 'react';
+import { useDialogLayer } from '../dialog/useDialogLayer';
 
 type Direction = 'left' | 'right' | 'bottom';
 
@@ -25,26 +26,11 @@ export function SlidePanel({
 }: SlidePanelProps) {
   const titleId = useId();
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => {
-      document.removeEventListener('keydown', handleKey);
-    };
-  }, [isOpen, onClose]);
+  const panelRef = useRef<HTMLDivElement>(null);
 
-  // Lock body scroll while open
-  useEffect(() => {
-    if (!isOpen) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [isOpen]);
+  // CORE-067: overlay stack (Escape closes only the top dialog), focus trap
+  // with restore-to-opener, and the ref-counted body scroll lock.
+  useDialogLayer({ isOpen, onClose, containerRef: panelRef });
 
   if (!isOpen) return null;
 
@@ -60,6 +46,7 @@ export function SlidePanel({
 
       {/* Panel */}
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

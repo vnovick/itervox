@@ -3,6 +3,10 @@ package main
 import (
 	"io"
 	"log/slog"
+	"strings"
+	"time"
+
+	charmlog "github.com/charmbracelet/log"
 
 	"github.com/vnovick/itervox/internal/logging"
 )
@@ -78,4 +82,77 @@ func postStartupHandler(fileWriter io.Writer, logLevel slog.Level, logFormat str
 		return logging.NewRedactingHandler(logging.NewFanoutHandler(stderrHandler, fileHandler))
 	}
 	return logging.NewRedactingHandler(fileHandler)
+}
+
+// bootLogHandlers builds main's startup logging (CORE-059):
+//
+//   - boot is the slog default until run() takes over: stderr + the file
+//     sink, behind logging.NewRedactingHandler.
+//   - stderrOnly is the bare stderr leg. main wraps it in the stderr-only
+//     logger (the one explicit secret-display path, CORE-012) and
+//     postStartupHandler reuses it for the headless fanout.
+//
+// headless is "no terminal attached" (!statusui.TerminalAvailable()). Then
+// stderr honours format exactly like the file sink — "json" gives one JSON
+// object per slog record, which is what container platforms and journald
+// ingest. With a terminal stderr stays the human charmlog text (and once the
+// TUI starts, slog goes to the file only). Output written with fmt.Fprint*
+// before or outside slog (usage, fatal startup errors) is never JSON.
+func newStderrLogHandler(w io.Writer, level slog.Level, format string, headless bool) slog.Handler {
+	if headless && format == "json" {
+		return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
+	}
+	charmLevel := charmlog.InfoLevel
+	if level == slog.LevelDebug {
+		charmLevel = charmlog.DebugLevel
+	}
+	return charmlog.NewWithOptions(w, charmlog.Options{
+		ReportTimestamp: true,
+		TimeFormat:      time.TimeOnly,
+		Level:           charmLevel,
+	})
+}
+
+func bootLogHandlers(stderr, file io.Writer, level slog.Level, format string, headless bool) (boot, stderrOnly slog.Handler) {
+	stderrOnly = newStderrLogHandler(stderr, level, format, headless)
+	fileHandler := newFileLogHandler(file, level, format)
+	return logging.NewRedactingHandler(logging.NewFanoutHandler(stderrOnly, fileHandler)), stderrOnly
+}
+
+// earlyLogHandler is the slog default from the first line of main until
+// bootLogHandlers takes over (M4-close D8). Before it, records emitted that
+// early — dotenv load failures, ITERVOX_BIN warnings, the invalid
+// --log-format warning, claimPIDFile's stale-record reclaim — went through
+// Go's default text logger: never JSON on a headless daemon and never
+// redacted. It writes to w (stderr) only: nothing may touch the log file the
+// live daemon owns before claimPIDFile has refused a second start. The
+// format is pre-scanned from args (the --log-format flag, which wins) and
+// env (ITERVOX_LOG_FORMAT), because flag.Parse has not run yet; the level is
+// INFO (--verbose is not known yet either).
+func earlyLogHandler(w io.Writer, args []string, env string, headless bool) slog.Handler {
+	format := resolveLogFormat(scanLogFormatFlag(args), env)
+	return logging.NewRedactingHandler(newStderrLogHandler(w, slog.LevelInfo, format, headless))
+}
+
+// scanLogFormatFlag returns the value of the last -log-format / --log-format
+// flag in args ("--log-format json" or "--log-format=json"), or "".
+func scanLogFormatFlag(args []string) string {
+	v := ""
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			break
+		}
+		name, val, hasVal := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !strings.HasPrefix(a, "-") || name != "log-format" {
+			continue
+		}
+		if hasVal {
+			v = val
+		} else if i+1 < len(args) {
+			v = args[i+1]
+			i++
+		}
+	}
+	return v
 }

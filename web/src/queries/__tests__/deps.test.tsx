@@ -156,8 +156,14 @@ describe('useAnalyzeDeps', () => {
   });
 
   it('surfaces the server error body when the POST itself fails', async () => {
+    // BH-M2-1: the daemon's writeError envelope, not a plain-text body.
     mockAuthedFetch.mockResolvedValueOnce(
-      new Response('analyzer profile not configured', { status: 422 }),
+      new Response(
+        JSON.stringify({
+          error: { code: 'bad_request', message: 'analyzer profile not configured' },
+        }),
+        { status: 422 },
+      ),
     );
 
     const { result } = renderHook(() => useAnalyzeDeps(), { wrapper });
@@ -291,8 +297,20 @@ describe('useSetDepsOverride', () => {
   });
 
   it('surfaces a failed override as an error toast without calling refreshSnapshot', async () => {
-    mockAuthedFetch.mockResolvedValueOnce(
-      new Response('orchestrator event queue is full; retry', { status: 503 }),
+    // BH-M2-1: the real 503 envelope. apiRequest retries it once (nothing
+    // was enqueued), so it fails only when both attempts are refused.
+    mockAuthedFetch.mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'deps_override_queue_full',
+              message: 'orchestrator event queue is full; retry',
+            },
+          }),
+          { status: 503, headers: { 'Retry-After': '0' } },
+        ),
+      ),
     );
 
     const { result } = renderHook(() => useSetDepsOverride(), { wrapper });
@@ -302,7 +320,11 @@ describe('useSetDepsOverride', () => {
         .mutateAsync({ identifier: 'ENG-2', enabled: true })
         .catch((err: unknown) => err);
     });
-    await flushMutation(mutation);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10); // the Retry-After wait
+      await mutation;
+    });
+    expect(mockAuthedFetch).toHaveBeenCalledTimes(2);
 
     expect(result.current.isError).toBe(true);
     expect(useItervoxStore.getState().refreshSnapshot).not.toHaveBeenCalled();

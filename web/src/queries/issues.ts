@@ -1,11 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
 import type { StateSnapshot, TrackerIssue } from '../types/schemas';
 import { TrackerIssueSchema } from '../types/schemas';
 import { z } from 'zod';
-import { authedFetch } from '../auth/authedFetch';
+import { apiRequest, ApiError } from '../auth/apiRequest';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
 import { logIdentifiersKey, logsKey, sublogsKey } from './logs';
 
@@ -32,31 +32,10 @@ function toastApiError(err: unknown, fallback = 'Action failed — please try ag
   useToastStore.getState().addToast(message);
 }
 
-/**
- * Builds an `Error` from a failed `Response`, preferring the server's
- * structured `{error:{code,message}}` envelope (see internal/server/handlers.go)
- * over a generic `${op} failed: ${status}` message. Used by mutations whose
- * server errors carry an operator-actionable message (e.g. `bad_request`
- * field validation, `not_found`).
- */
-async function apiErrorFromResponse(res: Response, op: string): Promise<Error> {
-  try {
-    const data = (await res.json()) as unknown;
-    if (
-      typeof data === 'object' &&
-      data !== null &&
-      'error' in data &&
-      typeof (data as { error: unknown }).error === 'object' &&
-      (data as { error: unknown }).error !== null
-    ) {
-      const { message } = (data as { error: { message?: unknown } }).error;
-      if (typeof message === 'string' && message !== '') return new Error(message);
-    }
-  } catch {
-    // Not JSON — fall through to the generic message.
-  }
-  return new Error(`${op} failed: ${String(res.status)}`);
-}
+// CORE-049: ApiError, the Retry-After helper and the single retry on an
+// admission-rejected 503 (CORE-005) live in auth/apiRequest; re-exported here
+// for existing importers.
+export { ApiError, ISSUE_CONTROL_RETRY_MAX_MS, retryAfterDelayMs } from '../auth/apiRequest';
 
 /**
  * Returns an `onError` handler that rolls back optimistic query/snapshot updates
@@ -72,6 +51,50 @@ function makeRollbackHandler(queryClient: QueryClient) {
     if (context?.prevSnapshot) useItervoxStore.getState().setSnapshot(context.prevSnapshot);
     toastApiError(_error);
   };
+}
+
+/**
+ * CORE-073 — success toast for the issue control verbs (Pause, Resume, Stop,
+ * Discard, Cancel retry). Worded "requested": the daemon only enqueues the
+ * action on its event loop, so the toast must not claim it already happened.
+ */
+function toastActionRequested(verb: string, identifier: string): void {
+  useToastStore.getState().addToast(`${verb} requested for ${identifier}`, 'success');
+}
+
+export interface IssueActionOptions {
+  /** Operator-facing verb for the success toast. */
+  verb?: string;
+}
+
+/**
+ * Mutation keys for the per-issue actions a list can fire for several rows at
+ * once (M5-close BH-M5-3). One useMutation instance tracks only its LATEST
+ * call — isPending/variables and per-call mutate callbacks describe that call
+ * alone — so a list reads every in-flight identifier from the mutation cache
+ * via usePendingIssueIds instead.
+ */
+export const ISSUE_MUTATION_KEYS = {
+  provideInput: ['issue-action', 'provideInput'],
+  resume: ['issue-action', 'resume'],
+  terminate: ['issue-action', 'terminate'],
+  dismissInput: ['issue-action', 'dismissInput'],
+} as const;
+
+/** Identifiers with an in-flight mutation of `kind` (any hook instance). */
+export function usePendingIssueIds(kind: keyof typeof ISSUE_MUTATION_KEYS): ReadonlySet<string> {
+  const vars = useMutationState({
+    filters: { mutationKey: ISSUE_MUTATION_KEYS[kind], status: 'pending' },
+    select: (m) => m.state.variables,
+  });
+  const ids = new Set<string>();
+  for (const v of vars) {
+    if (typeof v === 'string') ids.add(v);
+    else if (v && typeof v === 'object' && 'identifier' in v && typeof v.identifier === 'string') {
+      ids.add(v.identifier);
+    }
+  }
+  return ids;
 }
 
 function invalidateIssueQueries(queryClient: QueryClient, identifier?: string): void {
@@ -108,9 +131,8 @@ function updateIssueCaches(
 }
 
 async function fetchIssues(): Promise<TrackerIssue[]> {
-  const res = await authedFetch('/api/v1/issues');
-  if (!res.ok) throw new Error(`fetch issues failed: ${String(res.status)}`);
-  return z.array(TrackerIssueSchema).parse(await res.json());
+  const { data } = await apiRequest('/api/v1/issues', { op: 'fetch issues' });
+  return z.array(TrackerIssueSchema).parse(data);
 }
 
 export function useIssues() {
@@ -130,9 +152,10 @@ export function useIssue(identifier: string) {
   return useQuery({
     queryKey: ISSUE_KEY(identifier),
     queryFn: async () => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}`);
-      if (!res.ok) throw new Error(`fetch issue failed: ${String(res.status)}`);
-      return TrackerIssueSchema.parse(await res.json());
+      const { data } = await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}`, {
+        op: 'fetch issue',
+      });
+      return TrackerIssueSchema.parse(data);
     },
     enabled: identifier !== '',
     staleTime: 0,
@@ -180,12 +203,11 @@ export function useUpdateIssueState() {
       return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
     },
     mutationFn: async ({ identifier, state }: { identifier: string; state: string }) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/state`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/state`, {
+        op: 'updateIssueState',
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state }),
+        json: { state },
       });
-      if (!res.ok) throw new Error(`updateIssueState failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: (_data, { identifier }) => {
@@ -207,12 +229,11 @@ export function useSetIssueProfile() {
       return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
     },
     mutationFn: async ({ identifier, profile }: { identifier: string; profile: string }) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/profile`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/profile`, {
+        op: 'setIssueProfile',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile }),
+        json: { profile },
       });
-      if (!res.ok) throw new Error(`setIssueProfile failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: (_data, { identifier }) => {
@@ -234,12 +255,11 @@ export function useSetIssueBackend() {
       return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
     },
     mutationFn: async ({ identifier, backend }: { identifier: string; backend: string }) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/backend`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/backend`, {
+        op: 'setIssueBackend',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backend }),
+        json: { backend },
       });
-      if (!res.ok) throw new Error(`setIssueBackend failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: (_data, { identifier }) => {
@@ -248,7 +268,8 @@ export function useSetIssueBackend() {
   });
 }
 
-export function useCancelIssue() {
+/** POST /cancel. Pauses a running issue; on a retrying issue it cancels the retry. */
+export function useCancelIssue({ verb = 'Pause' }: IssueActionOptions = {}) {
   const queryClient = useQueryClient();
   return useMutation({
     onMutate: async (identifier: string) => {
@@ -276,21 +297,23 @@ export function useCancelIssue() {
       };
     },
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/cancel`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/cancel`, {
+        op: 'cancelIssue',
         method: 'POST',
       });
-      if (!res.ok) throw new Error(`cancelIssue failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: (_data, identifier) => {
+      toastActionRequested(verb, identifier);
       refreshIssueViews(queryClient, identifier);
     },
   });
 }
 
-export function useResumeIssue() {
+export function useResumeIssue({ verb = 'Resume' }: IssueActionOptions = {}) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ISSUE_MUTATION_KEYS.resume,
     onMutate: async (identifier: string) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
       await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
@@ -338,32 +361,40 @@ export function useResumeIssue() {
       };
     },
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/resume`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/resume`, {
+        op: 'resumeIssue',
         method: 'POST',
       });
-      if (!res.ok) throw new Error(`resumeIssue failed: ${String(res.status)}`);
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: (_data, identifier) => {
+      toastActionRequested(verb, identifier);
       refreshIssueViews(queryClient, identifier);
     },
   });
 }
 
-export function useTerminateIssue() {
+/**
+ * POST /terminate. The daemon releases the claim and moves the issue to the
+ * first backlog state (else the first active state): "Stop" on a running row,
+ * "Discard" on a paused one (TUI parity: S stop running, D discard paused).
+ */
+export function useTerminateIssue({ verb = 'Discard' }: IssueActionOptions = {}) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ISSUE_MUTATION_KEYS.terminate,
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/terminate`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/terminate`, {
+        op: 'terminateIssue',
         method: 'POST',
       });
-      if (!res.ok) throw new Error(`terminateIssue failed: ${String(res.status)}`);
     },
     onSuccess: (_data, identifier) => {
+      toastActionRequested(verb, identifier);
       refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
-      toastApiError(err, 'Terminate failed — please try again.');
+      toastApiError(err, `${verb} failed — please try again.`);
     },
   });
 }
@@ -372,10 +403,10 @@ export function useTriggerAIReview() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/ai-review`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/ai-review`, {
+        op: 'triggerAIReview',
         method: 'POST',
       });
-      if (!res.ok) throw new Error(`triggerAIReview failed: ${String(res.status)}`);
     },
     onSuccess: (_data, identifier) => {
       refreshIssueViews(queryClient, identifier);
@@ -399,12 +430,13 @@ export function useClearIssueLogs() {
       // Until this change, only the first endpoint was hit — so the
       // Timeline kept showing the same data even after a successful clear.
       const encoded = encodeURIComponent(identifier);
-      const [logsRes, subRes] = await Promise.all([
-        authedFetch(`/api/v1/issues/${encoded}/logs`, { method: 'DELETE' }),
-        authedFetch(`/api/v1/issues/${encoded}/sublogs`, { method: 'DELETE' }),
+      await Promise.all([
+        apiRequest(`/api/v1/issues/${encoded}/logs`, { op: 'clearIssueLogs', method: 'DELETE' }),
+        apiRequest(`/api/v1/issues/${encoded}/sublogs`, {
+          op: 'clearIssueSubLogs',
+          method: 'DELETE',
+        }),
       ]);
-      if (!logsRes.ok) throw new Error(`clearIssueLogs failed: ${String(logsRes.status)}`);
-      if (!subRes.ok) throw new Error(`clearIssueSubLogs failed: ${String(subRes.status)}`);
     },
     onSuccess: (_data, identifier) => {
       void queryClient.invalidateQueries({ queryKey: logsKey(identifier) });
@@ -425,8 +457,7 @@ export function useClearAllLogs() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const res = await authedFetch('/api/v1/logs', { method: 'DELETE' });
-      if (!res.ok) throw new Error(`clearAllLogs failed: ${String(res.status)}`);
+      await apiRequest('/api/v1/logs', { op: 'clearAllLogs', method: 'DELETE' });
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['logs'] });
@@ -443,8 +474,7 @@ export function useClearAllWorkspaces() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const res = await authedFetch('/api/v1/workspaces', { method: 'DELETE' });
-      if (!res.ok) throw new Error(`clearAllWorkspaces failed: ${String(res.status)}`);
+      await apiRequest('/api/v1/workspaces', { op: 'clearAllWorkspaces', method: 'DELETE' });
     },
     onSuccess: () => {
       void useItervoxStore.getState().refreshSnapshot();
@@ -462,10 +492,10 @@ export function useClearIssueSubLogs() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
+        op: 'clearIssueSubLogs',
         method: 'DELETE',
       });
-      if (!res.ok) throw new Error(`clearIssueSubLogs failed: ${String(res.status)}`);
     },
     onSuccess: (_data, identifier) => {
       void queryClient.invalidateQueries({ queryKey: sublogsKey(identifier) });
@@ -485,29 +515,57 @@ export function useClearIssueSubLogs() {
  * operator-facing notice rather than the raw `provideInput failed: 409`
  * developer string.
  */
-export class InlineInputEnabledError extends Error {
+/** Server code for provide-input while agent.inline_input is on. */
+const INLINE_INPUT_ENABLED_CODE = 'inline_input_enabled';
+
+export class InlineInputEnabledError extends ApiError {
   constructor() {
-    super('Inline input is on — reply by commenting on this issue in your tracker.');
+    super(
+      'Inline input is on — reply by commenting on this issue in your tracker.',
+      409,
+      INLINE_INPUT_ENABLED_CODE,
+    );
     this.name = 'InlineInputEnabledError';
   }
 }
 
-export function useProvideInput() {
+export function useProvideInput({
+  onSent,
+}: {
+  /**
+   * Called from the hook-level onSuccess for EVERY successful reply, with its
+   * identifier — unlike a per-call mutate callback, which fires only for the
+   * latest call (M5-close BH-M5-3: a list clears each row's draft here).
+   */
+  onSent?: (identifier: string) => void;
+} = {}) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ISSUE_MUTATION_KEYS.provideInput,
     mutationFn: async ({ identifier, message }: { identifier: string; message: string }) => {
-      const res = await authedFetch(
-        `/api/v1/issues/${encodeURIComponent(identifier)}/provide-input`,
-        {
+      try {
+        await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/provide-input`, {
+          op: 'provideInput',
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message }),
-        },
-      );
-      if (res.status === 409) throw new InlineInputEnabledError();
-      if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
+          json: { message },
+        });
+      } catch (err) {
+        // CORE-049: keyed on the server's code, not the bare status — a 409
+        // with any OTHER code surfaces its own message. A 409 with no
+        // envelope (an older daemon) keeps the historical inline-input
+        // reading.
+        if (
+          err instanceof ApiError &&
+          err.status === 409 &&
+          (err.code === INLINE_INPUT_ENABLED_CODE || err.code === undefined)
+        ) {
+          throw new InlineInputEnabledError();
+        }
+        throw err;
+      }
     },
     onSuccess: (_data, { identifier }) => {
+      onSent?.(identifier);
       refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
@@ -541,13 +599,11 @@ export function usePostIssueComment() {
       identifier: string;
       body: string;
     }): Promise<{ queued: boolean }> => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/comment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
-      });
-      if (!res.ok) throw await apiErrorFromResponse(res, 'postComment');
-      return { queued: res.status === 202 };
+      const { status } = await apiRequest(
+        `/api/v1/issues/${encodeURIComponent(identifier)}/comment`,
+        { op: 'postComment', method: 'POST', json: { body } },
+      );
+      return { queued: status === 202 };
     },
     onSuccess: ({ queued }, { identifier }) => {
       useToastStore
@@ -567,14 +623,12 @@ export function usePostIssueComment() {
 export function useDismissInput() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ISSUE_MUTATION_KEYS.dismissInput,
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(
-        `/api/v1/issues/${encodeURIComponent(identifier)}/dismiss-input`,
-        {
-          method: 'POST',
-        },
-      );
-      if (!res.ok) throw new Error(`dismissInput failed: ${String(res.status)}`);
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/dismiss-input`, {
+        op: 'dismissInput',
+        method: 'POST',
+      });
     },
     onSuccess: (_data, identifier) => {
       refreshIssueViews(queryClient, identifier);
@@ -589,16 +643,62 @@ export function useReanalyzeIssue() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/reanalyze`, {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/reanalyze`, {
+        op: 'reanalyzeIssue',
         method: 'POST',
       });
-      if (!res.ok) throw new Error(`reanalyzeIssue failed: ${String(res.status)}`);
     },
     onSuccess: (_data, identifier) => {
       refreshIssueViews(queryClient, identifier);
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Re-analysis failed — please try again.');
+    },
+  });
+}
+
+/**
+ * CORE-175 — acknowledge an issue's failed / stalled attention entry. The
+ * daemon records `upTo` (the newest failure the operator saw) on its event
+ * loop and lists it in `snapshot.failureAcks`; a later failure surfaces
+ * again. Optimistic: the entry leaves the inbox at once, and the previous
+ * snapshot is restored (with an error toast) if the request fails. Callers
+ * render the action only when `snapshot.capabilities` includes
+ * 'failure_ack' (older daemons have no endpoint).
+ */
+export function useAcknowledgeFailure() {
+  return useMutation({
+    onMutate: ({ identifier, upTo }: { identifier: string; upTo: string }) => {
+      const prevAcks = useItervoxStore.getState().snapshot?.failureAcks;
+      if (useItervoxStore.getState().snapshot) {
+        useItervoxStore.getState().patchSnapshot({
+          failureAcks: [
+            ...(prevAcks ?? []).filter((a) => a.identifier !== identifier),
+            { identifier, upTo },
+          ],
+        });
+      }
+      return { prevAcks };
+    },
+    mutationFn: async ({ identifier, upTo }: { identifier: string; upTo: string }) => {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/failures/ack`, {
+        op: 'acknowledgeFailure',
+        method: 'POST',
+        json: { upTo },
+      });
+    },
+    // M6-close — roll back only failureAcks: restoring the whole pre-click
+    // snapshot would also discard any snapshot that arrived while the request
+    // was in flight.
+    onError: (error, _vars, context) => {
+      if (useItervoxStore.getState().snapshot) {
+        useItervoxStore.getState().patchSnapshot({ failureAcks: context?.prevAcks });
+      }
+      toastApiError(error);
+    },
+    onSuccess: (_data, { identifier }) => {
+      useToastStore.getState().addToast(`Acknowledged the failure on ${identifier}`, 'success');
+      void useItervoxStore.getState().refreshSnapshot();
     },
   });
 }

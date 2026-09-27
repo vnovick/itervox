@@ -1,5 +1,5 @@
 import { MarkdownPromptEditor } from '../profiles/MarkdownPromptEditor';
-import { checkboxCls, fieldLabelCls, helperTextCls, inputCls, selectCls } from '../formStyles';
+import { checkboxCls, fieldLabelCls, helperTextCls, selectCls } from '../formStyles';
 import type { AutomationFormValues } from './automationForm';
 import {
   TRIGGER_OPTIONS,
@@ -8,8 +8,7 @@ import {
 } from './automationEditorConstants';
 import { AutomationFilterFields } from './AutomationFilterFields';
 import { AutomationInstructionsPanel } from './AutomationInstructionsPanel';
-import { CronPicker } from './CronPicker';
-import { getIANATimezones } from './timezones';
+import { CronScheduleFields } from './CronScheduleFields';
 import { RateLimitedFieldsBlock } from './RateLimitedFieldsBlock';
 import { BlockersResolvedFieldsBlock } from './BlockersResolvedFieldsBlock';
 
@@ -63,13 +62,16 @@ export function AutomationEditorFields({
   onCooldownMinutesChange: (value: string) => void;
   onMoveToStateChange: (value: string) => void;
 }) {
-  const isCron = values.triggerType === 'cron';
-  const isInputRequired = values.triggerType === 'input_required';
-  const isIssueEnteredState = values.triggerType === 'issue_entered_state';
-  const isRateLimited = values.triggerType === 'rate_limited';
-  const isBlockersResolved = values.triggerType === 'blockers_resolved';
+  // CORE-047 round 2: an unknown trigger (newer daemon) is read-only — none
+  // of the known trigger-specific sections apply to it.
+  const known = values.unknownFields?.trigger === undefined;
+  const isCron = known && values.triggerType === 'cron';
+  const isInputRequired = known && values.triggerType === 'input_required';
+  const isIssueEnteredState = known && values.triggerType === 'issue_entered_state';
+  const isRateLimited = known && values.triggerType === 'rate_limited';
+  const isBlockersResolved = known && values.triggerType === 'blockers_resolved';
   const supportsBatchLimit =
-    values.triggerType === 'cron' ||
+    isCron ||
     values.triggerType === 'tracker_comment_added' ||
     values.triggerType === 'issue_entered_state' ||
     values.triggerType === 'issue_moved_to_backlog';
@@ -95,8 +97,11 @@ export function AutomationEditorFields({
 
       <div className="grid gap-4 md:grid-cols-2">
         <div>
-          <label className={fieldLabelCls}>Profile</label>
+          <label htmlFor="automation-profile-select" className={fieldLabelCls}>
+            Profile
+          </label>
           <select
+            id="automation-profile-select"
             value={values.profile}
             onChange={(event) => {
               onProfileChange(event.target.value);
@@ -116,9 +121,13 @@ export function AutomationEditorFields({
         </div>
 
         <div>
-          <label className={fieldLabelCls}>Trigger</label>
+          <label htmlFor="automation-trigger-select" className={fieldLabelCls}>
+            Trigger
+          </label>
           <select
+            id="automation-trigger-select"
             value={values.triggerType}
+            disabled={!known}
             onChange={(event) => {
               onTriggerTypeChange(event.target.value as AutomationTriggerType);
             }}
@@ -136,8 +145,11 @@ export function AutomationEditorFields({
 
       {isIssueEnteredState && (
         <div>
-          <label className={fieldLabelCls}>Entered State</label>
+          <label htmlFor="automation-entered-state-select" className={fieldLabelCls}>
+            Entered State
+          </label>
           <select
+            id="automation-entered-state-select"
             aria-label="Entered State"
             value={values.triggerState}
             onChange={(event) => {
@@ -160,38 +172,12 @@ export function AutomationEditorFields({
       )}
 
       {isCron && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <label className={fieldLabelCls}>Cron</label>
-            <CronPicker value={values.cron} onChange={onCronChange} />
-          </div>
-
-          <div>
-            <label htmlFor="automation-timezone-input" className={fieldLabelCls}>
-              Timezone
-            </label>
-            <input
-              id="automation-timezone-input"
-              list="automation-timezone-zones"
-              value={values.timezone}
-              onChange={(event) => {
-                onTimezoneChange(event.target.value);
-              }}
-              placeholder="UTC or Asia/Jerusalem"
-              className={inputCls}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <datalist id="automation-timezone-zones">
-              {getIANATimezones().map((zone) => (
-                <option key={zone} value={zone} />
-              ))}
-            </datalist>
-            <p className={helperTextCls}>
-              IANA zone name. Start typing to filter; leave blank to use the daemon timezone.
-            </p>
-          </div>
-        </div>
+        <CronScheduleFields
+          cron={values.cron}
+          timezone={values.timezone}
+          onCronChange={onCronChange}
+          onTimezoneChange={onTimezoneChange}
+        />
       )}
 
       {isInputRequired && (

@@ -3,7 +3,6 @@ package main
 import (
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/automationconfig"
@@ -46,14 +45,13 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			if r.LastEventAt != nil {
 				lastEvAt = r.LastEventAt.Format(time.RFC3339)
 			}
-			// Count subagent markers in the log buffer for this issue.
+			// Subagent markers retained in this issue's log ring: an O(1)
+			// read of the counter logbuffer maintains on Add (CORE-035), not
+			// a copy-and-scan of up to 500 lines per running issue per
+			// snapshot.
 			var subCount int
 			if logBuf != nil {
-				for _, line := range logBuf.Get(r.Issue.Identifier) {
-					if strings.Contains(line, `"claude: subagent"`) || strings.Contains(line, `"codex: subagent"`) {
-						subCount++
-					}
-				}
+				subCount = logBuf.SubagentCount(r.Issue.Identifier)
 			}
 			// T-6: prefer the live counter (incremented from the HTTP handler
 			// goroutine) over RunEntry.CommentCount because the latter is only
@@ -195,6 +193,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			History:                      history,
 			Retrying:                     retrying,
 			Paused:                       paused,
+			PauseReasons:                 pauseReasonsMap(s), // M6-close BH-M6-3
 			MaxConcurrentAgents:          orch.MaxWorkers(),
 			MaxRetries:                   orch.MaxRetriesCfg(),
 			FailedState:                  orch.FailedStateCfg(),
@@ -209,6 +208,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			ActiveStates:                 activeStates,
 			TerminalStates:               terminalStates,
 			CompletionState:              completionState,
+			WorkingState:                 cfg.Tracker.WorkingState, // CORE-070; no runtime setter, not cfgMu-guarded
 			BacklogStates:                cfg.Tracker.BacklogStates,
 			PollIntervalMs:               cfg.Polling.IntervalMs,
 			AutoClearWorkspace:           autoClearWorkspace,
@@ -241,7 +241,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DepsAnalyzerProfile:       orch.DepsAnalyzerProfileCfg(),
 			DepsLastAnalyzedAt:        depsLastAnalyzedAt,
 			DepsAnalyzeJob:            depsAnalyzeJob,
-			AvailableModels:           convertModelsForSnapshot(cfg.Agent.AvailableModels),
+			AvailableModels:           convertModelsForSnapshot(orch.AvailableModelsCfg()), // CORE-160: runtime-mutable
 			SupportedAgentActions:     config.SupportedAgentActions(),
 			ReviewerProfile:           func() string { p, _ := orch.ReviewerCfg(); return p }(),
 			AutoReview:                func() bool { _, a := orch.ReviewerCfg(); return a }(),
@@ -254,6 +254,19 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// against /api/v1/issues rows by Identifier.
 			OutboxEntries: outboxEntryRows(ob.Snapshot()),
 			OutboxSyncing: outboxSyncingRows(s.OutboxSyncing),
+			// CORE-044 — most recent tracker failure (poll or failed-state move).
+			LastTrackerError: trackerErrorRow(s),
+			// CORE-046 — the RecentFailures ring (always an array).
+			RecentFailures: recentFailureRows(s),
+			// CORE-175 — operator acks of worker failures + the capability
+			// that makes the dashboard offer the action.
+			FailureAcks:  failureAckRows(s),
+			Capabilities: []string{server.CapabilityFailureAck},
+			// CORE-091 — daemon-session token / estimated-cost totals.
+			Totals: totalsRow(s),
+			// CORE-055 — agent backend breakers and auto-switch provenance.
+			BackendHealth: backendHealthRows(s, knownBackends(cfg, profiles)),
+			AutoSwitches:  autoSwitchRows(s),
 		}
 		// Stale threshold for the dashboard badge: pick the longest
 		// MaxAgeMinutes across all enabled input_required automations. If no

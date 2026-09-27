@@ -2,9 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
-
-	"github.com/charmbracelet/x/term"
 )
 
 // fatalExit terminates the process with the given exit code, restoring the
@@ -42,8 +39,6 @@ func fatalExit(code int) {
 		// deferred copy on the normal path is harmless.
 		onFatalExit()
 	}
-	if term.IsTerminal(os.Stdin.Fd()) {
-		_ = exec.Command("stty", "sane").Run()
-	}
+	restoreTerminal()
 	os.Exit(code)
 }

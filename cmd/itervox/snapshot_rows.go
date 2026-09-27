@@ -9,6 +9,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/server"
@@ -302,7 +303,7 @@ func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow,
 			Status:     string(entry.Status),
 			Running:    running[targetID],
 			Queued:     queued[targetID],
-			Terminal:   isSnapshotTerminal(entry.IssueState, s.TerminalStates),
+			Terminal:   domain.IsTerminalState(entry.IssueState, s.TerminalStates),
 			URL:        nodeURLs[targetID],
 		})
 		for _, blocker := range entry.BlockedBy {
@@ -312,7 +313,7 @@ func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow,
 			}
 			sourceState := stringValue(blocker.State)
 			sourceKnown := stringValue(blocker.Identifier) != ""
-			resolved := isSnapshotTerminal(sourceState, s.TerminalStates)
+			resolved := domain.IsTerminalState(sourceState, s.TerminalStates)
 			nodes[sourceID] = mergeDependencyGraphNode(nodes[sourceID], server.DependencyGraphNodeRow{
 				ID:         sourceID,
 				Identifier: sourceID,
@@ -462,15 +463,6 @@ func blockerGraphIdentifier(blocker domain.BlockerRef) string {
 	return stringValue(blocker.URL)
 }
 
-func isSnapshotTerminal(state string, terminalStates []string) bool {
-	for _, terminal := range terminalStates {
-		if strings.EqualFold(strings.TrimSpace(state), strings.TrimSpace(terminal)) && strings.TrimSpace(state) != "" {
-			return true
-		}
-	}
-	return false
-}
-
 func stringValue(value *string) string {
 	if value == nil {
 		return ""
@@ -534,6 +526,7 @@ func outboxEntryRows(entries []outbox.Entry) []server.OutboxEntryRow {
 			EnqueuedAt:       e.EnqueuedAt,
 			NextAttemptAt:    e.NextAttemptAt,
 			RateLimitedUntil: nilIfZero(e.RateLimitedUntil),
+			LastFailedAt:     nilIfZero(e.LastFailedAt),
 		})
 	}
 	return rows
@@ -583,4 +576,23 @@ func resolveProjectName(cfg *config.Config, workflowPath string) string {
 		}
 	}
 	return "itervox"
+}
+
+// trackerErrorRow converts State.LastTrackerError into its wire row, or nil
+// when none is recorded (CORE-044). The message is tracker/transport error
+// text; it is passed through the log redactor because a transport error can
+// echo request headers or URLs.
+func trackerErrorRow(s orchestrator.State) *server.TrackerErrorRow {
+	e := s.LastTrackerError
+	if e.At.IsZero() {
+		return nil
+	}
+	return &server.TrackerErrorRow{
+		At:                  e.At,
+		Op:                  e.Op,
+		Kind:                e.Kind,
+		Message:             logging.RedactString(e.Message),
+		ResetAt:             nilIfZero(e.ResetAt),
+		ConsecutiveFailures: s.ConsecutivePollFailures,
+	}
 }

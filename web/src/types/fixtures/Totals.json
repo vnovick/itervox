@@ -1,0 +1,9 @@
+{
+  "inputTokens": 12000,
+  "outputTokens": 3400,
+  "costUsdEstimated": 0.4213,
+  "costCoverage": {
+    "claudeRuns": 3,
+    "codexRuns": 1
+  }
+}

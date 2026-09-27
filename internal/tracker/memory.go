@@ -41,6 +41,14 @@ func NewMemoryTracker(issues []domain.Issue, activeStates, terminalStates []stri
 	}
 }
 
+// SetStateLists implements StateListSetter (CORE-160).
+func (m *MemoryTracker) SetStateLists(active, terminal []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activeStates = append([]string(nil), active...)
+	m.terminalStates = append([]string(nil), terminal...)
+}
+
 // InjectError causes all subsequent calls to return the given error.
 // Pass nil to clear.
 func (m *MemoryTracker) InjectError(err error) {

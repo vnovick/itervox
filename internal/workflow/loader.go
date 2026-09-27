@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/automationdef"
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +44,11 @@ func (e *Error) Unwrap() error { return e.Cause }
 type Workflow struct {
 	Config         map[string]any
 	PromptTemplate string
+	// ContentHash is the sha256 of the exact bytes Load parsed. The daemon
+	// hands it to WatchFrom as the watcher's baseline, so an edit that lands
+	// between Load and the watcher's first reading is still seen as a change
+	// (M1-close C2). Zero for a Workflow not produced by Load.
+	ContentHash [32]byte
 }
 
 // Load reads and parses a WORKFLOW.md file at the given path.
@@ -52,7 +57,12 @@ func Load(path string) (*Workflow, error) {
 	if err != nil {
 		return nil, &Error{Code: ErrMissingFile, Path: path, Cause: err}
 	}
-	return parse(path, string(data))
+	wf, err := parse(path, string(data))
+	if err != nil {
+		return nil, err
+	}
+	wf.ContentHash = sha256.Sum256(data)
+	return wf, nil
 }
 
 func parse(path, content string) (*Workflow, error) {
@@ -127,7 +137,10 @@ var keyLineRE = regexp.MustCompile(`^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:\s*)(.*)$
 // route through ApplyAndWriteFrontMatter for the same guarantee; this
 // function predated that pattern.
 func PatchIntField(path, key string, n int) error {
-	unlock := lockForPath(path)
+	unlock, err := lockForPath(path)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	data, err := os.ReadFile(path)
@@ -175,20 +188,28 @@ func PatchIntField(path, key string, n int) error {
 	if frontEnd > 0 {
 		patched = patched + content[frontEnd:]
 	}
-	return atomicfs.WriteFile(path, []byte(patched), 0o644)
+	return writeLocked(path, data, []byte(patched), true)
 }
 
 // PatchAgentBoolField sets a boolean key under the agent: block of the YAML front matter.
 // If the key already exists it is updated in place; if it does not exist it is appended
 // inside the agent: block. Setting enabled=false removes the key entirely.
+//
+// Routed through ApplyAndWriteFrontMatter (CORE-006) so concurrent callers
+// for the same path (e.g. an HTTP settings PUT racing the TUI) are
+// serialized by editMu instead of racing a bare read-modify-write.
 func PatchAgentBoolField(path, key string, enabled bool) error {
-	return patchBlockBoolField(path, "agent", key, enabled)
+	return ApplyAndWriteFrontMatter(path, MutateAgentBoolField(key, enabled))
 }
 
 // PatchWorkspaceBoolField sets a boolean key under the workspace: block of the YAML front matter.
 // Behaves identically to PatchAgentBoolField but targets the workspace: block.
+// There is no MutateWorkspaceBoolField export (no caller needs to compose it
+// with other mutators today); it calls the package-private
+// mutateBlockBoolField directly instead of MutateAgentBoolField, which is
+// hardcoded to the agent: block.
 func PatchWorkspaceBoolField(path, key string, enabled bool) error {
-	return patchBlockBoolField(path, "workspace", key, enabled)
+	return ApplyAndWriteFrontMatter(path, mutateBlockBoolField("workspace", key, enabled))
 }
 
 // defaultBlockIndent matches the convention written by `itervox init` for
@@ -226,11 +247,29 @@ func detectBlockIndent(frontLines []string, blockLine int) string {
 	return defaultBlockIndent
 }
 
-// findBlockHeader returns the index of the line equal to "<block>:", or -1.
+// findBlockHeader returns the index of the line naming the given top-level
+// block. It tolerates a trailing " #comment" and/or trailing whitespace —
+// both valid YAML on an otherwise-bare "<block>:" header — but NEVER leading
+// whitespace, so a "<block>:" line nested under a different top-level key
+// can never be mistaken for the top-level header (CORE-125). Quoted
+// ("dependencies":) or flow-style keys are intentionally left unmatched;
+// ApplyAndWriteFrontMatter's write-time re-parse turns that case into a
+// refused write with an error instead of silently producing a duplicate,
+// unparseable key.
 func findBlockHeader(frontLines []string, block string) int {
 	target := block + ":"
 	for i, l := range frontLines {
 		if l == target {
+			return i
+		}
+		if l == "" || l[0] == ' ' || l[0] == '\t' {
+			continue
+		}
+		candidate := l
+		if ci := strings.Index(candidate, " #"); ci >= 0 {
+			candidate = candidate[:ci]
+		}
+		if strings.TrimRight(candidate, " \t") == target {
 			return i
 		}
 	}
@@ -257,37 +296,9 @@ func findKeyInBlock(frontLines []string, blockLine int, key string) int {
 	return -1
 }
 
-// writeFrontMatter is defined in settings_patch.go (shared trailing-newline
-// policy for every patcher in this package).
-
-// patchBlockBoolField is the shared implementation used by PatchAgentBoolField
-// and PatchWorkspaceBoolField.
-func patchBlockBoolField(path, block, key string, enabled bool) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch bool: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	frontLines, bodyLines := splitFrontMatter(content)
-	if frontLines == nil {
-		return fmt.Errorf("workflow patch bool: no front matter in %s", path)
-	}
-
-	blockLine := findBlockHeader(frontLines, block)
-	indent := detectBlockIndent(frontLines, blockLine)
-	keyLine := indent + key + ": "
-	keyFound := findKeyInBlock(frontLines, blockLine, key)
-
-	switch {
-	case keyFound >= 0 && !enabled:
-		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-	case keyFound >= 0:
-		frontLines[keyFound] = keyLine + "true"
-	case enabled:
-		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyLine+"true")
-	}
-	return writeFrontMatter(path, frontLines, bodyLines)
-}
+// renderFrontMatter and writeLocked are defined in settings_patch.go (shared
+// trailing-newline policy and the single write primitive for every patcher
+// in this package).
 
 // insertAfterBlockHeader inserts `line` immediately after `blockLine`, or at
 // the end of frontLines when the block header is absent (defensive — patcher
@@ -306,31 +317,55 @@ func insertAfterBlockHeader(frontLines []string, blockLine int, line string) []s
 
 // PatchAgentStringField sets or removes a string key under the agent: block of the YAML front matter.
 // If the key already exists it is updated in place; if value == "" the key is removed.
+//
+// Routed through ApplyAndWriteFrontMatter (CORE-006); see PatchAgentBoolField.
 func PatchAgentStringField(path, key, value string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch string: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	frontLines, bodyLines := splitFrontMatter(content)
-	if frontLines == nil {
-		return fmt.Errorf("workflow patch string: no front matter in %s", path)
-	}
+	return ApplyAndWriteFrontMatter(path, MutateAgentStringField(key, value))
+}
 
-	blockLine := findBlockHeader(frontLines, "agent")
-	indent := detectBlockIndent(frontLines, blockLine)
-	keyPrefix := indent + key + ": "
-	keyFound := findKeyInBlock(frontLines, blockLine, key)
+// MutateDependenciesStringField returns a Mutator that sets or removes a
+// string key under the dependencies: block. See PatchDependenciesStringField.
+func MutateDependenciesStringField(key, value string) Mutator {
+	return func(frontLines []string) ([]string, error) {
+		blockLine := findBlockHeader(frontLines, "dependencies")
+		if blockLine < 0 && value != "" {
+			// splitFrontMatter's frontLines never includes the closing "---"
+			// delimiter (see splitFrontMatter), so appending the header here
+			// lands it at the end of the front matter, not after it.
+			frontLines = append(frontLines, "dependencies:")
+			blockLine = len(frontLines) - 1
+		}
+		indent := detectBlockIndent(frontLines, blockLine)
+		keyPrefix := indent + key + ": "
+		keyFound := findKeyInBlock(frontLines, blockLine, key)
 
-	switch {
-	case keyFound >= 0 && value == "":
-		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-	case keyFound >= 0:
-		frontLines[keyFound] = keyPrefix + strconv.Quote(value)
-	case value != "":
-		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyPrefix+strconv.Quote(value))
+		switch {
+		case keyFound >= 0 && value == "":
+			frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
+		case keyFound >= 0:
+			frontLines[keyFound] = keyPrefix + strconv.Quote(value)
+		case value != "":
+			frontLines = insertAfterBlockHeader(frontLines, blockLine, keyPrefix+strconv.Quote(value))
+		}
+
+		// Write-time re-parse guard (CORE-125), scoped to this mutator
+		// rather than a blanket check in ApplyAndWriteFrontMatter: an
+		// existing "dependencies:" header findBlockHeader does not
+		// recognise (e.g. a quoted "dependencies": key, an explicit
+		// non-goal — see findBlockHeader) leaves blockLine at -1 above, so
+		// this mutator creates a SECOND top-level "dependencies:" header —
+		// the exact corruption CORE-125 reported, since YAML treats both
+		// spellings as the same key. Re-parsing the candidate result here,
+		// still inside ApplyAndWriteFrontMatter's per-path lock, turns that
+		// case into a refused write with the file left untouched instead of
+		// a WORKFLOW.md that fails to load on the next reload/restart. The
+		// path argument is only used by parseFrontMatter for error context,
+		// so a Mutator (which has no path of its own) passes a fixed label.
+		if _, err := parseFrontMatter("dependencies patch", frontLines); err != nil {
+			return nil, fmt.Errorf("workflow mutate dependencies: edit would produce unparseable front matter: %w", err)
+		}
+		return frontLines, nil
 	}
-	return writeFrontMatter(path, frontLines, bodyLines)
 }
 
 // PatchDependenciesStringField sets or removes a string key under the
@@ -339,165 +374,14 @@ func PatchAgentStringField(path, key, value string) error {
 // when it is absent the block header is created at the end of the front
 // matter. Appending the key without a header would land it under whatever
 // block came last.
+//
+// Routed through ApplyAndWriteFrontMatter (CORE-006), which also re-parses
+// the assembled front matter before the atomic rename and refuses the write
+// (leaving the file untouched) if it does not parse — the guard that turns a
+// header this patcher cannot recognise (e.g. a quoted "dependencies": key)
+// into a refused write instead of a duplicate, unparseable key (CORE-125).
 func PatchDependenciesStringField(path, key, value string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch dependencies: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	frontLines, bodyLines := splitFrontMatter(content)
-	if frontLines == nil {
-		return fmt.Errorf("workflow patch dependencies: no front matter in %s", path)
-	}
-
-	blockLine := findBlockHeader(frontLines, "dependencies")
-	if blockLine < 0 && value != "" {
-		// splitFrontMatter's frontLines never includes the closing "---"
-		// delimiter (see splitFrontMatter), so appending the header here
-		// lands it at the end of the front matter, not after it.
-		frontLines = append(frontLines, "dependencies:")
-		blockLine = len(frontLines) - 1
-	}
-	indent := detectBlockIndent(frontLines, blockLine)
-	keyPrefix := indent + key + ": "
-	keyFound := findKeyInBlock(frontLines, blockLine, key)
-
-	switch {
-	case keyFound >= 0 && value == "":
-		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-	case keyFound >= 0:
-		frontLines[keyFound] = keyPrefix + strconv.Quote(value)
-	case value != "":
-		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyPrefix+strconv.Quote(value))
-	}
-	return writeFrontMatter(path, frontLines, bodyLines)
-}
-
-// PatchAgentStringSliceField sets or removes a string-slice key under the
-// agent: block of the YAML front matter. Empty values remove the key.
-func PatchAgentStringSliceField(path, key string, values []string) error {
-	return patchBlockStringSliceField(path, "agent", key, values)
-}
-
-func patchBlockStringSliceField(path, block, key string, values []string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch string slice: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	frontLines, bodyLines := splitFrontMatter(content)
-	if frontLines == nil {
-		return fmt.Errorf("workflow patch string slice: no front matter in %s", path)
-	}
-
-	encoded, err := json.Marshal(values)
-	if err != nil {
-		return fmt.Errorf("workflow patch string slice: marshal %q: %w", key, err)
-	}
-
-	blockLine := findBlockHeader(frontLines, block)
-	indent := detectBlockIndent(frontLines, blockLine)
-	keyLine := indent + key + ": "
-	keyFound := findKeyInBlock(frontLines, blockLine, key)
-
-	switch {
-	case keyFound >= 0 && len(values) == 0:
-		frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-	case keyFound >= 0:
-		frontLines[keyFound] = keyLine + string(encoded)
-	case len(values) > 0:
-		frontLines = insertAfterBlockHeader(frontLines, blockLine, keyLine+string(encoded))
-	}
-	return writeFrontMatter(path, frontLines, bodyLines)
-}
-
-// PatchAgentStringMapField replaces or removes a string map under the agent:
-// block of the YAML front matter. Empty maps remove the key entirely.
-func PatchAgentStringMapField(path, key string, values map[string]string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch string map: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	frontLines, bodyLines := splitFrontMatter(content)
-	if frontLines == nil {
-		return fmt.Errorf("workflow patch string map: no front matter in %s", path)
-	}
-
-	// Honour the file's existing indent convention.
-	// The block header `<indent>key:` and the child entries are written with
-	// the indent the rest of the agent: block already uses (so a 4-space
-	// workflow stays at 4-space, a 2-space workflow stays at 2-space).
-	agentLine := findBlockHeader(frontLines, "agent")
-	indent := detectBlockIndent(frontLines, agentLine)
-	childIndent := indent + indent
-	headerLine := indent + key + ":"
-
-	blockStart := -1
-	blockEnd := -1
-	for i, line := range frontLines {
-		if line != headerLine {
-			continue
-		}
-		blockStart = i
-		j := i + 1
-		for j < len(frontLines) {
-			l := frontLines[j]
-			if l == "" {
-				j++
-				continue
-			}
-			trimmed := strings.TrimLeft(l, " \t")
-			if len(l)-len(trimmed) > len(indent) {
-				j++
-			} else {
-				break
-			}
-		}
-		blockEnd = j
-		break
-	}
-
-	var replacement []string
-	if len(values) > 0 {
-		replacement = append(replacement, headerLine)
-		keys := make([]string, 0, len(values))
-		for mapKey := range values {
-			keys = append(keys, mapKey)
-		}
-		sort.Strings(keys)
-		for _, mapKey := range keys {
-			replacement = append(replacement, childIndent+strconv.Quote(mapKey)+": "+strconv.Quote(values[mapKey]))
-		}
-	}
-
-	var newFrontLines []string
-	switch {
-	case blockStart >= 0:
-		newFrontLines = append(newFrontLines, frontLines[:blockStart]...)
-		newFrontLines = append(newFrontLines, replacement...)
-		newFrontLines = append(newFrontLines, frontLines[blockEnd:]...)
-	case len(replacement) > 0:
-		newFrontLines = insertLinesAfter(frontLines, agentLine, replacement)
-	default:
-		return nil
-	}
-	return writeFrontMatter(path, newFrontLines, bodyLines)
-}
-
-// insertLinesAfter inserts a sequence of lines immediately after `at`
-// (defensively appends when `at` < 0). Companion to insertAfterBlockHeader
-// for callers that need to insert more than one line at once.
-func insertLinesAfter(frontLines []string, at int, lines []string) []string {
-	insertAt := len(frontLines)
-	if at >= 0 {
-		insertAt = at + 1
-	}
-	out := make([]string, 0, len(frontLines)+len(lines))
-	out = append(out, frontLines[:insertAt]...)
-	out = append(out, lines...)
-	out = append(out, frontLines[insertAt:]...)
-	return out
+	return ApplyAndWriteFrontMatter(path, MutateDependenciesStringField(key, value))
 }
 
 // ProfileEntry describes one named agent profile for PatchProfilesBlock.
@@ -527,14 +411,6 @@ type AutomationTriggerEntry = automationdef.Trigger
 type AutomationFilterEntry = automationdef.Filter
 type AutomationPolicyEntry = automationdef.Policy
 type AutomationEntry = automationdef.Definition
-
-// PatchProfilesBlock replaces (or inserts) the agent.profiles block in the YAML
-// front matter of the file at path. profiles maps profile name → ProfileEntry.
-// Passing nil or an empty map removes the profiles block entirely.
-// The rest of the file (other keys, comments, prompt body) is preserved byte-for-byte.
-func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
-	return ApplyAndWriteFrontMatter(path, MutateProfilesBlock(profiles))
-}
 
 // MutateProfilesBlock returns a Mutator that replaces (or inserts) the
 // agent.profiles: block. See PatchProfilesBlock.

@@ -6,6 +6,8 @@ import { HeroStats } from '../HeroStats';
 import { automationsFiredToday } from '../dashboardMetrics';
 import { useItervoxStore } from '../../../../store/itervoxStore';
 import { useUIStore } from '../../../../store/uiStore';
+import { makeSnapshot } from '../../../../test/fixtures/snapshots';
+import { StateSnapshotSchema } from '../../../../types/schemas';
 
 const navigateMock = vi.fn();
 
@@ -23,7 +25,7 @@ beforeEach(() => {
 });
 
 describe('HeroStats', () => {
-  it('counts both input-required and pending-input-resume entries as blocked', () => {
+  it('counts input-required and pending-input-resume entries separately (CORE-076)', () => {
     useItervoxStore.setState({
       snapshot: {
         generatedAt: new Date().toISOString(),
@@ -57,11 +59,14 @@ describe('HeroStats', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('Input Required')).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument();
+    // CORE-076 — pending_input_resume is no longer counted as needing input.
+    const needs = screen.getByText('Needs input').closest('[data-status-key]');
+    expect(needs).toHaveAttribute('data-status-count', '1');
+    const resuming = screen.getByText('Resuming').closest('[data-status-key]');
+    expect(resuming).toHaveAttribute('data-status-count', '1');
   });
 
-  it('keeps six-column stats for desktop instead of tablet widths', () => {
+  it('keeps one-row stats for desktop instead of tablet widths', () => {
     useItervoxStore.setState({
       snapshot: {
         generatedAt: new Date().toISOString(),
@@ -81,7 +86,7 @@ describe('HeroStats', () => {
     );
 
     const stats = screen.getByTestId('hero-stats');
-    expect(stats.className).toContain('lg:grid-cols-6');
+    expect(stats.className).toContain('lg:grid-cols-7');
     expect(stats.className).not.toContain('md:grid-cols-6');
   });
 });
@@ -237,5 +242,62 @@ describe('HeroStats — Automations triggered today tile', () => {
     fireEvent.click(tile);
     expect(useUIStore.getState().timelineAutomationOnly).toBe(true);
     expect(navigateMock).toHaveBeenCalledWith('/timeline');
+  });
+
+  // CORE-091 — fleet token/cost tile from snapshot.totals (Go side pending:
+  // see .plans/execution/M6-W3/rounds.md "Go handoff").
+  describe('estimated cost tile (CORE-091)', () => {
+    const renderWith = (totals: unknown) => {
+      useItervoxStore.setState({
+        snapshot: StateSnapshotSchema.parse({ ...makeSnapshot(), totals }),
+      });
+      render(
+        <MemoryRouter>
+          <HeroStats />
+        </MemoryRouter>,
+      );
+      return screen.queryByTestId('hero-stat-cost');
+    };
+
+    it("renders the estimated-cost tile with 'Claude runs only' when codexRuns > 0", () => {
+      const tile = renderWith({
+        inputTokens: 900_000,
+        outputTokens: 334_000,
+        costUsdEstimated: 4.567,
+        costCoverage: { claudeRuns: 3, codexRuns: 2 },
+      });
+      expect(tile).toHaveTextContent('$4.57');
+      expect(tile).toHaveTextContent(/estimated, Claude runs only/i);
+      expect(tile).toHaveTextContent('1.2M tokens');
+      // Eight tiles: two rows of four on large screens, one row from 2xl.
+      expect(screen.getByTestId('hero-stats').className).toContain('lg:grid-cols-4');
+    });
+
+    it("renders '—' for cost when costUsdEstimated is null", () => {
+      const tile = renderWith({
+        inputTokens: 10,
+        outputTokens: 5,
+        costUsdEstimated: null,
+        costCoverage: { claudeRuns: 0, codexRuns: 1 },
+      });
+      expect(tile).toHaveTextContent('—');
+      expect(tile).not.toHaveTextContent('$0');
+    });
+
+    it('says estimated (no Codex caveat) when only Claude runs contributed', () => {
+      const tile = renderWith({
+        inputTokens: 100,
+        outputTokens: 50,
+        costUsdEstimated: 0.01,
+        costCoverage: { claudeRuns: 2, codexRuns: 0 },
+      });
+      expect(tile).toHaveTextContent('$0.01');
+      expect(tile).toHaveTextContent(/^.*estimated.*$/i);
+      expect(tile).not.toHaveTextContent(/Claude runs only/i);
+    });
+
+    it('hides the tile when the daemon sends no totals (older daemon)', () => {
+      expect(renderWith(undefined)).toBeNull();
+    });
   });
 });

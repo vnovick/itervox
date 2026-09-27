@@ -19,8 +19,12 @@ test.describe('T-62 auth smoke', () => {
   test('1. URL token captured, stripped, persisted in sessionStorage', async ({ page }) => {
     await bootApp(page, { scenario: quickstartScenario, token: E2E_TOKEN });
 
-    // URL stripped via history.replaceState
-    expect(new URL(page.url()).search).toBe('');
+    // URL stripped via history.replaceState. AuthGate strips it in a mount
+    // effect, which can run after the load event goto() waits for: this used
+    // to pass only because the Google Fonts @import (a third-party stylesheet)
+    // held the load event back. Self-hosted fonts (CORE-098) removed that, so
+    // poll instead of reading the URL once.
+    await expect.poll(() => new URL(page.url()).search).toBe('');
 
     // Token in sessionStorage, NOT localStorage
     const session = await page.evaluate((k) => sessionStorage.getItem(k), SESSION_KEY);

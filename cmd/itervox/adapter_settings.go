@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,14 +10,18 @@ import (
 
 	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // adapter_settings.go houses the settings/config-mutating methods of
 // orchestratorAdapter. Extracted from main.go (G-12, gaps_280426_2) so the
 // entry-point file stays under its size-budget cap. All methods follow the
-// persist-then-mutate convention enforced by adapter_convention_test.go.
+// persist-then-mutate convention enforced by adapter_convention_test.go, and
+// every setter that writes WORKFLOW.md holds beginSettingsSave for the whole
+// write-then-apply so the file and memory cannot diverge (V4).
 
 // SetWorkers persists max_concurrent_agents to WORKFLOW.md FIRST, then
 // applies the change to the orchestrator. Persist-then-mutate matches the
@@ -25,6 +30,11 @@ import (
 // the WORKFLOW.md write silently failed, and the value would revert at the
 // next daemon restart, confusing the user.
 func (a *orchestratorAdapter) SetWorkers(n int) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	clamped := max(1, min(n, 50))
 	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", clamped); err != nil {
 		return fmt.Errorf("persist max_concurrent_agents: %w", err)
@@ -34,6 +44,11 @@ func (a *orchestratorAdapter) SetWorkers(n int) error {
 }
 
 func (a *orchestratorAdapter) BumpWorkers(delta int) (int, error) {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return 0, lockErr
+	}
+	defer unlock()
 	current := a.orch.MaxWorkers()
 	next := max(1, min(current+delta, 50))
 	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", next); err != nil {
@@ -45,6 +60,16 @@ func (a *orchestratorAdapter) BumpWorkers(delta int) (int, error) {
 
 func (a *orchestratorAdapter) SetIssueProfile(identifier, profile string) {
 	a.orch.SetIssueProfile(identifier, profile)
+}
+
+// ClearBackendBreaker implements server.BackendBreakerClearer (M3-close).
+func (a *orchestratorAdapter) ClearBackendBreaker(backend, host string) bool {
+	return a.orch.ClearBackendBreaker(backend, host)
+}
+
+// CheckIssueBackendPin implements server.IssueBackendPinChecker (CORE-056).
+func (a *orchestratorAdapter) CheckIssueBackendPin(identifier, backend string) error {
+	return a.orch.CheckIssueBackendPin(identifier, backend)
 }
 
 func (a *orchestratorAdapter) SetIssueBackend(identifier, backend string) {
@@ -71,6 +96,11 @@ func (a *orchestratorAdapter) ReviewerConfig() (string, bool) {
 }
 
 func (a *orchestratorAdapter) SetReviewerConfig(profile string, autoReview bool) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	prevProfile, prevAutoReview := a.orch.ReviewerCfg()
 	if err := config.ValidateReviewerAutoReview(profile, autoReview); err != nil {
 		return err
@@ -84,9 +114,11 @@ func (a *orchestratorAdapter) SetReviewerConfig(profile string, autoReview bool)
 	if err := persistReviewerConfig(a.workflowPath, profile, autoReview); err != nil {
 		return err
 	}
+	runSettingsBeforeApply("agent.reviewer_profile/auto_review")
 	if err := a.orch.SetReviewerCfg(profile, autoReview); err != nil {
-		_ = persistReviewerConfig(a.workflowPath, prevProfile, prevAutoReview)
-		return err
+		return rollbackSettingsWrite("agent.reviewer_profile/auto_review", err, func() error {
+			return persistReviewerConfig(a.workflowPath, prevProfile, prevAutoReview)
+		})
 	}
 	a.notify()
 	return nil
@@ -106,16 +138,35 @@ func (a *orchestratorAdapter) AvailableModels() map[string][]server.ModelOption 
 }
 
 func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
+	// CORE-010: re-validate with the effective default command BEFORE the
+	// file is patched, so a mismatching switch_to_backend is never persisted
+	// even by a caller that skipped the HTTP handler's validation. cfg.Agent.Command is read-only after startup (not a cfgMu
+	// field); ProfilesCfg reads the cfgMu-guarded profiles.
+	compiled := automationconfig.ConfigsFromDefinitions(automations)
+	if err := config.ValidateAutomationsWithDefaults(compiled, a.orch.ProfilesCfg(), a.cfg.Agent.Command); err != nil {
+		return err
+	}
 	if err := workflow.PatchAutomationsBlock(a.workflowPath, automations); err != nil {
 		return err
 	}
 	// no rollback needed: SetAutomationsCfg is infallible (slice assignment under cfgMu).
-	a.orch.SetAutomationsCfg(automationconfig.ConfigsFromDefinitions(automations))
+	a.orch.SetAutomationsCfg(compiled)
 	a.notify()
 	return nil
 }
 
-func (a *orchestratorAdapter) ClearAllWorkspaces() error {
+func (a *orchestratorAdapter) ClearAllWorkspaces() (err error) {
+	// CORE-008: turn a panic into an error. internal/server's
+	// handleClearAllWorkspaces goroutine also recovers (recoverServerGoroutine);
+	// this keeps any other caller of the adapter from crashing on it too.
+	defer orchestrator.RecoverGoroutine("clear-all-workspaces", "", func() {
+		err = errors.New("clear workspaces: panicked (see log)")
+	})
 	// Clear run history (in-memory + disk) so Timeline resets.
 	a.orch.ClearHistory()
 
@@ -138,6 +189,11 @@ func (a *orchestratorAdapter) ClearAllWorkspaces() error {
 }
 
 func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	reviewerProfile, autoReview := a.orch.ReviewerCfg()
 	prevEnabled := a.orch.AutoClearWorkspaceCfg()
 	if err := config.ValidateAutoClearAutoReview(enabled, reviewerProfile, autoReview); err != nil {
@@ -146,9 +202,11 @@ func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
 	if err := workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", enabled); err != nil {
 		return err
 	}
+	runSettingsBeforeApply("workspace.auto_clear")
 	if err := a.orch.SetAutoClearWorkspaceCfg(enabled); err != nil {
-		_ = workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", prevEnabled)
-		return err
+		return rollbackSettingsWrite("workspace.auto_clear", err, func() error {
+			return workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", prevEnabled)
+		})
 	}
 	a.notify()
 	return nil
@@ -158,6 +216,11 @@ func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
 // then updates the running config, rolling the file back if the runtime
 // update is rejected — same two-phase shape as SetAutoClearWorkspace.
 func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if err := config.ValidateDepsAnalysisMode(mode); err != nil {
 		return err
 	}
@@ -166,24 +229,40 @@ func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {
 		return err
 	}
 	if err := a.orch.SetDepsAnalysisModeCfg(mode); err != nil {
-		_ = workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", prev)
-		return err
+		return rollbackSettingsWrite("dependencies.analysis_mode", err, func() error {
+			return workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", prev)
+		})
 	}
 	a.notify()
 	return nil
 }
 
 func (a *orchestratorAdapter) UpdateTrackerStates(active, terminal []string, completion string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if err := persistTrackerStates(a.workflowPath, active, terminal, completion); err != nil {
 		return err
 	}
 	// no rollback needed: SetTrackerStatesCfg is infallible (3 field assignments under cfgMu).
 	a.orch.SetTrackerStatesCfg(active, terminal, completion)
+	// CORE-160: the tracker client's own copies (linear/github/memory), so the
+	// next poll uses the new lists without a reload.
+	if setter, ok := a.tr.(tracker.StateListSetter); ok {
+		setter.SetStateLists(active, terminal)
+	}
 	a.notify()
 	return nil
 }
 
 func (a *orchestratorAdapter) AddSSHHost(host, description string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	hosts, descs := a.orch.SSHHostsCfg()
 	if descs == nil {
 		descs = make(map[string]string)
@@ -209,6 +288,11 @@ func (a *orchestratorAdapter) AddSSHHost(host, description string) error {
 }
 
 func (a *orchestratorAdapter) RemoveSSHHost(host string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	hosts, descs := a.orch.SSHHostsCfg()
 	nextHosts := make([]string, 0, len(hosts))
 	for _, existing := range hosts {
@@ -228,6 +312,11 @@ func (a *orchestratorAdapter) RemoveSSHHost(host string) error {
 }
 
 func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if err := workflow.PatchAgentStringField(a.workflowPath, "dispatch_strategy", strategy); err != nil {
 		return err
 	}
@@ -237,12 +326,12 @@ func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
 	return nil
 }
 
-func (a *orchestratorAdapter) ProvideInput(identifier, message string) bool {
-	return a.orch.ProvideInput(identifier, message)
+func (a *orchestratorAdapter) ProvideInput(identifier, message string) error {
+	return mapIssueControlErr(a.orch.ProvideInput(identifier, message))
 }
 
-func (a *orchestratorAdapter) DismissInput(identifier string) bool {
-	return a.orch.DismissInput(identifier)
+func (a *orchestratorAdapter) DismissInput(identifier string) error {
+	return mapIssueControlErr(a.orch.DismissInput(identifier))
 }
 
 func (a *orchestratorAdapter) SetDepsOverride(identifier string, enabled bool) bool {
@@ -250,6 +339,11 @@ func (a *orchestratorAdapter) SetDepsOverride(identifier string, enabled bool) b
 }
 
 func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if err := workflow.PatchAgentBoolField(a.workflowPath, "inline_input", enabled); err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,6 +79,13 @@ func (s *Server) handleDepsAnalyzeEnqueue(w http.ResponseWriter, r *http.Request
 		mode = "auto"
 	}
 	jobID, queuedAt, err := s.depsAnalyzer.EnqueueAnalysis(profile, mode)
+	if writeDrainingConflict(w, err) { // M4-close BH-M4-3
+		return
+	}
+	if errors.Is(err, ErrBackendLimited) { // CORE-173 a
+		writeError(w, http.StatusConflict, "backend_limited", err.Error())
+		return
+	}
 	if err != nil {
 		// Surface "unknown profile" / "disabled profile" as 422 so the UI can
 		// show the validation error without retrying.

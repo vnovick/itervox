@@ -69,7 +69,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
         {isLoading && <p className="text-theme-muted text-sm">Loading projects…</p>}
 
         {isError && (
-          <p className="text-theme-danger text-sm">
+          <p className="text-theme-danger-text text-sm">
             Failed to load projects. Check that the server is running.
           </p>
         )}

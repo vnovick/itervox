@@ -207,18 +207,20 @@ describe('IssueDetailSlide', () => {
     expect(setSelectedIdentifier).toHaveBeenCalledWith(null);
   });
 
-  it('shows Pause Agent and Cancel Agent buttons when running', () => {
+  // CORE-073 (spec): the running footer says Discard, like the paused one.
+  it('shows Pause and Discard buttons when running', () => {
     setupDefaultMocks('ENG-10', { orchestratorState: 'running' });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.getByText(/Pause Agent/)).toBeInTheDocument();
-    expect(screen.getByText(/Cancel Agent/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '⏸ Pause' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '✕ Discard' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument();
   });
 
-  it('shows Resume Agent and Discard buttons when paused', () => {
+  it('shows Resume and Discard buttons when paused', () => {
     setupDefaultMocks('ENG-10', { orchestratorState: 'paused' });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.getByText(/Resume Agent/)).toBeInTheDocument();
-    expect(screen.getByText(/Discard/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '▶ Resume' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '✕ Discard' })).toBeInTheDocument();
   });
 
   it('shows comments when present', async () => {
@@ -309,7 +311,9 @@ describe('IssueDetailSlide', () => {
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
 
     expect(screen.getByText('Not dispatchable')).toBeInTheDocument();
-    expect(screen.getByText('blocked_by:ENG-5')).toBeInTheDocument();
+    // CORE-080 — human label from the shared table, raw reason kept beside it.
+    expect(screen.getByText('Blocked by ENG-5')).toBeInTheDocument();
+    expect(screen.getByText('(blocked_by:ENG-5)')).toBeInTheDocument();
   });
 
   it('shows "No description" when description is empty', () => {
@@ -375,18 +379,18 @@ describe('IssueDetailSlide', () => {
     expect(screen.queryByTestId('issue-detail-syncing-badge')).not.toBeInTheDocument();
   });
 
-  it('shows Cancel Retry button when retrying', () => {
+  it('shows Cancel retry button when retrying', () => {
     setupDefaultMocks('ENG-10', { orchestratorState: 'retrying' });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.getByText(/Cancel Retry/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '✕ Cancel retry' })).toBeInTheDocument();
   });
 
   it('does not show action footer when orchestratorState is idle', () => {
     setupDefaultMocks('ENG-10', { orchestratorState: 'idle' });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.queryByText(/Pause Agent/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Resume Agent/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Cancel Retry/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '⏸ Pause' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '▶ Resume' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '✕ Cancel retry' })).not.toBeInTheDocument();
   });
 
   it('shows review button when reviewerProfile is set and not running', () => {
@@ -474,23 +478,26 @@ describe('IssueDetailSlide', () => {
     mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(screen.getByText('Agent Profile')).toBeInTheDocument();
-    // Should show a select dropdown (not locked)
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    // Should show a select dropdown (not locked). CORE-056 added the
+    // backend combobox beside it, so select by accessible name.
+    expect(screen.getByRole('combobox', { name: 'Agent profile' })).toBeInTheDocument();
   });
 
-  it('shows locked profile indicator when state includes progress', () => {
+  // CORE-070 — retargeted: idle issue in a custom working state, so the
+  // running clause cannot mask a literal state-name comparison.
+  it('shows locked profile indicator in the configured working state', () => {
     const setSelectedIdentifier = vi.fn();
     mockStore.mockImplementation((selector: (s: any) => any) =>
       selector({
         selectedIdentifier: 'ENG-10',
         setSelectedIdentifier,
-        snapshot: { availableProfiles: ['fast'] },
+        snapshot: { availableProfiles: ['fast'], workingState: 'Doing' },
       }),
     );
     const issue = {
       ...baseIssue,
-      state: 'In Progress',
-      orchestratorState: 'running' as const,
+      state: 'Doing',
+      orchestratorState: 'idle' as const,
       agentProfile: 'fast',
     };
     mockUseIssues.mockReturnValue(castMock({ data: [issue] }));
@@ -517,7 +524,7 @@ describe('IssueDetailSlide', () => {
     );
     mockUsePostIssueComment.mockReturnValue(castMock({ mutate: vi.fn(), isPending: false }));
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.getByText('locked while In Progress')).toBeInTheDocument();
+    expect(screen.getByText('locked while Doing')).toBeInTheDocument();
   });
 
   it('shows input required UI when orchestratorState is input_required', () => {
@@ -628,5 +635,195 @@ describe('IssueDetailSlide', () => {
       { identifier: 'ENG-10', body: 'ship it' },
       expect.anything(),
     );
+  });
+
+  it('Discard requires confirmation on paused and running issues', async () => {
+    const user = userEvent.setup();
+    const terminateMutate = vi.fn();
+
+    // Paused → Discard.
+    setupDefaultMocks('ENG-10', { orchestratorState: 'paused' });
+    mockUseTerminateIssue.mockReturnValue(
+      castMock({ mutate: terminateMutate, mutateAsync: vi.fn(), isPending: false }),
+    );
+    const { rerender } = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    await user.click(screen.getByRole('button', { name: '✕ Discard' }));
+    expect(screen.getByRole('button', { name: 'Yes, discard' })).toHaveFocus();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(terminateMutate).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '✕ Discard' })).toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: '✕ Discard' }));
+    await user.click(screen.getByRole('button', { name: 'Yes, discard' }));
+    expect(terminateMutate).toHaveBeenCalledTimes(1);
+    expect(terminateMutate).toHaveBeenCalledWith('ENG-10');
+
+    mockUseTerminateIssue.mockReturnValue(
+      castMock({ mutate: terminateMutate, mutateAsync: vi.fn(), isPending: true }),
+    );
+    rerender(<IssueDetailSlide />);
+    const pendingDiscard = screen.getByRole('button', { name: 'Discarding…' });
+    expect(pendingDiscard).toBeDisabled();
+    await user.click(pendingDiscard);
+    expect(terminateMutate).toHaveBeenCalledTimes(1);
+
+    // Settle the paused mutation and switch the SAME tree to running state,
+    // reusing `rerender` so only one component tree is ever mounted.
+    terminateMutate.mockClear();
+    setupDefaultMocks('ENG-10', { orchestratorState: 'running' });
+    mockUseTerminateIssue.mockReturnValue(
+      castMock({ mutate: terminateMutate, mutateAsync: vi.fn(), isPending: false }),
+    );
+    rerender(<IssueDetailSlide />);
+
+    // Running → Discard.
+    await user.click(screen.getByRole('button', { name: '✕ Discard' }));
+    expect(screen.getByRole('button', { name: 'Yes, discard' })).toHaveFocus();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(terminateMutate).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '✕ Discard' })).toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: '✕ Discard' }));
+    await user.click(screen.getByRole('button', { name: 'Yes, discard' }));
+    expect(terminateMutate).toHaveBeenCalledTimes(1);
+    expect(terminateMutate).toHaveBeenCalledWith('ENG-10');
+
+    mockUseTerminateIssue.mockReturnValue(
+      castMock({ mutate: terminateMutate, mutateAsync: vi.fn(), isPending: true }),
+    );
+    rerender(<IssueDetailSlide />);
+    const pendingRunningDiscard = screen.getByRole('button', { name: 'Discarding…' });
+    expect(pendingRunningDiscard).toBeDisabled();
+    await user.click(pendingRunningDiscard);
+    expect(terminateMutate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── CORE-070 — tracker state names come from the snapshot ───────────────────
+
+describe('IssueDetailSlide', () => {
+  const reviewButtons = () => screen.queryAllByRole('button', { name: /^🔍 Review$/ });
+
+  it('renders a single Review button', () => {
+    const fixtures: Array<[string, Partial<typeof baseIssue>, Record<string, unknown>]> = [
+      ['retrying', { orchestratorState: 'retrying' as never }, {}],
+      ['paused', { orchestratorState: 'paused' as never }, {}],
+      ['input_required', { orchestratorState: 'input_required' as never }, {}],
+      [
+        'completion state',
+        { state: 'QA', orchestratorState: 'idle' as never },
+        { completionState: 'QA' },
+      ],
+      ['idle Todo', { state: 'Todo', orchestratorState: 'idle' as never }, {}],
+    ];
+    for (const [name, issue, snap] of fixtures) {
+      setupDefaultMocks('ENG-10', issue, { reviewerProfile: 'reviewer', ...snap });
+      const { unmount } = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+      expect(reviewButtons(), name).toHaveLength(1);
+      unmount();
+
+      setupDefaultMocks('ENG-10', issue, { reviewerProfile: '', ...snap });
+      const empty = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+      expect(reviewButtons(), `${name} without reviewer`).toHaveLength(0);
+      empty.unmount();
+    }
+  });
+
+  it('profile lock follows configured working state', () => {
+    const snap = { availableProfiles: ['fast'], workingState: 'Doing' };
+    // Custom working state locks, even with the orchestrator idle.
+    setupDefaultMocks('ENG-10', { state: 'Doing', orchestratorState: 'idle' as never }, snap);
+    const locked = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByText('locked while Doing')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Agent profile' })).not.toBeInTheDocument();
+    locked.unmount();
+
+    // A state that merely contains "progress" is not the working state.
+    setupDefaultMocks(
+      'ENG-10',
+      { state: 'Progress Review', orchestratorState: 'idle' as never },
+      snap,
+    );
+    const open = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByRole('combobox', { name: 'Agent profile' })).toBeInTheDocument();
+    open.unmount();
+
+    // An older daemon without workingState falls back to the default
+    // tracker.working_state ("In Progress"), matched exactly.
+    setupDefaultMocks(
+      'ENG-10',
+      { state: 'In Progress', orchestratorState: 'idle' as never },
+      { availableProfiles: ['fast'] },
+    );
+    const fallback = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByText('locked while In Progress')).toBeInTheDocument();
+    fallback.unmount();
+
+    // Running always locks.
+    setupDefaultMocks('ENG-10', { state: 'Todo', orchestratorState: 'running' }, snap);
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.queryByRole('combobox', { name: 'Agent profile' })).not.toBeInTheDocument();
+  });
+
+  it('footer uses custom completionState', () => {
+    // The footer carries run controls only. An idle issue in the configured
+    // completion state ("QA") gets its Review action once, from the body —
+    // not a second copy in an otherwise empty footer — and the literal
+    // "In Review" name no longer changes anything.
+    for (const state of ['QA', 'In Review']) {
+      setupDefaultMocks(
+        'ENG-10',
+        { state, orchestratorState: 'idle' as never },
+        { reviewerProfile: 'reviewer', completionState: 'QA' },
+      );
+      const { unmount } = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+      expect(screen.queryByTestId('issue-detail-footer'), state).not.toBeInTheDocument();
+      expect(reviewButtons(), state).toHaveLength(1);
+      unmount();
+    }
+    setupDefaultMocks(
+      'ENG-10',
+      { state: 'QA', orchestratorState: 'paused' as never },
+      {
+        reviewerProfile: 'reviewer',
+        completionState: 'QA',
+      },
+    );
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId('issue-detail-footer')).toBeInTheDocument();
+  });
+
+  // ─── CORE-073 ───────────────────────────────────────────────────────────────
+
+  it('Resume closes the slide on success and keeps it open on failure', async () => {
+    const user = userEvent.setup();
+    const resumeMutate = vi.fn();
+    const setSelectedIdentifier = setupDefaultMocks('ENG-10', {
+      orchestratorState: 'paused' as never,
+    });
+    mockUseResumeIssue.mockReturnValue(
+      castMock({ mutate: resumeMutate, mutateAsync: vi.fn(), isPending: false }),
+    );
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    // Failure: the mutation reports an error; the slide stays open.
+    resumeMutate.mockImplementationOnce(
+      (_id: string, opts?: { onError?: (e: Error) => void; onSettled?: () => void }) => {
+        opts?.onError?.(new Error('boom'));
+        opts?.onSettled?.();
+      },
+    );
+    await user.click(screen.getByRole('button', { name: '▶ Resume' }));
+    expect(resumeMutate).toHaveBeenCalledWith('ENG-10', expect.anything());
+    expect(setSelectedIdentifier).not.toHaveBeenCalled();
+
+    // Success: the slide closes only once the server accepted the resume.
+    resumeMutate.mockImplementationOnce((_id: string, opts?: { onSuccess?: () => void }) => {
+      expect(setSelectedIdentifier).not.toHaveBeenCalled();
+      opts?.onSuccess?.();
+    });
+    await user.click(screen.getByRole('button', { name: '▶ Resume' }));
+    expect(setSelectedIdentifier).toHaveBeenCalledWith(null);
   });
 });

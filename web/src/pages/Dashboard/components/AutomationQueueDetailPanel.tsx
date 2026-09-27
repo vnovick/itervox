@@ -121,7 +121,7 @@ export function AutomationQueueDetailPanel({
             label="PR"
             value={
               row.prUrl ? (
-                <a href={row.prUrl} className="text-theme-accent hover:underline">
+                <a href={row.prUrl} className="text-theme-accent-text hover:underline">
                   {row.prUrl}
                 </a>
               ) : null

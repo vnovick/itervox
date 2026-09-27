@@ -16,7 +16,8 @@ daemon sitting behind a tunnel or reverse proxy (exactly what most of the
 options below set up) is just as internet-exposed as one bound to `0.0.0.0`.
 So unless you set `server.allow_unauthenticated: true`, the daemon always
 auto-generates an ephemeral token at startup, prints a one-time dashboard URL
-with `?token=...`, and requires that bearer token on every request. Pinning a
+with `?token=...` when stderr is a terminal (headless, it writes the token to
+`<logs-dir>/api-token` instead — see [The API token](#the-api-token)), and requires that bearer token on every request. Pinning a
 fixed token in `.itervox/.env` (loaded automatically) is recommended so the
 token — and any bookmark or shortcut that carries it — stays stable across
 restarts, rather than needing to be re-copied every time:
@@ -32,7 +33,9 @@ for you:
 
 1. When the daemon starts with either an explicit or auto-generated token, it
    prints a dashboard URL with `?token=<token>` appended (look for the
-   `dashboard URL (carries token — copy/paste once)` log line).
+   `dashboard URL (carries token — copy/paste once)` log line). That line only
+   appears when stderr is a terminal — see [The API token](#the-api-token) for
+   headless runs.
 2. Open that URL once from your phone or other device. The dashboard captures
    the token, stores it in `sessionStorage`, and strips it from the URL bar.
 3. After that, every request and SSE connection sends the bearer header
@@ -131,7 +134,8 @@ command and you get a public HTTPS URL that proxies to your local dashboard.
 1. Install ngrok and authenticate (`ngrok config add-authtoken <token>`).
 2. Start the Itervox daemon as usual (default `127.0.0.1:8090` is fine — ngrok
    talks to localhost). Watch stderr for the `dashboard URL (carries token —
-   copy/paste once)` line and copy the token — the daemon auto-generates one
+   copy/paste once)` line (printed when stderr is a terminal; otherwise read
+   `<logs-dir>/api-token`) and copy the token — the daemon auto-generates one
    regardless of the loopback bind, since ngrok is about to make this
    loopback address reachable from the public internet.
 3. In a separate terminal:
@@ -190,7 +194,8 @@ without depending on any vendor.
    ```
 
 2. **On your laptop**, start Itervox as usual and copy the token from the
-   `dashboard URL (carries token — copy/paste once)` line on stderr — the
+   `dashboard URL (carries token — copy/paste once)` line on stderr (printed
+   when stderr is a terminal; otherwise read `<logs-dir>/api-token`) — the
    daemon auto-generates one by default even on a loopback bind, since Piko
    is about to expose it publicly. Then run the Piko agent pointing at your
    local Itervox dashboard:
@@ -273,13 +278,26 @@ regardless of `server.host`. This is deliberate: bind address is not a
 reliable signal for exposure. A daemon bound to `127.0.0.1` behind ngrok,
 Piko, Tailscale, or a reverse proxy is exactly as reachable from outside as
 one bound to `0.0.0.0`, and the daemon has no way to detect that from inside
-the process — so it always generates a token rather than guessing. The token
-is printed once in the startup log alongside a dashboard URL that embeds it:
+the process — so it always generates a token rather than guessing. When
+stderr is a terminal, the token is printed once on stderr inside a dashboard
+URL that embeds it (this line never reaches the rotating log file):
 
 ```
 INFO server: auto-generated ephemeral API token host=127.0.0.1 hint="set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated: true to opt out"
 INFO dashboard URL (carries token — copy/paste once) url=http://127.0.0.1:8090/?token=<long-hex-token>
 ```
+
+When stderr is **not** a terminal (systemd, a container, `itervox 2>file`), the
+tokenised URL is withheld so it never lands in journald or a log collector.
+The daemon instead logs `dashboard URL (token withheld from logs)` with the
+token-free URL, a `sha256:` fingerprint, and — for an auto-generated token —
+`token_file=<logs-dir>/api-token`. That file (mode 0600, rewritten on every
+start) holds the token; `<logs-dir>` defaults to a per-project directory under
+`~/.itervox/logs` (the same directory as `itervox.log`) and is overridden by
+`--logs-dir`. If you pinned `ITERVOX_API_TOKEN`, use that value — no file is
+written, and any stale `api-token` is removed. Set `ITERVOX_PRINT_TOKEN=1` to
+print the tokenised URL on stderr anyway; `ITERVOX_PRINT_TOKEN=0` or
+`--no-print-token` suppresses it even on a terminal.
 
 Auto-generated tokens are **ephemeral** — they change on every restart, which
 means the URL above changes too. Pinning a stable token in `.itervox/.env` is
@@ -313,17 +331,42 @@ server:
 `allow_unauthenticated` was previously named `allow_unauthenticated_lan`; the
 old key still parses (with a deprecation warning logged at startup) but new
 configs should use `allow_unauthenticated`. Setting it to `true` disables
-auth entirely — no auth middleware is installed on **any** bind, not just
+auth entirely — no bearer check is installed on **any** bind, not just
 non-loopback ones — and Itervox logs a warning at startup naming the risk.
+In its place a cross-origin guard refuses state-changing requests (`POST`,
+`PUT`, `PATCH`, `DELETE`) that a browser marks cross-site, or whose `Origin`
+host and port differ from `Host`, with `403 cross_origin_forbidden`, so a
+malicious page in your browser cannot drive the daemon. curl and scripts
+(no `Origin` header) are unaffected; see the
+[configuration reference](/configuration/#authentication) for the exact rule.
+
+It also installs a **Host guard** against DNS rebinding (a page on the
+attacker's hostname re-pointed at your daemon's address, which the
+cross-origin guard sees as same-origin): every route answers only a `Host` of
+`localhost`, an IP address, the configured `server.host`, or a name listed in
+`server.allowed_hosts`, and refuses anything else with `403 host_not_allowed`
+(`GET /api/v1/health` and `GET /api/v1/ready` are exempt). Options 1 (LAN by IP) and 2 (SSH tunnel to
+`localhost`) work unchanged, as does Tailscale by its `100.x` address. If you
+browse by a **name** — a Tailscale MagicDNS name, a tunnel hostname, a
+container service name — add it:
+
+```yaml
+server:
+  host: 0.0.0.0
+  allow_unauthenticated: true
+  allowed_hosts:
+    - devbox.tail1234.ts.net
+```
 This flag does nothing when `ITERVOX_API_TOKEN` is set — an explicit token
 always wins, and auth stays on. Do not combine this flag with any of the
 options above except Option 1/2/3 on a fully trusted network — see the
 reverse-proxy/TLS-termination note above for why it must never be set on a
 tunneled or proxied deployment.
 
-When `ITERVOX_API_TOKEN` is set, the daemon startup log includes a dashboard
-URL that embeds the token (`http://host:8090/?token=…`) — copy/paste that
-URL into your browser once. The dashboard captures the token into
+When `ITERVOX_API_TOKEN` is set and stderr is a terminal, the daemon prints
+a dashboard URL that embeds the token (`http://host:8090/?token=…`) on
+stderr — copy/paste that URL into your browser once (headless, append
+`?token=<your pinned value>` yourself). The dashboard captures the token into
 `sessionStorage`, strips it from the URL bar via `history.replaceState`, and
 sends it as `Authorization: Bearer` on every subsequent request (including
 SSE streams). If the token is missing, wrong, or the session ends, the

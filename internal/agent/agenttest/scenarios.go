@@ -40,17 +40,31 @@ func RateLimitedFailRunner() *CountingFailRunner {
 	return FailRunner("Error: HTTP 429: rate_limit_exceeded — please retry later")
 }
 
-// InputRequiredRunner emits an event sequence that signals the agent is
-// blocked waiting for human input. The orchestrator records this as
-// TerminalInputRequired and queues an InputRequiredEntry.
+// InputRequiredRunner emits the event sequence the real parsers produce for a
+// vendor-signalled input request: an assistant message carrying the agent's
+// question, then an error result event flagged IsInputRequired (what
+// ParseLine emits for a Claude `result` with is_error and an input-request
+// message, and ParseCodexLine for a Codex `turn.failed`). ApplyEvent turns
+// that into a TurnResult with Failed and InputRequired both set; the worker
+// routes it to TerminalInputRequired and queues an InputRequiredEntry
+// (CORE-164). There is no "input_required" stream event type — ApplyEvent
+// would silently drop one (CORE-138/142).
 func InputRequiredRunner(sessionID, question string) *FakeRunner {
 	return NewFakeRunner([]agent.StreamEvent{
-		{Type: "system", SessionID: sessionID},
+		{Type: agent.EventSystem, SessionID: sessionID},
 		{
-			Type:            "input_required",
+			Type:       agent.EventAssistant,
+			SessionID:  sessionID,
+			Message:    question,
+			TextBlocks: []string{question},
+			Usage:      agent.UsageSnapshot{InputTokens: 100, OutputTokens: 20},
+		},
+		{
+			Type:            agent.EventResult,
 			SessionID:       sessionID,
-			Message:         question,
+			IsError:         true,
 			IsInputRequired: true,
+			ResultText:      "Human turn required",
 		},
 	})
 }

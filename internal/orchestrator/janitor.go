@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -272,6 +273,7 @@ func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]st
 	// re-opened issue starts with a fresh dispatch budget.
 	pruneMap(state.PROpenedDispatched, identOfPROpened, keep)
 	pruneMap(state.PRMergedDispatched, identOfPROpened, keep)
+	pruneMap(state.BackendLimitedHolds, identOfKey, keep) // CORE-053
 	counts := LedgerJanitorCounts{
 		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keep),
 		Retry:         pruneMap(state.RetryAttempts, identOfRetry, keep),
@@ -338,6 +340,13 @@ func pruneAbsentTrackerIssues(state *State, currentActive, prevActive map[string
 		Profile:       pruneMap(state.IssueProfiles, identOfKey, keepRecording),
 		Backend:       pruneMap(state.IssueBackends, identOfKey, keepRecording),
 	}
+	// CORE-053/055: an absent issue's auto-switch marker, provenance and
+	// backend hold go with its overrides (the overrides are pruned above, so
+	// a surviving marker would describe nothing).
+	pruneMap(state.AutoSwitchedIdentifiers, identOfKey, keep)
+	pruneMap(state.AutoSwitchedAt, identOfKey, keep)
+	pruneMap(state.AutoSwitchInfo, identOfKey, keep)
+	pruneMap(state.BackendLimitedHolds, identOfKey, keep)
 	if len(removedIdents) > 0 {
 		now := time.Now()
 		for ident := range removedIdents {
@@ -422,4 +431,173 @@ func automationQueueIdentifiers(state *State) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+// pruneReviewLedgers drops ReviewVerdicts, ReviewOutcomes and
+// ReviewChainIndex entries for issues that are no longer tracked (untracked
+// reports true) unless a review may still be in flight for them (midChain
+// reports true). CORE-034: before this, a chain abandoned mid-way kept its
+// ReviewChainIndex forever and verdicts/outcomes were only reset when the same
+// issue was reviewed again. Returns the number of entries removed.
+//
+// INVARIANT: must only be called from the single event-loop goroutine.
+func pruneReviewLedgers(state *State, untracked, midChain func(ident string) bool) int {
+	if len(state.ReviewVerdicts)+len(state.ReviewOutcomes)+len(state.ReviewChainIndex) == 0 {
+		return 0
+	}
+	keep := func(ident string) bool { return !untracked(ident) || midChain(ident) }
+	removed := pruneMap(state.ReviewVerdicts, identOfKey, keep)
+	removed += pruneMap(state.ReviewOutcomes, identOfKey, keep)
+	removed += pruneMap(state.ReviewChainIndex, identOfKey, keep)
+	return removed
+}
+
+// untrackedIdentifierPredicate reports an identifier as untracked when its last
+// observed tracker state is terminal, or when it was absent from both this
+// poll and the previous one (the same two-observation rule as
+// pruneAbsentTrackerIssues; skipped entirely while no prior poll exists).
+func untrackedIdentifierPredicate(terminal, currentActive, prevActive map[string]struct{}) func(string) bool {
+	return func(ident string) bool {
+		if _, ok := terminal[ident]; ok {
+			return true
+		}
+		if len(prevActive) == 0 {
+			return false
+		}
+		_, now := currentActive[ident]
+		_, before := prevActive[ident]
+		return !now && !before
+	}
+}
+
+// reviewMidChainPredicate reports whether a review may still be in flight for
+// an identifier: a run (any kind) is live for it, a retry is pending for it,
+// or a reviewer was dispatched for it and has not yet succeeded or been
+// abandoned (reviewerInjectedProfiles, read once under issueProfilesMu). The
+// last signal matters because ReconcileTrackerStates deletes a fan-out
+// reviewer's Running entry BEFORE the reviewer's own success exit advances
+// the chain (#58 defect 1) — pruning in that window would strand the quorum.
+func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
+	busy := make(map[string]struct{}, len(state.Running)+len(state.RetryAttempts))
+	for _, e := range state.Running {
+		if e != nil {
+			busy[e.Issue.Identifier] = struct{}{}
+		}
+	}
+	for _, r := range state.RetryAttempts {
+		if r != nil {
+			busy[r.Identifier] = struct{}{}
+		}
+	}
+	o.issueProfilesMu.RLock()
+	for ident := range o.reviewerInjectedProfiles {
+		busy[ident] = struct{}{}
+	}
+	o.issueProfilesMu.RUnlock()
+	return func(ident string) bool {
+		_, ok := busy[ident]
+		return ok
+	}
+}
+
+// evictIdleLogBuffers frees the in-memory log ring of every identifier that
+// is no longer tracked (untracked reports true) and has nothing that may
+// still append to or be inspected from it live: no running worker, no
+// pending retry, not paused, not awaiting input, no pending input resume.
+// CORE-035: logBuf.Remove used to run only on the success path, so failed,
+// stalled, cancelled and input-required issues pinned up to 500 x 64 KiB
+// each for the rest of the generation.
+//
+// Remove only drops the in-memory window (under the issue's own lock) and
+// keeps the sequence counter: every line already Added carries its own copy
+// into the disk writer's queue, so no unflushed line is lost and the writer is
+// never raced; the log stays readable from disk. Resident identifiers are
+// listed without disk I/O, so this is safe on the event loop.
+//
+// INVARIANT: must only be called from the single event-loop goroutine.
+func (o *Orchestrator) evictIdleLogBuffers(state *State, untracked func(ident string) bool) int {
+	if o.logBuf == nil {
+		return 0
+	}
+	resident := o.logBuf.ResidentIdentifiers()
+	if len(resident) == 0 {
+		return 0
+	}
+	live := make(map[string]struct{}, len(state.Running)+len(state.RetryAttempts))
+	for _, e := range state.Running {
+		if e != nil {
+			live[e.Issue.Identifier] = struct{}{}
+		}
+	}
+	for _, r := range state.RetryAttempts {
+		if r != nil {
+			live[r.Identifier] = struct{}{}
+		}
+	}
+	evicted := 0
+	for _, ident := range resident {
+		if !untracked(ident) {
+			continue
+		}
+		if _, ok := live[ident]; ok {
+			continue
+		}
+		if _, ok := state.PausedIdentifiers[ident]; ok {
+			continue
+		}
+		if _, ok := state.InputRequiredIssues[ident]; ok {
+			continue
+		}
+		if _, ok := state.PendingInputResumes[ident]; ok {
+			continue
+		}
+		o.logBuf.Remove(ident)
+		evicted++
+	}
+	return evicted
+}
+
+// discardMarkerTTL is the lost-completion safety net for
+// State.DiscardingIdentifiers (CORE-109). A discard goroutine's completion
+// can legitimately arrive long after the insert: the direct write sink runs
+// each tracker attempt on a fresh postRunTimeout (60 s) context and only
+// checks the caller's 15 s context between attempts, and the completion send
+// itself waits up to 30 s. That is ~90 s worst case, so the TTL is
+// postRunTimeout + 30 s + 30 s of margin. A completion that arrives after
+// expiry is harmless: it carries its marker's generation, and the handler
+// ignores a generation that no longer matches.
+const discardMarkerTTL = postRunTimeout + 30*time.Second + 30*time.Second
+
+// markDiscarding inserts identifier's discard marker under a fresh
+// generation and returns that generation for the completion event.
+//
+// INVARIANT: must only be called from the single event-loop goroutine.
+func markDiscarding(state *State, identifier string, now time.Time) uint64 {
+	if state.DiscardingIdentifiers == nil {
+		state.DiscardingIdentifiers = make(map[string]DiscardMarker)
+	}
+	state.DiscardGeneration++
+	gen := state.DiscardGeneration
+	state.DiscardingIdentifiers[identifier] = DiscardMarker{Gen: gen, At: now}
+	return gen
+}
+
+// expireDiscardMarkers drops discard markers older than discardMarkerTTL —
+// markers whose EventDiscardComplete was lost (the 30 s send timed out), which
+// would otherwise block the issue from dispatch until restart. Returns how
+// many it dropped. A zero At (a marker set without a time) is never expired.
+//
+// INVARIANT: must only be called from the single event-loop goroutine.
+func expireDiscardMarkers(state *State, now time.Time) int {
+	removed := 0
+	for ident, marker := range state.DiscardingIdentifiers {
+		if marker.At.IsZero() || now.Sub(marker.At) <= discardMarkerTTL {
+			continue
+		}
+		delete(state.DiscardingIdentifiers, ident)
+		removed++
+		slog.Warn("orchestrator: discard marker expired, completion event was lost",
+			"identifier", ident, "gen", marker.Gen, "age", now.Sub(marker.At).Round(time.Second).String())
+	}
+	return removed
 }

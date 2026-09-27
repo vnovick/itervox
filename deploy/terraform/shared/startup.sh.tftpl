@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# itervox first-boot bootstrap (CORE-106). Rendered by OpenTofu; runs as root
+# from the cloud's startup hook. Mirrors what deploy/<cloud>/provision.sh tells
+# an operator to run by hand: fetch the release (which ships deploy/), verify
+# it against checksums.txt, then run deploy/bootstrap.sh with the data disk.
+#
+# No secret is rendered into this script — instance metadata/user-data is
+# readable by anything on the VM. Credentials come from the cloud secret
+# manager at service start (deploy/lib/fetch-secrets.sh via
+# /etc/itervox/secrets.env, written below with names only).
+set -euo pipefail
+exec > >(tee -a /var/log/itervox-startup.log) 2>&1
+
+MARKER=/var/lib/itervox/bootstrap.done
+if [[ -f "$MARKER" ]]; then
+  echo "itervox: already bootstrapped ($(cat "$MARKER")); nothing to do"
+  exit 0
+fi
+
+VERSION=${jsonencode(itervox_version)}
+REPO=${jsonencode(repo_url)}
+DATA_DISK=${jsonencode(data_disk_device)}
+ROOT=${jsonencode(install_root)}
+BASE="https://github.com/vnovick/itervox/releases/download"
+
+# Wait for the data disk to appear (attachment can trail first boot).
+for _ in $(seq 1 60); do
+  [[ -e "$DATA_DISK" ]] && break
+  sleep 5
+done
+[[ -e "$DATA_DISK" ]] || { echo "itervox: data disk $DATA_DISK never appeared" >&2; exit 1; }
+
+if command -v apt-get >/dev/null; then
+  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl jq tar
+elif command -v dnf >/dev/null; then
+  dnf install -y -q --allowerasing curl jq tar
+fi
+
+case "$(uname -m)" in
+  x86_64) ARCH=amd64 ;;
+  aarch64) ARCH=arm64 ;;
+  *) echo "itervox: unsupported arch $(uname -m)" >&2; exit 1 ;;
+esac
+if [[ "$VERSION" == latest ]]; then
+  VERSION="$(curl -fsSL https://api.github.com/repos/vnovick/itervox/releases/latest | jq -r .tag_name)"
+fi
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+ARCHIVE="itervox_linux_$ARCH.tar.gz"
+curl -fsSL -o "$WORK/$ARCHIVE" "$BASE/$VERSION/$ARCHIVE"
+curl -fsSL -o "$WORK/checksums.txt" "$BASE/$VERSION/checksums.txt"
+(cd "$WORK" && grep -E "[[:space:]]\*?$ARCHIVE\$" checksums.txt | sha256sum -c -)
+mkdir -p /opt/itervox-release
+tar -xzf "$WORK/$ARCHIVE" -C /opt/itervox-release
+
+install -d -m 0755 /etc/itervox
+%{ if secrets_provider != "" ~}
+# Names only: which provider and which secret backs which variable.
+cat > /etc/itervox/secrets.env <<'SECRETS'
+ITERVOX_SECRETS_PROVIDER=${secrets_provider}
+ITERVOX_SECRETS_MAP="${secrets_map}"
+%{ for k, v in secrets_extra ~}
+${k}=${v}
+%{ endfor ~}
+SECRETS
+chmod 0644 /etc/itervox/secrets.env
+%{ endif ~}
+
+/opt/itervox-release/deploy/bootstrap.sh \
+  --repo "$REPO" --version "$VERSION" --root "$ROOT" --data-disk "$DATA_DISK"
+
+%{ if secrets_provider == "azure" ~}
+# fetch-secrets.sh reads Key Vault with the az CLI as the service user, signed
+# in with the VM's managed identity (no stored credential).
+if ! command -v az >/dev/null; then
+  curl -fsSL https://aka.ms/InstallAzureCLIDeb -o "$WORK/install-az.sh"
+  bash "$WORK/install-az.sh"
+fi
+sudo -H -u itervox az login --identity --allow-no-subscriptions --output none
+%{ endif ~}
+%{ if start_service ~}
+systemctl enable --now itervox
+%{ else ~}
+echo "itervox: installed; fill $ROOT/<repo>/.itervox/.env (or the secret manager) and run: systemctl enable --now itervox"
+%{ endif ~}
+%{ if enable_cleanup_timer ~}
+systemctl enable --now itervox-cleanup.timer
+%{ endif ~}
+
+mkdir -p "$(dirname "$MARKER")"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$MARKER"
+echo "itervox: bootstrap complete ($VERSION)"

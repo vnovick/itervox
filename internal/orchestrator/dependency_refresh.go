@@ -9,6 +9,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/metrics"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -197,12 +198,22 @@ func (o *Orchestrator) runDependencyRefresh(
 	}
 
 	defer func() {
-		if r := recover(); r != nil {
+		r := recover()
+		if r != nil {
+			metrics.GoroutinePanic()
 			slog.Error("orchestrator: dependency refresh panicked",
 				"panic", r, "batch", len(result.BatchKeys))
 		}
 		result.FinishedAt = time.Now()
 		o.sendDependencyRefreshResult(result)
+		if r != nil {
+			// CORE-046: after the result that clears the single-flight latch.
+			o.RecordFailure(FailureRecord{
+				Kind:    FailureKindPanic,
+				Source:  "dependency-refresh",
+				Message: "dependency refresh panicked and was recovered; see the daemon log for the stack",
+			})
+		}
 	}()
 
 	fetchCtx, cancel := context.WithTimeout(ctx, order.Timeout)
@@ -467,6 +478,7 @@ func (o *Orchestrator) sendDependencyRefreshResult(result *DependencyRefreshResu
 		DependencyRefresh: result,
 	}:
 	case <-time.After(dependencyRefreshSendTimeout):
+		metrics.EventDropped() // CORE-045
 		// Dropped. The worker cannot clear the latch itself — that would be a
 		// State mutation from a worker goroutine. The loop-side watchdog in
 		// reconcileDependencyRefresh releases it instead.

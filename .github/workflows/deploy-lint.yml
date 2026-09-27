@@ -1,0 +1,108 @@
+name: Deploy lint
+
+# CORE-105: lint and smoke-test the deploy assets. Every job runs the same
+# `make` target an operator runs locally, and every tool is a pinned
+# container image (versions in the Makefile), so a red job reproduces offline
+# with docker alone.
+#
+# Fork-safe by construction: `pull_request` (never `pull_request_target`), a
+# read-only token, no secrets, no publish step. Nothing here can push an
+# image, touch a cloud account or read a repository secret.
+on:
+  pull_request:
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/deploy-lint.yml'
+      - 'Makefile'
+      # Inputs of the drift guards in deploy-test (heartbeat labels, /metrics
+      # family names) and of the smoke's /ready contract.
+      - 'cmd/itervox/heartbeat.go'
+      - 'cmd/itervox/snapshot_backends.go'
+      - 'internal/metrics/**'
+      - 'internal/server/ready.go'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck deploy/**/*.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: make deploy-shellcheck
+
+  hadolint:
+    name: hadolint deploy/docker/Dockerfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: hadolint
+        run: make deploy-hadolint
+
+  deploy-test:
+    name: make deploy-test (shell tests + drift guards)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: deploy shell tests
+        run: make deploy-test
+
+  promtool:
+    name: promtool check + test alert rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: promtool
+        run: make deploy-promtool
+
+  tofu:
+    name: tofu fmt + validate (gcp-vm, aws-ec2, azure-vm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: tofu validate
+        run: make deploy-tofu
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: make deploy-actionlint
+
+  docker-smoke:
+    name: docker build + /api/v1/health + /api/v1/ready
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: build image and smoke it
+        run: make deploy-smoke

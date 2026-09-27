@@ -11,17 +11,26 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 )
 
-func TestWriteFileAtomicallyReplacesExistingFileWithoutLeavingTempFiles(t *testing.T) {
+// CORE-037: every orchestrator ledger write goes through atomicfs.WriteFile
+// (temp + fsync + rename + best-effort parent-dir fsync). The test pins the
+// observable contract on the real write path: an existing file is replaced
+// whole, no temp file is left behind, and the per-call permission lands.
+func TestWriteLedgerFileUsesAtomicfsReplaceWithoutTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "input_required.json")
 
 	require.NoError(t, os.WriteFile(path, []byte(`{"old":true}`), 0o644))
 
-	require.NoError(t, writeFileAtomically(path, []byte(`{"new":true}`), 0o644))
+	o := New(&config.Config{}, nil, nil, nil)
+	require.NoError(t, o.writeLedgerFile(path, []byte(`{"new":true}`), 0o600))
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"new":true}`, string(data))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "per-call perm must be preserved")
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)

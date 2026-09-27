@@ -39,14 +39,17 @@ export function NotificationsView({ onSelect }: NotificationsViewProps) {
   const handleClick = (item: OperatorQueueItem) => {
     if (item.clickAction.type === 'select-issue') {
       onSelect(item.clickAction.identifier);
-    } else {
+    } else if (item.clickAction.type === 'navigate') {
       void navigate(item.clickAction.path);
     }
   };
 
   if (queue.total === 0) {
     return (
-      <div className="border-theme-line bg-theme-bg-elevated rounded-[var(--radius-md)] border px-6 py-12 text-center">
+      <div
+        data-testid="notifications-view"
+        className="border-theme-line bg-theme-bg-elevated rounded-[var(--radius-md)] border px-6 py-12 text-center"
+      >
         <p className="text-theme-text text-base font-semibold">All caught up</p>
         <p className="text-theme-text-secondary mt-1 text-sm">
           Nothing needs your attention right now.
@@ -56,7 +59,7 @@ export function NotificationsView({ onSelect }: NotificationsViewProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div data-testid="notifications-view" className="space-y-6">
       {queue.groups.map((group) => (
         <section key={group.group} aria-labelledby={`notifications-group-${group.group}`}>
           <h2

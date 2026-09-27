@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,13 +26,19 @@ import (
 // orchestrator, log buffer, tracker, and WORKFLOW.md persistence helpers.
 // notify must be set after server construction (adapter.notify = srv.Notify).
 type orchestratorAdapter struct {
-	orch         *orchestrator.Orchestrator
-	logBuf       *logbuffer.Buffer
-	cfg          *config.Config
-	tr           tracker.Tracker
-	workflowPath string
-	notify       func()
-	skillsCache  *skills.Cache
+	orch *orchestrator.Orchestrator
+	// dispatchPRMerged overrides orch.DispatchPRMergedAutomations in tests
+	// (nil in production).
+	dispatchPRMerged func(context.Context, domain.Issue, orchestrator.PRMergedEvent)
+	logBuf           *logbuffer.Buffer
+	cfg              *config.Config
+	tr               tracker.Tracker
+	workflowPath     string
+	// settingsGen is the settings generation this adapter's config was
+	// loaded under; see beginSettingsSave (M1-close C2).
+	settingsGen uint64
+	notify      func()
+	skillsCache *skills.Cache
 	// logsDir is the logs directory the daemon actually writes to, including
 	// an operator-supplied --logs-dir. Empty means "not threaded" (tests, and
 	// any caller with no log file), in which case Analytics falls back to
@@ -47,6 +54,13 @@ type orchestratorAdapter struct {
 	// is self-contained and thread-safe on its own mutex (see
 	// internal/outbox/outbox.go's package doc), unlike orchestrator.State.
 	ob *outbox.Outbox
+	// outboxEnabled mirrors cfg.Tracker.Outbox (read-only after startup), set
+	// in run(). ob is non-nil either way, so handle presence cannot say
+	// whether anything drains it: with the kill switch off the flusher never
+	// starts, and a write enqueued here would be answered "queued" and never
+	// delivered (CORE-120). New writes gate on this flag; Retry/Drop and the
+	// snapshot keep using ob so leftover entries stay visible and manageable.
+	outboxEnabled bool
 }
 
 func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {
@@ -69,32 +83,55 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 	return result, nil
 }
 
-func (a *orchestratorAdapter) CancelIssue(identifier string) bool {
-	return a.orch.CancelIssue(identifier)
+// mapIssueControlErr translates orchestrator.ErrBusy into server.ErrBusy so
+// internal/server's handlers can branch on it without importing
+// internal/orchestrator (package order — CORE-005). Any other error
+// (orchestrator.ErrNotFound today) passes through unchanged: the handler
+// only distinguishes "is this ErrBusy" from "everything else", mapping the
+// latter to 404.
+func mapIssueControlErr(err error) error {
+	if errors.Is(err, orchestrator.ErrBusy) {
+		return server.ErrBusy
+	}
+	if errors.Is(err, orchestrator.ErrDraining) { // CORE-057 → 409
+		return server.ErrDraining
+	}
+	return err
 }
 
-func (a *orchestratorAdapter) ResumeIssue(identifier string) bool {
-	ok := a.orch.ResumeIssue(identifier)
-	if ok {
+func (a *orchestratorAdapter) CancelIssue(identifier string) error {
+	return mapIssueControlErr(a.orch.CancelIssue(identifier))
+}
+
+func (a *orchestratorAdapter) ResumeIssue(identifier string) error {
+	err := a.orch.ResumeIssue(identifier)
+	if err == nil {
 		a.orch.Refresh()
 	}
-	return ok
+	return mapIssueControlErr(err)
 }
 
-func (a *orchestratorAdapter) TerminateIssue(identifier string) bool {
-	ok := a.orch.TerminateIssue(identifier)
-	if ok {
+func (a *orchestratorAdapter) TerminateIssue(identifier string) error {
+	err := a.orch.TerminateIssue(identifier)
+	if err == nil {
 		a.orch.Refresh()
 	}
-	return ok
+	return mapIssueControlErr(err)
 }
 
-func (a *orchestratorAdapter) ReanalyzeIssue(identifier string) bool {
-	return a.orch.ReanalyzeIssue(identifier)
+func (a *orchestratorAdapter) ReanalyzeIssue(identifier string) error {
+	return mapIssueControlErr(a.orch.ReanalyzeIssue(identifier))
 }
 
-func (a *orchestratorAdapter) FetchLogs(identifier string) []string {
-	return a.logBuf.Get(identifier)
+func (a *orchestratorAdapter) FetchLogs(ctx context.Context, identifier string) []string {
+	return a.logBuf.GetContext(ctx, identifier)
+}
+
+// GetSince satisfies server.OrchestratorClient by delegating directly to the
+// log buffer's sequence-numbered accessor (CORE-003). logBuf keeps its own
+// per-issue lock; this never touches orchestrator.State.
+func (a *orchestratorAdapter) GetSince(ctx context.Context, identifier string, epoch uint32, cursor int64, hasCursor bool) ([]string, uint32, int64, bool) {
+	return a.logBuf.GetSinceContext(ctx, identifier, epoch, cursor, hasCursor)
 }
 
 func (a *orchestratorAdapter) FetchLogIdentifiers() []string {
@@ -188,7 +225,7 @@ func (a *orchestratorAdapter) sublogFetcher(identifier string) agent.SublogFetch
 }
 
 func (a *orchestratorAdapter) DispatchReviewer(identifier string) error {
-	return a.orch.DispatchReviewer(identifier)
+	return mapIssueControlErr(a.orch.DispatchReviewer(identifier))
 }
 
 // RefreshAvailableModels implements server.ModelRefresher so the dashboard's
@@ -210,10 +247,27 @@ func (a *orchestratorAdapter) RefreshAvailableModels(ctx context.Context, backen
 		discovered["claude"] = agent.ListClaudeModels()
 		discovered["codex"] = agent.ListCodexModels()
 	}
+	// CORE-160: fenced like every settings save, persisted as a self-write,
+	// then applied in memory — no reload, so no in-flight turn is touched.
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
 	merged, err := mergeAvailableModelsIntoWorkflow(a.workflowPath, discovered)
 	if err != nil {
 		return nil, err
 	}
+	live := make(map[string][]config.ModelOption, len(merged))
+	for k, list := range merged {
+		opts := make([]config.ModelOption, len(list))
+		for i, m := range list {
+			opts[i] = config.ModelOption{ID: m.ID, Label: m.Label}
+		}
+		live[k] = opts
+	}
+	a.orch.SetAvailableModelsCfg(live)
+	a.notify()
 	out := make(map[string][]server.ModelOption, len(merged))
 	for k, list := range merged {
 		opts := make([]server.ModelOption, len(list))
@@ -228,7 +282,21 @@ func (a *orchestratorAdapter) RefreshAvailableModels(ctx context.Context, backen
 
 // EmitPRMerged implements server.PRMergedEmitter so the merge_pr action
 // handler can fire pr_merged automations after a successful gh merge. P1.
-func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef string) error {
+func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef, headRef string) error {
+	err := a.emitPRMerged(ctx, identifier, prURL, prNumber, mergedSHA, baseRef, headRef)
+	if err != nil && a.orch != nil {
+		// M6-close BH-M6-2: surface it in the Failures panel, not only the log.
+		a.orch.RecordFailure(orchestrator.FailureRecord{
+			Kind:       orchestrator.FailureKindAutomation,
+			Identifier: identifier,
+			Source:     "pr_merged",
+			Message:    fmt.Sprintf("pr_merged automations not dispatched after merging PR #%d: %v", prNumber, err),
+		})
+	}
+	return err
+}
+
+func (a *orchestratorAdapter) emitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef, headRef string) error {
 	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
 	if err != nil {
 		return fmt.Errorf("fetch issue: %w", err)
@@ -236,9 +304,14 @@ func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prUR
 	if issue == nil {
 		return fmt.Errorf("issue %s not found", identifier)
 	}
-	a.orch.DispatchPRMergedAutomations(ctx, *issue, orchestrator.PRMergedEvent{
+	dispatch := a.dispatchPRMerged
+	if dispatch == nil {
+		dispatch = a.orch.DispatchPRMergedAutomations
+	}
+	dispatch(ctx, *issue, orchestrator.PRMergedEvent{
 		PRURL:     prURL,
 		PRNumber:  prNumber,
+		Branch:    headRef, // trigger.pr_branch (CORE-108)
 		BaseRef:   baseRef,
 		MergedSHA: mergedSHA,
 		MergedAt:  time.Now().UTC(),
@@ -274,7 +347,7 @@ func (a *orchestratorAdapter) PostOperatorComment(ctx context.Context, identifie
 	if issue == nil {
 		return false, fmt.Errorf("fetch issue %s: %w", identifier, tracker.ErrNotFound)
 	}
-	if a.ob != nil {
+	if a.outboxEnabled && a.ob != nil {
 		return true, a.ob.Enqueue(outbox.Entry{
 			Kind:       outbox.KindCreateComment,
 			IssueID:    issue.ID,
@@ -334,4 +407,13 @@ func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, 
 	}
 	a.orch.RecordIssueStatusChange(change)
 	return nil
+}
+
+// AckFailures implements server.FailureAcker (CORE-175).
+func (a *orchestratorAdapter) AckFailures(identifier string, upTo time.Time) error {
+	err := a.orch.AckFailures(identifier, upTo)
+	if errors.Is(err, orchestrator.ErrNoWorkerFailure) {
+		return server.ErrNoWorkerFailure
+	}
+	return mapIssueControlErr(err)
 }

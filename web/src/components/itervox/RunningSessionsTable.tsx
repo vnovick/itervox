@@ -13,9 +13,12 @@ import {
 } from '../../queries/issues';
 import { fmtMs, stateBadgeColor } from '../../utils/format';
 import Badge from '../ui/badge/Badge';
+import { ConfirmButton } from '../ui/button/ConfirmButton';
 import { EMPTY_RUNNING, EMPTY_PAUSED, EMPTY_PROFILES } from '../../utils/constants';
 import { SessionAccordion } from './SessionAccordion';
 import { AgentProfileSelector } from './selectors';
+import { RunningRowMeta } from './RunningRowMeta';
+import { useNow } from '../../hooks/useNow';
 const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
 
 export default function RunningSessionsTable() {
@@ -29,12 +32,17 @@ export default function RunningSessionsTable() {
   );
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
   const cancelIssueMutation = useCancelIssue();
+  // CORE-073 — Discard on both the running and the paused row (the spec's
+  // verb: /terminate moves the issue to the first backlog state). Both
+  // hit /terminate; separate instances keep each row's pending state and
+  // success toast wording apart.
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
   const setIssueProfileMutation = useSetIssueProfile();
   const { data: issues } = useIssues();
 
   const running = useStableRunning(rawRunning);
+  const now = useNow(1_000); // CORE-090: one ticker for every row's age
 
   const profileMap = useMemo(
     () =>
@@ -81,7 +89,10 @@ export default function RunningSessionsTable() {
   }
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
+    <div
+      id="running-sessions"
+      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 overflow-hidden rounded-[var(--radius-md)] border"
+    >
       {/* Header — visible whenever there are running or paused sessions */}
       {sorted.length > 0 && (
         <div
@@ -92,7 +103,7 @@ export default function RunningSessionsTable() {
           }}
         >
           <h3 className="text-theme-text text-[15px] font-semibold">Running Sessions</h3>
-          <span className="bg-theme-success-soft text-theme-success inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium">
+          <span className="bg-theme-success-soft text-theme-success-text inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
             {sorted.length} active
           </span>
@@ -102,54 +113,51 @@ export default function RunningSessionsTable() {
       {/* Running session rows */}
       {sorted.map((row) => (
         <div key={row.identifier} className="border-theme-line border-t">
-          {/* Clickable row */}
+          {/* Row — a mouse click anywhere toggles the log accordion; keyboard
+              and assistive tech use the chevron button (M5-close: a
+              role="button" row containing buttons was nested-interactive). */}
+          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the chevron button is the keyboard toggle (M5-close) */}
           <div
-            role="button"
-            tabIndex={0}
-            aria-label={`Toggle details for ${row.identifier}`}
+            data-testid={`running-row-${row.identifier}`}
             onClick={() => {
               toggle(row.identifier);
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') toggle(row.identifier);
-            }}
-            className="grid cursor-pointer items-center px-4 py-[14px] transition-colors select-none hover:bg-[var(--bg-soft)]"
-            style={{
-              gridTemplateColumns: '24px 100px minmax(80px, auto) 56px 1fr 72px auto',
-              gap: '14px',
-            }}
+            // CORE-087 — a wrapping card on phones (the last event takes its
+            // own line); the fixed seven-column grid from sm up.
+            className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-[14px] transition-colors select-none hover:bg-[var(--bg-soft)] sm:grid sm:grid-cols-[24px_100px_minmax(80px,auto)_56px_1fr_72px_auto] sm:gap-[14px]"
           >
-            {/* Chevron */}
-            <span
-              className="text-[10px] transition-transform duration-200"
-              style={{
-                color: 'var(--muted)',
-                transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none',
-                display: 'inline-block',
+            {/* Chevron — the accordion toggle */}
+            <button
+              type="button"
+              aria-label={`Toggle details for ${row.identifier}`}
+              aria-expanded={expandedId === row.identifier}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle(row.identifier);
               }}
+              className="text-theme-muted inline-flex h-6 w-6 items-center justify-center rounded text-[10px]"
             >
-              ▶
-            </span>
+              <span
+                aria-hidden="true"
+                className="inline-block transition-transform duration-200"
+                style={{ transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none' }}
+              >
+                ▶
+              </span>
+            </button>
 
-            {/* Identifier — click opens detail slide */}
-            <span
-              role="button"
-              tabIndex={0}
+            {/* Identifier — opens the detail slide */}
+            <button
+              type="button"
               aria-label={`View details for ${row.identifier}`}
-              className="text-theme-accent cursor-pointer truncate font-mono text-sm font-semibold hover:underline"
+              className="text-theme-accent-text min-h-6 cursor-pointer truncate text-left font-mono text-sm font-semibold hover:underline"
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedIdentifier(row.identifier);
               }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.stopPropagation();
-                  setSelectedIdentifier(row.identifier);
-                }
-              }}
             >
               {row.identifier}
-            </span>
+            </button>
 
             {/* Kind + State badge */}
             <div className="flex items-center gap-1 whitespace-nowrap">
@@ -177,12 +185,15 @@ export default function RunningSessionsTable() {
               )}
             </span>
 
-            {/* Last event */}
-            <span
-              className="text-theme-text-secondary truncate font-mono text-xs"
-              title={row.lastEvent ?? undefined}
-            >
-              {row.lastEvent ? row.lastEvent.slice(0, 100) : '—'}
+            {/* Last event + CORE-090 backend/host/tokens/age/profile */}
+            <span className="order-last flex min-w-0 basis-full flex-col gap-0.5 sm:order-none sm:basis-auto">
+              <span
+                className="text-theme-text-secondary truncate font-mono text-xs"
+                title={row.lastEvent ?? undefined}
+              >
+                {row.lastEvent ? row.lastEvent.slice(0, 100) : '—'}
+              </span>
+              <RunningRowMeta row={row} profile={profileMap[row.identifier]} now={now} />
             </span>
 
             {/* Elapsed */}
@@ -190,6 +201,7 @@ export default function RunningSessionsTable() {
 
             {/* Actions */}
             <div
+              role="presentation"
               className="flex flex-shrink-0 gap-2"
               onClick={(e) => {
                 e.stopPropagation();
@@ -203,24 +215,20 @@ export default function RunningSessionsTable() {
                 style={{
                   background: 'var(--warning-soft)',
                   borderColor: 'var(--warning-soft)',
-                  color: 'var(--warning)',
+                  color: 'var(--warning-text)',
                 }}
               >
                 ⏸ Pause
               </button>
-              <button
-                onClick={() => {
+              <ConfirmButton
+                label="✕ Discard"
+                confirmLabel="Yes, discard"
+                pendingLabel="Discarding…"
+                isPending={terminateIssueMutation.isPending}
+                onConfirm={() => {
                   terminateIssueMutation.mutate(row.identifier);
                 }}
-                className="inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
-                style={{
-                  background: 'var(--danger-soft)',
-                  borderColor: 'var(--danger-soft)',
-                  color: 'var(--danger)',
-                }}
-              >
-                ✕ Cancel
-              </button>
+              />
             </div>
           </div>
 
@@ -244,7 +252,7 @@ export default function RunningSessionsTable() {
           }}
         >
           <div className="px-4 py-3">
-            <span className="text-theme-warning text-xs font-semibold tracking-[0.05em] uppercase">
+            <span className="text-theme-warning-text text-xs font-semibold tracking-[0.05em] uppercase">
               ⏸ Paused ({paused.length})
             </span>
           </div>
@@ -256,46 +264,48 @@ export default function RunningSessionsTable() {
               const isExpanded = expandedPausedId === identifier;
               return (
                 <div key={identifier} className="border-theme-line border-b last:border-b-0">
-                  {/* Paused row — click to expand accordion */}
+                  {/* Paused row — a mouse click toggles the accordion; the
+                      chevron button is the keyboard toggle (M5-close). */}
+                  {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the chevron button is the keyboard toggle (M5-close) */}
                   <div
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Toggle details for paused issue ${identifier}`}
+                    data-testid={`paused-row-${identifier}`}
                     onClick={() => {
                       togglePaused(identifier);
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') togglePaused(identifier);
-                    }}
                     className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 transition-colors hover:bg-[var(--bg-soft)]"
                   >
-                    {/* Chevron */}
-                    <span
-                      className="text-theme-muted text-[10px] transition-transform duration-200"
-                      style={{ transform: isExpanded ? 'rotate(90deg)' : 'none' }}
+                    {/* Chevron — the accordion toggle */}
+                    <button
+                      type="button"
+                      aria-label={`Toggle details for paused issue ${identifier}`}
+                      aria-expanded={isExpanded}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePaused(identifier);
+                      }}
+                      className="text-theme-muted inline-flex h-6 w-6 items-center justify-center rounded text-[10px]"
                     >
-                      ▶
-                    </span>
+                      <span
+                        aria-hidden="true"
+                        className="inline-block transition-transform duration-200"
+                        style={{ transform: isExpanded ? 'rotate(90deg)' : 'none' }}
+                      >
+                        ▶
+                      </span>
+                    </button>
 
-                    {/* Identifier */}
-                    <span
-                      role="button"
-                      tabIndex={0}
+                    {/* Identifier — opens the detail slide */}
+                    <button
+                      type="button"
                       aria-label={`View details for paused issue ${identifier}`}
-                      className="text-theme-warning cursor-pointer font-mono text-sm font-semibold hover:underline"
+                      className="text-theme-warning-text min-h-6 cursor-pointer font-mono text-sm font-semibold hover:underline"
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedIdentifier(identifier);
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.stopPropagation();
-                          setSelectedIdentifier(identifier);
-                        }
-                      }}
                     >
                       {identifier}
-                    </span>
+                    </button>
 
                     {/* Title — truncated, fills remaining space */}
                     {issueTitle && (
@@ -306,6 +316,7 @@ export default function RunningSessionsTable() {
 
                     {/* PR badge */}
                     <div
+                      role="presentation"
                       className="ml-auto flex items-center gap-2"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -316,7 +327,7 @@ export default function RunningSessionsTable() {
                           href={prURL}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="bg-theme-accent-soft text-theme-accent inline-flex flex-shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium"
+                          className="bg-theme-accent-soft text-theme-accent-text inline-flex flex-shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium"
                           onClick={(e) => {
                             e.stopPropagation();
                           }}
@@ -328,6 +339,7 @@ export default function RunningSessionsTable() {
 
                     {/* Actions — wrap on mobile */}
                     <div
+                      role="presentation"
                       className="mt-1 flex w-full flex-shrink-0 items-center gap-1.5 sm:mt-0 sm:ml-0 sm:w-auto"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -348,24 +360,20 @@ export default function RunningSessionsTable() {
                         style={{
                           background: 'var(--success-soft)',
                           borderColor: 'var(--success-soft)',
-                          color: 'var(--success)',
+                          color: 'var(--success-text)',
                         }}
                       >
                         ▶ Resume
                       </button>
-                      <button
-                        onClick={() => {
+                      <ConfirmButton
+                        label="✕ Discard"
+                        confirmLabel="Yes, discard"
+                        pendingLabel="Discarding…"
+                        isPending={terminateIssueMutation.isPending}
+                        onConfirm={() => {
                           terminateIssueMutation.mutate(identifier);
                         }}
-                        className="btn-action-cancel inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
-                        style={{
-                          background: 'var(--danger-soft)',
-                          borderColor: 'var(--danger-soft)',
-                          color: 'var(--danger)',
-                        }}
-                      >
-                        ✕ Discard
-                      </button>
+                      />
                     </div>
                   </div>
 
@@ -382,11 +390,6 @@ export default function RunningSessionsTable() {
             })}
           </div>
         </div>
-      )}
-
-      {/* Empty state */}
-      {sorted.length === 0 && paused.length === 0 && (
-        <div className="text-theme-muted px-4 py-8 text-center text-sm">No agents running</div>
       )}
     </div>
   );

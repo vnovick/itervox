@@ -29,6 +29,7 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-logs-dir` | string | `~/.itervox/logs/<kind>/<slug>-<project>` (or `~/.itervox/logs/workflow/<project>` when no `project_slug` is set) | Directory for rotating log files |
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
+| `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
 
 > **Note (post-v0.2):** the `-demo` flag was removed in favour of an embedded
 > quickstart template. To explore itervox without a real tracker, drop a
@@ -190,7 +191,8 @@ itervox -h
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ITERVOX_DRY_RUN` | `""` | Set to `"1"` to enable dry-run mode. The orchestrator logs dispatch decisions but does **not** start agent workers. Useful for verifying configuration and dispatch logic without consuming API tokens. |
-| `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The auto-generated token, and the dashboard URL that carries it, are printed to stderr once. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
+| `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The dashboard URL that carries the token is printed to stderr once, only when stderr is a terminal (see `ITERVOX_PRINT_TOKEN`); an auto-generated token is also written to `<logs-dir>/api-token` (mode 0600, rewritten on every start), which is where a headless run (systemd, containers) finds it. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
+| `ITERVOX_PRINT_TOKEN` | `""` | `1`/`true` prints the tokenised dashboard URL on stderr even when stderr is not a terminal; `0`/`false` suppresses it even on a terminal. Unset: printed only on a terminal. `-no-print-token` always wins. |
 
 ### Auto-loading
 

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 // Errors returned by TestAutomation (T-10) so HTTP handlers can map them to
@@ -274,7 +274,7 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 		if sendCtx.Err() != nil {
 			return
 		}
-		if !matchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{
@@ -301,6 +301,7 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 			Automation: &dispatch,
 		}:
 		case <-sendCtx.Done():
+			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: pr_opened dispatch event not accepted before context done",
 				"identifier", issue.Identifier,
 				"automation", rule.ID,
@@ -574,7 +575,7 @@ func truncateForLog(s string, max int) string {
 }
 
 func matchesInputRequiredAutomation(issue domain.Issue, automation InputRequiredAutomation, inputContext string) bool {
-	return matchesAutomationFilter(
+	return MatchesAutomationFilter(
 		issue,
 		automation.MatchMode,
 		automation.States,
@@ -598,7 +599,7 @@ func (o *Orchestrator) dispatchMatchingRunFailedAutomations(
 		return
 	}
 	for _, automation := range automations {
-		if !matchesAutomationFilter(
+		if !MatchesAutomationFilter(
 			issue,
 			automation.MatchMode,
 			automation.States,
@@ -638,7 +639,7 @@ func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
 		return
 	}
 	for _, automation := range automations {
-		if !matchesAutomationFilter(
+		if !MatchesAutomationFilter(
 			issue,
 			automation.MatchMode,
 			automation.States,
@@ -670,7 +671,13 @@ func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
 	}
 }
 
-func matchesAutomationFilter(
+// MatchesAutomationFilter is the single automation filter matcher (CORE-111),
+// shared by the orchestrator's trigger dispatchers and cmd/itervox's cron /
+// input-required watcher. Each configured criterion — identifier regex,
+// states (case-insensitive), labels_any (case-insensitive), input-context
+// regex — is one check; match mode "any" needs one to pass, anything else
+// needs all. No criteria matches everything.
+func MatchesAutomationFilter(
 	issue domain.Issue,
 	matchMode string,
 	states []string,
@@ -718,24 +725,29 @@ func matchesAutomationFilter(
 	return true
 }
 
-func (o *Orchestrator) startAutomationRun(
+// startAutomationRunOrHold is startAutomationRun that also reports a
+// backend hold (CORE-053): held is true when the run was not started only
+// because the backend gate refused its target, so the caller queues it with
+// the backend_limited reason instead of dropping it.
+func (o *Orchestrator) startAutomationRunOrHold(
 	ctx context.Context,
 	state *State,
 	issue domain.Issue,
 	now time.Time,
 	automation AutomationDispatch,
-) bool {
+) (started, held bool) {
 	if automation.ProfileName == "" {
-		return false
+		return false, false
 	}
 	if _, running := state.Running[issue.ID]; running {
-		return false
+		return false, false
 	}
 	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return false
+		return false, false
 	}
-	if AvailableSlots(*state) <= 0 {
-		return false
+	o.syncDrainRequest(state)        // M4-close D2
+	if AvailableSlots(*state) <= 0 { // 0 while draining (CORE-057)
+		return false, false
 	}
 
 	o.cfgMu.RLock()
@@ -748,34 +760,63 @@ func (o *Orchestrator) startAutomationRun(
 
 	if !ok {
 		slog.Warn("orchestrator: automation profile not found", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return false
+		return false, false
 	}
 	if !config.ProfileEnabled(profile) {
 		slog.Warn("orchestrator: automation profile disabled", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return false
+		return false, false
 	}
 
-	workerCtx, workerCancel := context.WithCancel(ctx)
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
 	// Automation workers follow the same default/profile/per-issue backend
-	// resolution as normal worker and reviewer dispatch. Rate-limit auto-switch
-	// recovery is a deliberate final override below because it represents the
-	// backend that just became available for the fallback run.
+	// resolution as normal worker and reviewer dispatch (CORE-115: one
+	// resolver). Rate-limit auto-switch recovery is the resolver's final
+	// override because it represents the backend that just became available
+	// for the fallback run.
 	issueBackend := o.issueBackendForDispatch(*state, issue.Identifier)
-	agentCommand, runnerCommand, backend := resolveBackendForIssue(
-		defaultCommand, defaultBackend, &profile, issueBackend,
-	)
+	recoveryBackend := ""
+	if automation.Trigger.Type == config.AutomationTriggerRateLimited && automation.AutoResume {
+		recoveryBackend = automation.Trigger.SwitchedToBackend
+	}
+	// CORE-053/054: gate the target. A rate_limited recovery run (issue
+	// lifecycle) names its backend explicitly and is never rerouted; other
+	// automation runs reroute per run through backend_fallback. A held run
+	// is reported so the caller queues it (backend_limited), not dropped.
+	gate := o.gateDispatch(state, gateRequest{
+		identifier: issue.Identifier,
+		in: dispatchTargetInput{
+			DefaultCommand:  defaultCommand,
+			DefaultBackend:  defaultBackend,
+			Profile:         &profile,
+			IssueBackend:    issueBackend,
+			RecoveryBackend: recoveryBackend,
+		},
+		profileName:  automation.ProfileName,
+		host:         workerHost,
+		hosts:        hosts,
+		allowReroute: !automation.UseIssueLifecycle && o.operatorPinnedBackend(issue.Identifier) == "",
+	}, now)
+	if gate.held {
+		o.logger().Info("orchestrator: automation held, backend limited",
+			"identifier", issue.Identifier, "automation", automation.AutomationID,
+			"hold", describeHold(gate.hold))
+		return false, true
+	}
+	o.saveBackendHealthToDisk(state)
+	target := gate.target
+	workerHost = gate.host
+	profileName := automation.ProfileName
+	if gate.rerouted {
+		profileName = gate.profileName
+	}
+	runnerCommand, backend := target.RunnerCommand, target.Backend
+	workerCtx, workerCancel := context.WithCancel(ctx)
 	if issueBackend != "" {
 		slog.Info("orchestrator: using per-issue backend override for automation",
 			"identifier", issue.Identifier, "backend", issueBackend)
 	}
-	if automation.Trigger.Type == config.AutomationTriggerRateLimited &&
-		automation.AutoResume &&
-		automation.Trigger.SwitchedToBackend != "" {
-		backend = automation.Trigger.SwitchedToBackend
-		runnerCommand = agent.CommandWithBackendHint(agentCommand, backend)
-	}
+	o.logRefusedBackend(issue.Identifier, "automation", target)
 
 	if o.DryRun {
 		workerCancel()
@@ -786,7 +827,7 @@ func (o *Orchestrator) startAutomationRun(
 			"worker_host", workerHost,
 			"backend", backend)
 		state.Claimed[issue.ID] = struct{}{}
-		return true
+		return true, false
 	}
 
 	state.Claimed[issue.ID] = struct{}{}
@@ -799,7 +840,7 @@ func (o *Orchestrator) startAutomationRun(
 		Issue:        issue,
 		WorkerHost:   workerHost,
 		Backend:      backend,
-		ProfileName:  automation.ProfileName,
+		ProfileName:  profileName,
 		Kind:         kind,
 		AutomationID: automation.AutomationID,
 		TriggerType:  automation.Trigger.Type,
@@ -815,14 +856,16 @@ func (o *Orchestrator) startAutomationRun(
 	slog.Info("orchestrator: dispatching automation worker",
 		"identifier", issue.Identifier,
 		"automation", automation.AutomationID,
-		"profile", automation.ProfileName,
+		"profile", profileName,
 		"backend", backend,
 	)
 
 	o.recordAutomationDispatch(issue, automation, backend)
 
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, automation.ProfileName, false, nil, &automation)
-	return true
+	o.workersWg.Add(issue.Identifier)
+	switchNotice := o.backendSwitchNotice(state, issue.Identifier, backend, profileName, &automation) // CORE-101
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, &automation, switchNotice)
+	return true, false
 }
 
 // AutomationFiredLogPrefix is the canonical leading token of the synthetic

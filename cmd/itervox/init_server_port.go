@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,7 +21,17 @@ import (
 // Used by `itervox init --update --server-port <n>` to migrate stale
 // WORKFLOW.md files that pin `server.port: 8090` into the "two daemons in
 // parallel" friendly setting without an operator hand-edit.
+//
+// The read-modify-write runs under workflow.WithEditLock (CORE-149) so it is
+// serialized against a running daemon's settings patchers, which are a
+// separate process.
 func rewriteServerPort(workflowPath string, port int) error {
+	return workflow.WithEditLock(workflowPath, func() error {
+		return rewriteServerPortLocked(workflowPath, port)
+	})
+}
+
+func rewriteServerPortLocked(workflowPath string, port int) error {
 	raw, err := os.ReadFile(workflowPath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", workflowPath, err)

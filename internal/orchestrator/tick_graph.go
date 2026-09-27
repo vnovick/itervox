@@ -146,24 +146,6 @@ type GraphMetrics struct {
 	CycleMembers map[string]int
 }
 
-// ComputeGraphMetrics is a pure function computing GraphMetrics for g. It
-// runs iterative Tarjan SCC (no recursion — candidate sets can be large),
-// builds the SCC condensation DAG, then computes per-component transitive
-// dependents and longest chain via a single reverse-topological pass so
-// cycles cannot wedge the traversal.
-//
-// This is a single-consumer convenience wrapper around the shared SCC
-// decomposition — it recomputes Tarjan on every call. Callers that also need
-// ExtractCycles' output for the same TickGraph in the same tick should call
-// ComputeTickGraphAnalysis instead, which computes the SCC pass once and
-// feeds both consumers from it.
-func ComputeGraphMetrics(g TickGraph) GraphMetrics {
-	nodes := sortedNodes(g)
-	adj := adjacency(g, nodes)
-	scc := tarjanSCC(nodes, adj)
-	return computeGraphMetrics(g, nodes, adj, scc)
-}
-
 // computeGraphMetrics is the shared core of ComputeGraphMetrics: it consumes
 // an already-computed SCC decomposition (nodes/adj/scc) instead of deriving
 // its own, so ComputeTickGraphAnalysis can fuse this with extractCycles over
@@ -266,24 +248,6 @@ type DependencyCycle struct {
 	Members    []string // sorted identifiers
 	Kind       string   // "tracker" | "inferred" | "mixed"
 	DetectedAt time.Time
-}
-
-// ExtractCycles is a pure function producing the sorted DependencyCycle list
-// for g. DetectedAt is carried forward from prev when the exact sorted
-// member set matches an entry there (so the alert timestamp is stable across
-// ticks instead of re-stamping every tick); otherwise it is stamped now.
-// Output is sorted by first member.
-//
-// This is a single-consumer convenience wrapper around the shared SCC
-// decomposition — it recomputes Tarjan on every call. Callers that also need
-// ComputeGraphMetrics' output for the same TickGraph in the same tick should
-// call ComputeTickGraphAnalysis instead, which computes the SCC pass once
-// and feeds both consumers from it.
-func ExtractCycles(g TickGraph, prev []DependencyCycle, now time.Time) []DependencyCycle {
-	nodes := sortedNodes(g)
-	adj := adjacency(g, nodes)
-	scc := tarjanSCC(nodes, adj)
-	return extractCycles(g, nodes, adj, scc, prev, now)
 }
 
 // extractCycles is the shared core of ExtractCycles: it consumes an

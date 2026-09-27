@@ -124,7 +124,7 @@ export function queuedAge(queuedAt: string): string {
 export function statusTone(status: AutomationQueueRow['status']): string {
   switch (status) {
     case 'blocked':
-      return 'bg-theme-warning-soft text-theme-warning';
+      return 'bg-theme-warning-soft text-theme-warning-text';
     case 'dispatching':
       return 'bg-theme-accent-soft text-theme-accent-strong';
     default:

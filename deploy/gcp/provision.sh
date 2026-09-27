@@ -3,8 +3,10 @@
 # Provision a GCP Compute Engine VM for itervox.
 #
 # Defaults to NO public IP. Access is via IAP TCP tunnelling, which is gated by
-# Google IAM — strictly stronger than a bearer token, and it avoids the
-# loopback-behind-proxy auth gap (issue #48) entirely.
+# Google IAM — strictly stronger than a bearer token, since it doesn't depend
+# on the daemon's own auth at all (see the closed
+# https://github.com/vnovick/itervox/issues/48: itervox now auto-generates a
+# token on every bind by default).
 #
 # Usage: ./provision.sh [--name itervox] [--zone us-central1-a] [--public]
 #
@@ -41,25 +43,45 @@ gcloud compute instances create "$NAME" \
   --scopes=cloud-platform \
   "${NETWORK_ARGS[@]}"
 
+# CORE-062: create and attach persistent data disk for state roots
+echo "==> creating persistent data disk for state roots"
+gcloud compute disks create "${NAME}-data" \
+  --zone="$ZONE" \
+  --size=100GB \
+  --type=pd-balanced
+
+gcloud compute instances attach-disk "$NAME" \
+  --disk="${NAME}-data" \
+  --device-name=itervox-data \
+  --zone="$ZONE"
+
 # IAP tunnelling and Cloud NAT egress both need explicit plumbing when the VM
 # has no external address.
 if ! $PUBLIC; then
-  echo "==> allowing IAP ingress on 22 (tunnel source range is fixed by Google)"
-  gcloud compute firewall-rules create allow-iap-ssh \
-    --allow=tcp:22 \
-    --source-ranges=35.235.240.0/20 \
-    --description="IAP TCP forwarding" 2>/dev/null \
-    || echo "    (rule already exists)"
+  REGION="${ZONE%-*}"
 
-  echo
-  echo "    NOTE: with --no-address the VM has no outbound internet access until"
-  echo "    you attach a Cloud NAT gateway. bootstrap.sh needs egress to fetch"
-  echo "    packages and the itervox release:"
-  echo
-  echo "      gcloud compute routers create itervox-router --network=default --region=\${ZONE%-*}"
-  echo "      gcloud compute routers nats create itervox-nat --router=itervox-router \\"
-  echo "          --region=\${ZONE%-*} --auto-allocate-nat-external-ip \\"
-  echo "          --nat-all-subnet-ip-ranges"
+  echo "==> allowing IAP ingress on 22 (tunnel source range is fixed by Google)"
+  if ! gcloud compute firewall-rules describe allow-iap-ssh --format='value(name)' &>/dev/null; then
+    gcloud compute firewall-rules create allow-iap-ssh \
+      --network=default \
+      --allow=tcp:22 \
+      --source-ranges=35.235.240.0/20 \
+      --description="IAP TCP forwarding"
+  else
+    echo "    (rule already exists)"
+  fi
+
+  echo "==> ensuring Cloud NAT egress (bootstrap.sh needs it to fetch packages and the itervox release)"
+  if ! gcloud compute routers describe itervox-router --region="$REGION" --format='value(name)' &>/dev/null; then
+    gcloud compute routers create itervox-router --network=default --region="$REGION"
+  fi
+  if ! gcloud compute routers nats describe itervox-nat --router=itervox-router --region="$REGION" --format='value(name)' &>/dev/null; then
+    gcloud compute routers nats create itervox-nat --router=itervox-router \
+      --region="$REGION" --auto-allocate-nat-external-ip \
+      --nat-all-subnet-ip-ranges
+  else
+    echo "    (NAT already exists)"
+  fi
 fi
 
 cat <<EOF
@@ -71,11 +93,11 @@ cat <<EOF
    gcloud compute scp --recurse --tunnel-through-iap --zone=$ZONE \\
      deploy/ $NAME:~/deploy
    gcloud compute ssh $NAME --tunnel-through-iap --zone=$ZONE \\
-     --command 'sudo ~/deploy/bootstrap.sh --repo <git-url>'
+     --command 'sudo ~/deploy/bootstrap.sh --repo <git-url> --data-disk /dev/disk/by-id/google-itervox-data'
 
- Reach the dashboard (no public IP, IAM-gated):
-   gcloud compute start-iap-tunnel $NAME 8090 \\
-     --local-host-port=localhost:8090 --zone=$ZONE
+ Reach the dashboard (no public IP, IAM-gated; itervox binds 127.0.0.1:8090,
+ so tunnel SSH and forward the port locally rather than tunnelling 8090 directly):
+   gcloud compute ssh $NAME --tunnel-through-iap --zone=$ZONE -- -N -L 8090:localhost:8090
    open http://localhost:8090/?token=<ITERVOX_API_TOKEN>
 
  Logging + alerting: install the Ops Agent, then see deploy/monitoring/

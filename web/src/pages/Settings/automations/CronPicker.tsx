@@ -1,16 +1,9 @@
-import { Suspense, lazy, useRef, useState } from 'react';
-import { ConfigProvider, theme as antdTheme } from 'antd';
+import { Suspense, lazy, useId, useRef, useState } from 'react';
 import { inputCls, helperTextCls } from '../formStyles';
-
-// react-js-cron ships its own stylesheet (Tailwind-friendly, antd-based).
-// Load eagerly so the picker is ready before the lazy chunk resolves.
-import 'react-js-cron/dist/styles.css';
 import './CronPicker.css';
 
-const LazyCron = lazy(async () => {
-  const mod = await import('react-js-cron');
-  return { default: mod.Cron };
-});
+// CORE-098 — antd, react-js-cron and its stylesheet load only with this chunk.
+const LazyCronWidget = lazy(() => import('./CronWidget'));
 
 interface CronPickerProps {
   value: string;
@@ -20,6 +13,8 @@ interface CronPickerProps {
    * for the always-visible custom-cron text field.
    */
   placeholder?: string;
+  /** id of the visible field label; the picker is exposed as a labelled group. */
+  labelledBy?: string;
 }
 
 /**
@@ -41,7 +36,13 @@ interface CronPickerProps {
  * The component is lazy-loaded — antd is heavy and not needed until a user
  * actually opens an automation editor.
  */
-export function CronPicker({ value, onChange, placeholder = '0 9 * * 1-5' }: CronPickerProps) {
+export function CronPicker({
+  value,
+  onChange,
+  placeholder = '0 9 * * 1-5',
+  labelledBy,
+}: CronPickerProps) {
+  const rawId = useId();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   // Local copy of the raw text field so typing doesn't fight the picker's
   // re-renders. Kept in sync with `value` whenever the picker mutates it.
@@ -68,79 +69,51 @@ export function CronPicker({ value, onChange, placeholder = '0 9 * * 1-5' }: Cro
     </div>
   );
 
-  // Pull theme tokens from CSS variables so antd's components track the
-  // dashboard's light/dark mode automatically.
-  const cssVar = (name: string, fallbackValue: string) => {
-    if (typeof window === 'undefined') return fallbackValue;
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    return v || fallbackValue;
-  };
-
   return (
     <Suspense fallback={fallback}>
-      <ConfigProvider
-        // Mount every antd portal-component (Select dropdowns, Tooltip,
-        // Popover) inside the picker wrapper so it inherits the modal's
-        // stacking context. The wrapper ref is captured below.
-        getPopupContainer={(node) => node?.parentElement ?? document.body}
-        theme={{
-          algorithm: antdTheme.darkAlgorithm,
-          token: {
-            colorPrimary: cssVar('--accent', '#6366f1'),
-            colorBgContainer: cssVar('--bg-soft', '#1a1f2e'),
-            colorBgElevated: cssVar('--bg-elevated', '#11151c'),
-            colorBorder: cssVar('--line', '#2a2f3a'),
-            colorText: cssVar('--text', '#e5e7eb'),
-            colorTextSecondary: cssVar('--text-secondary', '#9ca3af'),
-            borderRadius: 6,
-            fontSize: 13,
-            zIndexPopupBase: 100000, // sit above the editor modal (z-99999)
-          },
-        }}
+      <div
+        ref={wrapperRef}
+        role="group"
+        aria-labelledby={labelledBy}
+        data-testid="cron-picker"
+        className="cron-picker-wrapper space-y-2"
       >
-        <div ref={wrapperRef} data-testid="cron-picker" className="cron-picker-wrapper space-y-2">
-          <LazyCron
-            value={value}
-            setValue={(next: string) => {
-              onChange(next);
+        <LazyCronWidget
+          value={value}
+          setValue={(next: string) => {
+            onChange(next);
+            setRawText(next);
+          }}
+        />
+        <div>
+          <label
+            htmlFor={rawId}
+            className="text-theme-text-secondary mb-1 block text-[11px] font-medium tracking-wider uppercase"
+          >
+            Custom expression
+          </label>
+          <input
+            id={rawId}
+            data-testid="cron-raw-input"
+            data-cron-raw="true"
+            value={rawText}
+            onChange={(event) => {
+              const next = event.target.value;
               setRawText(next);
+              onChange(next);
             }}
-            clearButton={false}
-            // humanizeLabels: render "Monday" etc. in the picker UI for ops.
-            // humanizeValue=false (explicit) — we MUST emit numeric (1-5)
-            // cron tokens because the Go-side `internal/schedule/cron.go`
-            // parser only accepts integer day-of-week / month tokens.
-            // react-js-cron defaults humanizeValue to true, so an explicit
-            // `false` is required (omitting the prop is NOT the same).
-            humanizeLabels
-            humanizeValue={false}
+            placeholder={placeholder}
+            spellCheck={false}
+            autoComplete="off"
+            className={`${inputCls} font-mono text-xs`}
+            aria-label="Cron expression (raw text)"
           />
-          <div>
-            <label className="text-theme-text-secondary mb-1 block text-[11px] font-medium tracking-wider uppercase">
-              Custom expression
-            </label>
-            <input
-              data-testid="cron-raw-input"
-              data-cron-raw="true"
-              value={rawText}
-              onChange={(event) => {
-                const next = event.target.value;
-                setRawText(next);
-                onChange(next);
-              }}
-              placeholder={placeholder}
-              spellCheck={false}
-              autoComplete="off"
-              className={`${inputCls} font-mono text-xs`}
-              aria-label="Cron expression (raw text)"
-            />
-            <p className={helperTextCls}>
-              Five-field cron: minute hour day month weekday. Picker and text input stay in sync —
-              edit either one.
-            </p>
-          </div>
+          <p className={helperTextCls}>
+            Five-field cron: minute hour day month weekday. Picker and text input stay in sync —
+            edit either one.
+          </p>
         </div>
-      </ConfigProvider>
+      </div>
     </Suspense>
   );
 }

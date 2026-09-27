@@ -3,10 +3,12 @@
 # Itervox itself has no TLS — there is no ListenAndServeTLS anywhere in
 # internal/server/ — so something has to terminate it for a public URL.
 #
-# ⚠️  A loopback bind behind this proxy installs NO auth middleware unless
-#     ITERVOX_API_TOKEN is set explicitly. The daemon only auto-generates a
-#     token for non-loopback binds and cannot tell it is publicly reachable.
-#     See https://github.com/vnovick/itervox/issues/48
+# Itervox auto-generates an ephemeral bearer token on every bind — including
+# loopback — unless ITERVOX_API_TOKEN is pinned or server.allow_unauthenticated
+# is set. Bind address is not a security signal: a loopback daemon behind this
+# proxy is exactly as internet-exposed as a public bind, and the daemon has no
+# way to tell from inside the process. Pin ITERVOX_API_TOKEN so restarts don't
+# invalidate saved dashboard sessions. See https://github.com/vnovick/itervox/issues/48
 #
 # Prefer a private tunnel (GCP IAP / AWS SSM / Azure Bastion) over this file.
 

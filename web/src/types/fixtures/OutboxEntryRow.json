@@ -6,5 +6,6 @@
   "attempts": 2,
   "lastError": "tracker: 500 internal server error",
   "enqueuedAt": "2026-05-25T12:00:00Z",
-  "nextAttemptAt": "2026-05-25T12:00:20Z"
+  "nextAttemptAt": "2026-05-25T12:00:20Z",
+  "lastFailedAt": "2026-05-25T12:00:10Z"
 }

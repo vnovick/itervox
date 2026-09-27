@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -23,7 +24,16 @@ func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
 	return defs
 }
 
+// DefaultAgentCommand returns agent.command, read-only after startup (not a
+// cfgMu field), for the dashboard's automation validation (CORE-010).
+func (a *orchestratorAdapter) DefaultAgentCommand() string { return a.cfg.Agent.Command }
+
 func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, originalName string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	currentProfiles := a.orch.ProfilesCfg()
 	if currentProfiles == nil {
 		currentProfiles = make(map[string]config.AgentProfile)
@@ -148,6 +158,9 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 	}
 	if reviewerChanged {
 		if err := a.orch.SetReviewerCfg(reviewerProfile, autoReview); err != nil {
+			slog.Error("settings: reviewer config rejected after WORKFLOW.md was written; "+
+				"WORKFLOW.md and the running config disagree until the next reload",
+				"reviewer_profile", reviewerProfile, "error", err)
 			return err
 		}
 	}
@@ -222,6 +235,11 @@ func profileDefFromConfig(p config.AgentProfile) server.ProfileDef {
 }
 
 func (a *orchestratorAdapter) DeleteProfile(name string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	profiles := a.orch.ProfilesCfg()
 	delete(profiles, name)
 	automations, automationsChanged := removeAutomationsForProfile(a.orch.AutomationsCfg(), name)
@@ -254,6 +272,9 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	}
 	if reviewerChanged {
 		if err := a.orch.SetReviewerCfg(reviewerProfile, autoReview); err != nil {
+			slog.Error("settings: reviewer config rejected after WORKFLOW.md was written; "+
+				"WORKFLOW.md and the running config disagree until the next reload",
+				"reviewer_profile", reviewerProfile, "error", err)
 			return err
 		}
 	}

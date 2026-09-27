@@ -1,6 +1,7 @@
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { useId } from 'react';
 import { Modal } from '../../components/ui/modal';
 
 // ─── Zod schema — mirrors Go backend validation in config/validate.go ────────
@@ -25,10 +26,11 @@ interface AddSSHHostModalProps {
 }
 
 const inputCls =
-  'w-full rounded-md border border-theme-line bg-theme-bg-soft text-theme-text text-[13px] px-2.5 py-2 outline-none';
+  'w-full rounded-md border border-theme-line bg-theme-bg-soft text-theme-text text-[13px] px-2.5 py-2 outline-none focus:border-theme-accent';
 const labelCls = 'block text-xs font-medium mb-1 text-theme-text-secondary';
 
 export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps) {
+  const headingId = useId();
   const {
     register,
     handleSubmit,
@@ -54,8 +56,17 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
   });
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} showCloseButton padded className="max-w-md">
-      <h2 className="text-theme-text mb-4 text-base font-semibold">Add Worker Host</h2>
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      showCloseButton
+      padded
+      className="max-w-md"
+      ariaLabelledBy={headingId}
+    >
+      <h2 id={headingId} className="text-theme-text mb-4 text-base font-semibold">
+        Add Worker Host
+      </h2>
 
       {/* Host type selector */}
       <div className="mb-5 flex gap-2">
@@ -96,18 +107,20 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
         className="space-y-4"
       >
         <div>
-          <label className={labelCls}>
-            Host address <span className="text-theme-danger">*</span>
+          <label htmlFor="ssh-host-address" className={labelCls}>
+            Host address <span className="text-theme-danger-text">*</span>
           </label>
           <input
+            id="ssh-host-address"
             className={inputCls}
             type="text"
             placeholder="build-server.example.com or 192.168.1.10:22"
+            // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer captures the opener before this runs, so focus still returns to it on close (M5-close)
             autoFocus
             {...register('host')}
           />
           {errors.host && (
-            <p role="alert" className="text-theme-danger mt-1 text-xs">
+            <p role="alert" className="text-theme-danger-text mt-1 text-xs">
               {errors.host.message}
             </p>
           )}
@@ -118,8 +131,11 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
         </div>
 
         <div>
-          <label className={labelCls}>Description (optional)</label>
+          <label htmlFor="ssh-host-description" className={labelCls}>
+            Description (optional)
+          </label>
           <input
+            id="ssh-host-description"
             className={inputCls}
             type="text"
             placeholder="e.g. Build server — 32 cores, 64 GB RAM"
@@ -131,24 +147,22 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
         <div
           className="space-y-1.5 rounded-lg px-3.5 py-3 text-[12px] leading-relaxed"
           style={{
-            background: 'rgba(234,179,8,0.08)',
-            border: '1px solid rgba(234,179,8,0.25)',
-            color: '#ca8a04',
+            background: 'var(--warning-soft)',
+            border: '1px solid var(--warning)',
+            color: 'var(--warning-text)',
           }}
         >
           <div className="flex items-center gap-1.5 font-semibold">
             <span>⚠</span> SSH host key required
           </div>
-          <p style={{ color: '#a16207' }}>
+          <p style={{ color: 'var(--warning-text)' }}>
             The host's key must be in{' '}
-            <code style={{ background: 'rgba(234,179,8,0.12)', padding: '0 3px', borderRadius: 3 }}>
-              ~/.ssh/known_hosts
-            </code>{' '}
-            on this machine before Itervox can connect. Run once to pre-accept it:
+            <code style={{ padding: '0 3px', borderRadius: 3 }}>~/.ssh/known_hosts</code> on this
+            machine before Itervox can connect. Run once to pre-accept it:
           </p>
           <pre
             className="rounded px-2.5 py-1.5 font-mono text-[11px] select-all"
-            style={{ background: 'rgba(0,0,0,0.15)', color: '#fbbf24' }}
+            style={{ background: 'var(--bg-soft)', color: 'var(--text)' }}
           >
             {`ssh-keyscan -H ${hostValue.trim() || '<host>'} >> ~/.ssh/known_hosts`}
           </pre>

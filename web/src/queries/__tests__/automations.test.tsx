@@ -68,7 +68,12 @@ describe('useTestAutomation (T-10)', () => {
   });
 
   it('emits an error toast when the server returns non-ok', async () => {
-    mockAuthedFetch.mockResolvedValueOnce(new Response('rule not found', { status: 500 }));
+    // BH-M2-1: the daemon's writeError envelope; its message reaches the toast.
+    mockAuthedFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'not_found', message: 'rule not found' } }), {
+        status: 500,
+      }),
+    );
     const { result } = renderHook(() => useTestAutomation(), { wrapper });
     result.current.mutate({ automationId: 'gone', identifier: 'ENG-1' });
     await waitFor(() => {

@@ -65,9 +65,28 @@ query ItervoxIssueDetail($id: String!) {
         createdAt
         user { id name }
       }
+      pageInfo { hasNextPage endCursor }
     }
     createdAt
     updatedAt
+  }
+}`
+
+// QueryIssueComments reads one further page of an issue's comments, after the
+// first page the detail queries return (CORE-124). Its page size and ordering
+// match theirs so the cursor they hand back continues the same sequence.
+const QueryIssueComments = `
+query ItervoxIssueComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 50, after: $after, orderBy: createdAt) {
+      nodes {
+        id
+        body
+        createdAt
+        user { id name }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 }`
 
@@ -209,6 +228,7 @@ query ItervoxLinearIssueDetailsById($ids: [ID!]!, $first: Int!, $relationFirst: 
           createdAt
           user { id name }
         }
+        pageInfo { hasNextPage endCursor }
       }
       createdAt
       updatedAt

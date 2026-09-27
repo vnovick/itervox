@@ -116,12 +116,22 @@ func TestParseLine(t *testing.T) {
 			wantResultText: "Human turn required",
 		},
 		{
-			name:           "result error with input required (approval)",
+			// CORE-166: bare "approval" is not a pending human answer; a
+			// pending-approval error is a configuration problem and stays Failed.
+			name:           "result error mentioning pending approval is not input required",
 			line:           `{"type":"result","subtype":"error","is_error":true,"result":"Pending approval needed"}`,
 			wantType:       "result",
 			wantIsError:    true,
-			wantInputReq:   true,
+			wantInputReq:   false,
 			wantResultText: "Pending approval needed",
+		},
+		{
+			name:           "result error with input required (needs your input)",
+			line:           `{"type":"result","subtype":"error","is_error":true,"result":"Claude needs your input"}`,
+			wantType:       "result",
+			wantIsError:    true,
+			wantInputReq:   true,
+			wantResultText: "Claude needs your input",
 		},
 		{
 			name:    "malformed JSON returns error",
@@ -273,8 +283,17 @@ func TestParseCodexLineFixtures(t *testing.T) {
 			wantIsError: true,
 		},
 		{
-			name:         "turn.failed with input required (approval)",
+			// CORE-166: "requires approval" is how codex reports an approval
+			// POLICY denial ("`cmd` requires approval by policy"), not a question.
+			name:         "turn.failed mentioning requires approval is not input required",
 			line:         `{"type":"turn.failed","error":{"message":"Requires approval from admin"}}`,
+			wantType:     EventResult,
+			wantIsError:  true,
+			wantInputReq: false,
+		},
+		{
+			name:         "turn.failed with input required (human turn)",
+			line:         `{"type":"turn.failed","error":{"message":"Human turn required"}}`,
 			wantType:     EventResult,
 			wantIsError:  true,
 			wantInputReq: true,
@@ -771,27 +790,44 @@ func TestToolDescriptionAgentTruncation(t *testing.T) {
 // ValidateClaudeCLICommand / ValidateCodexCLICommand
 // ---------------------------------------------------------------------------
 
+// validateCLICommandNoBinary runs fn with the shell fallback disabled and
+// PATH pointed at an empty temp dir, so neither a real claude/codex binary
+// nor the user's login shell can mask the outcome (CORE-128: the previous
+// version of these tests discarded the error with `_ = err` and could never
+// fail).
+func validateCLICommandNoBinary(t *testing.T, fn func(string) error, command string) error {
+	t.Helper()
+	prev := validateCLIShellFallback
+	validateCLIShellFallback = false
+	t.Cleanup(func() { validateCLIShellFallback = prev })
+	t.Setenv("PATH", t.TempDir())
+	return fn(command)
+}
+
 func TestValidateClaudeCLICommandEmpty(t *testing.T) {
-	// Empty command falls back to ValidateClaudeCLI, which will fail in test env.
-	err := ValidateClaudeCLICommand("")
-	// We just verify it returns an error (claude not on PATH in CI).
-	// If claude IS on PATH, it returns nil which is also fine.
-	_ = err
+	// Empty command falls back to ValidateClaudeCLI.
+	err := validateCLICommandNoBinary(t, ValidateClaudeCLICommand, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI not available")
 }
 
 func TestValidateClaudeCLICommandClaude(t *testing.T) {
-	err := ValidateClaudeCLICommand("claude")
-	_ = err
+	// "claude" also falls back to ValidateClaudeCLI (same as empty).
+	err := validateCLICommandNoBinary(t, ValidateClaudeCLICommand, "claude")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI not available")
 }
 
 func TestValidateCodexCLICommandEmpty(t *testing.T) {
-	err := ValidateCodexCLICommand("")
-	_ = err
+	err := validateCLICommandNoBinary(t, ValidateCodexCLICommand, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "codex CLI not available")
 }
 
 func TestValidateCodexCLICommandCodex(t *testing.T) {
-	err := ValidateCodexCLICommand("codex")
-	_ = err
+	err := validateCLICommandNoBinary(t, ValidateCodexCLICommand, "codex")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "codex CLI not available")
 }
 
 func TestValidateCodexCLICommandCustomPath(t *testing.T) {
@@ -1052,7 +1088,7 @@ func TestStreamLineToEntriesWith_SuccessResultReturnsNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// multi.go helpers — firstCommandToken, isEnvAssignment, parseBackendHint
+// multi.go helpers — firstCommandToken, parseBackendHint (delegates to config)
 // ---------------------------------------------------------------------------
 
 func TestFirstCommandToken(t *testing.T) {
@@ -1078,28 +1114,8 @@ func TestFirstCommandToken(t *testing.T) {
 	}
 }
 
-func TestIsEnvAssignment(t *testing.T) {
-	tests := []struct {
-		token string
-		want  bool
-	}{
-		{"FOO=bar", true},
-		{"_VAR=123", true},
-		{"A=", true},
-		{"var123=val", true},
-		{"=nope", false},
-		{"nope", false},
-		{"123=bad", false},
-		{"-flag", false},
-		{"", false},
-		{"a.b=c", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.token, func(t *testing.T) {
-			assert.Equal(t, tc.want, isEnvAssignment(tc.token))
-		})
-	}
-}
+// TestIsEnvAssignment moved to internal/config/backend_command_test.go with
+// the parser itself (CORE-010).
 
 func TestParseBackendHint(t *testing.T) {
 	tests := []struct {

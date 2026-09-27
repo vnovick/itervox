@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 )
@@ -22,6 +23,13 @@ import (
 // signal.
 type outboxRefresher interface {
 	Refresh()
+}
+
+// outboxFailureRecorder is the optional ring producer the flusher uses for a
+// real delivery failure (CORE-046). *orchestrator.Orchestrator implements it
+// with a NON-blocking send; the flusher never touches State.
+type outboxFailureRecorder interface {
+	RecordFailure(orchestrator.FailureRecord) bool
 }
 
 // outboxFlushInterval is how often startOutboxFlusher polls the outbox for
@@ -158,6 +166,7 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 	go func() {
 		defer close(done)
 		defer wg.Wait()
+		defer failFastOnPanic("outbox-flusher")
 		ticker := time.NewTicker(outboxFlushInterval)
 		defer ticker.Stop()
 		absentReconciler := &absentIssueReconciler{}
@@ -181,6 +190,10 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 					go func() {
 						defer wg.Done()
 						defer absentReconciler.finish()
+						// One-shot read-only reconcile round: recover and
+						// let the next due check retry (finish() above
+						// releases the in-flight guard either way).
+						defer orchestrator.RecoverGoroutine("outbox-absent-reconcile", "", nil)
 						runAbsentIssueReconcileTick(ctx, ob, tr)
 					}()
 				}
@@ -202,27 +215,6 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 // backoff nor moves an entry toward the degraded badge.
 func runOutboxFlusherTickForAdapter(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, now time.Time, adapter string) {
 	runOutboxFlusherTickGated(ctx, ob, tr, orch, now, adapter)
-}
-
-// runOutboxFlusherTick performs one flusher tick: it delivers every entry
-// ob.Due(now) returns, sequentially, stopping early if ctx is cancelled
-// mid-tick. Extracted from startOutboxFlusher's goroutine body so tests can
-// drive a single tick directly with an injected `now` (and an injected
-// ob.SetNow clock for backoff assertions) instead of waiting on a real
-// ticker — same convention as cmd/itervox/deps_auto_analyze.go's
-// runDepsAutoAnalyzeTick.
-//
-// Delegates to runOutboxFlusherTickGated with adapter "" — a key no gate is
-// ever recorded under, so the per-entry gate check never fires. Production
-// goes through runOutboxFlusherTickForAdapter with the real adapter key.
-//
-// Sequential, not concurrent: ob.Due already returns at most one entry per
-// issue (the FIFO head), so cross-issue delivery could in principle run in
-// parallel, but the spec is explicit ("for each entry (sequentially...)")
-// and a single in-flight tracker call at a time keeps flusher behavior easy
-// to reason about and trivially serializes with any other tracker caller.
-func runOutboxFlusherTick(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, now time.Time) {
-	runOutboxFlusherTickGated(ctx, ob, tr, orch, now, "")
 }
 
 // runOutboxFlusherTickGated is the tick loop. It re-checks adapter's shared
@@ -304,6 +296,18 @@ func flushOutboxEntry(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker
 		slog.Warn("outbox flusher: flush failed, will retry",
 			"id", entry.ID, "issue_id", entry.IssueID, "identifier", entry.Identifier,
 			"kind", entry.Kind, "attempts", entry.Attempts+1, "error", flushErr)
+		// CORE-046: a real delivery failure (rate-limit deferrals returned
+		// above) lands in RecentFailures. Attempts are left out of the
+		// message so repeats of the same error coalesce into one entry.
+		if fr, ok := orch.(outboxFailureRecorder); ok {
+			fr.RecordFailure(orchestrator.FailureRecord{
+				Kind:       orchestrator.FailureKindOutbox,
+				Identifier: entry.Identifier,
+				Source:     string(entry.Kind),
+				Message:    fmt.Sprintf("outbox %s delivery failed, will retry: %v", entry.Kind, flushErr),
+				OccurredAt: now,
+			})
+		}
 		return
 	}
 
@@ -349,7 +353,9 @@ var errCommentAlreadyDelivered = errors.New("outbox flusher: comment already del
 // again without a lookup and the comment is duplicated. Linear is immune: the
 // key is the comment's own id, so a re-sent create collides with the comment
 // that already landed, the collision fails the attempt, and the retry's lookup
-// then finds it and marks the entry flushed.
+// then finds it and marks the entry flushed. That immunity needs the key to be
+// identical across restarts, which includes a legacy entry's backfilled key:
+// outbox.New derives it from the entry ID and persists it at load (CORE-122).
 func deliverComment(ctx context.Context, tr tracker.Tracker, entry outbox.Entry) error {
 	ic, ok := tr.(tracker.IdempotentCommenter)
 	if !ok || entry.CommentKey == "" {

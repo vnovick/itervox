@@ -4,7 +4,8 @@ import PageMeta from '../../components/common/PageMeta';
 import { Card } from '../../components/ui/Card/Card';
 import { AutomationsCard } from '../Settings/AutomationsCard';
 import { useSettingsPageData } from '../Settings/useSettingsPageData';
-import { useUIStore, type AutomationsTab } from '../../store/uiStore';
+import type { AutomationsTab } from '../../store/uiStore';
+import { useAutomationsTabUrlState } from '../../hooks/useUrlState';
 import AutomationsActivityTab from './AutomationsActivityTab';
 
 const AUTOMATIONS_TABS: Array<{ id: AutomationsTab; label: string }> = [
@@ -21,8 +22,8 @@ export default function Automations() {
     setAutomations,
     setAutomationsTyped,
   } = useSettingsPageData();
-  const tab = useUIStore((s) => s.automationsTab);
-  const setTab = useUIStore((s) => s.setAutomationsTab);
+  // CORE-085 — the tab lives in ?tab= (reload and Back restore it).
+  const [tab, setTab] = useAutomationsTabUrlState();
   const [searchParams] = useSearchParams();
   const focusAutomationId = searchParams.get('openAutomation') ?? undefined;
 
@@ -30,14 +31,13 @@ export default function Automations() {
     <>
       <PageMeta
         title="Itervox | Automations"
-        description="Itervox automations — cron and event-driven helpers that will evolve into canvas"
+        description="Itervox automations — cron and event-driven helper runs"
       />
       <div className="w-full max-w-none space-y-8">
         <div>
           <h1 className="text-theme-text text-2xl font-bold tracking-tight">Automations</h1>
           <p className="text-theme-muted mt-1 text-sm">
-            Configure cron and event-driven helper runs. This page is the stepping stone toward the
-            future Canvas workflow surface.
+            Configure cron and event-driven helper runs, and see what each rule has fired.
           </p>
         </div>
 
@@ -53,9 +53,9 @@ export default function Automations() {
             <Card variant="elevated" className="space-y-2">
               <p className="text-theme-text text-sm font-medium">Automation scope</p>
               <p className="text-theme-muted text-sm leading-relaxed">
-                Use this page for practical automations today: scheduled QA checks, backlog review,
-                and helper agents that react to input-required events. The broader visual workflow
-                canvas will build on top of this surface later.
+                Scheduled QA checks, backlog review, helper agents that react to input-required
+                events, and rate_limited rules that move an issue to another profile when its
+                backend is limited.
               </p>
             </Card>
 

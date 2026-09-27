@@ -23,7 +23,6 @@ beforeEach(() => {
     logs: [],
     sseConnected: false,
     selectedIdentifier: null,
-    tokenSamples: [],
   });
 });
 
@@ -37,21 +36,27 @@ describe('setSnapshot', () => {
     expect(useItervoxStore.getState().snapshot).toEqual(EMPTY_SNAP);
   });
 
-  it('appends a token sample on every setSnapshot call', () => {
+  // CORE-083 — the token-sample window was recomputed on every push and never
+  // rendered; the store now holds exactly these data fields.
+  it('does not keep a token-sample window', () => {
     const snap = { ...EMPTY_SNAP, running: [{ tokens: 500 }] };
     useItervoxStore.getState().setSnapshot(snap as never);
-    expect(useItervoxStore.getState().tokenSamples).toHaveLength(1);
-    expect(useItervoxStore.getState().tokenSamples[0].totalTokens).toBe(500);
-  });
-
-  it('rolls the window when MAX_TOKEN_SAMPLES (60) is reached', () => {
-    // appendTokenSample dedups consecutive identical totalTokens, so each push
-    // must have a unique tokens value to actually add a new sample.
-    for (let i = 0; i < 61; i++) {
-      const snap = { ...EMPTY_SNAP, running: [{ tokens: i + 1 }] };
-      useItervoxStore.getState().setSnapshot(snap as never);
-    }
-    expect(useItervoxStore.getState().tokenSamples).toHaveLength(60);
+    const dataKeys = Object.entries(useItervoxStore.getState())
+      .filter(([, v]) => typeof v !== 'function')
+      .map(([k]) => k)
+      .sort();
+    expect(dataKeys).toEqual([
+      'activeIssueId',
+      'lastMessageAt',
+      'lastSchemaDrift',
+      'lastSnapshotAt',
+      'logSeq',
+      'logs',
+      'schemaDriftCount',
+      'selectedIdentifier',
+      'snapshot',
+      'sseConnected',
+    ]);
   });
 });
 
@@ -160,8 +165,6 @@ describe('refreshSnapshot', () => {
       .mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue(mockSnap) });
     await useItervoxStore.getState().refreshSnapshot();
     expect(useItervoxStore.getState().snapshot).toEqual(mockSnap);
-    expect(useItervoxStore.getState().tokenSamples).toHaveLength(1);
-    expect(useItervoxStore.getState().tokenSamples[0].totalTokens).toBe(99);
   });
 
   it('does nothing when fetch fails', async () => {

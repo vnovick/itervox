@@ -20,6 +20,7 @@ type keyMap struct {
 	Dispatch      key.Binding
 	Resume        key.Binding
 	Terminate     key.Binding
+	Stop          key.Binding
 	PanelNext     key.Binding
 	EscKey        key.Binding
 	DrillDown     key.Binding
@@ -28,6 +29,7 @@ type keyMap struct {
 	HistoryTab    key.Binding
 	AssignProfile key.Binding
 	SplitToggle   key.Binding
+	Help          key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -112,6 +114,10 @@ func defaultKeys() keyMap {
 			key.WithKeys("D"),
 			key.WithHelp("D", "discard paused"),
 		),
+		Stop: key.NewBinding(
+			key.WithKeys("S"),
+			key.WithHelp("S", "stop running"),
+		),
 		OpenURL: key.NewBinding(
 			key.WithKeys("o"),
 			key.WithHelp("o", copyPRHelpLabel),
@@ -132,15 +138,26 @@ func defaultKeys() keyMap {
 			key.WithKeys("s"),
 			key.WithHelp("s", "split details"),
 		),
+		Help: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "more"),
+		),
 	}
 }
 
-// ShortHelp implements key.Map and returns the compact help binding list.
+// ShortHelp implements key.Map: the trimmed footer (CORE-092) — the
+// everyday navigation keys, pause, quit and `?` for the full list.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.EscKey, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.OpenURL, k.OpenWebUI, k.AssignProfile, k.SplitToggle, k.Quit}
+	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.Kill, k.Quit, k.Help}
 }
 
-// FullHelp implements key.Map and returns the full help binding list.
+// FullHelp implements key.Map: every binding, in columns, shown after `?`.
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.ListUp, k.ListDown, k.Toggle, k.PanelNext, k.EscKey, k.DrillDown, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.AssignProfile, k.SplitToggle, k.Quit}}
+	return [][]key.Binding{
+		{k.ListUp, k.ListDown, k.Toggle, k.PanelNext, k.EscKey, k.DrillDown},
+		{k.LogUp, k.LogDown, k.HistoryTab, k.SplitToggle, k.OpenURL, k.OpenWebUI},
+		{k.Kill, k.Resume, k.Terminate, k.Stop, k.AssignProfile},
+		{k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker},
+		{k.Help, k.Quit},
+	}
 }

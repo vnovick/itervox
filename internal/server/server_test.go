@@ -21,6 +21,18 @@ import (
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
+// errNotRunningForTest, errNotPausedForTest and errNotFoundForTest are
+// non-ErrBusy sentinel errors FuncClient test doubles return to simulate the
+// "the issue isn't in the state this call requires" case (CORE-005): any
+// error that is not server.ErrBusy maps to 404, so the exact sentinel used
+// doesn't matter to the handler — these just make each test's intent
+// readable at the call site instead of returning a bare bool.
+var (
+	errNotRunningForTest = errors.New("test: not running")
+	errNotPausedForTest  = errors.New("test: not paused")
+	errNotFoundForTest   = errors.New("test: not found")
+)
+
 func baseSnap() server.StateSnapshot {
 	return server.StateSnapshot{
 		GeneratedAt: time.Now(),
@@ -33,6 +45,9 @@ func makeTestConfig(snap server.StateSnapshot) server.Config {
 	return server.Config{
 		Snapshot:    func() server.StateSnapshot { return snap },
 		RefreshChan: make(chan struct{}, 1),
+		// httptest.NewRequest addresses "example.com"; without a token the
+		// CORE-162 Host guard would refuse it. host_guard_test.go clears this.
+		AllowedHosts: []string{"example.com"},
 	}
 }
 
@@ -560,7 +575,7 @@ func TestHandleIssueDetail_FetchError_Returns500(t *testing.T) {
 
 // ─── handleCancelIssue ────────────────────────────────────────────────────────
 
-func testServerWithCancel(t *testing.T, fn func(string) bool) *server.Server {
+func testServerWithCancel(t *testing.T, fn func(string) error) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{CancelIssueFn: fn}
@@ -568,7 +583,12 @@ func testServerWithCancel(t *testing.T, fn func(string) bool) *server.Server {
 }
 
 func TestHandleCancelIssue_Found_Returns200(t *testing.T) {
-	srv := testServerWithCancel(t, func(id string) bool { return id == "ENG-1" })
+	srv := testServerWithCancel(t, func(id string) error {
+		if id == "ENG-1" {
+			return nil
+		}
+		return errNotRunningForTest
+	})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-1", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -581,7 +601,7 @@ func TestHandleCancelIssue_Found_Returns200(t *testing.T) {
 }
 
 func TestHandleCancelIssue_NotFound_Returns404(t *testing.T) {
-	srv := testServerWithCancel(t, func(id string) bool { return false })
+	srv := testServerWithCancel(t, func(id string) error { return errNotRunningForTest })
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-999", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -590,9 +610,18 @@ func TestHandleCancelIssue_NotFound_Returns404(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "not_running")
 }
 
+func TestResumeIssueBusyReturns503(t *testing.T) {
+	srv := testServerWithResume(t, func(string) error { return server.ErrBusy })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-5/resume", "")
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, "1", w.Header().Get("Retry-After"))
+	assert.Contains(t, w.Body.String(), "orchestrator_busy")
+}
+
 // ─── handleResumeIssue ────────────────────────────────────────────────────────
 
-func testServerWithResume(t *testing.T, fn func(string) bool) *server.Server {
+func testServerWithResume(t *testing.T, fn func(string) error) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{ResumeIssueFn: fn}
@@ -600,7 +629,12 @@ func testServerWithResume(t *testing.T, fn func(string) bool) *server.Server {
 }
 
 func TestHandleResumeIssue_Found_Returns200(t *testing.T) {
-	srv := testServerWithResume(t, func(id string) bool { return id == "ENG-5" })
+	srv := testServerWithResume(t, func(id string) error {
+		if id == "ENG-5" {
+			return nil
+		}
+		return errNotPausedForTest
+	})
 	w := postJSON(t, srv, "/api/v1/issues/ENG-5/resume", "")
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -611,7 +645,7 @@ func TestHandleResumeIssue_Found_Returns200(t *testing.T) {
 }
 
 func TestHandleResumeIssue_NotPaused_Returns404(t *testing.T) {
-	srv := testServerWithResume(t, func(id string) bool { return false })
+	srv := testServerWithResume(t, func(id string) error { return errNotPausedForTest })
 	w := postJSON(t, srv, "/api/v1/issues/ENG-5/resume", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.Contains(t, w.Body.String(), "not_paused")
@@ -619,7 +653,7 @@ func TestHandleResumeIssue_NotPaused_Returns404(t *testing.T) {
 
 // ─── handleTerminateIssue ─────────────────────────────────────────────────────
 
-func testServerWithTerminate(t *testing.T, fn func(string) bool) *server.Server {
+func testServerWithTerminate(t *testing.T, fn func(string) error) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{TerminateIssueFn: fn}
@@ -637,21 +671,21 @@ func putJSON(t *testing.T, srv *server.Server, path, body string) *httptest.Resp
 
 func TestHandleTerminateIssue_Success(t *testing.T) {
 	var got string
-	srv := testServerWithTerminate(t, func(id string) bool { got = id; return true })
+	srv := testServerWithTerminate(t, func(id string) error { got = id; return nil })
 	w := postJSON(t, srv, "/api/v1/issues/ENG-5/terminate", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "ENG-5", got)
 }
 
 func TestHandleTerminateIssue_NotFound(t *testing.T) {
-	srv := testServerWithTerminate(t, func(string) bool { return false })
+	srv := testServerWithTerminate(t, func(string) error { return errNotFoundForTest })
 	w := postJSON(t, srv, "/api/v1/issues/ENG-X/terminate", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 // ─── handleReanalyzeIssue ─────────────────────────────────────────────────────
 
-func testServerWithReanalyze(t *testing.T, fn func(string) bool) *server.Server {
+func testServerWithReanalyze(t *testing.T, fn func(string) error) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{ReanalyzeIssueFn: fn}
@@ -660,7 +694,7 @@ func testServerWithReanalyze(t *testing.T, fn func(string) bool) *server.Server 
 
 func TestHandleReanalyzeIssue_Success(t *testing.T) {
 	var got string
-	srv := testServerWithReanalyze(t, func(id string) bool { got = id; return true })
+	srv := testServerWithReanalyze(t, func(id string) error { got = id; return nil })
 	w := postJSON(t, srv, "/api/v1/issues/ENG-7/reanalyze", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "ENG-7", got)
@@ -668,7 +702,7 @@ func TestHandleReanalyzeIssue_Success(t *testing.T) {
 }
 
 func TestHandleReanalyzeIssue_NotPaused(t *testing.T) {
-	srv := testServerWithReanalyze(t, func(string) bool { return false })
+	srv := testServerWithReanalyze(t, func(string) error { return errNotPausedForTest })
 	w := postJSON(t, srv, "/api/v1/issues/ENG-7/reanalyze", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.Contains(t, w.Body.String(), "not_paused")
@@ -847,8 +881,8 @@ type fakeProjectManager struct {
 func (f *fakeProjectManager) FetchProjects(_ context.Context) ([]server.Project, error) {
 	return f.projects, nil
 }
-func (f *fakeProjectManager) GetProjectFilter() []string  { return f.filter }
-func (f *fakeProjectManager) SetProjectFilter(s []string) { f.filter = s }
+func (f *fakeProjectManager) GetProjectFilter() []string        { return f.filter }
+func (f *fakeProjectManager) SetProjectFilter(s []string) error { f.filter = s; return nil }
 
 func testServerWithProjects(t *testing.T) (*server.Server, *fakeProjectManager) {
 	t.Helper()
@@ -944,7 +978,7 @@ func TestNotifyDoesNotPanicWithNoSubscribers(t *testing.T) {
 
 // ─── handleIssueLogs / handleClearIssueLogs ───────────────────────────────────
 
-func testServerWithIssueLogs(t *testing.T, fetchLogs func(string) []string) *server.Server {
+func testServerWithIssueLogs(t *testing.T, fetchLogs func(context.Context, string) []string) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
 	cfg.Client = &server.FuncClient{FetchLogsFn: fetchLogs}
@@ -952,7 +986,7 @@ func testServerWithIssueLogs(t *testing.T, fetchLogs func(string) []string) *ser
 }
 
 func TestHandleIssueLogs_ReturnsEntries(t *testing.T) {
-	srv := testServerWithIssueLogs(t, func(id string) []string {
+	srv := testServerWithIssueLogs(t, func(_ context.Context, id string) []string {
 		return []string{`{"level":"INFO","msg":"claude: text","time":"10:00:00","text":"something happened"}`}
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/logs", nil)
@@ -966,7 +1000,7 @@ func TestHandleIssueLogs_ReturnsEntries(t *testing.T) {
 }
 
 func TestHandleIssueLogs_EmptyLogs(t *testing.T) {
-	srv := testServerWithIssueLogs(t, func(string) []string { return nil })
+	srv := testServerWithIssueLogs(t, func(context.Context, string) []string { return nil })
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/logs", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -1030,6 +1064,69 @@ func TestHandleSetIssueBackend(t *testing.T) {
 			if w.Code != tc.wantCode {
 				t.Errorf("got %d, want %d", w.Code, tc.wantCode)
 			}
+		})
+	}
+}
+
+// CORE-040: the per-issue backend override is a closed enum. The value is
+// fed into the dispatch command as a backend hint that is split at the first
+// whitespace, so an unvalidated value like "claude printf AUDIT #" would reach
+// the runner's `$SHELL -lc`. Values are compared EXACTLY — no TrimSpace, no
+// case folding — so " codex" and "Codex" are rejected, not normalised.
+func TestHandleSetIssueBackendRejectsUnknownBackend(t *testing.T) {
+	tests := []struct {
+		name     string
+		backend  string
+		wantCode int
+	}{
+		{"claude", "claude", http.StatusOK},
+		{"codex", "codex", http.StatusOK},
+		{"empty clears the override", "", http.StatusOK},
+		{"unknown", "nope", http.StatusBadRequest},
+		{"shell payload after a valid backend", "claude printf AUDIT #", http.StatusBadRequest},
+		{"tab-joined backends", "claude\tcodex", http.StatusBadRequest},
+		{"leading space", " codex", http.StatusBadRequest},
+		{"trailing space", "codex ", http.StatusBadRequest},
+		{"command separator", "codex;id", http.StatusBadRequest},
+		{"upper case", "CODEX", http.StatusBadRequest},
+		{"title case", "Claude", http.StatusBadRequest},
+		{"backend hint prefix", "@@itervox-backend=codex", http.StatusBadRequest},
+		{"newline", "claude\nid", http.StatusBadRequest},
+		{"path to binary", "/usr/local/bin/claude", http.StatusBadRequest},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			var gotBackend string
+			cfg := makeTestConfig(baseSnap())
+			cfg.Client = &server.FuncClient{SetIssueBackendFn: func(_, backend string) {
+				calls++
+				gotBackend = backend
+			}}
+			srv := server.New(cfg)
+
+			body, err := json.Marshal(map[string]string{"backend": tc.backend})
+			require.NoError(t, err)
+			w := postJSON(t, srv, "/api/v1/issues/PROJ-1/backend", string(body))
+			require.Equal(t, tc.wantCode, w.Code, "body: %s", w.Body.String())
+
+			if tc.wantCode == http.StatusOK {
+				assert.Equal(t, 1, calls, "a valid value must be forwarded")
+				assert.Equal(t, tc.backend, gotBackend)
+				return
+			}
+			assert.Zero(t, calls, "a rejected value must never reach SetIssueBackend")
+			var resp struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+					Field   string `json:"field"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, "bad_request", resp.Error.Code)
+			assert.Equal(t, "backend", resp.Error.Field)
+			assert.NotEmpty(t, resp.Error.Message)
 		})
 	}
 }
@@ -1107,6 +1204,115 @@ func TestBearerAuth_MissingBearerPrefix_Returns401(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// TestBearerAuthConstantTimeCompare is a behaviour-regression test only: it
+// cannot demonstrate constant-time execution (that requires timing
+// measurement, which a unit test cannot reliably do), it only pins that
+// valid/wrong/wrong-length/empty tokens still produce the correct
+// 200/401/401/401 outcomes after the strings.TrimPrefix(...) != s.apiToken
+// compare was replaced with subtle.ConstantTimeCompare.
+func TestBearerAuthConstantTimeCompare(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "my-secret"
+	srv := server.New(cfg)
+
+	cases := []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{"valid token", "Bearer my-secret", http.StatusOK},
+		{"wrong token, same length", "Bearer my-secre!", http.StatusUnauthorized},
+		{"wrong length token", "Bearer x", http.StatusUnauthorized},
+		{"empty token", "Bearer ", http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+			req.Header.Set("Authorization", tc.header)
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+			assert.Equal(t, tc.want, w.Code)
+		})
+	}
+}
+
+// ─── Security headers ────────────────────────────────────────────────────────
+
+// assertSecurityHeaders checks the four headers securityHeadersMiddleware
+// sets on every response; both security-header tests below assert all four.
+func assertSecurityHeaders(t *testing.T, h http.Header) {
+	t.Helper()
+	assert.Equal(t, "frame-ancestors 'none'", h.Get("Content-Security-Policy"))
+	assert.Equal(t, "DENY", h.Get("X-Frame-Options"))
+	assert.Equal(t, "nosniff", h.Get("X-Content-Type-Options"))
+	assert.Equal(t, "no-referrer", h.Get("Referrer-Policy"))
+}
+
+// TestSecurityHeaders_DefaultDeny pins the exact default-deny values on a
+// single plain route.
+func TestSecurityHeaders_DefaultDeny(t *testing.T) {
+	srv := testServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assertSecurityHeaders(t, w.Header())
+}
+
+// TestSecurityHeaders_AllRoutes covers every response class named in
+// CORE-014's acceptance: the SPA fallback, an unauthenticated route, a 401
+// (no token against a token-gated route), and an SSE stream. The SSE row
+// uses a real httptest.Server + http.Client rather than
+// httptest.NewRecorder() so the response headers actually arrive over the
+// wire before the request is cancelled — handleEvents/handleIssueLogStream
+// loop until the client disconnects (r.Context().Done()), so an in-process
+// ResponseRecorder call would never return and hang the test.
+func TestSecurityHeaders_AllRoutes(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "my-secret"
+	srv := server.New(cfg)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	t.Run("SPA fallback", func(t *testing.T) {
+		resp, err := http.Get(ts.URL + "/")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assertSecurityHeaders(t, resp.Header)
+	})
+
+	t.Run("unauthenticated health route", func(t *testing.T) {
+		resp, err := http.Get(ts.URL + "/api/v1/health")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assertSecurityHeaders(t, resp.Header)
+	})
+
+	t.Run("401 without a token", func(t *testing.T) {
+		resp, err := http.Get(ts.URL + "/api/v1/state")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assertSecurityHeaders(t, resp.Header)
+	})
+
+	t.Run("SSE stream", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer my-secret")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+		assertSecurityHeaders(t, resp.Header)
+		// Headers have arrived; cancel now so the streaming handler returns
+		// instead of blocking until the test process exits.
+		cancel()
+	})
 }
 
 // ─── SSE endpoint ────────────────────────────────────────────────────────────
@@ -1532,37 +1738,20 @@ func TestHandleSubLogs_UsesRequestContext(t *testing.T) {
 // N entries and stream only events N+1..end. Without this, every reconnect
 // re-delivers the entire buffer (duplicate-line spam in the dashboard).
 func TestHandleSubLogStream_ResumesFromLastEventID(t *testing.T) {
-	cfg := makeTestConfig(baseSnap())
-	ctx, cancel := context.WithCancel(context.Background())
-	entries := []domain.IssueLogEntry{
-		{Event: "text", Message: "one"},
-		{Event: "text", Message: "two"},
-		{Event: "text", Message: "three"},
-		{Event: "text", Message: "four"},
-		{Event: "text", Message: "five"},
-	}
-	cfg.Client = &server.FuncClient{
-		FetchSubLogsFn: func(context.Context, string) ([]domain.IssueLogEntry, error) {
-			defer cancel()
-			return entries, nil
-		},
-	}
-	srv := server.New(cfg)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
-	req.Header.Set("Last-Event-ID", "3")
-	w := httptest.NewRecorder()
-
-	srv.ServeHTTP(w, req)
-
-	body := w.Body.String()
-	assert.NotContains(t, body, `"message":"one"`, "events 1-3 must be skipped after Last-Event-ID: 3")
+	entries := entriesOf("one", "two", "three", "four", "five")
+	// Ids are "<epoch>-<seq>" since CORE-153; the epoch comes from a first
+	// connection over the same set.
+	epoch, _ := lastSublogID(t, sublogOnce(t, entries, ""))
+	body := sublogOnce(t, entries, epoch+"-3")
+	assert.NotContains(t, body, `"message":"one"`, "events 1-3 must be skipped after Last-Event-ID: <epoch>-3")
 	assert.NotContains(t, body, `"message":"two"`)
 	assert.NotContains(t, body, `"message":"three"`)
 	assert.Contains(t, body, `"message":"four"`)
 	assert.Contains(t, body, `"message":"five"`)
-	// Server stamps each emitted event with id: <cursor>.
-	assert.Contains(t, body, "id: 4")
-	assert.Contains(t, body, "id: 5")
+	// Server stamps each emitted event with id: <epoch>-<cursor>.
+	assert.Contains(t, body, "id: "+epoch+"-4")
+	assert.Contains(t, body, "id: "+epoch+"-5")
+	assert.NotContains(t, body, "event: gap")
 }
 
 // TestHandleSubLogStream_StaleLastEventIDReplaysFromStart guards against a
@@ -1753,12 +1942,26 @@ func TestHandleGetReviewer_DefaultsWhenNoFn(t *testing.T) {
 
 // ─── handleProvideInput / handleDismissInput ─────────────────────────────────
 
-func TestHandleProvideInput_NotFound(t *testing.T) {
+// TestHandleProvideInput_QueuedReturns202 pins CORE-005's dropped-404
+// contract: ProvideInput performs no lookup of its own, so a zero-value
+// FuncClient (ProvideInputFn nil, defaulting to nil/"queued") must succeed
+// with 202 Accepted rather than the old always-404 behaviour.
+func TestHandleProvideInput_QueuedReturns202(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{} // ProvideInput always returns false
+	cfg.Client = &server.FuncClient{}
 	srv := server.New(cfg)
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+}
+
+func TestProvideInputBusyReturns503(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ProvideInputFn: func(string, string) error { return server.ErrBusy }}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, "1", w.Header().Get("Retry-After"))
+	assert.Contains(t, w.Body.String(), "orchestrator_busy")
 }
 
 func TestHandleProvideInput_EmptyMessage_Returns400(t *testing.T) {
@@ -1777,21 +1980,36 @@ func TestHandleProvideInput_InvalidJSON_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestHandleDismissInput_NotFound(t *testing.T) {
+// TestHandleDismissInput_QueuedReturns202 is DismissInput's counterpart to
+// TestHandleProvideInput_QueuedReturns202 (CORE-005).
+func TestHandleDismissInput_QueuedReturns202(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{} // DismissInput always returns false
+	cfg.Client = &server.FuncClient{}
 	srv := server.New(cfg)
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/dismiss-input", "")
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 }
 
+func TestDismissInputBusyReturns503(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{DismissInputFn: func(string) error { return server.ErrBusy }}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/dismiss-input", "")
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, "1", w.Header().Get("Retry-After"))
+	assert.Contains(t, w.Body.String(), "orchestrator_busy")
+}
+
+// TestProvideInputRejectedWhenInlineInput pins that the 409 inline_input
+// guard is evaluated BEFORE the busy/queued path — the CORE-005 fix must not
+// disturb this ordering (server_test.go:1788 in the CORE-005 evidence).
 func TestProvideInputRejectedWhenInlineInput(t *testing.T) {
 	snap := baseSnap()
 	snap.InlineInput = true
 	cfg := makeTestConfig(snap)
 	called := false
 	cfg.Client = &server.FuncClient{
-		ProvideInputFn: func(string, string) bool { called = true; return true },
+		ProvideInputFn: func(string, string) error { called = true; return nil },
 	}
 	srv := server.New(cfg)
 
@@ -1804,12 +2022,12 @@ func TestProvideInputRejectedWhenInlineInput(t *testing.T) {
 
 func TestProvideInputAllowedWhenInlineInputOff(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{ProvideInputFn: func(string, string) bool { return true }}
+	cfg.Client = &server.FuncClient{ProvideInputFn: func(string, string) error { return nil }}
 	srv := server.New(cfg)
 
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 }
 
 func TestHandleAgentComment_Success(t *testing.T) {
@@ -1950,9 +2168,9 @@ func TestHandleAgentProvideInput_ForbiddenWithoutPermission(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.ActionTokenStore = store
 	cfg.Client = &server.FuncClient{
-		ProvideInputFn: func(string, string) bool {
+		ProvideInputFn: func(string, string) error {
 			called = true
-			return true
+			return nil
 		},
 	}
 	srv := server.New(cfg)
@@ -1979,9 +2197,9 @@ func TestAgentActionProvideInputAllowedWhenInlineInput(t *testing.T) {
 	cfg := makeTestConfig(snap)
 	cfg.ActionTokenStore = store
 	cfg.Client = &server.FuncClient{
-		ProvideInputFn: func(string, string) bool {
+		ProvideInputFn: func(string, string) error {
 			called = true
-			return true
+			return nil
 		},
 	}
 	srv := server.New(cfg)
@@ -1992,7 +2210,7 @@ func TestAgentActionProvideInputAllowedWhenInlineInput(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 	assert.True(t, called, "agent-actions provide-input must reach the orchestrator even when inline_input is on")
 }
 
@@ -2484,7 +2702,7 @@ func TestValidate_AllPresent(t *testing.T) {
 // ─── handleIssueLogs with skipped entries ────────────────────────────────────
 
 func TestHandleIssueLogs_SkipsDebugAndLifecycleEntries(t *testing.T) {
-	srv := testServerWithIssueLogs(t, func(string) []string {
+	srv := testServerWithIssueLogs(t, func(context.Context, string) []string {
 		return []string{
 			`{"level":"DEBUG","msg":"internal detail"}`,
 			`{"level":"INFO","msg":"claude: session started"}`,
@@ -2507,7 +2725,12 @@ func TestHandleIssueLogs_SkipsDebugAndLifecycleEntries(t *testing.T) {
 // ─── POST /api/v1/issues/{id}/cancel alias ───────────────────────────────────
 
 func TestHandleCancelIssue_PostAlias(t *testing.T) {
-	srv := testServerWithCancel(t, func(id string) bool { return id == "ENG-1" })
+	srv := testServerWithCancel(t, func(id string) error {
+		if id == "ENG-1" {
+			return nil
+		}
+		return errNotRunningForTest
+	})
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/cancel", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "cancelled")
@@ -2793,4 +3016,42 @@ func TestHandleIssueComment_TooLong400(t *testing.T) {
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/comment", body)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// CORE-056: a pin the CORE-115 resolver would refuse (codex over a
+// "claude ..." command) is rejected up front with 409 and the resolver's
+// reason, and never stored; the dashboard shows that message.
+func TestHandleSetIssueBackend_RefusesMismatchedPin(t *testing.T) {
+	calls := 0
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetIssueBackendFn: func(string, string) { calls++ },
+		CheckIssueBackendPinFn: func(_, backend string) error {
+			if backend == "codex" {
+				return errors.New(`per-issue backend requested backend "codex" but the command runs "claude"; kept "claude"`)
+			}
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/PROJ-1/backend", `{"backend":"codex"}`)
+	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+	assert.Zero(t, calls, "a refused pin is never stored")
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Field   string `json:"field"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "backend_pin_refused", resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, `the command runs "claude"`)
+	assert.Equal(t, "backend", resp.Error.Field)
+
+	w = postJSON(t, srv, "/api/v1/issues/PROJ-1/backend", `{"backend":"claude"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+	w = postJSON(t, srv, "/api/v1/issues/PROJ-1/backend", `{"backend":""}`)
+	require.Equal(t, http.StatusOK, w.Code, "clearing is never refused")
+	assert.Equal(t, 2, calls)
 }

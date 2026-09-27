@@ -82,7 +82,7 @@ export function DependenciesCard({ mode, onSetMode }: DependenciesCardProps) {
           ))}
         </div>
         {error && (
-          <span role="alert" className="text-theme-danger mt-2 block text-xs">
+          <span role="alert" className="text-theme-danger-text mt-2 block text-xs">
             {error}
           </span>
         )}

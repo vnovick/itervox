@@ -1,14 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
+	"strings"
 
 	"github.com/vnovick/itervox/internal/agent"
-	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -163,18 +164,34 @@ func readAvailableModels(workflowPath string) (map[string][]agent.ModelOption, e
 // WORKFLOW.md from the discovered map. For each backend present in
 // `discovered`, the new list replaces the old; other backends keep their
 // previous entries. Atomic write.
+//
+// The read-modify-write holds the same per-path lock as every settings
+// patcher; a bare read + atomicfs.WriteFile could overwrite a concurrent
+// locked edit with stale bytes (M0-close G3, CORE-006). It is a self-write
+// (CORE-160): the dashboard refresh applies the merged list in memory through
+// Orchestrator.SetAvailableModelsCfg, so it needs no reload. The CLI
+// (`itervox models refresh`) runs in its own process, whose self-write
+// registry the daemon never sees, so a running daemon still reloads for it.
 func mergeAvailableModelsIntoWorkflow(workflowPath string, discovered map[string][]agent.ModelOption) (map[string][]agent.ModelOption, error) {
-	raw, err := os.ReadFile(workflowPath)
+	var merged map[string][]agent.ModelOption
+	err := workflow.ApplyAndWriteFrontMatter(workflowPath, func(frontLines []string) ([]string, error) {
+		var err error
+		merged, frontLines, err = mergeAvailableModelsFront(frontLines, discovered)
+		return frontLines, err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", workflowPath, err)
+		return nil, fmt.Errorf("models: update %s: %w", workflowPath, err)
 	}
-	front, after, ok := splitWorkflowFrontMatter(string(raw))
-	if !ok {
-		return nil, fmt.Errorf("workflow %s: front matter not found", workflowPath)
-	}
+	return merged, nil
+}
+
+// mergeAvailableModelsFront is the pure front-matter transform behind
+// mergeAvailableModelsIntoWorkflow: it re-encodes the front matter with the
+// merged agent.available_models map.
+func mergeAvailableModelsFront(frontLines []string, discovered map[string][]agent.ModelOption) (map[string][]agent.ModelOption, []string, error) {
 	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(front), &doc); err != nil {
-		return nil, fmt.Errorf("parse front matter: %w", err)
+	if err := yaml.Unmarshal([]byte(strings.Join(frontLines, "\n")), &doc); err != nil {
+		return nil, nil, fmt.Errorf("parse front matter: %w", err)
 	}
 	if doc == nil {
 		doc = map[string]any{}
@@ -203,9 +220,7 @@ func mergeAvailableModelsIntoWorkflow(workflowPath string, discovered map[string
 	}
 	// Refreshed backends overwrite their slot entirely; untouched backends
 	// keep their existing entries.
-	for backend, opts := range discovered {
-		merged[backend] = opts
-	}
+	maps.Copy(merged, discovered)
 
 	yamlMap := map[string][]map[string]string{}
 	for backend, opts := range merged {
@@ -224,17 +239,9 @@ func mergeAvailableModelsIntoWorkflow(workflowPath string, discovered map[string
 
 	encoded, err := yaml.Marshal(doc)
 	if err != nil {
-		return nil, fmt.Errorf("encode front matter: %w", err)
+		return nil, nil, fmt.Errorf("encode front matter: %w", err)
 	}
-	var out bytes.Buffer
-	out.WriteString("---\n")
-	out.Write(encoded)
-	out.WriteString("---\n")
-	out.WriteString(after)
-	if err := atomicfs.WriteFile(workflowPath, out.Bytes(), 0o644); err != nil {
-		return nil, fmt.Errorf("write %s: %w", workflowPath, err)
-	}
-	return merged, nil
+	return merged, strings.Split(strings.TrimSuffix(string(encoded), "\n"), "\n"), nil
 }
 
 // modelBackendsAccepted returns the set of backends `itervox models refresh`

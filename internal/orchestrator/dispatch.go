@@ -8,6 +8,11 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 )
 
+// IneligibleBackendLimited is the ineligible reason for an issue the
+// dispatch gate refused because its target backend (and every fallback) is
+// limited by the backend circuit breaker (CORE-053).
+const IneligibleBackendLimited = "backend_limited"
+
 // IneligibleReason returns a short string explaining why an issue cannot be
 // dispatched by the normal reconcile loop, or "" if it is eligible. Useful for
 // diagnostic logging.
@@ -96,6 +101,13 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 			return IneligibleInferredBlockedByPrefix + entry.Source
 		}
 	}
+	// CORE-053: the dispatch gate held this issue because its target
+	// backend (and every backend_fallback target) is limited. Checked last:
+	// it is the most transient reason, and it is recorded only after the
+	// resolver chose (backend, host), which this function cannot do.
+	if backendHoldActive(state, issue.Identifier) {
+		return IneligibleBackendLimited
+	}
 	return ""
 }
 
@@ -140,7 +152,13 @@ func SortForDispatch(issues []domain.Issue) []domain.Issue {
 // It reads state.MaxConcurrentAgents (snapshotted from cfg at the start of
 // each tick under cfgMu) rather than cfg directly, so the event loop can call
 // it lock-free throughout a tick.
+//
+// A draining loop (CORE-057) has no slots: every slot-gated admission path
+// (tick dispatch, retries, pending-input resumes, automations) holds its work.
 func AvailableSlots(state State) int {
+	if state.Draining {
+		return 0
+	}
 	n := state.MaxConcurrentAgents - len(state.Running)
 	if n < 0 {
 		return 0
@@ -157,13 +175,10 @@ func isActiveState(s string, state State) bool {
 	return false
 }
 
+// isTerminalState applies the shared domain.IsTerminalState contract
+// (CORE-111) to the loop's terminal-state list.
 func isTerminalState(s string, state State) bool {
-	for _, t := range state.TerminalStates {
-		if strings.EqualFold(s, t) {
-			return true
-		}
-	}
-	return false
+	return domain.IsTerminalState(s, state.TerminalStates)
 }
 
 func countRunningInState(state State, issueState string) int {

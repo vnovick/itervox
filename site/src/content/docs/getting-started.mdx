@@ -65,7 +65,7 @@ itervox
 
 Itervox starts polling your tracker, spawning agents for active issues, streaming logs to the terminal, and writing `.itervox/HEARTBEAT.md` with current daemon state. By default it loads `WORKFLOW.md` from the current directory; pass `-workflow <path>` only if it lives elsewhere.
 
-Open the dashboard at `http://localhost:8090` to see the Kanban board.
+Open the dashboard to see the Kanban board. If you omitted `server.port` from `WORKFLOW.md`, it defaults to `http://localhost:8090` — but `itervox init` scaffolds `server.port: 0` (OS-assigned), so don't assume 8090 blindly. Find the actual URL in `.itervox/dashboard_url` or the `dashboard URL:` line of `itervox doctor` — both give the **token-free** URL (no bearer token is stored there). The dashboard also needs the bearer token, which comes from one of: the TUI's `w` key (copies the tokenised URL to the clipboard), the tokenised URL printed once on the startup terminal's stderr (only when stderr is a terminal), `<logs-dir>/api-token` for an auto-generated token (mode 0600; `<logs-dir>` defaults to `~/.itervox/logs/<kind>/<slug>-<project>/`), or the value you pinned as `ITERVOX_API_TOKEN` in `.itervox/.env`. See [Remote access → The API token](/guides/remote-access/#the-api-token).
 
 ### 4. (Optional) Verbose mode
 

@@ -14,3 +14,12 @@ func SetDebounceInterval(d time.Duration) (prev time.Duration) {
 	debounceInterval = d
 	return prev
 }
+
+// SetPollInterval overrides the watcher's stat interval for tests and returns
+// the previous value. Callers must stop every Watch goroutine before
+// restoring it.
+func SetPollInterval(d time.Duration) (prev time.Duration) {
+	prev = pollInterval
+	pollInterval = d
+	return prev
+}

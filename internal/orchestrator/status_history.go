@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 type IssueStatusSource string
@@ -120,6 +121,7 @@ func (o *Orchestrator) RecordIssueStatusChange(change IssueStatusChange) bool {
 	case o.events <- OrchestratorEvent{Type: EventIssueStatusChanged, StatusChange: &change}:
 		return true
 	default:
+		metrics.EventDropped() // CORE-045
 		slog.Warn("orchestrator: status change event dropped", "identifier", change.Identifier)
 		return false
 	}

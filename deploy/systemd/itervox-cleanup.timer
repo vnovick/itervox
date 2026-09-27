@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily itervox workspace/log cleanup (CORE-107)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Run a missed sweep after the VM was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

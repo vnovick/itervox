@@ -177,7 +177,7 @@ export function AutomationsCard({
 
         {availableProfiles.length === 0 && (
           <div className="px-5 py-4">
-            <p className="text-theme-danger text-xs">
+            <p className="text-theme-danger-text text-xs">
               Create at least one agent profile before adding automations.
             </p>
           </div>
@@ -228,7 +228,9 @@ export function AutomationsCard({
       {status && (
         <p
           className={
-            status.kind === 'error' ? 'text-theme-danger text-sm' : 'text-theme-success text-sm'
+            status.kind === 'error'
+              ? 'text-theme-danger-text text-sm'
+              : 'text-theme-success-text text-sm'
           }
         >
           {status.message}

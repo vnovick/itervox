@@ -200,6 +200,50 @@ func TestDispatchReviewer_UsesConfiguredSSHHost(t *testing.T) {
 }
 
 func TestDispatchReviewer_UsesPerIssueBackendOverride(t *testing.T) {
+	// CORE-115: the pin is honoured for a wrapper command; a claude/codex
+	// binary keeps its own backend (see the ...RefusesMismatchedPin sibling).
+	cfg := baseConfig()
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "run-reviewer.sh", Prompt: "You are a code reviewer."},
+	}
+
+	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	runner := &commandTrackingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}, 1),
+	}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+	orch.SetIssueBackend("ENG-1", "codex")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.NoError(t, orch.DispatchReviewer("ENG-1"))
+
+	select {
+	case <-runner.done:
+	case <-ctx.Done():
+		t.Fatal("reviewer did not complete within 3s")
+	}
+
+	commands := runner.snapshot()
+	require.Len(t, commands, 1)
+	assert.Contains(t, commands[0], "@@itervox-backend=codex")
+}
+
+func TestDispatchReviewer_RefusesMismatchedPin(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Tracker.CompletionState = "In Review"
 	cfg.Agent.ReviewerProfile = "reviewer"
@@ -238,7 +282,8 @@ func TestDispatchReviewer_UsesPerIssueBackendOverride(t *testing.T) {
 
 	commands := runner.snapshot()
 	require.Len(t, commands, 1)
-	assert.Contains(t, commands[0], "@@itervox-backend=codex")
+	assert.NotContains(t, commands[0], "@@itervox-backend=codex",
+		"CORE-115: a codex pin must not route the claude reviewer command to the Codex runner")
 }
 
 // ─── Auto-review tests ──────────────────────────────────────────────────────

@@ -563,7 +563,7 @@ func TestHeaderLineCount_Minimal(t *testing.T) {
 		snap: newTestSnap(server.StateSnapshot{}),
 		cfg:  Config{},
 	}
-	assert.Equal(t, 3, m.headerLineCount(), "base header is 3 lines")
+	assert.Equal(t, 2, m.headerLineCount(), "base header is the top rule and the agents row (CORE-084)")
 }
 
 func TestHeaderLineCount_WithDashboardURL(t *testing.T) {
@@ -571,7 +571,7 @@ func TestHeaderLineCount_WithDashboardURL(t *testing.T) {
 		snap: newTestSnap(server.StateSnapshot{}),
 		cfg:  Config{DashboardURL: "http://localhost:8090"},
 	}
-	assert.Equal(t, 4, m.headerLineCount())
+	assert.Equal(t, 3, m.headerLineCount())
 }
 
 func TestHeaderLineCount_WithRateLimits(t *testing.T) {
@@ -581,7 +581,7 @@ func TestHeaderLineCount_WithRateLimits(t *testing.T) {
 		}),
 		cfg: Config{},
 	}
-	assert.Equal(t, 4, m.headerLineCount())
+	assert.Equal(t, 3, m.headerLineCount())
 }
 
 func TestHeaderLineCount_WithKillMsg(t *testing.T) {
@@ -590,7 +590,7 @@ func TestHeaderLineCount_WithKillMsg(t *testing.T) {
 		cfg:     Config{},
 		killMsg: "pausing PROJ-1",
 	}
-	assert.Equal(t, 4, m.headerLineCount())
+	assert.Equal(t, 3, m.headerLineCount())
 }
 
 func TestHeaderLineCount_WithDispatchMsg(t *testing.T) {
@@ -599,7 +599,7 @@ func TestHeaderLineCount_WithDispatchMsg(t *testing.T) {
 		cfg:         Config{},
 		dispatchMsg: "dispatched PROJ-2",
 	}
-	assert.Equal(t, 4, m.headerLineCount())
+	assert.Equal(t, 3, m.headerLineCount())
 }
 
 func TestHeaderLineCount_AllExtras(t *testing.T) {
@@ -610,8 +610,9 @@ func TestHeaderLineCount_AllExtras(t *testing.T) {
 		cfg:     Config{DashboardURL: "http://localhost:8090"},
 		killMsg: "pausing PROJ-1",
 	}
-	// 3 base + 1 rate limit + 1 dashboard URL + 1 kill msg = 6
-	assert.Equal(t, 6, m.headerLineCount())
+	// 2 base + 1 tracker budget + 1 dashboard URL + 1 kill msg = 5 (CORE-084:
+	// the old 3-line base and the never-drawn rate-limit line are gone).
+	assert.Equal(t, 5, m.headerLineCount())
 }
 
 func TestHeaderLineCount_WithInputRows(t *testing.T) {
@@ -623,17 +624,7 @@ func TestHeaderLineCount_WithInputRows(t *testing.T) {
 		}),
 		cfg: Config{},
 	}
-	assert.Equal(t, 4, m.headerLineCount())
-}
-
-func TestInputStateCounts(t *testing.T) {
-	waiting, pending := inputStateCounts([]server.InputRequiredRow{
-		{Identifier: "PROJ-1", State: "input_required"},
-		{Identifier: "PROJ-2", State: "pending_input_resume"},
-		{Identifier: "PROJ-3", State: "input_required"},
-	})
-	assert.Equal(t, 2, waiting)
-	assert.Equal(t, 1, pending)
+	assert.Equal(t, 3, m.headerLineCount())
 }
 
 // ---------------------------------------------------------------------------
@@ -967,23 +958,11 @@ func TestUpdate_ResumeKey_Failure(t *testing.T) {
 // Key: D (terminate)
 // ---------------------------------------------------------------------------
 
-func TestUpdate_TerminateRunning(t *testing.T) {
-	terminated := ""
-	snap := newTestSnap(server.StateSnapshot{
-		Running: []server.RunningRow{{Identifier: "R-1"}},
-	})
-	m := readyModel(snap)
-	m.cfg.TerminateIssue = func(id string) bool {
-		terminated = id
-		return true
-	}
-
-	// 'D' key
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
-	m = newM.(Model)
-	assert.Equal(t, "R-1", terminated)
-	assert.Contains(t, m.killMsg, "Cancelled R-1")
-}
+// TestUpdate_TerminateRunning used to pin that D on a running row terminated
+// it unconfirmed. CORE-020 deliberately removed that
+// behaviour: D is restricted to paused rows and stopping a running row is the
+// confirmed S key. See TestDiscardKeyIgnoresRunningRow and
+// TestStopKeyConfirmAcceptTerminatesRunning in confirm_keys_test.go.
 
 func TestUpdate_TerminatePaused(t *testing.T) {
 	terminated := ""
@@ -998,8 +977,10 @@ func TestUpdate_TerminatePaused(t *testing.T) {
 	m.inPausedSection = true
 	m.pausedCursor = 0
 
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
-	m = newM.(Model)
+	// CORE-020: D now asks for confirmation first; y accepts.
+	m = updateKey(m, "D")
+	assert.Equal(t, "", terminated, "D alone must not discard")
+	m = updateKey(m, "y")
 	assert.Equal(t, "P-1", terminated)
 	assert.Contains(t, m.killMsg, "Discarded P-1")
 }

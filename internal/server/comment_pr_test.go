@@ -157,6 +157,7 @@ func commentPRTestServer(t *testing.T, pausedWithPR map[string]string, issueComm
 		},
 		RefreshChan:      make(chan struct{}, 1),
 		ActionTokenStore: store,
+		AllowedHosts:     testAllowedHosts,
 		Client: &FuncClient{
 			CommentOnIssueFn: func(_ context.Context, identifier, body string) error {
 				if issueCommented != nil {

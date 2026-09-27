@@ -3,7 +3,7 @@ run tick
 TEA WINDOW SIZE: {160 30}
 -- view:
 ╔═[ ITER//VOX ]════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗␤
-║ AGENTS ▸ 0/5   TOKENS ▸ ↑0 ↓0 ∑0   RETRY ▸ 0␤
+║ AGENTS ▸ 1/5 Active   TOKENS ▸ ↑0 ↓0 ∑0   RETRYING ▸ 0␤
 ●─[ ISSUES · history ]  h:toggle              ║◆─[ LOGS: PROJ-1 ]  s:details                                                                                    ␤
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║  [◉ RUNNING]                                                                                                    ␤
   x pause  r resume  D discard                ║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
@@ -22,17 +22,18 @@ TEA WINDOW SIZE: {160 30}
                                               ║                                                                                                                 ␤
                                               ║                                                                                                                 ␤
                                               ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
 ◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
 ► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
                 0s                                                                 1281023h53m38s                                                     2562047h47m1␤
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o copy PR URL • w copy web URL • a assign profile • s split details • q quit␤
+↑ prev • ↓ next • tab focus panel • enter drill down • x pause • q quit • ? more␤
 
 run key:s
 ----
 -- view:
 ╔═[ ITER//VOX ]════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗␤
-║ AGENTS ▸ 0/5   TOKENS ▸ ↑0 ↓0 ∑0   RETRY ▸ 0␤
+║ AGENTS ▸ 1/5 Active   TOKENS ▸ ↑0 ↓0 ∑0   RETRYING ▸ 0␤
 ●─[ ISSUES · history ]  h:toggle              ║◆─[ LOGS: PROJ-1 ]  s:details                                                                                    ␤
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║  [◉ RUNNING]                                                                                                    ␤
   x pause  r resume  D discard                ║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
@@ -51,17 +52,18 @@ run key:s
                                               ║                                                                                                                 ␤
                                               ║                                                                                                                 ␤
                                               ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
 ◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
 ► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
                 0s                                                                 1281023h53m38s                                                     2562047h47m1␤
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o copy PR URL • w copy web URL • a assign profile • s split details • q quit␤
+↑ prev • ↓ next • tab focus panel • enter drill down • x pause • q quit • ? more␤
 
 run key:s
 ----
 -- view:
 ╔═[ ITER//VOX ]════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗␤
-║ AGENTS ▸ 0/5   TOKENS ▸ ↑0 ↓0 ∑0   RETRY ▸ 0␤
+║ AGENTS ▸ 1/5 Active   TOKENS ▸ ↑0 ↓0 ∑0   RETRYING ▸ 0␤
 ●─[ ISSUES · history ]  h:toggle              ║◆─[ LOGS: PROJ-1 ]  s:details                                                                                    ␤
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║  [◉ RUNNING]                                                                                                    ␤
   x pause  r resume  D discard                ║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
@@ -80,8 +82,9 @@ run key:s
                                               ║                                                                                                                 ␤
                                               ║                                                                                                                 ␤
                                               ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
 ◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
 ► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
                 0s                                                                 1281023h53m38s                                                     2562047h47m1␤
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o copy PR URL • w copy web URL • a assign profile • s split details • q quit␤
+↑ prev • ↓ next • tab focus panel • enter drill down • x pause • q quit • ? more␤

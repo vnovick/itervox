@@ -127,8 +127,12 @@ func persistReviewerConfig(path, profile string, autoReview bool) error {
 	return workflow.PatchReviewerConfig(path, profile, autoReview)
 }
 
+// persistTrackerStates is a self-write (CORE-116/CORE-160): the caller
+// applies the lists in memory through SetTrackerStatesCfg AND the tracker
+// client's tracker.StateListSetter, so the save needs no reload and never
+// stops an in-flight turn.
 func persistTrackerStates(path string, active, terminal []string, completion string) error {
-	return workflow.PatchTrackerStates(path, active, terminal, completion)
+	return workflow.ApplyAndWriteFrontMatter(path, workflow.MutateTrackerStates(active, terminal, completion))
 }
 
 func persistMaxRetries(path string, n int) error {

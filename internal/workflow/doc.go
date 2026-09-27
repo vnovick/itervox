@@ -34,29 +34,6 @@ func NewDoc(path string) *Doc {
 	return &Doc{path: path}
 }
 
-// SetMaxConcurrentAgents queues an update to the `max_concurrent_agents`
-// integer field in the front matter. Equivalent to PatchIntField but
-// composable with other Set* calls in the same Save.
-func (d *Doc) SetMaxConcurrentAgents(n int) *Doc {
-	d.queue = append(d.queue, MutateIntField("max_concurrent_agents", n))
-	return d
-}
-
-// SetAgentString queues an update to a top-level string field under the
-// agent: block (e.g. `dispatch_strategy`).
-func (d *Doc) SetAgentString(key, value string) *Doc {
-	d.queue = append(d.queue, MutateAgentStringField(key, value))
-	return d
-}
-
-// SetAgentBool queues an update to a top-level boolean field under the
-// agent: block. enabled=false removes the key entirely (matching the
-// existing PatchAgentBoolField semantics).
-func (d *Doc) SetAgentBool(key string, enabled bool) *Doc {
-	d.queue = append(d.queue, MutateAgentBoolField(key, enabled))
-	return d
-}
-
 // SetAgentStringSlice queues an update to a string-slice field under the
 // agent: block (e.g. `ssh_hosts`). Empty slice removes the key.
 //

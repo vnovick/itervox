@@ -1,0 +1,137 @@
+# CORE-113: Prometheus alerting rules for itervox.
+#
+# Two sources, both real:
+#   itervox_*            the daemon's own GET /metrics (server.metrics.enabled:
+#                        true; families in internal/metrics/exposition.go and
+#                        docs/api.md "Metrics"). Scrape with the bearer token:
+#                          authorization: {credentials_file: /etc/prometheus/itervox-token}
+#   itervox_heartbeat_*  heartbeat-metrics.sh --cloud prometheus, via the
+#                        node_exporter textfile collector (HEARTBEAT.md content
+#                        the daemon does not export on /metrics: degraded
+#                        startup, dependency cycles, backend breakers).
+#
+# Deliberately absent: any alert on HEARTBEAT.md mtime / heartbeat_age_seconds.
+# The writer only rewrites when state is dirty AND 15 s have passed, so a
+# healthy idle daemon stops touching the file. Event-loop liveness is
+# itervox_event_loop_last_idle_timestamp_seconds (and /api/v1/ready loop_fresh).
+#
+# Check:  promtool check rules deploy/monitoring/prometheus-rules.yml
+# Test:   promtool test rules deploy/monitoring/prometheus-rules.test.yml
+# (make deploy-promtool runs both in the prom/prometheus image.)
+groups:
+  - name: itervox-daemon
+    rules:
+      - alert: ItervoxScrapeDown
+        expr: up{job="itervox"} == 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "itervox /metrics unreachable on {{ $labels.instance }}"
+          description: "The daemon is down, or the scrape token is wrong (a 401 also sets up=0). Check `systemctl status itervox`."
+
+      - alert: ItervoxEventLoopStalled
+        # The loop stamps this after every iteration; /api/v1/ready calls the
+        # loop stale after 3x the poll interval or one tick past 10 min.
+        expr: itervox_event_loop_last_idle_timestamp_seconds > 0 and (time() - itervox_event_loop_last_idle_timestamp_seconds) > 600
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "itervox event loop has not finished an iteration for 10+ min on {{ $labels.instance }}"
+          description: "No dispatch, retries or reconciliation are happening. The optional itervox-watchdog timer restarts the unit after 3 failed /ready probes."
+
+      - alert: ItervoxTrackerPollFailing
+        expr: itervox_tracker_poll_consecutive_failures >= 3
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $value }} consecutive tracker poll failures on {{ $labels.instance }}"
+          description: "Rate-limited polls do not count. /api/v1/ready is 503 until a poll succeeds; a restart will not help."
+
+      - alert: ItervoxTrackerRateLimitedLong
+        expr: (itervox_tracker_rate_limited_until_seconds - time()) > 900
+        for: 5m
+        labels: {severity: warn}
+        annotations:
+          summary: "tracker {{ $labels.adapter }} rate-limited for another {{ $value | humanizeDuration }}"
+
+      - alert: ItervoxGoroutinePanic
+        expr: increase(itervox_goroutine_panics_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "itervox recovered a goroutine panic on {{ $labels.instance }}"
+          description: "The panic site is in the daemon log at level=ERROR."
+
+      - alert: ItervoxEventsDropped
+        expr: increase(itervox_events_dropped_total[15m]) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "orchestrator events dropped on {{ $labels.instance }}"
+
+      - alert: ItervoxPersistWriteErrors
+        expr: increase(itervox_persist_write_errors_total[15m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "runtime ledger writes failing on {{ $labels.instance }} (disk full or read-only?)"
+          description: "paused/input-required/queue state may not survive a restart."
+
+      - alert: ItervoxOutboxBacklog
+        # Degraded entries crossed the dashboard's error-badge threshold; a
+        # pending backlog that does not drain for 30 min is stuck too.
+        expr: itervox_outbox_entries{state="degraded"} > 0 or itervox_outbox_entries{state="pending"} > 20
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "tracker outbox not draining on {{ $labels.instance }} ({{ $labels.state }}={{ $value }})"
+          description: "Tracker comments/state moves are queued. Check the dashboard Outbox panel; discard stuck entries."
+
+      - alert: ItervoxInputRequired
+        expr: itervox_input_required > 0
+        for: 30m
+        labels: {severity: info}
+        annotations:
+          summary: "{{ $value }} issue(s) waiting on a human reply for 30+ min on {{ $labels.instance }}"
+
+      - alert: ItervoxSaturated
+        expr: itervox_dispatch_eligible_waiting > 0 and itervox_workers_running >= itervox_workers_max
+        for: 1h
+        labels: {severity: info}
+        annotations:
+          summary: "all agent slots busy with eligible work waiting for 1h on {{ $labels.instance }}"
+          description: "Raise agent.max_concurrent_agents or accept the queue."
+
+      - alert: ItervoxWorkerFailureRate
+        expr: sum by (instance) (increase(itervox_worker_exits_total{reason=~"failed|stalled"}[1h])) >= 5
+        labels: {severity: warn}
+        annotations:
+          summary: "{{ $value }} failed/stalled agent runs in the last hour on {{ $labels.instance }}"
+
+      - alert: ItervoxDashboardClientErrors
+        expr: increase(itervox_client_errors_total{outcome="accepted"}[15m]) > 0
+        labels: {severity: info}
+        annotations:
+          summary: "dashboard reported {{ $labels.kind }} errors on {{ $labels.instance }}"
+          description: "kind=\"schema\" means dashboard/daemon version drift."
+
+  - name: itervox-heartbeat
+    rules:
+      - alert: ItervoxDaemonDegraded
+        expr: itervox_heartbeat_degraded == 1
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "itervox on {{ $labels.instance }} came up with a startup error"
+          description: "HEARTBEAT.md says 'Daemon: degraded'; read its 'Last startup error' line and .itervox/STARTUP_ERROR.md."
+
+      - alert: ItervoxDependencyCycle
+        expr: itervox_heartbeat_deps_cycles > 0
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "{{ $value }} dependency cycle(s) are holding issues on {{ $labels.instance }}"
+
+      - alert: ItervoxBackendLimited
+        expr: itervox_heartbeat_backends_limited > 0
+        for: 2h
+        labels: {severity: info}
+        annotations:
+          summary: "an agent backend has been usage-limited for 2h+ on {{ $labels.instance }}"

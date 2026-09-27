@@ -3,6 +3,11 @@ Description=Itervox autonomous agent daemon
 Documentation=https://itervox.dev
 After=network-online.target
 Wants=network-online.target
+# CORE-062: the service user's HOME (every ~/.itervox state root, ~/.claude,
+# ~/.codex) and the checkout live under @ROOT@, which bootstrap.sh mounts from
+# the persistent data disk when --data-disk is given. Never start on an
+# unmounted, empty directory.
+RequiresMountsFor=@ROOT@
 
 [Service]
 Type=simple
@@ -15,22 +20,40 @@ Group=@USER@
 # agent subprocess it spawns).
 WorkingDirectory=@WORKDIR@
 
-ExecStart=/usr/local/bin/itervox --workflow WORKFLOW.md
+# CORE-061: secret-manager fetch. /etc/itervox/secrets.env (optional, root-owned)
+# selects the provider (ITERVOX_SECRETS_PROVIDER, ITERVOX_SECRETS_MAP, ...);
+# fetch-secrets.sh writes /run/itervox/env (0600, tmpfs, removed on stop) in
+# ExecStartPre, and systemd reads it when it spawns ExecStart. With no provider
+# the script is a no-op and the optional "-" forms tolerate the missing files.
+RuntimeDirectory=itervox
+RuntimeDirectoryMode=0700
+EnvironmentFile=-/etc/itervox/secrets.env
+EnvironmentFile=-/run/itervox/env
+ExecStartPre=/usr/local/bin/fetch-secrets.sh
+
+# CORE-057 drain: SIGTERM stops admission and waits up to --shutdown-grace for
+# in-flight agent turns, then cancels them and allows up to 30 s more for the
+# generation to stop. TimeoutStopSec MUST be >= shutdown-grace + 35 s, or
+# systemd SIGKILLs a daemon that is still draining. Change both together.
+ExecStart=/usr/local/bin/itervox --workflow WORKFLOW.md --shutdown-grace 240s
+KillSignal=SIGTERM
+# mixed: SIGTERM goes to the daemon ONLY — it drains and then stops its own
+# agent process groups. The default (control-group) would SIGTERM every agent
+# subprocess at the same instant and abort the turns the drain exists to let
+# finish. On timeout, SIGKILL still reaches the whole cgroup.
+KillMode=mixed
+TimeoutStopSec=300
 
 # No controlling terminal. The Bubbletea TUI's TTY-ownership guard detects this,
 # logs "statusui: refusing to start TUI", and the daemon continues headless.
 StandardInput=null
 StandardOutput=journal
 StandardError=journal
+# For JSON lines on stderr/journald (CORE-059, redacted) add
+# `--log-format json` to ExecStart; it also switches the rotating log file.
 
 Restart=always
 RestartSec=5s
-
-# SIGTERM begins a graceful drain: in-flight agents are allowed to finish.
-# Agent turns routinely run for minutes, so give the drain real headroom
-# before systemd escalates to SIGKILL.
-KillSignal=SIGTERM
-TimeoutStopSec=300
 
 # Modest hardening only. Agents run arbitrary project build and test commands
 # inside git worktrees, so aggressive sandboxing (ProtectSystem=strict,

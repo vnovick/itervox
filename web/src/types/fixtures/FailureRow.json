@@ -1,0 +1,9 @@
+{
+  "kind": "outbox",
+  "identifier": "ENG-1",
+  "source": "comment",
+  "message": "outbox comment delivery failed, will retry: linear: 502",
+  "occurredAt": "2026-05-25T12:00:00Z",
+  "recordedAt": "2026-05-25T12:00:10Z",
+  "count": 3
+}

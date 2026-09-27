@@ -144,7 +144,7 @@ export function TimelineDetailPanel({
                   </button>
                 )}
                 {selectedSession?.status === 'live' ? (
-                  <span className="bg-theme-success-soft text-theme-success rounded px-1.5 py-0.5 text-[9px] font-medium">
+                  <span className="bg-theme-success-soft text-theme-success-text rounded px-1.5 py-0.5 text-[9px] font-medium">
                     live
                   </span>
                 ) : (
@@ -153,8 +153,8 @@ export function TimelineDetailPanel({
                       className="rounded px-1.5 py-0.5 text-[9px] font-medium"
                       style={
                         selectedSession.status === 'succeeded'
-                          ? { background: 'var(--success-soft)', color: 'var(--success)' }
-                          : { background: 'var(--danger-soft)', color: 'var(--danger)' }
+                          ? { background: 'var(--success-soft)', color: 'var(--success-text)' }
+                          : { background: 'var(--danger-soft)', color: 'var(--danger-text)' }
                       }
                     >
                       {selectedSession.status}

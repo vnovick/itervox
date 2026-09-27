@@ -63,14 +63,10 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 // A named keepalive event is sent after 25 s of stream inactivity to prevent proxy timeouts.
 // GET /api/v1/events
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	setSSEHeaders(w)
 
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := sseFlusher(w)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 
@@ -95,6 +91,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.streamsDone: // generation shut down (CORE-025); the client reconnects
 			return
 		case <-sub:
 			if err := s.writeSSEEvent(w, flusher); err != nil {
@@ -131,13 +129,44 @@ func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) erro
 	return nil
 }
 
+// writeBusyOr404 maps an issue-control error to its HTTP response: ErrBusy
+// becomes 503 with a Retry-After hint (the orchestrator's event channel was
+// full — nothing was enqueued, so a single client retry is safe), and any
+// other non-nil error becomes 404 with the caller-supplied code/message
+// (the method's own synchronous lookup established the issue is not in the
+// required state). Callers pass err == nil themselves; this is only invoked
+// on the error path (CORE-005).
+// issueError prefixes an issue-control failure with the issue it concerns
+// (BH-M5-5). The dashboard toast store dedupes by message, so a message that
+// does not name the issue merges failures for different issues into one toast.
+// The chain is kept for errors.Is, and an error that already names the issue
+// is returned unchanged so the identifier never appears twice.
+func issueError(identifier string, err error) error {
+	if err == nil || identifier == "" || strings.Contains(err.Error(), identifier) {
+		return err
+	}
+	return fmt.Errorf("issue %s: %w", identifier, err)
+}
+
+func writeBusyOr404(w http.ResponseWriter, err error, notFoundCode, notFoundMsg string) {
+	if writeDrainingConflict(w, err) {
+		return
+	}
+	if errors.Is(err, ErrBusy) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "orchestrator_busy", "orchestrator event queue is full; retry")
+		return
+	}
+	writeError(w, http.StatusNotFound, notFoundCode, notFoundMsg)
+}
+
 // handleReanalyzeIssue moves a paused issue to the forced re-analysis queue,
 // bypassing the open-PR guard on next dispatch.
 // POST /api/v1/issues/{identifier}/reanalyze
 func (s *Server) handleReanalyzeIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if !s.client.ReanalyzeIssue(identifier) {
-		writeError(w, http.StatusNotFound, "not_paused", "issue "+identifier+" is not paused")
+	if err := s.client.ReanalyzeIssue(identifier); err != nil {
+		writeBusyOr404(w, err, "not_paused", "issue "+identifier+" is not paused")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"queued": true, "identifier": identifier})
@@ -146,31 +175,31 @@ func (s *Server) handleReanalyzeIssue(w http.ResponseWriter, r *http.Request) {
 // handleResumeIssue removes a paused issue from the pause set so it can be dispatched again.
 func (s *Server) handleResumeIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.client.ResumeIssue(identifier) {
-		writeJSON(w, http.StatusOK, map[string]any{"resumed": true, "identifier": identifier})
-	} else {
-		writeError(w, http.StatusNotFound, "not_paused", "issue "+identifier+" is not paused")
+	if err := s.client.ResumeIssue(identifier); err != nil {
+		writeBusyOr404(w, err, "not_paused", "issue "+identifier+" is not paused")
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"resumed": true, "identifier": identifier})
 }
 
 // handleCancelIssue cancels the running worker for the given issue identifier.
 func (s *Server) handleCancelIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.client.CancelIssue(identifier) {
-		writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "identifier": identifier})
-	} else {
-		writeError(w, http.StatusNotFound, "not_running", "issue "+identifier+" is not running")
+	if err := s.client.CancelIssue(identifier); err != nil {
+		writeBusyOr404(w, err, "not_running", "issue "+identifier+" is not running")
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "identifier": identifier})
 }
 
 // handleTerminateIssue hard-stops a running or paused issue without adding it to PausedIdentifiers.
 func (s *Server) handleTerminateIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.client.TerminateIssue(identifier) {
-		writeJSON(w, http.StatusOK, map[string]any{"terminated": true, "identifier": identifier})
-	} else {
-		writeError(w, http.StatusNotFound, "not_found", "issue "+identifier+" is not running or paused")
+	if err := s.client.TerminateIssue(identifier); err != nil {
+		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not running or paused")
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"terminated": true, "identifier": identifier})
 }
 
 // handleIssueDetail returns a single issue by identifier, enriched with orchestrator state.
@@ -181,7 +210,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	if s.fetchIssue != nil {
 		issue, err := s.fetchIssue(r.Context(), identifier)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+			writeClientError(w, "fetch_failed", err)
 			return
 		}
 		if issue == nil {
@@ -195,7 +224,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	// Slow path: scan all issues.
 	issues, err := s.client.FetchIssues(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		writeClientError(w, "fetch_failed", err)
 		return
 	}
 	for _, issue := range issues {
@@ -211,7 +240,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	issues, err := s.client.FetchIssues(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		writeClientError(w, "fetch_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, issues)
@@ -225,15 +254,10 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "log file not configured", http.StatusNotFound)
 		return
 	}
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := beginSSE(w)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
 
 	f, err := os.Open(s.logFile)
 	if err != nil {
@@ -350,6 +374,8 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.streamsDone: // generation shut down (CORE-025)
+			return
 		case <-ticker.C:
 			if !flush() {
 				return
@@ -362,7 +388,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 // from the in-memory log buffer (only available for currently-running sessions).
 func (s *Server) handleIssueLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	lines := s.client.FetchLogs(identifier)
+	lines := s.client.FetchLogs(r.Context(), identifier)
 	entries := make([]IssueLogEntry, 0, len(lines))
 	for _, line := range lines {
 		entry, skip := parseLogLine(line)
@@ -374,186 +400,12 @@ func (s *Server) handleIssueLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entries)
 }
 
-// handleIssueLogStream streams parsed log entries for one issue as SSE.
-// It tracks a cursor into the in-memory buffer and emits only new entries on
-// each tick, so clients receive push notifications instead of polling.
-// If the buffer is reset (cleared/issue removed) the cursor resets and all
-// current entries are re-sent.
-// GET /api/v1/issues/{identifier}/log-stream
-func (s *Server) handleIssueLogStream(w http.ResponseWriter, r *http.Request) {
-	identifier := chi.URLParam(r, "identifier")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	// cursor tracks how many lines from the buffer have already been sent.
-	// On reconnect we honor the Last-Event-ID header (T-18) so the client
-	// resumes after the last event it acknowledged. Browsers (and the
-	// @microsoft/fetch-event-source library used by web/) automatically
-	// echo this header on reconnect when the server emits "id:" lines.
-	sent := parseLastEventID(r.Header.Get("Last-Event-ID"))
-
-	sendNew := func() bool {
-		lines := s.client.FetchLogs(identifier)
-		// Guard against buffer reset (cleared while streaming) or a stale
-		// Last-Event-ID pointing past the current buffer length.
-		if sent > len(lines) {
-			sent = 0
-		}
-		for _, line := range lines[sent:] {
-			sent++
-			entry, skip := parseLogLine(line)
-			if skip {
-				continue
-			}
-			b, err := json.Marshal(entry)
-			if err != nil {
-				continue
-			}
-			// id: <cursor> lets the client resume from this point on
-			// reconnect via the Last-Event-ID header.
-			if err := writeSSEFrame(w, "id: %d\nevent: log\ndata: %s\n\n", sent, b); err != nil {
-				return false
-			}
-		}
-		flushSSE(w, flusher)
-		return true
-	}
-
-	if !sendNew() {
-		return
-	}
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			if !sendNew() {
-				return
-			}
-		}
-	}
-}
-
-// handleSubLogStream streams parsed session/subagent log entries for one issue
-// as SSE. The source data still comes from per-issue JSONL files, but the
-// browser receives push updates instead of polling every few seconds.
-// GET /api/v1/issues/{identifier}/sublog-stream
-func (s *Server) handleSubLogStream(w http.ResponseWriter, r *http.Request) {
-	identifier := chi.URLParam(r, "identifier")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	initialEntries, err := s.client.FetchSubLogs(r.Context(), identifier)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	// Honor Last-Event-ID for resume-after-reconnect (T-18).
-	sent := parseLastEventID(r.Header.Get("Last-Event-ID"))
-	sendNew := func(entries []domain.IssueLogEntry) bool {
-		if sent > len(entries) {
-			sent = 0
-		}
-		for _, entry := range entries[sent:] {
-			sent++
-			b, err := json.Marshal(entry)
-			if err != nil {
-				continue
-			}
-			if err := writeSSEFrame(w, "id: %d\nevent: sublog\ndata: %s\n\n", sent, b); err != nil {
-				return false
-			}
-		}
-		flushSSE(w, flusher)
-		return true
-	}
-
-	if !sendNew(initialEntries) {
-		return
-	}
-
-	// G-01 (gaps_280426_2): 5-second cadence (was 1 second). FetchSubLogs
-	// re-reads + re-parses every `.jsonl` line in the per-issue session
-	// directory on every tick, scaling with `(open viewers × session size)`.
-	// 5s is a stop-gap that 5x-reduces the disk/CPU cost while keeping
-	// dashboard latency tolerable (most sublog activity is multi-second
-	// agent reasoning, not sub-second). A proper fix tracks per-stream file
-	// offsets and only reads appended bytes; deferred to a future T-NN.
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			entries, err := s.client.FetchSubLogs(r.Context(), identifier)
-			if err != nil {
-				// T-45 (03.G-06): emit a structured SSE `error` frame before
-				// returning so the dashboard can distinguish a tracker fetch
-				// failure from a clean disconnect (user closed tab). Without
-				// this, the per-issue sublog modal silently disappears with
-				// no signal of what went wrong.
-				writeSubLogErrorEvent(w, err)
-				return
-			}
-			if !sendNew(entries) {
-				return
-			}
-		}
-	}
-}
-
-// writeSubLogErrorEvent emits an SSE `event: error` frame carrying a JSON
-// payload `{code, message}` so the dashboard can render a toast or banner
-// instead of treating the disconnect as benign. T-45 (03.G-06).
-func writeSubLogErrorEvent(w http.ResponseWriter, err error) {
-	const code = "fetch_failed"
-	// JSON-encode inline to keep this self-contained — the payload is small
-	// enough that pulling in encoding/json's error path is overkill.
-	msg := err.Error()
-	// Replace characters that would break the SSE single-line data: framing.
-	msg = strings.ReplaceAll(msg, "\n", " ")
-	msg = strings.ReplaceAll(msg, "\r", " ")
-	// Produce a compact JSON envelope; quoting via fmt.Sprintf is safe here
-	// because both code and the cleaned message are plain ASCII strings —
-	// %q escapes embedded quotes for us.
-	payload := fmt.Sprintf(`{"code":%q,"message":%q}`, code, msg)
-	if werr := writeSSEFrame(w, "event: error\ndata: %s\n\n", payload); werr == nil {
-		if flusher, ok := w.(http.Flusher); ok {
-			flushSSE(w, flusher)
-		}
-	}
-}
-
 // handleClearIssueLogs deletes the in-memory and on-disk log buffer for an issue.
 // DELETE /api/v1/issues/{identifier}/logs
 func (s *Server) handleClearIssueLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	if err := s.client.ClearLogs(identifier); err != nil {
-		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		writeClientError(w, "clear_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -564,7 +416,7 @@ func (s *Server) handleClearIssueLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClearIssueSubLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	if err := s.client.ClearIssueSubLogs(identifier); err != nil {
-		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		writeClientError(w, "clear_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -586,7 +438,7 @@ func (s *Server) handleLogIdentifiers(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/v1/logs
 func (s *Server) handleClearAllLogs(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.ClearAllLogs(); err != nil {
-		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		writeClientError(w, "clear_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -598,7 +450,7 @@ func (s *Server) handleClearSessionSublog(w http.ResponseWriter, r *http.Request
 	identifier := chi.URLParam(r, "identifier")
 	sessionID := chi.URLParam(r, "sessionId")
 	if err := s.client.ClearSessionSublog(identifier, sessionID); err != nil {
-		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		writeClientError(w, "clear_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -613,7 +465,7 @@ func (s *Server) handleSubLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	entries, err := s.client.FetchSubLogs(r.Context(), identifier)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		writeClientError(w, "fetch_failed", err)
 		return
 	}
 	if entries == nil {
@@ -627,7 +479,10 @@ func (s *Server) handleSubLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAIReview(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	if err := s.client.DispatchReviewer(identifier); err != nil {
-		writeError(w, http.StatusInternalServerError, "dispatch_failed", err.Error())
+		if writeDrainingConflict(w, err) {
+			return
+		}
+		writeClientError(w, "dispatch_failed", issueError(identifier, err))
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -645,7 +500,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, err := s.projectManager.FetchProjects(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		writeClientError(w, "fetch_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
@@ -675,10 +530,15 @@ func (s *Server) handleSetProjectFilter(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_body", "expected JSON with optional 'slugs' array")
 		return
 	}
-	if body.Slugs == nil {
-		s.projectManager.SetProjectFilter(nil) // reset to WORKFLOW.md default
-	} else {
-		s.projectManager.SetProjectFilter(*body.Slugs)
+	var slugs []string // nil = reset to WORKFLOW.md default
+	if body.Slugs != nil {
+		slugs = *body.Slugs
+	}
+	// M4-close D4/D5: a fence refusal is a retryable 503 settings_reloading,
+	// a failed persist a 500 — never a 200 for a save that did not happen.
+	if err := s.projectManager.SetProjectFilter(slugs); err != nil {
+		writeClientError(w, "project_filter_not_saved", err)
+		return
 	}
 	filter := s.projectManager.GetProjectFilter()
 	writeJSON(w, http.StatusOK, map[string]any{"filter": filter, "ok": true})
@@ -696,7 +556,7 @@ func (s *Server) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := WithIssueStatusSource(r.Context(), IssueStatusSourceDashboard)
 	if err := s.client.UpdateIssueState(ctx, identifier, body.State); err != nil {
-		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
+		writeClientError(w, "update_failed", issueError(identifier, err))
 		return
 	}
 	// Trigger an immediate re-poll so the orchestrator picks up the new state
@@ -736,6 +596,23 @@ func (s *Server) handleSetIssueBackend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
+	// CORE-040: a closed enum, compared exactly. "" clears the override. The
+	// value becomes a backend hint that dispatch splits at the first
+	// whitespace, so anything else ("claude printf …", " codex") could smuggle
+	// a command into the runner's shell. Deliberately no TrimSpace.
+	if body.Backend != "" && !config.IsSupportedBackend(body.Backend) {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("backend must be \"claude\", \"codex\", or \"\" to clear, got %q", body.Backend), "backend")
+		return
+	}
+	// CORE-056: a pin the CORE-115 resolver would refuse is rejected here,
+	// with the resolver's reason, rather than stored as an inert pin.
+	if checker, ok := s.client.(IssueBackendPinChecker); ok && body.Backend != "" {
+		if err := checker.CheckIssueBackendPin(identifier, body.Backend); err != nil {
+			writeErrorWithField(w, http.StatusConflict, "backend_pin_refused", issueError(identifier, err).Error(), "backend")
+			return
+		}
+	}
 	s.client.SetIssueBackend(identifier, body.Backend)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier, "backend": body.Backend})
 }
@@ -763,11 +640,15 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
 		return
 	}
-	if ok := s.client.ProvideInput(identifier, body.Message); !ok {
-		writeError(w, http.StatusNotFound, "not_found", "issue not in input-required state")
+	// ProvideInput performs no lookup of its own (CORE-005): the only error
+	// it can return is ErrBusy (event channel full). There is no "not found"
+	// branch here any more — whether the issue is actually waiting for input
+	// is the event loop's decision, so success means "queued", not "applied".
+	if err := s.client.ProvideInput(identifier, body.Message); err != nil {
+		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "identifier": identifier})
 }
 
 // maxOperatorCommentBytes bounds a dashboard comment. 10 KiB is far above
@@ -800,10 +681,10 @@ func (s *Server) handleIssueComment(w http.ResponseWriter, r *http.Request) {
 	queued, err := s.client.PostOperatorComment(r.Context(), identifier, text)
 	if err != nil {
 		if errors.Is(err, tracker.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "issue not found")
+			writeError(w, http.StatusNotFound, "not_found", "issue "+identifier+" not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
+		writeClientError(w, "comment_failed", issueError(identifier, err))
 		return
 	}
 	if queued {
@@ -815,11 +696,13 @@ func (s *Server) handleIssueComment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDismissInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if ok := s.client.DismissInput(identifier); !ok {
-		writeError(w, http.StatusNotFound, "not_found", "issue not in input-required state")
+	// Same contract as handleProvideInput: no lookup, so no "not found"
+	// branch — only ErrBusy (event channel full) can fail this (CORE-005).
+	if err := s.client.DismissInput(identifier); err != nil {
+		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "identifier": identifier})
 }
 
 func (s *Server) validateAgentActionRequest(w http.ResponseWriter, r *http.Request, action string) (agentactions.Grant, bool) {
@@ -865,7 +748,7 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 	// humans to read. v1 will add a separate agent_comment action with structured
 	// metadata for intentional multi-agent communication.
 	if err := s.client.CommentOnIssue(r.Context(), identifier, tracker.MarkManagedComment(body.Body)); err != nil {
-		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
+		writeClientError(w, "comment_failed", err)
 		return
 	}
 	// T-6: track per-issue comment counts so the dashboard can surface a
@@ -894,7 +777,7 @@ func (s *Server) handleAgentCreateIssue(w http.ResponseWriter, r *http.Request) 
 	}
 	issue, err := s.client.CreateIssue(r.Context(), identifier, body.Title, body.Body, grant.CreateIssueState)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create_issue_failed", err.Error())
+		writeClientError(w, "create_issue_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "issue": issue})
@@ -920,7 +803,7 @@ func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := WithIssueStatusSource(r.Context(), IssueStatusSourceAgent)
 	if err := s.client.UpdateIssueState(ctx, identifier, targetState); err != nil {
-		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
+		writeClientError(w, "update_failed", err)
 		return
 	}
 	select {
@@ -942,11 +825,15 @@ func (s *Server) handleAgentProvideInput(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "bad_request", "message field required")
 		return
 	}
-	if ok := s.client.ProvideInput(identifier, body.Message); !ok {
-		writeError(w, http.StatusNotFound, "not_found", "issue not in input-required state")
+	// Same ErrBusy-only contract as handleProvideInput. This route is
+	// intentionally NOT gated on agent.inline_input (see handleProvideInput's
+	// comment) — that policy difference is preserved; only the busy/not-found
+	// mapping changes (CORE-005).
+	if err := s.client.ProvideInput(identifier, body.Message); err != nil {
+		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "identifier": identifier})
 }
 
 func (s *Server) handleSetInlineInput(w http.ResponseWriter, r *http.Request) {
@@ -958,7 +845,7 @@ func (s *Server) handleSetInlineInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.SetInlineInput(body.Enabled); err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", err.Error())
+		writeClientError(w, "server_error", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -981,7 +868,7 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 		// Absolute set: clamp and apply directly.
 		target = max(1, min(body.Workers, 50))
 		if err := s.client.SetWorkers(target); err != nil {
-			writeError(w, http.StatusInternalServerError, "persist_failed", err.Error())
+			writeClientError(w, "persist_failed", err)
 			return
 		}
 	} else {
@@ -989,7 +876,7 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 		var err error
 		target, err = s.client.BumpWorkers(body.Delta)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "persist_failed", err.Error())
+			writeClientError(w, "persist_failed", err)
 			return
 		}
 	}
@@ -1037,7 +924,7 @@ func (s *Server) handleSetReviewer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_profile", err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "persist_failed", err.Error())
+		writeClientError(w, "persist_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1069,7 +956,7 @@ func (s *Server) handleRefreshModels(w http.ResponseWriter, r *http.Request) {
 		}
 		out, err := refresher.RefreshAvailableModels(r.Context(), body.Backend)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "refresh_failed", err.Error())
+			writeClientError(w, "refresh_failed", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -1148,7 +1035,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "profile_exists", err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "upsert_failed", err.Error())
+		writeClientError(w, "upsert_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1159,7 +1046,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if err := s.client.DeleteProfile(name); err != nil {
-		writeError(w, http.StatusInternalServerError, "delete_failed", err.Error())
+		writeClientError(w, "delete_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1186,12 +1073,15 @@ func (s *Server) handleSetAutomations(w http.ResponseWriter, r *http.Request) {
 			CreateIssueState: strings.TrimSpace(def.CreateIssueState),
 		}
 	}
-	if err := config.ValidateAutomations(automationconfig.ConfigsFromDefinitions(body.Automations), profiles); err != nil {
+	// CORE-010: pass agent.command so a switch profile with an empty command
+	// is validated against the command it inherits at dispatch; a mismatch
+	// is a 400 client error, rejected before SetAutomations persists.
+	if err := config.ValidateAutomationsWithDefaults(automationconfig.ConfigsFromDefinitions(body.Automations), profiles, s.client.DefaultAgentCommand()); err != nil {
 		writeAutomationValidationError(w, err)
 		return
 	}
 	if err := s.client.SetAutomations(body.Automations); err != nil {
-		writeError(w, http.StatusInternalServerError, "set_automations_failed", err.Error())
+		writeClientError(w, "set_automations_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1222,7 +1112,7 @@ func (s *Server) handleTestAutomation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.TestAutomation(r.Context(), automationID, identifier); err != nil {
-		writeError(w, http.StatusInternalServerError, "test_automation_failed", err.Error())
+		writeClientError(w, "test_automation_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1268,8 +1158,23 @@ func writeAutomationValidationError(w http.ResponseWriter, err error) {
 // Responds 202 immediately and performs deletion in a background goroutine so
 // the UI does not hang on large workspace trees.
 // DELETE /api/v1/workspaces
+//
+// Only one clear runs at a time (CORE-114): a request while one is in flight
+// answers 409 clear_in_progress.
 func (s *Server) handleClearAllWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if !s.clearAllInFlight.CompareAndSwap(false, true) {
+		writeError(w, http.StatusConflict, "clear_in_progress", "a workspace clear is already running; retry when it finishes")
+		return
+	}
 	go func() {
+		defer s.clearAllInFlight.Store(false)
+		// CORE-008: a panic in the client call must not crash the daemon,
+		// and must still publish this task's failure outcome — the same log
+		// line the error path emits (the 202 has already been sent, so the
+		// log is the only outcome channel).
+		defer recoverServerGoroutine("clear-all-workspaces", func(r any) {
+			slog.Error("clear all workspaces failed", "error", fmt.Sprintf("panic: %v", r))
+		})
 		if err := s.client.ClearAllWorkspaces(); err != nil {
 			slog.Error("clear all workspaces failed", "error", err)
 		}
@@ -1297,7 +1202,7 @@ func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, "invalid_combination", err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
+		writeClientError(w, "set_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoClearWorkspace": *body.Enabled})
@@ -1319,7 +1224,7 @@ func (s *Server) handleSetDepsAnalysisMode(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.client.SetDepsAnalysisMode(mode); err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", err.Error())
+		writeClientError(w, "server_error", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": mode})
@@ -1343,7 +1248,7 @@ func (s *Server) handleUpdateTrackerStates(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.client.UpdateTrackerStates(body.ActiveStates, body.TerminalStates, body.CompletionState); err != nil {
-		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
+		writeClientError(w, "update_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1363,7 +1268,7 @@ func (s *Server) handleAddSSHHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.AddSSHHost(strings.TrimSpace(body.Host), body.Description); err != nil {
-		writeError(w, http.StatusInternalServerError, "add_ssh_host_failed", err.Error())
+		writeClientError(w, "add_ssh_host_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1379,7 +1284,7 @@ func (s *Server) handleRemoveSSHHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.RemoveSSHHost(host); err != nil {
-		writeError(w, http.StatusInternalServerError, "remove_ssh_host_failed", err.Error())
+		writeClientError(w, "remove_ssh_host_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1400,7 +1305,7 @@ func (s *Server) handleSetDispatchStrategy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.client.SetDispatchStrategy(body.Strategy); err != nil {
-		writeError(w, http.StatusInternalServerError, "set_strategy_failed", err.Error())
+		writeClientError(w, "set_strategy_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

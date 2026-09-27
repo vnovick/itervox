@@ -74,6 +74,7 @@ export function TokenEntryScreen() {
           id="api-token"
           type="password"
           autoComplete="current-password"
+          // eslint-disable-next-line jsx-a11y/no-autofocus -- the token field is the only control on this screen; focusing it is the expected login behaviour
           autoFocus
           value={value}
           onChange={(e) => {

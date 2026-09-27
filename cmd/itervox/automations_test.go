@@ -309,9 +309,9 @@ func TestMatchesAutomationFilter_ChecksLabelsAndInputContext(t *testing.T) {
 		Labels:     []string{"triage"},
 	}
 
-	assert.True(t, matchesAutomationFilter(issue, entry, "Continue with the existing branch"))
-	assert.False(t, matchesAutomationFilter(issue, entry, "Need approval for production migration"))
-	assert.False(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-42", Labels: []string{"docs"}}, entry, "Continue with the existing branch"))
+	assert.True(t, automationEntryMatches(issue, entry, "Continue with the existing branch"))
+	assert.False(t, automationEntryMatches(issue, entry, "Need approval for production migration"))
+	assert.False(t, automationEntryMatches(domain.Issue{Identifier: "ENG-42", Labels: []string{"docs"}}, entry, "Continue with the existing branch"))
 }
 
 func TestMatchesAutomationFilter_AnyMatchMode(t *testing.T) {
@@ -327,9 +327,9 @@ func TestMatchesAutomationFilter_AnyMatchMode(t *testing.T) {
 		identifierRe: regexp.MustCompile("^ENG-42$"),
 	}
 
-	assert.True(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-42"}, entry, ""))
-	assert.True(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-99", Labels: []string{"triage"}}, entry, ""))
-	assert.False(t, matchesAutomationFilter(domain.Issue{Identifier: "ENG-99", Labels: []string{"docs"}}, entry, ""))
+	assert.True(t, automationEntryMatches(domain.Issue{Identifier: "ENG-42"}, entry, ""))
+	assert.True(t, automationEntryMatches(domain.Issue{Identifier: "ENG-99", Labels: []string{"triage"}}, entry, ""))
+	assert.False(t, automationEntryMatches(domain.Issue{Identifier: "ENG-99", Labels: []string{"docs"}}, entry, ""))
 }
 
 // Default match mode + explicit filter.states must narrow the fetch to ONLY

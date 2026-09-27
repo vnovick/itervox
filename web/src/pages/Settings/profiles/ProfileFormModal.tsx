@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Modal, ModalFooter } from '../../../components/ui/modal';
@@ -11,6 +12,7 @@ import {
 } from '../profileCommands';
 import { checkboxCls, helperTextCls, inputCls } from '../formStyles';
 import { ProfileEditorFields } from './ProfileEditorFields';
+import { UnknownValueNotice } from '../../../components/itervox/UnknownValueNotice';
 import { type ProfileFormValues, profileFormSchema } from './profileForm';
 
 interface ProfileFormModalProps {
@@ -55,6 +57,7 @@ export function ProfileFormModal({
   onClose,
   onSubmit,
 }: ProfileFormModalProps) {
+  const headingId = useId();
   const {
     register,
     handleSubmit,
@@ -123,10 +126,19 @@ export function ProfileFormModal({
   });
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} showCloseButton padded className="mx-4 my-6 max-w-5xl">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      showCloseButton
+      padded
+      className="mx-4 my-6 max-w-5xl"
+      ariaLabelledBy={headingId}
+    >
       <div className="space-y-5">
         <div>
-          <h2 className="text-theme-text text-lg font-semibold">{title}</h2>
+          <h2 id={headingId} className="text-theme-text text-lg font-semibold">
+            {title}
+          </h2>
           {subtitle && <p className="text-theme-text-secondary mt-1 text-sm">{subtitle}</p>}
         </div>
 
@@ -146,12 +158,13 @@ export function ProfileFormModal({
             <input
               id="profile-name-input"
               {...register('name')}
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer restores focus to the opener on close (M5-close)
               autoFocus
               placeholder="profile-name"
               className={`${inputCls} font-mono text-sm`}
             />
             {errors.name && (
-              <p role="alert" className="text-theme-danger mt-1 text-xs">
+              <p role="alert" className="text-theme-danger-text mt-1 text-xs">
                 {errors.name.message}
               </p>
             )}
@@ -178,6 +191,12 @@ export function ProfileFormModal({
             </span>
           </label>
 
+          <UnknownValueNotice
+            items={(initialValues.unknownAllowedActions ?? []).map((raw) => ({
+              what: 'action',
+              raw,
+            }))}
+          />
           <ProfileEditorFields
             backend={backend}
             model={model}
@@ -234,12 +253,12 @@ export function ProfileFormModal({
           />
 
           {errors.command && (
-            <p role="alert" className="text-theme-danger text-xs">
+            <p role="alert" className="text-theme-danger-text text-xs">
               {errors.command.message}
             </p>
           )}
           {errors.root && (
-            <p role="alert" className="text-theme-danger text-xs">
+            <p role="alert" className="text-theme-danger-text text-xs">
               {errors.root.message}
             </p>
           )}

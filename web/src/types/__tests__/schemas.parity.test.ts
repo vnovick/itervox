@@ -14,6 +14,7 @@ import {
   StateSnapshotSchema,
 } from '../schemas';
 import { makeSnapshot } from '../../test/fixtures/snapshots';
+import { DEPS_ANALYSIS_MODES } from '../schemas';
 import { AUTOMATION_TRIGGER_TYPES } from '../automationTriggers';
 
 // Regression guard for the "Board/Deps go Offline" class of bug: the daemon
@@ -328,11 +329,11 @@ describe('OutboxEntryRowSchema and StateSnapshot outbox fields (write-ahead-outb
 
 // deps-analysis-mode Task 3 — StateSnapshot.DepsAnalysisMode is additive
 // (omitempty on the wire, "auto" | "manual"). The full-snapshot fixture must
-// still parse with the field present, and an unrecognized value must fail
-// the parse rather than silently coercing — unlike DepsAnalyzeJobSchema's
-// `trigger` field above, this one has no safe single fallback (it drives a
-// runtime-editable Settings control), so the contract is reject-and-surface,
-// not catch-and-default.
+// still parse with the field present. CORE-047 superseded the original
+// reject-and-surface contract for an unrecognized value: rejecting froze the
+// WHOLE production dashboard. An unknown mode now degrades to 'auto' (the
+// absent-field default) and is surfaced through the schema-fallback listener
+// (reported to the daemon by CORE-048) instead.
 describe('StateSnapshot depsAnalysisMode parity (deps-analysis-mode Task 3)', () => {
   it('parses the full-snapshot fixture with depsAnalysisMode: "auto"', () => {
     const result = StateSnapshotSchema.safeParse(makeSnapshot());
@@ -369,12 +370,13 @@ describe('StateSnapshot depsAnalysisMode parity (deps-analysis-mode Task 3)', ()
     }
   });
 
-  it('rejects an unrecognized depsAnalysisMode value', () => {
+  it('degrades an unrecognized depsAnalysisMode value to auto (CORE-047)', () => {
     const result = StateSnapshotSchema.safeParse({
       ...makeSnapshot(),
       depsAnalysisMode: 'sometimes',
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    expect(result.data?.depsAnalysisMode).toBe('auto');
   });
 
   // Same "Board/Deps go Offline" class of bug as the agent action parity
@@ -389,8 +391,7 @@ describe('StateSnapshot depsAnalysisMode parity (deps-analysis-mode Task 3)', ()
       String(m[1]),
     );
     expect(goModes).toHaveLength(2);
-    const zodValues = StateSnapshotSchema.shape.depsAnalysisMode.unwrap()
-      .options as readonly string[];
+    const zodValues: readonly string[] = DEPS_ANALYSIS_MODES;
     for (const mode of goModes) {
       expect(
         zodValues,
@@ -398,5 +399,21 @@ describe('StateSnapshot depsAnalysisMode parity (deps-analysis-mode Task 3)', ()
       ).toContain(mode);
     }
     expect(zodValues).toHaveLength(goModes.length);
+  });
+});
+
+// CORE-070 — optional workingState (tracker.working_state). Additive: older
+// daemons omit it.
+describe('StateSnapshot workingState parity (CORE-070)', () => {
+  it('parses workingState when present', () => {
+    const result = StateSnapshotSchema.safeParse(makeSnapshot({ workingState: 'Doing' }));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.workingState).toBe('Doing');
+  });
+
+  it('parses a snapshot without workingState', () => {
+    const result = StateSnapshotSchema.safeParse(makeSnapshot());
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.workingState).toBeUndefined();
   });
 });

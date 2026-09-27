@@ -341,3 +341,20 @@ func TestHandleClearDepsOverride_ChannelFullReturns503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Contains(t, w.Body.String(), "deps_override_queue_full")
 }
+
+// M4-close BH-M4-3: a manual analyze while the daemon drains is refused with
+// 409 {"code":"draining"}, not a 422 validation error.
+func TestHandleDepsAnalyze_DrainingReturns409(t *testing.T) {
+	da := &fakeDepsAnalyzer{
+		defaultProfile: "deps-analyzer",
+		enqueueFn: func(string, string) (string, time.Time, error) {
+			return "", time.Time{}, server.ErrDraining
+		},
+	}
+	srv := newDepsTestServer(t, da)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/deps/analyze", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"draining"`)
+}

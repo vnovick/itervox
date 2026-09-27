@@ -25,6 +25,18 @@ type TurnResult struct {
 	InputRequired     bool
 	FailureText       string // result field from the error event, or stderr output
 	ResultText        string // result field from a successful result event
+	// OversizeLines counts stdout lines the stream reader skipped without
+	// buffering them (CORE-002): a non-terminal line over
+	// maxNonTerminalLineBytes, or a line whose top-level "type" is not found
+	// within streamDetectBudgetBytes. Exposed per turn so CORE-045 can export
+	// itervox_agent_lines_oversize_total.
+	OversizeLines int
+	// LastLimit is the most significant vendor limit signal seen during the
+	// turn (CORE-050). Kept even when the runner also returns an error.
+	LastLimit *LimitSignal
+	// CostUSD is the session-cumulative estimated cost from the turn's
+	// result event (Claude's total_cost_usd, CORE-091); nil when unknown.
+	CostUSD *float64
 }
 
 // Logger is a minimal structured logging interface, satisfied by *slog.Logger.
@@ -85,6 +97,10 @@ func FinalizeResult(r TurnResult) TurnResult {
 
 // ApplyEvent merges a StreamEvent into the accumulated TurnResult.
 func ApplyEvent(r TurnResult, ev StreamEvent) TurnResult {
+	// CORE-050: every event type may carry a limit signal (rate_limit_event,
+	// api_retry, result, Codex error / turn.failed). It never sets Failed by
+	// itself — only a result event does.
+	r.LastLimit = mergeLimit(r.LastLimit, ev.Limit)
 	switch ev.Type {
 	case EventSystem:
 		if r.SessionID == "" {
@@ -111,6 +127,10 @@ func ApplyEvent(r TurnResult, ev StreamEvent) TurnResult {
 		r.TotalTokens = r.InputTokens + r.OutputTokens
 		if ev.SessionID != "" {
 			r.SessionID = ev.SessionID
+		}
+		if ev.CostUSD != nil {
+			c := *ev.CostUSD
+			r.CostUSD = &c
 		}
 		if ev.IsError {
 			r.Failed = true

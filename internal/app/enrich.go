@@ -61,6 +61,11 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 	if backendName, ok := snap.IssueBackends[issue.Identifier]; ok && backendName != "" {
 		ti.AgentBackend = backendName
 	}
+	// CORE-055: distinguish an automatic switch from an operator pin.
+	if _, auto := snap.AutoSwitchedIdentifiers[issue.Identifier]; auto {
+		row := AutoSwitchRowFor(snap, issue.Identifier)
+		ti.AutoSwitch = &row
+	}
 	// Orchestrator state
 	if re, ok := snap.Running[issue.ID]; ok {
 		ti.OrchestratorState = "running"

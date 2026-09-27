@@ -95,7 +95,13 @@ export function SessionAccordion({ identifier, workerHost, sessionId }: SessionA
           </div>
         </div>
 
-        <Terminal entries={termEntries} follow showTime={false} className="h-full flex-1" />
+        <Terminal
+          entries={termEntries}
+          follow
+          showTime={false}
+          className="h-full flex-1"
+          resetKey={`${identifier}|${String(selectedIdx)}`}
+        />
       </div>
     </div>
   );

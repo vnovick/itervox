@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 // JobStatus identifies a depsanalysis job's progress.
@@ -166,6 +167,7 @@ func (m *JobManager) notifyLocked(job *Job) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
+				metrics.GoroutinePanic()
 				slog.Error("depsanalysis: onTransition callback panicked", "job_id", job.ID, "panic", r)
 			}
 		}()
@@ -260,6 +262,7 @@ func (m *JobManager) execute(ctx context.Context, cancel context.CancelFunc, job
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
+				metrics.GoroutinePanic()
 				panicked = r
 				slog.Error("depsanalysis: analyzer job panicked", "job_id", job.ID, "panic", r)
 			}

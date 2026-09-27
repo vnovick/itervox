@@ -1,0 +1,76 @@
+---
+title: Why Vercel Is Not Suitable
+description: Itervox is a long-running daemon; Vercel is a serverless function host. Why they don't fit together, and where to run Itervox instead.
+sidebar:
+  order: 12
+---
+
+**TL;DR:** Vercel cannot host Itervox, and it cannot host just the dashboard
+either. The daemon needs one process that stays alive for days; Vercel runs
+functions with a maximum duration and no guaranteed reuse between invocations.
+Run Itervox on a VM (GCP Compute Engine, AWS EC2, Azure VM) or as the
+[official container image](/guides/deployment/#official-container-image) on a
+host you control. See the [platform tier matrix](/guides/deployment/#platform-tier-matrix).
+
+---
+
+## Why the mismatch
+
+| Itervox needs | Vercel's model |
+|---|---|
+| One process alive for days | Functions end at a plan-dependent maximum duration |
+| In-memory orchestrator state (running agents, retry and automation queues) | No process reuse guaranteed between invocations |
+| Git worktrees and state files on a persistent disk | No persistent local filesystem |
+| Agent subprocesses that run for minutes | Work is tied to a request's lifetime |
+| Long-lived SSE connections (`/api/v1/events` for as long as a tab is open) | Responses are bounded by the function's duration |
+| A drain on `SIGTERM` that waits for in-flight agent turns (`--shutdown-grace`) | No controllable shutdown window |
+
+Any one of these rules it out.
+
+---
+
+## What to do instead
+
+### VM + systemd (recommended)
+
+```bash
+./deploy/gcp/provision.sh            # or aws/ or azure/ — prints the --data-disk path
+sudo ./bootstrap.sh --repo git@github.com:you/project.git --data-disk <path>
+```
+
+Reach the dashboard through the cloud's private tunnel (IAP, SSM, Bastion) or
+Tailscale — no public IP needed. See the [VM deployment guide](/guides/deployment/).
+
+### The official container image
+
+```bash
+docker build -f deploy/docker/Dockerfile -t itervox:dev .
+docker run -d --stop-timeout 300 \
+  -e ITERVOX_REPO=https://github.com/you/project.git \
+  -e ITERVOX_API_TOKEN -e GH_TOKEN -e LINEAR_API_KEY -e ANTHROPIC_API_KEY \
+  -v itervox-data:/data -p 127.0.0.1:8090:8090 \
+  itervox:dev
+```
+
+Run it with exactly one replica, a persistent volume for `/data`, and a stop
+timeout of at least `--shutdown-grace` + 35 s. Managed container platforms are
+listed as experimental in the
+[platform tier matrix](/guides/deployment/#platform-tier-matrix) — Cloud Run, for
+example, allows only 10 s between `SIGTERM` and `SIGKILL`, so every rollout
+cancels in-flight agent turns.
+
+---
+
+## Can I host just the web UI on Vercel?
+
+**No, not without changing the daemon.** The dashboard talks to the daemon's
+API with an `Authorization: Bearer` header, and a browser only sends such a
+request to another origin after a CORS preflight that the server approves. The
+daemon emits no CORS headers at all (there is no `Access-Control-*` anywhere in
+`internal/server/`), so a UI served from a Vercel origin cannot call it. With
+`server.allow_unauthenticated: true` the cross-origin guard additionally refuses
+state-changing requests from other origins.
+
+It would not buy anything anyway: the web bundle is embedded in the `itervox`
+binary and served by the daemon itself, and you still need the always-on daemon
+somewhere else.

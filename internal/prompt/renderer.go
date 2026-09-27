@@ -23,9 +23,9 @@ var liquidEngine = func() *liquid.Engine {
 	return e
 }()
 
-// Render renders a Liquid template with issue and attempt variables.
-// Returns template_parse_error on bad syntax, template_render_error on unknown vars/filters.
-func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
+// RenderWith is Render with extra top-level bindings (e.g. the worker's
+// `run` object, CORE-101). extra cannot replace `issue` or `attempt`.
+func RenderWith(tmpl string, issue domain.Issue, attempt *int, extra map[string]any) (string, error) {
 	if strings.TrimSpace(tmpl) == "" {
 		return DefaultPrompt, nil
 	}
@@ -35,10 +35,12 @@ func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
 		return "", fmt.Errorf("template_parse_error: %w", err)
 	}
 
-	bindings := map[string]any{
-		"issue":   issueToMap(issue),
-		"attempt": attemptValue(attempt),
+	bindings := map[string]any{}
+	for key, value := range extra {
+		bindings[key] = value
 	}
+	bindings["issue"] = issueToMap(issue)
+	bindings["attempt"] = attemptValue(attempt)
 
 	out, err := tpl.Render(bindings)
 	if err != nil {
@@ -46,14 +48,6 @@ func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
 	}
 
 	return string(out), nil
-}
-
-// RenderProfilePrompt renders a profile prompt through the Liquid engine with
-// the same issue bindings as Render. If the prompt contains no Liquid syntax
-// it passes through unchanged. Returns the input as-is on parse/render errors
-// so a plain-text prompt still works.
-func RenderProfilePrompt(promptText string, issue domain.Issue, attempt *int) string {
-	return RenderPromptOverlay(promptText, issue, attempt, nil)
 }
 
 // RenderPromptOverlay renders a plain-text or Liquid prompt fragment using the

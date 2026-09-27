@@ -74,7 +74,7 @@ export function GeneralCard({ inlineInput, onSetInlineInput }: GeneralCardProps)
               resumes.
             </span>
             {error && (
-              <span role="alert" className="text-theme-danger mt-1 block text-xs">
+              <span role="alert" className="text-theme-danger-text mt-1 block text-xs">
                 {error}
               </span>
             )}
