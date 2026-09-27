@@ -1,14 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // repoInfo holds values discovered by scanning the current directory.
@@ -37,7 +38,7 @@ type detectedStack struct {
 func scanRepo(dir string) repoInfo {
 	info := repoInfo{DefaultBranch: "main", ProjectName: "my-project"}
 
-	if out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
+	if out, err := gitexec.Command(context.Background(), dir, "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
 		info.RemoteURL = strings.TrimSpace(string(out))
 		info.Owner, info.Repo = parseGitRemote(info.RemoteURL)
 		if info.Repo != "" {
@@ -48,7 +49,7 @@ func scanRepo(dir string) repoInfo {
 		}
 	}
 
-	if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
+	if out, err := gitexec.Command(context.Background(), dir, "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
 		ref := strings.TrimSpace(string(out))
 		if parts := strings.Split(ref, "/"); len(parts) > 0 {
 			info.DefaultBranch = parts[len(parts)-1]

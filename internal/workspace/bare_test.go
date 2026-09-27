@@ -3,13 +3,13 @@ package workspace_test
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -21,14 +21,14 @@ func setupUpstreamRepo(t *testing.T) string {
 	work := t.TempDir()
 
 	cmds := [][]string{
-		{"git", "init", "-b", "main", work},
-		{"git", "-C", work, "config", "user.email", "test@test.com"},
-		{"git", "-C", work, "config", "user.name", "Test"},
-		{"git", "-C", work, "commit", "--allow-empty", "-m", "init"},
-		{"git", "clone", "--bare", work, upstream},
+		{"init", "-b", "main", work},
+		{"-C", work, "config", "user.email", "test@test.com"},
+		{"-C", work, "config", "user.name", "Test"},
+		{"-C", work, "commit", "--allow-empty", "-m", "init"},
+		{"clone", "--bare", work, upstream},
 	}
 	for _, args := range cmds {
-		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		out, err := gitexec.Command(context.Background(), work, args...).CombinedOutput()
 		require.NoError(t, err, "setup: %s: %s", args, out)
 	}
 	return upstream
@@ -44,7 +44,7 @@ func TestEnsureBareClone_ClonesFromRemote(t *testing.T) {
 	assert.DirExists(t, barePath)
 
 	// Verify it's a bare repo
-	cmd := exec.Command("git", "-C", barePath, "rev-parse", "--is-bare-repository")
+	cmd := gitexec.Command(context.Background(), barePath, "rev-parse", "--is-bare-repository")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Equal(t, "true", strings.TrimSpace(string(out)))
@@ -84,14 +84,14 @@ func TestFetchBare(t *testing.T) {
 	// Add a new commit to upstream
 	work := t.TempDir()
 	cmds := [][]string{
-		{"git", "clone", upstream, work},
-		{"git", "-C", work, "config", "user.email", "test@test.com"},
-		{"git", "-C", work, "config", "user.name", "Test"},
-		{"git", "-C", work, "commit", "--allow-empty", "-m", "second"},
-		{"git", "-C", work, "push", "origin", "main"},
+		{"clone", upstream, work},
+		{"-C", work, "config", "user.email", "test@test.com"},
+		{"-C", work, "config", "user.name", "Test"},
+		{"-C", work, "commit", "--allow-empty", "-m", "second"},
+		{"-C", work, "push", "origin", "main"},
 	}
 	for _, args := range cmds {
-		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		out, err := gitexec.Command(context.Background(), root, args...).CombinedOutput()
 		require.NoError(t, err, "push: %s: %s", args, out)
 	}
 
@@ -99,7 +99,7 @@ func TestFetchBare(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify we have the new commit
-	cmd := exec.Command("git", "-C", barePath, "log", "--oneline", "--all")
+	cmd := gitexec.Command(context.Background(), barePath, "log", "--oneline", "--all")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "second")

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // M4-close D9 / BH-M4-1 — the doctor --deploy push probe is read-only: it
@@ -16,8 +18,7 @@ import (
 // pre-push hook that writes a marker file; after the probe the marker must
 // not exist.
 func TestDoctorPushProbeSkipsPrePushHook(t *testing.T) {
-	gitBin, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
 	root := t.TempDir()
@@ -26,9 +27,8 @@ func TestDoctorPushProbeSkipsPrePushHook(t *testing.T) {
 	marker := filepath.Join(root, "HOOK_RAN")
 	gitRun := func(dir string, args ...string) {
 		t.Helper()
-		cmd := exec.Command(gitBin, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		cmd := gitexec.Command(context.Background(), dir, args...)
+		cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -51,5 +51,23 @@ func TestDoctorPushProbeSkipsPrePushHook(t *testing.T) {
 	}
 	if c.Status != deployOK {
 		t.Fatalf("want push auth ok against a local remote, got %s: %s", c.Status, c.Detail)
+	}
+}
+
+// TestDeployProbeRunDropsInheritedGitDir: `itervox doctor --deploy` runs
+// `git remote get-url` / `git push --dry-run` (and gh, which runs git) via
+// this runner. Started from a git hook, an inherited GIT_DIR would aim those
+// probes at the enclosing repository.
+func TestDeployProbeRunDropsInheritedGitDir(t *testing.T) {
+	t.Setenv("GIT_DIR", "/victim/.git")
+	t.Setenv("GIT_WORK_TREE", "/victim")
+	env := defaultDeployProbeEnv()
+	out, err := env.run(context.Background(), t.TempDir(), []string{"EXTRA=kept"}, "/bin/sh", "-c",
+		`printf '%s|%s|%s' "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" "$EXTRA"`)
+	if err != nil {
+		t.Fatalf("run: %v: %s", err, out)
+	}
+	if got := string(out); got != "unset|unset|kept" {
+		t.Fatalf("probe saw GIT_DIR|GIT_WORK_TREE|EXTRA = %q, want unset|unset|kept", got)
 	}
 }

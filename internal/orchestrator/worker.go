@@ -21,6 +21,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/metrics"
 	"github.com/vnovick/itervox/internal/prdetector"
@@ -954,15 +955,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// workspace `git add` fails and we skip the commit silently (previous
 		// behavior — the file remains in the working tree, no Warn spam on
 		// every success); other commit failures log.
-		addCmd := exec.CommandContext(ctx, "git", "add", HandoffDirRelPath)
-		addCmd.Dir = wsPath
-		if err := addCmd.Run(); err == nil {
-			commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "chore(itervox): record agent handoff", "--no-verify", "--", HandoffDirRelPath)
-			commitCmd.Dir = wsPath
-			if out, err := commitCmd.CombinedOutput(); err != nil && !strings.Contains(string(out), "nothing to commit") {
-				slog.Warn("worker: handoff commit failed (file remains uncommitted)",
-					"issue_identifier", issue.Identifier, "error", err)
-			}
+		if staged, err := workspace.CommitPathOnly(ctx, wsPath, HandoffDirRelPath, "chore(itervox): record agent handoff"); staged && err != nil {
+			slog.Warn("worker: handoff commit failed (file remains uncommitted)",
+				"issue_identifier", issue.Identifier, "error", err)
 		}
 	}
 
@@ -975,8 +970,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		defer postRunCancel()
 		// Push so the remote branch reflects the agent's changes.
 		if wsPath != "" {
-			pushCmd := exec.CommandContext(postRunCtx, "git", "push", "origin", prCtx.Branch)
-			pushCmd.Dir = wsPath
+			pushCmd := gitexec.Command(postRunCtx, wsPath, "push", "origin", prCtx.Branch)
 			if err := pushCmd.Run(); err != nil {
 				slog.Warn("worker: git push failed (non-fatal)",
 					"issue_identifier", issue.Identifier, "branch", prCtx.Branch, "error", err)
@@ -988,6 +982,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// working directory; omitting Dir avoids misleading readers.
 			ghCommentCmd := exec.CommandContext(postRunCtx, "gh", "pr", "comment", prCtx.URL,
 				"--body", sessionComment)
+			ghCommentCmd.Env = gitexec.Environ()
 			if err := ghCommentCmd.Run(); err != nil {
 				slog.Warn("worker: gh pr comment failed (non-fatal)",
 					"issue_identifier", issue.Identifier, "pr_url", prCtx.URL, "error", err)

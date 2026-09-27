@@ -247,6 +247,9 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator and cmd/itervox)
 
+gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
+         & co. and requires a dir; audited by TestNoRawGitExecOutsideGitexec)
+
 workflow ──── config ──── workspace (hooks — also imports procgroup)
 
 agent (claude/codex subprocess runners — imports domain, config, procgroup,

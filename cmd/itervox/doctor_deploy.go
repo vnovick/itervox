@@ -17,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
@@ -78,7 +79,10 @@ func defaultDeployProbeEnv() deployProbeEnv {
 		run: func(ctx context.Context, dir string, extraEnv []string, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), extraEnv...)
+			// Scrubbed for every probe: `git` directly, and `gh`, which runs
+			// git to resolve the repository. An inherited GIT_DIR would
+			// otherwise aim the probes at the wrong repository.
+			cmd.Env = gitexec.Environ(extraEnv...)
 			cmd.Stdin = nil
 			return cmd.CombinedOutput()
 		},

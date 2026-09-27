@@ -30,6 +30,24 @@ func TestItervoxAgentEnvSetsMarker(t *testing.T) {
 	assert.True(t, sawPath, "os.Environ() must be preserved, not replaced")
 }
 
+// TestItervoxAgentEnvDropsInheritedGitDir: an agent runs `git commit` in its
+// worktree. If the daemon was started from a git hook, GIT_DIR/GIT_WORK_TREE
+// point at the enclosing repository and would redirect those commits there.
+func TestItervoxAgentEnvDropsInheritedGitDir(t *testing.T) {
+	t.Setenv("GIT_DIR", "/victim/.git")
+	t.Setenv("GIT_WORK_TREE", "/victim")
+	t.Setenv("GIT_SSH_COMMAND", "ssh -i key")
+
+	env := agent.ItervoxAgentEnv()
+
+	for _, kv := range env {
+		assert.False(t, strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE="),
+			"agent env must not carry %s", kv)
+	}
+	assert.Contains(t, env, "GIT_SSH_COMMAND=ssh -i key", "git auth variables must survive")
+	assert.Contains(t, env, "ITERVOX_AGENT=1")
+}
+
 func TestItervoxAgentEnvKeepsExtras(t *testing.T) {
 	env := agent.ItervoxAgentEnv("CLAUDE_CODE_LOG_DIR=/tmp/logs")
 

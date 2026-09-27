@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"os"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // itervoxAgentMarker is exported into every agent turn's environment.
@@ -30,8 +31,13 @@ const itervoxAgentMarker = "ITERVOX_AGENT=1"
 // Every local exec.CommandContext in this package must use this. Go inherits
 // the parent environment when cmd.Env is nil, so a path that simply omits the
 // assignment silently ships without the marker.
+//
+// The inherited environment is scrubbed of git's repository-location
+// variables (gitexec.Environ): an agent runs `git commit` in its worktree,
+// and a GIT_DIR inherited from a daemon started under a git hook would send
+// those commits to the enclosing repository instead.
 func itervoxAgentEnv(extra ...string) []string {
-	env := append(os.Environ(), itervoxAgentMarker)
+	env := gitexec.Environ(itervoxAgentMarker)
 	for _, kv := range extra {
 		if strings.TrimSpace(kv) == "" {
 			continue

@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // MergePRRequest is the JSON body accepted by
@@ -131,7 +132,11 @@ const (
 // stderr only on the error path is safe because none of those JSON calls
 // are ever read on a non-nil error.
 func runGH(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, "gh", args...).Output()
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	// gh runs git to resolve repositories and (for --delete-branch) to
+	// delete local branches; an inherited GIT_DIR would redirect those.
+	cmd.Env = gitexec.Environ()
+	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
 			out = append(out, exitErr.Stderr...)

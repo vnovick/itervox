@@ -30,6 +30,7 @@ import (
 	"github.com/vnovick/itervox/internal/app"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
@@ -332,6 +333,12 @@ func main() {
 	// line, until bootLogHandlers installs the full stderr+file handler.
 	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !statusui.TerminalAvailable())))
 	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
+	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
+	// a .env could carry): itervox may be started from a git hook, and every
+	// subprocess it spawns — git, gh, hooks, agent CLIs — must act on the
+	// repository its working directory names, never the enclosing one.
+	// gitexec.Command scrubs per call as well; this covers every other spawn.
+	gitexec.UnsetInProcess()
 	// Register a pre-set ITERVOX_API_TOKEN (from the real environment or
 	// loaded above via .itervox/.env) for exact-value log redaction. See
 	// logging.RegisterSecret's doc comment: agent subprocesses inherit this

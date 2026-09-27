@@ -2,7 +2,6 @@ package workspace_test
 
 import (
 	"context"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -63,14 +63,13 @@ func TestResolveWorktreeBranch_EmptyBranchFallsBack(t *testing.T) {
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	cmds := [][]string{
-		{"git", "init", "-b", "main"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "commit", "--allow-empty", "-m", "init"},
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "init"},
 	}
 	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
+		cmd := gitexec.Command(context.Background(), dir, args...)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git setup failed: %s", string(out))
 	}
@@ -95,8 +94,7 @@ func TestEnsureWorktree_CreatesWorktree(t *testing.T) {
 	assert.DirExists(t, ws.Path)
 
 	// Verify the worktree is on the expected branch
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = ws.Path
+	cmd := gitexec.Command(context.Background(), ws.Path, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Equal(t, "itervox/eng-1", strings.TrimSpace(string(out)))
@@ -118,8 +116,7 @@ func TestEnsureWorktree_BranchAlreadyExists(t *testing.T) {
 	mgr, root := worktreeManager(t)
 
 	// Create branch manually in the base repo (simulates partial previous run)
-	cmd := exec.Command("git", "branch", "itervox/eng-1")
-	cmd.Dir = root
+	cmd := gitexec.Command(context.Background(), root, "branch", "itervox/eng-1")
 	require.NoError(t, cmd.Run())
 
 	// EnsureWorkspace must succeed even though branch already exists
@@ -140,8 +137,7 @@ func TestRemoveWorktree_RemovesWorktreeAndBranch(t *testing.T) {
 	assert.NoDirExists(t, ws.Path)
 
 	// Branch must also be deleted
-	cmd := exec.Command("git", "branch", "--list", "itervox/eng-1")
-	cmd.Dir = root
+	cmd := gitexec.Command(context.Background(), root, "branch", "--list", "itervox/eng-1")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Empty(t, strings.TrimSpace(string(out)), "branch should be deleted after remove")
@@ -156,8 +152,7 @@ func TestRemoveWorktree_KeepsBranchWhenNameEmpty(t *testing.T) {
 	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "")
 	require.NoError(t, err)
 
-	cmd := exec.Command("git", "branch", "--list", "itervox/eng-1")
-	cmd.Dir = root
+	cmd := gitexec.Command(context.Background(), root, "branch", "--list", "itervox/eng-1")
 	out, _ := cmd.Output()
 	assert.NotEmpty(t, strings.TrimSpace(string(out)), "branch should be kept when branchName is empty")
 }
@@ -191,8 +186,7 @@ func TestEnsureWorktree_BareClone_CreatesWorktree(t *testing.T) {
 	assert.DirExists(t, ws.Path)
 
 	// Verify the worktree is on the expected branch
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = ws.Path
+	cmd := gitexec.Command(context.Background(), ws.Path, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Equal(t, "itervox/eng-1", strings.TrimSpace(string(out)))
@@ -221,7 +215,7 @@ func TestRemoveWorktree_BareClone(t *testing.T) {
 	assert.NoDirExists(t, ws.Path)
 
 	// Branch must also be deleted from the bare repo
-	cmd := exec.Command("git", "-C", filepath.Join(root, ".bare"), "branch", "--list", "itervox/eng-1")
+	cmd := gitexec.Command(context.Background(), filepath.Join(root, ".bare"), "branch", "--list", "itervox/eng-1")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Empty(t, strings.TrimSpace(string(out)), "branch should be deleted from bare repo")

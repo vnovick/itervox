@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/procgroup"
 )
 
@@ -55,7 +56,9 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	cmd.Dir = workspacePath
 	cmd.Stdout = out
 	cmd.Stderr = out
-	cmd.Env = hookEnv(os.Environ())
+	// Scrubbed: a hook script that runs git must act on this workspace,
+	// not on a repository named by an inherited GIT_DIR.
+	cmd.Env = hookEnv(gitexec.Environ())
 	setHookProcessGroup(cmd)
 
 	// Start + Track + Wait rather than Run so the hook's group is in the
