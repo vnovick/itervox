@@ -51,6 +51,17 @@ git -C "$WORK/src" -c user.name=smoke -c user.email=smoke@example.invalid commit
 git clone -q --bare "$WORK/src" "$WORK/proj.git"
 chmod -R a+rX "$WORK/proj.git"
 
+# On a Linux host the bind-mounted bare repo keeps the host uid, not the
+# image's 10001, and git refuses to clone a repo owned by another user
+# ("dubious ownership"); Docker Desktop remaps ownership, so only CI hits it.
+# safe.directory is read only from system/global/command-line config, and a
+# file:// clone strips GIT_CONFIG_COUNT/PARAMETERS from upload-pack's env, so
+# it goes in a read-only global config. The identity keeps the entrypoint
+# from trying to write its default one into that read-only file.
+printf '%s\n' '[safe]' '	directory = /src/proj.git' \
+  '[user]' '	name = smoke' '	email = smoke@example.invalid' > "$WORK/gitconfig"
+chmod 0644 "$WORK/gitconfig"
+
 # Stand-in agent CLI: the daemon refuses to start its run loop without a
 # runnable `claude`, and a smoke test must never reach a model. It answers
 # --version only; with an empty memory tracker nothing is ever dispatched.
@@ -66,11 +77,15 @@ docker run -d --name "$NAME" \
   -v "$WORK/proj.git:/src/proj.git:ro" \
   -v "$WORK/claude:/opt/agent/bin/claude:ro" \
   -e ITERVOX_REPO=file:///src/proj.git \
+  -v "$WORK/gitconfig:/etc/itervox-smoke.gitconfig:ro" \
+  -e GIT_CONFIG_GLOBAL=/etc/itervox-smoke.gitconfig \
   -e ITERVOX_REPO_UPDATE=off \
   --stop-timeout 30 \
   "$IMAGE" >/dev/null
 
-PORT="$(docker port "$NAME" 8090/tcp | head -n1 | sed 's/.*://')"
+# `|| true`: under pipefail a container that already exited makes `docker
+# port` fail and would abort here, before the logs below explain why.
+PORT="$(docker port "$NAME" 8090/tcp 2>/dev/null | head -n1 | sed 's/.*://' || true)"
 [[ -n "$PORT" ]] || { log "no published port"; docker logs "$NAME" 2>&1 | tail -40; exit 1; }
 BASE="http://127.0.0.1:$PORT"
 
