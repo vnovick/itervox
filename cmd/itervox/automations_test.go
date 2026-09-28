@@ -917,6 +917,146 @@ func TestStartAutomations_ReplaysPersistedInputRequiredIssueOnStartup(t *testing
 	}, 3*time.Second, 25*time.Millisecond)
 }
 
+// TestStartAutomations_DoesNotReplayEntryTheEventLoopAlreadyReplayed pins the
+// single-owner rule for startup replay: Orchestrator.Run replays persisted
+// input-required entries itself, so the automation scheduler's first pass must
+// not replay them again. The race it pins: the loop dispatches the responder,
+// the scheduler's first tick observes the still-blocked entry in the snapshot
+// while that worker is mid-turn, and the second dispatch survives dedup
+// because it only lands after the first worker released its claim — two
+// responder runs for one blocked question.
+func TestStartAutomations_DoesNotReplayEntryTheEventLoopAlreadyReplayed(t *testing.T) {
+	cfg := &config.Config{
+		Polling: config.PollingConfig{IntervalMs: 20},
+		Tracker: config.TrackerConfig{
+			ActiveStates:    []string{"Todo"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+		},
+		Agent: config.AgentConfig{
+			Command:             "claude",
+			MaxConcurrentAgents: 2,
+			Profiles: map[string]config.AgentProfile{
+				"responder": {Command: "claude"},
+			},
+			// A Config literal skips the loader's max_turns default (20); at 0
+			// the worker runs no turn and the gated runner is never reached.
+			MaxTurns:      1,
+			TurnTimeoutMs: 60000,
+			ReadTimeoutMs: 30000,
+		},
+		Automations: []config.AutomationConfig{
+			{
+				ID:      "input-responder",
+				Enabled: true,
+				Profile: "responder",
+				Trigger: config.AutomationTriggerConfig{
+					Type: config.AutomationTriggerInputRequired,
+				},
+				Filter: config.AutomationFilterConfig{
+					States:            []string{"Todo"},
+					LabelsAny:         []string{"triage"},
+					InputContextRegex: `continue|branch`,
+				},
+			},
+		},
+	}
+	tr := tracker.NewMemoryTracker([]domain.Issue{{
+		ID:         "id-1",
+		Identifier: "ENG-1",
+		Title:      "Needs answer",
+		State:      "Todo",
+		Labels:     []string{"triage"},
+	}}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+
+	runner := &gatedRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		started: make(chan struct{}, 4),
+		release: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, tr, runner, nil)
+
+	irFile := filepath.Join(t.TempDir(), "input_required.json")
+	require.NoError(t, os.WriteFile(irFile, []byte(`{
+  "awaiting": {
+    "ENG-1": {
+      "issue_id": "id-1",
+      "identifier": "ENG-1",
+      "context": "Continue with the existing branch",
+      "question_comment_id": "q-1",
+      "queued_at": "2026-04-20T16:47:06+03:00"
+    }
+  }
+}`), 0o644))
+	orch.SetInputRequiredFile(irFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	runDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("orchestrator did not stop before test cleanup")
+		}
+	})
+
+	// Register the rules before Run, exactly as startAutomations does in
+	// main.go, so the event loop's startup replay sees them.
+	orch.SetInputRequiredAutomations(compileAutomations(cfg).inputRequired)
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("event loop did not replay the persisted input-required entry")
+	}
+	require.Eventually(t, func() bool {
+		_, blocked := orch.Snapshot().InputRequiredIssues["ENG-1"]
+		return blocked
+	}, 3*time.Second, 5*time.Millisecond)
+
+	// The scheduler's first pass now sees the populated snapshot while the
+	// replayed worker is still mid-turn. Hold the worker long enough for that
+	// pass to run before letting it finish.
+	startAutomations(ctx, cfg, tr, orch)
+	time.Sleep(300 * time.Millisecond)
+	close(runner.release)
+
+	require.Eventually(t, func() bool {
+		return len(orch.RunHistory()) >= 1
+	}, 3*time.Second, 5*time.Millisecond)
+	require.Never(t, func() bool {
+		return len(orch.RunHistory()) > 1
+	}, 500*time.Millisecond, 10*time.Millisecond, "persisted entry was replayed twice")
+}
+
+// gatedRunner reports each turn start on started and holds the turn until
+// release is closed, so a test can act while a worker is provably mid-turn.
+type gatedRunner struct {
+	agent.Runner
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *gatedRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, mode agent.PermissionMode) (agent.TurnResult, error) {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+	}
+	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, mode)
+}
+
 type countingDoneRunner struct {
 	agent.Runner
 	mu        sync.Mutex

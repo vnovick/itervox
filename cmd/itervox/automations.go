@@ -84,8 +84,15 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			issues:          make(map[string]observedAutomationIssue),
 			trackerComments: make(map[string]map[string]observedAutomationComment),
 		}
+		// Start initialized: Orchestrator.Run already replays persisted
+		// input-required entries against the startup rules registered above,
+		// so this loop only replays rules hot-added later. Uninitialized, its
+		// first pass re-fired every entry it saw whenever it landed after the
+		// loop's first snapshot — a second responder run for the same blocked
+		// question once the first had released its claim.
 		inputRequiredState := inputRequiredReplayState{
-			issues: make(map[string]inputRequiredReplayIssueState),
+			initialized: true,
+			issues:      make(map[string]inputRequiredReplayIssueState),
 		}
 		runOnce := func(now time.Time) {
 			// Build a per-tick cfg view with runtime-mutable fields read

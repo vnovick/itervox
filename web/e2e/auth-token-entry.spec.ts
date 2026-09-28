@@ -4,12 +4,11 @@ import { startDaemon, type Daemon } from './helpers/daemon';
 /**
  * Flow 1 (T-31): auth-token-entry.
  *
- * The daemon is bound to loopback in this scenario, so the auth gate
- * actually allows unauthenticated access by design. To exercise the token
- * entry screen we first set ITERVOX_API_TOKEN, then load the dashboard
- * WITHOUT the `?token=` query param — the AuthGate should block the app and
- * render the token entry form. After typing the right token and submitting,
- * the dashboard renders.
+ * The daemon requires a bearer token on every bind, loopback included. The
+ * helper sets ITERVOX_API_TOKEN, then we load the dashboard WITHOUT the
+ * `?token=` query param — the AuthGate should block the app and render the
+ * token entry form. After typing the right token and submitting, the
+ * dashboard renders.
  */
 let daemon: Daemon;
 
@@ -21,11 +20,20 @@ test.afterAll(async () => {
   await daemon.stop();
 });
 
-async function expectStateApiOK(page: Page) {
-  const status = await page.evaluate(async () => {
-    const res = await fetch('/api/v1/state');
-    return res.status;
+// The API only accepts `Authorization: Bearer`, so a bare fetch is always
+// 401. Use the token AuthGate persisted (same lookup order as tokenStore) to
+// prove the app stored the right one and that it authorizes the API.
+async function expectStateApiOK(page: Page, expectedToken: string) {
+  const { stored, status } = await page.evaluate(async () => {
+    const token =
+      localStorage.getItem('itervox.apiToken.persistent') ??
+      sessionStorage.getItem('itervox.apiToken');
+    const res = await fetch('/api/v1/state', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return { stored: token, status: res.status };
   });
+  expect(stored).toBe(expectedToken);
   expect(status).toBe(200);
 }
 
@@ -49,7 +57,7 @@ test('shows token entry screen when no token is stored, accepts the right token'
   // the snapshot loads.
   await expect(page.getByText(/^Live$/)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole('heading', { name: /token|sign in|enter/i })).toHaveCount(0);
-  await expectStateApiOK(page);
+  await expectStateApiOK(page, daemon.token);
 });
 
 test('rejects an obviously wrong token', async ({ page }) => {
