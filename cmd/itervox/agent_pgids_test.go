@@ -146,9 +146,18 @@ func startGroup(t *testing.T) int {
 		t.Fatal(err)
 	}
 	pgid := cmd.Process.Pid
-	// Cleanups run last-in first-out: register Wait first so the kill runs
-	// before it.
-	t.Cleanup(func() { _ = cmd.Wait() })
+	// The test is the leader's parent, so a signalled leader stays a zombie
+	// until it is waited for — and on Linux kill(-pgid, 0) still succeeds for
+	// a group of zombies. Wait at once so groupAlive sees the exit. (A real
+	// orphaned group is reparented to init, which reaps it.)
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+	// Cleanups run last-in first-out: register the wait first so the kill
+	// runs before it.
+	t.Cleanup(func() { <-exited })
 	killGroupOnCleanup(t, pgid)
 	return pgid
 }
