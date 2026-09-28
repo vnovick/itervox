@@ -3,12 +3,12 @@ package agent
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"strings"
-	"unicode"
+
+	"github.com/vnovick/itervox/internal/config"
 )
 
-const backendHintPrefix = "@@itervox-backend="
+const backendHintPrefix = config.BackendHintPrefix
 
 type MultiRunner struct {
 	defaultRunner Runner
@@ -78,81 +78,14 @@ func CommandWithBackendHint(command, backend string) string {
 	return backendHintPrefix + backend + " " + command
 }
 
+// The pure command-token parser moved to internal/config (CORE-010) so that
+// config validation can derive a command's backend without importing agent.
+// These unexported names delegate so existing call sites are unchanged.
+
 func backendFromCommand(command string) (backend, cleaned string) {
-	if hinted, rest := parseBackendHint(command); hinted != "" {
-		return hinted, rest
-	}
-	first := firstCommandToken(command)
-	if first == "" {
-		return "", command
-	}
-	switch filepath.Base(first) {
-	case "claude", "codex":
-		return filepath.Base(first), command
-	default:
-		return "", command
-	}
+	return config.SplitBackendFromCommand(command)
 }
 
 func parseBackendHint(command string) (backend, cleaned string) {
-	trimmed := strings.TrimSpace(command)
-	if !strings.HasPrefix(trimmed, backendHintPrefix) {
-		return "", command
-	}
-	rest := strings.TrimPrefix(trimmed, backendHintPrefix)
-	if rest == "" {
-		return "", command
-	}
-	idx := strings.IndexAny(rest, " \t")
-	if idx < 0 {
-		return rest, ""
-	}
-	return rest[:idx], strings.TrimLeft(rest[idx:], " \t")
-}
-
-func firstCommandToken(command string) string {
-	fields := strings.Fields(command)
-	for i := 0; i < len(fields); i++ {
-		token := fields[i]
-		if token == "" {
-			continue
-		}
-		if isEnvAssignment(token) {
-			continue
-		}
-		if filepath.Base(token) == "env" {
-			for j := i + 1; j < len(fields); j++ {
-				next := fields[j]
-				if next == "" {
-					continue
-				}
-				if isEnvAssignment(next) || strings.HasPrefix(next, "-") {
-					continue
-				}
-				return next
-			}
-			return ""
-		}
-		return token
-	}
-	return ""
-}
-
-func isEnvAssignment(token string) bool {
-	key, _, ok := strings.Cut(token, "=")
-	if !ok || key == "" {
-		return false
-	}
-	for i, r := range key {
-		if i == 0 {
-			if r != '_' && !unicode.IsLetter(r) {
-				return false
-			}
-			continue
-		}
-		if r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			return false
-		}
-	}
-	return true
+	return config.ParseBackendHint(command)
 }

@@ -13,6 +13,7 @@ import type {
   DependencyCycleRow,
   DependencyAttentionRow,
   OutboxEntryRow,
+  FailureRow,
 } from '../types/schemas';
 
 /**
@@ -51,3 +52,4 @@ export const EMPTY_DEPENDENCY_CYCLES: DependencyCycleRow[] = [];
 export const EMPTY_DEPENDENCY_ATTENTION: DependencyAttentionRow[] = [];
 // outbox Task 4 — stable empty fallback for the Outbox panel.
 export const EMPTY_OUTBOX_ENTRIES: OutboxEntryRow[] = [];
+export const EMPTY_RECENT_FAILURES: FailureRow[] = [];

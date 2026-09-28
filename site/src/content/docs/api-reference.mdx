@@ -20,19 +20,37 @@ http://localhost:8090/api/v1
 ### Dashboard / API bearer auth
 
 By default, on every bind — including loopback (`127.0.0.1`, `localhost`,
-`::1`) — Itervox secures all `/api/v1/*` routes except `/api/v1/health` with
-bearer-token auth. Bind address is not treated as a security boundary: a
+`::1`) — Itervox secures all `/api/v1/*` routes except `/api/v1/health` and
+`/api/v1/ready` with bearer-token auth (and `/metrics`, when enabled, with the
+same token). Bind address is not treated as a security boundary: a
 loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
 one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
 - If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
   `false` (the default), Itervox auto-generates an ephemeral token at
-  startup and prints the tokened dashboard URL to stderr once.
+  startup and prints the tokened dashboard URL to stderr once — only when
+  stderr is a terminal or `ITERVOX_PRINT_TOKEN=1` (`--no-print-token`
+  always suppresses it). Otherwise the token is written to
+  `<logs-dir>/api-token` (mode 0600) and the log carries only its path and
+  a `sha256:` fingerprint.
 - `server.allow_unauthenticated: true` disables auth entirely, on every
   bind. Renamed from `server.allow_unauthenticated_lan`, which still parses
   as a deprecated alias.
-- `GET /api/v1/health` is always auth-exempt — the only auth-exempt route.
+- With `server.allow_unauthenticated: true`, state-changing requests (`POST`,
+  `PUT`, `PATCH`, `DELETE`) from another origin are refused with `403`
+  `cross_origin_forbidden`: `Sec-Fetch-Site: cross-site`/`same-site`, or an
+  `Origin` whose host and port differ from `Host` (scheme is not compared;
+  `Origin: null` never matches). Requests with neither header (curl,
+  scripts) and `GET`/SSE pass. Token mode has no origin check.
+- With `server.allow_unauthenticated: true`, every route (API, SSE,
+  dashboard) refuses a request whose `Host` is a DNS name other than
+  `localhost`, `server.host` or one in `server.allowed_hosts` with `403`
+  `host_not_allowed` (DNS-rebinding guard). IP addresses always pass;
+  `GET /api/v1/health` and `GET /api/v1/ready` are exempt. Token mode has no
+  Host check.
+- `GET /api/v1/health` and `GET /api/v1/ready` are always auth-exempt — the
+  only auth-exempt routes. `GET /metrics` is never auth-exempt.
 
 ```bash
 curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
@@ -76,6 +94,10 @@ JSON errors use the typed envelope below:
 ```
 
 - `field` is optional and is mainly used by settings/forms.
+- The dashboard surfaces `message` in its error toasts. A `503` whose `code`
+  is `orchestrator_busy`, `settings_reloading` or `deps_override_queue_full`
+  means nothing was enqueued or written; the dashboard retries such a request
+  once after `Retry-After`. Other `503`s are not retried.
 - Some legacy streaming code paths still use plain text responses for transport
   failures before SSE framing starts.
 
@@ -93,7 +115,92 @@ Auth-exempt liveness probe.
 { "status": "ok" }
 ```
 
+A static answer: it proves the HTTP server is up, not that the orchestrator
+is working. Use it for liveness (restart-on-failure); use `/ready` for
+readiness and alerting.
+
+### `GET /api/v1/ready`
+
+Auth-exempt readiness probe driven by the orchestrator's event loop. `200`
+when ready, `503` when not; the body is the same either way and holds only
+booleans and one timestamp:
+
+```json
+{
+  "ready": true,
+  "loop_fresh": true,
+  "last_poll_ok": true,
+  "config_invalid": false,
+  "degraded": false,
+  "tracker_rate_limited_until": null,
+  "draining": false
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `ready` | `loop_fresh`, fewer than 3 consecutive failed tracker polls, and not `draining`. |
+| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event — for example a slow tracker call — it stays fresh for up to 10 minutes (the tick budget). Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
+| `last_poll_ok` | The most recent tick polled the tracker and the poll succeeded (`false` before the first poll and while polling is shed for budget). |
+| `config_invalid` | The last `WORKFLOW.md` reload failed validation; the daemon keeps running on its last valid config. |
+| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
+| `tracker_rate_limited_until` | RFC 3339 instant the tracker rate-limit gate lifts, `null` while it is closed. |
+| `draining` | The daemon is draining — after `SIGTERM`/`SIGINT`, or before applying an operator edit to `WORKFLOW.md` — and admits no new work while in-flight agent turns finish. A draining daemon answers `503` so a load balancer stops routing to it; `loop_fresh` stays `true`. |
+
+A rate-limited poll does not count as a failure: the tracker said when to
+come back, so the probe reports `degraded` and stays ready. `config_invalid`
+does not make the daemon unready either — taking it out of a load balancer
+would hide the dashboard you fix the file from. Like `/health`, `/ready` is
+exempt from the unauthenticated-mode Host guard: its body carries no error
+text, identifiers or configuration.
+
 ---
+
+## Metrics
+
+### `GET /metrics`
+
+Prometheus text exposition (`text/plain; version=0.0.4`). Off by default:
+set `server.metrics.enabled: true`. Requires the same bearer token as
+`/api/v1/*` (in `allow_unauthenticated` mode it is open like the rest of the
+API and subject to the Host guard). Disabled, it answers `404`.
+
+```bash
+curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" http://localhost:8090/metrics
+```
+
+| Family | Type | Labels | Meaning |
+|---|---|---|---|
+| `itervox_workers_running` | gauge | | Agent workers running now. |
+| `itervox_workers_max` | gauge | | `agent.max_concurrent_agents` as of the last tick. |
+| `itervox_retry_queue_length` | gauge | | Issues waiting to retry. |
+| `itervox_automation_queue_length` | gauge | | Automation queue entries. |
+| `itervox_input_required` | gauge | | Issues waiting for human input. |
+| `itervox_paused_issues` | gauge | | Paused issues. |
+| `itervox_worker_exits_total` | counter | `reason` | Worker exits (`succeeded`, `failed`, `stalled`, `input_required`, `canceled_by_reconciliation`). |
+| `itervox_tracker_requests_total` | counter | `adapter`, `outcome` | Tracker HTTP calls after in-call retries; `outcome` is `ok`, `rate_limited` or `error` (transport failure). |
+| `itervox_goroutine_panics_total` | counter | | Panics recovered on daemon goroutines (the site is in the log line). |
+| `itervox_events_dropped_total` | counter | | Orchestrator events that could not be delivered (full channel or send timeout). |
+| `itervox_client_errors_total` | counter | `kind`, `outcome` | Dashboard error reports on `POST /api/v1/client-errors`; `kind` is `render`, `error`, `unhandledrejection`, `schema` or `other`, `outcome` is `accepted`, `rate_limited` or `dropped`. |
+| `itervox_persist_write_errors_total` | counter | | Failed runtime-ledger writes. Resets on a `WORKFLOW.md` reload. |
+| `itervox_transport_failures_total` | counter | | Retry-exhausted runs classified as transport failures. Resets on reload. |
+| `itervox_dispatch_ticks_total` | counter | `bound` | Poll ticks observed (`any`), and those that were slot-bound (`slot`) or dependency-bound (`dependency`). Resets on reload. |
+| `itervox_dispatch_eligible_waiting` | gauge | | Eligible issues waiting for a slot on the last tick. |
+| `itervox_dispatch_blocked_by_dependency` | gauge | | Candidates held by a dependency gate on the last tick. |
+| `itervox_outbox_entries` | gauge | `state` | Outbox entries: `pending` (all), `degraded`, `rate_limited`. |
+| `itervox_tracker_rate_limited_until_seconds` | gauge | `adapter` | Unix time the tracker rate-limit gate lifts; `0` while closed. |
+| `itervox_tracker_poll_consecutive_failures` | gauge | | Consecutive failed (non-rate-limited) candidate polls. |
+| `itervox_tracker_last_error_timestamp_seconds` | gauge | `kind` | Unix time of the last tracker failure (`outage` or `rate_limited`); absent when none. |
+| `itervox_event_loop_last_idle_timestamp_seconds` | gauge | | Unix time the event loop last finished an iteration. |
+
+No series carries an issue identifier. The process-wide counters survive a
+`WORKFLOW.md` reload; the ones marked "resets on reload" belong to the
+orchestrator generation and restart from zero, which `rate()` handles as a
+counter reset. A scrape never waits on a settings save: it reads the
+orchestrator snapshot, the outbox and the rate-limit gate only.
+
+---
+
 
 ## Real-time streams
 
@@ -121,8 +228,12 @@ Per-issue in-memory log SSE stream.
 Per-issue session/subagent log SSE stream.
 
 - Event name: `sublog`
-- Event shape: `id: <cursor>\nevent: sublog\ndata: <JSON IssueLogEntry>\n\n`
-- Supports resume via `Last-Event-ID`
+- Event shape: `id: <epoch>-<seq>\nevent: sublog\ndata: <JSON IssueLogEntry>\n\n`
+  (CORE-153). `epoch` identifies the issue's current set of session-log entries
+  and changes when the session files are replaced or cleared.
+- Supports resume via `Last-Event-ID`; a cursor from another epoch, a bare
+  pre-CORE-153 number or one past the end gets `id: <epoch>-0\nevent: gap` and a
+  full replay.
 - On mid-stream fetch failure the server emits:
 
 ```text
@@ -159,6 +270,100 @@ Useful top-level fields include:
 - `sshHosts`, `dispatchStrategy`
 - `autoClearWorkspace`, `inlineInput`
 - `configInvalid`
+- `lastTrackerError` — the most recent tracker failure, absent when none:
+  `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
+  "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
+  a poll failure; a failed failed-state move stays for up to an hour.
+- `outboxEntries[].lastFailedAt` — when that outbox entry last failed to
+  deliver (rate-limit deferrals do not count).
+- `backendHealth` (CORE-055) — one row per agent backend, and per SSH host
+  that has a breaker: `{ "backend", "host"?, "status": "healthy" | "warning"
+  | "limited" | "probing", "kind"?: "quota" | "throttle", "limitType"?,
+  "limitedUntil", "retryAt"?, "since"?, "probeIssue"?, "heldIssues",
+  "reroutedIssues" }`. `limitedUntil` is always present and `null` unless the
+  vendor published a reset time; `retryAt` is when the breaker half-opens
+  (the reset, or the cooldown end). This is the AGENT backend, unrelated to
+  `rateLimits` (tracker API budget) and `outboxEntries[].rateLimitedUntil`
+  (tracker writes). Absent on older daemons.
+- `autoSwitches` (CORE-055) — issues whose next run uses an automatic
+  override: `{ "identifier", "source": "automation" | "backend_fallback" |
+  "unknown", "fromBackend"?, "fromProfile"?, "toBackend"?, "toProfile"?,
+  "reason"?, "switchedAt"? }`, sorted by identifier. It describes the next
+  dispatch; the running session's backend stays on `running[].backend`.
+  `/api/v1/issues` rows carry the same object as `autoSwitch`, and an issue
+  held by an open breaker has `ineligibleReason: "backend_limited"`.
+- `pauseReasons` — `{ "<identifier>": "<reason>" }` for currently paused
+  issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted` or
+  `transition_failed` (treat unknown values as opaque). An issue paused by an
+  older daemon without a recorded reason is absent. Omitted when empty.
+- `failureAcks` (CORE-175) — `[{ "identifier", "upTo" }]`, sorted by
+  identifier: the operator's acknowledgements of worker failures (see
+  `POST /issues/{identifier}/failures/ack`). Omitted when empty.
+- `capabilities` — optional daemon features the dashboard may use; currently
+  `["failure_ack"]`. Treat unknown entries as opaque.
+- `totals` (CORE-091) — daemon-session cumulative, reset on restart:
+  `{ "inputTokens", "outputTokens", "costUsdEstimated", "costCoverage":
+  { "claudeRuns", "codexRuns" } }`. `costUsdEstimated` is the sum of Claude's
+  client-side `total_cost_usd` estimates — counted per agent session, so a
+  resumed session is not counted twice — and is `null` until a Claude run
+  reports a cost. Codex reports no cost: `codexRuns > 0` means the estimate
+  covers Claude runs only.
+- `recentFailures` — always an array (possibly empty) on a current daemon:
+  the last 100 operator-relevant failures, oldest recorded first. Each row is
+  `{ "kind", "identifier"?, "source"?, "message", "occurredAt", "recordedAt",
+  "count" }`. `kind` is `worker_failed`, `worker_stalled`, `tracker_poll`,
+  `tracker_write`, `persist`, `outbox`, `panic`, `client` or `automation` (an
+  automation that could not be dispatched, e.g. `pr_merged` after a merge) (treat unknown
+  kinds as opaque). `message` is built from the classified error only (never
+  prompt text or agent output), redacted, and capped at 1 KiB. Identical
+  consecutive failures coalesce into one row with a `count`. `occurredAt` is
+  when the failure happened (latest repeat), `recordedAt` when the daemon
+  recorded it; an off-loop failure can be recorded after a newer one, so sort
+  by `occurredAt` to display. Rate-limited polls and outbox rate-limit
+  deferrals are not failures. The list survives a `WORKFLOW.md` reload but not
+  a daemon restart.
+
+Retry rows' `error` and the rest of an agent failure's text are passed
+through the log redactor before they reach the snapshot: known key shapes,
+`NAME=value` assignments whose upper-case name contains `SECRET`, `TOKEN`,
+`PASSWORD`, `API_KEY`, `PRIVATE_KEY`, `ACCESS_KEY` or `CREDENTIAL`, the same
+with a lower- or mixed-case name (`password=`, `api_key=`, `"apiKey":`,
+`x-api-key:`), HTTP Basic credentials, URL passwords (also with an empty
+user), and long random-looking tokens (also inside a path) appear as `***`.
+Vendor request ids (`req_…`, `msg_…`), SRI hashes, git SHAs, UUIDs and
+ordinary paths stay readable.
+
+---
+
+
+## Client error reports
+
+### `POST /api/v1/client-errors`
+
+The dashboard reports its own production failures here — error-boundary
+crashes, uncaught `error` / `unhandledrejection` events, and snapshot schema
+drift — so they reach the daemon log, `itervox_client_errors_total` and
+`recentFailures` (kind `client`). Authenticated like the rest of `/api/v1`
+(bearer token; in `allow_unauthenticated` mode the CSRF guard and Host guard
+apply).
+
+```json
+{ "kind": "render", "message": "Cannot read properties of undefined", "route": "/settings", "stack": "..." }
+```
+
+- `kind`: `render`, `error`, `unhandledrejection` or `schema`; any other value
+  is recorded as `other`. `message` is required.
+- The body is capped at 8 KiB **including trailing bytes** and must be exactly
+  one JSON object. The daemon redacts `message`, `route` and `stack` and
+  bounds them (1 KiB, 256 B, 2 KiB) before logging.
+- Responses: `202 {"accepted":true}`; `400 bad_request` (malformed, empty
+  message, trailing data); `413 payload_too_large`; `429 rate_limited`
+  (a daemon-wide budget of 20 reports, refilling one per 3 s, with
+  `Retry-After`); `503 orchestrator_busy` when the event queue is full (the
+  report is dropped, not queued).
+- The dashboard itself dedupes identical `{kind, message, route}` reports for
+  60 s, sends at most 10 per minute per tab, never reports its own failed
+  POST, and sends nothing while it is on the token or server-down screen.
 
 ---
 
@@ -183,6 +388,30 @@ Useful top-level fields include:
 | `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch |
 | `PATCH` | `/issues/{identifier}/state` | `{"state":"In Review"}` | `{"ok":true,"identifier":"ENG-1","state":"In Review"}` | Triggers immediate refresh |
 
+While the daemon is draining (see `draining` under `/ready`), `resume`,
+`reanalyze`, `ai-review` and `provide-input` are refused with
+`409 {"code":"draining"}`: nothing was queued; re-send once the daemon is
+back.
+
+### Backend health
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `POST` | `/backend-health/clear` | `{"backend":"claude","host":""}` | `202 {"queued":true,"backend":"claude","host":""}` |
+
+Closes one agent-backend circuit breaker (`backendHealth[]` on the
+snapshot) when you know the backend is available again. `host` is empty for
+local runs or the SSH worker host of a host-scoped breaker. The clear is
+queued on the orchestrator's event loop: `202` means queued — watch
+`/api/v1/state` or the SSE stream for the row to turn `healthy`. Issues held
+with `backend_limited` on that breaker are re-evaluated on the next dispatch
+pass. Errors: `400 bad_request` (`field: "backend"` unless `claude` or
+`codex`; `field: "host"` for a malformed host), `503 event_queue_full`
+(retry), `501 not_implemented`. Like every state-changing route it needs the
+bearer token, or, in `server.allow_unauthenticated` mode, passes the
+cross-origin guard. The dashboard offers the same action as **Clear** next to
+a limited backend chip.
+
 ### Per-issue overrides and human-input flow
 
 | Method | Path | Request body | Success response |
@@ -191,9 +420,28 @@ Useful top-level fields include:
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
 | `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
 | `POST` | `/issues/{identifier}/deps-override` | — | `202 {"identifier":"ENG-1","overridden":true}` |
 | `DELETE` | `/issues/{identifier}/deps-override` | — | `202 {"identifier":"ENG-1","overridden":false}` |
+
+`backend` returns `400 bad_request` for anything but `claude`, `codex` or `""`,
+and `409 backend_pin_refused` (with the resolver's reason in `message`,
+`field: "backend"`) when the issue's command runs the other backend — for
+example a `codex` pin over a `claude ...` profile, which the dispatcher would
+refuse. A refused pin is not stored. A pin applies from the next run and wins
+over `agent.backend_fallback`.
+
+`failures/ack` (CORE-175) acknowledges the issue's `worker_failed` /
+`worker_stalled` rows in `recentFailures` that occurred at or before `upTo`
+(RFC 3339), so the dashboard's attention inbox stops counting them; a newer
+failure is not covered. `400 bad_request` for a missing or unparsable `upTo`,
+`404 issue_not_found` when the issue has no such row, `503 orchestrator_busy`
+(`Retry-After: 1`) when the event queue is full. The ack is applied by the
+event loop (the latest `upTo` per issue wins), is allowed while the daemon
+drains (it starts no work), and is not persisted: like `recentFailures`, it
+does not survive a restart, and it is dropped once the issue's failures leave
+the ring. Offered only when `capabilities` includes `failure_ack`.
 
 `provide-input` / `dismiss-input` return `404 not_found` when the issue is not
 currently in `input_required`. `provide-input` returns `409 inline_input_enabled`
@@ -260,7 +508,11 @@ Notes:
 
 ## Runtime settings
 
-All settings endpoints persist back to `WORKFLOW.md`.
+All settings endpoints persist back to `WORKFLOW.md` and apply the value in
+memory. None of them reloads `WORKFLOW.md`, so saving a setting never touches
+an in-flight agent turn — this now includes `/settings/tracker/states`, the
+Linear project filter (`PUT /projects/filter`) and
+`POST /settings/models/refresh`, which used to reload (CORE-160).
 
 | Method | Path | Request body | Success response |
 |---|---|---|---|
@@ -344,7 +596,7 @@ field derived from `instructions`; new clients should use the file-backed fields
 | `GET` | `/settings/reviewer` | `{"profile":"reviewer","auto_review":true}` |
 | `PUT` | `/settings/reviewer` | `{"ok":true}` |
 | `GET` | `/settings/models` | `{ "<backend>": [ModelOption] }` |
-| `POST` | `/settings/models/refresh` | Re-queries each backend's `--list-models` and refreshes the cached list |
+| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "all"}` (default `all`); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
 
 `PUT /settings/reviewer` request body:
 

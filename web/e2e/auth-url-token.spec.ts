@@ -18,11 +18,20 @@ test.afterAll(async () => {
   await daemon.stop();
 });
 
-async function expectStateApiOK(page: Page) {
-  const status = await page.evaluate(async () => {
-    const res = await fetch('/api/v1/state');
-    return res.status;
+// The API only accepts `Authorization: Bearer`, so a bare fetch is always
+// 401. Use the token AuthGate persisted (same lookup order as tokenStore) to
+// prove the app stored the right one and that it authorizes the API.
+async function expectStateApiOK(page: Page, expectedToken: string) {
+  const { stored, status } = await page.evaluate(async () => {
+    const token =
+      localStorage.getItem('itervox.apiToken.persistent') ??
+      sessionStorage.getItem('itervox.apiToken');
+    const res = await fetch('/api/v1/state', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return { stored: token, status: res.status };
   });
+  expect(stored).toBe(expectedToken);
   expect(status).toBe(200);
 }
 
@@ -33,7 +42,7 @@ test('captures ?token= from the URL and renders the dashboard immediately', asyn
   await expect(page.getByText(/^Live$/)).toBeVisible({ timeout: 10_000 });
   // The token entry heading should NOT appear.
   await expect(page.getByRole('heading', { name: /enter your itervox token/i })).toHaveCount(0);
-  await expectStateApiOK(page);
+  await expectStateApiOK(page, daemon.token);
 
   // The query param should be stripped from the URL.
   await expect.poll(() => new URL(page.url()).searchParams.get('token')).toBeNull();
@@ -46,5 +55,5 @@ test('a stored token survives a page reload (sessionStorage)', async ({ page }) 
   // Reload — without the query param, AuthGate must read from sessionStorage.
   await page.reload();
   await expect(page.getByText(/^Live$/)).toBeVisible({ timeout: 10_000 });
-  await expectStateApiOK(page);
+  await expectStateApiOK(page, daemon.token);
 });

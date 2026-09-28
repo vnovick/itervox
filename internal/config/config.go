@@ -71,9 +71,11 @@ const (
 
 // DefaultServerPort is the HTTP port bound when `server.port` is absent from
 // WORKFLOW.md. A fixed default — not ephemeral — so the dashboard URL survives
-// daemon restarts and config reloads; 8090 matches the Vite dev proxy target
-// and the scaffolded WORKFLOW.md. An explicit `server.port: 0` still asks the
-// OS for a free port, which is the knob for running several daemons at once.
+// daemon restarts and config reloads; 8090 matches the Vite dev proxy target.
+// `itervox init` does NOT scaffold this default: it writes an explicit
+// `server.port: 0` (OS-assigned), the knob for running several daemons at
+// once, so this constant only applies when `server.port` is omitted from
+// WORKFLOW.md entirely (e.g. hand-written or older configs).
 const DefaultServerPort = 8090
 
 // DefaultRateLimitReservePercent is the share of the tracker request budget
@@ -108,6 +110,28 @@ const (
 	// DepsAnalysisModeManual leaves the analyzer to explicit operator triggers.
 	DepsAnalysisModeManual = "manual"
 )
+
+// agent.rate_limit_error_patterns_mode values (CORE-100).
+const (
+	// RateLimitPatternsModeReplace (the default) makes a non-empty
+	// agent.rate_limit_error_patterns the whole list: the built-in defaults
+	// no longer apply.
+	RateLimitPatternsModeReplace = "replace"
+	// RateLimitPatternsModeExtend adds the operator's patterns to the
+	// built-in defaults.
+	RateLimitPatternsModeExtend = "extend"
+)
+
+// ValidateRateLimitPatternsMode reports whether mode is an accepted
+// agent.rate_limit_error_patterns_mode value. Exact lowercase tokens only.
+func ValidateRateLimitPatternsMode(mode string) error {
+	switch mode {
+	case RateLimitPatternsModeReplace, RateLimitPatternsModeExtend:
+		return nil
+	}
+	return fmt.Errorf("config: agent.rate_limit_error_patterns_mode must be %q or %q, got %q",
+		RateLimitPatternsModeExtend, RateLimitPatternsModeReplace, mode)
+}
 
 // ValidateDepsAnalysisMode reports whether mode is an accepted
 // dependencies.analysis_mode value. Exact lowercase tokens only.
@@ -466,11 +490,23 @@ type AgentConfig struct {
 	// orchestrator's terminal-failure classifier matches against the
 	// worker's last-error text to decide if a failure was rate-limit
 	// driven (and so should fire `rate_limited` automations rather than
-	// just `run_failed`). Empty → uses the built-in default list
-	// (rate_limit_exceeded / rate limit / 429 / quota / too many requests).
-	// Operators can extend or override the list when a vendor surfaces
-	// new throttle wording. Gap §5.1.
+	// just `run_failed`). Empty → the built-in default list
+	// (orchestrator.defaultRateLimitErrorPatterns plus its clause rules and
+	// the agent-side standalone 429 rule). A non-empty list either REPLACES
+	// the defaults or is ADDED to them, per RateLimitErrorPatternsMode.
+	// Gap §5.1.
 	RateLimitErrorPatterns []string
+	// RateLimitErrorPatternsMode is agent.rate_limit_error_patterns_mode
+	// (CORE-100): "replace" (default — the pre-CORE-100 behaviour) or
+	// "extend". WORKFLOW.md only; no runtime setter, so it is not in the
+	// cfgMu allowlist. Read next to RateLimitErrorPatterns so the classifier
+	// always sees a consistent pair.
+	RateLimitErrorPatternsMode string
+	// BackendFallback is agent.backend_fallback (CORE-054): the declarative
+	// per-backend profile mapping used when a backend is limited, with
+	// reset-time switch-back and a minimum dwell. Read at config load only;
+	// not runtime-mutable, so not in the cfgMu allowlist.
+	BackendFallback BackendFallbackConfig
 	// MaxRetries is the maximum number of retry attempts before an issue is
 	// moved to the failed state. 0 means unlimited retries (legacy behavior).
 	// Default: 5.
@@ -512,6 +548,11 @@ type HooksConfig struct {
 type ServerConfig struct {
 	Port *int
 	Host string
+	// HostSource / PortSource name what set Host / Port (CORE-058):
+	// "ITERVOX_SERVER_HOST", "ITERVOX_SERVER_PORT", "PORT", "server.host",
+	// "server.port" or "default". Logged at bind time. Read-only after load.
+	HostSource string
+	PortSource string
 	// AllowUnauthenticatedLAN, when true, lets the daemon start (on ANY
 	// bind address, loopback included) without requiring ITERVOX_API_TOKEN.
 	// Explicit opt-in for trusted environments. Default false: a random
@@ -524,6 +565,26 @@ type ServerConfig struct {
 	// `server.allow_unauthenticated_lan` still parses as a deprecated alias
 	// (one-time slog.Warn); the new key wins if both are present.
 	AllowUnauthenticatedLAN bool
+	// AllowedHosts (YAML `server.allowed_hosts`) lists extra Host-header
+	// names the dashboard answers in allow_unauthenticated mode. Without a
+	// token the server refuses any request addressed to a DNS name other than
+	// localhost, server.host, or one listed here (DNS-rebinding protection,
+	// CORE-162); IP literals are always accepted. Reverse-proxy, tunnel and
+	// MagicDNS hostnames belong here. Ignored in token mode. Read-only after
+	// startup.
+	AllowedHosts []string
+	// Metrics (YAML `server.metrics`) controls the Prometheus text endpoint
+	// GET /metrics (CORE-045). Read-only after startup.
+	Metrics MetricsConfig
+}
+
+// MetricsConfig is `server.metrics`.
+type MetricsConfig struct {
+	// Enabled (YAML `server.metrics.enabled`, default false) registers
+	// GET /metrics on the dashboard listener, behind the same bearer token
+	// as the rest of the API. Off by default so an upgrade exposes nothing
+	// new; when off, /metrics answers 404.
+	Enabled bool
 }
 
 // DependenciesConfig holds settings for the unified dependency graph:
@@ -594,7 +655,12 @@ type Config struct {
 	SchemaVersion int
 	// WorkflowPath is the path passed to Load, used for actionable validation
 	// and migration errors.
-	WorkflowPath   string
+	WorkflowPath string
+	// WorkflowHash is the sha256 of the WORKFLOW.md bytes Load parsed into
+	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
+	// watcher's baseline (M1-close C2). Zero when not built by Load.
+	// Read-only after startup.
+	WorkflowHash   [32]byte
 	Tracker        TrackerConfig
 	Polling        PollingConfig
 	Workspace      WorkspaceConfig
@@ -632,6 +698,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.WorkflowHash = wf.ContentHash
 	return cfg, nil
 }
 
@@ -716,7 +783,11 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	// T-32: optional StrictHostKeyChecking config. Default "accept-new" (TOFU)
 	// is enforced at the agent package level even if the field is omitted from
 	// WORKFLOW.md, so this just lets users override the default.
-	cfg.Agent.SSHStrictHostChecking = strField(agent, "ssh_strict_host_checking", "")
+	sshStrict, sshStrictErr := sshStrictHostCheckingField(agent)
+	if sshStrictErr != nil {
+		return nil, sshStrictErr
+	}
+	cfg.Agent.SSHStrictHostChecking = sshStrict
 	cfg.Agent.SSHStrictHostByHost = stringMapField(agent, "ssh_strict_host_by_host", nil)
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
@@ -744,7 +815,18 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.SwitchRevertHours = intField(agent, "switch_revert_hours", 0)
 	// Gap §5.1 — operator-configurable rate-limit error-message patterns.
 	cfg.Agent.RateLimitErrorPatterns = strSliceField(agent, "rate_limit_error_patterns", nil)
+	// CORE-100 — replace (default) | extend; an unknown value fails the load.
+	cfg.Agent.RateLimitErrorPatternsMode = strings.TrimSpace(strField(agent, "rate_limit_error_patterns_mode", RateLimitPatternsModeReplace))
+	if err := ValidateRateLimitPatternsMode(cfg.Agent.RateLimitErrorPatternsMode); err != nil {
+		return nil, err
+	}
 	cfg.Agent.SwitchWindowHours = intField(agent, "switch_window_hours", 6)
+	// CORE-054 — agent.backend_fallback (validated in ValidateDispatch).
+	backendFallback, err := parseBackendFallback(agent)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agent.BackendFallback = backendFallback
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
@@ -774,12 +856,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			cfg.Server.Port = &pInt
 		}
 	}
+	yamlPortSet := cfg.Server.Port != nil
 	// Absent (or unparseable) port → fixed default. Port stays a *int only so
 	// an explicit `0` (OS picks a free port, for multi-daemon setups) remains
 	// distinguishable in the YAML; after load it is always non-nil.
 	if cfg.Server.Port == nil {
 		defaultPort := DefaultServerPort
 		cfg.Server.Port = &defaultPort
+	}
+	// CORE-058: ITERVOX_SERVER_HOST / ITERVOX_SERVER_PORT / PORT override the
+	// YAML (see server_env.go for the precedence).
+	_, yamlHostSet := srv["host"]
+	if err := applyServerEnv(cfg, yamlHostSet, yamlPortSet, os.LookupEnv); err != nil {
+		return nil, err
 	}
 	// Alias: server.allow_unauthenticated_lan is deprecated in favor of
 	// server.allow_unauthenticated (#48 — the flag is no longer LAN-scoped,
@@ -798,6 +887,17 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
 	default:
 		cfg.Server.AllowUnauthenticatedLAN = false
+	}
+	allowedHosts, err := normalizeAllowedHosts(strSliceField(srv, "allowed_hosts", nil))
+	if err != nil {
+		return nil, err
+	}
+	cfg.Server.AllowedHosts = allowedHosts
+	cfg.Server.Metrics.Enabled = boolField(nestedMap(srv, "metrics"), "enabled", false)
+	if v, ok := srv["allowed_hosts"]; ok && v != nil {
+		if _, isList := v.([]any); !isList {
+			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
+		}
 	}
 
 	// Dependencies

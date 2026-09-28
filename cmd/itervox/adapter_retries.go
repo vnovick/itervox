@@ -14,6 +14,11 @@ import (
 // SetMaxRetries persists agent.max_retries to WORKFLOW.md, then applies the
 // change to the orchestrator. Negative values are clamped to 0 (unlimited).
 func (a *orchestratorAdapter) SetMaxRetries(n int) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if n < 0 {
 		n = 0
 	}
@@ -32,6 +37,11 @@ func (a *orchestratorAdapter) MaxRetries() int {
 // meaning "pause"), persists tracker.failed_state to WORKFLOW.md, then applies
 // the change to the orchestrator.
 func (a *orchestratorAdapter) SetFailedState(stateName string) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	stateName = strings.TrimSpace(stateName)
 	if stateName != "" {
 		active, terminal, _ := a.orch.TrackerStatesCfg()
@@ -57,6 +67,11 @@ func (a *orchestratorAdapter) FailedState() string {
 // to WORKFLOW.md, then applies the change to the orchestrator. Negative values
 // are clamped to 0 (= unlimited). Gap E.
 func (a *orchestratorAdapter) SetMaxSwitchesPerIssuePerWindow(n int) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if n < 0 {
 		n = 0
 	}
@@ -74,6 +89,11 @@ func (a *orchestratorAdapter) MaxSwitchesPerIssuePerWindow() int {
 // SetSwitchWindowHours persists agent.switch_window_hours to WORKFLOW.md, then
 // applies the change to the orchestrator. Values <= 0 normalise to 6h. Gap E.
 func (a *orchestratorAdapter) SetSwitchWindowHours(h int) error {
+	unlock, lockErr := a.beginSettingsSave()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if h <= 0 {
 		h = 6
 	}

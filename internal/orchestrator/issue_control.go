@@ -1,10 +1,29 @@
 package orchestrator
 
 import (
+	"errors"
 	"log/slog"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/metrics"
 )
+
+// ErrBusy is returned by the issue-control methods below when a
+// non-blocking send to the orchestrator's event channel found it full. It
+// means only "the request was not enqueued; try again" — it never means the
+// identifier was not found. Callers (internal/server's handlers, via the
+// OrchestratorClient adapter in cmd/itervox) must map it to HTTP 503 with a
+// Retry-After hint, not 404 (CORE-005).
+var ErrBusy = errors.New("orchestrator: event channel full")
+
+// ErrNotFound is returned by CancelIssue, ResumeIssue, TerminateIssue and
+// ReanalyzeIssue when a synchronous state lookup — performed BEFORE any
+// attempt to send an event — establishes that the identifier is not in the
+// state the call requires (e.g. ResumeIssue on an issue that isn't paused).
+// ProvideInput and DismissInput never return this: they perform no lookup,
+// so for them a non-nil error is ErrBusy (CORE-005) — or, for ProvideInput,
+// ErrDraining while the daemon drains (CORE-057).
+var ErrNotFound = errors.New("orchestrator: issue not found in the required state")
 
 // CancelIssue cancels a running or retry-queued issue and marks it as paused
 // so it is not automatically retried. The issue stays paused until ResumeIssue
@@ -13,10 +32,12 @@ import (
 //   - If the issue is in the retry queue (no live worker), an EventCancelRetry
 //     is sent to the event loop which removes the retry entry and pauses the issue.
 //
-// Returns true if an action was taken, false if the issue is neither running
-// nor queued for retry.
+// Returns nil if an action was taken, ErrNotFound if the issue is neither
+// running nor queued for retry, or ErrBusy if the event channel was full
+// (retry-queue cancel path only — the live-worker cancel path never sends an
+// event).
 // Safe to call from any goroutine.
-func (o *Orchestrator) CancelIssue(identifier string) bool {
+func (o *Orchestrator) CancelIssue(identifier string) error {
 	// Mark as user-cancelled BEFORE cancelling the worker so the exit handler
 	// in the event loop sees the flag when the EventWorkerExited arrives.
 	o.userCancelledMu.Lock()
@@ -30,7 +51,7 @@ func (o *Orchestrator) CancelIssue(identifier string) bool {
 		o.userCancelledMu.Unlock()
 	})
 	if cancelled {
-		return true
+		return nil
 	}
 
 	// No live worker — check if the issue is in the retry queue.
@@ -45,28 +66,33 @@ func (o *Orchestrator) CancelIssue(identifier string) bool {
 	o.snapMu.RUnlock()
 
 	if retryIssueID == "" {
-		return false
+		return ErrNotFound
 	}
 
 	select {
 	case o.events <- OrchestratorEvent{Type: EventCancelRetry, IssueID: retryIssueID, Identifier: identifier}:
 	default:
-		return false // channel full; caller can retry
+		metrics.EventDropped() // CORE-045
+		return ErrBusy         // channel full; caller can retry
 	}
 	slog.Info("orchestrator: retry-queue cancel queued", "identifier", identifier)
-	return true
+	return nil
 }
 
 // ResumeIssue removes a paused issue from the pause set, allowing it to be
 // dispatched again on the next tick.
-// Returns true if the issue was paused and is now resumed, false if not found.
+// Returns nil if the issue was paused and the resume was queued, ErrNotFound
+// if the issue was not paused, or ErrBusy if the event channel was full.
 // Safe to call from any goroutine.
-func (o *Orchestrator) ResumeIssue(identifier string) bool {
+func (o *Orchestrator) ResumeIssue(identifier string) error {
+	if o.isDraining() { // CORE-057
+		return ErrDraining
+	}
 	o.snapMu.RLock()
 	_, isPaused := o.lastSnap.PausedIdentifiers[identifier]
 	o.snapMu.RUnlock()
 	if !isPaused {
-		return false
+		return ErrNotFound
 	}
 	// Route state mutation through the event loop so the change is applied to
 	// state.PausedIdentifiers (the event loop's source of truth), not just to
@@ -74,21 +100,30 @@ func (o *Orchestrator) ResumeIssue(identifier string) bool {
 	select {
 	case o.events <- OrchestratorEvent{Type: EventResumeIssue, Identifier: identifier}:
 	default:
-		return false // channel full; caller can retry
+		metrics.EventDropped() // CORE-045
+		return ErrBusy         // channel full; caller can retry
 	}
 	slog.Info("orchestrator: issue resume queued", "identifier", identifier)
-	return true
+	return nil
 }
 
-// TerminateIssue hard-stops an issue without adding it to PausedIdentifiers:
-//   - If a worker is running, it is cancelled and the claim is released
-//     (the issue will be re-dispatched on the next poll cycle).
-//   - If the issue is paused, it is removed from PausedIdentifiers so it can
-//     be re-dispatched without a manual resume.
+// TerminateIssue discards an issue without adding it to PausedIdentifiers:
+//   - If a worker is running, it is cancelled; the claim is released when
+//     the event loop processes the worker's exit.
+//   - If the issue is paused, it is removed from PausedIdentifiers (and its
+//     captured session dropped) instead of being resumed.
 //
-// Returns true if any action was taken (worker cancelled or paused removed).
+// In both cases the event loop then moves the issue in the tracker via
+// asyncDiscardAndTransition: to the first tracker.backlog_states entry, else
+// the first tracker.active_states entry. The move is skipped when neither
+// list is set or the issue UUID is unknown (a legacy paused entry). Only the
+// active_states fallback leaves the issue eligible for re-dispatch.
+//
+// Returns nil if any action was taken (worker cancel or paused-removal
+// queued), ErrNotFound if the issue is neither running nor paused, or
+// ErrBusy if the event channel was full.
 // Safe to call from any goroutine.
-func (o *Orchestrator) TerminateIssue(identifier string) bool {
+func (o *Orchestrator) TerminateIssue(identifier string) error {
 	// Clean up the per-issue backend override so stale entries don't persist.
 	o.issueBackendsMu.Lock()
 	delete(o.issueBackends, identifier)
@@ -112,14 +147,15 @@ func (o *Orchestrator) TerminateIssue(identifier string) bool {
 		select {
 		case o.events <- OrchestratorEvent{Type: EventTerminatePaused, Identifier: identifier, IssueID: issueID}:
 		default:
-			return false // channel full; caller can retry
+			metrics.EventDropped() // CORE-045
+			return ErrBusy         // channel full; caller can retry
 		}
 		slog.Info("orchestrator: paused issue terminate queued", "identifier", identifier)
-		return true
+		return nil
 	}
 
 	if !isRunning {
-		return false
+		return ErrNotFound
 	}
 
 	// Route the running-worker terminate through the event loop so it is
@@ -130,34 +166,40 @@ func (o *Orchestrator) TerminateIssue(identifier string) bool {
 	select {
 	case o.events <- OrchestratorEvent{Type: EventTerminateRunning, Identifier: identifier}:
 	default:
-		return false // channel full; caller can retry
+		metrics.EventDropped() // CORE-045
+		return ErrBusy         // channel full; caller can retry
 	}
 	slog.Info("orchestrator: running issue terminate queued", "identifier", identifier)
-	return true
+	return nil
 }
 
 // ReanalyzeIssue moves a paused issue from the pause set to the ForceReanalyze queue
 // so that the next dispatch cycle runs the agent again, bypassing the open-PR guard.
-// Returns false if the issue is not currently paused or the event channel is full.
+// Returns ErrNotFound if the issue is not currently paused, ErrBusy if the
+// event channel is full, or nil once the re-analysis is queued.
 // Safe to call from any goroutine.
-func (o *Orchestrator) ReanalyzeIssue(identifier string) bool {
+func (o *Orchestrator) ReanalyzeIssue(identifier string) error {
+	if o.isDraining() { // CORE-057
+		return ErrDraining
+	}
 	// Read-only check: is the issue actually paused?
 	o.snapMu.RLock()
 	_, paused := o.lastSnap.PausedIdentifiers[identifier]
 	o.snapMu.RUnlock()
 	if !paused {
-		return false
+		return ErrNotFound
 	}
 	// Route state mutation through the event loop — avoids concurrent map access
 	// between this goroutine and the event loop which reads state.ForceReanalyze.
 	select {
 	case o.events <- OrchestratorEvent{Type: EventForceReanalyze, Identifier: identifier}:
 	default:
+		metrics.EventDropped() // CORE-045
 		// Event channel full; caller can retry.
-		return false
+		return ErrBusy
 	}
 	slog.Info("orchestrator: issue queued for forced re-analysis", "identifier", identifier)
-	return true
+	return nil
 }
 
 // SetIssueProfile sets (or clears) a named agent profile override for a specific issue.
@@ -229,34 +271,46 @@ func (o *Orchestrator) cancelRunningWorker(identifier string, cleanupFn func()) 
 }
 
 // ProvideInput sends the user's message to an input-required issue, resuming
-// the agent session. Returns false if the issue is not in the input-required queue.
+// the agent session. It performs NO lookup — it is a bare non-blocking send —
+// so the only way it can fail is a full event channel: it returns ErrBusy in
+// that case and nil once the message is queued. Whether the issue was
+// actually in the input-required queue is the event loop's decision, not
+// this call's (CORE-005); a queued send for an issue that turns out not to
+// be waiting for input is a no-op there.
 // Safe to call from any goroutine.
-func (o *Orchestrator) ProvideInput(identifier, message string) bool {
+func (o *Orchestrator) ProvideInput(identifier, message string) error {
+	if o.isDraining() { // CORE-057: the resume would start a worker
+		return ErrDraining
+	}
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:       EventProvideInput,
 		Identifier: identifier,
 		Message:    message,
 	}:
-		return true
+		return nil
 	default:
+		metrics.EventDropped() // CORE-045
 		slog.Warn("orchestrator: provide-input event channel full", "identifier", identifier)
-		return false
+		return ErrBusy
 	}
 }
 
-// DismissInput moves an input-required issue to paused state without providing
-// input. Returns false if the issue is not in the input-required queue.
+// DismissInput moves an input-required issue to paused state without
+// providing input. Like ProvideInput, it performs no lookup: the only
+// failure mode is a full event channel (ErrBusy); nil once queued
+// (CORE-005).
 // Safe to call from any goroutine.
-func (o *Orchestrator) DismissInput(identifier string) bool {
+func (o *Orchestrator) DismissInput(identifier string) error {
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:       EventDismissInput,
 		Identifier: identifier,
 	}:
-		return true
+		return nil
 	default:
+		metrics.EventDropped() // CORE-045
 		slog.Warn("orchestrator: dismiss-input event channel full", "identifier", identifier)
-		return false
+		return ErrBusy
 	}
 }

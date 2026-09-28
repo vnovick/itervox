@@ -142,7 +142,8 @@ describe('skills queries', () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBe(true);
     });
-    expect(mockAuthedFetch.mock.calls[0]).toEqual(['/api/v1/skills/inventory']);
+    // BH-M2-1: through apiRequest (authedFetch + init), so match the path.
+    expect(mockAuthedFetch.mock.calls[0][0]).toBe('/api/v1/skills/inventory');
     expect(result.current.data?.Skills?.[0].Name).toBe('demo');
   });
 
@@ -180,7 +181,8 @@ describe('skills queries', () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBe(true);
     });
-    expect(mockAuthedFetch.mock.calls[0]).toEqual(['/api/v1/skills/scan', { method: 'POST' }]);
+    expect(mockAuthedFetch.mock.calls[0][0]).toBe('/api/v1/skills/scan');
+    expect(mockAuthedFetch.mock.calls[0][1]).toMatchObject({ method: 'POST' });
     expect(client.getQueryData(['skills', 'inventory'])).toEqual(minimalInventory);
   });
 
@@ -222,22 +224,21 @@ describe('skills queries', () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBe(true);
     });
-    expect(mockAuthedFetch.mock.calls[0]).toEqual([
-      '/api/v1/skills/fix',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          issueID: 'UNUSED_PROFILE',
-          fix: {
-            Label: 'Disable profile',
-            Action: 'disable-profile',
-            Target: 'old-profile',
-            Destructive: false,
-          },
-        }),
-      },
-    ]);
+    expect(mockAuthedFetch.mock.calls[0][0]).toBe('/api/v1/skills/fix');
+    const fixInit = mockAuthedFetch.mock.calls[0][1] as RequestInit;
+    expect(new Headers(fixInit.headers).get('Content-Type')).toBe('application/json');
+    expect(fixInit).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({
+        issueID: 'UNUSED_PROFILE',
+        fix: {
+          Label: 'Disable profile',
+          Action: 'disable-profile',
+          Target: 'old-profile',
+          Destructive: false,
+        },
+      }),
+    });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['skills', 'inventory'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['skills', 'issues'] });
   });

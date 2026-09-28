@@ -22,7 +22,11 @@ test.describe('T-66 profiles + agents smoke', () => {
     await expect(page.getByRole('heading', { name: 'Agents', level: 1 })).toBeVisible();
     await expect(page.locator('h2#section-profiles')).toContainText('Profiles');
     await expect(page.locator('h2#section-reviewer')).toContainText('Code Review Agent');
-    await expect(page.locator('h2#section-capacity')).toContainText('Capacity');
+    // CORE-093 — Capacity moved to Settings; Agents links there.
+    await expect(page.getByRole('link', { name: 'Settings → Capacity' })).toHaveAttribute(
+      'href',
+      '/settings#section-capacity',
+    );
 
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
   });

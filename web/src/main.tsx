@@ -1,5 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import './fonts.css';
 import './index.css';
 
 import App from './App.tsx';
@@ -11,6 +12,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { AuthGate } from './auth/AuthGate';
 import { UnauthorizedError } from './auth/UnauthorizedError';
 import { StateSnapshotSchema } from './types/schemas';
+import { installGlobalErrorReporting } from './lib/clientErrorReporter';
 
 declare global {
   interface Window {
@@ -22,6 +24,10 @@ window.__ITERVOX_VALIDATE_STATE__ = (snapshot) => {
   const parsed = StateSnapshotSchema.safeParse(snapshot);
   return parsed.success ? { ok: true } : { ok: false, error: parsed.error.message };
 };
+
+// CORE-048: uncaught errors, unhandled rejections and snapshot enum
+// fallbacks are reported to the daemon (deduped and throttled).
+installGlobalErrorReporting();
 
 const queryClient = new QueryClient({
   defaultOptions: {

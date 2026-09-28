@@ -83,6 +83,15 @@ type ProjectManager interface {
 	SetProjectFilter(slugs []string)
 }
 
+// StateListSetter is an optional interface for adapters whose active and
+// terminal state lists can change at runtime (CORE-160). The dashboard's
+// tracker-states save applies the new lists through it, in memory, instead of
+// reloading WORKFLOW.md (which would stop in-flight agent turns). Safe for
+// concurrent use with every other adapter method.
+type StateListSetter interface {
+	SetStateLists(active, terminal []string)
+}
+
 // Tracker is the interface all tracker adapters must implement.
 type Tracker interface {
 	// FetchCandidateIssues returns issues in active states for the configured project.

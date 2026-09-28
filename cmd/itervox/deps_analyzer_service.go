@@ -135,8 +135,17 @@ func (s *depsAnalyzerService) EnqueueAnalysisWithTrigger(profile, mode, trigger 
 	if s == nil {
 		return "", time.Time{}, errors.New("deps analyzer service is nil")
 	}
+	// M4-close BH-M4-3: an analyzer pass runs an agent — it is admission,
+	// refused while the daemon drains (manual POST → 409 draining; the
+	// auto-analyze scheduler skips the tick).
+	if s.orch != nil && s.orch.AdmissionClosed() {
+		return "", time.Time{}, server.ErrDraining
+	}
 	if _, ok := s.lookupProfile(profile); !ok {
 		return "", time.Time{}, fmt.Errorf("profile %q is not configured or is disabled", profile)
+	}
+	if err := s.backendLimitedErr(profile); err != nil {
+		return "", time.Time{}, err
 	}
 	// Hand the daemon's context to the job manager so the analyzer keeps
 	// running after the HTTP request returns. Per-pass cancellation happens
@@ -263,6 +272,11 @@ func (s *depsAnalyzerService) run(ctx context.Context, profile string) (*depsana
 		}
 		s.jobs.MarkProgress(s.currentJobID(), done)
 	}
+	// CORE-173 a: a job queued before the breaker opened must not start on
+	// the limited backend either.
+	if err := s.backendLimitedErr(profile); err != nil {
+		return nil, err
+	}
 	all, err := depsanalysis.RunChunkedAgentPass(ctx, depsanalysis.AgentPassInput{
 		Runner:        s.runner,
 		Profile:       prof,
@@ -387,4 +401,18 @@ func jobRowFromJob(j *depsanalysis.Job) server.DepsAnalyzeJobRow {
 		row.LastActivityAt = &t
 	}
 	return row
+}
+
+// backendLimitedErr refuses an analyzer pass while the breaker of the
+// analyzer profile's backend is open (CORE-173 a): the analyzer runs an
+// agent outside the dispatch gate, so it must honour the breaker itself.
+func (s *depsAnalyzerService) backendLimitedErr(profile string) error {
+	if s.orch == nil {
+		return nil
+	}
+	backend, until, limited := s.orch.BackendLimitedForProfile(profile, time.Now())
+	if !limited {
+		return nil
+	}
+	return fmt.Errorf("%w: %s is limited until %s", server.ErrBackendLimited, backend, until.UTC().Format(time.RFC3339))
 }

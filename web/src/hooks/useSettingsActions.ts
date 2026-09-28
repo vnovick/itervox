@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
-import { authedFetch } from '../auth/authedFetch';
+import { ApiError, apiRequest } from '../auth/apiRequest';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
 import { SettingsError } from '../auth/SettingsError';
 import type { AutomationDef } from '../types/schemas';
+import { automationDefToWire, withUnknownAllowedActions } from '../types/configRoundTrip';
 
 // Read refreshSnapshot from the store directly (not via selector) so
 // the returned action functions have stable references across renders.
@@ -14,6 +15,20 @@ function getRefreshSnapshot() {
 
 function toastError(msg: string) {
   useToastStore.getState().addToast(msg, 'error');
+}
+
+// legacyMessage reads a top-level `{message}` from an already-parsed error
+// body (pre-envelope handlers). The structured envelope is ApiError.message.
+function legacyMessage(body: unknown): string | undefined {
+  if (
+    typeof body === 'object' &&
+    body !== null &&
+    'message' in body &&
+    typeof (body as { message: unknown }).message === 'string'
+  ) {
+    return (body as { message: string }).message;
+  }
+  return undefined;
 }
 
 // extractServerMessage attempts to parse a structured error body of the form
@@ -72,26 +87,22 @@ async function settingsFetch(
 
   const run = (async (): Promise<boolean> => {
     try {
-      const res = await authedFetch(url, {
-        method,
-        ...(body !== undefined
-          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-          : {}),
-      });
-      if (!res.ok) {
-        // Prefer the typed SettingsError when the response body parses against
-        // ServerErrorSchema. Fall back to extractServerMessage for any other JSON
-        // shape (e.g. legacy {message} bodies, plain-text errors).
-        const typed = await SettingsError.fromResponse(res);
-        const label = errorLabel ?? 'Request failed. Check the server logs.';
-        const message = typed?.message ?? (await extractServerMessage(res));
-        toastError(message ? `${label.replace(/[.!?]+$/, '')}: ${message}` : label);
-        return false;
-      }
+      // CORE-170: apiRequest retries a 503 settings_reloading (the save raced
+      // a WORKFLOW.md reload and nothing was written) once, after
+      // Retry-After; only a second failure reaches the toast below.
+      await apiRequest(url, { op: `${method} ${url}`, method, json: body });
       await getRefreshSnapshot()();
       return true;
     } catch (err) {
       if (err instanceof UnauthorizedError) return false; // AuthGate handles UI.
+      if (err instanceof ApiError) {
+        // Prefer the server's {code,message} envelope, then a legacy
+        // top-level {message}; otherwise the label alone.
+        const label = errorLabel ?? 'Request failed. Check the server logs.';
+        const message = err.code !== undefined ? err.message : legacyMessage(err.body);
+        toastError(message ? `${label.replace(/[.!?]+$/, '')}: ${message}` : label);
+        return false;
+      }
       // Browser-aborted requests (rare in practice but surfaced when a
       // component unmounts mid-fetch in StrictMode dev) are not actionable.
       if (isAbortLikeError(err)) return false;
@@ -122,20 +133,14 @@ export async function settingsFetchTyped(
   body?: unknown,
 ): Promise<{ ok: true } | { ok: false; error: SettingsError | null }> {
   try {
-    const res = await authedFetch(url, {
-      method,
-      ...(body !== undefined
-        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-        : {}),
-    });
-    if (!res.ok) {
-      const typed = await SettingsError.fromResponse(res);
-      return { ok: false, error: typed };
-    }
+    // CORE-170: same single settings_reloading retry as settingsFetch.
+    await apiRequest(url, { op: `${method} ${url}`, method, json: body });
     await getRefreshSnapshot()();
     return { ok: true };
   } catch (err) {
-    if (err instanceof UnauthorizedError) return { ok: false, error: null };
+    if (err instanceof ApiError && err.code !== undefined) {
+      return { ok: false, error: new SettingsError(err.code, err.message, err.field) };
+    }
     return { ok: false, error: null };
   }
 }
@@ -162,6 +167,10 @@ const actions = {
       `/api/v1/settings/profiles/${encodeURIComponent(name)}`,
       'PUT',
       {
+        // Keys a newer daemon sent that this bundle does not know; the known
+        // fields below always win (M2-close verifier minor).
+        ...(useItervoxStore.getState().snapshot?.profileDefs?.[originalName || name]?.unknownKeys ??
+          {}),
         command,
         backend: backend ?? '',
         prompt: prompt ?? '',
@@ -170,7 +179,14 @@ const actions = {
         soulFile: soulFile ?? '',
         instructionsFile: instructionsFile ?? '',
         enabled: enabled ?? true,
-        allowedActions: allowedActions ?? [],
+        // CORE-047 round 2: actions this bundle does not know are never
+        // offered in the UI, so they cannot have been removed on purpose;
+        // re-send them as the daemon last reported them.
+        allowedActions: withUnknownAllowedActions(
+          allowedActions,
+          useItervoxStore.getState().snapshot?.profileDefs?.[originalName || name]
+            ?.unknownAllowedActions,
+        ),
         createIssueState: createIssueState ?? '',
         originalName: originalName ?? '',
       },
@@ -295,7 +311,8 @@ const actions = {
     settingsFetch(
       '/api/v1/settings/automations',
       'PUT',
-      { automations },
+      // CORE-047 round 2: restore raw values this bundle does not know.
+      { automations: automations.map(automationDefToWire) },
       'Failed to update automations.',
     ),
 
@@ -308,7 +325,9 @@ const actions = {
   setAutomationsTyped: async (
     automations: AutomationDef[],
   ): Promise<{ ok: true } | { ok: false; error: SettingsError | null }> =>
-    settingsFetchTyped('/api/v1/settings/automations', 'PUT', { automations }),
+    settingsFetchTyped('/api/v1/settings/automations', 'PUT', {
+      automations: automations.map(automationDefToWire),
+    }),
 };
 
 export function useSettingsActions() {

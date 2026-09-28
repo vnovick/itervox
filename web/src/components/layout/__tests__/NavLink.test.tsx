@@ -42,4 +42,18 @@ describe('NavLink', () => {
     const link = screen.getByRole('link');
     expect(link).not.toHaveAttribute('data-active', 'true');
   });
+
+  it('active link has aria-current=page', () => {
+    renderWithRouter(<NavLink to="/dashboard" icon="◫" label="Dashboard" />, {
+      initialEntries: ['/dashboard'],
+    });
+    expect(screen.getByRole('link')).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('inactive link has no aria-current', () => {
+    renderWithRouter(<NavLink to="/settings" icon="⚙" label="Settings" />, {
+      initialEntries: ['/dashboard'],
+    });
+    expect(screen.getByRole('link')).not.toHaveAttribute('aria-current');
+  });
 });

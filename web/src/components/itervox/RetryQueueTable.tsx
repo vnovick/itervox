@@ -17,7 +17,7 @@ function fmtDueAt(dueAt: string): string {
 export default function RetryQueueTable() {
   const retrying = useItervoxStore((s) => s.snapshot?.retrying ?? EMPTY_RETRYING);
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
-  const cancelMutation = useCancelIssue();
+  const cancelMutation = useCancelIssue({ verb: 'Cancel retry' });
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -55,13 +55,16 @@ export default function RetryQueueTable() {
   if (retrying.length === 0) return null;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-lg)] border">
+    <div
+      id="retry-queue"
+      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 overflow-hidden rounded-[var(--radius-lg)] border"
+    >
       {/* Header */}
       <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3">
         <div>
           <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold">
             Retry Queue
-            <span className="bg-theme-warning-soft text-theme-warning rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+            <span className="bg-theme-warning-soft text-theme-warning-text rounded-full px-1.5 py-0.5 text-[10px] font-bold">
               {q ? `${String(filtered.length)}/${String(retrying.length)}` : retrying.length}
             </span>
           </h2>
@@ -85,48 +88,51 @@ export default function RetryQueueTable() {
       ) : (
         filtered.map((row) => (
           <div key={row.identifier} className="border-theme-line border-b last:border-b-0">
+            {/* Row — a mouse click toggles the accordion; the chevron button
+                is the keyboard toggle (M5-close: no nested interactive). */}
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the chevron button is the keyboard toggle (M5-close) */}
             <div
-              role="button"
-              tabIndex={0}
-              aria-label={`Toggle details for retrying issue ${row.identifier}`}
+              data-testid={`retry-row-${row.identifier}`}
               onClick={() => {
                 toggle(row.identifier);
               }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') toggle(row.identifier);
-              }}
               className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 transition-colors hover:bg-[var(--bg-soft)]"
             >
-              {/* Chevron */}
-              <span
-                className="text-theme-muted text-[10px] transition-transform duration-200"
-                style={{ transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none' }}
+              {/* Chevron — the accordion toggle */}
+              <button
+                type="button"
+                aria-label={`Toggle details for retrying issue ${row.identifier}`}
+                aria-expanded={expandedId === row.identifier}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggle(row.identifier);
+                }}
+                className="text-theme-muted inline-flex h-6 w-6 items-center justify-center rounded text-[10px]"
               >
-                ▶
-              </span>
+                <span
+                  aria-hidden="true"
+                  className="inline-block transition-transform duration-200"
+                  style={{ transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none' }}
+                >
+                  ▶
+                </span>
+              </button>
 
-              {/* Identifier */}
-              <span
-                role="button"
-                tabIndex={0}
+              {/* Identifier — opens the detail slide */}
+              <button
+                type="button"
                 aria-label={`View details for retrying issue ${row.identifier}`}
-                className="text-theme-accent cursor-pointer font-mono text-xs font-semibold hover:underline"
+                className="text-theme-accent-text min-h-6 cursor-pointer font-mono text-xs font-semibold hover:underline"
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedIdentifier(row.identifier);
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.stopPropagation();
-                    setSelectedIdentifier(row.identifier);
-                  }
-                }}
               >
                 {row.identifier}
-              </span>
+              </button>
 
               {/* Attempt badge */}
-              <span className="bg-theme-warning-soft text-theme-warning rounded px-1.5 py-0.5 font-mono text-[10px] font-medium">
+              <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 font-mono text-[10px] font-medium">
                 #{row.attempt}
               </span>
 
@@ -151,9 +157,9 @@ export default function RetryQueueTable() {
                   handleCancel(e, row.identifier);
                 }}
                 disabled={cancelling === row.identifier}
-                className="text-theme-danger ml-auto text-[11px] font-medium disabled:opacity-50"
+                className="text-theme-danger-text ml-auto min-h-6 px-1 text-[11px] font-medium disabled:opacity-50"
               >
-                {cancelling === row.identifier ? 'Cancelling…' : 'Cancel'}
+                {cancelling === row.identifier ? 'Cancelling retry…' : '✕ Cancel retry'}
               </button>
             </div>
 

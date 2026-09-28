@@ -17,6 +17,11 @@ internal/server/web/dist/*
 # Logs
 log/
 *.log
+# CORE-007 crash capture siblings (crash.log.1 rotation, crash.log.marker
+# baseline) — not matched by *.log; relevant when --logs-dir is inside a repo.
+crash.log*
+# CORE-012 live dashboard bearer token (<logs-dir>/api-token) — matters when --logs-dir is inside a repo.
+api-token
 
 # Env
 .env
@@ -36,3 +41,6 @@ site/.astro/
 marketing
 # Release-audit working docs (local only)
 v0.2.0/
+
+# CORE-149 inter-process WORKFLOW.md edit lock (transient)
+.WORKFLOW.md.lock

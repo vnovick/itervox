@@ -7,62 +7,64 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
-	"path/filepath"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-// --- shellQuote ---
+// --- ShellQuote ---
 
 func TestShellQuoteSimple(t *testing.T) {
-	assert.Equal(t, "'hello world'", shellQuote("hello world"))
+	assert.Equal(t, "'hello world'", ShellQuote("hello world"))
 }
 
 func TestShellQuoteWithSingleQuote(t *testing.T) {
 	// Single quotes inside the string must be escaped.
-	assert.Equal(t, "'it'\\''s fine'", shellQuote("it's fine"))
+	assert.Equal(t, "'it'\\''s fine'", ShellQuote("it's fine"))
 }
 
 func TestShellQuoteEmpty(t *testing.T) {
-	assert.Equal(t, "''", shellQuote(""))
+	assert.Equal(t, "''", ShellQuote(""))
 }
 
 func TestShellQuoteSpecialChars(t *testing.T) {
 	// Backticks, $, ! etc. are safe inside single quotes.
-	got := shellQuote("`echo $HOME`")
+	got := ShellQuote("`echo $HOME`")
 	assert.Equal(t, "'`echo $HOME`'", got)
 }
 
 // --- buildShellCmd ---
 
 func TestBuildShellCmdNewSession(t *testing.T) {
-	cmd := buildShellCmd("claude", nil, "do the thing", PermissionBypass)
+	cmd := buildShellCmd("claude", nil, "do the thing", localPromptRedirect, PermissionBypass)
 	assert.Contains(t, cmd, "claude")
 	assert.Contains(t, cmd, "--output-format stream-json")
-	assert.Contains(t, cmd, "-p")
-	assert.Contains(t, cmd, "do the thing")
+	// CORE-156: the prompt is never in the command; -p reads it from stdin.
+	assert.True(t, strings.HasSuffix(cmd, " -p < /dev/fd/3"), "got %q", cmd)
+	assert.NotContains(t, cmd, "do the thing")
 	assert.NotContains(t, cmd, "--resume")
 }
 
 func TestBuildShellCmdResumeWithoutPrompt(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "", PermissionBypass)
+	cmd := buildShellCmd("claude", &id, "", "", PermissionBypass)
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
 	// Resume without a prompt should not include -p.
-	assert.NotContains(t, cmd, " -p ")
+	assert.NotContains(t, cmd, " -p")
 }
 
 func TestBuildShellCmdResumeWithPrompt(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "the user reply", PermissionBypass)
+	cmd := buildShellCmd("claude", &id, "the user reply", localPromptRedirect, PermissionBypass)
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
-	// Resume WITH a prompt (input-required flow) should include both flags.
-	assert.Contains(t, cmd, " -p ")
-	assert.Contains(t, cmd, "the user reply")
+	// Resume WITH a prompt (input-required flow) should include both flags;
+	// the reply itself arrives on stdin (CORE-156).
+	assert.True(t, strings.HasSuffix(cmd, " -p < /dev/fd/3"), "got %q", cmd)
+	assert.NotContains(t, cmd, "the user reply")
 }
 
 func TestBuildDirectArgsResumeWithoutPrompt(t *testing.T) {
@@ -84,15 +86,15 @@ func TestBuildDirectArgsResumeWithPrompt(t *testing.T) {
 		"--verbose",
 		"--dangerously-skip-permissions",
 		"--resume", "sess-abc",
-		"-p", "the user reply",
-	}, args)
+		"-p",
+	}, args, "the reply arrives on stdin, never in argv (CORE-156)")
 }
 
 // Regression: an empty command must not produce a shell line that starts with
 // `--output-format`. Without the fallback, bash -lc would interpret the flag
 // as the command name and print `--output-format: command not found`.
 func TestBuildShellCmdEmptyCommandFallsBackToClaude(t *testing.T) {
-	cmd := buildShellCmd("", nil, "do the thing", PermissionBypass)
+	cmd := buildShellCmd("", nil, "do the thing", localPromptRedirect, PermissionBypass)
 	// Must not start with the flag (which would happen if leading whitespace
 	// was the only thing before --output-format).
 	assert.False(t, strings.HasPrefix(strings.TrimSpace(cmd), "--"),
@@ -102,14 +104,14 @@ func TestBuildShellCmdEmptyCommandFallsBackToClaude(t *testing.T) {
 }
 
 func TestBuildShellCmdWhitespaceCommandFallsBackToClaude(t *testing.T) {
-	cmd := buildShellCmd("   ", nil, "do the thing", PermissionBypass)
+	cmd := buildShellCmd("   ", nil, "do the thing", localPromptRedirect, PermissionBypass)
 	assert.True(t, strings.HasPrefix(strings.TrimSpace(cmd), "claude "),
 		"whitespace-only command should fall back to 'claude'; got: %q", cmd)
 }
 
 func TestBuildShellCmdEmptySessionID(t *testing.T) {
 	id := ""
-	cmd := buildShellCmd("claude", &id, "use prompt", PermissionBypass)
+	cmd := buildShellCmd("claude", &id, "use prompt", localPromptRedirect, PermissionBypass)
 	// Empty session ID should be treated as new session.
 	assert.NotContains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "-p")
@@ -148,32 +150,32 @@ func TestTodoItemsNoTodosKey(t *testing.T) {
 // --- buildCodexShellCmd ---
 
 func TestBuildCodexShellCmdNewSession(t *testing.T) {
-	cmd := buildCodexShellCmd("codex", nil, "do the work", "/workspace", PermissionBypass)
+	cmd := buildCodexShellCmd("codex", nil, "/workspace", localPromptRedirect, PermissionBypass)
 	assert.Contains(t, cmd, "codex")
 	assert.Contains(t, cmd, "-C")
 	assert.Contains(t, cmd, "/workspace")
 	assert.Contains(t, cmd, " exec")
 	assert.Contains(t, cmd, "--json")
-	assert.Contains(t, cmd, "do the work")
+	// CORE-156: the prompt argument is "-" (read stdin).
+	assert.True(t, strings.HasSuffix(cmd, " --skip-git-repo-check - < /dev/fd/3"), "got %q", cmd)
 	assert.NotContains(t, cmd, "resume")
 }
 
 func TestBuildCodexShellCmdResume(t *testing.T) {
 	id := "sess-xyz"
-	cmd := buildCodexShellCmd("codex", &id, "continue", "", PermissionBypass)
+	cmd := buildCodexShellCmd("codex", &id, "", localPromptRedirect, PermissionBypass)
 	assert.Contains(t, cmd, "resume")
-	assert.Contains(t, cmd, "sess-xyz")
-	assert.Contains(t, cmd, "continue")
+	assert.True(t, strings.HasSuffix(cmd, " 'sess-xyz' - < /dev/fd/3"), "got %q", cmd)
 }
 
 func TestBuildCodexShellCmdNoWorkspace(t *testing.T) {
-	cmd := buildCodexShellCmd("codex", nil, "prompt", "", PermissionBypass)
+	cmd := buildCodexShellCmd("codex", nil, "", localPromptRedirect, PermissionBypass)
 	assert.NotContains(t, cmd, "-C")
 }
 
 func TestBuildCodexShellCmdEmptySessionID(t *testing.T) {
 	id := ""
-	cmd := buildCodexShellCmd("codex", &id, "prompt text", "", PermissionBypass)
+	cmd := buildCodexShellCmd("codex", &id, "", localPromptRedirect, PermissionBypass)
 	assert.NotContains(t, cmd, "resume")
 }
 
@@ -201,14 +203,17 @@ func TestStreamLineToEntryEmptySessionID(t *testing.T) {
 }
 
 func TestSSHSessionIDFromTarHeader(t *testing.T) {
-	// The tar header name → session ID formula must match the local readJSONLFileMultiWith formula.
+	// The tar header name → session ID formula must match the local
+	// readJSONLFileMultiWith formula. Call the shared production function
+	// (sessionIDFromFilename) directly, rather than re-implementing its
+	// formula here, and assert fixed literal expected values.
 	cases := []struct{ name, want string }{
 		{"abc123.jsonl", "abc123"},
 		{"./abc123.jsonl", "abc123"},      // tar may include "./" prefix
 		{"subdir/abc123.jsonl", "abc123"}, // tar -C strips dir but test robustness
 	}
 	for _, c := range cases {
-		got := strings.TrimSuffix(filepath.Base(c.name), ".jsonl")
+		got := sessionIDFromFilename(c.name)
 		assert.Equal(t, c.want, got, "header name: %s", c.name)
 	}
 }
@@ -255,41 +260,63 @@ func TestParseRemoteJSONLTarSupportsCodexParser(t *testing.T) {
 	assert.Contains(t, entries[0].Message, "hello from codex")
 }
 
-// TestSafePromptArg guards against the argv hazard that surfaced in
-// production: a rendered prompt beginning with '-' (markdown list, YAML, or
-// accidental paste) was interpreted by Claude's CLI parser as an unknown
-// flag. The fix prepends a single space so the parser sees a non-flag value
-// token. Claude trims leading prompt whitespace, so the agent behavior is
-// unchanged.
-func TestSafePromptArg(t *testing.T) {
-	t.Run("prompts starting with '-' get a leading space", func(t *testing.T) {
-		assert.Equal(t, " - Step 1\n- Step 2", safePromptArg("- Step 1\n- Step 2"))
-		assert.Equal(t, " -help", safePromptArg("-help"))
-		assert.Equal(t, " --foo", safePromptArg("--foo"))
-		assert.Equal(t, " - id: input-responder\n  enabled: true",
-			safePromptArg("- id: input-responder\n  enabled: true"))
-	})
-	t.Run("prompts not starting with '-' are returned verbatim", func(t *testing.T) {
-		assert.Equal(t, "Continue the work.", safePromptArg("Continue the work."))
-		assert.Equal(t, "", safePromptArg(""))
-		assert.Equal(t, "  - leading whitespace is fine", safePromptArg("  - leading whitespace is fine"))
-		assert.Equal(t, "## Heading then - dash", safePromptArg("## Heading then - dash"))
-	})
-}
-
-// TestBuildDirectArgs_SafeForLeadingDashPrompt verifies the integration
-// between buildDirectArgs and safePromptArg — the slice passed to
-// exec.CommandContext must never contain a raw token starting with '-' as
-// the value slot after '-p'.
-func TestBuildDirectArgs_SafeForLeadingDashPrompt(t *testing.T) {
+// TestBuildArgsCarryNoPrompt (CORE-156) replaces the safePromptArg tests:
+// the prompt is no longer an argument at all, so a prompt that starts with
+// '-' (a markdown list, YAML) can no longer be parsed as a flag, and no
+// argument can reach Linux's MAX_ARG_STRLEN whatever the prompt's size.
+func TestBuildArgsCarryNoPrompt(t *testing.T) {
 	sid := "sess-123"
-	args := buildDirectArgs(&sid, "- id: x", PermissionBypass)
-	// Expect: [...sharedFlags, "--resume", "sess-123", "-p", " - id: x"]
-	require := func(cond bool, msg string) {
-		if !cond {
-			t.Fatalf("%s: args=%v", msg, args)
+	prompt := "- id: x\n" + strings.Repeat("y", 200<<10)
+	for name, args := range map[string][]string{
+		"claude first":  buildDirectArgs(nil, prompt, PermissionBypass),
+		"claude resume": buildDirectArgs(&sid, prompt, PermissionBypass),
+		"codex first":   buildCodexDirectArgs(nil, "/ws", PermissionBypass),
+		"codex resume":  buildCodexDirectArgs(&sid, "/ws", PermissionBypass),
+	} {
+		for _, a := range args {
+			assert.Less(t, len(a), 100, "%s: argument %q is prompt-sized", name, a[:min(len(a), 40)])
+			assert.NotContains(t, a, "id: x", "%s: prompt bytes in argv", name)
+		}
+		if strings.HasPrefix(name, "claude") {
+			assert.Equal(t, "-p", args[len(args)-1], "%s: -p with no prompt argument reads stdin", name)
+		} else {
+			assert.Equal(t, "-", args[len(args)-1], "%s: the \"-\" prompt argument reads stdin", name)
 		}
 	}
-	require(len(args) >= 2 && args[len(args)-2] == "-p", "expected -p flag before prompt")
-	require(args[len(args)-1] == " - id: x", "expected prompt to be prefixed with a space to neutralise leading dash")
+}
+
+// TestShellQuoteKeepsBackslashAndQuoteOutsideQuotedSegments pins the
+// fish-safe form (fix round 1, C1): fish interprets \' and \\ inside single
+// quotes, so both characters are emitted outside every quoted segment.
+func TestShellQuoteKeepsBackslashAndQuoteOutsideQuotedSegments(t *testing.T) {
+	assert.Equal(t, `'a'\\'b'\''c'`, ShellQuote(`a\b'c`))
+	assert.Equal(t, `'x'\\''\\'y'`, ShellQuote(`x\\y`))
+}
+
+// TestShellQuoteWorkerCasesUnion (CORE-111): ShellQuote replaced
+// orchestrator/worker.go's private copy ("'" + ReplaceAll(v, "'", `'\”`) +
+// "'"), used for the itervox shim's exec path and the env exports. For every
+// input without a backslash the output is byte-identical to that copy, and
+// for every input — backslashes included — POSIX sh reads back the original
+// value.
+func TestShellQuoteWorkerCasesUnion(t *testing.T) {
+	oldWorkerQuote := func(v string) string { return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'" }
+	cases := []string{
+		"", "plain", "/usr/local/bin/itervox", "/Users/me/My Apps/itervox",
+		"it's", "'", "''", "a'b'c", "$HOME `id` $(id)", "tab\tand\nnewline",
+		`back\slash`, `trailing\`, `\'mixed'\`,
+	}
+	for _, v := range cases {
+		got := ShellQuote(v)
+		if !strings.Contains(v, `\`) && got != oldWorkerQuote(v) {
+			t.Errorf("ShellQuote(%q) = %s; worker copy gave %s", v, got, oldWorkerQuote(v))
+		}
+		out, err := exec.Command("sh", "-c", "printf %s "+got).Output()
+		if err != nil {
+			t.Fatalf("sh rejected ShellQuote(%q) = %s: %v", v, got, err)
+		}
+		if string(out) != v {
+			t.Errorf("sh read back %q for ShellQuote(%q) = %s", out, v, got)
+		}
+	}
 }

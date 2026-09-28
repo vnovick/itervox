@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vnovick/itervox/internal/agentactions"
@@ -19,6 +21,28 @@ import (
 // errNotConfigured is returned by no-op callback stubs installed in New()
 // for optional Config fields that were left nil by the caller.
 var errNotConfigured = errors.New("not configured")
+
+// ErrBusy is the OrchestratorClient-level counterpart of
+// orchestrator.ErrBusy: an implementation returns it from CancelIssue,
+// ResumeIssue, TerminateIssue, ReanalyzeIssue, ProvideInput or DismissInput
+// to report that the underlying event channel was full, not that the issue
+// was not found. internal/server cannot import internal/orchestrator
+// (package order — server only imports domain and config), so
+// cmd/itervox's adapter translates orchestrator.ErrBusy into this sentinel;
+// handlers map errors.Is(err, ErrBusy) to 503 with Retry-After, and any
+// other non-nil error to 404 (CORE-005).
+var ErrBusy = errors.New("server: orchestrator event queue is full")
+
+// ErrDraining is the OrchestratorClient-level counterpart of
+// orchestrator.ErrDraining (CORE-057): the daemon is draining for shutdown or
+// a WORKFLOW.md reload and admits no new work. Handlers map it to 409
+// {"code":"draining"}; the operator retries once the daemon is back.
+var ErrDraining = errors.New("server: daemon is draining; not admitting new work")
+
+// ErrBackendLimited is returned by a DepsAnalyzer enqueue while the analyzer
+// profile's backend breaker is open (CORE-173 a); the handler answers
+// 409 backend_limited.
+var ErrBackendLimited = errors.New("server: agent backend is limited")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
@@ -281,7 +305,10 @@ type Project struct {
 // endpoints only when a non-nil ProjectManager is provided.
 type ProjectManager interface {
 	FetchProjects(ctx context.Context) ([]Project, error)
-	SetProjectFilter(slugs []string)
+	// SetProjectFilter persists and applies the filter. An error means
+	// nothing changed (M4-close D4): a wrapped ErrSettingsReloading is the
+	// reload fence (503), anything else a failed persist.
+	SetProjectFilter(slugs []string) error
 	GetProjectFilter() []string
 }
 
@@ -291,17 +318,58 @@ type ProjectManager interface {
 // implementations expose: the daemon-side merge_pr handler invokes it on a
 // successful gh merge so pr_merged automations fire downstream. Discovered
 // via type assertion to avoid bloating the main interface.
+// IssueBackendPinChecker is optionally implemented by the orchestrator
+// client (CORE-056): it reports why a per-issue backend pin would be refused
+// by the dispatch resolver (CORE-115) — e.g. codex over a "claude ..."
+// command — so POST /api/v1/issues/{identifier}/backend can reject it with
+// 409 instead of storing an inert pin.
+type IssueBackendPinChecker interface {
+	CheckIssueBackendPin(identifier, backend string) error
+}
+
+// FailureAcker is optionally implemented by the orchestrator client
+// (CORE-175): POST /api/v1/issues/{identifier}/failures/ack records that the
+// operator has seen the issue's worker failures up to upTo. It returns
+// ErrBusy when the event channel is full and ErrNoWorkerFailure when the
+// issue has no recent worker failure.
+type FailureAcker interface {
+	AckFailures(identifier string, upTo time.Time) error
+}
+
+// ErrNoWorkerFailure is FailureAcker's "nothing to acknowledge" (→ 404).
+var ErrNoWorkerFailure = errors.New("server: issue has no recent worker failure")
+
 type PRMergedEmitter interface {
-	EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef string) error
+	// headRef is the PR's head branch (trigger.pr_branch); prURL and
+	// baseRef bind trigger.pr_url and trigger.pr_base_branch (CORE-108).
+	EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef, headRef string) error
 }
 
 type OrchestratorClient interface {
 	FetchIssues(ctx context.Context) ([]TrackerIssue, error)
-	CancelIssue(identifier string) bool
-	ResumeIssue(identifier string) bool
-	TerminateIssue(identifier string) bool
-	ReanalyzeIssue(identifier string) bool
-	FetchLogs(identifier string) []string
+	// CancelIssue, ResumeIssue, TerminateIssue and ReanalyzeIssue return nil
+	// on success, ErrBusy when the orchestrator's event channel was full
+	// (map to 503 with Retry-After, never 404 — CORE-005), or any other
+	// non-nil error when a synchronous lookup established the issue is not
+	// in the required state (map to 404).
+	CancelIssue(identifier string) error
+	ResumeIssue(identifier string) error
+	TerminateIssue(identifier string) error
+	ReanalyzeIssue(identifier string) error
+	// FetchLogs returns the retained log lines for identifier. ctx is the
+	// request's: an implementation that may wait on disk must stop waiting
+	// when it ends (M0-close fix-G).
+	FetchLogs(ctx context.Context, identifier string) []string
+	// GetSince returns log lines appended for identifier strictly after
+	// cursor, the log buffer's current process epoch, the next cursor to
+	// resume from, and whether the returned lines are a gap replay of the
+	// current window rather than a contiguous continuation. hasCursor=false
+	// means "first connect" (epoch/cursor are ignored). Backs
+	// handleIssueLogStream's resume-by-sequence SSE contract (CORE-003);
+	// see internal/logbuffer.Buffer.GetSince's doc comment for the full
+	// sequence/epoch/gap semantics this delegates to. ctx is the request's,
+	// as for FetchLogs.
+	GetSince(ctx context.Context, identifier string, epoch uint32, cursor int64, hasCursor bool) (lines []string, currentEpoch uint32, next int64, gap bool)
 	ClearLogs(identifier string) error
 	ClearAllLogs() error
 	ClearIssueSubLogs(identifier string) error
@@ -346,6 +414,10 @@ type OrchestratorClient interface {
 	SetIssueProfile(identifier, profile string)
 	SetIssueBackend(identifier, backend string)
 	ProfileDefs() map[string]ProfileDef
+	// DefaultAgentCommand returns agent.command — the command a profile with
+	// an empty command inherits at dispatch. Automation validation needs it
+	// to resolve a switch profile's effective command (CORE-010).
+	DefaultAgentCommand() string
 	AvailableModels() map[string][]ModelOption
 	ReviewerConfig() (profile string, autoReview bool)
 	SetReviewerConfig(profile string, autoReview bool) error
@@ -362,8 +434,12 @@ type OrchestratorClient interface {
 	AddSSHHost(host, description string) error
 	RemoveSSHHost(host string) error
 	SetDispatchStrategy(strategy string) error
-	ProvideInput(identifier, message string) bool
-	DismissInput(identifier string) bool
+	// ProvideInput and DismissInput perform no lookup of their own (the
+	// event loop decides whether the issue is actually waiting for input),
+	// so the only non-nil error they can return is ErrBusy — map it to 503,
+	// never 404 (CORE-005).
+	ProvideInput(identifier, message string) error
+	DismissInput(identifier string) error
 	SetInlineInput(enabled bool) error
 	// BumpCommentCount is invoked after a successful agent-comment action so
 	// the snapshot row's CommentCount field can surface review activity on
@@ -405,15 +481,18 @@ type OrchestratorClient interface {
 type noopClient struct{}
 
 func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error) { return nil, errNotConfigured }
-func (noopClient) CancelIssue(string) bool                             { return false }
-func (noopClient) ResumeIssue(string) bool                             { return false }
-func (noopClient) TerminateIssue(string) bool                          { return false }
-func (noopClient) ReanalyzeIssue(string) bool                          { return false }
-func (noopClient) FetchLogs(string) []string                           { return nil }
-func (noopClient) ClearLogs(string) error                              { return errNotConfigured }
-func (noopClient) ClearAllLogs() error                                 { return errNotConfigured }
-func (noopClient) ClearIssueSubLogs(string) error                      { return errNotConfigured }
-func (noopClient) ClearSessionSublog(string, string) error             { return errNotConfigured }
+func (noopClient) CancelIssue(string) error                            { return errNotConfigured }
+func (noopClient) ResumeIssue(string) error                            { return errNotConfigured }
+func (noopClient) TerminateIssue(string) error                         { return errNotConfigured }
+func (noopClient) ReanalyzeIssue(string) error                         { return errNotConfigured }
+func (noopClient) FetchLogs(context.Context, string) []string          { return nil }
+func (noopClient) GetSince(context.Context, string, uint32, int64, bool) ([]string, uint32, int64, bool) {
+	return nil, 0, 0, false
+}
+func (noopClient) ClearLogs(string) error                  { return errNotConfigured }
+func (noopClient) ClearAllLogs() error                     { return errNotConfigured }
+func (noopClient) ClearIssueSubLogs(string) error          { return errNotConfigured }
+func (noopClient) ClearSessionSublog(string, string) error { return errNotConfigured }
 func (noopClient) FetchSubLogs(context.Context, string) ([]domain.IssueLogEntry, error) {
 	return nil, nil
 }
@@ -439,6 +518,7 @@ func (noopClient) SwitchWindowHours() int                                 { retu
 func (noopClient) SetIssueProfile(string, string)                         {}
 func (noopClient) SetIssueBackend(string, string)                         {}
 func (noopClient) ProfileDefs() map[string]ProfileDef                     { return nil }
+func (noopClient) DefaultAgentCommand() string                            { return "" }
 func (noopClient) AvailableModels() map[string][]ModelOption              { return nil }
 func (noopClient) ReviewerConfig() (string, bool)                         { return "", false }
 func (noopClient) SetReviewerConfig(string, bool) error                   { return nil }
@@ -453,376 +533,18 @@ func (noopClient) UpdateTrackerStates([]string, []string, string) error   { retu
 func (noopClient) AddSSHHost(string, string) error                        { return errNotConfigured }
 func (noopClient) RemoveSSHHost(string) error                             { return errNotConfigured }
 func (noopClient) SetDispatchStrategy(string) error                       { return errNotConfigured }
-func (noopClient) ProvideInput(string, string) bool                       { return false }
-func (noopClient) DismissInput(string) bool                               { return false }
-func (noopClient) SetInlineInput(bool) error                              { return errNotConfigured }
-func (noopClient) BumpCommentCount(string)                                {}
-func (noopClient) TestAutomation(context.Context, string, string) error   { return errNotConfigured }
-func (noopClient) SetDepsOverride(string, bool) bool                      { return false }
-func (noopClient) RetryOutboxEntry(string) bool                           { return false }
-func (noopClient) DropOutboxEntry(string)                                 {}
 
-// FuncClient builds an OrchestratorClient from individual function fields.
-// Any nil field falls back to the noopClient default. Intended for tests.
-type FuncClient struct {
-	FetchIssuesFn                     func(context.Context) ([]TrackerIssue, error)
-	CancelIssueFn                     func(string) bool
-	ResumeIssueFn                     func(string) bool
-	TerminateIssueFn                  func(string) bool
-	ReanalyzeIssueFn                  func(string) bool
-	FetchLogsFn                       func(string) []string
-	ClearLogsFn                       func(string) error
-	ClearAllLogsFn                    func() error
-	ClearIssueSubLogsFn               func(string) error
-	ClearSessionSublogFn              func(string, string) error
-	DispatchReviewerFn                func(string) error
-	CommentOnIssueFn                  func(context.Context, string, string) error
-	PostOperatorCommentFn             func(context.Context, string, string) (bool, error)
-	CreateIssueFn                     func(context.Context, string, string, string, string) (*domain.Issue, error)
-	UpdateIssueStateFn                func(context.Context, string, string) error
-	SetWorkersFn                      func(int) error
-	BumpWorkersFn                     func(int) (int, error)
-	SetMaxRetriesFn                   func(int) error
-	MaxRetriesFn                      func() int
-	SetFailedStateFn                  func(string) error
-	FailedStateFn                     func() string
-	SetMaxSwitchesPerIssuePerWindowFn func(int) error
-	MaxSwitchesPerIssuePerWindowFn    func() int
-	SetSwitchWindowHoursFn            func(int) error
-	SwitchWindowHoursFn               func() int
-	SetIssueProfileFn                 func(string, string)
-	SetIssueBackendFn                 func(string, string)
-	ProfileDefsFn                     func() map[string]ProfileDef
-	AvailableModelsFn                 func() map[string][]ModelOption
-	ReviewerConfigFn                  func() (string, bool)
-	SetReviewerConfigFn               func(string, bool) error
-	UpsertProfileFn                   func(string, ProfileDef, string) error
-	DeleteProfileFn                   func(string) error
-	SetAutomationsFn                  func([]AutomationDef) error
-	SetAutoClearWorkspaceFn           func(bool) error
-	SetDepsAnalysisModeFn             func(string) error
-	ClearAllWorkspacesFn              func() error
-	FetchLogIdentifiersFn             func() []string
-	UpdateTrackerStatesFn             func([]string, []string, string) error
-	FetchSubLogsFn                    func(context.Context, string) ([]domain.IssueLogEntry, error)
-	AddSSHHostFn                      func(string, string) error
-	RemoveSSHHostFn                   func(string) error
-	SetDispatchStrategyFn             func(string) error
-	SetInlineInputFn                  func(bool) error
-	ProvideInputFn                    func(string, string) bool
-	DismissInputFn                    func(string) bool
-	BumpCommentCountFn                func(string)
-	TestAutomationFn                  func(context.Context, string, string) error
-	SetDepsOverrideFn                 func(string, bool) bool
-	RetryOutboxEntryFn                func(string) bool
-	DropOutboxEntryFn                 func(string)
-}
-
-func (c *FuncClient) FetchIssues(ctx context.Context) ([]TrackerIssue, error) {
-	if c.FetchIssuesFn != nil {
-		return c.FetchIssuesFn(ctx)
-	}
-	return nil, errNotConfigured
-}
-func (c *FuncClient) CancelIssue(id string) bool {
-	if c.CancelIssueFn != nil {
-		return c.CancelIssueFn(id)
-	}
-	return false
-}
-func (c *FuncClient) ResumeIssue(id string) bool {
-	if c.ResumeIssueFn != nil {
-		return c.ResumeIssueFn(id)
-	}
-	return false
-}
-func (c *FuncClient) TerminateIssue(id string) bool {
-	if c.TerminateIssueFn != nil {
-		return c.TerminateIssueFn(id)
-	}
-	return false
-}
-func (c *FuncClient) ReanalyzeIssue(id string) bool {
-	if c.ReanalyzeIssueFn != nil {
-		return c.ReanalyzeIssueFn(id)
-	}
-	return false
-}
-func (c *FuncClient) FetchLogs(id string) []string {
-	if c.FetchLogsFn != nil {
-		return c.FetchLogsFn(id)
-	}
-	return nil
-}
-func (c *FuncClient) ClearLogs(id string) error {
-	if c.ClearLogsFn != nil {
-		return c.ClearLogsFn(id)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) ClearAllLogs() error {
-	if c.ClearAllLogsFn != nil {
-		return c.ClearAllLogsFn()
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) ClearIssueSubLogs(id string) error {
-	if c.ClearIssueSubLogsFn != nil {
-		return c.ClearIssueSubLogsFn(id)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) ClearSessionSublog(id, sessionID string) error {
-	if c.ClearSessionSublogFn != nil {
-		return c.ClearSessionSublogFn(id, sessionID)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) FetchSubLogs(ctx context.Context, id string) ([]domain.IssueLogEntry, error) {
-	if c.FetchSubLogsFn != nil {
-		return c.FetchSubLogsFn(ctx, id)
-	}
-	return nil, nil
-}
-func (c *FuncClient) DispatchReviewer(id string) error {
-	if c.DispatchReviewerFn != nil {
-		return c.DispatchReviewerFn(id)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) CommentOnIssue(ctx context.Context, identifier, body string) error {
-	if c.CommentOnIssueFn != nil {
-		return c.CommentOnIssueFn(ctx, identifier, body)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) PostOperatorComment(ctx context.Context, identifier, body string) (bool, error) {
-	if c.PostOperatorCommentFn != nil {
-		return c.PostOperatorCommentFn(ctx, identifier, body)
-	}
-	return false, errNotConfigured
-}
-func (c *FuncClient) CreateIssue(ctx context.Context, identifier, title, body, state string) (*domain.Issue, error) {
-	if c.CreateIssueFn != nil {
-		return c.CreateIssueFn(ctx, identifier, title, body, state)
-	}
-	return nil, errNotConfigured
-}
-func (c *FuncClient) UpdateIssueState(ctx context.Context, id, state string) error {
-	if c.UpdateIssueStateFn != nil {
-		return c.UpdateIssueStateFn(ctx, id, state)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) SetWorkers(n int) error {
-	if c.SetWorkersFn != nil {
-		return c.SetWorkersFn(n)
-	}
-	return nil
-}
-func (c *FuncClient) BumpWorkers(delta int) (int, error) {
-	if c.BumpWorkersFn != nil {
-		return c.BumpWorkersFn(delta)
-	}
-	return 0, nil
-}
-func (c *FuncClient) SetMaxRetries(n int) error {
-	if c.SetMaxRetriesFn != nil {
-		return c.SetMaxRetriesFn(n)
-	}
-	return nil
-}
-func (c *FuncClient) MaxRetries() int {
-	if c.MaxRetriesFn != nil {
-		return c.MaxRetriesFn()
-	}
-	return 0
-}
-func (c *FuncClient) SetFailedState(s string) error {
-	if c.SetFailedStateFn != nil {
-		return c.SetFailedStateFn(s)
-	}
-	return nil
-}
-func (c *FuncClient) FailedState() string {
-	if c.FailedStateFn != nil {
-		return c.FailedStateFn()
-	}
-	return ""
-}
-func (c *FuncClient) SetMaxSwitchesPerIssuePerWindow(n int) error {
-	if c.SetMaxSwitchesPerIssuePerWindowFn != nil {
-		return c.SetMaxSwitchesPerIssuePerWindowFn(n)
-	}
-	return nil
-}
-func (c *FuncClient) MaxSwitchesPerIssuePerWindow() int {
-	if c.MaxSwitchesPerIssuePerWindowFn != nil {
-		return c.MaxSwitchesPerIssuePerWindowFn()
-	}
-	return 0
-}
-func (c *FuncClient) SetSwitchWindowHours(h int) error {
-	if c.SetSwitchWindowHoursFn != nil {
-		return c.SetSwitchWindowHoursFn(h)
-	}
-	return nil
-}
-func (c *FuncClient) SwitchWindowHours() int {
-	if c.SwitchWindowHoursFn != nil {
-		return c.SwitchWindowHoursFn()
-	}
-	return 0
-}
-func (c *FuncClient) SetIssueProfile(id, profile string) {
-	if c.SetIssueProfileFn != nil {
-		c.SetIssueProfileFn(id, profile)
-	}
-}
-func (c *FuncClient) SetIssueBackend(id, backend string) {
-	if c.SetIssueBackendFn != nil {
-		c.SetIssueBackendFn(id, backend)
-	}
-}
-func (c *FuncClient) ProfileDefs() map[string]ProfileDef {
-	if c.ProfileDefsFn != nil {
-		return c.ProfileDefsFn()
-	}
-	return nil
-}
-func (c *FuncClient) AvailableModels() map[string][]ModelOption {
-	if c.AvailableModelsFn != nil {
-		return c.AvailableModelsFn()
-	}
-	return nil
-}
-func (c *FuncClient) ReviewerConfig() (string, bool) {
-	if c.ReviewerConfigFn != nil {
-		return c.ReviewerConfigFn()
-	}
-	return "", false
-}
-func (c *FuncClient) SetReviewerConfig(profile string, autoReview bool) error {
-	if c.SetReviewerConfigFn != nil {
-		return c.SetReviewerConfigFn(profile, autoReview)
-	}
-	return nil
-}
-func (c *FuncClient) UpsertProfile(name string, def ProfileDef, originalName string) error {
-	if c.UpsertProfileFn != nil {
-		return c.UpsertProfileFn(name, def, originalName)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) DeleteProfile(name string) error {
-	if c.DeleteProfileFn != nil {
-		return c.DeleteProfileFn(name)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) SetAutomations(automations []AutomationDef) error {
-	if c.SetAutomationsFn != nil {
-		return c.SetAutomationsFn(automations)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) SetAutoClearWorkspace(enabled bool) error {
-	if c.SetAutoClearWorkspaceFn != nil {
-		return c.SetAutoClearWorkspaceFn(enabled)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) SetDepsAnalysisMode(mode string) error {
-	if c.SetDepsAnalysisModeFn != nil {
-		return c.SetDepsAnalysisModeFn(mode)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) ClearAllWorkspaces() error {
-	if c.ClearAllWorkspacesFn != nil {
-		return c.ClearAllWorkspacesFn()
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) FetchLogIdentifiers() []string {
-	if c.FetchLogIdentifiersFn != nil {
-		return c.FetchLogIdentifiersFn()
-	}
-	return nil
-}
-func (c *FuncClient) UpdateTrackerStates(active, terminal []string, completion string) error {
-	if c.UpdateTrackerStatesFn != nil {
-		return c.UpdateTrackerStatesFn(active, terminal, completion)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) AddSSHHost(host, description string) error {
-	if c.AddSSHHostFn != nil {
-		return c.AddSSHHostFn(host, description)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) RemoveSSHHost(host string) error {
-	if c.RemoveSSHHostFn != nil {
-		return c.RemoveSSHHostFn(host)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) SetDispatchStrategy(strategy string) error {
-	if c.SetDispatchStrategyFn != nil {
-		return c.SetDispatchStrategyFn(strategy)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) ProvideInput(identifier, message string) bool {
-	if c.ProvideInputFn != nil {
-		return c.ProvideInputFn(identifier, message)
-	}
-	return false
-}
-func (c *FuncClient) DismissInput(identifier string) bool {
-	if c.DismissInputFn != nil {
-		return c.DismissInputFn(identifier)
-	}
-	return false
-}
-func (c *FuncClient) SetInlineInput(enabled bool) error {
-	if c.SetInlineInputFn != nil {
-		return c.SetInlineInputFn(enabled)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) BumpCommentCount(identifier string) {
-	if c.BumpCommentCountFn != nil {
-		c.BumpCommentCountFn(identifier)
-	}
-}
-func (c *FuncClient) TestAutomation(ctx context.Context, automationID, identifier string) error {
-	if c.TestAutomationFn != nil {
-		return c.TestAutomationFn(ctx, automationID, identifier)
-	}
-	return errNotConfigured
-}
-
-func (c *FuncClient) SetDepsOverride(identifier string, enabled bool) bool {
-	if c.SetDepsOverrideFn != nil {
-		return c.SetDepsOverrideFn(identifier, enabled)
-	}
-	return false
-}
-
-func (c *FuncClient) RetryOutboxEntry(id string) bool {
-	if c.RetryOutboxEntryFn != nil {
-		return c.RetryOutboxEntryFn(id)
-	}
-	return false
-}
-
-func (c *FuncClient) DropOutboxEntry(id string) {
-	if c.DropOutboxEntryFn != nil {
-		c.DropOutboxEntryFn(id)
-	}
-}
+// ProvideInput and DismissInput return nil (not errNotConfigured): they
+// perform no lookup of their own even in a real implementation, so a noop
+// backing has nothing more meaningful to report than "queued" (CORE-005).
+func (noopClient) ProvideInput(string, string) error                    { return nil }
+func (noopClient) DismissInput(string) error                            { return nil }
+func (noopClient) SetInlineInput(bool) error                            { return errNotConfigured }
+func (noopClient) BumpCommentCount(string)                              {}
+func (noopClient) TestAutomation(context.Context, string, string) error { return errNotConfigured }
+func (noopClient) SetDepsOverride(string, bool) bool                    { return false }
+func (noopClient) RetryOutboxEntry(string) bool                         { return false }
+func (noopClient) DropOutboxEntry(string)                               {}
 
 // StateSnapshot is the payload returned by GET /api/v1/state.
 type StateSnapshot struct {
@@ -873,6 +595,11 @@ type StateSnapshot struct {
 	TerminalStates []string `json:"terminalStates,omitempty"`
 	// CompletionState is the state the agent moves an issue to when it finishes (may be empty).
 	CompletionState string `json:"completionState,omitempty"`
+	// WorkingState is tracker.working_state: the state an issue is moved to
+	// when an agent is dispatched (CORE-070). The dashboard's issue-detail
+	// profile lock keys on it; empty/omitted means the web falls back to its
+	// "In Progress" default. Read-only after startup.
+	WorkingState string `json:"workingState,omitempty"`
 	// BacklogStates are always-fetched states shown as the leftmost board column.
 	BacklogStates []string `json:"backlogStates,omitempty"`
 	// PausedWithPR maps paused issue identifiers to a known open-PR URL.
@@ -882,6 +609,12 @@ type StateSnapshot struct {
 	// it optional) and for snapshot producers that do record PR URLs (e.g.
 	// tests driving comment_pr's GitHub-PR routing).
 	PausedWithPR map[string]string `json:"pausedWithPR,omitempty"`
+	// PauseReasons maps each paused issue to why it is paused (M6-close
+	// BH-M6-3): "user_cancelled", "user_dismissed_input",
+	// "retries_exhausted" or "transition_failed" (treat unknown values as
+	// opaque). An issue paused without a recorded reason (legacy pause file)
+	// is absent. Omitted when nothing is listed.
+	PauseReasons map[string]string `json:"pauseReasons,omitempty"`
 	// PollIntervalMs is the configured tracker poll interval in milliseconds.
 	// The TUI uses this to derive a safe background refresh rate.
 	PollIntervalMs int `json:"pollIntervalMs,omitempty"`
@@ -975,6 +708,24 @@ type StateSnapshot struct {
 	// daemon is running on the previously-valid config while exponentially
 	// backing off retries (T-26).
 	ConfigInvalid *ConfigInvalidStatus `json:"configInvalid,omitempty"`
+	// LastTrackerError is the most recent tracker failure (CORE-044). Absent
+	// when none is recorded: a successful poll clears a poll failure, and a
+	// write failure ages out after an hour.
+	LastTrackerError *TrackerErrorRow `json:"lastTrackerError,omitempty"`
+	// RecentFailures is the bounded ring of operator-relevant failures
+	// (CORE-046), oldest recorded first. Deliberately NOT omitempty: always an
+	// array (possibly empty) on a current daemon. Messages are redacted.
+	RecentFailures []FailureRow `json:"recentFailures"`
+	// FailureAcks are the operator's acknowledgements of worker failures
+	// (CORE-175): failures of Identifier that occurred at or before UpTo are
+	// acknowledged. Omitted when empty.
+	FailureAcks []FailureAckRow `json:"failureAcks,omitempty"`
+	// Capabilities lists optional daemon features the dashboard may use
+	// (CORE-175: "failure_ack"). Omitted when empty.
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Totals is the daemon-session token and estimated-cost accounting
+	// (CORE-091). Omitted only by daemons predating it.
+	Totals *TotalsRow `json:"totals,omitempty"`
 	// CandidateSeen is this tick's "what tracker polling saw" backlog rows —
 	// one per candidate-issue identifier, carrying the tracker's UpdatedAt
 	// when known. Additive, internal-tooling field: no dashboard consumer
@@ -1001,6 +752,66 @@ type StateSnapshot struct {
 	// Identifier against this list instead (see state.go's OutboxSyncing
 	// doc comment).
 	OutboxSyncing []string `json:"outboxSyncing,omitempty"`
+	// BackendHealth is one row per agent backend (and per worker host that
+	// has a breaker): the CORE-053 circuit breaker surfaced (CORE-055).
+	// Additive and optional: a pre-CORE-055 daemon omits it. This is the
+	// AGENT backend health — unrelated to RateLimits (the tracker API
+	// budget) and to OutboxEntries[].rateLimitedUntil (tracker writes).
+	BackendHealth []BackendHealthRow `json:"backendHealth,omitempty"`
+	// AutoSwitches lists the issues whose next dispatch runs on an
+	// automatic override (rate_limited automation or backend_fallback),
+	// sorted by identifier. Describes the NEXT dispatch; the running
+	// session's backend stays on RunningRow.Backend.
+	AutoSwitches []AutoSwitchRow `json:"autoSwitches,omitempty"`
+}
+
+// Backend health statuses carried by BackendHealthRow.Status.
+const (
+	BackendHealthHealthy = "healthy"
+	BackendHealthWarning = "warning"
+	BackendHealthLimited = "limited"
+	BackendHealthProbing = "probing"
+)
+
+// BackendHealthRow is one agent-backend circuit breaker (CORE-053/055).
+type BackendHealthRow struct {
+	Backend string `json:"backend"`
+	// Host is the SSH worker host the breaker applies to; "" = local runs.
+	Host   string `json:"host,omitempty"`
+	Status string `json:"status"`
+	// Kind is what opened the breaker: "quota" (a usage limit) or
+	// "throttle" (repeated api_retry rate limits).
+	Kind      string `json:"kind,omitempty"`
+	LimitType string `json:"limitType,omitempty"`
+	// LimitedUntil is the vendor-published reset. Deliberately nullable and
+	// not omitted: null means "not limited" or "reset unknown" (see
+	// RetryAt), never a fabricated time.
+	LimitedUntil *time.Time `json:"limitedUntil"`
+	// RetryAt is when the breaker half-opens (the reset, or the cooldown
+	// end when the reset is unknown). Absent when healthy.
+	RetryAt *time.Time `json:"retryAt,omitempty"`
+	Since   *time.Time `json:"since,omitempty"`
+	// ProbeIssue holds the single half-open probe while probing.
+	ProbeIssue string `json:"probeIssue,omitempty"`
+	// HeldIssues counts issues held with the backend_limited reason on
+	// this breaker; ReroutedIssues counts backend_fallback overrides away
+	// from it.
+	HeldIssues     int `json:"heldIssues"`
+	ReroutedIssues int `json:"reroutedIssues"`
+}
+
+// AutoSwitchRow is an issue's automatic override and its provenance
+// (CORE-055). Source is "automation", "backend_fallback", or "unknown" for
+// an override persisted before provenance was recorded.
+type AutoSwitchRow struct {
+	Identifier  string     `json:"identifier"`
+	Source      string     `json:"source"`
+	FromBackend string     `json:"fromBackend,omitempty"`
+	FromProfile string     `json:"fromProfile,omitempty"`
+	ToBackend   string     `json:"toBackend,omitempty"`
+	ToProfile   string     `json:"toProfile,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
+	SwitchedAt  *time.Time `json:"switchedAt,omitempty"`
 }
 
 // CandidateSeenRow is the wire shape of orchestrator.CandidateSeenRow.
@@ -1032,6 +843,70 @@ type OutboxEntryRow struct {
 	// pointer so a never-rate-limited entry omits the field entirely rather
 	// than serialising a zero time (same posture as DepsAnalyzeJobRow).
 	RateLimitedUntil *time.Time `json:"rateLimitedUntil,omitempty"`
+	// LastFailedAt is when the entry's most recent real delivery failure
+	// happened (rate-limit deferrals excluded). Nil until the first failure.
+	// HEARTBEAT uses it to pick the most recently failing degraded entry
+	// (CORE-044).
+	LastFailedAt *time.Time `json:"lastFailedAt,omitempty"`
+}
+
+// TrackerErrorRow is the wire shape of orchestrator.State.LastTrackerError
+// (CORE-044): the most recent tracker failure the event loop observed — a
+// failed candidate poll (op "poll") or a failed failed-state move (op
+// "update_state"). Kind is "outage" or "rate_limited"; ResetAt is the
+// tracker-published reset of a rate limit, when one was published.
+// ConsecutiveFailures is the current run of non-rate-limited poll failures.
+type TrackerErrorRow struct {
+	At                  time.Time  `json:"at"`
+	Op                  string     `json:"op"`
+	Kind                string     `json:"kind"`
+	Message             string     `json:"message"`
+	ResetAt             *time.Time `json:"resetAt,omitempty"`
+	ConsecutiveFailures int        `json:"consecutiveFailures,omitempty"`
+}
+
+// FailureRow is the wire shape of one orchestrator.FailureRecord (CORE-046).
+// Kind is worker_failed | worker_stalled | tracker_poll | tracker_write |
+// persist | outbox | panic | client (clients must tolerate new kinds).
+// OccurredAt is when the producer saw the failure (latest repeat when Count >
+// 1); RecordedAt is when the event loop recorded it. The ring is ordered by
+// RecordedAt; the dashboard sorts by OccurredAt.
+// FailureAckRow is one CORE-175 acknowledgement on the wire.
+type FailureAckRow struct {
+	Identifier string    `json:"identifier"`
+	UpTo       time.Time `json:"upTo"`
+}
+
+// TotalsRow is the snapshot's `totals` (CORE-091): daemon-session cumulative,
+// not persisted. CostUSDEstimated is Claude's client-side total_cost_usd
+// estimate summed per session, null until a Claude run reports cost; Codex
+// reports none, so CostCoverage.CodexRuns > 0 means the cost covers Claude
+// runs only.
+type TotalsRow struct {
+	InputTokens      int               `json:"inputTokens"`
+	OutputTokens     int               `json:"outputTokens"`
+	CostUSDEstimated *float64          `json:"costUsdEstimated"`
+	CostCoverage     TotalsCoverageRow `json:"costCoverage"`
+}
+
+// TotalsCoverageRow counts the runs behind TotalsRow (CORE-091).
+type TotalsCoverageRow struct {
+	ClaudeRuns int `json:"claudeRuns"`
+	CodexRuns  int `json:"codexRuns"`
+}
+
+// CapabilityFailureAck is advertised in StateSnapshot.Capabilities when the
+// daemon accepts POST /api/v1/issues/{identifier}/failures/ack (CORE-175).
+const CapabilityFailureAck = "failure_ack"
+
+type FailureRow struct {
+	Kind       string    `json:"kind"`
+	Identifier string    `json:"identifier,omitempty"`
+	Source     string    `json:"source,omitempty"`
+	Message    string    `json:"message"`
+	OccurredAt time.Time `json:"occurredAt"`
+	RecordedAt time.Time `json:"recordedAt"`
+	Count      int       `json:"count"`
 }
 
 // DepsAnalyzeJobRow is the wire shape returned by the deps-analyze status
@@ -1213,6 +1088,9 @@ type TrackerIssue struct {
 	AgentProfile string `json:"agentProfile,omitempty"`
 	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").
 	AgentBackend string `json:"agentBackend,omitempty"`
+	// AutoSwitch is set when AgentProfile/AgentBackend come from an
+	// automatic switch rather than an operator pin (CORE-055).
+	AutoSwitch *AutoSwitchRow `json:"autoSwitch,omitempty"`
 }
 
 // IssueLogEntry is one parsed log event for /api/v1/issues/{id}/logs.
@@ -1281,17 +1159,34 @@ func (b *broadcaster) close() {
 	}
 }
 
-// Shutdown wakes up SSE subscribers so they can exit on graceful daemon
-// shutdown. Pair with the http.Server's own Shutdown call — chi cancels
-// per-request contexts which is the primary exit signal; this helper is
-// belt-and-suspenders ordering documentation: orchestrator stop should
-// precede server stop, and server stop should call Shutdown to release
-// any subscriber holding a stale snapshot pointer. G-03.
+// Shutdown ends every streaming (SSE) handler of this Server — /events,
+// /logs, /issues/{id}/log-stream and /issues/{id}/sublog-stream return, which
+// ends their responses cleanly — and wakes broadcaster subscribers. Ordinary
+// requests are not affected. Safe to call more than once.
+//
+// http.Server.Shutdown alone does NOT end these handlers: it neither cancels
+// in-flight request contexts nor wakes a handler parked on its keepalive
+// ticker, so it only waits (for its deadline) while the streams run on. On a
+// config reload that left every open dashboard stream pinned to the old
+// generation — serving its frozen snapshot plus keepalives, and keeping the
+// old http.Server and Orchestrator reachable (CORE-025). cmd/itervox's
+// serveOnListener therefore registers this with http.Server.RegisterOnShutdown:
+// a reload ends the old generation's streams at once, the client reconnects
+// (openAuthedEventStream treats a clean close as retryable, CORE-004), and the
+// reconnect lands on the new generation because the old one no longer
+// accepts.
 func (s *Server) Shutdown() {
-	if s == nil || s.bc == nil {
+	if s == nil {
 		return
 	}
-	s.bc.close()
+	s.streamsOnce.Do(func() {
+		if s.streamsDone != nil {
+			close(s.streamsDone)
+		}
+	})
+	if s.bc != nil {
+		s.bc.close()
+	}
 }
 
 // Config holds all constructor parameters for a Server.
@@ -1337,6 +1232,33 @@ type Config struct {
 	// (agent.allow_unchecked_merge) — SRV-1 unarmed-gate opt-out for the
 	// merge_pr agent action. Read-only after startup.
 	AllowUncheckedMerge bool
+	// BindHost is server.host. In server.allow_unauthenticated mode (no
+	// APIToken) it is one of the names the DNS-rebinding Host guard accepts
+	// (CORE-162, see hostGuard). IP literals need no listing.
+	BindHost string
+	// AllowedHosts is server.allowed_hosts: extra Host names (reverse proxy,
+	// tunnel, MagicDNS, container service name) the Host guard accepts in
+	// server.allow_unauthenticated mode. Ignored in token mode.
+	AllowedHosts []string
+	// Readiness supplies the /api/v1/ready probe's inputs (CORE-043). It must
+	// be cheap and lock-light — atomics published by the event loop plus the
+	// tracker rate-limit gate — and must never take cfgMu or build a
+	// snapshot. Nil makes /ready answer 503.
+	Readiness func() ReadinessSignals
+	// Metrics, when non-nil, serves GET /metrics (Prometheus text format,
+	// CORE-045) behind the same bearer token as /api. cmd/itervox sets it
+	// only when server.metrics.enabled is true; nil answers 404.
+	Metrics http.Handler
+	// ReportClientError receives one redacted web client error report
+	// (POST /api/v1/client-errors, CORE-048) and must not block: cmd/itervox
+	// wires it to Orchestrator.RecordFailure. false means the event channel
+	// was full (the handler answers 503). Nil: reports are logged and counted
+	// only.
+	ReportClientError func(ClientErrorReport) bool
+	// ClientErrorLimiter rate-limits POST /api/v1/client-errors. Nil uses
+	// the process-wide default, which survives the Server rebuild every
+	// WORKFLOW.md reload performs.
+	ClientErrorLimiter *ClientErrorLimiter
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1349,10 +1271,15 @@ type Server struct {
 	fetchIssue     func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	projectManager ProjectManager
 	bc             *broadcaster
-	apiToken       string
-	actionTokens   *agentactions.Store
-	skills         SkillsClient
-	depsAnalyzer   DepsAnalyzer
+	// streamsDone is closed by Shutdown; every streaming handler returns
+	// when it closes (CORE-025). A Server built without New has a nil
+	// channel, which never fires.
+	streamsDone  chan struct{}
+	streamsOnce  sync.Once
+	apiToken     string
+	actionTokens *agentactions.Store
+	skills       SkillsClient
+	depsAnalyzer DepsAnalyzer
 	// mergeStrategy / mergeBlockLabels mirror Config.MergeStrategy /
 	// Config.MergeBlockLabels — startup-fixed merge_pr policy. gaps_11 G-3.
 	mergeStrategy    string
@@ -1363,6 +1290,19 @@ type Server struct {
 	// ghRun invokes the gh CLI for PR-surface handlers (merge_pr, comment_pr).
 	// Nil falls back to runGH; tests inject a fake.
 	ghRun func(ctx context.Context, args ...string) ([]byte, error)
+	// readiness mirrors Config.Readiness (CORE-043).
+	readiness func() ReadinessSignals
+	// metrics mirrors Config.Metrics (CORE-045).
+	metrics http.Handler
+	// reportClientError mirrors Config.ReportClientError; clientErrors is
+	// the route's rate limiter (CORE-048): Config.ClientErrorLimiter or the
+	// process-wide DefaultClientErrorLimiter.
+	reportClientError func(ClientErrorReport) bool
+	clientErrors      *ClientErrorLimiter
+	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
+	// the background, so a second request is refused instead of starting a
+	// second clear over the same tree (CORE-114).
+	clearAllInFlight atomic.Bool
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
@@ -1384,6 +1324,7 @@ func New(cfg Config) *Server {
 		fetchIssue:     cfg.FetchIssue,
 		projectManager: cfg.ProjectManager,
 		bc:             newBroadcaster(),
+		streamsDone:    make(chan struct{}),
 		apiToken:       cfg.APIToken,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
@@ -1392,6 +1333,24 @@ func New(cfg Config) *Server {
 		mergeStrategy:       cfg.MergeStrategy,
 		mergeBlockLabels:    cfg.MergeBlockLabels,
 		allowUncheckedMerge: cfg.AllowUncheckedMerge,
+		readiness:           cfg.Readiness,
+		metrics:             cfg.Metrics,
+		reportClientError:   cfg.ReportClientError,
+		clientErrors:        cfg.ClientErrorLimiter,
+	}
+	if s.clientErrors == nil {
+		s.clientErrors = DefaultClientErrorLimiter
+	}
+	// Root-router middleware: applies to every response class (200s, 401s,
+	// the SPA fallback, and SSE), unlike the bearer-auth group which only
+	// wraps the authenticated sub-router. Must be registered before routes()
+	// per chi's "middleware before routes" rule.
+	s.router.Use(securityHeadersMiddleware)
+	// CORE-162: DNS-rebinding guard, ahead of every route (SPA, static files,
+	// /api, SSE). Unauthenticated mode only — see hostGuard for why token
+	// mode does not need it.
+	if s.apiToken == "" {
+		s.router.Use(hostGuard(cfg.BindHost, cfg.AllowedHosts))
 	}
 	s.routes()
 	return s
@@ -1453,6 +1412,9 @@ func (s *Server) routes() {
 	s.router.Route("/api/v1", func(r chi.Router) {
 		// Health check is unauthenticated so load balancers can reach it.
 		r.Get("/health", s.handleHealth)
+		// Readiness (CORE-043): unauthenticated for the same reason as
+		// /health — container and load-balancer probes carry no token.
+		r.Get("/ready", s.handleReady)
 		r.Post("/agent-actions/{identifier}/comment", s.handleAgentComment)
 		r.Post("/agent-actions/{identifier}/comment_pr", s.handleAgentCommentPR)
 		r.Post("/agent-actions/{identifier}/merge_pr", s.handleAgentMergePR)
@@ -1466,6 +1428,10 @@ func (s *Server) routes() {
 		r.Group(func(r chi.Router) {
 			if s.apiToken != "" {
 				r.Use(s.bearerAuthMiddleware)
+			} else {
+				// server.allow_unauthenticated: no bearer check, so refuse
+				// cross-site state-changing requests instead (CORE-041).
+				r.Use(crossOriginGuardMiddleware)
 			}
 
 			r.Get("/state", s.handleState)
@@ -1494,10 +1460,15 @@ func (s *Server) routes() {
 			r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
 			r.Post("/issues/{identifier}/comment", s.handleIssueComment)
 			r.Post("/issues/{identifier}/deps-override", s.handleSetDepsOverride)
+			r.Post("/issues/{identifier}/failures/ack", s.handleAckFailures)
 			r.Delete("/issues/{identifier}/deps-override", s.handleClearDepsOverride)
+			// M3-close V1: operator clear of an agent-backend breaker.
+			r.Post("/backend-health/clear", s.handleClearBackendBreaker)
 			r.Post("/outbox/{id}/retry", s.handleRetryOutboxEntry)
 			r.Delete("/outbox/{id}", s.handleDropOutboxEntry)
 			r.Post("/settings/inline-input", s.handleSetInlineInput)
+			// CORE-048: web client error reports (8 KiB cap, rate-limited).
+			r.Post("/client-errors", s.handleClientError)
 			r.Get("/logs", s.handleLogs)
 			r.Post("/refresh", s.handleRefresh)
 			r.Get("/projects", s.handleListProjects)
@@ -1544,9 +1515,32 @@ func (s *Server) routes() {
 		})
 	})
 
+	// Prometheus metrics (CORE-045). Always routed so a disabled endpoint
+	// answers 404 instead of falling through to the SPA shell; behind the
+	// bearer token in token mode, and the CSRF guard (plus the root Host
+	// guard) in unauthenticated mode — never in the unauthenticated set.
+	s.router.Group(func(r chi.Router) {
+		if s.apiToken != "" {
+			r.Use(s.bearerAuthMiddleware)
+		} else {
+			r.Use(crossOriginGuardMiddleware)
+		}
+		r.Get("/metrics", s.handleMetrics)
+	})
+
 	// React SPA: serves all non-API paths from the embedded web/dist.
 	// Falls back to index.html so React Router client-side routing works.
 	s.router.Handle("/*", spaHandler())
+}
+
+// handleMetrics serves the injected Prometheus handler, or 404 when
+// server.metrics.enabled is off.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.metrics == nil {
+		writeError(w, http.StatusNotFound, "not_found", "metrics are disabled (set server.metrics.enabled: true)")
+		return
+	}
+	s.metrics.ServeHTTP(w, r)
 }
 
 // handleHealth returns a lightweight 200 OK for load balancer probes.
@@ -1560,7 +1554,13 @@ func (s *Server) bearerAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "
 		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, prefix) || strings.TrimPrefix(auth, prefix) != s.apiToken {
+		presented := strings.TrimPrefix(auth, prefix)
+		// subtle.ConstantTimeCompare requires equal-length inputs to run in
+		// constant time and returns 0 (not a panic) for a length mismatch, so
+		// it is safe to call directly on the raw byte slices without a
+		// length pre-check that would itself leak length via early return.
+		match := subtle.ConstantTimeCompare([]byte(presented), []byte(s.apiToken)) == 1
+		if !strings.HasPrefix(auth, prefix) || !match {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			return
 		}

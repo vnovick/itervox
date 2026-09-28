@@ -2,12 +2,12 @@ export const fieldLabelCls =
   'mb-2 block text-xs font-medium tracking-wider uppercase text-theme-text-secondary';
 
 export const inputCls =
-  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
+  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:border-theme-accent focus:outline-none bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
 
 export const selectCls = `${inputCls} cursor-pointer`;
 
 export const textareaCls =
-  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-xs font-mono focus:outline-none resize-y min-h-[72px] bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
+  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-xs font-mono focus:border-theme-accent focus:outline-none resize-y min-h-[72px] bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
 
 export const helperTextCls = 'text-theme-muted mt-1 text-[11px]';
 

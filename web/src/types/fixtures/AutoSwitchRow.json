@@ -1,0 +1,10 @@
+{
+  "identifier": "ENG-3",
+  "source": "backend_fallback",
+  "fromBackend": "claude",
+  "fromProfile": "coder",
+  "toBackend": "codex",
+  "toProfile": "coder-codex",
+  "reason": "backend_fallback: claude limited until 2026-05-25T12:10:00Z",
+  "switchedAt": "2026-05-25T12:00:00Z"
+}

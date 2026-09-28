@@ -1,16 +1,14 @@
 // RetriesCard — operator-facing surface for retry-budget knobs that
-// already exist in the Go backend (cfg.Agent.MaxRetries, cfg.Tracker.FailedState,
-// cfg.Agent.MaxSwitchesPerIssuePerWindow, cfg.Agent.SwitchWindowHours).
+// already exist in the Go backend (cfg.Agent.MaxRetries, cfg.Tracker.FailedState).
 //
 // max_retries: integer >= 0; "0" is the orchestrator's "unlimited" sentinel.
 // failed_state: dropdown sourced from the tracker's known states; the empty
 // option "Pause (do not move)" matches the orchestrator's pause-and-persist
 // fallback when no failed_state is configured.
 //
-// The rate-limit switch cap is delegated to SwitchCapSection (gap §5.5).
+// The rate-limit switch cap moved to RateLimitsFailoverCard (CORE-093).
 
 import { useEffect, useState } from 'react';
-import { SwitchCapSection } from './SwitchCapSection';
 
 interface RetriesCardProps {
   maxRetries: number;
@@ -20,13 +18,8 @@ interface RetriesCardProps {
   // operator can't accidentally auto-close exhausted issues by routing them
   // to success-on-failure.
   completionState?: string;
-  // Gap E — global per-issue switch cap for rate_limited automations.
-  maxSwitchesPerIssuePerWindow: number;
-  switchWindowHours: number;
   onSetMaxRetries: (n: number) => Promise<boolean>;
   onSetFailedState: (stateName: string) => Promise<boolean>;
-  onSetMaxSwitchesPerIssuePerWindow: (n: number) => Promise<boolean>;
-  onSetSwitchWindowHours: (h: number) => Promise<boolean>;
 }
 
 const PAUSE_LABEL = 'Pause (do not move)';
@@ -36,12 +29,8 @@ export function RetriesCard({
   failedState,
   trackerStateOptions,
   completionState,
-  maxSwitchesPerIssuePerWindow,
-  switchWindowHours,
   onSetMaxRetries,
   onSetFailedState,
-  onSetMaxSwitchesPerIssuePerWindow,
-  onSetSwitchWindowHours,
 }: RetriesCardProps) {
   // Local form state so the user can type freely without each keystroke
   // firing a settings PUT. We commit on blur.
@@ -121,7 +110,7 @@ export function RetriesCard({
             className="border-theme-line bg-theme-bg-soft text-theme-text mt-2 w-32 rounded-md border px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)] focus:outline-none"
           />
           {retriesError && (
-            <span role="alert" className="text-theme-danger mt-1 block text-xs">
+            <span role="alert" className="text-theme-danger-text mt-1 block text-xs">
               {retriesError}
             </span>
           )}
@@ -157,18 +146,11 @@ export function RetriesCard({
               ))}
           </select>
           {stateError && (
-            <span role="alert" className="text-theme-danger mt-1 block text-xs">
+            <span role="alert" className="text-theme-danger-text mt-1 block text-xs">
               {stateError}
             </span>
           )}
         </div>
-
-        <SwitchCapSection
-          maxSwitchesPerIssuePerWindow={maxSwitchesPerIssuePerWindow}
-          switchWindowHours={switchWindowHours}
-          onSetMaxSwitchesPerIssuePerWindow={onSetMaxSwitchesPerIssuePerWindow}
-          onSetSwitchWindowHours={onSetSwitchWindowHours}
-        />
       </div>
     </div>
   );

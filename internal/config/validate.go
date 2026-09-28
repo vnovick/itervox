@@ -193,6 +193,11 @@ func ValidateDispatch(cfg *Config) error {
 			return fmt.Errorf("invalid ssh host %q: must not start with '-' or contain whitespace", host)
 		}
 	}
+	// Check 7b: StrictHostKeyChecking modes must be ones ssh accepts
+	// (CORE-140) — an invalid value used to be dropped silently at startup.
+	if err := ValidateSSHStrictHostChecking(cfg.Agent.SSHStrictHostChecking, cfg.Agent.SSHStrictHostByHost); err != nil {
+		return err
+	}
 
 	// Check 8: profile commands must not contain shell metacharacters.
 	// Profile commands are passed as the first argument to bash -lc, so
@@ -210,10 +215,13 @@ func ValidateDispatch(cfg *Config) error {
 	if err := ValidateAgentProfiles(cfg.Agent.Profiles); err != nil {
 		return err
 	}
-	if err := ValidateAutomations(cfg.Automations, cfg.Agent.Profiles); err != nil {
+	if err := ValidateAutomationsWithDefaults(cfg.Automations, cfg.Agent.Profiles, cfg.Agent.Command); err != nil {
 		return err
 	}
 
+	if err := ValidateBackendFallback(cfg.Agent.BackendFallback, cfg.Agent.Profiles, cfg.Agent.Command); err != nil {
+		return err
+	}
 	if err := ValidateReviewerAutoReview(cfg.Agent.ReviewerProfile, cfg.Agent.AutoReview); err != nil {
 		return err
 	}
@@ -244,7 +252,11 @@ func ValidateAgentProfiles(profiles map[string]AgentProfile) error {
 	return nil
 }
 
-func ValidateAutomations(automations []AutomationConfig, profiles map[string]AgentProfile) error {
+// ValidateAutomationsWithDefaults is ValidateAutomations plus the default
+// agent command, used to resolve the effective command of a switch profile
+// whose own command is empty (CORE-010). An empty defaultCommand disables only
+// the inherited-command half of the switch_to_backend check.
+func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles map[string]AgentProfile, defaultCommand string) error {
 	if len(automations) == 0 {
 		return nil
 	}
@@ -329,6 +341,9 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 			default:
 				return fmt.Errorf("automation %q: policy.switch_to_backend must be empty, \"claude\", or \"codex\"", id)
 			}
+			if err := validateSwitchBackendCommand(id, switchToProfile, switchProfile, entry.Policy.SwitchToBackend, defaultCommand); err != nil {
+				return err
+			}
 			if entry.Policy.CooldownMinutes < 0 {
 				return fmt.Errorf("automation %q: policy.cooldown_minutes must be >= 0", id)
 			}
@@ -394,4 +409,102 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		}
 	}
 	return nil
+}
+
+// ValidateBackendFallback validates agent.backend_fallback (CORE-054):
+// chain entries are known, distinct backends; switch_back and on_unmapped are
+// known policies; the minutes are in range; every profile_map source is a
+// known profile (or "default"), every backend key is a known backend, and
+// every target exists, is enabled and actually runs that backend — its
+// profile backend, else its command's binary, else agent.command's. A target
+// whose backend cannot be determined (an opaque wrapper with no backend:) is
+// rejected, because the orchestrator would refuse to pair it (CORE-115).
+// A disabled block (enabled: false) is not validated.
+func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]AgentProfile, defaultCommand string) error {
+	if !fb.Enabled {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(fb.Chain))
+	for _, b := range fb.Chain {
+		if !IsSupportedBackend(b) {
+			return fmt.Errorf("agent.backend_fallback.chain: unknown backend %q (must be claude or codex)", b)
+		}
+		if _, dup := seen[b]; dup {
+			return fmt.Errorf("agent.backend_fallback.chain: backend %q listed twice", b)
+		}
+		seen[b] = struct{}{}
+	}
+	switch fb.SwitchBack {
+	case BackendFallbackSwitchBackAtReset, BackendFallbackSwitchBackOnSuccess, BackendFallbackSwitchBackManual:
+	default:
+		return fmt.Errorf("agent.backend_fallback.switch_back: %q must be at_reset, on_success or manual", fb.SwitchBack)
+	}
+	switch fb.OnUnmapped {
+	case BackendFallbackUnmappedHold, BackendFallbackUnmappedBackendHint:
+	default:
+		return fmt.Errorf("agent.backend_fallback.on_unmapped: %q must be hold or backend_hint", fb.OnUnmapped)
+	}
+	if fb.MinDwellMinutes < 0 {
+		return fmt.Errorf("agent.backend_fallback.min_dwell_minutes must be >= 0")
+	}
+	if fb.DefaultCooldownMinutes <= 0 || fb.DefaultCooldownMinutes > MaxBackendFallbackCooldownMinutes {
+		return fmt.Errorf("agent.backend_fallback.default_cooldown_minutes must be between 1 and %d (the breaker never holds an unknown reset longer than a day)", MaxBackendFallbackCooldownMinutes)
+	}
+	sources := make([]string, 0, len(fb.ProfileMap))
+	for source := range fb.ProfileMap {
+		sources = append(sources, source)
+	}
+	slices.Sort(sources)
+	for _, source := range sources {
+		if _, ok := profiles[source]; !ok && source != BackendFallbackDefaultProfileKey {
+			return fmt.Errorf("agent.backend_fallback.profile_map: unknown source profile %q", source)
+		}
+		row := fb.ProfileMap[source]
+		backends := make([]string, 0, len(row))
+		for b := range row {
+			backends = append(backends, b)
+		}
+		slices.Sort(backends)
+		for _, backend := range backends {
+			target := row[backend]
+			where := fmt.Sprintf("agent.backend_fallback.profile_map.%s.%s", source, backend)
+			if !IsSupportedBackend(backend) {
+				return fmt.Errorf("%s: backend key %q must be claude or codex", where, backend)
+			}
+			profile, ok := profiles[target]
+			if !ok {
+				return fmt.Errorf("%s: unknown profile %q", where, target)
+			}
+			if !ProfileEnabled(profile) {
+				return fmt.Errorf("%s: disabled profile %q", where, target)
+			}
+			got := ProfileRunsBackend(profile, defaultCommand)
+			if got == "" {
+				return fmt.Errorf("%s: cannot tell which backend profile %q runs; set backend: %s on it", where, target, backend)
+			}
+			if got != backend {
+				return fmt.Errorf("%s: profile %q runs %q, not %q", where, target, got, backend)
+			}
+		}
+	}
+	return nil
+}
+
+// ProfileRunsBackend is the backend a profile's runs execute on: the
+// recognisable binary (or backend hint) of its command — else of
+// defaultCommand, which an empty profile command inherits — and only for an
+// opaque wrapper its explicit backend. A recognisable binary wins over
+// backend:, as at dispatch (CORE-115). "" when unknown.
+func ProfileRunsBackend(profile AgentProfile, defaultCommand string) string {
+	command := profile.Command
+	if strings.TrimSpace(command) == "" {
+		command = defaultCommand
+	}
+	if bin := BackendFromCommand(command); bin != "" {
+		return bin
+	}
+	if IsSupportedBackend(profile.Backend) {
+		return profile.Backend
+	}
+	return ""
 }

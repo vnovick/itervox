@@ -28,8 +28,8 @@ function HostTile({ host }: { host: HostEntry }) {
 
   const kindStyle =
     host.kind === 'local'
-      ? { bg: 'rgba(34,197,94,0.12)', color: '#4ade80', label: 'Local' }
-      : { bg: 'rgba(99,102,241,0.12)', color: '#818cf8', label: 'SSH' };
+      ? { bg: 'var(--success-soft)', color: 'var(--success-text)', label: 'Local' }
+      : { bg: 'var(--accent-soft)', color: 'var(--accent-text)', label: 'SSH' };
 
   return (
     <div className="bg-theme-bg-elevated border-theme-line overflow-hidden rounded-xl border">
@@ -48,7 +48,7 @@ function HostTile({ host }: { host: HostEntry }) {
         {host.disabled ? (
           <span
             className="flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.04em] uppercase"
-            style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}
+            style={{ background: 'var(--danger-soft)', color: 'var(--danger-text)' }}
           >
             Disabled
           </span>

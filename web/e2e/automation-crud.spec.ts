@@ -49,21 +49,15 @@ test('create + delete an automation round-trip', async ({ page }) => {
   await page.getByRole('button', { name: /create automation/i }).click();
 
   // After the round-trip the modal closes and the new automation appears in
-  // the list. Use polling because the SSE snapshot may take a tick.
-  await expect
-    .poll(
-      async () => {
-        return page.getByText('e2e-smoke').isVisible();
-      },
-      { timeout: 5_000 },
-    )
-    .toBe(true);
-
-  // Delete the automation — find a delete button on the new row.
-  // Use the stable data-automation-row attribute as the anchor; ancestor div
-  // selectors may match high up in the tree where the button isn't a direct
-  // child, leading to "first()" picking a wrong element.
+  // the list. Anchor on the stable data-automation-row attribute: the id is
+  // also rendered by the activity panel (heading + sparkline title), so a
+  // bare getByText('e2e-smoke') is ambiguous. The web-first assertion retries
+  // while the SSE snapshot catches up.
   const row = page.locator('[data-automation-row="e2e-smoke"]');
+  await expect(row).toBeVisible({ timeout: 5_000 });
+
+  // Delete the automation from its own row — ancestor div selectors may match
+  // high up in the tree where the button isn't a direct child.
   await row.getByRole('button', { name: /delete|remove/i }).click();
 
   // After delete, the row should be gone from the snapshot.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -316,6 +317,7 @@ func startDepsAutoAnalyze(
 		return
 	}
 	go func() {
+		defer failFastOnPanic("deps-auto-analyze")
 		ticker := time.NewTicker(depsAutoAnalyzeTickInterval)
 		defer ticker.Stop()
 		var state autoAnalyzeState
@@ -364,6 +366,14 @@ func runDepsAutoAnalyzeTick(
 	}
 
 	id, _, err := svc.EnqueueAnalysisWithTrigger(profile, "auto", "auto")
+	if errors.Is(err, server.ErrDraining) { // M4-close BH-M4-3
+		slog.Debug("deps auto-analyze: skipped, daemon is draining")
+		return
+	}
+	if errors.Is(err, server.ErrBackendLimited) { // CORE-173 a
+		slog.Debug("deps auto-analyze: skipped, analyzer backend is limited", "profile", profile, "error", err)
+		return
+	}
 	if err != nil {
 		slog.Warn("deps auto-analyze: enqueue failed", "profile", profile, "error", err)
 		return

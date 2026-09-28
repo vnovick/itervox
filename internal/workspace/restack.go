@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // RestackOutcome is the result of attempting to rebase a stacked worktree onto
@@ -81,11 +83,9 @@ func (m *Manager) RestackWorktree(ctx context.Context, identifier, branchName, o
 		return RestackUpToDate, nil
 	}
 
-	rebase := exec.CommandContext(ctx, "git", "rebase", onto)
-	rebase.Dir = wtPath
+	rebase := gitexec.Command(ctx, wtPath, "rebase", onto)
 	if out, rerr := rebase.CombinedOutput(); rerr != nil {
-		abort := exec.CommandContext(ctx, "git", "rebase", "--abort")
-		abort.Dir = wtPath
+		abort := gitexec.Command(ctx, wtPath, "rebase", "--abort")
 		// An abort failure is worth surfacing: it means the worktree may be
 		// left mid-rebase, which every later operation on it would trip over.
 		if aout, aerr := abort.CombinedOutput(); aerr != nil {
@@ -106,8 +106,7 @@ func (m *Manager) RestackWorktree(ctx context.Context, identifier, branchName, o
 // entangle them with a checkout, and they are exactly the "I was midway
 // through something" signal that should stop an automated rewrite.
 func worktreeIsDirty(ctx context.Context, wtPath string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = wtPath
+	cmd := gitexec.Command(ctx, wtPath, "status", "--porcelain")
 	out, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("workspace: git status in %s: %w", wtPath, err)
@@ -117,8 +116,7 @@ func worktreeIsDirty(ctx context.Context, wtPath string) (bool, error) {
 
 // branchContains reports whether HEAD already contains ref's tip.
 func branchContains(ctx context.Context, wtPath, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ref, "HEAD")
-	cmd.Dir = wtPath
+	cmd := gitexec.Command(ctx, wtPath, "merge-base", "--is-ancestor", ref, "HEAD")
 	err := cmd.Run()
 	if err == nil {
 		return true, nil

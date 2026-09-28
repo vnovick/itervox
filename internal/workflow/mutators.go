@@ -10,9 +10,11 @@ import (
 
 // This file extracts the in-memory front-matter manipulation from each
 // Patch* helper in loader.go into composable Mutator values. The Doc API
-// (doc.go) chains these into one atomic Save. Existing Patch* callers
-// continue to work unchanged — they each delegate to the corresponding
-// Mutate* via ApplyAndWriteFrontMatter.
+// (doc.go) chains these into one atomic Save. Every Patch* function in this
+// package now delegates to the corresponding Mutate*/mutate* helper via
+// ApplyAndWriteFrontMatter (CORE-006), so every writer is serialized by
+// editMu and none reads the file directly outside of loadWorkflow,
+// PatchIntField, and ApplyAndWriteFrontMatter itself.
 
 // MutateIntField rewrites the first occurrence of `key: <int>` inside the
 // front matter, preserving any inline comment. Errors when the key is
@@ -63,6 +65,12 @@ func MutateAgentStringMapField(key string, values map[string]string) Mutator {
 
 // ── Block-level helpers (shared between Patch* and Mutate* paths) ───────────
 
+// mutateBlockStringField, mutateBlockBoolField, mutateBlockStringSliceField
+// and mutateBlockStringMapField all derive their indent unit from
+// detectBlockIndent (loader.go) rather than a hardcoded two-space prefix —
+// a WORKFLOW.md whose front matter uses 4-space indent (yaml.v3's default
+// serialisation) must keep that indent on every key these helpers write or
+// remove, matching the sibling lines already in the block (CORE-006).
 func mutateBlockStringField(block, key, value string) Mutator {
 	return func(frontLines []string) ([]string, error) {
 		blockLine, blockEnd := findBlockRange(frontLines, block)
@@ -75,7 +83,8 @@ func mutateBlockStringField(block, key, value string) Mutator {
 			}
 			return nil, fmt.Errorf("workflow mutate: %q block not found", block)
 		}
-		keyPrefix := "  " + key + ":"
+		indent := detectBlockIndent(frontLines, blockLine)
+		keyPrefix := indent + key + ":"
 		out := make([]string, 0, len(frontLines))
 		out = append(out, frontLines[:blockLine+1]...)
 		written := false
@@ -84,14 +93,14 @@ func mutateBlockStringField(block, key, value string) Mutator {
 				if value == "" {
 					continue
 				}
-				out = append(out, "  "+key+": "+strconv.Quote(value))
+				out = append(out, indent+key+": "+strconv.Quote(value))
 				written = true
 				continue
 			}
 			out = append(out, line)
 		}
 		if !written && value != "" {
-			out = append(out, "  "+key+": "+strconv.Quote(value))
+			out = append(out, indent+key+": "+strconv.Quote(value))
 		}
 		out = append(out, frontLines[blockEnd:]...)
 		return out, nil
@@ -107,7 +116,8 @@ func mutateBlockBoolField(block, key string, enabled bool) Mutator {
 			}
 			return nil, fmt.Errorf("workflow mutate: %q block not found", block)
 		}
-		keyPrefix := "  " + key + ":"
+		indent := detectBlockIndent(frontLines, blockLine)
+		keyPrefix := indent + key + ":"
 		out := make([]string, 0, len(frontLines))
 		out = append(out, frontLines[:blockLine+1]...)
 		written := false
@@ -116,14 +126,14 @@ func mutateBlockBoolField(block, key string, enabled bool) Mutator {
 				if !enabled {
 					continue // remove the key
 				}
-				out = append(out, "  "+key+": true")
+				out = append(out, indent+key+": true")
 				written = true
 				continue
 			}
 			out = append(out, line)
 		}
 		if !written && enabled {
-			out = append(out, "  "+key+": true")
+			out = append(out, indent+key+": true")
 		}
 		out = append(out, frontLines[blockEnd:]...)
 		return out, nil
@@ -136,14 +146,15 @@ func mutateBlockStringSliceField(block, key string, values []string) Mutator {
 		if err != nil {
 			return nil, fmt.Errorf("marshal %q: %w", key, err)
 		}
-		keyPrefix := "  " + key + ":"
 		blockLine, _ := findBlockRange(frontLines, block)
+		indent := detectBlockIndent(frontLines, blockLine)
+		keyPrefix := indent + key + ":"
 		// Locate existing key inside block.
 		keyFound := -1
 		if blockLine >= 0 {
 			for j := blockLine + 1; j < len(frontLines); j++ {
 				line := frontLines[j]
-				if len(line) > 0 && line[0] != ' ' {
+				if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
 					break
 				}
 				if strings.HasPrefix(line, keyPrefix) {
@@ -159,7 +170,7 @@ func mutateBlockStringSliceField(block, key string, values []string) Mutator {
 			out = append(out, frontLines[keyFound+1:]...)
 		case keyFound >= 0:
 			out = append(out, frontLines[:keyFound]...)
-			out = append(out, "  "+key+": "+string(encoded))
+			out = append(out, indent+key+": "+string(encoded))
 			out = append(out, frontLines[keyFound+1:]...)
 		case len(values) > 0:
 			insertAt := len(frontLines)
@@ -167,7 +178,7 @@ func mutateBlockStringSliceField(block, key string, values []string) Mutator {
 				insertAt = blockLine + 1
 			}
 			out = append(out, frontLines[:insertAt]...)
-			out = append(out, "  "+key+": "+string(encoded))
+			out = append(out, indent+key+": "+string(encoded))
 			out = append(out, frontLines[insertAt:]...)
 		default:
 			return frontLines, nil
@@ -179,11 +190,14 @@ func mutateBlockStringSliceField(block, key string, values []string) Mutator {
 func mutateBlockStringMapField(block, key string, values map[string]string) Mutator {
 	return func(frontLines []string) ([]string, error) {
 		blockLine, _ := findBlockRange(frontLines, block)
+		indent := detectBlockIndent(frontLines, blockLine)
+		childIndent := indent + indent
+		headerLine := indent + key + ":"
 		// Locate existing key block.
 		blockStart := -1
 		blockEndLocal := -1
 		for i, line := range frontLines {
-			if line != "  "+key+":" {
+			if line != headerLine {
 				continue
 			}
 			blockStart = i
@@ -194,9 +208,8 @@ func mutateBlockStringMapField(block, key string, values map[string]string) Muta
 					j++
 					continue
 				}
-				trimmed := strings.TrimLeft(l, " ")
-				indent := len(l) - len(trimmed)
-				if indent > 2 {
+				trimmed := strings.TrimLeft(l, " \t")
+				if len(l)-len(trimmed) > len(indent) {
 					j++
 				} else {
 					break
@@ -208,14 +221,14 @@ func mutateBlockStringMapField(block, key string, values map[string]string) Muta
 
 		var replacement []string
 		if len(values) > 0 {
-			replacement = append(replacement, "  "+key+":")
+			replacement = append(replacement, headerLine)
 			keys := make([]string, 0, len(values))
 			for mapKey := range values {
 				keys = append(keys, mapKey)
 			}
 			sort.Strings(keys)
 			for _, mapKey := range keys {
-				replacement = append(replacement, "    "+strconv.Quote(mapKey)+": "+strconv.Quote(values[mapKey]))
+				replacement = append(replacement, childIndent+strconv.Quote(mapKey)+": "+strconv.Quote(values[mapKey]))
 			}
 		}
 

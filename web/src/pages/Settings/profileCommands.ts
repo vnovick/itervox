@@ -143,10 +143,6 @@ export function modelsForBackend(
   return backend === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
 }
 
-export function modelDatalistId(backend: SupportedBackend): string {
-  return `${backend}-models-datalist`;
-}
-
 export function commandToModel(cmd: string | undefined | null): string {
   if (!cmd) return '';
   const match = cmd.match(/(?:^|\s)--model\s+(\S+)/);

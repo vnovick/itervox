@@ -71,7 +71,7 @@ func TestPostOperatorCommentEnqueuesPlainBody(t *testing.T) {
 	require.NoError(t, err)
 	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}
 	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, []string{"In Progress"}, []string{"Done"})
-	adapter := &orchestratorAdapter{ob: ob, tr: mt}
+	adapter := &orchestratorAdapter{ob: ob, tr: mt, outboxEnabled: true}
 
 	queued, err := adapter.PostOperatorComment(context.Background(), "ENG-1", "Looks good, ship it")
 
@@ -91,15 +91,23 @@ func TestPostOperatorCommentEnqueuesPlainBody(t *testing.T) {
 	assert.Empty(t, detail.Comments, "nothing reaches the tracker until the flusher runs")
 }
 
+// TestPostOperatorCommentDirectWhenOutboxOff (CORE-120) uses the shape
+// production builds with tracker.outbox: false — run() constructs the outbox
+// handle unconditionally (so leftover entries stay visible and Retry/Drop
+// work) but never starts the flusher. Enqueueing there answered 202 queued
+// for a comment nothing would ever deliver.
 func TestPostOperatorCommentDirectWhenOutboxOff(t *testing.T) {
+	ob, err := outbox.New(t.TempDir() + "/outbox.json")
+	require.NoError(t, err)
 	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}
 	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, []string{"In Progress"}, []string{"Done"})
-	adapter := &orchestratorAdapter{tr: mt} // ob == nil: tracker.outbox: false
+	adapter := &orchestratorAdapter{tr: mt, ob: ob, outboxEnabled: false} // tracker.outbox: false — handle present, no flusher
 
 	queued, err := adapter.PostOperatorComment(context.Background(), "ENG-1", "direct")
 
 	require.NoError(t, err)
-	assert.False(t, queued)
+	assert.False(t, queued, "with the outbox switched off the comment is posted, not queued")
+	assert.Empty(t, ob.Snapshot(), "nothing may be enqueued into an outbox no flusher drains")
 	detail, err := mt.FetchIssueDetail(context.Background(), "id1")
 	require.NoError(t, err)
 	require.Len(t, detail.Comments, 1)

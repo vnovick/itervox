@@ -70,6 +70,27 @@ func checkGoroutinesTracked(fset *token.FileSet, f *ast.File, filename string, k
 		if !ok {
 			return true
 		}
+		// CORE-008: goSafe(&o.<wg>, ...) is a goroutine launch whose
+		// WaitGroup is an argument (goSafe calls Add(1) itself). It must
+		// name one of the joined WaitGroups — otherwise converting a `go`
+		// statement to goSafe would silently escape this guard.
+		ast.Inspect(fd, func(inner ast.Node) bool {
+			call, ok := inner.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "goSafe" {
+				return true
+			}
+			if len(call.Args) == 0 || !isTrackedWGAddr(call.Args[0], knownWGs) {
+				pos := fset.Position(call.Pos())
+				violations = append(violations,
+					"goSafe at "+pos.String()+" in "+fd.Name.Name+
+						": first argument must be &o.{autoClearWg|discardWg|commentWg}",
+				)
+			}
+			return true
+		})
 		// Walk the function body looking for GoStmts.
 		ast.Inspect(fd, func(inner ast.Node) bool {
 			gostmt, ok := inner.(*ast.GoStmt)
@@ -138,4 +159,21 @@ func checkGoroutinesTracked(fset *token.FileSet, f *ast.File, filename string, k
 	})
 
 	return violations
+}
+
+// isTrackedWGAddr reports whether expr is `&o.<wg>` for a known WaitGroup.
+func isTrackedWGAddr(expr ast.Expr, knownWGs map[string]struct{}) bool {
+	u, ok := expr.(*ast.UnaryExpr)
+	if !ok || u.Op != token.AND {
+		return false
+	}
+	sel, ok := u.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "o" {
+		return false
+	}
+	_, known := knownWGs[sel.Sel.Name]
+	return known
 }

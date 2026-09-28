@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -46,7 +47,7 @@ func (s *Server) handleSetMaxRetries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.SetMaxRetries(maxRetries); err != nil {
-		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
+		writeClientError(w, "set_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "maxRetries": maxRetries})
@@ -65,7 +66,7 @@ func (s *Server) handleSetMaxSwitches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.SetMaxSwitchesPerIssuePerWindow(cap); err != nil {
-		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
+		writeClientError(w, "set_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -83,7 +84,7 @@ func (s *Server) handleSetSwitchWindowHours(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := s.client.SetSwitchWindowHours(hours); err != nil {
-		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
+		writeClientError(w, "set_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -102,6 +103,12 @@ func (s *Server) handleSetFailedState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.SetFailedState(failedState); err != nil {
+		// The reload fence is not a bad value: it must stay a retryable 503
+		// rather than fall into this handler's 400 for unknown states (D2).
+		if errors.Is(err, ErrSettingsReloading) {
+			writeClientError(w, "set_failed", err)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_state", err.Error())
 		return
 	}

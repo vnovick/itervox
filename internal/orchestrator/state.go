@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 )
@@ -63,6 +64,19 @@ const (
 	// waiting for the next tick's ReconcileInferredDeps pass.
 	// unified-dependency-graph Task 6.
 	EventSetDepsOverride EventType = "SetDepsOverride"
+	// EventFailureRecorded carries one RecentFailures entry from an off-loop
+	// producer (outbox flusher, ledger writer, recovered panic, web client
+	// error report). Sent non-blocking via RecordFailure; a dropped event is
+	// counted, never re-sent. The loop appends it (CORE-046).
+	EventFailureRecorded EventType = "FailureRecorded"
+	// EventDrain is sent by RequestDrain (CORE-057) when the daemon begins a
+	// graceful drain for shutdown or a WORKFLOW.md reload. The loop sets
+	// State.Draining; from then on nothing new is admitted while in-flight
+	// workers run to completion.
+	EventDrain EventType = "Drain"
+	// EventAckFailures records an operator acknowledgement of an issue's
+	// worker failures up to a time (CORE-175).
+	EventAckFailures EventType = "AckFailures"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -81,6 +95,23 @@ type OrchestratorEvent struct { //nolint:revive
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
 	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
 	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
+	Failure            *FailureRecord           // used by EventFailureRecorded
+	// Limit is the vendor limit signal of a failed turn (CORE-050/051):
+	// set on TerminalRateLimited, and on TerminalFailed when the turn saw an
+	// advisory throttle whose vendor delay the retry should honour.
+	Limit *agent.LimitSignal
+	// AckUpTo is the acknowledged-up-to time of an EventAckFailures.
+	AckUpTo time.Time
+	// DiscardGen identifies the discard operation an EventDiscardComplete
+	// finishes (CORE-109); it must match the marker's Gen to clear it.
+	DiscardGen uint64
+}
+
+// DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
+// generation of the discard operation that set it and when it was set.
+type DiscardMarker struct {
+	Gen uint64
+	At  time.Time
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -99,6 +130,13 @@ const (
 	// (permission prompt, missing API key, etc.). The issue is moved to the
 	// InputRequiredIssues queue instead of being retried or marked as succeeded.
 	TerminalInputRequired TerminalReason = "input_required"
+	// TerminalRateLimited is used when a failed turn carries a quota limit
+	// signal (agent.LimitSignal.Terminal, CORE-050): the backend cannot serve
+	// the issue again before the limit resets. The event loop evaluates the
+	// rate_limited fallback immediately, without consuming a retry, and falls
+	// through to the normal failed path when no fallback is eligible
+	// (CORE-051).
+	TerminalRateLimited TerminalReason = "rate_limited"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).
@@ -171,6 +209,10 @@ type InputRequiredEntry struct {
 	// bounded time no matter how large the backlog grows. Zero means never
 	// checked, which sorts first.
 	LastReplyCheckAt time.Time
+	// QuestionStuckWarned records that the Warn for a degraded, undelivered
+	// question has been logged, so it fires once per entry rather than on
+	// every tick (CORE-123). Event-loop owned; session-scoped.
+	QuestionStuckWarned bool
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not
@@ -249,6 +291,15 @@ type RunEntry struct {
 	RetryAttempt       *int
 	StartedAt          time.Time
 	WorkerCancel       context.CancelFunc
+	// CostUSD is the latest session-cumulative estimated cost reported by the
+	// run's result events (Claude total_cost_usd, CORE-091); nil when unknown.
+	CostUSD *float64
+	// totalsInput/totalsOutput/totalsCounted record what this run has
+	// already contributed to State.Totals (CORE-091). Unexported: event-loop
+	// bookkeeping, not part of the snapshot.
+	totalsInput   int
+	totalsOutput  int
+	totalsCounted bool
 }
 
 // CompletedRun is a snapshot of a finished worker session, kept in the history ring buffer.
@@ -309,6 +360,10 @@ type PausedSessionInfo struct {
 
 // State is the single in-memory authority for all orchestrator runtime data.
 type State struct {
+	// Draining is set by the event loop on EventDrain (CORE-057) and never
+	// cleared: a drain ends with the generation. While true AvailableSlots
+	// is 0 and dispatch()/dispatchReviewerForIssue refuse.
+	Draining            bool
 	PollIntervalMs      int
 	MaxConcurrentAgents int
 	// ActiveStates and TerminalStates are snapshotted from cfg at the start of
@@ -371,6 +426,32 @@ type State struct {
 	// exceeded the TTL, even if no successful exit cleared them. Gap §6.2.
 	// Keys mirror AutoSwitchedIdentifiers; the two maps stay in sync.
 	AutoSwitchedAt map[string]time.Time
+	// SwitchHistory records, per tracker issue ID, the time of every
+	// rate_limited switch that fired, for the per-issue cap
+	// (cfg.Agent.MaxSwitchesPerIssuePerWindow over SwitchWindowHours).
+	// RateLimitCooldowns maps "<issueID>|<failed profile>" to the time until
+	// which that pair is muted from re-firing a rate_limited rule.
+	// RateLimitCapCommentUntil maps issue ID to the next time a cap-exhausted
+	// tracker comment may be posted. All three were mutex-guarded
+	// Orchestrator fields lost on restart; they are event-loop State now and
+	// persisted with the auto-switched overrides (CORE-052).
+	SwitchHistory            map[string][]time.Time
+	RateLimitCooldowns       map[string]time.Time
+	RateLimitCapCommentUntil map[string]time.Time
+	// AutoSwitchInfo is the provenance of each automatic override in
+	// AutoSwitchedIdentifiers: who switched (a rate_limited automation or
+	// agent.backend_fallback), from and to which backend/profile, and why.
+	// Keys mirror AutoSwitchedIdentifiers; persisted with them (CORE-055).
+	AutoSwitchInfo map[string]AutoSwitchRecord
+	// BackendHealth is the per-(backend, worker host) circuit breaker
+	// (CORE-053), keyed by BackendHealthKey. Absent means healthy. Written
+	// only by the event loop; persisted to backend_health.json.
+	BackendHealth map[string]BackendHealthEntry
+	// BackendLimitedHolds records the issues the dispatch gate refused
+	// because every target backend was limited (the backend_limited
+	// ineligible reason), with the breaker key and the earliest time a
+	// target may admit it. Derived, event-loop owned, not persisted.
+	BackendLimitedHolds map[string]BackendHold
 	// ForceReanalyze holds identifiers queued for forced PR re-analysis.
 	// These bypass the "existing open PR = skip" guard on next dispatch.
 	ForceReanalyze map[string]struct{}
@@ -388,8 +469,24 @@ type State struct {
 	// has been processed but whose UpdateIssueState goroutine has not yet
 	// completed. Issues in this set are ineligible for dispatch, preventing the
 	// TUI's background TriggerPoll from re-picking them before the label update
-	// (e.g. removing "In Progress") finishes. Cleared by EventDiscardComplete.
-	DiscardingIdentifiers map[string]struct{}
+	// (e.g. removing "In Progress") finishes. Cleared by the
+	// EventDiscardComplete whose DiscardGen matches the marker's Gen, or —
+	// when that completion was lost — expired by the janitor after
+	// discardMarkerTTL (CORE-109).
+	DiscardingIdentifiers map[string]DiscardMarker
+	// DiscardGeneration is the last generation handed to a discard marker.
+	// Event-loop state: incremented on every insert so a late completion of
+	// an older discard cannot clear a newer marker for the same identifier.
+	DiscardGeneration uint64
+	// FailureAcks is identifier → acknowledged-up-to time for the
+	// operator's "acknowledge" on failed/stalled attention items
+	// (CORE-175). Event-loop state; not persisted, like the RecentFailures
+	// ring it refers to, and pruned when the issue has no worker failure
+	// left in that ring.
+	FailureAcks map[string]time.Time
+	// Totals is the daemon-session token and estimated-cost accounting
+	// (CORE-091): event-loop state, not persisted.
+	Totals RunTotals
 	// InputRequiredIssues tracks issues whose agent signalled that it needs
 	// human input to continue. Key: identifier. These issues are not dispatched
 	// until the user provides input or dismisses.
@@ -415,11 +512,31 @@ type State struct {
 	// ReviewOutcomes is the quorum result once every reviewer in the chain
 	// has reported. Key: issue identifier.
 	ReviewOutcomes map[string]ReviewOutcome
+	// PersistWriteErrors counts failed ledger writes (CORE-038). Not tracked
+	// by the event loop: Snapshot() overlays the orchestrator's atomic
+	// counter, so it is only meaningful on a Snapshot() result.
+	PersistWriteErrors int64
 	// DispatchPressure records whether each tick was slot-bound or
 	// dependency-bound, so the operator can tell whether raising
 	// agent.max_concurrent_agents would actually buy throughput. Session-
 	// scoped and not persisted; see dispatch_pressure.go.
 	DispatchPressure DispatchPressure
+	// LastTrackerError is the most recent tracker failure (CORE-044): a
+	// failed poll (op "poll", set in onTick) or a failed failed-state move
+	// (op "update_state", reported back on EventDiscardComplete). Written
+	// only by the event loop; zero At means none. A successful poll clears a
+	// poll error; a write error ages out after trackerWriteErrorTTL.
+	LastTrackerError TrackerErrorInfo
+	// ConsecutivePollFailures counts consecutive non-rate-limited poll
+	// failures; reset by a successful poll. Drives the Warn→Error escalation
+	// at PollFailureEscalationThreshold and the /ready probe (CORE-043).
+	ConsecutivePollFailures int
+	// RecentFailures is the bounded (RecentFailuresCap) ring of operator-
+	// relevant failures, oldest first by RecordedAt (CORE-046). Appended only
+	// by the event loop — in-loop producers call appendRecentFailure, off-loop
+	// producers send EventFailureRecorded via RecordFailure. Not persisted;
+	// carried across WORKFLOW.md reloads by cmd/itervox (SeedRecentFailures).
+	RecentFailures []FailureRecord
 	// DependencyAudit tracks normalized blocker state by issue identifier.
 	DependencyAudit map[string]*DependencyAuditEntry
 	// DependencyTransitionSeq increments when dependency audit emits a transition.
@@ -504,6 +621,12 @@ type State struct {
 	// goroutine) only sends the event. unified-dependency-graph Task 6.
 	DepsOverrides map[string]time.Time
 
+	// PendingReviews holds reviewer dispatches refused while draining
+	// (M4-close BH-M4-2), keyed by issue identifier. Persisted to
+	// pending_reviews.json and re-dispatched by resumePendingReviews once
+	// admission is open again (normally after the restart). Event loop only.
+	PendingReviews map[string]PendingReview
+
 	// DependencyCycles holds this tick's strongly-connected-component cycle
 	// alerts over the tick graph (sorted by first member). Recomputed every
 	// tick by ExtractCycles from the tick graph built in onTick; DetectedAt
@@ -565,11 +688,17 @@ func NewState(cfg *config.Config) State {
 		IssueBackends:               make(map[string]string),
 		AutoSwitchedIdentifiers:     make(map[string]struct{}),
 		AutoSwitchedAt:              make(map[string]time.Time),
+		SwitchHistory:               make(map[string][]time.Time),
+		RateLimitCooldowns:          make(map[string]time.Time),
+		RateLimitCapCommentUntil:    make(map[string]time.Time),
+		AutoSwitchInfo:              make(map[string]AutoSwitchRecord),
+		BackendHealth:               make(map[string]BackendHealthEntry),
+		BackendLimitedHolds:         make(map[string]BackendHold),
 		ForceReanalyze:              make(map[string]struct{}),
 		PrevActiveIdentifiers:       make(map[string]struct{}),
 		PrevIssueStates:             make(map[string]string),
 		IssueStatusHistory:          make(map[string][]IssueStatusChange),
-		DiscardingIdentifiers:       make(map[string]struct{}),
+		DiscardingIdentifiers:       make(map[string]DiscardMarker),
 		InputRequiredIssues:         make(map[string]*InputRequiredEntry),
 		PendingInputResumes:         make(map[string]*PendingInputResumeEntry),
 		AutomationQueue:             make(map[string]*AutomationQueueEntry),
@@ -585,6 +714,7 @@ func NewState(cfg *config.Config) State {
 		PRMergedDispatched: make(map[string]struct{}),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
+		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
 	}
 }

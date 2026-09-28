@@ -124,11 +124,19 @@ export const configInvalidScenario: Scenario = {
 export const timelineLogsScenario: Scenario = {
   snapshot: makeSnapshot({
     history: [
-      makeHistoryRow({ identifier: 'DEMO-OK', status: 'succeeded' }),
-      makeHistoryRow({ identifier: 'DEMO-FAIL', status: 'failed' }),
-      makeHistoryRow({ identifier: 'DEMO-CANCEL', status: 'cancelled' }),
-      makeHistoryRow({ identifier: 'DEMO-STALL', status: 'stalled' }),
-      makeHistoryRow({ identifier: 'DEMO-INPUT', status: 'input_required' }),
+      makeHistoryRow({ identifier: 'DEMO-OK', sessionId: 'sess-demo-ok', status: 'succeeded' }),
+      makeHistoryRow({ identifier: 'DEMO-FAIL', sessionId: 'sess-demo-fail', status: 'failed' }),
+      makeHistoryRow({
+        identifier: 'DEMO-CANCEL',
+        sessionId: 'sess-demo-cancel',
+        status: 'cancelled',
+      }),
+      makeHistoryRow({ identifier: 'DEMO-STALL', sessionId: 'sess-demo-stall', status: 'stalled' }),
+      makeHistoryRow({
+        identifier: 'DEMO-INPUT',
+        sessionId: 'sess-demo-input',
+        status: 'input_required',
+      }),
     ],
   }),
   issues: [
@@ -193,8 +201,21 @@ export const mobileShellScenario: Scenario = {
 //     badge renders
 //   - a single AUTOMATION FIRED log line on DEMO-AUTO so the Logs filter
 //     chip can be exercised
-const _automationsPassToday = new Date();
-_automationsPassToday.setHours(9, 0, 0, 0);
+// "Today" must be today for BOTH the local-day hero tile (dashboardMetrics)
+// and the UTC-day sparkline buckets (AutomationActivityCard), and never in
+// the future. A fixed local 09:00 broke both whenever the suite ran before
+// 09:00 local or across the local/UTC date line (e.g. 02:30 in UTC+3 is still
+// yesterday in UTC, so 09:00 local fell into no sparkline bucket). Pick the
+// midpoint between the later of the two midnights and now.
+function automationsPassTodayMs(now: number = Date.now()): number {
+  const local = new Date(now);
+  local.setHours(0, 0, 0, 0);
+  const utc = new Date(now);
+  utc.setUTCHours(0, 0, 0, 0);
+  const dayStart = Math.max(local.getTime(), utc.getTime());
+  return dayStart + Math.floor((now - dayStart) / 2);
+}
+const _automationsPassToday = new Date(automationsPassTodayMs());
 const _automationsPassYesterday = new Date(_automationsPassToday.getTime() - 24 * 60 * 60 * 1000);
 
 export const automationsPassScenario: Scenario = {
@@ -221,6 +242,7 @@ export const automationsPassScenario: Scenario = {
     running: [
       makeRunningRow({
         identifier: 'DEMO-AUTO',
+        sessionId: 'sess-demo-auto',
         kind: 'reviewer',
         backend: 'codex',
         automationId: 'pr-on-input',
@@ -231,6 +253,7 @@ export const automationsPassScenario: Scenario = {
     history: [
       makeHistoryRow({
         identifier: 'DEMO-1',
+        sessionId: 'sess-demo-1-cron',
         automationId: 'cron-nightly',
         triggerType: 'cron',
         startedAt: _automationsPassToday.toISOString(),
@@ -238,6 +261,7 @@ export const automationsPassScenario: Scenario = {
       }),
       makeHistoryRow({
         identifier: 'DEMO-2',
+        sessionId: 'sess-demo-2',
         automationId: 'cron-nightly',
         triggerType: 'cron',
         startedAt: _automationsPassToday.toISOString(),
@@ -246,6 +270,7 @@ export const automationsPassScenario: Scenario = {
       // Yesterday — should NOT count toward "automations triggered today".
       makeHistoryRow({
         identifier: 'DEMO-OLD',
+        sessionId: 'sess-demo-old',
         automationId: 'pr-on-input',
         triggerType: 'input_required',
         startedAt: _automationsPassYesterday.toISOString(),
@@ -254,6 +279,7 @@ export const automationsPassScenario: Scenario = {
       // Manual run — should not appear under any automation chip.
       makeHistoryRow({
         identifier: 'DEMO-MANUAL',
+        sessionId: 'sess-demo-manual',
         startedAt: _automationsPassToday.toISOString(),
         finishedAt: _automationsPassToday.toISOString(),
       }),

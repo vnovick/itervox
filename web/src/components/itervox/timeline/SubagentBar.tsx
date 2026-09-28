@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { activateOnKey } from '../../../utils/activateOnKey';
 import type { SubagentSegment } from './types';
 import { SUB_BAR_HEIGHT, SUBAGENT_LABEL_WIDTH, subagentColor, TICK_MARK_STYLE } from './styles';
 
@@ -30,12 +31,17 @@ export const SubagentBar = memo(function SubagentBar({
 
   return (
     <div
-      className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 transition-colors"
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      aria-label={`Subagent ${segment.name} log`}
+      className="focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:ring-2 focus-visible:outline-none"
       style={{
         paddingLeft: 24,
         background: selected ? 'var(--purple-soft)' : 'transparent',
       }}
       onClick={onSelect}
+      onKeyDown={activateOnKey(onSelect)}
     >
       <span className="shrink-0 text-xs" style={{ color: colors.text }}>
         ↗

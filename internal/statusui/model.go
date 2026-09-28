@@ -75,7 +75,8 @@ type Config struct {
 	// ResumeIssue resumes a paused agent. If nil, the 'r' key is disabled.
 	ResumeIssue func(identifier string) bool
 	// TerminateIssue hard-stops a running or paused agent without pausing it.
-	// If nil, the 'd' key is disabled.
+	// Reached only through a y/N confirm: D on a paused row, S on a running
+	// row (CORE-020). If nil, both D and S are disabled.
 	TerminateIssue func(identifier string) bool
 	// SetIssueProfile assigns (or clears) a per-issue agent profile override.
 	// Empty profile string resets to default. If nil, the 'a' key is disabled.
@@ -142,18 +143,27 @@ type pickerLoadedMsg struct {
 }
 
 // ── Sci-fi colour palette ────────────────────────────────────────────────────
-// Electric neon accents on a dark terminal background.
-// All colours are 24-bit hex so they render correctly on modern terminals.
-const (
-	colCyan   = lipgloss.Color("#00d4ff") // primary accent — electric cyan
-	colGreen  = lipgloss.Color("#00ff88") // active / success — neon green
-	colAmber  = lipgloss.Color("#ffb000") // warning / tokens — amber
-	colRed    = lipgloss.Color("#ff4040") // error / paused — hot red
-	colPurple = lipgloss.Color("#bf5af2") // subagent — electric purple
-	colGray   = lipgloss.Color("#4a5568") // dim chrome
-	colMuted  = lipgloss.Color("#718096") // secondary text
-	colSelect = lipgloss.Color("#00d4ff") // selected-row foreground
+// Electric neon accents on a dark terminal background, with darker, more
+// saturated Light variants for light terminals (CORE-092): lipgloss picks the
+// variant from the terminal's background and downsamples either to the
+// terminal's colour profile. AdaptiveColor is a struct, so this is a var
+// block; the styles below take lipgloss.TerminalColor and are unchanged.
+var (
+	colCyan   = lipgloss.AdaptiveColor{Light: "#006b8f", Dark: "#00d4ff"} // primary accent — electric cyan
+	colGreen  = lipgloss.AdaptiveColor{Light: "#00703c", Dark: "#00ff88"} // active / success — neon green
+	colAmber  = lipgloss.AdaptiveColor{Light: "#8a5a00", Dark: "#ffb000"} // warning / tokens — amber
+	colRed    = lipgloss.AdaptiveColor{Light: "#b3001b", Dark: "#ff4040"} // error / paused — hot red
+	colPurple = lipgloss.AdaptiveColor{Light: "#7a1fa2", Dark: "#bf5af2"} // subagent — electric purple
+	colGray   = lipgloss.AdaptiveColor{Light: "#9aa5b1", Dark: "#4a5568"} // dim chrome
+	colMuted  = lipgloss.AdaptiveColor{Light: "#4a5568", Dark: "#718096"} // secondary text
+	colSelect = lipgloss.AdaptiveColor{Light: "#005a78", Dark: "#00d4ff"} // selected-row foreground
 )
+
+// palette names every palette entry (TestPaletteLightVariantsDifferFromDark).
+var palette = map[string]lipgloss.AdaptiveColor{
+	"cyan": colCyan, "green": colGreen, "amber": colAmber, "red": colRed,
+	"purple": colPurple, "gray": colGray, "muted": colMuted, "select": colSelect,
+}
 
 // Lipgloss styles.
 var (
@@ -172,30 +182,8 @@ var (
 
 const (
 	leftPaneWidth = 46 // visual chars for the issue list pane
-	footerLines   = 2  // ╚═ line + help line
+	narrowWidth   = 70 // below this, one pane at a time (CORE-092)
 )
-
-// toolStyle returns a lipgloss style for a given tool name based on its category.
-func toolStyle(name string) lipgloss.Style {
-	n := strings.ToLower(name)
-	switch {
-	case strings.Contains(n, "bash") || strings.Contains(n, "shell") || strings.Contains(n, "execute") || n == "sh":
-		return styleYellow // amber — shell/command execution
-	case strings.Contains(n, "read") || strings.Contains(n, "write") || strings.Contains(n, "edit") ||
-		strings.Contains(n, "glob") || n == "ls" || strings.Contains(n, "file") || strings.Contains(n, "notebook"):
-		return styleGreen // green — file operations
-	case strings.Contains(n, "web") || strings.Contains(n, "fetch") || strings.Contains(n, "http") ||
-		strings.Contains(n, "navigate") || strings.Contains(n, "browse") || strings.Contains(n, "url"):
-		return styleCyan // cyan — web/network
-	case strings.Contains(n, "task") || strings.Contains(n, "agent") || strings.Contains(n, "dispatch") ||
-		strings.Contains(n, "subagent"):
-		return stylePurple // purple — AI orchestration
-	case strings.Contains(n, "grep") || strings.Contains(n, "search") || strings.Contains(n, "find"):
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#7dd3fc")) // sky — search
-	default:
-		return styleMuted
-	}
-}
 
 // subagentInfo captures one subagent task boundary within a session's log slice.
 // Lines [startLine, endLine) in the session's buffer belong to this subagent.
@@ -237,6 +225,14 @@ type Model struct {
 	ready       bool
 	killMsg     string
 	lastText    map[string]string // persists last text message per identifier
+
+	// CORE-020 destructive-key confirm. confirmKind is "" (nothing pending),
+	// "discard" (D on a paused row) or "stop" (S on a running row);
+	// confirmID is the identifier the pending action targets. While a confirm
+	// is pending the next key is consumed: y/Y runs TerminateIssue, anything
+	// else cancels.
+	confirmKind string
+	confirmID   string
 
 	// project picker state
 	pickerOpen     bool
@@ -406,7 +402,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i := len(lines) - 1; i >= 0; i-- {
 					if e, ok := parseBufLine(lines[i]); ok {
 						if (e.Msg == "claude: text" || e.Msg == "codex: text") && e.Text != "" {
-							m.lastText[r.Identifier] = e.Text
+							// Flatten to one line before any width budgeting (BH-M5-4).
+							m.lastText[r.Identifier] = singleLine(e.Text)
 							break
 						}
 					}
@@ -448,6 +445,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tickCmd())
 
 	case tea.KeyMsg:
+		// CORE-020: a pending destructive-key confirm consumes the next key
+		// before anything else (panels, pickers, navigation). ctrl+c still
+		// quits after cancelling.
+		if m.confirmKind != "" {
+			if handled := m.resolveConfirm(msg); handled {
+				return m, nil
+			}
+		}
 		// Backlog panel navigation takes priority when open.
 		if m.backlogOpen {
 			switch {
@@ -464,7 +469,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cfg.DispatchIssue != nil && m.backlogCursor < len(m.backlogItems) {
 					item := m.backlogItems[m.backlogCursor]
 					if err := m.cfg.DispatchIssue(item.Identifier); err != nil {
-						m.dispatchMsg = "✗ dispatch failed: " + truncate(err.Error(), 30)
+						m.dispatchMsg = "✗ dispatch failed: " + truncate(singleLine(err.Error()), 30)
 					} else {
 						m.dispatchMsg = "⚡ Queued " + item.Identifier
 						m.backlogItems = append(m.backlogItems[:m.backlogCursor], m.backlogItems[m.backlogCursor+1:]...)
@@ -828,7 +833,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, m.keys.Terminate):
-			// Discard selected item: running (via nav) or paused (via paused section).
+			// CORE-020: D discards the selected PAUSED issue only, after a
+			// y/N confirm. It never touches a running row — that is S.
 			if m.cfg.TerminateIssue != nil {
 				if m.inPausedSection && len(m.paused) > 0 {
 					cursor := m.pausedCursor
@@ -836,22 +842,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cursor = 0
 					}
 					id := m.paused[cursor]
-					if m.cfg.TerminateIssue(id) {
-						m.killMsg = "✕ Discarded " + id
-						if cursor >= len(m.paused)-1 {
-							m.inPausedSection = false
-							m.pausedCursor = 0
-						}
-					} else {
-						m.killMsg = "✗ Could not discard " + id
-					}
-				} else if item, ok := m.currentNavItem(); ok && item.issueIdx < len(m.sessions) {
+					m.confirmKind = "discard"
+					m.confirmID = id
+					m.killMsg = fmt.Sprintf("⚠ Discard %s? It is %s. y/N", id, m.discardTargetDescription())
+				} else {
+					m.killMsg = "✕ D discards paused issues only — use S to stop a running issue"
+				}
+			}
+		case key.Matches(msg, m.keys.Stop):
+			// CORE-020: S stops the running issue under the cursor, after a
+			// y/N confirm that names where the orchestrator will move it.
+			if m.cfg.TerminateIssue != nil && !m.inPausedSection {
+				if item, ok := m.currentNavItem(); ok && item.issueIdx < len(m.sessions) {
 					id := m.sessions[item.issueIdx].Identifier
-					if m.cfg.TerminateIssue(id) {
-						m.killMsg = "✕ Cancelled " + id
-					} else {
-						m.killMsg = "✗ Could not cancel " + id
-					}
+					m.confirmKind = "stop"
+					m.confirmID = id
+					m.killMsg = fmt.Sprintf("⚠ Stop %s? The running turn is killed and the issue is %s. y/N", id, m.discardTargetDescription())
+				} else {
+					m.killMsg = "✕ Select a running issue to stop"
 				}
 			}
 		case key.Matches(msg, m.keys.WorkersUp):
@@ -913,6 +921,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case key.Matches(msg, m.keys.Help):
+			// CORE-092: `?` toggles the full key list; the footer grows,
+			// so the panes are re-sized to keep the frame on screen.
+			m.help.ShowAll = !m.help.ShowAll
+			m.resizeViewport()
 		case key.Matches(msg, m.keys.SplitToggle):
 			if m.width >= 120 && !m.backlogOpen {
 				m.splitMode = !m.splitMode
@@ -956,6 +969,9 @@ func (m *Model) resizeViewport() {
 		return
 	}
 	rightW := max(20, m.width-leftPaneWidth-1)
+	if m.narrow() {
+		rightW = max(10, m.width) // CORE-092: the log pane alone fills the width
+	}
 	bh := m.bodyHeight()
 	vpH := max(3, bh-3) // 3 lines for right-pane title + info-row + separator
 
@@ -1010,7 +1026,7 @@ func (m *Model) bodyHeight() int {
 	if m.ganttVisible() {
 		gantt = ganttSectionLines
 	}
-	return max(5, m.height-m.headerLineCount()-gantt-footerLines)
+	return max(5, m.height-m.headerLineCount()-gantt-m.footerLineCount())
 }
 
 // ganttSectionLines is the fixed height of the Gantt timeline section.
@@ -1080,21 +1096,11 @@ func (m *Model) selectedSessionID() (id, kind string) {
 
 // headerLineCount counts header lines rendered above the split panes.
 func (m *Model) headerLineCount() int {
-	n := 3 // ╔═, ║ Agents/Tokens/Retry, (optional rate/web/kill)
-	s := m.snap()
-	if s.RateLimits != nil {
-		n++
-	}
-	if m.cfg.DashboardURL != "" {
-		n++
-	}
-	if m.killMsg != "" || m.dispatchMsg != "" {
-		n++
-	}
-	if len(s.InputRequired) > 0 {
-		n++
-	}
-	return n
+	// CORE-084: counted from the header View draws, so the two can never
+	// drift (the old hand count reserved a rate-limit line that was never
+	// drawn, plus a spare base line, and missed the GitHub and config-invalid
+	// rows).
+	return strings.Count(m.renderHeader(m.snap()), "\n")
 }
 
 // refreshViewport rebuilds the log viewport for the selected nav item.
@@ -1169,131 +1175,38 @@ func (m *Model) renderViewportLines(viewLines []string, identifier, emptyMsg str
 	}
 }
 
-// View implements tea.Model and renders the full TUI layout.
 func (m Model) View() string {
 	if !m.ready {
 		return "Initializing Itervox...\n"
 	}
 	s := m.snap()
 
-	// ── Header (full width) ─────────────────────────────────
-	var totalIn, totalOut int
-	for _, r := range s.Running {
-		totalIn += r.InputTokens
-		totalOut += r.OutputTokens
-	}
-
-	// ── Angular sci-fi header ────────────────────────────────
-	// Top bar: ╔═[ ITERVOX ]═══...═╗
-	innerW := max(0, m.width-2)
-	title := "[ ITER//VOX ]"
-	ruleLen := max(0, innerW-len(title)-1)
-	hdrTop := styleGray.Render("╔═") +
-		styleCyan.Bold(true).Render(title) +
-		styleGray.Render(strings.Repeat("═", ruleLen)+"╗")
-
-	// Backend display: collect unique backends from running sessions
-	backendSet := make(map[string]bool)
-	for _, r := range s.Running {
-		if r.Backend != "" {
-			backendSet[r.Backend] = true
-		}
-	}
-	backendPart := ""
-	if len(backendSet) > 0 {
-		backends := make([]string, 0, len(backendSet))
-		for b := range backendSet {
-			backends = append(backends, b)
-		}
-		sort.Strings(backends)
-		backendPart = styleGray.Render("   ") +
-			styleLabel.Render("BACKEND") + styleGray.Render(" ▸ ") +
-			styleCyan.Render(strings.Join(backends, ", "))
-	}
-
-	// Agent / token / retry row
-	agentVal := styleGreen.Render(fmt.Sprintf("%d", s.Counts.Running)) +
-		styleGray.Render(fmt.Sprintf("/%d", m.cfg.MaxAgents))
-	tokenVal := styleYellow.Render("↑"+fmtCount(totalIn)) +
-		styleMuted.Render(" ↓"+fmtCount(totalOut)) +
-		styleGray.Render(" ∑"+fmtCount(totalIn+totalOut))
-	retryColor := styleMuted
-	if len(s.Retrying) > 0 {
-		retryColor = styleRed
-	}
-	retryVal := retryColor.Render(fmt.Sprintf("%d", len(s.Retrying)))
-
-	row1 := styleGray.Render("║ ") +
-		styleLabel.Render("AGENTS") + styleGray.Render(" ▸ ") + agentVal +
-		styleGray.Render("   ") +
-		styleLabel.Render("TOKENS") + styleGray.Render(" ▸ ") + tokenVal +
-		styleGray.Render("   ") +
-		styleLabel.Render("RETRY") + styleGray.Render(" ▸ ") + retryVal +
-		backendPart
-
-	var hdr strings.Builder
-	hdr.WriteString(hdrTop + "\n")
-	hdr.WriteString(row1 + "\n")
-
-	if waiting, pending := inputStateCounts(s.InputRequired); waiting > 0 || pending > 0 {
-		var parts []string
-		if waiting > 0 {
-			parts = append(parts, styleYellow.Render(fmt.Sprintf("%d waiting", waiting)))
-		}
-		if pending > 0 {
-			parts = append(parts, styleCyan.Render(fmt.Sprintf("%d resuming", pending)))
-		}
-		hdr.WriteString(styleGray.Render("║ ") +
-			styleLabel.Render("INPUT ") + styleGray.Render(" ▸ ") +
-			strings.Join(parts, styleGray.Render("   ")) +
-			styleMuted.Render("  reply in tracker/dashboard") + "\n")
-	}
-
-	if m.cfg.DashboardURL != "" {
-		hdr.WriteString(styleGray.Render("║ ") +
-			styleLabel.Render("WEB   ") + styleGray.Render(" ▸ ") +
-			styleCyan.Render(osc8Link(m.cfg.DashboardURL, m.cfg.DashboardURL)) +
-			styleMuted.Render("  w:"+copyKeyHint) + "\n")
-	}
-
-	// GitHub tracker info: states are mapped to issue labels
-	if m.cfg.TrackerKind == "github" {
-		hdr.WriteString(styleGray.Render("║ ") +
-			styleMuted.Render("ⓘ GitHub: issue states mapped to labels") + "\n")
-	}
-
-	statusMsg := m.killMsg
-	if m.dispatchMsg != "" {
-		statusMsg = m.dispatchMsg
-	}
-	if statusMsg != "" {
-		hdr.WriteString(styleGray.Render("║ ") + styleYellow.Render("⚡ "+statusMsg) + "\n")
-	}
-
-	// Config-invalid banner (T-26 piece 4) — surface a stale-config state to
-	// the operator so they know their last WORKFLOW.md edit didn't take and
-	// the daemon is running on the previously-valid config. Mirrors the web
-	// dashboard banner behavior.
-	if s.ConfigInvalid != nil {
-		ci := s.ConfigInvalid
-		hdr.WriteString(styleGray.Render("║ ") +
-			styleRed.Bold(true).Render("⚠ CONFIG INVALID") +
-			styleGray.Render(" ▸ ") +
-			styleYellow.Render(ci.Error) +
-			styleMuted.Render(fmt.Sprintf("  (retry %d, daemon on last valid config)", ci.RetryAttempt)) +
-			"\n")
-	}
+	hdr := m.renderHeader(s)
+	// CORE-084: the header height changes between resizes (a flash message,
+	// an input-required row, the tracker budget), and the log viewport was
+	// sized only on resize — so the frame outgrew the terminal by a line.
+	// Size this render's copy of the viewports to the current header.
+	m.resizeViewport()
 
 	// ── Split body ──────────────────────────────────────────
 	left := m.renderLeft()
 	divider := m.renderDivider()
 	right := m.renderRight()
 	var body string
-	if m.splitMode && !m.backlogOpen {
+	switch {
+	case m.narrow():
+		// CORE-092: one pane at a time below narrowWidth — the focused log
+		// pane, otherwise the issue list.
+		if m.activePanel == 1 {
+			body = right
+		} else {
+			body = left
+		}
+	case m.splitMode && !m.backlogOpen:
 		splitDiv := m.renderSplitDivider()
 		details := m.renderSplitDetails()
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right, splitDiv, details)
-	} else {
+	default:
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
 	}
 
@@ -1305,9 +1218,13 @@ func (m Model) View() string {
 
 	// ── Footer ──────────────────────────────────────────────
 	footerRule := strings.Repeat("═", max(0, m.width-2))
-	footer := styleGray.Render("╚"+footerRule+"╝") + "\n" + styleMuted.Render(m.help.View(m.keys))
+	footer := styleGray.Render("╚"+footerRule+"╝") + "\n" + styleMuted.Render(m.helpView())
 
-	return hdr.String() + body + "\n" + gantt + footer + "\n"
+	frame := hdr + body + "\n" + gantt + footer + "\n"
+	if m.narrow() {
+		frame = clampLines(frame, m.width)
+	}
+	return frame
 }
 
 // renderLeft builds the left pane (issue list with subagents, retry queue, paused, input).
@@ -1401,11 +1318,7 @@ func (m *Model) renderLeft() string {
 				row := fmt.Sprintf("  %s %-13s t%-2d %5s %s",
 					statusGlyph, idStr, h.TurnCount, tok, fmtDuration(elapsed))
 				if isCursor {
-					padded := fmt.Sprintf("%-*s", leftPaneWidth-2, "► "+row[2:])
-					if len(padded) > leftPaneWidth-2 {
-						padded = padded[:leftPaneWidth-2]
-					}
-					add(statusStyle.Bold(true).Render(padded))
+					add(statusStyle.Bold(true).Render(fitWidth("► "+strings.TrimPrefix(row, "  "), leftPaneWidth-2)))
 				} else {
 					add(statusStyle.Faint(true).Render(row))
 				}
@@ -1466,11 +1379,7 @@ func (m *Model) renderLeft() string {
 		if selected {
 			id := styleReverse.Render("▶ " + truncate(r.Identifier, 13))
 			row := fmt.Sprintf("%s %s%s %s %4s %s", id, expandMark, profileBadge, turns, tok, stateBadge)
-			padded := fmt.Sprintf("%-*s", leftPaneWidth, row)
-			if len(padded) > leftPaneWidth {
-				padded = padded[:leftPaneWidth]
-			}
-			add(padded)
+			add(fitWidth(row, leftPaneWidth))
 		} else {
 			id := styleMuted.Render("  " + truncate(r.Identifier, 13))
 			row := fmt.Sprintf("%s %s%s %s %4s %s", id, expandMark, profileBadge, turns, tok, stateBadge)
@@ -1488,7 +1397,7 @@ func (m *Model) renderLeft() string {
 			}
 			preview := "  " + truncate(txt, leftPaneWidth-3)
 			if selected {
-				add(styleDim.Render(fmt.Sprintf("%-*s", leftPaneWidth, preview)))
+				add(styleDim.Render(fitWidth(preview, leftPaneWidth)))
 			} else {
 				add(styleGray.Render(preview))
 			}
@@ -1508,11 +1417,7 @@ func (m *Model) renderLeft() string {
 				var subRow string
 				if subSelected {
 					subRow = fmt.Sprintf("    ▶ ◈ %s", desc)
-					padded := fmt.Sprintf("%-*s", leftPaneWidth, subRow)
-					if len(padded) > leftPaneWidth {
-						padded = padded[:leftPaneWidth]
-					}
-					add(stylePurple.Bold(true).Render(padded))
+					add(stylePurple.Bold(true).Render(fitWidth(subRow, leftPaneWidth)))
 				} else {
 					subRow = fmt.Sprintf("      ◈ %s", desc)
 					add(stylePurple.Faint(true).Render(subRow))
@@ -1524,7 +1429,7 @@ func (m *Model) renderLeft() string {
 	// Retry queue section.
 	if len(m.retrying) > 0 && len(lines) < bh {
 		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
-		add(styleLabel.Render("◆─[ RETRY QUEUE ]"))
+		add(styleLabel.Render("◆─[ " + statusHeading(statusRetrying) + " ]"))
 		for _, r := range m.retrying {
 			if len(lines) >= bh {
 				break
@@ -1532,18 +1437,19 @@ func (m *Model) renderLeft() string {
 			due := max(0, time.Until(r.DueAt))
 			errSuffix := ""
 			if r.Error != "" {
-				errSuffix = " " + truncate(r.Error, 12)
+				errSuffix = " " + truncate(singleLine(r.Error), 12)
 			}
 			row := fmt.Sprintf("  ↻ %-12s att=%-2d in %s%s",
 				truncate(r.Identifier, 12), r.Attempt, fmtDuration(due), errSuffix)
-			add(styleYellow.Faint(true).Render(row))
+			add(statusStyle(statusRetrying).Faint(true).Render(row))
 		}
 	}
 
 	// Paused section.
 	if len(m.paused) > 0 && len(lines) < bh {
 		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
-		add(styleRed.Render("◆─[ PAUSED ]") + styleMuted.Render("  j↓ k↑ r resume  D discard"))
+		pausedStyle := statusStyle(statusPaused)
+		add(pausedStyle.Render("◆─[ "+statusHeading(statusPaused)+" ]") + styleMuted.Render("  j↓ k↑ r resume  D discard"))
 		for i, id := range m.paused {
 			if len(lines) >= bh {
 				break
@@ -1551,35 +1457,43 @@ func (m *Model) renderLeft() string {
 			isCursorHere := m.inPausedSection && m.pausedCursor == i
 			if isCursorHere {
 				row := fmt.Sprintf("► ⏸ %-12s  press r to resume", truncate(id, 12))
-				padded := fmt.Sprintf("%-*s", leftPaneWidth, row)
-				if len(padded) > leftPaneWidth {
-					padded = padded[:leftPaneWidth]
-				}
-				add(styleRed.Bold(true).Render(padded))
+				add(pausedStyle.Bold(true).Render(fitWidth(row, leftPaneWidth)))
 			} else {
 				row := fmt.Sprintf("  ⏸ %-12s  press r to resume", truncate(id, 12))
-				add(styleRed.Faint(true).Render(row))
+				add(pausedStyle.Faint(true).Render(row))
 			}
 		}
 	}
 
-	if len(m.inputRows) > 0 && len(lines) < bh {
-		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
-		add(styleYellow.Render("◆─[ INPUT ]") + styleMuted.Render("  reply in tracker/dashboard"))
+	// Input rows split the same way as the web operator queue: needs-input
+	// rows (the operator must reply) and read-only resuming rows.
+	for _, sec := range []struct {
+		key    statusKey
+		glyph  string
+		status string
+		hint   string
+	}{
+		{statusInputRequired, "?", "waiting for reply", "  reply in tracker/dashboard"},
+		{statusPendingInputResume, "↺", "reply received", ""},
+	} {
+		var rows []server.InputRequiredRow
 		for _, row := range m.inputRows {
+			if inputRowState(row) == sec.key {
+				rows = append(rows, row)
+			}
+		}
+		if len(rows) == 0 || len(lines) >= bh {
+			continue
+		}
+		style := statusStyle(sec.key)
+		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+		add(style.Render("◆─[ "+statusHeading(sec.key)+" ]") + styleMuted.Render(sec.hint))
+		for _, row := range rows {
 			if len(lines) >= bh {
 				break
 			}
-			glyph := "?"
-			status := "waiting for reply"
-			rowStyle := styleYellow.Faint(true)
-			if row.State == "pending_input_resume" {
-				glyph = "↺"
-				status = "reply received"
-				rowStyle = styleCyan.Faint(true)
-			}
-			rendered := fmt.Sprintf("  %s %-12s %s", glyph, truncate(row.Identifier, 12), status)
-			add(rowStyle.Render(rendered))
+			rendered := fmt.Sprintf("  %s %-12s %s", sec.glyph, truncate(row.Identifier, 12), sec.status)
+			add(style.Faint(true).Render(rendered))
 		}
 	}
 
@@ -1726,17 +1640,6 @@ func (m *Model) renderRight() string {
 	return title + "\n" + infoRow + sep + "\n" + m.logVP.View()
 }
 
-func inputStateCounts(rows []server.InputRequiredRow) (waiting, pending int) {
-	for _, row := range rows {
-		if row.State == "pending_input_resume" {
-			pending++
-			continue
-		}
-		waiting++
-	}
-	return waiting, pending
-}
-
 // prefix renders a coloured terminal-style prefix symbol followed by the message.
 func termLine(pfx, pfxColor, msg, msgColor string) string {
 	p := lipgloss.NewStyle().Foreground(lipgloss.Color(pfxColor)).Bold(true).Render(pfx)
@@ -1844,6 +1747,7 @@ func extractSubagents(lines []string) []subagentInfo {
 		if desc == "" {
 			desc = e.Tool
 		}
+		desc = singleLine(desc) // rendered as one pane row (BH-M5-4)
 		if len(subs) > 0 {
 			subs[len(subs)-1].endLine = i
 		}
@@ -2138,11 +2042,7 @@ func (m *Model) renderProjectPicker() string {
 			label := truncate(row.label, leftPaneWidth-7)
 			content := fmt.Sprintf("  %s %s", checked, label)
 			if i == m.pickerCursor {
-				padded := fmt.Sprintf("%-*s", leftPaneWidth, content)
-				if len(padded) > leftPaneWidth {
-					padded = padded[:leftPaneWidth]
-				}
-				add(styleReverse.Render(padded))
+				add(styleReverse.Render(fitWidth(content, leftPaneWidth)))
 			} else if row.slug == "" {
 				add(styleCyan.Render(content))
 			} else {
@@ -2188,11 +2088,7 @@ func (m *Model) renderProfilePicker() string {
 		label := truncate(name, leftPaneWidth-10)
 		content := fmt.Sprintf("  %s %s%s", indicator, label, backend)
 		if i == m.profilePickerCursor {
-			padded := fmt.Sprintf("%-*s", leftPaneWidth, content)
-			if len(padded) > leftPaneWidth {
-				padded = padded[:leftPaneWidth]
-			}
-			add(styleReverse.Render(padded))
+			add(styleReverse.Render(fitWidth(content, leftPaneWidth)))
 		} else {
 			add(content)
 		}
@@ -2203,11 +2099,7 @@ func (m *Model) renderProfilePicker() string {
 	clearIdx := len(m.profilePickerItems)
 	clearContent := "  " + styleRed.Render("✕") + " " + styleMuted.Render("clear override")
 	if m.profilePickerCursor == clearIdx {
-		padded := fmt.Sprintf("%-*s", leftPaneWidth, clearContent)
-		if len(padded) > leftPaneWidth {
-			padded = padded[:leftPaneWidth]
-		}
-		add(styleReverse.Render(padded))
+		add(styleReverse.Render(fitWidth(clearContent, leftPaneWidth)))
 	} else {
 		add(clearContent)
 	}
@@ -2221,16 +2113,6 @@ func (m *Model) renderProfilePicker() string {
 // isTodoState checks if a state is a TODO (active) state.
 func (m *Model) isTodoState(state string) bool {
 	for _, s := range m.cfg.TodoStates {
-		if strings.EqualFold(s, state) {
-			return true
-		}
-	}
-	return false
-}
-
-// isBacklogState checks if a state is a BACKLOG state.
-func (m *Model) isBacklogState(state string) bool {
-	for _, s := range m.cfg.BacklogStates {
 		if strings.EqualFold(s, state) {
 			return true
 		}
@@ -2274,7 +2156,7 @@ func (m *Model) renderBacklogPanel() string {
 		add(styleMuted.Render("  · loading..."))
 	case m.backlogErr != "":
 		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
-		add(styleRed.Render("  ✗ " + truncate(m.backlogErr, leftPaneWidth-4)))
+		add(styleRed.Render("  ✗ " + truncate(singleLine(m.backlogErr), leftPaneWidth-4)))
 	default:
 		// BACKLOG section (first)
 		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
@@ -2334,7 +2216,7 @@ func (m *Model) renderBacklogItem(item BacklogIssueItem, selected bool, add func
 
 	// Truncate fields to fit - no state column, just ID and title
 	idTrunc := truncate(item.Identifier, 12)
-	titleTrunc := truncate(item.Title, leftPaneWidth-18) // Reserve space for prefix and ID
+	titleTrunc := truncate(singleLine(item.Title), leftPaneWidth-18) // Reserve space for prefix and ID
 
 	if selected {
 		// Selected row with highlight
@@ -2431,7 +2313,7 @@ func (m *Model) renderBacklogDetails() string {
 				break
 			}
 			author := truncate(c.Author, 12)
-			add(styleCyan.Render(author+":") + " " + truncate(c.Body, rightW-16))
+			add(styleCyan.Render(author+":") + " " + truncate(singleLine(c.Body), rightW-16))
 			commentCount++
 		}
 	}
@@ -2748,13 +2630,13 @@ func (m *Model) renderGantt() string {
 		var rowLabel string
 		if m.leftTab == "history" {
 			// History mode: same issue, label by date.
-			rowLabel = fmt.Sprintf("%-*s", labelW, truncate(e.startedAt.Format("01/02 15:04"), labelW))
+			rowLabel = fitWidth(truncate(e.startedAt.Format("01/02 15:04"), labelW), labelW)
 		} else {
 			// Normal mode: label by identifier; paused gets ⏸ prefix.
 			if e.isPaused {
-				rowLabel = fmt.Sprintf("%-*s", labelW, truncate("⏸ "+e.identifier, labelW))
+				rowLabel = fitWidth(truncate("⏸ "+e.identifier, labelW), labelW)
 			} else {
-				rowLabel = fmt.Sprintf("%-*s", labelW, truncate(e.identifier, labelW))
+				rowLabel = fitWidth(truncate(e.identifier, labelW), labelW)
 			}
 		}
 
@@ -2838,7 +2720,7 @@ func (m *Model) renderGantt() string {
 					elStr := fmt.Sprintf("%-*s", elapsedW, fmtDuration(time.Duration(phaseMs)*time.Millisecond))
 
 					descLabel := fmt.Sprintf("[%d] %s", si+1, sub.description)
-					rowLbl := fmt.Sprintf("%-*s", labelW, truncate(descLabel, labelW))
+					rowLbl := fitWidth(truncate(descLabel, labelW), labelW)
 					sb.WriteString(
 						styleMuted.Render("  "+rowLbl+" ") +
 							phaseStyle.Render(string(phaseRunes)) +
@@ -2904,16 +2786,6 @@ func fmtCount(n int) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 1 {
-		return "…"
-	}
-	return s[:max-1] + "…"
 }
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink escape sequence.

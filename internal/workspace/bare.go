@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // BareDir is the directory name for the bare clone inside workspace root.
@@ -66,8 +67,10 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 	}
 
 	slog.Info("bare: cloning repository", "url", cloneURL, "path", barePath)
-	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", cloneURL, barePath)
-	cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+	// Dir "." keeps a relative cloneURL/barePath resolving exactly as before;
+	// the scrubbed env is what stops an inherited GIT_DIR from mattering.
+	cmd := gitexec.Command(ctx, ".", "clone", "--bare", cloneURL, barePath)
+	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("bare: git clone --bare: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -76,9 +79,9 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 	// "git fetch" would be a no-op. Configure one that maps remote branches
 	// directly to refs/heads/* (not refs/remotes/origin/*). This keeps HEAD
 	// valid since HEAD points to refs/heads/<default_branch>.
-	refspecCmd := exec.CommandContext(ctx, "git", "-C", barePath,
+	refspecCmd := gitexec.Command(ctx, ".", "-C", barePath,
 		"config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
-	refspecCmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+	refspecCmd.Env = append(refspecCmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := refspecCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("bare: set fetch refspec: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -88,8 +91,8 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 
 // FetchBare runs git fetch --all --prune in the bare clone to update all remote refs.
 func FetchBare(ctx context.Context, barePath string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", barePath, "fetch", "--all", "--prune")
-	cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+	cmd := gitexec.Command(ctx, ".", "-C", barePath, "fetch", "--all", "--prune")
+	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bare: fetch: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -105,7 +108,7 @@ func FetchBare(ctx context.Context, barePath string) error {
 // treated as a MISMATCH: refusing costs a clear error, while wrongly reusing
 // points a daemon at someone else's repository.
 func bareRemoteMatches(ctx context.Context, barePath, cloneURL string) bool {
-	cmd := exec.CommandContext(ctx, "git", "-C", barePath, "config", "--get", "remote.origin.url")
+	cmd := gitexec.Command(ctx, ".", "-C", barePath, "config", "--get", "remote.origin.url")
 	out, err := cmd.Output()
 	if err != nil {
 		return false

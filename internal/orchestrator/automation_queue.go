@@ -47,6 +47,10 @@ const (
 	// blockers apart from tracker blockers.
 	AutomationQueueReasonInferredBlockedBy AutomationQueueReason = "inferred_blocked_by"
 	AutomationQueueReasonPausedByState     AutomationQueueReason = "paused_by_state"
+	// AutomationQueueReasonBackendLimited holds an automation whose target
+	// backend is limited by the backend circuit breaker (CORE-053) instead
+	// of dropping it.
+	AutomationQueueReasonBackendLimited AutomationQueueReason = IneligibleBackendLimited
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -400,7 +404,8 @@ func automationQueueableReason(reason string) (bool, AutomationQueueReason, stri
 		AutomationQueueReasonInputRequired,
 		AutomationQueueReasonPendingInputResume,
 		AutomationQueueReasonBlockedBy,
-		AutomationQueueReasonInferredBlockedBy:
+		AutomationQueueReasonInferredBlockedBy,
+		AutomationQueueReasonBackendLimited: // CORE-053: held, never dropped
 		return true, queueReason, detail
 	default:
 		return false, "", ""
@@ -535,7 +540,12 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 			"reason", reason)
 		return false
 	}
-	return o.startAutomationRun(ctx, state, issue, now, dispatch)
+	started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+	if held {
+		// CORE-053: the target backend is limited — hold, never drop.
+		return enqueueAutomation(state, issue, dispatch, string(AutomationQueueReasonBackendLimited), now)
+	}
+	return started
 }
 
 // drainAutomationQueueFetchBudget caps per-drain tracker fetches as a
@@ -609,8 +619,14 @@ func (o *Orchestrator) drainAutomationQueueWithCandidates(
 		entry.Status = AutomationQueueDispatching
 		entry.LastAttemptAt = now
 		entry.AttemptCount++
-		if o.startAutomationRun(ctx, state, issue, now, dispatch) {
+		started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+		if started {
 			removeAutomationQueueEntry(state, entry.ID)
+			continue
+		}
+		if held {
+			// CORE-053: still backend_limited — keep it queued.
+			_ = updateAutomationQueueEntryReason(entry, string(AutomationQueueReasonBackendLimited), now)
 			continue
 		}
 		if AvailableSlots(*state) <= 0 {

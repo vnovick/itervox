@@ -16,11 +16,16 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
+	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/metrics"
 	"github.com/vnovick/itervox/internal/prdetector"
+	"github.com/vnovick/itervox/internal/procgroup"
 	"github.com/vnovick/itervox/internal/prompt"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -60,10 +65,17 @@ const operatorReplyEnvelope = "## Operator Reply Channel\n\n" +
 //     dispatch and we're continuing in-place).
 //
 // See ResumeContext in state.go for the full contract.
-func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resume *ResumeContext, automation *AutomationDispatch) {
+func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resume *ResumeContext, automation *AutomationDispatch, switchNotice *BackendSwitchNotice) {
+	// CORE-026: outermost defer, so Run's join sees this worker done only
+	// after everything below — including the panic path's sendExit — ran.
+	defer o.workersWg.Done(issue.Identifier)
+	// CORE-042: every agent and hook group this worker starts is labelled
+	// with the issue in the orphan-group ledger.
+	ctx = procgroup.WithLabel(ctx, issue.Identifier)
 	defer func() {
 		if r := recover(); r != nil {
-			err := fmt.Errorf("worker panic: %v", r)
+			metrics.GoroutinePanic()
+			err := fmt.Errorf("%w: %v", errWorkerPanic, r)
 			slog.Error("worker panicked",
 				"issue_id", issue.ID,
 				"issue_identifier", issue.Identifier,
@@ -88,6 +100,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		RunEntry: &RunEntry{SessionID: runLogID},
 	}:
 	default:
+		metrics.EventDropped() // CORE-045
 		slog.Debug("orchestrator: worker update event dropped (channel full)", "issue_id", issue.ID)
 	}
 
@@ -346,6 +359,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// prompt would include turn 1..N-1's outputs as "prior agent handoffs."
 	runTimestamp := handoffRunTimestamp(startedAt)
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
+	// CORE-101: the Liquid `run` object for the WORKFLOW.md body, profile
+	// SOUL/INSTRUCTIONS and automation instructions.
+	runVars := runBindings(runTimestamp, runHandoffRelPath, switchNotice)
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -379,7 +395,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if isReviewer && reviewerTmpl != "" {
 			promptTemplate = reviewerTmpl
 		}
-		renderedPrompt, err := prompt.Render(promptTemplate, issue, attemptPtr)
+		renderedPrompt, err := prompt.RenderWith(promptTemplate, issue, attemptPtr, runVars)
 		if err != nil {
 			slog.Warn("worker: prompt render failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -419,6 +435,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + priorHandoffs
 		}
 		renderedPrompt += "\n\n" + buildRunContextBlock(runTimestamp, runHandoffRelPath)
+		// CORE-101: daemon-owned, after the envelope and handoffs and before
+		// every profile block, so an instructions_file cannot drop it.
+		if block := buildBackendSwitchNoticeBlock(switchNotice); block != "" {
+			renderedPrompt += "\n\n" + block
+		}
 		// #58 — when this run is one profile of a multi-reviewer chain, tell
 		// the agent where to record its verdict. Empty (and therefore a
 		// no-op) for normal workers and single-reviewer setups.
@@ -433,7 +454,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// multi-profile setups always tell the agent who its peers are.
 		if profileName != "" {
 			if profile, ok := profilesSnap[profileName]; ok {
-				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr) {
+				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, runVars) {
 					if block != "" {
 						renderedPrompt += "\n\n" + block
 					}
@@ -441,11 +462,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 		if automation != nil && automation.Instructions != "" {
+			bindings := automationTriggerBindings(automation)
+			maps.Copy(bindings, runVars)
 			renderedPrompt += "\n\n" + prompt.RenderPromptOverlay(
 				automation.Instructions,
 				issue,
 				attemptPtr,
-				automationTriggerBindings(automation),
+				bindings,
 			)
 		}
 		if actionContext != "" {
@@ -501,7 +524,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			identifier: issue.Identifier,
 			sessionID:  runLogID,
 		}
+		// forwarder tracks the last api_retry throttle delivered this turn.
+		// Every new vendor signal is a fresh *LimitSignal (agent.mergeLimit
+		// copies), so pointer identity forwards each api_retry once for the
+		// event loop's backend breaker (CORE-053). BH-M3-5: it is marked
+		// delivered only after the non-blocking send below succeeded.
+		var forwarder limitForwarder
 		onProgress := func(partial agent.TurnResult) {
+			var limit *agent.LimitSignal
+			fresh := forwarder.candidate(partial.LastLimit)
+			if fresh != nil {
+				c := *fresh
+				limit = &c
+			}
 			select {
 			case o.events <- OrchestratorEvent{
 				Type:    EventWorkerUpdate,
@@ -514,10 +549,28 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					SessionID:    runLogID,
 					LastMessage:  partial.LastText,
 				},
+				Limit: limit,
 			}:
+				if fresh != nil {
+					forwarder.sent(fresh)
+				}
 			default:
+				metrics.EventDropped() // CORE-045
 				slog.Debug("orchestrator: worker update event dropped (channel full)", "issue_id", issue.ID)
 			}
+		}
+		// M2-close: refuse a prompt the backend's CLI would reject, loudly
+		// and before it starts (never a silent truncation, never an error
+		// buried in the CLI's stderr).
+		if err := agent.ValidatePromptSize(backend, renderedPrompt); err != nil {
+			o.logger().Error("worker: prompt exceeds the backend's input cap; run not started",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+				"turn", turn, "backend", backend, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, formatBufLine("ERROR", "worker: prompt exceeds the backend's input cap", []any{"detail", err.Error(), "session_id", runLogID}))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
+			return
 		}
 		turnStart := time.Now()
 		logDir := ""
@@ -540,6 +593,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				RunEntry: &RunEntry{AgentSessionID: s},
 			}:
 			default:
+				metrics.EventDropped() // CORE-045
 			}
 		}
 
@@ -569,36 +623,113 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 
-		if result.Failed {
+		// CORE-051: a failed turn carrying a quota limit signal (CORE-050)
+		// exits TerminalRateLimited so the event loop can evaluate the
+		// rate_limited fallback on this first failure. It runs BEFORE the
+		// input-required branch: a limit is never a question a human reply
+		// can answer (CORE-166). An orchestrator cancellation stays a
+		// cancellation.
+		if (result.Failed || runErr != nil) && result.LastLimit.Terminal() && !errors.Is(runErr, context.Canceled) {
+			failureText := logging.RedactString(result.FailureText)
+			cause := turnFailureCause(turn, failureText, runErr)
+			o.logger().Warn("worker: turn hit a vendor usage limit",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn,
+				"limit_type", result.LastLimit.LimitType, "limit_source", result.LastLimit.Source,
+				"resets_at", formatResetsAt(result.LastLimit), "error", boundedTurnFailureLog(cause))
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, formatBufLine("WARN", "worker: turn hit a vendor usage limit",
+					[]any{"limit_type", result.LastLimit.LimitType, "resets_at", formatResetsAt(result.LastLimit), "session_id", runLogID}))
+			}
+			o.sendExitWithLimit(ctx, issue, attempt, TerminalRateLimited, cause, limitForHost(result.LastLimit, workerHost))
+			return
+		}
+
+		// InputRequired means the agent needs human input to continue (e.g.
+		// permission prompt, API key). Send TerminalInputRequired so the event
+		// loop queues the issue for user input instead of retrying or completing.
+		//
+		// CORE-164: this runs BEFORE the Failed branch. The vendor parsers flag
+		// InputRequired only on an error result event (Claude result is_error,
+		// Codex turn.failed), which also sets Failed, so checking Failed first
+		// turned every vendor-signalled input request into TerminalFailed
+		// (retry / failed_state) and left only the text sentinel reaching this
+		// branch. A runner error (read timeout, start failure, cancellation) is
+		// still a failure: the stream did not end on the input request.
+		if result.InputRequired && runErr == nil {
+			o.queueInputRequiredEntry(
+				ctx,
+				issue,
+				attempt,
+				runLogID,
+				claudeSessionID,
+				backend,
+				agentCommand,
+				workerHost,
+				profileName,
+				activeBranchName,
+				explicitInputRequiredContext(result),
+				"",
+				buildInputRequiredExitRunEntry(
+					issue,
+					attempt,
+					startedAt,
+					turn,
+					runLogID,
+					workerHost,
+					backend,
+					cumulativeInput,
+					cumulativeCached,
+					cumulativeOutput,
+					result,
+				),
+			)
+			return
+		}
+
+		// A runner error is always a failed turn, whatever result.Failed says
+		// (CORE-029): a runner that returns an error must never fall through
+		// to the 0-token "session concluded" break below.
+		if result.Failed || runErr != nil {
 			// A result error with no failure text and no tokens produced means the
 			// claude CLI was asked to --resume a session that had already concluded.
 			// Treat this as a clean session end rather than a real failure so the
-			// issue does not land in the retry queue.
-			if result.FailureText == "" && result.InputTokens == 0 && result.OutputTokens == 0 {
+			// issue does not land in the retry queue. Only when the runner itself
+			// returned no error (CORE-029): a read timeout, start failure or
+			// cancellation before the first token is not a concluded session.
+			if runErr == nil && result.FailureText == "" && result.InputTokens == 0 && result.OutputTokens == 0 {
 				slog.Info("worker: empty result error on 0-token turn — treating as clean session end",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
 				break
 			}
-			cause := runErr
-			if cause == nil {
-				msg := fmt.Sprintf("turn %d: agent reported failure", turn)
-				if result.FailureText != "" {
-					msg = fmt.Sprintf("turn %d: %s", turn, result.FailureText)
-				}
-				cause = errors.New(msg)
-			}
-			slog.Warn("worker: turn failed",
+			// CORE-167: FailureText embeds agent stderr, which can carry
+			// exported secrets. The runners already redact it where they
+			// assemble it; redact again here so a runner that does not (a
+			// future backend, a test double) cannot leak through the exit
+			// cause, the retry row on the dashboard, the tracker comment on
+			// exhaustion, or the log lines below. Idempotent on redacted text.
+			failureText := logging.RedactString(result.FailureText)
+			cause := turnFailureCause(turn, failureText, runErr)
+			// The WARN line carries the agent's own message plus only the
+			// last turnFailedLogStderrTail bytes of stderr (where the root
+			// cause is); the full redacted FailureText (up to 64 KiB) is on
+			// the DEBUG line and in the per-issue dashboard log.
+			o.logger().Warn("worker: turn failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
-				"turn", turn, "error", cause)
+				"turn", turn, "error", boundedTurnFailureLog(cause))
+			o.logger().Debug("worker: turn failed (full failure text)",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+				"turn", turn, "error", logging.RedactString(cause.Error()))
 			// Emit full error detail to the per-issue log buffer (#7).
 			if o.logBuf != nil {
-				detail := cause.Error()
-				if result.FailureText != "" && !strings.Contains(detail, result.FailureText) {
-					detail = detail + " | " + result.FailureText
+				detail := logging.RedactString(cause.Error())
+				if failureText != "" && !strings.Contains(detail, failureText) {
+					detail = detail + " | " + failureText
 				}
 				o.logBuf.Add(issue.Identifier, formatBufLine("WARN", "worker: turn failed", []any{"detail", detail, "session_id", runLogID}))
 			}
-			o.sendExit(ctx, issue, attempt, TerminalFailed, cause)
+			// An advisory throttle (CORE-050) rides along so the retry
+			// honours the vendor's delay; the reason stays TerminalFailed.
+			o.sendExitWithLimit(ctx, issue, attempt, TerminalFailed, cause, limitForHost(result.LastLimit, workerHost))
 			return
 		}
 
@@ -608,55 +739,6 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			slog.Info("worker: 0-token turn — session concluded, exiting loop",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
 			break
-		}
-
-		// InputRequired means the agent needs human input to continue (e.g.
-		// permission prompt, API key). Send TerminalInputRequired so the event
-		// loop queues the issue for user input instead of retrying or completing.
-		if result.InputRequired {
-			inputContext := result.FailureText
-			if inputContext == "" {
-				inputContext = result.ResultText
-			}
-			if inputContext == "" {
-				inputContext = "Agent requires human input to continue"
-			}
-			slog.Info("worker: agent requires input — queuing for user input",
-				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn,
-				"context", inputContext)
-			if o.logBuf != nil {
-				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
-					fmt.Sprintf("worker: agent requires input — %s", inputContext), runLogID))
-			}
-			var sid string
-			if claudeSessionID != nil {
-				sid = *claudeSessionID
-			}
-			o.sendExitWithInputRequired(ctx, buildInputRequiredExitRunEntry(
-				issue,
-				attempt,
-				startedAt,
-				turn,
-				runLogID,
-				workerHost,
-				backend,
-				cumulativeInput,
-				cumulativeCached,
-				cumulativeOutput,
-				result,
-			), &InputRequiredEntry{
-				IssueID:     issue.ID,
-				Identifier:  issue.Identifier,
-				SessionID:   sid,
-				Context:     inputContext,
-				BranchName:  activeBranchName,
-				Backend:     backend,
-				Command:     agentCommand,
-				WorkerHost:  workerHost,
-				ProfileName: profileName,
-				QueuedAt:    time.Now(),
-			})
-			return
 		}
 
 		if o.queueSuccessfulTurnInputRequired(
@@ -731,9 +813,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				InputTokens:  cumulativeInput,
 				OutputTokens: cumulativeOutput,
 				SessionID:    runLogID,
+				// CORE-091: the turn's session-cumulative cost, keyed by the
+				// agent session so a resumed session is not counted twice.
+				AgentSessionID: result.SessionID,
+				CostUSD:        result.CostUSD,
 			},
 		}:
 		default:
+			metrics.EventDropped() // CORE-045
 			// Event loop busy — skip this tick, next turn will send another update.
 		}
 
@@ -868,15 +955,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// workspace `git add` fails and we skip the commit silently (previous
 		// behavior — the file remains in the working tree, no Warn spam on
 		// every success); other commit failures log.
-		addCmd := exec.CommandContext(ctx, "git", "add", HandoffDirRelPath)
-		addCmd.Dir = wsPath
-		if err := addCmd.Run(); err == nil {
-			commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "chore(itervox): record agent handoff", "--no-verify", "--", HandoffDirRelPath)
-			commitCmd.Dir = wsPath
-			if out, err := commitCmd.CombinedOutput(); err != nil && !strings.Contains(string(out), "nothing to commit") {
-				slog.Warn("worker: handoff commit failed (file remains uncommitted)",
-					"issue_identifier", issue.Identifier, "error", err)
-			}
+		if staged, err := workspace.CommitPathOnly(ctx, wsPath, HandoffDirRelPath, "chore(itervox): record agent handoff"); staged && err != nil {
+			slog.Warn("worker: handoff commit failed (file remains uncommitted)",
+				"issue_identifier", issue.Identifier, "error", err)
 		}
 	}
 
@@ -889,8 +970,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		defer postRunCancel()
 		// Push so the remote branch reflects the agent's changes.
 		if wsPath != "" {
-			pushCmd := exec.CommandContext(postRunCtx, "git", "push", "origin", prCtx.Branch)
-			pushCmd.Dir = wsPath
+			pushCmd := gitexec.Command(postRunCtx, wsPath, "push", "origin", prCtx.Branch)
 			if err := pushCmd.Run(); err != nil {
 				slog.Warn("worker: git push failed (non-fatal)",
 					"issue_identifier", issue.Identifier, "branch", prCtx.Branch, "error", err)
@@ -902,6 +982,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// working directory; omitting Dir avoids misleading readers.
 			ghCommentCmd := exec.CommandContext(postRunCtx, "gh", "pr", "comment", prCtx.URL,
 				"--body", sessionComment)
+			ghCommentCmd.Env = gitexec.Environ()
 			if err := ghCommentCmd.Run(); err != nil {
 				slog.Warn("worker: gh pr comment failed (non-fatal)",
 					"issue_identifier", issue.Identifier, "pr_url", prCtx.URL, "error", err)
@@ -1120,6 +1201,33 @@ func (o *Orchestrator) queueSuccessfulTurnInputRequired(
 	return true
 }
 
+// explicitInputRequiredDefault is the question posted when an explicit
+// input request carries no usable text at all.
+const explicitInputRequiredDefault = "Agent requires human input to continue"
+
+// explicitInputRequiredContext builds the question for a turn whose result
+// has InputRequired set (the text sentinel or a vendor error event). The
+// question is posted to the tracker, and FailureText is unsafe there: it ends
+// in the agent's raw stderr, which can carry env exports and prompt text
+// (CORE-164). So the context is agent-written text first — the result text,
+// then the last assistant message — and only then the vendor's own stream
+// error message, with the stderr segment split off. queueInputRequiredEntry
+// then passes it through the log redactor.
+func explicitInputRequiredContext(result agent.TurnResult) string {
+	text := strings.TrimSpace(result.ResultText)
+	if text == "" {
+		text = strings.TrimSpace(result.LastText)
+	}
+	if text == "" && result.FailureText != "" {
+		vendorMsg, _ := agent.SplitFailureText(result.FailureText)
+		text = strings.TrimSpace(vendorMsg)
+	}
+	if text == "" {
+		return explicitInputRequiredDefault
+	}
+	return text
+}
+
 func buildSuccessfulTurnInputCheckText(result agent.TurnResult) string {
 	var blocks string
 	if n := len(result.AllTextBlocks); n > 0 {
@@ -1155,6 +1263,11 @@ func (o *Orchestrator) queueInputRequiredEntry(
 	backend, agentCommand, workerHost, profileName, branchName, inputContext, reason string,
 	runEntry *RunEntry,
 ) {
+	// The context becomes a tracker comment, the dashboard entry and an
+	// automation prompt; none of those paths runs through the log handler's
+	// redactor, so scrub it here, the one funnel every input-required exit
+	// (explicit, sentinel, fallback) passes through (CORE-164).
+	inputContext = logging.RedactString(inputContext)
 	if reason == "" {
 		slog.Info("worker: agent requires input — queuing for user input",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
@@ -1239,7 +1352,7 @@ func prepareAgentActionRuntime(tokens interface {
 		return "", "", fmt.Errorf("create shim dir: %w", err)
 	}
 	shimPath := filepath.Join(shimDir, "itervox")
-	script := "#!/bin/sh\nexec " + shellQuote(exePath) + " \"$@\"\n"
+	script := "#!/bin/sh\nexec " + agent.ShellQuote(exePath) + " \"$@\"\n"
 	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("write shim: %w", err)
@@ -1292,7 +1405,7 @@ func prependEnvToCommand(command string, env map[string]string) string {
 		}
 		b.WriteString(key)
 		b.WriteString("=")
-		b.WriteString(shellQuote(env[key]))
+		b.WriteString(agent.ShellQuote(env[key]))
 		b.WriteByte(' ')
 	}
 	b.WriteString(commandRemainder)
@@ -1338,22 +1451,18 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 	return strings.Join(lines, "\n")
 }
 
-func renderProfilePromptBlocks(profile config.AgentProfile, issue domain.Issue, attempt *int) []string {
+func renderProfilePromptBlocks(profile config.AgentProfile, issue domain.Issue, attempt *int, extra map[string]any) []string {
 	var blocks []string
 	if profile.Soul != "" {
-		blocks = append(blocks, prompt.RenderProfilePrompt(profile.Soul, issue, attempt))
+		blocks = append(blocks, prompt.RenderPromptOverlay(profile.Soul, issue, attempt, extra))
 	}
 	if profile.Instructions != "" {
-		blocks = append(blocks, prompt.RenderProfilePrompt(profile.Instructions, issue, attempt))
+		blocks = append(blocks, prompt.RenderPromptOverlay(profile.Instructions, issue, attempt, extra))
 	}
 	if len(blocks) == 0 && profile.Prompt != "" {
-		blocks = append(blocks, prompt.RenderProfilePrompt(profile.Prompt, issue, attempt))
+		blocks = append(blocks, prompt.RenderPromptOverlay(profile.Prompt, issue, attempt, extra))
 	}
 	return blocks
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // generateRunID returns a short random ID that is assigned to a worker run
@@ -1367,12 +1476,65 @@ func generateRunID() string {
 	return "run-" + hex.EncodeToString(b)
 }
 
+// turnFailedLogStderrTail bounds the stderr carried by the WARN "worker: turn
+// failed" line (CORE-167). The root cause is at the end of stderr; the full
+// (redacted, 64 KiB-bounded) text is logged at DEBUG.
+const turnFailedLogStderrTail = 2 << 10
+
+// boundedTurnFailureLog renders cause for the WARN line: the agent-reported
+// part whole, the stderr part cut to its last turnFailedLogStderrTail bytes,
+// everything redacted.
+func boundedTurnFailureLog(cause error) string {
+	text := logging.RedactString(cause.Error())
+	agentPart, stderr := agent.SplitFailureText(text)
+	if len(stderr) <= turnFailedLogStderrTail {
+		return text
+	}
+	cut := len(stderr) - turnFailedLogStderrTail
+	for cut < len(stderr) && !utf8.RuneStart(stderr[cut]) {
+		cut++
+	}
+	return agentPart + " | stderr: [...truncated...]" + stderr[cut:]
+}
+
+// turnFailureCause builds a failed turn's exit cause (CORE-029). The vendor
+// FailureText is kept even when the runner returned an error, because the
+// exhausted-retry rate-limit classifier only sees the exit cause's text; the
+// runner error is wrapped so errors.Is(cause, context.Canceled) still routes
+// orchestrator-driven cancellations to the claim-release branch. When the
+// FailureText already contains the runner error's text (the agent-side
+// fallback for a read error with no parsed diagnostic), it is not repeated.
+func turnFailureCause(turn int, failureText string, runErr error) error {
+	switch {
+	case runErr == nil && failureText == "":
+		return fmt.Errorf("turn %d: agent reported failure", turn)
+	case runErr == nil:
+		return fmt.Errorf("turn %d: %s", turn, failureText)
+	case failureText == "":
+		return runErr
+	case strings.Contains(failureText, runErr.Error()):
+		return &turnFailure{msg: fmt.Sprintf("turn %d: %s", turn, failureText), err: runErr}
+	default:
+		return fmt.Errorf("turn %d: %s: %w", turn, failureText, runErr)
+	}
+}
+
+// turnFailure is an exit cause whose text already includes its wrapped
+// error's text.
+type turnFailure struct {
+	msg string
+	err error
+}
+
+func (e *turnFailure) Error() string { return e.msg }
+func (e *turnFailure) Unwrap() error { return e.err }
+
 func (o *Orchestrator) sendExit(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error) {
 	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "", "")
 }
 
 func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string) {
-	ev := OrchestratorEvent{
+	o.deliverExit(ctx, issue, OrchestratorEvent{
 		Type:    EventWorkerExited,
 		IssueID: issue.ID,
 		RunEntry: &RunEntry{
@@ -1383,7 +1545,31 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 			RetryAttempt:   &attempt,
 		},
 		Error: err,
+	})
+}
+
+// sendExitWithLimit sends a failed exit carrying the turn's vendor limit
+// signal (CORE-051). The worker never mutates State: the event loop decides.
+func (o *Orchestrator) sendExitWithLimit(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, limit *agent.LimitSignal) {
+	o.deliverExit(ctx, issue, OrchestratorEvent{
+		Type:     EventWorkerExited,
+		IssueID:  issue.ID,
+		RunEntry: &RunEntry{Issue: issue, TerminalReason: reason, RetryAttempt: &attempt},
+		Error:    err,
+		Limit:    limit,
+	})
+}
+
+// formatResetsAt renders a limit's reset time for logs ("" when unknown).
+func formatResetsAt(limit *agent.LimitSignal) string {
+	if limit == nil || limit.ResetsAt.IsZero() {
+		return ""
 	}
+	return limit.ResetsAt.UTC().Format(time.RFC3339)
+}
+
+// deliverExit sends a worker exit event to the event loop.
+func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev OrchestratorEvent) {
 	// If the worker context is already cancelled (e.g. user-triggered pause via
 	// CancelIssue), the exit event must still reach the event loop so that
 	// PausedIdentifiers is set correctly.  Fall back to a background-derived
@@ -1395,10 +1581,17 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 		sendCtx, cancel = context.WithTimeout(context.Background(), hookFallbackTimeout)
 		defer cancel()
 	}
-	// Nil-receive channel blocks forever — safe fallback when Run hasn't started.
-	var orchDone <-chan struct{}
-	if p := o.runCtx.Load(); p != nil {
-		orchDone = (*p).Done()
+	// M4-close D1: key off loopExited, not the Run ctx. After a forced stop
+	// the loop keeps collecting exits (collectExitsAfterCancel) while its ctx
+	// is already done. Nil before Run: blocks forever, the send wins.
+	orchDone := o.loopExitedCh()
+	select {
+	case <-orchDone:
+		// Checked first: once the loop is gone a buffered send would vanish.
+		slog.Warn("worker: exit event dropped (orchestrator exited)",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+		return
+	default:
 	}
 	select {
 	case o.events <- ev:
@@ -1463,10 +1656,7 @@ func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *
 		sendCtx, cancel = context.WithTimeout(context.Background(), hookFallbackTimeout)
 		defer cancel()
 	}
-	var orchDone <-chan struct{}
-	if p := o.runCtx.Load(); p != nil {
-		orchDone = (*p).Done()
-	}
+	orchDone := o.loopExitedCh() // M4-close D1: see deliverExit
 	select {
 	case o.events <- ev:
 	case <-orchDone:

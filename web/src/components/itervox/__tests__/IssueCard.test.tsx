@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { DndContext, KeyboardSensor, useSensor, useSensors } from '@dnd-kit/core';
 import IssueCard from '../IssueCard';
+import DraggableCard from '../BoardColumn/DraggableCard';
 import type { TrackerIssue } from '../../../types/schemas';
 
 const baseIssue: TrackerIssue = {
@@ -68,6 +70,42 @@ describe('IssueCard', () => {
     const badge = screen.getByTestId('issue-card-blocked-badge');
     expect(badge).toHaveTextContent('Blocked 2');
     expect(badge).toHaveAttribute('title', 'Blocked by 2 issues');
+  });
+
+  // CORE-080 — why-idle chip from the server-derived ineligibleReason.
+  it('shows ineligible reason chip', () => {
+    render(
+      <IssueCard
+        issue={{
+          ...baseIssue,
+          orchestratorState: 'idle',
+          ineligibleReason: 'blocked_by:ENG-2',
+          blockedBy: ['ENG-2'],
+        }}
+        onSelect={vi.fn()}
+      />,
+    );
+    const chip = screen.getByTestId('why-idle-chip');
+    expect(chip).toHaveTextContent('Blocked by ENG-2');
+    // Accessible: the visible label is prefixed for AT and the raw reason
+    // is in the tooltip.
+    expect(chip).toHaveTextContent(/Not dispatching:/);
+    expect(chip).toHaveAttribute('title', expect.stringContaining('blocked_by:ENG-2'));
+    // The blocker-count badge stays alongside the chip.
+    expect(screen.getByTestId('issue-card-blocked-badge')).toHaveTextContent('Blocked 1');
+  });
+
+  it('renders no chip when ineligibleReason is absent', () => {
+    render(
+      <IssueCard
+        issue={{ ...baseIssue, blockedBy: ['ABC-0'], blockedByDetails: [] }}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('why-idle-chip')).not.toBeInTheDocument();
+    const badge = screen.getByTestId('issue-card-blocked-badge');
+    expect(badge).toHaveTextContent('Blocked 1');
+    expect(badge).toHaveAttribute('title', 'Blocked by 1 issue');
   });
 
   it('falls back to blockedBy when blocker details are absent', () => {
@@ -268,6 +306,23 @@ describe('IssueCard', () => {
     expect(screen.queryByTitle('Send to queue')).not.toBeInTheDocument();
   });
 
+  // CORE-024 — the dispatch button is otherwise hover-only
+  // (group-hover:opacity-100), invisible to keyboard users. Real computed
+  // opacity from Tailwind's `focus-visible:` class isn't observable in
+  // jsdom (no stylesheet is processed in the Vitest environment), so this
+  // asserts the inline-style fallback that makes the same behavior real and
+  // testable regardless of the CSS pipeline.
+  it('makes the hover-only dispatch button visible when keyboard-focused', () => {
+    const idleIssue = { ...baseIssue, orchestratorState: 'idle' as const };
+    render(<IssueCard issue={idleIssue} onSelect={vi.fn()} onDispatch={vi.fn()} />);
+    const dispatchButton = screen.getByTitle('Send to queue');
+    expect(getComputedStyle(dispatchButton).opacity).not.toBe('1');
+    fireEvent.focus(dispatchButton);
+    expect(getComputedStyle(dispatchButton).opacity).toBe('1');
+    fireEvent.blur(dispatchButton);
+    expect(getComputedStyle(dispatchButton).opacity).not.toBe('1');
+  });
+
   it('does not render elapsed when elapsedMs is undefined', () => {
     render(<IssueCard issue={{ ...baseIssue, elapsedMs: undefined }} onSelect={vi.fn()} />);
     expect(screen.queryByText(/\d+[ms]/)).not.toBeInTheDocument();
@@ -366,6 +421,110 @@ describe('IssueCard', () => {
     it('does not render the badge when syncing is false/undefined', () => {
       render(<IssueCard issue={baseIssue} onSelect={vi.fn()} />);
       expect(screen.queryByTestId('issue-card-syncing-badge')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('CORE-055: auto-switch badge', () => {
+    it('renders "<backend> (auto)" with the provenance as its title', () => {
+      render(
+        <IssueCard
+          issue={{
+            ...baseIssue,
+            agentBackend: 'codex',
+            autoSwitch: {
+              identifier: baseIssue.identifier,
+              source: 'backend_fallback',
+              fromBackend: 'claude',
+              toBackend: 'codex',
+              reason: 'backend_fallback: claude limited',
+            },
+          }}
+          onSelect={vi.fn()}
+        />,
+      );
+      const badge = screen.getByTestId('issue-card-auto-switch-badge');
+      expect(badge).toHaveTextContent('codex (auto)');
+      expect(badge).toHaveAttribute(
+        'title',
+        'Auto-switched from claude by backend_fallback: backend_fallback: claude limited',
+      );
+    });
+
+    it('does not render the badge for an operator pin', () => {
+      render(<IssueCard issue={{ ...baseIssue, agentBackend: 'codex' }} onSelect={vi.fn()} />);
+      expect(screen.queryByTestId('issue-card-auto-switch-badge')).not.toBeInTheDocument();
+    });
+  });
+
+  // CORE-068 — keyboard open vs. dnd-kit's KeyboardSensor (Space/Enter start a drag).
+  describe('keyboard open', () => {
+    function Board({
+      onSelect,
+      onDragStart,
+    }: {
+      onSelect: (id: string) => void;
+      onDragStart: () => void;
+    }) {
+      const sensors = useSensors(useSensor(KeyboardSensor));
+      return (
+        <DndContext sensors={sensors} onDragStart={onDragStart}>
+          <DraggableCard
+            issue={baseIssue}
+            isBeingDragged={false}
+            shouldCollapse={false}
+            onSelect={onSelect}
+            runningKindByIdentifier={{ 'ABC-1': 'reviewer' }}
+            commentCountByIdentifier={{ 'ABC-1': 2 }}
+          />
+        </DndContext>
+      );
+    }
+
+    it('review badge Enter opens detail without bubbling to drag', async () => {
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onDragStart = vi.fn();
+      render(<Board onSelect={onSelect} onDragStart={onDragStart} />);
+      screen.getByTestId('issue-card-review-badge').focus();
+      await user.keyboard('{Enter}');
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith('ABC-1');
+      expect(onDragStart).not.toHaveBeenCalled();
+    });
+
+    it('title button opens detail with Enter and Space without starting a drag', async () => {
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onDragStart = vi.fn();
+      render(<Board onSelect={onSelect} onDragStart={onDragStart} />);
+      const title = screen.getByRole('button', { name: 'Fix the bug' });
+      title.focus();
+      await user.keyboard('{Enter}');
+      await user.keyboard(' ');
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      expect(onDragStart).not.toHaveBeenCalled();
+    });
+
+    it('drag handle Space still starts a keyboard drag', async () => {
+      const user = userEvent.setup();
+      const onSelect = vi.fn();
+      const onDragStart = vi.fn();
+      render(<Board onSelect={onSelect} onDragStart={onDragStart} />);
+      const handle = screen.getByRole('button', { name: 'Move ABC-1' });
+      expect(handle).toHaveAttribute('aria-roledescription', 'draggable');
+      handle.focus();
+      await user.keyboard(' ');
+      expect(onDragStart).toHaveBeenCalledTimes(1);
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('the card wrapper is no longer a role=button around nested controls', () => {
+      render(<Board onSelect={vi.fn()} onDragStart={vi.fn()} />);
+      // Only real buttons remain, in DOM order: drag handle, review badge, title.
+      const names = screen
+        .getAllByRole('button')
+        .map((b) => b.getAttribute('aria-label') ?? b.textContent);
+      expect(names).toEqual(['Move ABC-1', '📝 2 reviews', 'Fix the bug']);
     });
   });
 });

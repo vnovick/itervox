@@ -1,6 +1,7 @@
 import { fetchEventSource, type EventSourceMessage } from '@microsoft/fetch-event-source';
 import { getToken, useTokenStore } from './tokenStore';
 import { useAuthStore } from './authStore';
+import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../utils/timings';
 
 /**
  * Replaces native EventSource with a fetch-based SSE client that CAN send
@@ -19,6 +20,22 @@ class FatalSSEError extends Error {
   }
 }
 
+// Sentinel: thrown from onclose to force @microsoft/fetch-event-source to
+// retry. The library's `create()` loop only reconnects when the request
+// promise rejects (see lib/esm/fetch.js: a clean stream end calls
+// `onclose(); dispose(); resolve();` — returning normally from onclose
+// resolves the outer promise for good, so a proxy/LB graceful close would
+// otherwise end the stream forever). Throwing here routes through the
+// library's catch block into our onerror, which applies backoff and
+// notifies onDisconnect — so onclose itself must NOT also call
+// onDisconnect, or every clean close would notify twice.
+class RetryableCloseError extends Error {
+  constructor() {
+    super('sse closed cleanly by server; reconnecting');
+    this.name = 'RetryableCloseError';
+  }
+}
+
 export interface AuthedEventStreamOptions {
   /** Called for each SSE message (default channel — no `event:` field). */
   onMessage: (msg: EventSourceMessage) => void;
@@ -27,9 +44,6 @@ export interface AuthedEventStreamOptions {
   /** Called when the stream disconnects (transient — a reconnect will follow). */
   onDisconnect?: () => void;
 }
-
-const SSE_RECONNECT_BASE_MS = 1000;
-const SSE_RECONNECT_MAX_MS = 15_000;
 
 /**
  * Opens an authenticated SSE stream. Returns a closer function.
@@ -73,8 +87,15 @@ export function openAuthedEventStream(url: string, opts: AuthedEventStreamOption
       opts.onMessage(msg);
     },
     onclose() {
-      opts.onDisconnect?.();
-      // Returning normally from onclose triggers a reconnect by the library.
+      if (ctrl.signal.aborted) {
+        // Deliberate close (unmount/navigation) — don't notify or retry.
+        return;
+      }
+      // Clean server-side close: throw so the library's catch routes into
+      // onerror (below), which applies backoff and notifies onDisconnect.
+      // Do NOT call opts.onDisconnect?.() here too, or a clean close would
+      // notify twice.
+      throw new RetryableCloseError();
     },
     onerror(err) {
       if (err instanceof FatalSSEError) {

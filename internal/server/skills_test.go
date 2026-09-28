@@ -51,6 +51,7 @@ func newSkillsTestServer(t *testing.T, fake *fakeSkillsClient) *Server {
 		Snapshot:     func() StateSnapshot { return StateSnapshot{} },
 		RefreshChan:  make(chan struct{}, 1),
 		SkillsClient: fake,
+		AllowedHosts: testAllowedHosts,
 	}
 	return New(cfg)
 }
@@ -165,6 +166,7 @@ func TestSkills_NilClientFallsBackToNoop(t *testing.T) {
 		Snapshot:    func() StateSnapshot { return StateSnapshot{} },
 		RefreshChan: make(chan struct{}, 1),
 		// SkillsClient intentionally nil — should fall back to noop.
+		AllowedHosts: testAllowedHosts,
 	}
 	s := New(cfg)
 	rec := httptest.NewRecorder()

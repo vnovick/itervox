@@ -1,0 +1,8 @@
+# Local OpenTofu/Terraform working state. Never commit state: it holds every
+# resource attribute in plain text.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log

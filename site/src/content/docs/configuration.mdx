@@ -95,7 +95,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
 | `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
-| `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled. Load-time only (no runtime setter). |
+| `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly, and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. Load-time only (no runtime setter). |
 
 **Outbox visibility:** pending and degraded entries appear in the dashboard's
 Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
@@ -261,11 +261,11 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `command` | string | `"claude"` | CLI command used to launch the agent. Can include flags (e.g. `"claude --model claude-opus-4-6"`). |
-| `backend` | string | `""` | Explicitly sets the runner backend (`"claude"` or `"codex"`). Only needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name. |
+| `backend` | string | `""` | Explicitly sets the runner backend (`"claude"` or `"codex"`). Only needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name. A backend that disagrees with a command whose binary is `claude` or `codex` (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning. |
 | `max_concurrent_agents` | int | `10` | Maximum number of agent workers running simultaneously across all issues. |
 | `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits that override `max_concurrent_agents`. Keys are lowercase state names. See example below. |
 | `max_automation_queue_length` | int | `100` | Maximum durable automation dispatch entries waiting for capacity or dependency resolution. `0`/negative values fall back to the default; the queue is never unlimited. |
-| `max_retries` | int | `5` | Maximum retry attempts before an issue is moved to `tracker.failed_state` (or paused if `failed_state` is empty). `0` means unlimited retries. |
+| `max_retries` | int | `5` | Maximum retry attempts before an issue is moved to `tracker.failed_state` (or paused if `failed_state` is empty). `0` means unlimited retries. When the failed turn carried a vendor limit signal, the retry waits for the vendor's reset time or retry delay (at most 6 hours) if that is longer than the normal back-off. |
 | `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. `0`/negative values fall back to the default; use `max_retries` to control retry count. |
 | `max_turns` | int | `20` | Maximum number of agent turns per session. |
 
@@ -309,10 +309,11 @@ headroom the dashboard already reports.
 | `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. |
 | `review_quorum` | string | `"any_block"` | How reviewer verdicts combine: `any_block` (one block blocks), `majority` (strictly more than half), or `unanimous` (all must block). A reviewer that records no parseable verdict counts as a block. |
 | `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. As of v0.2.0, this safely coexists with `workspace.auto_clear` — the clear is deferred until the reviewer also completes. |
-| `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. This cap limits switching; it is not the trigger condition. |
-| `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. |
+| `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. Also counts `backend_fallback` switches of implementer runs. This cap limits switching; it is not the trigger condition. |
+| `switch_window_hours` | int | `6` | Rolling window size (in hours) for the switch cap. The switch history, cooldowns and cap-comment dedupe survive a daemon restart. |
 | `switch_revert_hours` | int | `0` | TTL (in hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` (default) disables the revert. Operator-set overrides survive — only auto-switches with a recorded `AutoSwitchedAt` timestamp are eligible. |
-| `rate_limit_error_patterns` | string[] | `[]` | Custom substrings for detecting rate-limit errors in agent stderr. Empty falls back to built-in defaults (`rate_limit_exceeded`, `rate limit`, `429`, `quota`, `too many requests`). |
+| `backend_fallback` | map | absent | Declarative reroute when a backend hits its usage limit, with reset-time switch-back and a minimum dwell. See "Backend health and fallback" below. Read at load time; not runtime-editable. |
+| `rate_limit_error_patterns` | string[] | `[]` | Custom case-insensitive substrings for detecting rate-limit errors, matched verbatim against the whole failure text (agent-reported failure and CLI stderr). Empty falls back to the built-in defaults: anchored 429 forms (`http 429`, `status: 429`, `(429)`, `429 too many requests`), anchored quota forms (`insufficient_quota`, `quota exceeded for`, `usage quota`), `rate_limit_exceeded`, `rate limit`, `too many requests` and the Claude/Codex usage-limit phrases. A bare `429` counts only in the agent-reported failure, never in CLI stderr; a bare `quota` never counts. |
 | `allow_unchecked_merge` | bool | `false` | When `false` (default), the `merge_pr` action refuses to merge on a repo with zero required checks configured (reason `unarmed_gate:...`) instead of merging with no CI coverage. Set `true` to merge anyway; the daemon still logs a loud warning. |
 
 ```yaml
@@ -329,6 +330,103 @@ agent:
 :::caution[Removed field]
 `agent_mode` was removed in v0.2.0. The daemon rejects configs containing it. Profile files now always inject when a profile is selected — no mode flag needed. Delete `agent_mode` (and the legacy alias `enable_agent_teams`) from your `WORKFLOW.md`.
 :::
+
+### Backend health and fallback (`agent.backend_fallback`)
+
+**Backend circuit breaker.** Itervox keeps one breaker per agent backend and
+worker host (`claude`, `codex`, `claude@build-1`, ...): a limit seen on SSH
+host A says nothing about local runs or host B, which may use other
+credentials. A breaker opens when:
+
+- a run stops on a usage limit (Claude `rate_limit_event` `rejected`, a
+  result with API status 429/402, a Codex "You've hit your usage limit"):
+  limited until the vendor's published reset, or for
+  `default_cooldown_minutes` (15) when no reset is published; or
+- Claude reports `api_retry` for `rate_limit`/`overloaded` three times within
+  5 minutes on that backend and host: limited for 5 minutes (or the vendor's
+  retry delay, when longer). Fewer retries only mark it `warning`.
+
+A breaker never holds longer than its source can justify: a
+`rate_limit_event` reset is capped at 5h15m for the `five_hour` window, 7 days
++ 1h for `seven_day*` windows and 24h for any other window; a reset read from
+text (Codex, or a Claude result message) at 6h; an `api_retry` throttle at 1h;
+an unknown reset uses `default_cooldown_minutes` (at most 1440). A further
+reset is capped and logged, and a persisted value is capped again on load.
+A zone-less text reset from an SSH worker (Codex prints the host's local time
+with no zone) is treated as unknown, because the daemon cannot tell the
+host's zone; the cooldown and one probe re-learn it. To close a breaker
+early, use **Clear** on the dashboard chip or
+`POST /api/v1/backend-health/clear` (see the API reference).
+
+While a breaker is open, no issue is started on that backend and host.
+Workers, retries, reviewers, automation runs and input-required resumes are
+all checked. An issue that cannot run anywhere is held with the
+`backend_limited` ineligible reason (shown as the issue's "why idle" reason),
+never paused, and consumes no retry. Queued automations stay queued with
+`backend_limited`. When the reset passes, the breaker half-opens: exactly
+one issue is dispatched as a probe, and the others wait. A probe that
+succeeds (or stops to ask a question) closes the breaker. A probe that hits
+the limit again reopens it. Open breakers survive a restart
+(`backend_health.json` in the daemon log directory, next to
+`auto_switched.json`; runtime state, never commit it).
+
+**Declarative fallback.** With `agent.backend_fallback`, a limited target is
+rerouted instead of held:
+
+```yaml
+agent:
+  backend_fallback:
+    chain: [claude, codex]          # preference order
+    profile_map:                    # counterpart profile per backend
+      coder:    { codex: coder-codex }
+      reviewer: { codex: reviewer-codex }
+      default:  { codex: coder-codex }   # issues running agent.command
+    on_unmapped: hold               # hold | backend_hint
+    default_cooldown_minutes: 15    # when the vendor publishes no reset
+    min_dwell_minutes: 30
+    switch_back: at_reset           # at_reset | on_success | manual
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` when the block is present | `false` keeps the block but turns rerouting off. Without the block there is no rerouting, but the breaker still holds issues on a limited backend. The whole block may also be a boolean: `backend_fallback: false` is off, `true` is on with the defaults. Any other shape (`"off"`, a number, a list, `enabled: "false"`) fails config loading |
+| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known, distinct backends only |
+| `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). The reverse direction is implied: a target profile maps back through its source row |
+| `on_unmapped` | string | `hold` | For a profile with no mapping: `hold` (wait with `backend_limited`) or `backend_hint` (request the chain backend for the issue's own command; works only for wrapper commands — a `claude ...` command is never paired with codex) |
+| `default_cooldown_minutes` | int | `15` | How long a breaker stays limited when the vendor published no reset time (1–1440). Also used by the breaker when the block is absent |
+| `min_dwell_minutes` | int | `30` | Minimum time a switched issue stays on the fallback before it may switch back. It never blocks a further hop when the fallback itself becomes limited |
+| `switch_back` | string | `at_reset` | `at_reset`: the override is cleared once the dwell has passed AND the original backend is no longer limited (its reset, or the cooldown, has passed); the next dispatch goes back through the breaker. `on_success`: cleared by the first successful run after the dwell. `manual`: never cleared automatically (pin a backend, or use `switch_revert_hours`) |
+
+The block is read at load time: edit `WORKFLOW.md` to change it (the normal
+reload applies it). There is no settings API for it.
+
+A switched implementer issue keeps its new profile and backend for later
+runs (a sticky override, shown on the card as `codex (auto)` and in the
+snapshot's `autoSwitches`). Before, a success cleared the override, so the
+next dispatch went back to the still-limited backend. Each fallback switch
+counts against `max_switches_per_issue_per_window`. With the cap spent, the
+issue is held rather than rerouted. Reviewer and automation runs are
+rerouted per run and leave the issue's profile alone.
+
+**Precedence** (fallback vs pins vs `rate_limited` rules):
+
+1. An operator's per-issue backend pin (dashboard issue detail, or
+   `POST /api/v1/issues/{identifier}/backend`) wins. A pinned issue is never
+   rerouted: when its pinned backend is limited it is held with
+   `backend_limited`. A pin is refused up front (`409 backend_pin_refused`) when
+   the issue's command runs the other backend.
+2. `agent.backend_fallback`, for profiles it maps (or every profile with
+   `on_unmapped: backend_hint`). When such a run hits a usage limit, the
+   fallback alone handles it: the issue is rerouted at once (no retry
+   consumed) or held, and `rate_limited` automations are **not** evaluated
+   for that exit.
+3. `rate_limited` automations, for everything else: unmapped profiles, pinned
+   issues, and failures classified from text at retry exhaustion. They keep
+   their own cap, cooldown and switch target. A switch target on a limited
+   backend is queued with `backend_limited` rather than started.
+
+When both are configured, use `profile_map` for the common Claude ⇄ Codex
+pairs and keep `rate_limited` rules for custom mappings or helper runs.
 
 ### SSH dispatch
 
@@ -353,6 +451,10 @@ agent:
   ssh_strict_host_by_host:
     "build-host-1.example.com": yes
 ```
+
+**Worker host requirements.** Each turn runs as `ssh -T <host> bash -lc '<fixed wrapper>'`, with the script (prompt included) sent on ssh's stdin, so the worker needs **bash 3.2 or later** (with process substitution: `/dev/fd` or a writable `TMPDIR`) plus the POSIX userland tools `sh`, `cat`, `printf`, `wc` and `sleep` — no `setsid`, `ps`, `head` or `base64`. The prompt reaches the agent CLI on its stdin, never as a command-line argument (`claude ... -p`, `codex exec ... -`), so no prompt size is refused on Linux workers (`MAX_ARG_STRLEN`); Claude Code caps piped input at 10 MB. The remote user's login shell can be any of sh, bash, zsh, dash, ksh, csh or tcsh; it only passes the wrapper to bash. Any SSH server works (OpenSSH or Dropbear): the wrapper creates its own process group for the agent instead of relying on the server's. The worker's login profile must not read stdin: a profile that reads a line or a fixed number of bytes makes the turn fail with exit 97 ("arrived truncated"), and one that reads stdin to end-of-file blocks the turn until it is cancelled.
+
+**Cancelled turns stop the remote agent.** itervox keeps the ssh connection's stdin open for the whole turn. When a turn is cancelled, times out, or the daemon shuts down, the local `ssh` client is killed, sshd closes the session, and the wrapper on the worker sees end-of-file on stdin. It then sends `SIGTERM` to the process group it created for the agent (the agent and everything it started), and `SIGKILL` 2 seconds later. Nothing outside that group is signalled — not the SSH server, other sessions on the same connection (Dropbear, `ControlMaster`), or background jobs your login profile started — and a normally finished turn signals nothing at all. A `readonly TMOUT` in the login profile does not affect it. A process that moved itself into another process group or session (for example with `setsid`) is not reached. If the network drops without the client dying, sshd only notices once its `ClientAliveInterval` or TCP keepalive expires, and the stop happens then.
 
 ### Available models
 
@@ -453,7 +555,7 @@ Supported triggers:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected
-- `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. The switch cap limits automated switching; it is not the trigger condition.
+- `rate_limited` — fires when a worker run hits a vendor usage limit. A structured limit reported by the agent (Claude's `rate_limit_event` with status `rejected`, or a result with API status 429/402; a Codex "You've hit your usage limit" error) fires it on the **first** failure without consuming a retry, also with `max_retries: 0`. Otherwise it fires when the run exhausts its retries and the failure text is classified as rate-limit-driven. The switch cap limits automated switching; it is not the trigger condition. With no eligible fallback, the issue is retried after the vendor's reset time (at most 6 hours).
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
 Tracker event triggers are poll-derived, not webhook-derived. The automation
@@ -704,9 +806,11 @@ Controls the built-in HTTP server that serves the web dashboard and REST API.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `host` | string | `"127.0.0.1"` | Interface the server listens on. Change to `"0.0.0.0"` to expose on all interfaces. |
-| `port` | int | auto-assigned | TCP port. When omitted, Itervox picks an available port and prints it at startup. |
-| `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted, fully local deployments where the daemon is physically unreachable from anyone else — this has an effect on every bind, including loopback, since a loopback daemon behind a tunnel or reverse proxy is exactly as reachable as one bound to `0.0.0.0`. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically but logs a deprecation warning at startup. |
+| `host` | string | `"127.0.0.1"` | Interface the server listens on. Change to `"0.0.0.0"` to expose on all interfaces. `ITERVOX_SERVER_HOST` overrides it (see "Bind overrides from the environment"). |
+| `port` | int | `8090` | TCP port. `0` = the OS picks a free port (for several daemons on one machine). If the port is in use, startup fails naming the holder. `ITERVOX_SERVER_PORT`, then `PORT`, override it. |
+| `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set to `true` **only** for trusted, fully local deployments where the daemon is physically unreachable from anyone else — this has an effect on every bind, including loopback, since a loopback daemon behind a tunnel or reverse proxy is exactly as reachable as one bound to `0.0.0.0`. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically but logs a deprecation warning at startup. State-changing requests from another origin are still refused with 403 (see Authentication below). |
+| `allowed_hosts` | list of strings | `[]` | Extra `Host` header names the dashboard answers when `allow_unauthenticated: true` (DNS-rebinding protection). Without a token every route refuses a request whose `Host` is a DNS name other than `localhost`, the configured `host`, or one listed here, with 403 `host_not_allowed`; IP addresses are always accepted. List the reverse-proxy, tunnel, Tailscale MagicDNS or container service hostname you browse to, without scheme (a `:port` is ignored). Ignored in token mode. |
+| `metrics.enabled` | bool | `false` | Serve Prometheus metrics at `GET /metrics` (text format) on the dashboard listener. Requires the same bearer token as `/api/v1/*`; off, `/metrics` answers 404. Families, labels and semantics: API reference, "Metrics". Read at startup. |
 
 ```yaml
 server:
@@ -714,11 +818,136 @@ server:
   port: 8090
 ```
 
+### Bind overrides from the environment
+
+Containers need `0.0.0.0` and PaaS platforms (Cloud Run, Heroku, Render, …)
+inject the port as `$PORT`, so the bind can come from the environment:
+
+| Value | Precedence, highest first |
+|---|---|
+| host | `ITERVOX_SERVER_HOST` → `server.host` → `127.0.0.1` |
+| port | `ITERVOX_SERVER_PORT` → `PORT` → `server.port` → `8090` |
+
+- There is no daemon command-line flag for the host or port.
+- `0` means "the OS picks a free port" in an env var as in `server.port`; an
+  explicit `server.port: 0` still holds when no env var is set.
+- A variable that is **set** but invalid — empty, not an integer, outside
+  0–65535, a host with a scheme (`http://…`), a path, whitespace or a
+  `host:port` pair — fails startup with an error naming the variable. It is
+  never silently ignored. An IPv6 literal (`::`, `[::1]`) or a host name is
+  accepted.
+- Beware a shell that exports `PORT` for another project: it moves the
+  daemon's bind. The `HTTP server listening` log line names the winning
+  source (`host_source`, `port_source`).
+- The environment is fixed when the process starts: a `WORKFLOW.md` reload
+  re-reads the same values, so changing the bind through the environment
+  needs a restart.
+- The host override feeds the same `server.host` everything else uses, so
+  the unauthenticated-mode Host guard accepts the env host by name exactly as
+  it would the YAML one, and the dashboard URL written to
+  `.itervox/dashboard_url` uses the bound address. The cross-origin guard
+  compares `Origin` with the request's `Host`, so it is unaffected.
+
 ### Authentication
 
-Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /api/v1/health` probe is auth-exempt so load balancers and uptime monitors can check liveness without a token — it is the only auth-exempt route.
+Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once — only when stderr is a terminal or `ITERVOX_PRINT_TOKEN=1` (`--no-print-token` always suppresses it). Headless (systemd, containers, redirected stderr), an auto-generated token is written to `<logs-dir>/api-token` (mode 0600, rewritten on every start) instead, and the log line carries only its path and a `sha256:` fingerprint. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /api/v1/health` (static liveness) and `GET /api/v1/ready` (event-loop readiness) probes are auth-exempt so load balancers, uptime monitors and container health checks can use them without a token — they are the only auth-exempt routes. `GET /metrics` (opt-in via `server.metrics.enabled`) always needs the token.
+
+**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the TUI) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
+
+**Host guard (DNS rebinding) in unauthenticated mode.** The cross-origin guard cannot stop DNS rebinding: a page on a hostname the attacker controls re-points that name at your daemon's address and then talks to it *same-origin*, so it could otherwise store a profile with an arbitrary `command`, rewrite settings, or read state and logs. With `server.allow_unauthenticated: true`, every route — API, SSE, the dashboard and static files — therefore requires the request's `Host` (port and IPv6 brackets stripped, case-insensitive) to be `localhost`, an IP address, the configured `server.host`, or a name in `server.allowed_hosts`; anything else gets 403 with code `host_not_allowed`. IP addresses always pass because a rebinding attack needs a DNS name — so browsing to `http://192.168.1.20:8090` with `host: 0.0.0.0`, container probes by pod IP, and SSH tunnels to `localhost` all keep working, as does the Vite dev proxy (it forwards `Host: localhost:<port>`). `GET /api/v1/health` is exempt because it returns a constant, and `GET /api/v1/ready` because it returns only booleans and the tracker's rate-limit reset and is probed by whatever name the platform uses. **If you reach an unauthenticated daemon through a reverse proxy, tunnel, MagicDNS or container service hostname, add that name to `server.allowed_hosts`.** Token mode has no Host check: a rebound page never holds the bearer token.
 
 See the [Remote access guide](/guides/remote-access/) for setting up persistent tokens and reverse-proxy TLS.
+
+---
+
+## Daemon lifecycle: shutdown, reload and logs
+
+### Graceful drain on `SIGTERM` / `SIGINT`
+
+The first `SIGTERM` or `SIGINT` starts a **drain**:
+
+1. The daemon stops admitting work: no new dispatch, no retry, no
+   pending-input resume, no automation start (automations are queued and
+   persisted), no reviewer. `resume`, `reanalyze`, `ai-review` and
+   `provide-input` answer `409 draining`.
+2. `GET /api/v1/ready` answers `503` with `"draining": true`, so a load
+   balancer stops routing to the daemon. The dashboard and API stay up.
+3. In-flight agent turns keep running on an uncancelled context and finish
+   normally; their tracker writes and handoffs happen as usual.
+4. When the last turn finishes — or `--shutdown-grace` (default `30s`)
+   expires, or a **second** `SIGTERM`/`SIGINT` arrives — the daemon cancels
+   whatever is still running (the agent's process group is killed), waits for
+   the orchestrator to record the exits, flush its ledgers and join its
+   workers (at most ~30 s more), removes `daemon.pid` / `dashboard_url` /
+   `HEARTBEAT.md`, and exits `0`. A third signal exits without waiting.
+
+The log shows `shutdown: draining …`, then `shutdown: drain complete` /
+`shutdown: drain grace expired, forcing stop` / `shutdown: received second
+signal, forcing immediate stop`. Whether a turn cancelled at grace expiry
+resumes its agent session after the restart is not verified for either CLI —
+size `--shutdown-grace` to your longest normal turn. Under a service manager,
+its stop timeout must exceed `--shutdown-grace` (for systemd:
+`TimeoutStopSec`, with `KillMode=mixed` so only the daemon receives the
+signal), and `itervox stop --grace` must exceed it too, or the drain is cut
+short by a `SIGKILL`.
+
+### What an edit to `WORKFLOW.md` does
+
+Settings saved from the dashboard or TUI never reload: each is written as the
+daemon's own write and applied in memory. An **operator edit** (your editor,
+`git pull`, a deploy) is detected by the file watcher and applied with
+**drain, then reload**: admission stops exactly as for a shutdown, in-flight
+turns finish (bounded by the same `--shutdown-grace`; past it the remaining
+turns are cancelled), and then the new generation loads the file and starts
+dispatching again. `/ready` reports `draining` meanwhile. A signal during a
+reload drain turns it into a shutdown. Edits made while draining are picked
+up by the same reload.
+
+Why not the alternatives: *reload-and-cancel* (the old behaviour) kills every
+running turn on any edit, and whether a killed turn resumes is unverified;
+*apply without cancelling* would need every load-time field
+to be hot-swappable, while only the fields on the runtime-mutable list can be
+changed safely under a running generation. Draining keeps the one-generation-
+at-a-time invariant and loses no work; the cost is that an edit takes effect
+only after the current turns end (or the grace expires), and no new work
+starts in between. An edit that makes the file invalid still drains first,
+then shows the "config invalid" banner and waits for a fix.
+
+### Log format
+
+`--log-format text|json` (or `ITERVOX_LOG_FORMAT`; the flag wins) selects
+the format of the rotating log file **and**, when no terminal is attached
+(systemd, containers, CI), of stderr — one JSON object per log record, for
+platforms that collect stdout/stderr. With a terminal, stderr stays
+human-readable text (and once the TUI starts, logs go to the file only). Both
+sinks go through the same secret redaction (`Bearer` tokens, `lin_api_…`,
+`ghp_…`, `sk-ant-…` are written as `***`). Lines printed before logging
+starts or outside it (usage text, fatal start-up errors, the TUI's own
+"not starting" notice) are plain text in either format.
+
+### Deployment preflight: `itervox doctor --deploy`
+
+`itervox doctor --deploy [--workflow PATH]` runs the normal doctor checks
+plus non-mutating deployment probes and prints one
+`[ok]` / `[warn]` / `[fail]` / `[skipped]` line each; it exits `1` if any
+line is `[fail]`:
+
+| Probe | How |
+|---|---|
+| `claude credentials` | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_AUTH_TOKEN` set (Bedrock/Vertex env accepted), else `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) with its expiry; an expired access token with a refresh token is fine. On macOS the login lives in the Keychain, which doctor does not read (`[warn]`). |
+| `codex credentials` | `CODEX_API_KEY` / `OPENAI_API_KEY` set, else the read-only `codex login status`. |
+| per SSH host | With `agent.ssh_hosts`, one `[skipped]` line per host and backend: only this machine is probed. |
+| `gh auth` | `gh auth status` (missing `gh` is a `[warn]`: PR detection and merges will not work). |
+| `git push auth` | `git push --dry-run origin HEAD:refs/heads/itervox-doctor-probe` in the `WORKFLOW.md` directory, with prompts disabled. The dry run never creates the ref; it proves the credentials, not branch protection or receive hooks. |
+| `tracker API` | Linear: one `{ viewer { id name } }` query. GitHub: `GET /repos/{owner}/{repo}`, reporting whether the token may push (write labels/states). Through the same client code as the daemon. |
+| `daemon /ready` | `GET /api/v1/ready` on the URL in `.itervox/dashboard_url`; `[warn]` when no daemon runs here. |
+
+Probes only backends the configuration uses, loads `.itervox/.env` first like
+the daemon, runs each probe with a 10 s timeout, and prints one redacted line
+of any CLI output — never raw tokens. It does not check `HEARTBEAT.md`: the
+heartbeat is rewritten only when state changes, so its age is not a liveness
+signal. Unknown `doctor` flags are now an error (exit `2`) instead of being
+ignored.
 
 ---
 

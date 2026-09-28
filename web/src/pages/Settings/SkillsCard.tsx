@@ -199,7 +199,7 @@ export function SkillsCard() {
   }
   if (error) {
     return (
-      <div className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger rounded-lg border p-4 text-sm">
+      <div className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger-text rounded-lg border p-4 text-sm">
         Failed to load skills inventory: {String(error)}
       </div>
     );
@@ -283,7 +283,7 @@ export function SkillsCard() {
       {inventory.Partial && (
         <div
           role="status"
-          className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-lg border p-4 text-sm"
+          className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning-text rounded-lg border p-4 text-sm"
         >
           <p className="font-medium">Partial inventory</p>
           <p className="mt-1 text-xs">
@@ -414,6 +414,7 @@ function RecommendationRow({
   // the same click for affordance.
   return (
     <li className="border-theme-line rounded border">
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the aria-expanded toggle button inside is the keyboard path */}
       <div
         onClick={() => {
           setOpen((v) => !v);

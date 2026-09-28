@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +54,10 @@ type Client struct {
 	rateMu        sync.RWMutex
 	lastRateLimit *rateLimitSnapshot
 
+	// statesMu guards cfg.ActiveStates and cfg.TerminalStates, which
+	// SetStateLists replaces at runtime (CORE-160).
+	statesMu sync.RWMutex
+
 	// projectFilterMu guards projectFilter.
 	// nil = use cfg.ProjectSlug (WORKFLOW.md default, backward compat).
 	// non-nil empty slice = all issues, no project filter.
@@ -81,6 +86,10 @@ type Client struct {
 	stateCacheMu sync.RWMutex
 	teamOfIssue  map[string]string            // issue ID -> team ID
 	statesOfTeam map[string]map[string]string // team ID -> state name -> state UUID
+
+	// commentPages caches full middle pages of ascending comment threads
+	// (CORE-165); see completeComments.
+	commentPages commentPageCache
 }
 
 // lookupStateID returns the cached workflow-state UUID for stateName on the
@@ -229,11 +238,22 @@ func stringValue(v any) string {
 	return s
 }
 
+// SetStateLists implements tracker.StateListSetter (CORE-160).
+func (c *Client) SetStateLists(active, terminal []string) {
+	c.statesMu.Lock()
+	defer c.statesMu.Unlock()
+	c.cfg.ActiveStates = append([]string(nil), active...)
+	c.cfg.TerminalStates = append([]string(nil), terminal...)
+}
+
 // FetchCandidateIssues returns paginated active-state issues respecting the
 // current runtime project filter. If no runtime filter is set, it falls back
 // to the WORKFLOW.md project_slug value (or all issues if that is also empty).
 func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
-	return c.fetchWithProjectFilter(ctx, c.cfg.ActiveStates)
+	c.statesMu.RLock()
+	active := append([]string(nil), c.cfg.ActiveStates...)
+	c.statesMu.RUnlock()
+	return c.fetchWithProjectFilter(ctx, active)
 }
 
 // FetchIssuesByStates returns issues for the given state names, honoring the
@@ -395,7 +415,7 @@ func (c *Client) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) 
 		if err != nil {
 			return nil, fmt.Errorf("linear_fetch_details_by_ids: %w", err)
 		}
-		issues, err := decodeDetailResponse(body)
+		issues, err := c.decodeDetailResponse(ctx, body)
 		if err != nil {
 			return nil, err
 		}
@@ -409,7 +429,12 @@ func (c *Client) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) 
 // FetchIssueStatesByIDs, whose query has no comments block, so routing this
 // through it would silently return every issue with an empty comment list —
 // which the reply-check callers would read as "no reply yet", forever.
-func decodeDetailResponse(body map[string]any) ([]domain.Issue, error) {
+//
+// Comments beyond the first page are read per issue (completeComments). An
+// issue whose follow-up page fails is left OUT of the result rather than
+// returned with a partial thread: absence sends the caller to the
+// single-issue fetch, which retries the pages and surfaces the error.
+func (c *Client) decodeDetailResponse(ctx context.Context, body map[string]any) ([]domain.Issue, error) {
 	data, ok := body["data"].(map[string]any)
 	if !ok {
 		return nil, decodeError(body)
@@ -432,7 +457,13 @@ func decodeDetailResponse(body map[string]any) ([]domain.Issue, error) {
 		if issue == nil {
 			continue
 		}
-		issue.Comments = extractComments(node)
+		comments, err := c.completeComments(ctx, issue.ID, node)
+		if err != nil {
+			slog.Warn("linear: could not read an issue's full comment thread in the batch; leaving it to the single-issue fetch",
+				"identifier", issue.Identifier, "error", err)
+			continue
+		}
+		issue.Comments = comments
 		result = append(result, *issue)
 	}
 	return result, nil
@@ -858,8 +889,111 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 	if issue == nil {
 		return nil, fmt.Errorf("linear_fetch_detail: could not normalize issue")
 	}
-	issue.Comments = extractComments(rawIssue)
+	comments, err := c.completeComments(ctx, issueID, rawIssue)
+	if err != nil {
+		return nil, fmt.Errorf("linear_fetch_detail: %w", err)
+	}
+	issue.Comments = comments
 	return issue, nil
+}
+
+// maxCommentPages bounds how many 50-comment pages one issue's thread is read
+// to (500 comments), so a pathological thread cannot turn a reply check into
+// an unbounded request burst.
+const maxCommentPages = 10
+
+// completeComments returns an issue's whole comment thread (up to
+// maxCommentPages) in ascending CreatedAt order, starting from the first page
+// already present in rawIssue and following its cursor (CORE-124).
+//
+// Linear's `orderBy: createdAt` direction is NOT established: its pagination
+// docs say only that results are "ordered by createdAt" by default, and it has
+// not been confirmed against the live API. Before this, the adapter read one
+// 50-comment page and trusted its order, so whichever end of a longer thread
+// that page held, the other end was invisible — and the input-required
+// question's key is authoritative, so a question outside the window was never
+// matched and a tracker reply never resumed the agent. Reading to the end and
+// sorting here makes the result correct under EITHER direction and restores
+// the domain.Comment ascending-order contract regardless of what Linear sends.
+// Only a thread longer than the bound depends on the direction; that case is
+// logged.
+//
+// CORE-165: reading to the end costs one request per 50 comments on every
+// reply check. When the thread is served ASCENDING (checked on every page,
+// not assumed), a full page that has a successor cannot change as comments
+// are added — they land after it — so such pages are cached per (issue,
+// cursor) for commentPageTTL and only the last page is re-read. A
+// descending or undetermined thread is read in full: there every page
+// shifts when a comment is added. The TTL bounds how long an edited or
+// deleted comment in a cached page stays stale.
+func (c *Client) completeComments(ctx context.Context, issueID string, rawIssue map[string]any) ([]domain.Comment, error) {
+	comments := extractComments(rawIssue)
+	cacheable := commentsAscending(nil, comments)
+	hasNext, cursor := commentsPageInfo(rawIssue)
+	for page := 1; hasNext && cursor != ""; page++ {
+		if page >= maxCommentPages {
+			slog.Warn("linear: comment thread longer than the read bound; the remainder is not visible",
+				"issue_id", issueID, "comments_read", len(comments), "max_pages", maxCommentPages)
+			break
+		}
+		var (
+			pageComments []domain.Comment
+			next         bool
+			nextCursor   string
+		)
+		if hit, ok := c.commentPages.get(issueID, cursor, time.Now()); cacheable && ok {
+			pageComments, next, nextCursor = hit.comments, hit.hasNext, hit.nextCursor
+		} else {
+			body, err := c.graphql(ctx, QueryIssueComments, map[string]any{"id": issueID, "after": cursor})
+			if err != nil {
+				return nil, fmt.Errorf("linear_fetch_comments: %w", err)
+			}
+			data, ok := body["data"].(map[string]any)
+			if !ok {
+				return nil, decodeError(body)
+			}
+			rawPage, ok := data["issue"].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("linear_fetch_comments: missing issue in response")
+			}
+			pageComments = extractComments(rawPage)
+			next, nextCursor = commentsPageInfo(rawPage)
+			cacheable = cacheable && commentsAscending(comments, pageComments)
+			if cacheable && next && nextCursor != "" && nextCursor != cursor {
+				c.commentPages.put(issueID, cursor, commentPage{comments: pageComments, hasNext: next, nextCursor: nextCursor}, time.Now())
+			}
+		}
+		comments = append(comments, pageComments...)
+		if nextCursor == cursor {
+			break // a cursor that does not advance would loop to the bound
+		}
+		hasNext, cursor = next, nextCursor
+	}
+	sortCommentsAscending(comments)
+	return comments, nil
+}
+
+// commentsPageInfo reads the comments block's pageInfo. A response without
+// one (an older query shape, a test fixture) reads as the last page.
+func commentsPageInfo(rawIssue map[string]any) (bool, string) {
+	block, _ := rawIssue["comments"].(map[string]any)
+	info, _ := block["pageInfo"].(map[string]any)
+	hasNext, _ := info["hasNextPage"].(bool)
+	cursor, _ := info["endCursor"].(string)
+	return hasNext, cursor
+}
+
+// sortCommentsAscending orders comments oldest-first, the domain.Comment
+// contract. Stable, so comments with equal or unknown times keep the order
+// Linear sent them in; an unknown CreatedAt sorts as the zero time.
+func sortCommentsAscending(comments []domain.Comment) {
+	at := func(c domain.Comment) time.Time {
+		if c.CreatedAt == nil {
+			return time.Time{}
+		}
+		return *c.CreatedAt
+	}
+	sort.SliceStable(comments, func(i, j int) bool { return at(comments[i]).Before(at(comments[j])) })
 }
 
 // extractComments decodes the `comments` block of a raw Linear issue payload.

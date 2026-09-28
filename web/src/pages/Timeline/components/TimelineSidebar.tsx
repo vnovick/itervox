@@ -1,4 +1,5 @@
 import { ConfirmModal } from '../../../components/ui/modal';
+import { Select } from '../../../components/ui/Select';
 import { dotStyle } from '../../../components/itervox/timeline/types';
 import type { IssueGroup } from '../../../components/itervox/timeline/types';
 
@@ -36,8 +37,8 @@ export function TimelineSidebar({
   return (
     <>
       <aside
-        className="border-theme-line bg-theme-panel flex flex-shrink-0 flex-col border-r"
-        style={{ width: 180 }}
+        data-testid="timeline-sidebar"
+        className="border-theme-line bg-theme-panel hidden w-[180px] flex-shrink-0 flex-col border-r md:flex"
       >
         <div className="border-theme-line border-b px-3 py-3">
           <p className="text-theme-muted text-[10px] font-bold tracking-[0.08em] uppercase">
@@ -133,6 +134,29 @@ export function TimelineSidebar({
           )}
         </div>
       </aside>
+      {/* CORE-087 — below md the list collapses to a select above the detail pane
+          (after the aside in DOM order, so desktop text lookups find the list first). */}
+      <div className="bg-theme-panel border-theme-line flex flex-shrink-0 items-center gap-2 border-b px-3 py-2 md:hidden">
+        <label htmlFor="timeline-issue-select" className="text-theme-text-secondary text-[11px]">
+          Issue
+        </label>
+        <Select
+          id="timeline-issue-select"
+          data-testid="timeline-issue-select"
+          value={selectedId ?? ''}
+          onChange={(event) => {
+            onSelectIssue(event.target.value);
+          }}
+          className="h-8 min-w-0 flex-1 text-xs"
+        >
+          {selectedId === null && <option value="">Select an issue</option>}
+          {issueGroups.map((group) => (
+            <option key={group.identifier} value={group.identifier}>
+              {group.identifier} — {statusLabel(group)}
+            </option>
+          ))}
+        </Select>
+      </div>
 
       <ConfirmModal
         isOpen={!!confirmClearId}

@@ -40,8 +40,14 @@ jobs:
       - name: Build
         run: go build ./cmd/... ./internal/...
 
+      # -tags sshmatrix: the slow SSH login-shell matrix in internal/agent,
+      # skipped by a plain `go test` (CORE-172). goleak.VerifyTestMain runs in
+      # internal/agent, internal/server and internal/orchestrator (CORE-112).
       - name: Test (with race detector and coverage)
-        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./cmd/... ./internal/...
+        run: go test -race -count=1 -timeout 20m -tags sshmatrix -coverprofile=coverage.out -covermode=atomic ./cmd/... ./internal/...
+
+      - name: Deploy script tests (fetch-secrets quoting, bootstrap dry-run)
+        run: make deploy-test
 
       - name: Show coverage summary
         run: go tool cover -func=coverage.out | tail -1
@@ -54,6 +60,11 @@ jobs:
 
       - name: Vet
         run: go vet ./cmd/... ./internal/...
+
+      # CORE-112: no production-unreachable function outside the reasoned
+      # scripts/deadcode-allowlist.txt (deadcode is pinned in the script).
+      - name: Dead code
+        run: make deadcode
 
 
   lint:
@@ -87,7 +98,7 @@ jobs:
           cache: true
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 
       - name: Run govulncheck
         run: govulncheck -tags dev ./cmd/... ./internal/...

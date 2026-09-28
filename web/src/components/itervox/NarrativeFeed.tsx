@@ -1,4 +1,7 @@
+import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../../store/itervoxStore';
+import { useLogStream } from '../../hooks/useLogStream';
 import { Terminal } from '../ui/Terminal/Terminal';
 import type { LogEntry, LogLevel } from '../ui/Terminal/Terminal';
 
@@ -21,16 +24,23 @@ function lineToLevel(line: string): LogLevel {
 }
 
 export function NarrativeFeed() {
-  const logs = useItervoxStore((s) => s.logs);
+  // CORE-075 — the global log stream lives here, its only reader: it opens
+  // when the feed mounts and closes when it unmounts.
+  useLogStream();
+  const { logs, logSeq } = useItervoxStore(useShallow((s) => ({ logs: s.logs, logSeq: s.logSeq })));
 
-  // Take the last 20 lines
-  const recent = logs.slice(-MAX_FEED_LINES);
-
-  const entries: LogEntry[] = recent.map((line, i) => ({
-    ts: i,
-    level: lineToLevel(line),
-    message: line,
-  }));
+  // CORE-069 — every line carries its store client id, so the Terminal keys
+  // (and its unseen-line count) stay stable when the 20-line window advances.
+  const entries = useMemo<LogEntry[]>(() => {
+    const recent = logs.slice(-MAX_FEED_LINES);
+    const firstSeq = logSeq - recent.length + 1;
+    return recent.map((line, i) => ({
+      ts: firstSeq + i,
+      seq: firstSeq + i,
+      level: lineToLevel(line),
+      message: line,
+    }));
+  }, [logs, logSeq]);
 
   return (
     <div

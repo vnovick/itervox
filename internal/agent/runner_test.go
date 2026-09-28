@@ -1,11 +1,13 @@
 package agent_test
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,28 +17,85 @@ import (
 	"github.com/vnovick/itervox/internal/agent/agenttest"
 )
 
+// CORE-144/CORE-145: these two tests used to drive agenttest.FakeRunner,
+// which never builds any real argv — it just replays scripted StreamEvents —
+// so they could not have caught a regression in buildDirectArgs's -p/--resume
+// construction. They now drive the real agent.ClaudeRunner against a fake
+// "claude" executable that dumps its argv, the same fake-binary idiom used
+// throughout codex_test.go (e.g. TestCodexRunnerResumeTurn's argFile).
+
 func TestRunTurnFirstTurnBuildsPromptFlag(t *testing.T) {
+	fakeOutput := strings.Join([]string{
+		`{"type":"system","session_id":"sess-1"}`,
+		`{"type":"result","subtype":"success","session_id":"sess-1"}`,
+	}, "\n") + "\n"
+
 	dir := t.TempDir()
-	fake := agenttest.NewFakeRunner([]agent.StreamEvent{
-		{Type: "system", SessionID: "sess-1"},
-		{Type: "result", SessionID: "sess-1"},
-	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "do the thing", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
+	fakeExe := filepath.Join(dir, "claude")
+	argFile := filepath.Join(dir, "args.txt")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %[1]s\ncat >> %[1]s\nprintf '%%s' %[2]s\n", shellLiteral(argFile), shellLiteral(fakeOutput))
+	require.NoError(t, os.WriteFile(fakeExe, []byte(script), 0o755))
+
+	runner := agent.NewClaudeRunner()
+	result, err := runner.RunTurn(context.Background(), slog.Default(), nil, nil, "do the thing", dir, fakeExe, "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
 	assert.Equal(t, "sess-1", result.SessionID)
 	assert.False(t, result.Failed)
+
+	argv, err := os.ReadFile(argFile)
+	require.NoError(t, err)
+	// argv, then the stdin the fake copied (CORE-156: -p with no prompt
+	// argument, the prompt on stdin).
+	assert.Equal(t, "--output-format stream-json --verbose --dangerously-skip-permissions -p\ndo the thing", string(argv),
+		"a first turn (nil sessionID) must build the -p flag and deliver the prompt on stdin")
+	assert.NotContains(t, string(argv), "--resume", "a first turn must not pass --resume")
 }
 
 func TestRunTurnContinuationUsesResume(t *testing.T) {
+	fakeOutput := strings.Join([]string{
+		`{"type":"system","session_id":"sess-1"}`,
+		`{"type":"result","subtype":"success","session_id":"sess-1"}`,
+	}, "\n") + "\n"
+
 	dir := t.TempDir()
+	fakeExe := filepath.Join(dir, "claude")
+	argFile := filepath.Join(dir, "args.txt")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %[1]s\ncat >> %[1]s\nprintf '%%s' %[2]s\n", shellLiteral(argFile), shellLiteral(fakeOutput))
+	require.NoError(t, os.WriteFile(fakeExe, []byte(script), 0o755))
+
+	runner := agent.NewClaudeRunner()
 	sessionID := "sess-1"
+	result, err := runner.RunTurn(context.Background(), slog.Default(), nil, &sessionID, "continue", dir, fakeExe, "", "", 30000, 60000, agent.PermissionBypass)
+	require.NoError(t, err)
+	assert.Equal(t, "sess-1", result.SessionID)
+
+	argv, err := os.ReadFile(argFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(argv), "--resume sess-1", "a continuation turn must pass --resume with the session ID")
+	assert.True(t, strings.HasSuffix(string(argv), " -p\ncontinue"), "the reply must arrive on stdin after -p; got %q", argv)
+}
+
+// TestFakeRunnerRecordsSessionIDs gives agenttest.FakeRunner.SessionIDs a
+// live read site (CORE-144): the field was recorded on every RunTurn call
+// but read by no test anywhere in the repo. It exists specifically so
+// orchestrator-level tests can verify which sessionID pointer value (as a
+// string, "" for nil) each dispatched turn carried, across multiple calls to
+// the same fake runner — verify that shape directly here.
+func TestFakeRunnerRecordsSessionIDs(t *testing.T) {
+	dir := t.TempDir()
 	fake := agenttest.NewFakeRunner([]agent.StreamEvent{
 		{Type: "system", SessionID: "sess-1"},
 		{Type: "result", SessionID: "sess-1"},
 	})
-	result, err := fake.RunTurn(context.Background(), slog.Default(), nil, &sessionID, "continue", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
+
+	_, err := fake.RunTurn(context.Background(), slog.Default(), nil, nil, "first", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
 	require.NoError(t, err)
-	assert.Equal(t, "sess-1", result.SessionID)
+
+	sid := "sess-1"
+	_, err = fake.RunTurn(context.Background(), slog.Default(), nil, &sid, "continue", dir, "claude", "", "", 30000, 60000, agent.PermissionBypass)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"", "sess-1"}, fake.SessionIDs, "SessionIDs must record \"\" for the nil-sessionID call and the resumed ID for the second")
 }
 
 func TestRunTurnFailedOnErrorResult(t *testing.T) {
@@ -372,24 +431,38 @@ func TestApplyEventChained(t *testing.T) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// TestPartialLineBuffering drives the production readLines (via the
+// ReadLinesForTest export) instead of a private bufio.Scanner, so a
+// regression in streamLineReader's cross-read line assembly actually fails
+// this test. The previous version built its own scanner that never touched
+// readLines/streamLineReader at all, and blocked on an unbuffered channel
+// receive with no timeout — a real regression would have hung the test run
+// rather than failing it (CORE-134).
 func TestPartialLineBuffering(t *testing.T) {
 	r, w := io.Pipe()
-	resultCh := make(chan agent.StreamEvent, 1)
+	type outcome struct {
+		res agent.TurnResult
+		err error
+	}
+	doneCh := make(chan outcome, 1)
 	go func() {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			ev, err := agent.ParseLine(scanner.Bytes())
-			if err == nil {
-				resultCh <- ev
-				return
-			}
-		}
+		res, err := agent.ReadLinesForTest(r, agent.ParseLine)
+		doneCh <- outcome{res, err}
 	}()
+
 	partial := `{"type":"result","subtype":"success","session_id":"s1"}`
 	_, _ = fmt.Fprint(w, partial[:10])
 	time.Sleep(10 * time.Millisecond)
 	_, _ = fmt.Fprintln(w, partial[10:])
-	ev := <-resultCh
-	assert.Equal(t, agent.EventResult, ev.Type)
-	_ = r.Close()
+	require.NoError(t, w.Close())
+
+	select {
+	case out := <-doneCh:
+		require.NoError(t, out.err)
+		assert.Equal(t, "s1", out.res.SessionID,
+			"a JSON line split across two separate Write calls must still be assembled into one complete line")
+	case <-time.After(5 * time.Second):
+		t.Fatal("readLines did not return after the split-write line completed and the pipe closed; " +
+			"a partial-line-buffering regression must fail this test, not hang it")
+	}
 }

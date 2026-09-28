@@ -55,7 +55,7 @@ describe('IssueBlockerDetails', () => {
     expect(badge.className).toContain('bg-theme-danger-soft');
     expect(badge.className).toContain('text-theme-danger');
     expect(badge.className).not.toContain('bg-theme-warning-soft');
-    expect(badge.className).not.toContain('text-theme-warning');
+    expect(badge.className).not.toContain('text-theme-warning-text');
   });
 
   it('renders the stale-blocker wording for a stale_blocker entry', () => {
@@ -85,7 +85,7 @@ describe('IssueBlockerDetails', () => {
     render(<IssueBlockerDetails issue={{}} attention={attention} />);
     const badge = screen.getByTestId('issue-attention-badge');
     expect(badge.className).toContain('bg-theme-warning-soft');
-    expect(badge.className).toContain('text-theme-warning');
+    expect(badge.className).toContain('text-theme-warning-text');
     expect(badge.className).not.toContain('bg-theme-danger-soft');
     expect(badge.className).not.toContain('text-theme-danger');
   });

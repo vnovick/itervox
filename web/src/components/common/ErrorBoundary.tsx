@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { reportClientError } from '../../lib/clientErrorReporter';
 
 interface Props {
   children: ReactNode;
@@ -20,6 +21,12 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    // CORE-048: report in production too, so the operator sees the crash.
+    reportClientError({
+      kind: 'render',
+      message: error.message,
+      stack: `${error.stack ?? ''}${info.componentStack ?? ''}`,
+    });
     if (import.meta.env.DEV) {
       console.error('[Itervox] Unhandled render error', error, info.componentStack);
     }

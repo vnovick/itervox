@@ -17,6 +17,7 @@ package outbox
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -101,6 +102,11 @@ type Entry struct {
 	// which omitempty never omits, so every never-rate-limited entry used to
 	// persist "0001-01-01T00:00:00Z".
 	RateLimitedUntil time.Time `json:"rate_limited_until,omitzero"`
+	// LastFailedAt is when the most recent real delivery failure happened
+	// (CORE-044) — a rate-limit deferral does not set it, for the same reason
+	// it does not bump Attempts. HEARTBEAT's "Last error" uses it to pick the
+	// degraded entry that failed most recently. Zero until the first failure.
+	LastFailedAt time.Time `json:"last_failed_at,omitzero"`
 }
 
 // Degraded reports whether this entry has failed enough consecutive times
@@ -155,6 +161,7 @@ func New(path string) (*Outbox, error) {
 	// write queue forever while reporting Attempts=0 and Degraded()=false.
 	// Dropping it with a loud log is strictly better than a silent wedge:
 	// the entry could never have been delivered by this build anyway.
+	backfilled := 0
 	for _, e := range entries {
 		if e.ID == "" {
 			slog.Warn("outbox: dropping persisted entry with no ID", "path", path, "issue_id", e.IssueID)
@@ -170,17 +177,39 @@ func New(path string) (*Outbox, error) {
 			// comment entry in memory has one; this key cannot match posts
 			// made by earlier attempts of THIS entry (they carried no key),
 			// which is the one-deploy duplicate window the design accepts.
-			key, err := NewCommentKey()
-			if err != nil {
-				slog.Warn("outbox: could not backfill comment key, entry keeps legacy behaviour",
-					"id", e.ID, "identifier", e.Identifier, "error", err)
-			} else {
-				e.CommentKey = key
-			}
+			//
+			// The key is derived from the entry's stable ID, not drawn at
+			// random (CORE-122): if the process dies after the flusher posts
+			// under it but before anything persists, the next open must
+			// hand back the SAME key, or the post repeats under a new one
+			// that no FindCommentByKey lookup can connect to the first.
+			e.CommentKey = legacyCommentKey(e.ID)
+			backfilled++
 		}
 		o.entries = append(o.entries, e)
 	}
+	if backfilled > 0 {
+		// Make the backfill durable before the first delivery attempt so the
+		// file stops needing it. A failure is not fatal: the derived key is
+		// identical on every open, and every later persist retries the write.
+		if err := o.persistLocked(); err != nil {
+			slog.Warn("outbox: could not persist backfilled comment keys; they are re-derived identically on the next open",
+				"path", path, "entries", backfilled, "error", err)
+		}
+	}
 	return o, nil
+}
+
+// legacyCommentKey derives a comment key for an entry persisted before
+// CommentKey existed, deterministically from its ID, formatted like
+// NewCommentKey (a version-4, variant-10 UUID) because Linear uses the key
+// as the comment id and requires a UUID.
+func legacyCommentKey(id string) string {
+	sum := sha256.Sum256([]byte("itervox/outbox/legacy-comment-key\x00" + id))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // Enqueue appends a new entry, assigning its ID/EnqueuedAt/NextAttemptAt
@@ -355,6 +384,7 @@ func (o *Outbox) MarkFailed(id string, err error, now time.Time) {
 		e.LastError = rl.Error()
 	} else {
 		e.Attempts++
+		e.LastFailedAt = now
 		e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
 		e.RateLimitedUntil = time.Time{}
 		if err != nil {

@@ -28,6 +28,18 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
+    # CORE-064: ship deploy/ in the release archives with its tree intact —
+    # bootstrap.sh resolves systemd/itervox.service, caddy/Caddyfile and
+    # lib/fetch-secrets.sh relative to itself. A bare glob keeps each file's
+    # path; strip_parent would flatten the tree and silently drop the
+    # same-named files (the three provision.sh, the two README.md).
+    # `files:` replaces GoReleaser's defaults, so LICENSE/README/CHANGELOG
+    # are listed again.
+    files:
+      - deploy/**
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
 
 checksum:
   name_template: checksums.txt

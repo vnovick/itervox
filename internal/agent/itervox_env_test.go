@@ -30,6 +30,24 @@ func TestItervoxAgentEnvSetsMarker(t *testing.T) {
 	assert.True(t, sawPath, "os.Environ() must be preserved, not replaced")
 }
 
+// TestItervoxAgentEnvDropsInheritedGitDir: an agent runs `git commit` in its
+// worktree. If the daemon was started from a git hook, GIT_DIR/GIT_WORK_TREE
+// point at the enclosing repository and would redirect those commits there.
+func TestItervoxAgentEnvDropsInheritedGitDir(t *testing.T) {
+	t.Setenv("GIT_DIR", "/victim/.git")
+	t.Setenv("GIT_WORK_TREE", "/victim")
+	t.Setenv("GIT_SSH_COMMAND", "ssh -i key")
+
+	env := agent.ItervoxAgentEnv()
+
+	for _, kv := range env {
+		assert.False(t, strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE="),
+			"agent env must not carry %s", kv)
+	}
+	assert.Contains(t, env, "GIT_SSH_COMMAND=ssh -i key", "git auth variables must survive")
+	assert.Contains(t, env, "ITERVOX_AGENT=1")
+}
+
 func TestItervoxAgentEnvKeepsExtras(t *testing.T) {
 	env := agent.ItervoxAgentEnv("CLAUDE_CODE_LOG_DIR=/tmp/logs")
 
@@ -60,15 +78,15 @@ func TestItervoxAgentExportPrefixIsShellSafe(t *testing.T) {
 	assert.NotContains(t, got, "`")
 }
 
-// The trap: cmd.Env at claude.go was previously set ONLY when
-// `logDir != "" && workerHost == ""`. A run with no log dir configured must
-// still carry the marker via itervoxAgentEnv's no-log-dir ("") extra shape,
-// which is exactly what claude.go's unconditional cmd.Env assignment now
-// passes.
-func TestClaudeLocalTurnSetsMarkerWithoutLogDir(t *testing.T) {
-	env := agent.ItervoxAgentEnv("") // the no-log-dir shape
-	assert.Contains(t, env, "ITERVOX_AGENT=1")
-}
+// CORE-133: TestClaudeLocalTurnSetsMarkerWithoutLogDir used to live here. It
+// only re-tested itervoxAgentEnv's no-log-dir shape in isolation and never
+// touched claude.go's cmd.Env, so it could not have caught a regression in
+// the local RunTurn path (e.g. cmd.Env only being set conditionally again).
+// Deleted rather than duplicated: TestClaudeDirectBinaryTurnCarriesMarkerInRealEnv
+// below already exercises the exact trap this test named — the real local
+// RunTurn path (workerHost="", logDir="") with a fake claude executable that
+// dumps its own environment — and is the test that actually asserts the
+// marker landed in cmd.Env.
 
 // ---------------------------------------------------------------------------
 // Behavioral wiring tests — real subprocess, not source text.
@@ -135,13 +153,7 @@ func TestClaudeSSHTurnCarriesMarkerAcrossBoundary(t *testing.T) {
 	// baked into the shell command ssh hands to the remote `bash -lc`. We
 	// substitute a fake "ssh" binary on PATH to capture the real argv
 	// RunTurn builds, without touching a network or a real host.
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "ssh_args.out")
-	fakeSSH := filepath.Join(dir, "ssh")
-	script := fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do printf '%%s\\n' \"$a\" >> %s; done\n", argsFile)
-	require.NoError(t, os.WriteFile(fakeSSH, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	argsFile := installRecordingFakeSSH(t)
 
 	runner := agent.NewClaudeRunner()
 	_, _ = runner.RunTurn(
@@ -157,13 +169,7 @@ func TestClaudeSSHTurnCarriesMarkerAcrossBoundary(t *testing.T) {
 }
 
 func TestCodexSSHTurnCarriesMarkerAcrossBoundary(t *testing.T) {
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "ssh_args.out")
-	fakeSSH := filepath.Join(dir, "ssh")
-	script := fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do printf '%%s\\n' \"$a\" >> %s; done\n", argsFile)
-	require.NoError(t, os.WriteFile(fakeSSH, []byte(script), 0o755))
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	argsFile := installRecordingFakeSSH(t)
 
 	runner := agent.NewCodexRunner()
 	_, _ = runner.RunTurn(

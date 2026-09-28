@@ -153,7 +153,7 @@ func TestIneligibleReasonPaused(t *testing.T) {
 func TestIneligibleReasonDiscarding(t *testing.T) {
 	cfg := baseConfig()
 	state := orchestrator.NewState(cfg)
-	state.DiscardingIdentifiers["ENG-1"] = struct{}{}
+	state.DiscardingIdentifiers["ENG-1"] = orchestrator.DiscardMarker{}
 	issue := makeIssue("id1", "ENG-1", "In Progress", nil, nil)
 
 	reason := orchestrator.IneligibleReason(issue, state, cfg)
@@ -783,8 +783,8 @@ func TestResumeIssueClearsFromPaused(t *testing.T) {
 	}
 
 	// Cancel the issue (moves to paused).
-	ok := orch.CancelIssue("ENG-1")
-	require.True(t, ok)
+	err := orch.CancelIssue("ENG-1")
+	require.NoError(t, err)
 
 	// Wait for paused to appear.
 	deadline := time.After(2 * time.Second)
@@ -801,7 +801,7 @@ func TestResumeIssueClearsFromPaused(t *testing.T) {
 	}
 
 	// Resume the issue.
-	orch.ResumeIssue("ENG-1")
+	_ = orch.ResumeIssue("ENG-1")
 
 	// Wait for paused to be cleared.
 	deadline = time.After(2 * time.Second)
@@ -1163,8 +1163,8 @@ func TestTerminateIssueRunning(t *testing.T) {
 		t.Fatal("worker did not appear within 2s")
 	}
 
-	ok := orch.TerminateIssue("ENG-1")
-	require.True(t, ok, "terminate should succeed for running worker")
+	err := orch.TerminateIssue("ENG-1")
+	require.NoError(t, err, "terminate should succeed for running worker")
 
 	// Wait for the worker to exit and claim to be released. 2s was tight
 	// under full-suite load — the cancel signal → worker exit → event-loop
@@ -1232,7 +1232,7 @@ func TestTerminateIssuePaused(t *testing.T) {
 	}
 
 	// First pause via cancel.
-	orch.CancelIssue("ENG-1")
+	_ = orch.CancelIssue("ENG-1")
 	deadline := time.After(2 * time.Second)
 	for {
 		snap := orch.Snapshot()
@@ -1247,8 +1247,8 @@ func TestTerminateIssuePaused(t *testing.T) {
 	}
 
 	// Now terminate the paused issue.
-	ok := orch.TerminateIssue("ENG-1")
-	require.True(t, ok, "terminate should succeed for paused issue")
+	err := orch.TerminateIssue("ENG-1")
+	require.NoError(t, err, "terminate should succeed for paused issue")
 
 	// Wait for paused to be cleared.
 	deadline = time.After(2 * time.Second)
@@ -1272,8 +1272,8 @@ func TestTerminateIssuePaused(t *testing.T) {
 func TestProvideInput(t *testing.T) {
 	o := newOrch()
 	// ProvideInput should succeed even without Run (just enqueues to channel).
-	ok := o.ProvideInput("ENG-1", "here is my answer")
-	assert.True(t, ok, "ProvideInput should succeed when channel is not full")
+	err := o.ProvideInput("ENG-1", "here is my answer")
+	assert.NoError(t, err, "ProvideInput should succeed when channel is not full")
 }
 
 // ---------------------------------------------------------------------------
@@ -1282,8 +1282,8 @@ func TestProvideInput(t *testing.T) {
 
 func TestDismissInput(t *testing.T) {
 	o := newOrch()
-	ok := o.DismissInput("ENG-1")
-	assert.True(t, ok, "DismissInput should succeed when channel is not full")
+	err := o.DismissInput("ENG-1")
+	assert.NoError(t, err, "DismissInput should succeed when channel is not full")
 }
 
 // ---------------------------------------------------------------------------
@@ -1384,7 +1384,7 @@ func TestPausedFilePersistence(t *testing.T) {
 	}
 
 	// Cancel to pause the issue (triggers disk write).
-	orch.CancelIssue("ENG-1")
+	_ = orch.CancelIssue("ENG-1")
 
 	// Wait for paused to appear and file to be written.
 	deadline := time.After(2 * time.Second)
@@ -1400,8 +1400,24 @@ func TestPausedFilePersistence(t *testing.T) {
 		}
 	}
 
-	// Give a bit of time for the file write to complete.
-	time.Sleep(100 * time.Millisecond)
+	// CORE-169: paused.json is written by the ledger's background writer
+	// (CORE-038), off the event loop, so "Snapshot says paused" does not mean
+	// "the file has it" — under fsync contention the write lands well after
+	// the 100 ms this test used to sleep, and a second orchestrator started
+	// on the same file then loaded "{}" and (being a second writer on the
+	// same path, which production's pid lock never allows) wrote "{}" back.
+	// Wait deterministically instead: first for the live writer to land the
+	// version (no event needed to trigger it), then for Run's shutdown flush,
+	// which is the durability contract a restart relies on.
+	require.Eventually(t, func() bool {
+		data, err := os.ReadFile(pausedFile)
+		return err == nil && strings.Contains(string(data), `"ENG-1"`)
+	}, 10*time.Second, 10*time.Millisecond, "the ledger writer never landed the paused version while Run was live")
+	cancel()
+	<-done1
+	data, err := os.ReadFile(pausedFile)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"ENG-1"`, "Run returned without the paused version on disk")
 
 	// Now create a second orchestrator and load from the same file.
 	cfg2 := baseConfig()
@@ -1409,7 +1425,7 @@ func TestPausedFilePersistence(t *testing.T) {
 	orch2 := orchestrator.New(cfg2, mt2, fake, nil)
 	orch2.SetPausedFile(pausedFile)
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
 
 	done2 := make(chan struct{})
@@ -1417,17 +1433,14 @@ func TestPausedFilePersistence(t *testing.T) {
 		_ = orch2.Run(ctx2)
 		close(done2)
 	}()
-	time.Sleep(100 * time.Millisecond)
+	assert.Eventually(t, func() bool {
+		_, paused := orch2.Snapshot().PausedIdentifiers["ENG-1"]
+		return paused
+	}, 5*time.Second, 10*time.Millisecond, "paused state should persist to disk and reload")
 
-	snap2 := orch2.Snapshot()
-	_, paused := snap2.PausedIdentifiers["ENG-1"]
-	assert.True(t, paused, "paused state should persist to disk and reload")
-
-	// Wait for both orchestrator goroutines to exit before the test returns,
-	// so t.TempDir cleanup doesn't race with paused.json writes.
-	cancel()
+	// Wait for the second orchestrator to exit before the test returns, so
+	// t.TempDir cleanup doesn't race with paused.json writes.
 	cancel2()
-	<-done1
 	<-done2
 }
 
@@ -1516,8 +1529,8 @@ func TestCancelIssueInRetryQueue(t *testing.T) {
 	}
 
 	// Cancel while in retry queue.
-	ok := orch.CancelIssue("ENG-1")
-	assert.True(t, ok, "cancel should succeed for issue in retry queue")
+	err := orch.CancelIssue("ENG-1")
+	assert.NoError(t, err, "cancel should succeed for issue in retry queue")
 
 	// Wait for the issue to be paused.
 	deadline = time.After(2 * time.Second)
@@ -1660,11 +1673,11 @@ func TestDismissInputMovesToPaused(t *testing.T) {
 
 	// DismissInput for unknown identifier should succeed at the channel level
 	// but the event handler should log a warning and not crash.
-	ok := orch.DismissInput("NONEXISTENT-1")
-	assert.True(t, ok)
+	err := orch.DismissInput("NONEXISTENT-1")
+	assert.NoError(t, err)
 
-	ok = orch.ProvideInput("NONEXISTENT-1", "hello")
-	assert.True(t, ok)
+	err = orch.ProvideInput("NONEXISTENT-1", "hello")
+	assert.NoError(t, err)
 
 	// Let the events process without panic.
 	time.Sleep(100 * time.Millisecond)
@@ -1796,12 +1809,23 @@ func TestClearHistoryRemovesFile(t *testing.T) {
 		}
 	}
 
-	orch.ClearHistory()
-	assert.Empty(t, orch.RunHistory(), "history should be empty after clear")
-
-	// Wait for orch to exit so t.TempDir cleanup doesn't race history writes.
+	// Stop the orchestrator before clearing. ENG-1 stays active, so a live
+	// loop keeps re-dispatching it, and a run that completes between
+	// ClearHistory and RunHistory is (correctly) recorded afresh — which made
+	// the empty-after-clear assertion fail intermittently under load. With
+	// the loop stopped, addCompletedRun (event-loop only) can no longer run,
+	// so the assertions below observe ClearHistory alone. Stopping first also
+	// keeps t.TempDir cleanup from racing history writes.
 	cancel()
 	<-done
+
+	_, err := os.Stat(histFile)
+	require.NoError(t, err, "history file must exist before clear")
+
+	orch.ClearHistory()
+	assert.Empty(t, orch.RunHistory(), "history should be empty after clear")
+	_, err = os.Stat(histFile)
+	assert.True(t, os.IsNotExist(err), "history file should be removed after clear, stat err=%v", err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1810,8 +1834,8 @@ func TestClearHistoryRemovesFile(t *testing.T) {
 
 func TestReanalyzeIssueNotPaused(t *testing.T) {
 	o := newOrch()
-	ok := o.ReanalyzeIssue("ENG-99")
-	assert.False(t, ok, "reanalyze should return false when issue is not paused")
+	err := o.ReanalyzeIssue("ENG-99")
+	assert.ErrorIs(t, err, orchestrator.ErrNotFound, "reanalyze should return ErrNotFound when issue is not paused")
 }
 
 // ---------------------------------------------------------------------------
@@ -1836,8 +1860,8 @@ func TestSortForDispatchNilCreatedAt(t *testing.T) {
 
 func TestResumeIssueNotPaused(t *testing.T) {
 	o := newOrch()
-	ok := o.ResumeIssue("ENG-99")
-	assert.False(t, ok, "resume should return false when issue is not paused")
+	err := o.ResumeIssue("ENG-99")
+	assert.ErrorIs(t, err, orchestrator.ErrNotFound, "resume should return ErrNotFound when issue is not paused")
 }
 
 // ---------------------------------------------------------------------------
@@ -1952,6 +1976,9 @@ func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(a
 
 func TestManualPauseResumePreservesSession(t *testing.T) {
 	cfg := baseConfig()
+	// CORE-033: a paused session resumes only on a known, matching backend
+	// (claude/codex); baseConfig's empty command has none, so pin claude.
+	cfg.Agent.Command = "claude"
 	cfg.Polling.IntervalMs = 20
 	cfg.PromptTemplate = "Resume {{ issue.identifier }} :: {{ issue.title }}"
 	mt := singleIssueTracker(t, "In Progress")
@@ -1983,7 +2010,7 @@ func TestManualPauseResumePreservesSession(t *testing.T) {
 	}
 
 	// User clicks Pause.
-	require.True(t, orch.CancelIssue("ENG-1"))
+	require.NoError(t, orch.CancelIssue("ENG-1"))
 
 	// Wait for the issue to land in PausedSessions with the captured session.
 	deadline := time.After(3 * time.Second)
@@ -2000,7 +2027,7 @@ func TestManualPauseResumePreservesSession(t *testing.T) {
 	}
 
 	// User clicks Resume.
-	require.True(t, orch.ResumeIssue("ENG-1"))
+	require.NoError(t, orch.ResumeIssue("ENG-1"))
 
 	// Wait for the resumed worker invocation (third RunTurn call overall:
 	// first-turn success, second-turn stall, third-turn resumed worker).
@@ -2065,7 +2092,7 @@ func TestManualPauseResumeWithoutSession(t *testing.T) {
 	}
 
 	// Cancel before any session ID has been captured.
-	require.True(t, orch.CancelIssue("ENG-1"))
+	require.NoError(t, orch.CancelIssue("ENG-1"))
 
 	// Wait for paused.
 	deadline := time.After(3 * time.Second)

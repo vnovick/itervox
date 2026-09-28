@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { EMPTY_INPUT_REQUIRED } from '../../utils/constants';
 import { QueueSearchInput } from './QueueSearchInput';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 
 // Dashboard panel that makes `pending_input_resume` issues visible at a
 // glance — previously only surfaced as a count pill in the app header and
@@ -43,11 +44,18 @@ export function PendingResumePanel({ onSelect }: { onSelect?: (identifier: strin
   // panel into view once both the route and the panel are mounted.
   const { hash } = useLocation();
   const ref = useRef<HTMLDivElement | null>(null);
+  // CORE-024 — scrollIntoView's `behavior` is an explicit argument, so the
+  // CSS `scroll-behavior: auto !important` under `prefers-reduced-motion:
+  // reduce` (index.css) cannot override it. Honor the preference in JS.
+  const prefersReducedMotion = usePrefersReducedMotion();
   useEffect(() => {
     if (hash === '#pending-resume' && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      ref.current.scrollIntoView({
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+        block: 'start',
+      });
     }
-  }, [hash, resuming.length]);
+  }, [hash, resuming.length, prefersReducedMotion]);
 
   if (resuming.length === 0) return null;
 

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import MarkdownPanel from './MarkdownPanel';
+import { InputReplyBox } from './InputReplyBox';
 import type { useDismissInput, useProvideInput } from '../../queries/issues';
 import type { TrackerIssue } from '../../types/schemas';
 
@@ -12,7 +13,8 @@ interface InputRequiredPanelProps {
 
 // Extracted from IssueDetailSlide (Task 5, inline-input outbox sub-project) to
 // keep the parent under the size-budget cap. Owns the reply-box local state
-// since it is only ever used within this panel.
+// since it is only ever used within this panel. The reply box itself is
+// InputReplyBox, shared with the attention inbox (CORE-077).
 export function InputRequiredPanel({
   issue,
   inlineInput,
@@ -45,53 +47,19 @@ export function InputRequiredPanel({
         <h4 className="text-sm font-semibold text-orange-400">Agent needs your input</h4>
       </div>
       {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
-      {inlineInput ? (
-        <p data-testid="input-required-inline-notice" className="text-theme-text-secondary text-sm">
-          Reply by commenting on this issue in your tracker — the agent resumes from your comment.
-          Dashboard replies are turned off (Settings → General → Inline input).
-        </p>
-      ) : (
-        <textarea
-          value={replyText}
-          onChange={(e) => {
-            setReplyText(e.target.value);
-          }}
-          placeholder="Type your reply… (will be posted as a comment to the tracker)"
-          aria-label="Reply to the agent"
-          rows={4}
-          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
-        />
-      )}
-      <div className="flex items-center gap-2">
-        {!inlineInput && (
-          <button
-            onClick={() => {
-              if (!replyText.trim()) return;
-              provideInputMutation.mutate(
-                { identifier: issue.identifier, message: replyText.trim() },
-                {
-                  onSuccess: () => {
-                    setReplyText('');
-                  },
-                },
-              );
-            }}
-            disabled={provideInputMutation.isPending || !replyText.trim()}
-            className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {provideInputMutation.isPending ? 'Sending…' : 'Reply & Resume Agent'}
-          </button>
-        )}
-        <button
-          onClick={() => {
-            dismissInputMutation.mutate(issue.identifier);
-          }}
-          disabled={dismissInputMutation.isPending}
-          className="text-theme-text-secondary bg-theme-bg-soft rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          {dismissInputMutation.isPending ? 'Dismissing…' : 'Dismiss'}
-        </button>
-      </div>
+      <InputReplyBox
+        identifier={issue.identifier}
+        inlineInput={inlineInput}
+        draft={replyText}
+        onDraftChange={setReplyText}
+        provideInputMutation={provideInputMutation}
+        dismissInputMutation={dismissInputMutation}
+        sending={provideInputMutation.isPending}
+        dismissing={dismissInputMutation.isPending}
+        onSent={() => {
+          setReplyText('');
+        }}
+      />
     </div>
   );
 }

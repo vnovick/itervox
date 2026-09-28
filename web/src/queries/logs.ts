@@ -3,38 +3,95 @@ import { useQuery } from '@tanstack/react-query';
 import type { IssueLogEntry } from '../types/schemas';
 import { IssueLogEntrySchema } from '../types/schemas';
 import { z } from 'zod';
-import { authedFetch } from '../auth/authedFetch';
+import { apiRequest } from '../auth/apiRequest';
 import { openAuthedEventStream } from '../auth/authedEventStream';
+import { applyLogEntry, applyLogGap, emptyLogStream, type LogStreamState } from './logStream';
 
-export const LIVE_LOG_ENTRY_CAP = 500;
+export { LIVE_LOG_ENTRY_CAP } from './logStream';
 
 export const logsKey = (identifier: string) => ['logs', identifier] as const;
 export const sublogsKey = (identifier: string) => ['sublogs', identifier] as const;
 export const logIdentifiersKey = () => ['log-identifiers'] as const;
 
-function appendCappedLogEntry(prev: IssueLogEntry[], entry: IssueLogEntry): IssueLogEntry[] {
-  if (prev.length >= LIVE_LOG_ENTRY_CAP) {
-    return [...prev.slice(prev.length - LIVE_LOG_ENTRY_CAP + 1), entry];
-  }
-  return [...prev, entry];
+const EMPTY_LOG_ENTRIES: IssueLogEntry[] = [];
+const EMPTY_IDENTIFIERS: string[] = [];
+
+// Each live stream instance (one per effect run) gets a distinct number, so
+// its first frames replace whatever an earlier instance left in state.
+let nextStreamInstance = 0;
+
+/**
+ * Subscribes to one live log SSE stream and keeps its lines across reconnects
+ * (CORE-027; see logStream.ts for the resume/de-dupe/gap rules). `event` is
+ * the SSE event name carrying log lines ('log' or 'sublog').
+ */
+function useLiveLogStream(path: string, event: string, identifier: string, isLive: boolean) {
+  const [stream, setStream] = useState<LogStreamState>(() => emptyLogStream(identifier));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!isLive || !identifier) return;
+    nextStreamInstance += 1;
+    const instance = nextStreamInstance;
+
+    // No reset here (react-hooks/set-state-in-effect): the hook's output is
+    // keyed by identifier, so a different identifier shows nothing until its
+    // own lines arrive, and this instance's first frame replaces any lines an
+    // earlier instance left behind.
+    const close = openAuthedEventStream(path, {
+      // onOpen fires on every (re)connection. It must NOT clear the lines:
+      // a retry resends Last-Event-ID and the server resumes after it, so
+      // the lines already shown are not replayed (CORE-027).
+      onOpen: () => {
+        setLoading(false);
+        setError(false);
+      },
+      onMessage: (msg) => {
+        if (msg.event === 'gap') {
+          setStream((prev) => applyLogGap(prev, identifier, instance, msg.id));
+          return;
+        }
+        if (msg.event !== event) return; // keepalives, error frames, …
+        try {
+          const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
+          setStream((prev) => applyLogEntry(prev, identifier, instance, msg.id, entry));
+        } catch {
+          // malformed event — skip
+        }
+      },
+      onDisconnect: () => {
+        setError(true);
+        setLoading(false);
+      },
+    });
+
+    return () => {
+      close();
+    };
+  }, [path, event, identifier, isLive]);
+
+  const data = stream.identifier === identifier ? stream.entries : EMPTY_LOG_ENTRIES;
+  return { data, isLoading: loading, isError: error };
 }
 
 async function fetchLogIdentifiers(): Promise<string[]> {
-  const res = await authedFetch('/api/v1/logs/identifiers');
-  if (!res.ok) throw new Error(`fetch log identifiers failed: ${String(res.status)}`);
-  return z.array(z.string()).parse(await res.json());
+  const { data } = await apiRequest('/api/v1/logs/identifiers', { op: 'fetch log identifiers' });
+  return z.array(z.string()).parse(data);
 }
 
 async function fetchIssueLogs(identifier: string): Promise<IssueLogEntry[]> {
-  const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`);
-  if (!res.ok) throw new Error(`fetch logs failed: ${String(res.status)}`);
-  return z.array(IssueLogEntrySchema).parse(await res.json());
+  const { data } = await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`, {
+    op: 'fetch logs',
+  });
+  return z.array(IssueLogEntrySchema).parse(data);
 }
 
 async function fetchSubLogs(identifier: string): Promise<IssueLogEntry[]> {
-  const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`);
-  if (!res.ok) throw new Error(`fetch sublogs failed: ${String(res.status)}`);
-  return z.array(IssueLogEntrySchema).parse(await res.json());
+  const { data } = await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
+    op: 'fetch sublogs',
+  });
+  return z.array(IssueLogEntrySchema).parse(data);
 }
 
 /**
@@ -47,52 +104,12 @@ async function fetchSubLogs(identifier: string): Promise<IssueLogEntry[]> {
  */
 export function useIssueLogs(identifier: string, isLive: boolean) {
   // SSE state — always declared (rules of hooks), activated only when isLive
-  const [sseData, setSseData] = useState<IssueLogEntry[]>([]);
-  const [sseLoading, setSseLoading] = useState(false);
-  const [sseError, setSseError] = useState(false);
-
-  useEffect(() => {
-    if (!isLive || !identifier) return;
-
-    // Note: state resets (clearing data, setting loading=true) happen inside
-    // onOpen below rather than in this effect body. That avoids the
-    // react-hooks/set-state-in-effect lint rule and also means we don't paint
-    // an empty "loading…" state if the new connection opens within one frame.
-    // The trade-off: between identifier change and first onOpen, the UI may
-    // briefly show stale lines from the previous identifier (typically <100ms).
-
-    const close = openAuthedEventStream(
-      `/api/v1/issues/${encodeURIComponent(identifier)}/log-stream`,
-      {
-        // onOpen fires on every (re)connection. Clear stale lines so the
-        // server's replayed initial batch doesn't duplicate what we already
-        // rendered before the disconnect, and reset loading/error state.
-        onOpen: () => {
-          setSseData([]);
-          setSseLoading(false);
-          setSseError(false);
-        },
-        onMessage: (msg) => {
-          // Only handle the 'log' named event, ignore keepalives etc.
-          if (msg.event !== 'log') return;
-          try {
-            const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
-            setSseData((prev) => appendCappedLogEntry(prev, entry));
-          } catch {
-            // malformed event — skip
-          }
-        },
-        onDisconnect: () => {
-          setSseError(true);
-          setSseLoading(false);
-        },
-      },
-    );
-
-    return () => {
-      close();
-    };
-  }, [identifier, isLive]);
+  const live = useLiveLogStream(
+    `/api/v1/issues/${encodeURIComponent(identifier)}/log-stream`,
+    'log',
+    identifier,
+    isLive,
+  );
 
   // One-shot query — disabled when isLive to avoid redundant HTTP fetches
   const {
@@ -106,9 +123,7 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
     staleTime: 15_000,
   });
 
-  if (isLive) {
-    return { data: sseData, isLoading: sseLoading, isError: sseError };
-  }
+  if (isLive) return live;
   return { data: queryData ?? [], isLoading: queryLoading, isError: queryError };
 }
 
@@ -120,41 +135,12 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
  * - isLive=false: one-shot TanStack Query fetch with infinite stale time.
  */
 export function useSubagentLogs(identifier: string, isLive: boolean) {
-  const [sseData, setSseData] = useState<IssueLogEntry[]>([]);
-  const [sseLoading, setSseLoading] = useState(false);
-  const [sseError, setSseError] = useState(false);
-
-  useEffect(() => {
-    if (!isLive || !identifier) return;
-
-    const close = openAuthedEventStream(
-      `/api/v1/issues/${encodeURIComponent(identifier)}/sublog-stream`,
-      {
-        onOpen: () => {
-          setSseData([]);
-          setSseLoading(false);
-          setSseError(false);
-        },
-        onMessage: (msg) => {
-          if (msg.event !== 'sublog') return;
-          try {
-            const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
-            setSseData((prev) => appendCappedLogEntry(prev, entry));
-          } catch {
-            // malformed event — skip
-          }
-        },
-        onDisconnect: () => {
-          setSseError(true);
-          setSseLoading(false);
-        },
-      },
-    );
-
-    return () => {
-      close();
-    };
-  }, [identifier, isLive]);
+  const live = useLiveLogStream(
+    `/api/v1/issues/${encodeURIComponent(identifier)}/sublog-stream`,
+    'sublog',
+    identifier,
+    isLive,
+  );
 
   const { data, isLoading, isError } = useQuery({
     queryKey: sublogsKey(identifier),
@@ -163,9 +149,7 @@ export function useSubagentLogs(identifier: string, isLive: boolean) {
     staleTime: Infinity,
   });
 
-  if (isLive) {
-    return { data: sseData, isLoading: sseLoading, isError: sseError };
-  }
+  if (isLive) return live;
   return { data, isLoading, isError };
 }
 
@@ -174,11 +158,17 @@ export function useSubagentLogs(identifier: string, isLive: boolean) {
  * (either in-memory or persisted to disk). Use this for the Logs sidebar
  * instead of the full issue list from the tracker.
  */
-export function useLogIdentifiers() {
-  const { data = [] } = useQuery({
+export function useLogIdentifiers(): { data: string[]; settled: boolean } {
+  const {
+    data = EMPTY_IDENTIFIERS,
+    isSuccess,
+    isError,
+  } = useQuery({
     queryKey: logIdentifiersKey(),
     queryFn: fetchLogIdentifiers,
     staleTime: 10_000,
   });
-  return data;
+  // settled: the first fetch has finished either way (CORE-085 waits for it
+  // before treating a /logs/:identifier deep link as unknown).
+  return { data, settled: isSuccess || isError };
 }

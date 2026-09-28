@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ListView } from '../ListView';
 import type { TrackerIssue } from '../../../../types/schemas';
@@ -87,6 +88,34 @@ describe('ListView', () => {
     expect(badge).toHaveAttribute('title', 'Blocked by 2 issues');
   });
 
+  // CORE-080 — why-idle chip on list rows.
+  it('shows ineligible reason chip', () => {
+    render(
+      <ListView
+        issues={[{ ...baseIssue, ineligibleReason: 'backend_limited' }]}
+        onSelect={vi.fn()}
+        availableProfiles={[]}
+        onProfileChange={vi.fn()}
+      />,
+    );
+    const chip = screen.getByTestId('why-idle-chip');
+    expect(chip).toHaveTextContent('Agent backend limited');
+    expect(chip).toHaveAttribute('title', expect.stringContaining('backend_limited'));
+    expect(screen.getByText('Blocked 2')).toBeInTheDocument();
+  });
+
+  it('renders no chip when ineligibleReason is absent', () => {
+    render(
+      <ListView
+        issues={[baseIssue]}
+        onSelect={vi.fn()}
+        availableProfiles={[]}
+        onProfileChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('why-idle-chip')).not.toBeInTheDocument();
+  });
+
   it('falls back to blockedBy when blocker details are absent', () => {
     render(
       <ListView
@@ -100,5 +129,23 @@ describe('ListView', () => {
     const badge = screen.getByText('Blocked 1');
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveAttribute('title', 'Blocked by 1 issue');
+  });
+
+  it('list row opens with Enter from its title button (CORE-068)', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(
+      <ListView
+        issues={[baseIssue]}
+        onSelect={onSelect}
+        availableProfiles={[]}
+        onProfileChange={vi.fn()}
+      />,
+    );
+    const title = screen.getByRole('button', { name: 'Blocked task' });
+    title.focus();
+    await user.keyboard('{Enter}');
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('ENG-10');
   });
 });

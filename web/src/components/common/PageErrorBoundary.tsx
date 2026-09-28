@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { reportClientError } from '../../lib/clientErrorReporter';
 
 interface Props {
   children: ReactNode;
@@ -22,6 +23,12 @@ export class PageErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    // CORE-048: report in production too, so the operator sees the crash.
+    reportClientError({
+      kind: 'render',
+      message: error.message,
+      stack: `${error.stack ?? ''}${info.componentStack ?? ''}`,
+    });
     if (import.meta.env.DEV) {
       console.error('[Itervox] Page render error', error, info.componentStack);
     }
@@ -33,7 +40,7 @@ export class PageErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
-        <h2 className="text-theme-danger text-xl font-semibold">This page crashed</h2>
+        <h2 className="text-theme-danger-text text-xl font-semibold">This page crashed</h2>
         <p className="text-theme-muted max-w-md text-sm">
           An unexpected error occurred while rendering this page.
         </p>

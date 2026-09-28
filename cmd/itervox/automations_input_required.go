@@ -330,7 +330,7 @@ func replayInputRequiredIssueDetail(
 }
 
 func matchesReplayInputRequiredAutomation(issue domain.Issue, automation orchestrator.InputRequiredAutomation, inputContext string) bool {
-	return matchesAutomationFilter(issue, compiledAutomation{
+	return automationEntryMatches(issue, compiledAutomation{
 		cfg: config.AutomationConfig{
 			Filter: config.AutomationFilterConfig{
 				MatchMode: automation.MatchMode,

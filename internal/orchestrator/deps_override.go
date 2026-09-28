@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 // SetDepsOverride enables or disables an operator dismissal of the
@@ -27,6 +29,7 @@ func (o *Orchestrator) SetDepsOverride(identifier string, enabled bool) bool {
 		slog.Info("orchestrator: deps override queued", "identifier", identifier, "enabled", enabled)
 		return true
 	default:
+		metrics.EventDropped() // CORE-045
 		slog.Warn("orchestrator: deps override event channel full", "identifier", identifier)
 		return false
 	}
@@ -129,7 +132,5 @@ func (o *Orchestrator) saveDepsOverridesToDisk(overrides map[string]time.Time) {
 		slog.Warn("orchestrator: failed to create deps overrides dir", "path", path, "error", err)
 		return
 	}
-	if err := writeFileAtomically(path, data, 0o644); err != nil {
-		slog.Warn("orchestrator: failed to write deps overrides file", "path", path, "error", err)
-	}
+	o.persistLedger(ledgerDepsOverrides, path, data, 0o644)
 }

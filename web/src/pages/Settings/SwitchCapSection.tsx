@@ -88,6 +88,7 @@ export function SwitchCapSection({
         <span className="text-theme-text-secondary text-xs">switches per</span>
         <input
           id="retries-switch-window"
+          aria-label="Rate-limit switch window in hours"
           type="number"
           min={1}
           inputMode="numeric"
@@ -109,7 +110,7 @@ export function SwitchCapSection({
         <span className="text-theme-text-secondary text-xs">hours</span>
       </div>
       {error && (
-        <span role="alert" className="text-theme-danger mt-1 block text-xs">
+        <span role="alert" className="text-theme-danger-text mt-1 block text-xs">
           {error}
         </span>
       )}

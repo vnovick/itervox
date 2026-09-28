@@ -115,6 +115,22 @@ func TestServerPortDefaultAndExplicitZero(t *testing.T) {
 	})
 }
 
+// TestServerAllowedHostsParses covers server.allowed_hosts (CORE-162): a YAML
+// list round-trips, absence yields nil, a non-list value is ignored.
+func TestServerAllowedHostsParses(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("server:\n  allowed_hosts:\n    - itervox.example.com\n    - devbox.tail1234.ts.net\n")))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"itervox.example.com", "devbox.tail1234.ts.net"}, cfg.Server.AllowedHosts)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Server.AllowedHosts)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("server:\n  allowed_hosts: itervox.example.com\n")))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Server.AllowedHosts)
+}
+
 // TestServerAllowUnauthenticatedAlias covers the #48 rename:
 // server.allow_unauthenticated is the preferred key, the legacy
 // server.allow_unauthenticated_lan still parses as a deprecated alias, and

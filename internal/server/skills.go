@@ -125,7 +125,9 @@ func (s *Server) handleSkillsFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.skills.ApplyFix(r.Context(), body.IssueID, body.Fix); err != nil {
-		writeError(w, http.StatusInternalServerError, "fix_failed", err.Error())
+		// edit-yaml saves through the settings adapter, so a reload fence
+		// refusal becomes a retryable 503 like every settings route (E1).
+		writeClientError(w, "fix_failed", err)
 		return
 	}
 	// Re-scan synchronously so the next /issues call reflects the change.

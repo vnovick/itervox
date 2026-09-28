@@ -37,7 +37,14 @@ const SSE_SILENCE_CHECK_INTERVAL_MS = 5_000;
  */
 export function useItervoxSSE() {
   useEffect(() => {
-    const { setSnapshot, setSseConnected } = useItervoxStore.getState();
+    const {
+      setSnapshot,
+      setSseConnected,
+      setLastMessageAt,
+      setLastSnapshotAt,
+      recordSnapshotParseFailure,
+      noteSnapshotParsed,
+    } = useItervoxStore.getState();
 
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let silenceTimer: ReturnType<typeof setInterval> | null = null;
@@ -52,9 +59,14 @@ export function useItervoxSSE() {
         if (res.ok) {
           const snap = StateSnapshotSchema.parse(await res.json());
           setSnapshot(snap);
+          setLastSnapshotAt(Date.now());
+          noteSnapshotParsed();
         }
       } catch (err) {
         if (err instanceof UnauthorizedError) return; // AuthGate will handle.
+        // CORE-047: JSON/schema failures count toward the drift banner in
+        // production; transport failures are ignored here (stale banner).
+        recordSnapshotParseFailure(err, 'poll');
       }
     }
 
@@ -111,6 +123,7 @@ export function useItervoxSSE() {
         sseWorking = true;
         setSseConnected(true);
         lastEventAt = Date.now(); // reset so handshake counts as "fresh"
+        setLastMessageAt(lastEventAt);
         stopPoll();
         startSilenceWatchdog();
       },
@@ -122,6 +135,10 @@ export function useItervoxSSE() {
         // handlers.go::handleEvents); skip the snapshot parse for those so
         // we don't log a parse warning every 25s on a quiet system.
         lastEventAt = Date.now();
+        // CORE-023 — publish to the store too so useConnectionState can
+        // distinguish "channel alive" (bumped by keepalives) from "data
+        // fresh" (lastSnapshotAt, only bumped by a real parsed snapshot).
+        setLastMessageAt(lastEventAt);
         if (!sseWorking) {
           sseWorking = true;
           setSseConnected(true);
@@ -131,7 +148,15 @@ export function useItervoxSSE() {
         try {
           const snap: StateSnapshot = StateSnapshotSchema.parse(JSON.parse(msg.data));
           setSnapshot(snap);
+          setLastSnapshotAt(Date.now());
+          noteSnapshotParsed();
         } catch (err) {
+          // CORE-047: counted and surfaced in production (SchemaDriftBanner).
+          // lastMessageAt was bumped above on purpose: it means "channel
+          // alive", and keepalives bump it too, so moving it after the parse
+          // would not make the silence watchdog fire. Data freshness is
+          // lastSnapshotAt, which a failed parse never bumps.
+          recordSnapshotParseFailure(err, 'sse');
           if (import.meta.env.DEV) {
             console.warn('[itervox] SSE message parse/validation failed', err);
           }

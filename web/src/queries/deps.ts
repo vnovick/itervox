@@ -14,7 +14,7 @@
  * job's error message in a toast when the analyzer fails.
  */
 import { useMutation } from '@tanstack/react-query';
-import { authedFetch } from '../auth/authedFetch';
+import { ApiError, apiRequest } from '../auth/apiRequest';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
 import {
@@ -70,13 +70,11 @@ async function pollUntilTerminal(
     }
     await new Promise((resolve) => setTimeout(resolve, delay));
     delay = Math.min(delay * 2, POLL_INTERVAL_MAX_MS);
-    const res = await authedFetch(`/api/v1/deps/analyze/${encodeURIComponent(jobId)}`);
-    if (!res.ok) {
-      // 404 means the job vanished — surface the failure and stop polling.
-      throw new Error(`analyze deps status check failed (${String(res.status)})`);
-    }
-    const json: unknown = await res.json();
-    const job = DepsAnalyzeJobSchema.parse(json);
+    // A 404 (the job vanished) surfaces as ApiError and stops polling.
+    const { data } = await apiRequest(`/api/v1/deps/analyze/${encodeURIComponent(jobId)}`, {
+      op: 'analyze deps status check',
+    });
+    const job = DepsAnalyzeJobSchema.parse(data);
     onJobUpdate?.({
       jobId: job.jobId,
       status: job.status,
@@ -95,17 +93,12 @@ async function pollUntilTerminal(
 export function useAnalyzeDeps() {
   return useMutation<DepsAnalyzeJob, Error, AnalyzeDepsInput>({
     mutationFn: async ({ profile, onJobUpdate }) => {
-      const res = await authedFetch('/api/v1/deps/analyze', {
+      const { data } = await apiRequest('/api/v1/deps/analyze', {
+        op: 'analyze deps',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(profile ? { profile } : {}),
+        json: profile ? { profile } : {},
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `analyze deps failed (${String(res.status)})`);
-      }
-      const json: unknown = await res.json();
-      const enq = DepsAnalyzeEnqueueResponseSchema.parse(json);
+      const enq = DepsAnalyzeEnqueueResponseSchema.parse(data);
       onJobUpdate?.({ jobId: enq.jobId });
       const controller = new AbortController();
       const job = await pollUntilTerminal(enq.jobId, controller.signal, onJobUpdate);
@@ -137,14 +130,18 @@ export function useAnalyzeDeps() {
 export function useCancelAnalyzeDeps() {
   return useMutation<undefined, Error, { jobId: string }>({
     mutationFn: async ({ jobId }) => {
-      const res = await authedFetch(`/api/v1/deps/analyze/${encodeURIComponent(jobId)}`, {
-        method: 'DELETE',
-      });
-      // 404 means the job already finished between the click and the request
-      // landing — a normal race, not an error worth surfacing.
-      if (!res.ok && res.status !== 404) {
-        throw new Error(`cancel failed (${String(res.status)})`);
+      try {
+        await apiRequest(`/api/v1/deps/analyze/${encodeURIComponent(jobId)}`, {
+          op: 'cancel',
+          method: 'DELETE',
+        });
+      } catch (err) {
+        // 404 means the job already finished between the click and the
+        // request landing — a normal race, not an error worth surfacing.
+        if (err instanceof ApiError && err.status === 404) return undefined;
+        throw err;
       }
+      return undefined;
     },
     onError: (err) => {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -168,21 +165,19 @@ export interface SetDepsOverrideInput {
  * dependency gating layer for one issue via
  * POST/DELETE /api/v1/issues/{identifier}/deps-override (Task 6 backend).
  * Mirrors the useAnalyzeDeps/useCancelAnalyzeDeps shape in this file:
- * authedFetch for transport, refreshSnapshot() on success (never
+ * apiRequest for transport, refreshSnapshot() on success (never
  * patchSnapshot — the override changes server-computed gating state that
  * only the daemon can recompute), toast on failure.
  */
 export function useSetDepsOverride() {
   return useMutation<SetDepsOverrideInput, Error, SetDepsOverrideInput>({
     mutationFn: async ({ identifier, enabled }) => {
-      const res = await authedFetch(
-        `/api/v1/issues/${encodeURIComponent(identifier)}/deps-override`,
-        { method: enabled ? 'POST' : 'DELETE' },
-      );
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `dependency override failed (${String(res.status)})`);
-      }
+      // apiRequest retries a 503 deps_override_queue_full once (nothing was
+      // enqueued) and surfaces the server's message otherwise (BH-M2-1).
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/deps-override`, {
+        op: 'dependency override',
+        method: enabled ? 'POST' : 'DELETE',
+      });
       return { identifier, enabled };
     },
     onSuccess: ({ identifier, enabled }) => {

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { authedFetch } from '../../auth/authedFetch';
+import { ApiError, apiRequest } from '../../auth/apiRequest';
+import { UnauthorizedError } from '../../auth/UnauthorizedError';
 import { useToastStore } from '../../store/toastStore';
 
 interface ModelsCardProps {
@@ -24,12 +25,20 @@ export function ModelsCard({ availableModels }: ModelsCardProps) {
   const refresh = async (backend: Backend) => {
     setRefreshing(backend);
     try {
-      const res = await authedFetch('/api/v1/settings/models/refresh', {
+      await apiRequest('/api/v1/settings/models/refresh', {
+        op: 'models refresh',
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend }),
+        json: { backend },
       });
-      if (res.status === 501) {
+      useToastStore
+        .getState()
+        .addToast(
+          `Refreshed ${backend === 'all' ? 'all backends' : backend} — WORKFLOW.md updated`,
+          'success',
+        );
+    } catch (err) {
+      if (err instanceof UnauthorizedError) return; // AuthGate handles UI.
+      if (err instanceof ApiError && err.status === 501) {
         useToastStore
           .getState()
           .addToast(
@@ -38,18 +47,6 @@ export function ModelsCard({ availableModels }: ModelsCardProps) {
           );
         return;
       }
-      if (!res.ok) {
-        const detail = await res.text();
-        useToastStore.getState().addToast(`Refresh failed: ${detail}`, 'error');
-        return;
-      }
-      useToastStore
-        .getState()
-        .addToast(
-          `Refreshed ${backend === 'all' ? 'all backends' : backend} — WORKFLOW.md updated`,
-          'success',
-        );
-    } catch (err) {
       useToastStore.getState().addToast(`Refresh failed: ${(err as Error).message}`, 'error');
     } finally {
       setRefreshing(null);
@@ -101,7 +98,7 @@ export function ModelsCard({ availableModels }: ModelsCardProps) {
                     type="button"
                     onClick={() => refresh(backend as Backend)}
                     disabled={refreshing !== null}
-                    className="text-theme-accent disabled:text-theme-muted ml-auto text-[10px] hover:underline"
+                    className="text-theme-accent-text disabled:text-theme-muted ml-auto text-[10px] hover:underline"
                     data-testid={`models-refresh-${backend}`}
                   >
                     {refreshing === backend ? 'Refreshing…' : 'Refresh'}

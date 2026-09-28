@@ -1,55 +1,79 @@
-import { Link } from 'react-router';
+import { Link, type To } from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
 import { MobileMenuButton } from '../components/ui/MobileMenuButton';
 import { ItervoxLogo } from '../components/brand/ItervoxLogo';
-import { formatOrchestratorState } from '../utils/format';
-import { inputRequiredRowState } from '../utils/inputRequired';
+import { fmtMs } from '../utils/format';
+import { STATUS_META, type StatusKey } from '../lib/statusModel';
+import { useStatusSummary } from '../hooks/useStatusSummary';
 import { useConnectionState } from '../hooks/useConnectionState';
+import { SchemaDriftBanner } from '../components/itervox/SchemaDriftBanner';
+import { useDashboardHref } from '../hooks/useDashboardHref';
+import { useUIStore } from '../store/uiStore';
+
+// CORE-076 — pill colour per status-model tone (one palette for all pills).
+const PILL_TONE_CLASS: Record<string, string> = {
+  success: 'bg-theme-success-soft text-theme-success-text',
+  warning: 'bg-theme-warning-soft text-theme-warning-text',
+  danger: 'bg-theme-danger-soft text-theme-danger-text',
+  info: 'bg-theme-accent-soft text-theme-accent-strong',
+  neutral: 'bg-theme-bg-elevated text-theme-text-secondary',
+};
+
+// CORE-086 — every count pill links to the dashboard section behind it.
+function StatusPill({
+  statusKey,
+  count,
+  to,
+  prefix = '',
+  title,
+}: {
+  statusKey: StatusKey;
+  count: number;
+  to: To;
+  prefix?: string;
+  title?: string;
+}) {
+  const meta = STATUS_META[statusKey];
+  return (
+    <Link
+      to={to}
+      data-status-key={statusKey}
+      data-status-count={count}
+      title={title}
+      className={`rounded-full px-2 py-0.5 text-xs transition-colors hover:opacity-80 ${PILL_TONE_CLASS[meta.tone] ?? ''}`}
+    >
+      {prefix}
+      {count} {meta.noun}
+    </Link>
+  );
+}
 
 const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
   // v0.2.0 audit P2-10 — connection-state timing comes from the shared
   // useConnectionState hook so this header and the Dashboard overlay agree
   // on "is the API offline?" instead of running two competing timers.
-  const { sseConnected, hasSnapshot, timedOut } = useConnectionState();
-  const {
-    running,
-    paused,
-    retrying,
-    awaitingInput,
-    pendingInputResumes,
-    maxAgents,
-    projectName,
-    configInvalid,
-  } = useItervoxStore(
+  const { sseConnected, hasSnapshot, timedOut, isStale, dataAgeMs } = useConnectionState();
+  // CORE-076 — every count, label and tone comes from the shared status
+  // model (lib/statusModel), the same derivation LiveOpsStrip, HeroStats and
+  // the operator queue use.
+  const { projectName, configInvalid } = useItervoxStore(
     useShallow((s) => ({
-      running: s.snapshot?.running.length ?? 0,
-      paused: s.snapshot?.paused.length ?? 0,
-      retrying: s.snapshot?.retrying.length ?? 0,
-      pendingInputResumes: (s.snapshot?.inputRequired ?? []).filter(
-        (entry) => inputRequiredRowState(entry) === 'pending_input_resume',
-      ).length,
-      awaitingInput: (s.snapshot?.inputRequired ?? []).filter(
-        (entry) => inputRequiredRowState(entry) === 'input_required',
-      ).length,
-      maxAgents: s.snapshot?.maxConcurrentAgents ?? 0,
       projectName: s.snapshot?.projectName ?? '',
       configInvalid: s.snapshot?.configInvalid ?? null,
     })),
   );
-  const orchestratorState =
-    running > 0
-      ? 'running'
-      : pendingInputResumes > 0
-        ? 'pending_input_resume'
-        : awaitingInput > 0
-          ? 'input_required'
-          : retrying > 0
-            ? 'retrying'
-            : paused > 0
-              ? 'paused'
-              : 'idle';
-  const pct = maxAgents > 0 ? Math.round((running / maxAgents) * 100) : 0;
+  const {
+    running,
+    paused,
+    retrying,
+    needsInput: awaitingInput,
+    resuming: pendingInputResumes,
+    maxAgents,
+    capacityPct: pct,
+    headline,
+  } = useStatusSummary();
+  const dashboardHref = useDashboardHref();
 
   const liveLabel = sseConnected
     ? 'Live'
@@ -67,7 +91,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
       {configInvalid && (
         <div
           role="alert"
-          className="bg-theme-warning-soft text-theme-warning border-theme-warning sticky top-0 z-40 border-b px-4 py-2 text-sm"
+          className="bg-theme-warning-soft text-theme-warning-text border-theme-warning sticky top-0 z-40 border-b px-4 py-2 text-sm"
           data-testid="config-invalid-banner"
         >
           <strong className="font-semibold">WORKFLOW.md is invalid:</strong>{' '}
@@ -76,6 +100,27 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             (retry attempt {configInvalid.retryAttempt}
             {configInvalid.retryAt ? ` at ${configInvalid.retryAt}` : ''}; daemon running on the
             last valid config)
+          </span>
+        </div>
+      )}
+      {/* Schema-drift banner — CORE-047. */}
+      <SchemaDriftBanner />
+      {/* Stale-data banner — CORE-023. A snapshot can go stale in place (the
+          daemon stopped responding but the last-fetched state stays on
+          screen with only a small "Reconnecting…" label to notice). This is
+          the prominent, sticky version: it only shows once BOTH the SSE
+          channel (keepalives included) and the polling fallback have gone
+          quiet past the threshold — see useConnectionState. */}
+      {isStale && (
+        <div
+          role="alert"
+          className="bg-theme-warning-soft text-theme-warning-text border-theme-warning sticky top-0 z-40 border-b px-4 py-2 text-sm"
+          data-testid="stale-data-banner"
+        >
+          <strong className="font-semibold">Data may be out of date:</strong>{' '}
+          <span>
+            last update {dataAgeMs !== null ? `${fmtMs(dataAgeMs)} ago` : 'unknown'} — the dashboard
+            cannot currently reach the itervox daemon.
           </span>
         </div>
       )}
@@ -112,44 +157,62 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         )}
 
         {/* Orchestrator state */}
-        <span className="bg-theme-bg-elevated text-theme-text-secondary shrink-0 rounded px-2 py-0.5 font-mono text-xs">
-          {formatOrchestratorState(orchestratorState)}
+        <span
+          data-testid="header-orchestrator-state"
+          className="bg-theme-bg-elevated text-theme-text-secondary shrink-0 rounded px-2 py-0.5 font-mono text-xs"
+        >
+          {STATUS_META[headline].label}
         </span>
 
         {/* Running count */}
         {running > 0 && (
-          <span className="text-theme-success flex items-center gap-1.5">
-            <strong>{running}</strong>
-            <span className="text-theme-text-secondary">running</span>
-          </span>
-        )}
-
-        {paused > 0 && (
-          <span className="bg-theme-danger-soft text-theme-danger rounded-full px-2 py-0.5 text-xs">
-            {paused} paused
-          </span>
-        )}
-
-        {awaitingInput > 0 && (
-          <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-xs text-orange-400">
-            {awaitingInput} need input
-          </span>
-        )}
-
-        {pendingInputResumes > 0 && (
           <Link
-            to="/#pending-resume"
-            className="rounded-full bg-orange-500/15 px-2 py-0.5 text-xs text-orange-400 transition-colors hover:bg-orange-500/25"
-            title="Jump to the Resuming panel"
+            to={dashboardHref('running-sessions')}
+            data-status-key="running"
+            data-status-count={running}
+            title="Jump to the running sessions"
+            className="text-theme-success-text flex items-center gap-1.5 rounded underline-offset-2 hover:underline"
           >
-            {pendingInputResumes} resuming
+            <strong>{running}</strong>
+            <span className="text-theme-text-secondary">{STATUS_META.running.noun}</span>
           </Link>
         )}
 
+        {paused > 0 && (
+          <StatusPill
+            statusKey="paused"
+            count={paused}
+            to={dashboardHref('running-sessions')}
+            title="Jump to the paused sessions"
+          />
+        )}
+
+        {awaitingInput > 0 && (
+          <StatusPill
+            statusKey="input_required"
+            count={awaitingInput}
+            to={dashboardHref('attention-inbox')}
+            title="Jump to the attention inbox"
+          />
+        )}
+
+        {pendingInputResumes > 0 && (
+          <StatusPill
+            statusKey="pending_input_resume"
+            count={pendingInputResumes}
+            to={dashboardHref('pending-resume')}
+            title="Jump to the Resuming panel"
+          />
+        )}
+
         {retrying > 0 && (
-          <span className="bg-theme-warning-soft text-theme-warning rounded-full px-2 py-0.5 text-xs">
-            ↻ {retrying} retrying
-          </span>
+          <StatusPill
+            statusKey="retrying"
+            count={retrying}
+            prefix="↻ "
+            to={dashboardHref('retry-queue')}
+            title="Jump to the retry queue"
+          />
         )}
 
         {/* Capacity bar — hidden on mobile */}
@@ -171,6 +234,20 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             </span>
           </span>
         )}
+
+        {/* CORE-095 — the command palette's visible entry point (also Mod+K). */}
+        {/* A plain button (the Button primitive's ghost/xs look): the header is
+            in the main entry and the primitives pull in tailwind-merge (M6-close). */}
+        <button
+          type="button"
+          className="text-theme-text-secondary hover:bg-theme-panel-strong hover:text-theme-text focus-visible:ring-theme-accent ml-auto inline-flex h-6 items-center gap-1.5 rounded-[var(--radius-sm)] px-2 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          aria-keyshortcuts="Control+K Meta+K"
+          onClick={() => {
+            useUIStore.getState().setCommandPaletteOpen(true);
+          }}
+        >
+          Commands <kbd className="text-theme-muted font-mono">Ctrl/⌘ K</kbd>
+        </button>
       </header>
     </>
   );

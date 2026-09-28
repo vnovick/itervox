@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
 )
@@ -23,13 +24,58 @@ type Mutator func(frontLines []string) ([]string, error)
 // changes after rename. Keyed by absolute path; unbounded growth is bounded
 // by "number of WORKFLOW.md files this daemon has ever touched", which is
 // effectively 1.
-var editMu sync.Map // path -> *sync.Mutex
+var editMu sync.Map // path -> chan struct{} (capacity 1: a mutex with a timed acquire)
 
-func lockForPath(path string) func() {
-	muIface, _ := editMu.LoadOrStore(path, &sync.Mutex{})
-	mu := muIface.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+// lockForPath serializes a WORKFLOW.md read-modify-write both within this
+// process (editMu) and across processes (an flock on the sidecar
+// ".<base>.lock", CORE-149 — `itervox init --update` and `itervox models
+// refresh` are separate processes from the daemon). Lock order is fixed:
+// in-process lock first, then the file lock; the returned unlock releases
+// them in reverse. Neither lock is reentrant — never call lockForPath (or a
+// function that takes it) while holding it for the same path.
+//
+// Both acquisitions share one deadline, editLockTimeout (BH4): a writer
+// queued in-process behind one that is itself waiting on a stuck foreign
+// holder gives up at the same moment instead of each waiting a full timeout
+// in turn. On timeout the error wraps ErrEditLockBusy and nothing is written.
+func lockForPath(path string) (func(), error) {
+	deadline := time.Now().Add(editLockTimeout)
+	muIface, _ := editMu.LoadOrStore(path, make(chan struct{}, 1))
+	mu := muIface.(chan struct{})
+	timer := time.NewTimer(editLockTimeout)
+	select {
+	case mu <- struct{}{}:
+		timer.Stop()
+	case <-timer.C:
+		return nil, editLockBusyError(lockFilePath(path), "another edit in this process")
+	}
+	unlockFile, err := lockFile(path, deadline)
+	if err != nil {
+		<-mu
+		return nil, err
+	}
+	return func() {
+		unlockFile()
+		<-mu
+	}, nil
+}
+
+// WithEditLock runs fn while holding the same in-process and inter-process
+// lock as every patcher in this package. It is for WORKFLOW.md writers that
+// cannot be expressed as a front-matter Mutator (the `itervox init --update`
+// YAML re-encoders): fn must do its whole read-modify-write inside, and must
+// not call any locking function of this package for the same path.
+//
+// Writes made inside fn are NOT registered as self-writes: if the running
+// daemon itself ever used this, its watcher would reload — the safe default
+// for a write whose value no in-memory setter applied.
+func WithEditLock(path string, fn func() error) error {
+	unlock, err := lockForPath(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn()
 }
 
 // ApplyAndWriteFrontMatter reads the file at path, splits it into front
@@ -37,13 +83,26 @@ func lockForPath(path string) func() {
 // reassembles the file, and writes it back atomically. If any mutator
 // returns an error, the file is left untouched.
 //
-// Concurrent calls for the same path are serialized via editMu so that
-// multi-tab editors cannot lose writes to read-modify-write races.
+// Concurrent calls for the same path are serialized via lockForPath (editMu
+// plus the inter-process sidecar flock) so that multi-tab editors and
+// separate itervox processes cannot lose writes to read-modify-write races.
+//
+// The write is registered as a self-write (CORE-116): this process's
+// WORKFLOW.md watcher will not reload for it, because every daemon caller
+// applies the same value in memory under cfgMu. A caller whose value has
+// no in-memory setter must use WriteAndReload instead.
 func ApplyAndWriteFrontMatter(path string, mutators ...Mutator) error {
+	return applyAndWrite(path, true, mutators)
+}
+
+func applyAndWrite(path string, registerSelfWrite bool, mutators []Mutator) error {
 	if len(mutators) == 0 {
 		return nil
 	}
-	unlock := lockForPath(path)
+	unlock, err := lockForPath(path)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	data, err := os.ReadFile(path)
@@ -64,7 +123,7 @@ func ApplyAndWriteFrontMatter(path string, mutators ...Mutator) error {
 		frontLines = next
 	}
 
-	return writeFrontMatter(path, frontLines, bodyLines)
+	return writeLocked(path, data, []byte(renderFrontMatter(frontLines, bodyLines)), registerSelfWrite)
 }
 
 // PatchReviewerConfig atomically rewrites agent.reviewer_profile and
@@ -123,67 +182,59 @@ func MutateReviewerConfig(profile string, autoReview bool) Mutator {
 	}
 }
 
-// PatchTrackerStates atomically rewrites tracker.active_states,
-// tracker.terminal_states, and tracker.completion_state inside the YAML front
-// matter. Missing keys are inserted inside the tracker block.
-func PatchTrackerStates(path string, active, terminal []string, completion string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch tracker states: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	frontLines, bodyLines := splitFrontMatter(content)
-	if frontLines == nil {
-		return fmt.Errorf("workflow patch tracker states: no front matter in %s", path)
-	}
-
-	trackerLine := -1
-	trackerEnd := len(frontLines)
-	for i, line := range frontLines {
-		if line != "tracker:" {
-			continue
-		}
-		trackerLine = i
-		for j := i + 1; j < len(frontLines); j++ {
-			next := frontLines[j]
-			if next == "" {
+// MutateTrackerStates returns a Mutator that rewrites tracker.active_states,
+// tracker.terminal_states, and tracker.completion_state inside the tracker:
+// block. See PatchTrackerStates.
+func MutateTrackerStates(active, terminal []string, completion string) Mutator {
+	return func(frontLines []string) ([]string, error) {
+		trackerLine := -1
+		trackerEnd := len(frontLines)
+		for i, line := range frontLines {
+			if line != "tracker:" {
 				continue
 			}
-			if next[0] != ' ' {
-				trackerEnd = j
-				break
+			trackerLine = i
+			for j := i + 1; j < len(frontLines); j++ {
+				next := frontLines[j]
+				if next == "" {
+					continue
+				}
+				if next[0] != ' ' {
+					trackerEnd = j
+					break
+				}
+			}
+			break
+		}
+		if trackerLine < 0 {
+			return nil, fmt.Errorf("workflow mutate tracker states: tracker block not found")
+		}
+
+		block := make([]string, 0, trackerEnd-trackerLine-1+3)
+		for _, line := range frontLines[trackerLine+1 : trackerEnd] {
+			switch {
+			case strings.HasPrefix(line, "  active_states:"):
+				continue
+			case strings.HasPrefix(line, "  terminal_states:"):
+				continue
+			case strings.HasPrefix(line, "  completion_state:"):
+				continue
+			default:
+				block = append(block, line)
 			}
 		}
-		break
-	}
-	if trackerLine < 0 {
-		return fmt.Errorf("workflow patch tracker states: tracker block not found in %s", path)
-	}
+		block = append(block,
+			"  active_states: "+marshalStringSliceInline(active),
+			"  terminal_states: "+marshalStringSliceInline(terminal),
+			"  completion_state: "+strconv.Quote(completion),
+		)
 
-	block := make([]string, 0, trackerEnd-trackerLine-1+3)
-	for _, line := range frontLines[trackerLine+1 : trackerEnd] {
-		switch {
-		case strings.HasPrefix(line, "  active_states:"):
-			continue
-		case strings.HasPrefix(line, "  terminal_states:"):
-			continue
-		case strings.HasPrefix(line, "  completion_state:"):
-			continue
-		default:
-			block = append(block, line)
-		}
+		newFrontLines := make([]string, 0, len(frontLines)-((trackerEnd-trackerLine-1)-len(block)))
+		newFrontLines = append(newFrontLines, frontLines[:trackerLine+1]...)
+		newFrontLines = append(newFrontLines, block...)
+		newFrontLines = append(newFrontLines, frontLines[trackerEnd:]...)
+		return newFrontLines, nil
 	}
-	block = append(block,
-		"  active_states: "+marshalStringSliceInline(active),
-		"  terminal_states: "+marshalStringSliceInline(terminal),
-		"  completion_state: "+strconv.Quote(completion),
-	)
-
-	newFrontLines := make([]string, 0, len(frontLines)-((trackerEnd-trackerLine-1)-len(block)))
-	newFrontLines = append(newFrontLines, frontLines[:trackerLine+1]...)
-	newFrontLines = append(newFrontLines, block...)
-	newFrontLines = append(newFrontLines, frontLines[trackerEnd:]...)
-	return writeFrontMatter(path, newFrontLines, bodyLines)
 }
 
 // PatchAgentMaxRetries atomically rewrites agent.max_retries in the YAML front
@@ -301,7 +352,9 @@ func MutateTrackerStringField(key, value string) Mutator {
 	}
 }
 
-func writeFrontMatter(path string, frontLines, bodyLines []string) error {
+// renderFrontMatter reassembles a WORKFLOW.md from front-matter and body
+// lines (shared trailing-newline policy for every patcher in this package).
+func renderFrontMatter(frontLines, bodyLines []string) string {
 	var b strings.Builder
 	b.WriteString("---\n")
 	b.WriteString(strings.Join(frontLines, "\n"))
@@ -310,5 +363,20 @@ func writeFrontMatter(path string, frontLines, bodyLines []string) error {
 	if len(bodyLines) > 0 && bodyLines[len(bodyLines)-1] != "" {
 		b.WriteString("\n")
 	}
-	return atomicfs.WriteFile(path, []byte(b.String()), 0o644)
+	return b.String()
+}
+
+// writeLocked is the single WORKFLOW.md write primitive of this package. The
+// caller holds lockForPath(path) and passes the bytes it read under that lock
+// (pre) and the bytes to write (post). After a successful atomic write the
+// (pre, post) transition is registered for the watcher's self-write
+// suppression (CORE-116) unless registerSelfWrite is false.
+func writeLocked(path string, pre, post []byte, registerSelfWrite bool) error {
+	if err := atomicfs.WriteFile(path, post, 0o644); err != nil {
+		return err
+	}
+	if registerSelfWrite {
+		recordSelfWrite(path, pre, post)
+	}
+	return nil
 }

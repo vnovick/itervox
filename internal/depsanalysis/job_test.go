@@ -430,36 +430,60 @@ func TestJobManagerCancelUnknownIDReturnsFalse(t *testing.T) {
 // otherwise — that IS the assertion) and (b) the job still reaches its
 // terminal state, proving the manager's own bookkeeping survives a
 // misbehaving callback.
+//
+// CORE-168: execute() publishes the terminal status under m.mu and only then
+// runs the terminal callback with the lock RELEASED (notifyLocked), so
+// "Status reports JobSucceeded" does not imply "the terminal callback has
+// run". The old assertion (calls >= 2 right after Status turned terminal)
+// raced that window and failed once in a loaded -race run. The terminal
+// callback now signals a channel the test waits on, and it deliberately
+// sleeps first, so the test can never again depend on the callback winning
+// that race.
 func TestJobManagerSurvivesPanicInOnTransitionCallback(t *testing.T) {
 	m := NewJobManager(func(_ context.Context, _ string) (*JobResult, error) {
 		return &JobResult{Sidecar: &Sidecar{Version: SidecarSchemaVersion}}, nil
 	}, time.Minute)
 
 	var calls atomic.Int32
+	terminal := make(chan struct{}, 4)
 	m.SetOnTransition(func(job *Job) {
-		calls.Add(1)
+		if job.Status != JobRunning {
+			time.Sleep(20 * time.Millisecond) // widen the window CORE-168 raced
+			calls.Add(1)
+			terminal <- struct{}{}
+		} else {
+			calls.Add(1)
+		}
 		panic("deliberate onTransition panic")
 	})
+	waitTerminal := func() {
+		t.Helper()
+		select {
+		case <-terminal:
+		case <-time.After(10 * time.Second):
+			t.Fatal("terminal onTransition callback never ran")
+		}
+	}
 
 	id, err := m.Enqueue(context.Background(), "p")
 	require.NoError(t, err)
+	waitTerminal()
 
-	require.Eventually(t, func() bool {
-		job, ok := m.Status(id)
-		return ok && job.Status == JobSucceeded
-	}, 2*time.Second, 10*time.Millisecond, "job must still reach a terminal state despite the panicking callback")
-
-	assert.GreaterOrEqual(t, calls.Load(), int32(2),
+	job, ok := m.Status(id)
+	require.True(t, ok)
+	assert.Equal(t, JobSucceeded, job.Status, "job must still reach a terminal state despite the panicking callback")
+	assert.Equal(t, int32(2), calls.Load(),
 		"onTransition must have fired for both the running and terminal transitions")
 
 	// The manager's lock must still be usable — a second Enqueue proves the
 	// mutex was not left in a broken state by the recovered panic.
 	second, err := m.Enqueue(context.Background(), "p")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		job, ok := m.Status(second)
-		return ok && job.Status == JobSucceeded
-	}, 2*time.Second, 10*time.Millisecond)
+	require.NotEqual(t, id, second, "the first job is terminal, so this must start a new one")
+	waitTerminal()
+	job, ok = m.Status(second)
+	require.True(t, ok)
+	assert.Equal(t, JobSucceeded, job.Status)
 }
 
 // FIX 5 (final review) — Cancel must never return true without actually

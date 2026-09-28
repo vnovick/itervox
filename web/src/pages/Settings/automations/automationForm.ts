@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AutomationDef } from '../../../types/schemas';
 import { AUTOMATION_TRIGGER_TYPES } from '../../../types/automationTriggers';
 import type { SuggestedAutomation } from './suggestedAutomations';
+import type { AutomationUnknownFields } from '../../../types/configRoundTrip';
 
 function isValidRegex(value: string): boolean {
   if (value.trim() === '') return true;
@@ -46,30 +47,44 @@ export const automationFormSchema = z
       message: 'Cooldown must be a non-negative integer (in minutes).',
     }),
     moveToState: z.string(),
+    // CORE-047 round 2: raw values from a newer daemon, read-only in the form
+    // and restored on save (automationDefToWire).
+    unknownFields: z.custom<AutomationUnknownFields>().optional(),
   })
   .superRefine((values, ctx) => {
-    if (values.triggerType === 'cron' && values.cron.trim() === '') {
+    // An unknown trigger's own fields are not editable here, so its
+    // trigger-specific checks do not apply (the daemon validates on save).
+    const triggerKnown = values.unknownFields?.trigger === undefined;
+    if (triggerKnown && values.triggerType === 'cron' && values.cron.trim() === '') {
       ctx.addIssue({
         code: 'custom',
         path: ['cron'],
         message: 'Cron automations require a cron expression.',
       });
     }
-    if (values.triggerType === 'issue_entered_state' && values.triggerState.trim() === '') {
+    if (
+      triggerKnown &&
+      values.triggerType === 'issue_entered_state' &&
+      values.triggerState.trim() === ''
+    ) {
       ctx.addIssue({
         code: 'custom',
         path: ['triggerState'],
         message: 'Issue-entered-state automations require a target state.',
       });
     }
-    if (values.triggerType === 'rate_limited' && values.switchToProfile.trim() === '') {
+    if (
+      triggerKnown &&
+      values.triggerType === 'rate_limited' &&
+      values.switchToProfile.trim() === ''
+    ) {
       ctx.addIssue({
         code: 'custom',
         path: ['switchToProfile'],
         message: 'Rate-limited automations require a profile to switch to.',
       });
     }
-    if (values.triggerType === 'rate_limited' && !values.autoResume) {
+    if (triggerKnown && values.triggerType === 'rate_limited' && !values.autoResume) {
       ctx.addIssue({
         code: 'custom',
         path: ['autoResume'],
@@ -125,6 +140,7 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
         ? String(automation.policy.cooldownMinutes)
         : '',
     moveToState: automation.policy?.moveToState ?? '',
+    unknownFields: automation.unknownFields,
   };
 }
 
@@ -166,6 +182,7 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
     },
     filter: Object.keys(filter).length > 0 ? filter : undefined,
     policy: buildAutomationPolicy(values),
+    ...(values.unknownFields ? { unknownFields: values.unknownFields } : {}),
   };
 }
 

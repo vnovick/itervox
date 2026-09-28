@@ -1,7 +1,16 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
+import type { DraggableAttributes } from '@dnd-kit/core';
+import { GripVertical } from 'lucide-react';
 import { fmtMs, EMPTY_PROFILE_LABEL } from '../../utils/format';
 import type { TrackerIssue, ProfileDef } from '../../types/schemas';
+import { WhyIdleChip } from './WhyIdleChip';
 
+/**
+ * CORE-068: the dnd-kit keyboard activator lives on a dedicated drag handle
+ * (registered via `setActivatorNodeRef`), so Space/Enter only start a
+ * keyboard drag when the handle itself is focused. The rest of the card —
+ * the title button, the review badge — keep their native key behaviour.
+ */
 interface CardProps {
   issue: TrackerIssue;
   isDragging?: boolean;
@@ -35,6 +44,10 @@ interface CardProps {
   // is showing the about-to-be-true state, not necessarily what the
   // tracker itself currently reports.
   syncing?: boolean;
+  /** Board-only: dnd-kit attributes for the drag handle. Omitted in overlays and lists. */
+  dragHandleAttributes?: DraggableAttributes;
+  /** Board-only: dnd-kit `setActivatorNodeRef` for the drag handle. */
+  dragHandleRef?: (element: HTMLElement | null) => void;
 }
 
 function resolveBackend(
@@ -89,6 +102,8 @@ export default memo(function IssueCard({
   retryAttempt,
   maxRetries,
   syncing,
+  dragHandleAttributes,
+  dragHandleRef,
 }: CardProps) {
   const isRunning = issue.orchestratorState === 'running';
   const isInputRequired = issue.orchestratorState === 'input_required';
@@ -107,10 +122,18 @@ export default memo(function IssueCard({
   const backend = resolveBackend(issue.agentProfile, profileDefs, runningBackend, defaultBackend);
   const hasActivity = isActive;
   const blockerCount = getBlockerCount(issue);
+  // CORE-024 — the dispatch button is otherwise only revealed by
+  // `group-hover:opacity-100`, which a keyboard user tabbing to it without a
+  // mouse never triggers. Tailwind's `focus-visible:opacity-100` handles
+  // this in production CSS; the local `dispatchFocused` state is a small
+  // belt-and-suspenders duplicate that also makes the behavior verifiable
+  // without a built stylesheet (Vitest's jsdom does not process CSS).
+  const [dispatchFocused, setDispatchFocused] = useState(false);
 
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the title button is the keyboard/AT way to open the issue (CORE-068)
     <div
-      className={`issue-card group border-theme-line bg-theme-bg-elevated cursor-pointer rounded-lg border p-3 transition-all select-none ${
+      className={`issue-card group border-theme-line bg-theme-bg-elevated focus-within:border-theme-accent cursor-pointer rounded-lg border p-3 transition-all select-none ${
         isDragging ? 'rotate-1 opacity-90 shadow-lg' : ''
       }`}
       onClick={() => {
@@ -119,6 +142,22 @@ export default memo(function IssueCard({
     >
       {/* Row 1: Status dot + Identifier + profile/dispatch (right) */}
       <div className="flex items-center gap-2">
+        {dragHandleAttributes && (
+          <button
+            type="button"
+            ref={dragHandleRef}
+            {...dragHandleAttributes}
+            aria-label={`Move ${issue.identifier}`}
+            data-testid="issue-card-drag-handle"
+            onClick={(e) => {
+              // A click on the handle is not a request to open the issue.
+              e.stopPropagation();
+            }}
+            className="text-theme-muted hover:text-theme-text-secondary -ml-1 flex h-5 w-4 flex-shrink-0 cursor-grab items-center justify-center rounded"
+          >
+            <GripVertical size={14} aria-hidden="true" />
+          </button>
+        )}
         {/* Status dot — Linear-style */}
         <span
           className={`border-theme-line h-3.5 w-3.5 flex-shrink-0 rounded-full border-2 ${
@@ -149,6 +188,7 @@ export default memo(function IssueCard({
           {/* Profile selector */}
           {showProfileSelector && (
             <div
+              role="presentation"
               className="flex-shrink-0"
               onClick={(e) => {
                 e.stopPropagation();
@@ -160,7 +200,7 @@ export default memo(function IssueCard({
                   onProfileChange(issue.identifier, e.target.value);
                 }}
                 disabled={isRunning}
-                className="border-theme-line bg-theme-panel-strong text-theme-text-secondary max-w-[100px] rounded border px-1.5 py-0.5 text-[10px] font-medium focus:outline-none disabled:opacity-40"
+                className="border-theme-line bg-theme-panel-strong text-theme-text-secondary focus:border-theme-accent max-w-[100px] rounded border px-1.5 py-0.5 text-[10px] font-medium focus:outline-none disabled:opacity-40"
               >
                 <option value="">{EMPTY_PROFILE_LABEL}</option>
                 {availableProfiles.map((p) => (
@@ -249,17 +289,34 @@ export default memo(function IssueCard({
             </span>
           )}
 
+          {/* CORE-055: the next run uses an automatic override (a
+              rate_limited automation or backend_fallback), not a pin. */}
+          {issue.autoSwitch && (
+            <span
+              data-testid="issue-card-auto-switch-badge"
+              title={`Auto-switched from ${issue.autoSwitch.fromBackend ?? 'unknown'} by ${issue.autoSwitch.source}${
+                issue.autoSwitch.reason ? `: ${issue.autoSwitch.reason}` : ''
+              }`}
+              className="bg-theme-warning-soft text-theme-warning-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+            >
+              {issue.autoSwitch.toBackend ?? issue.agentBackend ?? 'switched'} (auto)
+            </span>
+          )}
+
+          {/* CORE-080 — why this idle issue is not dispatching. */}
+          <WhyIdleChip reason={issue.ineligibleReason} />
+
           {blockerCount > 0 && (
             <span
               data-testid="issue-card-blocked-badge"
               title={`Blocked by ${String(blockerCount)} issue${blockerCount === 1 ? '' : 's'}`}
-              className="bg-theme-danger-soft text-theme-danger flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+              className="bg-theme-danger-soft text-theme-danger-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
             >
               Blocked {blockerCount}
             </span>
           )}
 
-          {/* Dispatch button */}
+          {/* Dispatch button — visible on hover OR keyboard focus (CORE-024) */}
           {onDispatch && (
             <button
               title="Send to queue"
@@ -267,7 +324,14 @@ export default memo(function IssueCard({
                 e.stopPropagation();
                 onDispatch(issue.identifier);
               }}
-              className="text-theme-accent bg-theme-accent-soft flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] opacity-0 transition-opacity group-hover:opacity-100"
+              onFocus={() => {
+                setDispatchFocused(true);
+              }}
+              onBlur={() => {
+                setDispatchFocused(false);
+              }}
+              style={dispatchFocused ? { opacity: 1 } : undefined}
+              className="text-theme-accent-text bg-theme-accent-soft flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
             >
               ▶
             </button>
@@ -276,7 +340,18 @@ export default memo(function IssueCard({
       </div>
 
       {/* Row 2: Title — Linear-style: single line, truncated */}
-      <p className="text-theme-text mt-1.5 truncate text-sm font-medium">{issue.title}</p>
+      {/* CORE-068: a real button, so the card opens from the keyboard (Enter
+          or Space) without going through the drag handle. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(issue.identifier);
+        }}
+        className="text-theme-text mt-1.5 block w-full cursor-pointer truncate rounded-sm text-left text-sm font-medium focus-visible:underline"
+      >
+        {issue.title}
+      </button>
 
       {/* Row 3: Bottom metadata — compact badges */}
       <div className="mt-2 flex items-center gap-1.5">
@@ -306,8 +381,8 @@ export default memo(function IssueCard({
           <span
             className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${
               isRunning
-                ? 'bg-theme-success-soft text-theme-success'
-                : 'bg-theme-warning-soft text-theme-warning'
+                ? 'bg-theme-success-soft text-theme-success-text'
+                : 'bg-theme-warning-soft text-theme-warning-text'
             }`}
           >
             {issue.orchestratorState}

@@ -1,10 +1,10 @@
-// Gap §4.4 — RetriesCard vitest. Covers max_retries (G), failed_state (G),
-// and the switch-cap controls (E §6.1 in plan / iteration 2). The card
+// Gap §4.4 — RetriesCard vitest. Covers max_retries (G) and failed_state (G);
+// the switch-cap controls moved to RateLimitsFailoverCard (CORE-093). The card
 // commits on blur — typing alone shouldn't fire the setter, but blur with
 // a changed value should.
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RetriesCard } from '../RetriesCard';
 
 function setup(overrides: Partial<Parameters<typeof RetriesCard>[0]> = {}) {
@@ -13,70 +13,57 @@ function setup(overrides: Partial<Parameters<typeof RetriesCard>[0]> = {}) {
     failedState: '',
     trackerStateOptions: ['Backlog', 'In Progress', 'Done'],
     completionState: 'Done',
-    maxSwitchesPerIssuePerWindow: 2,
-    switchWindowHours: 6,
     onSetMaxRetries: vi.fn().mockResolvedValue(true),
     onSetFailedState: vi.fn().mockResolvedValue(true),
-    onSetMaxSwitchesPerIssuePerWindow: vi.fn().mockResolvedValue(true),
-    onSetSwitchWindowHours: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
   return { ...render(<RetriesCard {...props} />), props };
 }
 
 describe('RetriesCard', () => {
-  it('renders the current max_retries and switch-cap values', () => {
-    setup({ maxRetries: 7, maxSwitchesPerIssuePerWindow: 4, switchWindowHours: 12 });
+  it('renders the current max_retries value', () => {
+    setup({ maxRetries: 7 });
     expect(screen.getByLabelText(/Max retries per issue/i)).toHaveValue(7);
-    expect(screen.getByLabelText(/Rate-limit switch cap/i)).toHaveValue(4);
-    // The hours input is the second number input in the switch-cap row.
-    const inputs = screen.getAllByRole('spinbutton');
-    expect(inputs[2]).toHaveValue(12);
   });
 
-  it('commits a changed switch cap on blur', async () => {
-    const { props } = setup();
-    const capInput = screen.getByLabelText(/Rate-limit switch cap/i);
-    fireEvent.change(capInput, { target: { value: '5' } });
-    fireEvent.blur(capInput);
+  // CORE-093 — the switch cap lives in the 'Rate limits & failover' section.
+  it('no longer renders the switch cap', () => {
+    setup();
+    expect(screen.queryByLabelText(/Rate-limit switch cap/i)).not.toBeInTheDocument();
+  });
+
+  it('commits a changed max_retries on blur and reverts a non-integer', async () => {
+    const { props } = setup({ maxRetries: 5 });
+    const input = screen.getByLabelText(/Max retries per issue/i);
+    fireEvent.change(input, { target: { value: '8' } });
+    fireEvent.blur(input);
     await waitFor(() => {
-      expect(props.onSetMaxSwitchesPerIssuePerWindow).toHaveBeenCalledWith(5);
+      expect(props.onSetMaxRetries).toHaveBeenCalledWith(8);
     });
+    fireEvent.change(input, { target: { value: 'many' } });
+    fireEvent.blur(input);
+    expect(await screen.findByText(/non-negative integer/i)).toBeInTheDocument();
+    expect(input).toHaveValue(5);
   });
 
-  it('does NOT call setter when the value is unchanged', async () => {
-    const { props } = setup({ maxSwitchesPerIssuePerWindow: 2 });
-    const capInput = screen.getByLabelText(/Rate-limit switch cap/i);
-    fireEvent.change(capInput, { target: { value: '2' } });
-    fireEvent.blur(capInput);
-    // Give React a tick to settle.
-    await new Promise((r) => setTimeout(r, 10));
-    expect(props.onSetMaxSwitchesPerIssuePerWindow).not.toHaveBeenCalled();
-  });
-
-  it('rejects non-integer cap input and reverts the draft to the prop', async () => {
-    const { props } = setup({ maxSwitchesPerIssuePerWindow: 3 });
-    const capInput = screen.getByLabelText(/Rate-limit switch cap/i);
-    fireEvent.change(capInput, { target: { value: 'soon' } });
-    fireEvent.blur(capInput);
+  it('surfaces a failed max_retries save and a failed failed_state save', async () => {
+    const { props } = setup({
+      maxRetries: 5,
+      onSetMaxRetries: vi.fn().mockResolvedValue(false),
+      onSetFailedState: vi.fn().mockResolvedValue(false),
+    });
+    const input = screen.getByLabelText(/Max retries per issue/i);
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.blur(input);
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/non-negative integer/i);
+      expect(screen.getAllByText(/Failed to save/i)).toHaveLength(1);
     });
-    expect(props.onSetMaxSwitchesPerIssuePerWindow).not.toHaveBeenCalled();
-    // The draft must revert so the operator sees the live value, not their
-    // bad input.
-    expect(capInput.value).toBe('3');
-  });
-
-  it('rejects zero or negative window-hours and surfaces a positive-integer error', async () => {
-    const { props } = setup({ switchWindowHours: 6 });
-    const inputs = screen.getAllByRole('spinbutton');
-    const windowInput = inputs[2] as HTMLInputElement;
-    fireEvent.change(windowInput, { target: { value: '0' } });
-    fireEvent.blur(windowInput);
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Backlog' } });
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/positive integer/i);
+      expect(props.onSetFailedState).toHaveBeenCalledWith('Backlog');
     });
-    expect(props.onSetSwitchWindowHours).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getAllByText(/Failed to save/i)).toHaveLength(2);
+    });
   });
 });

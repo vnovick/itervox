@@ -173,7 +173,7 @@ export function ProfilesCard({
           ) : (
             <div className="px-5 py-10 text-center text-sm">
               No profiles configured yet.{' '}
-              <button onClick={openAddModal} className="text-theme-accent hover:underline">
+              <button onClick={openAddModal} className="text-theme-accent-text hover:underline">
                 Add one
               </button>
             </div>
@@ -199,7 +199,7 @@ export function ProfilesCard({
         )}
       </Card>
 
-      {status && <p className="text-theme-danger text-sm">{status.message}</p>}
+      {status && <p className="text-theme-danger-text text-sm">{status.message}</p>}
 
       {modalState && (
         <ProfileFormModal

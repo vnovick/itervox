@@ -437,29 +437,7 @@ func TestBuildNavItems_MultipleSessions(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// toolStyle — returns correct lipgloss style based on tool name category
-// ---------------------------------------------------------------------------
-
-func TestToolStyle_DoesNotPanic(t *testing.T) {
-	// toolStyle is called during every TUI render; verify it handles all categories.
-	names := []string{
-		"bash", "shell", "execute", "sh", // amber — shell
-		"read", "write", "edit", "glob", "ls", // green — file
-		"webfetch", "fetch", "http", "navigate", // cyan — web
-		"task", "agent", "dispatch", "subagent", // purple — AI orchestration
-		"grep", "search", "find", // sky — search
-		"unknown_tool", // muted — default
-	}
-	for _, name := range names {
-		assert.NotPanics(t, func() {
-			style := toolStyle(name)
-			_ = style.Render("x")
-		}, "toolStyle(%q) panicked", name)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// isTodoState / isBacklogState — state classification helpers
+// isTodoState — state classification helper
 // ---------------------------------------------------------------------------
 
 func TestIsTodoState_Match(t *testing.T) {
@@ -478,22 +456,4 @@ func TestIsTodoState_NoMatch(t *testing.T) {
 func TestIsTodoState_EmptyConfig(t *testing.T) {
 	m := Model{cfg: Config{}}
 	assert.False(t, m.isTodoState("In Progress"))
-}
-
-func TestIsBacklogState_Match(t *testing.T) {
-	m := Model{cfg: Config{BacklogStates: []string{"Backlog", "Triage"}}}
-	assert.True(t, m.isBacklogState("Backlog"))
-	assert.True(t, m.isBacklogState("backlog"), "case-insensitive")
-	assert.True(t, m.isBacklogState("TRIAGE"))
-}
-
-func TestIsBacklogState_NoMatch(t *testing.T) {
-	m := Model{cfg: Config{BacklogStates: []string{"Backlog"}}}
-	assert.False(t, m.isBacklogState("In Progress"))
-	assert.False(t, m.isBacklogState(""))
-}
-
-func TestIsBacklogState_EmptyConfig(t *testing.T) {
-	m := Model{cfg: Config{}}
-	assert.False(t, m.isBacklogState("Backlog"))
 }

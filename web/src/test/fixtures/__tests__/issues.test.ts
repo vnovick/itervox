@@ -61,7 +61,7 @@ describe('issue fixture factories', () => {
         url: 'https://example.com/issues/DEMO-1',
       },
     ]);
-    expect(issue.ineligibleReason).toMatch(/blocked by/);
+    expect(issue.ineligibleReason).toMatch(/^blocked_by:/);
   });
 
   it('parses issue status-change history from issue detail responses', () => {

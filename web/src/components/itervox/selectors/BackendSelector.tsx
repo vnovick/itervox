@@ -1,3 +1,10 @@
+/** The agent backends the daemon accepts (server config.IsSupportedBackend). */
+const KNOWN_BACKENDS = ['claude', 'codex'] as const;
+const BACKEND_LABELS: Record<(typeof KNOWN_BACKENDS)[number], string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+};
+
 interface BackendSelectorProps {
   value: string;
   onChange: (backend: string) => void;
@@ -6,6 +13,16 @@ interface BackendSelectorProps {
   /** Show "Backend:" label. Default true. */
   showLabel?: boolean;
   size?: 'sm' | 'md';
+  /**
+   * When set, adds a first option with value "" (clear the override) and
+   * this label, e.g. "Default (claude)". CORE-056.
+   */
+  defaultOptionLabel?: string;
+  /** Accessible name when the visible "Backend:" label is hidden. */
+  ariaLabel?: string;
+  /** Links the select to an external description (help / error text). */
+  ariaDescribedBy?: string;
+  disabled?: boolean;
 }
 
 const SIZE_CLS = {
@@ -19,6 +36,10 @@ export function BackendSelector({
   readOnly = false,
   showLabel = true,
   size = 'md',
+  defaultOptionLabel,
+  ariaLabel,
+  ariaDescribedBy,
+  disabled = false,
 }: BackendSelectorProps) {
   if (readOnly) {
     return (
@@ -33,30 +54,41 @@ export function BackendSelector({
   const select = (
     <select
       value={value}
+      aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
+      disabled={disabled}
       onChange={(e) => {
         onChange(e.target.value);
       }}
       onClick={(e) => {
         e.stopPropagation();
       }}
-      className={`border-theme-line bg-theme-panel-strong text-theme-text cursor-pointer rounded-[var(--radius-sm)] border font-medium focus:outline-none ${SIZE_CLS[size]}`}
+      className={`border-theme-line bg-theme-panel-strong text-theme-text cursor-pointer rounded-[var(--radius-sm)] border font-medium focus:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${SIZE_CLS[size]}`}
     >
-      <option value="claude">Claude</option>
-      <option value="codex">Codex</option>
+      {defaultOptionLabel !== undefined && <option value="">{defaultOptionLabel}</option>}
+      {KNOWN_BACKENDS.map((b) => (
+        <option key={b} value={b}>
+          {BACKEND_LABELS[b]}
+        </option>
+      ))}
     </select>
   );
 
   if (!showLabel) return select;
 
   return (
-    <label
-      className="text-theme-muted flex flex-shrink-0 items-center gap-1 text-[10px]"
+    // Event boundary only: keeps clicks on the picker from reaching the row.
+    <span
+      role="presentation"
+      className="flex-shrink-0"
       onClick={(e) => {
         e.stopPropagation();
       }}
     >
-      Backend:
-      {select}
-    </label>
+      <label className="text-theme-muted flex items-center gap-1 text-[10px]">
+        Backend:
+        {select}
+      </label>
+    </span>
   );
 }

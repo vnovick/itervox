@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // ReviewComment is a single PR review comment.
@@ -39,9 +39,8 @@ type PRContext struct {
 // local ref cache (no network call). Returns e.g. "origin/main". Returns ""
 // when the ref cannot be resolved (e.g. origin/HEAD was never fetched).
 func detectDefaultBranch(ctx context.Context, wsPath string) string {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
-	cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
-	cmd.Dir = wsPath
+	cmd := gitexec.Command(ctx, wsPath, "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -162,15 +161,13 @@ func FetchPRContext(ctx context.Context, pr *PRContext, wsPath, baseBranch strin
 			base = "origin/main"
 		}
 
-		statCmd := exec.CommandContext(ctx, "git", "diff", "--stat", base)
-		statCmd.Dir = wsPath
+		statCmd := gitexec.Command(ctx, wsPath, "diff", "--stat", base)
 		if out, err := statCmd.Output(); err == nil {
 			pr.DiffStat = strings.TrimSpace(string(out))
 		}
 
 		// Fetch full diff only if small.
-		diffCmd := exec.CommandContext(ctx, "git", "diff", base)
-		diffCmd.Dir = wsPath
+		diffCmd := gitexec.Command(ctx, wsPath, "diff", base)
 		if out, err := diffCmd.Output(); err == nil {
 			lines := strings.Count(string(out), "\n")
 			if lines <= maxFullDiffLines {

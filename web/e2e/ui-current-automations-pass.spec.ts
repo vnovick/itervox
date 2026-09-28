@@ -53,22 +53,27 @@ test.describe('automations_ui_pass — Lane 2 integration', () => {
   });
 
   // T-4 — Logs page automation chip filters to AUTOMATION FIRED entries.
+  // The prefix toggle is `chip-automation-only` (codex-B5 rename); plain
+  // `chip-automation` is the event-type chip from FILTER_CHIPS.
   test('T-4: /logs automation chip filters to AUTOMATION FIRED lines', async ({ page }) => {
     await bootApp(page, { scenario: automationsPassScenario, route: '/logs' });
     // Sidebar lists DEMO-AUTO; click it to load its log buffer.
-    await page.getByRole('button', { name: /DEMO-AUTO/ }).first().click();
+    await page
+      .getByRole('button', { name: /DEMO-AUTO/ })
+      .first()
+      .click();
 
     // Each Terminal entry is a `<span data-level=...>` — that's the production
     // selector. Vitest tests mock Terminal differently; the e2e harness uses
     // the real component, so match its actual DOM.
     const entries = page.locator('[data-level]');
     await expect(entries).toHaveCount(3);
-    await page.locator('[data-testid="chip-automation"]').click();
+    await page.locator('[data-testid="chip-automation-only"]').click();
     // Filtered view: only the AUTOMATION FIRED entry survives.
     await expect(entries).toHaveCount(1);
     await expect(entries.first()).toContainText('AUTOMATION FIRED');
     // Toggle off restores everything.
-    await page.locator('[data-testid="chip-automation"]').click();
+    await page.locator('[data-testid="chip-automation-only"]').click();
     await expect(entries).toHaveCount(3);
   });
 
@@ -91,7 +96,9 @@ test.describe('automations_ui_pass — Lane 2 integration', () => {
 
   // T-8 — Hero "automations today" tile shows the count and click-through
   // routes to /timeline with the chip enabled.
-  test('T-8: hero automations-today tile counts today + navigates with chip set', async ({ page }) => {
+  test('T-8: hero automations-today tile counts today + navigates with chip set', async ({
+    page,
+  }) => {
     await bootApp(page, { scenario: automationsPassScenario, route: '/' });
     const tile = page.locator('[data-testid="hero-stat-automations-today"]');
     await expect(tile).toBeVisible();
@@ -125,7 +132,10 @@ test.describe('automations_ui_pass — Lane 2 integration', () => {
     // The mockApi handle records every non-GET request. Wait until the test-fire
     // POST shows up.
     await expect
-      .poll(() => api.recordedMutations.find((m) => /\/automations\/.+\/test$/.test(m.url)) !== undefined)
+      .poll(
+        () =>
+          api.recordedMutations.find((m) => /\/automations\/.+\/test$/.test(m.url)) !== undefined,
+      )
       .toBe(true);
     const fired = api.recordedMutations.find((m) => /\/automations\/.+\/test$/.test(m.url));
     expect(fired).toBeDefined();

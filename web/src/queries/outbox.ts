@@ -12,20 +12,17 @@
  * useSetDepsOverride in queries/deps.ts.
  */
 import { useMutation } from '@tanstack/react-query';
-import { authedFetch } from '../auth/authedFetch';
+import { apiRequest } from '../auth/apiRequest';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
 
 export function useRetryOutboxEntry() {
   return useMutation<string, Error, string>({
     mutationFn: async (id) => {
-      const res = await authedFetch(`/api/v1/outbox/${encodeURIComponent(id)}/retry`, {
+      await apiRequest(`/api/v1/outbox/${encodeURIComponent(id)}/retry`, {
+        op: 'retry',
         method: 'POST',
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `retry failed (${String(res.status)})`);
-      }
       return id;
     },
     onSuccess: () => {
@@ -42,13 +39,10 @@ export function useRetryOutboxEntry() {
 export function useDiscardOutboxEntry() {
   return useMutation<string, Error, string>({
     mutationFn: async (id) => {
-      const res = await authedFetch(`/api/v1/outbox/${encodeURIComponent(id)}`, {
+      await apiRequest(`/api/v1/outbox/${encodeURIComponent(id)}`, {
+        op: 'discard',
         method: 'DELETE',
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `discard failed (${String(res.status)})`);
-      }
       return id;
     },
     onSuccess: () => {

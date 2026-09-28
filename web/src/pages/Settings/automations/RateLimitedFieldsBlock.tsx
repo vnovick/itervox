@@ -54,7 +54,7 @@ export function RateLimitedFieldsBlock({
         {values.switchToProfile !== '' && !availableProfiles.includes(values.switchToProfile) && (
           <p
             role="alert"
-            className="text-theme-danger mt-1 text-xs"
+            className="text-theme-danger-text mt-1 text-xs"
             data-testid="rate-limited-missing-profile-warning"
           >
             Profile <span className="font-mono">{values.switchToProfile}</span> is no longer
@@ -70,6 +70,7 @@ export function RateLimitedFieldsBlock({
         <select
           id="automation-switch-to-backend"
           value={values.switchToBackend}
+          disabled={values.unknownFields?.switchToBackend !== undefined}
           onChange={(event) => {
             onSwitchToBackendChange(event.target.value as '' | 'claude' | 'codex');
           }}

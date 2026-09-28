@@ -27,6 +27,27 @@ func TestRunHookThreadsItervoxBinIntoSubprocess(t *testing.T) {
 	}
 }
 
+// TestRunHookDropsInheritedGitDir: a hook script that runs git must act on
+// the workspace, not on the repository an inherited GIT_DIR names.
+func TestRunHookDropsInheritedGitDir(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "captured.txt")
+	t.Setenv("GIT_DIR", "/victim/.git")
+	t.Setenv("GIT_WORK_TREE", "/victim")
+
+	script := `printf '%s|%s' "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" > ` + outPath
+	if err := RunHook(context.Background(), script, tmp, 5000); err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if got := string(data); got != "unset|unset" {
+		t.Errorf("hook saw GIT_DIR|GIT_WORK_TREE = %q, want unset|unset", got)
+	}
+}
+
 func TestHookEnvOverridesInheritedItervoxBin(t *testing.T) {
 	t.Setenv("ITERVOX_BIN", "/correct/value")
 	base := []string{

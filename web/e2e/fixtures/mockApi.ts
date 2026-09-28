@@ -138,8 +138,13 @@ export async function installMockApi(page: Page, scenario: Scenario): Promise<Mo
         const id = decodeURIComponent(m[1]);
         const kind = m[2];
         const entries: IssueLogEntry[] = kind === 'log-stream' ? current.logs[id] ?? [] : [];
+        // Frames carry `<generation>-<seq>` ids like the daemon's logbuffer
+        // (CORE-027). The mock closes the stream after the last frame, so the
+        // client reconnects and receives the same frames again; without ids
+        // the resume/de-dupe rules cannot recognise the replay and every
+        // reconnect appended the lines again (3 → 6 → 9 …).
         const body = entries
-          .map((e) => `event: log\ndata: ${JSON.stringify(e)}\n\n`)
+          .map((e, i) => `id: e2e-${String(i + 1)}\nevent: log\ndata: ${JSON.stringify(e)}\n\n`)
           .join('');
         return route.fulfill({ status: 200, contentType: 'text/event-stream', body });
       }

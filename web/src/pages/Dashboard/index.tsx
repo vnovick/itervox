@@ -16,7 +16,12 @@ import { LiveOpsStrip } from './components/LiveOpsStrip';
 import { AutomationQueueList } from './components/AutomationQueueList';
 import { AutomationQueueDetailPanel } from './components/AutomationQueueDetailPanel';
 import { OutboxList } from './components/OutboxList';
+import { FailuresPanel } from './components/FailuresPanel';
 import { DashboardIssuesPanel } from './components/DashboardIssuesPanel';
+import { AttentionInbox } from './components/AttentionInbox';
+import { FirstRunChecklist } from './components/FirstRunChecklist';
+import { useDashboardUrlState } from '../../hooks/useUrlState';
+import { useHashScroll } from '../../hooks/useHashScroll';
 
 // v0.2.0 audit P2-9 — typed empty arrays now live in `utils/constants.ts`
 // alongside the other module-level stable references. The three local
@@ -35,9 +40,26 @@ import {
   EMPTY_DEPENDENCY_AUDIT,
   EMPTY_DEPENDENCY_CYCLES,
   EMPTY_OUTBOX_ENTRIES,
+  EMPTY_RECENT_FAILURES,
 } from '../../utils/constants';
 
 export default function Dashboard() {
+  // CORE-079 — ?view= / ?q= / ?state= <-> the dashboard view and filters.
+  useDashboardUrlState();
+  // CORE-086 — header pills and ops chips link to sections by hash; scroll
+  // once the targeted section has rows (the key changes when any does).
+  const sectionRowsKey = useItervoxStore((st) => {
+    const snap = st.snapshot;
+    if (!snap) return '';
+    return [
+      snap.running.length,
+      snap.paused.length,
+      snap.retrying.length,
+      snap.inputRequired?.length ?? 0,
+      snap.outboxEntries?.length ?? 0,
+    ].join('|');
+  });
+  useHashScroll(sectionRowsKey);
   const { data: issues = [] } = useIssues();
   const {
     availableProfiles,
@@ -64,6 +86,7 @@ export default function Dashboard() {
     dependencyAudit,
     dependencyCycles,
     outboxEntries,
+    recentFailures,
   } = useItervoxStore(
     useShallow((s) => ({
       availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
@@ -90,6 +113,7 @@ export default function Dashboard() {
       dependencyAudit: s.snapshot?.dependencyAudit ?? EMPTY_DEPENDENCY_AUDIT,
       dependencyCycles: s.snapshot?.dependencyCycles ?? EMPTY_DEPENDENCY_CYCLES,
       outboxEntries: s.snapshot?.outboxEntries ?? EMPTY_OUTBOX_ENTRIES,
+      recentFailures: s.snapshot?.recentFailures ?? EMPTY_RECENT_FAILURES,
     })),
   );
   const backlogStateSet = useMemo(() => new Set(backlogStates), [backlogStates]);
@@ -170,6 +194,11 @@ export default function Dashboard() {
       />
       <div className="space-y-[14px]">
         <ProjectSelector />
+        {/* CORE-077 — everything that needs the operator, with inline
+            Reply / Resume / Discard, above every other section. */}
+        {/* CORE-097 — only on an empty fleet (no issues, no runs). */}
+        <FirstRunChecklist />
+        <AttentionInbox onSelectIssue={handleIssueSelect} />
         <LiveOpsStrip />
 
         {/* Hero-compact banner — responsive: stacks on mobile */}
@@ -217,17 +246,32 @@ export default function Dashboard() {
 
         <OutboxList entries={outboxEntries} onSelectIssue={handleIssueSelect} />
 
+        <FailuresPanel failures={recentFailures} onSelectIssue={handleIssueSelect} />
+
         {apiOffline && (
-          <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-[var(--radius-md)] border p-4 text-sm">
+          <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning-text rounded-[var(--radius-md)] border p-4 text-sm">
             <p className="mb-1 font-semibold">Cannot reach the Itervox API</p>
-            <p className="mb-2 opacity-80">
-              Make sure your{' '}
+            {/* CORE-022 — the daemon's port is NOT reliably 8090: omitting
+                server.port from WORKFLOW.md does default to 8090, but
+                `itervox init` scaffolds `port: 0`, which asks the OS for a
+                random free port instead. Tell the operator how to find the
+                real URL rather than a port that may not be in use. */}
+            <p className="opacity-80">
+              Make sure the itervox binary is running for this project. If{' '}
+              <code className="bg-theme-bg-elevated rounded px-1 font-mono">server.port</code> is
+              omitted from your{' '}
               <code className="bg-theme-bg-elevated rounded px-1 font-mono">WORKFLOW.md</code> front
-              matter includes the following and the itervox binary is running:
+              matter, the daemon listens on port 8090 by default — but{' '}
+              <code className="bg-theme-bg-elevated rounded px-1 font-mono">itervox init</code>{' '}
+              scaffolds <code className="bg-theme-bg-elevated rounded px-1 font-mono">port: 0</code>
+              , which asks the OS for a random free port instead. Run{' '}
+              <code className="bg-theme-bg-elevated rounded px-1 font-mono">itervox doctor</code> or
+              check{' '}
+              <code className="bg-theme-bg-elevated rounded px-1 font-mono">
+                .itervox/dashboard_url
+              </code>{' '}
+              to find the URL it is actually listening on.
             </p>
-            <pre className="bg-theme-bg-elevated rounded p-2 font-mono text-xs">
-              {'server:\n  port: 8090'}
-            </pre>
           </div>
         )}
 

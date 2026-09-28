@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // defaultBranches is the set of branch names treated as "no feature branch".
@@ -85,7 +86,7 @@ func (m *Manager) resolveGitDir(ctx context.Context, root, branchName string) (s
 		return barePath, nil
 	}
 	// Legacy: fetch in the root repo directly.
-	fetchCmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "origin", branchName)
+	fetchCmd := gitexec.Command(ctx, root, "-C", root, "fetch", "origin", branchName)
 	if err := fetchCmd.Run(); err != nil {
 		slog.Debug("worktree: fetch failed (best-effort)", "branch", branchName, "error", err)
 	}
@@ -158,7 +159,7 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 
 	// Safety: assert the resulting path is still under root.
 	if err := AssertContained(root, wtPath); err != nil {
-		_ = exec.Command("git", "-C", gitDir, "worktree", "remove", "--force", wtPath).Run()
+		_ = gitexec.Command(context.Background(), gitDir, "-C", gitDir, "worktree", "remove", "--force", wtPath).Run()
 		return Workspace{}, err
 	}
 
@@ -184,8 +185,8 @@ func runGitWorktreeAdd(ctx context.Context, root, wtPath, branchName, startPoint
 		// git worktree add <path> <branch>  (no startpoint allowed for existing branches)
 		args = []string{"-C", root, "worktree", "add", wtPath, branchName}
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+	cmd := gitexec.Command(ctx, root, args...)
+	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -217,7 +218,7 @@ func (m *Manager) removeWorktree(ctx context.Context, identifier, branchName str
 	}
 
 	// git -C <gitDir> worktree remove --force <wtPath>
-	cmd := exec.CommandContext(ctx, "git", "-C", gitDir, "worktree", "remove", "--force", wtPath)
+	cmd := gitexec.Command(ctx, gitDir, "-C", gitDir, "worktree", "remove", "--force", wtPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		output := strings.TrimSpace(string(out))
 		// These messages mean the worktree is already gone — treat as success.
@@ -228,11 +229,11 @@ func (m *Manager) removeWorktree(ctx context.Context, identifier, branchName str
 	}
 
 	// Prune stale metadata from .git/worktrees/
-	_ = exec.CommandContext(ctx, "git", "-C", gitDir, "worktree", "prune").Run()
+	_ = gitexec.Command(ctx, gitDir, "-C", gitDir, "worktree", "prune").Run()
 
 	// Delete branch (best-effort, only when caller provides a name).
 	if branchName != "" {
-		_ = exec.CommandContext(ctx, "git", "-C", gitDir, "branch", "-D", branchName).Run()
+		_ = gitexec.Command(ctx, gitDir, "-C", gitDir, "branch", "-D", branchName).Run()
 	}
 
 	return nil
@@ -246,6 +247,6 @@ func (m *Manager) refExists(ctx context.Context, gitDir, ref string) bool {
 	if ref == "" {
 		return false
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", gitDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	cmd := gitexec.Command(ctx, gitDir, "-C", gitDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	return cmd.Run() == nil
 }

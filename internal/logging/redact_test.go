@@ -90,11 +90,11 @@ func TestRedactingHandler_RedactsMsgAndAttrs(t *testing.T) {
 	h := NewRedactingHandler(inner)
 	log := slog.New(h)
 
-	// Three exfil paths: msg field, plain string attr, and Secret-wrapped attr.
+	// Two exfil paths: msg field and plain string attr. (The Secret-wrapped
+	// attr path went with the unused Secret type, CORE-110.)
 	log.Info(
 		"saw token sk-ant-supersecret-1234567890XYZABCD0123456789 in env",
 		"raw", "carries lin_api_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa here",
-		"wrapped", Secret("not-actually-a-detected-pattern-but-must-still-be-***"),
 	)
 
 	out := buf.String()
@@ -103,9 +103,6 @@ func TestRedactingHandler_RedactsMsgAndAttrs(t *testing.T) {
 	}
 	if strings.Contains(out, "lin_api_aaaa") {
 		t.Errorf("redacting handler leaked linear key in attr: %s", out)
-	}
-	if !strings.Contains(out, "wrapped=***") {
-		t.Errorf("expected Secret-wrapped attr to render as '***'; got: %s", out)
 	}
 }
 

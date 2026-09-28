@@ -69,7 +69,7 @@ export function WorkspaceCard({
               delete the cloned workspace directory. Logs are always kept for visibility.
             </span>
             {visibleError && (
-              <span role="alert" className="text-theme-danger mt-1 block text-xs">
+              <span role="alert" className="text-theme-danger-text mt-1 block text-xs">
                 {visibleError}
               </span>
             )}

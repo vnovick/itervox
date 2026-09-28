@@ -596,7 +596,7 @@ Walk through each dashboard view and confirm visual coverage.
 
 **Auth flow:**
 - Start the daemon on the default loopback bind (`127.0.0.1:8090`)
-- Without `ITERVOX_API_TOKEN`, daemon auto-generates one and prints it (auth is on by default on every bind, including loopback)
+- Without `ITERVOX_API_TOKEN`, daemon auto-generates one and prints it on a terminal, or writes it to `<logs-dir>/api-token` when stderr is not a terminal (auth is on by default on every bind, including loopback)
 - Visit `http://localhost:8090/?token=<token>` — should auto-capture and proceed
 - Visit `http://localhost:8090/` without token — should show the login screen
 - Set `server.allow_unauthenticated: true` and confirm token is no longer required
@@ -625,6 +625,7 @@ Walk through each dashboard view and confirm visual coverage.
 - Edit WORKFLOW.md while daemon is running (change an automation's instructions)
 - Save the file
 - TUI/dashboard reflects the change on the next automation tick without restart
+- With an agent running, change **Max workers** (or any other setting) from the dashboard: the agent keeps running — a settings save does not reload the daemon. A hand edit of WORKFLOW.md still does.
 
 **Config-invalid backoff:**
 - Introduce a YAML syntax error in WORKFLOW.md

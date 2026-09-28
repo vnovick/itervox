@@ -5,6 +5,14 @@ const CHANNEL_NAME = 'itervox-tab-sync';
 const PING = 'ping';
 const PONG = 'pong';
 
+// CORE-099 — measured (M6-W2, Chrome over plain HTTP/1.1): each tab holds 2
+// live streams on the Dashboard and Logs pages and 3 on Timeline; browsers
+// allow 6 connections per server, so a third Dashboard tab (or a second
+// Timeline tab) exhausts them and further requests stall. Informational: the
+// tab still works, and closing one frees its connections.
+export const MULTI_TAB_NOTICE =
+  'Itervox is open in another tab. Browsers allow 6 connections per server and each tab keeps 2–3 open, so a third tab can stall page loads. Close tabs you are not using.';
+
 /**
  * Detects when multiple browser tabs/windows have Itervox open and shows a
  * warning toast. Uses BroadcastChannel to coordinate — no server changes needed.
@@ -27,12 +35,7 @@ export function useMultiTabWarning() {
       } else if (event.data === PONG && !warned) {
         // Another tab replied to our ping — we're the new tab, show warning.
         warned = true;
-        useToastStore
-          .getState()
-          .addToast(
-            'Itervox is open in another tab. Using multiple tabs may cause SSE connection issues.',
-            'error',
-          );
+        useToastStore.getState().addToast(MULTI_TAB_NOTICE, 'info');
       }
     };
 

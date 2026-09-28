@@ -3,6 +3,9 @@ import { render, screen } from '@testing-library/react';
 import { NarrativeFeed } from '../NarrativeFeed';
 
 vi.mock('../../../store/itervoxStore', () => ({ useItervoxStore: vi.fn() }));
+// CORE-075: the feed opens the global log stream; covered in
+// NarrativeFeed.stream.test.tsx against the real store.
+vi.mock('../../../hooks/useLogStream', () => ({ useLogStream: vi.fn() }));
 
 import { useItervoxStore } from '../../../store/itervoxStore';
 
@@ -10,7 +13,7 @@ const mockStore = vi.mocked(useItervoxStore);
 
 describe('NarrativeFeed', () => {
   beforeEach(() => {
-    mockStore.mockImplementation((selector: (s: any) => any) => selector({ logs: [] }));
+    mockStore.mockImplementation((selector: (s: any) => any) => selector({ logs: [], logSeq: 0 }));
   });
 
   it('renders the feed container', () => {
@@ -25,7 +28,7 @@ describe('NarrativeFeed', () => {
 
   it('renders log messages from the store', () => {
     mockStore.mockImplementation((selector: (s: any) => any) =>
-      selector({ logs: ['agent started', 'running tool'] }),
+      selector({ logs: ['agent started', 'running tool'], logSeq: 2 }),
     );
     render(<NarrativeFeed />);
     expect(screen.getByText('agent started')).toBeInTheDocument();
@@ -34,7 +37,9 @@ describe('NarrativeFeed', () => {
 
   it('shows at most 20 entries', () => {
     const lines = Array.from({ length: 25 }, (_, i) => `event ${String(i)}`);
-    mockStore.mockImplementation((selector: (s: any) => any) => selector({ logs: lines }));
+    mockStore.mockImplementation((selector: (s: any) => any) =>
+      selector({ logs: lines, logSeq: lines.length }),
+    );
     render(<NarrativeFeed />);
     // Shows last 20 events (indices 5-24)
     expect(screen.queryByText('event 0')).not.toBeInTheDocument();

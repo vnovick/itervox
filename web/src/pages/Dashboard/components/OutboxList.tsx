@@ -24,7 +24,8 @@ export function OutboxList({
 
   return (
     <section
-      className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-lg)] border"
+      id="outbox"
+      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 overflow-hidden rounded-[var(--radius-lg)] border"
       data-testid="outbox-list"
     >
       <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3">
@@ -101,7 +102,7 @@ function OutboxItem({
           onClick={() => {
             onSelectIssue(row.identifier);
           }}
-          className="text-theme-text hover:text-theme-accent min-w-0 truncate font-mono text-xs font-semibold"
+          className="text-theme-text hover:text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold"
         >
           {row.identifier}
         </button>
@@ -118,7 +119,7 @@ function OutboxItem({
             {row.degraded && (
               <span
                 data-testid={`outbox-degraded-badge-${row.id}`}
-                className="bg-theme-danger-soft text-theme-danger inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
+                className="bg-theme-danger-soft text-theme-danger-text inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
               >
                 degraded
               </span>
@@ -126,7 +127,7 @@ function OutboxItem({
             {showRateLimited && row.rateLimitedUntil && (
               <span
                 data-testid={`outbox-rate-limited-badge-${row.id}`}
-                className="bg-theme-warning-soft text-theme-warning inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
+                className="bg-theme-warning-soft text-theme-warning-text inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium"
                 title={`Tracker rate limited until ${new Date(row.rateLimitedUntil).toLocaleString()}`}
               >
                 rate limited until{' '}
@@ -154,7 +155,7 @@ function OutboxItem({
           onClick={() => {
             retryMutation.mutate(row.id);
           }}
-          className="border-theme-line text-theme-accent min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="border-theme-line text-theme-accent-text min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Retry
         </button>
@@ -164,7 +165,7 @@ function OutboxItem({
           onClick={() => {
             discardMutation.mutate(row.id);
           }}
-          className="border-theme-line text-theme-danger min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="border-theme-line text-theme-danger-text min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
         </button>

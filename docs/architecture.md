@@ -110,16 +110,41 @@ WORKFLOW.md instructs the agent to emit the sentinel
 kept as an alias for callers that don't go through `FinalizeResult`. The worker forwards
 this to the orchestrator, which records the issue in
 `State.InputRequiredIssues`. The dashboard's `ReviewQueueSection` surfaces
-those issues so the user can supply guidance and resume. Codex backends also
-set `InputRequired` directly when they emit `turn.failed` with a "human turn"
-reason — both backends share the same downstream path.
+those issues so the user can supply guidance and resume. The parsers also
+set `InputRequired` directly when an error result event reads as an input
+request (a Claude `result` with `is_error`, a Codex `turn.failed`, matched by
+`isInputRequiredMsg`). Such a turn is also `Failed`; the worker checks
+`InputRequired` before `Failed`, so it exits `TerminalInputRequired`, and
+builds the question from agent-written text, never from stderr (CORE-164).
 
 ### Configuration hot-reload
 
 `workflow.Watch` (in `internal/workflow/watcher.go`) polls `WORKFLOW.md` once
-per second using a content hash, so identical writes do not trigger reloads.
-On a real change it invokes the supplied callback, which `cmd/itervox` wires
-to a graceful orchestrator restart.
+per second (stamp: mtime, size, sha256) and waits for the file to stay
+unchanged for 2 s before acting. When it settles it invokes the supplied
+callback, which `cmd/itervox` wires to a run-context cancel and a full reload
+of the orchestrator generation — which cancels in-flight agent turns.
+
+Settings saves from the dashboard and TUI do **not** reload (CORE-116). They
+apply the new value in memory under `cfgMu` and write `WORKFLOW.md` through
+the locked patchers in `internal/workflow`, which register each write's
+(pre, post) content hashes in a small process-local registry
+(`internal/workflow/selfwrite.go`). At settle time the watcher skips the
+reload only if the file moved from the content it last settled on to the
+current content purely through that chain of this process's own writes.
+An operator edit, a write by another `itervox` process, or an operator edit
+mixed into the same window as a save still reloads. Settings whose consumer
+only refreshes on reload (tracker active/terminal/completion states and the
+project filter, which the tracker client copies per generation, and the
+dashboard model refresh, which has no in-memory setter) write through
+`workflow.WriteAndReload` and keep reloading.
+
+Every `WORKFLOW.md` read-modify-write holds an in-process mutex and then an
+`flock` on the sidecar `.WORKFLOW.md.lock` (CORE-149), so `itervox init
+--update` and `itervox models refresh` — separate processes — cannot lose
+updates against a running daemon. The sidecar is transient and gitignored by
+`itervox init --update`; on platforms without `flock` (Windows) the file lock
+is a no-op.
 
 ### Tracker abstraction
 

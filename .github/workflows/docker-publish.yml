@@ -1,0 +1,76 @@
+name: Container Image
+
+# CORE-060: publish the official image to GHCR. Tag-gated: runs only when a
+# release tag is pushed (the same v*.*.* tags release.yml builds binaries for).
+# Nothing on a branch push or pull request can publish.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Deny everything by default; the job asks for exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push ghcr.io image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # checkout
+      packages: write  # push to ghcr.io/<owner>/itervox
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/itervox
+          # :latest is set explicitly below, never implicitly.
+          flavor: |
+            latest=false
+          # {{major}}.{{minor}} is not generated for a SemVer pre-release, and
+          # :latest only moves on a final release: a pre-release tag
+          # (v1.2.0-rc.1) contains "-" (M4-close).
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # The published image ships the claude and codex CLIs at the
+          # versions pinned in the Dockerfile (CORE-060); a plain local
+          # build leaves them out.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            INSTALL_AGENT_CLIS=true
+          provenance: true
+          sbom: true

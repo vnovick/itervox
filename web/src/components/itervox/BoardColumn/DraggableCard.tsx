@@ -1,8 +1,13 @@
-import { useRef, useEffect, useState, startTransition } from 'react';
+import { useCallback, useLayoutEffect, useRef, useEffect, useState, startTransition } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import IssueCard from '../IssueCard';
 import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
+
+// Identifier whose drag handle held focus when its card unmounted (a drop
+// into another column re-mounts the card there). The re-mounted card takes
+// focus back so a keyboard drag does not end on <body>.
+let focusHandoff: string | null = null;
 
 /**
  * One draggable item in a BoardColumn. While being dragged, the source-cell
@@ -57,36 +62,112 @@ export default function DraggableCard({
   const cardRef = useRef<HTMLDivElement>(null);
   const [measuredHeight, setMeasuredHeight] = useState(72);
 
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: issue.identifier,
-    data: { issue },
-  });
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } =
+    useDraggable({
+      id: issue.identifier,
+      data: { issue },
+    });
 
   const style =
     transform && !isDragging ? { transform: CSS.Translate.toString(transform) } : undefined;
 
-  // Measure card height in an effect so it happens outside render
+  // CORE-081 — track the card height with a ResizeObserver instead of reading
+  // offsetHeight after every render. The observer is (re)attached only when the
+  // real card is mounted (not while the drag placeholder stands in for it), so
+  // the placeholder's first isDragging render reads the last observed height.
+  // Zero heights are ignored: a detached node reports 0 and would collapse the
+  // placeholder. Without ResizeObserver (old engines) the card is measured once
+  // per mount instead.
   useEffect(() => {
-    if (!isDragging && cardRef.current) {
-      const h = cardRef.current.offsetHeight;
-      startTransition(() => {
-        setMeasuredHeight(h);
-      });
+    const node = cardRef.current;
+    if (isDragging || !node) return;
+    if (typeof ResizeObserver === 'undefined') {
+      const h = node.offsetHeight;
+      if (h > 0) setMeasuredHeight(h);
+      return;
     }
-  });
+    const observer = new ResizeObserver((entries) => {
+      const h = entries[entries.length - 1]?.contentRect.height ?? 0;
+      if (h > 0) {
+        startTransition(() => {
+          setMeasuredHeight(h);
+        });
+      }
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [isDragging]);
+
+  // CORE-068 — dnd-kit's KeyboardSensor starts a drag on Space/Enter. With an
+  // activator node registered it only does so when the key event's target IS
+  // that node (core 6.3.1, KeyboardSensor.activators). So the listeners stay
+  // on the whole card (pointer/touch drag from anywhere keeps working) while
+  // the role=button attributes and the activator ref move to a dedicated drag
+  // handle. The title button and nested controls get their keys back.
+
+  const handleNodeRef = useRef<HTMLElement | null>(null);
+  const placeholderHandleRef = useRef<HTMLButtonElement>(null);
+  const setHandleRef = useCallback(
+    (node: HTMLElement | null) => {
+      handleNodeRef.current = node;
+      setActivatorNodeRef(node);
+    },
+    [setActivatorNodeRef],
+  );
+
+  // Layout effects: the cleanup runs before React removes the old card's DOM
+  // (so it still sees the focused handle) and the mount runs after the new
+  // card's handle ref is attached, in the same commit.
+  useLayoutEffect(() => {
+    if (focusHandoff === issue.identifier) {
+      focusHandoff = null;
+      const active = document.activeElement;
+      if (!active || active === document.body) handleNodeRef.current?.focus();
+    }
+    return () => {
+      const active = document.activeElement;
+      if (active && (active === handleNodeRef.current || active === placeholderHandleRef.current)) {
+        focusHandoff = issue.identifier;
+      }
+    };
+  }, [issue.identifier]);
+
+  // M5-B1 follow-up — while lifted, the card's cell is a placeholder and the
+  // real handle unmounts, which dropped keyboard focus to <body> for the
+  // whole drag. The placeholder keeps a visually hidden stand-in handle
+  // (same activator ref and dnd-kit attributes) and focus moves to it; on
+  // drop dnd-kit's RestoreFocus returns focus to the card's own handle.
+  useEffect(() => {
+    if (!isDragging) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) placeholderHandleRef.current?.focus();
+  }, [isDragging]);
 
   if (isDragging) {
     const h = measuredHeight;
     return (
       <div
         ref={setNodeRef}
-        {...attributes}
         {...listeners}
         className={`border-theme-line-strong overflow-hidden rounded-lg border-2 border-dashed transition-all duration-300 ease-in-out ${
           shouldCollapse ? 'my-0 max-h-0 border-0 opacity-0' : 'opacity-100'
         }`}
         style={shouldCollapse ? undefined : { height: h }}
-      />
+      >
+        <button
+          type="button"
+          ref={(node) => {
+            placeholderHandleRef.current = node;
+            setHandleRef(node);
+          }}
+          {...attributes}
+          aria-label={`Move ${issue.identifier}`}
+          data-testid="issue-card-drag-handle-placeholder"
+          className="sr-only"
+        />
+      </div>
     );
   }
 
@@ -97,7 +178,6 @@ export default function DraggableCard({
         cardRef.current = node;
       }}
       style={style}
-      {...attributes}
       {...listeners}
     >
       <IssueCard
@@ -117,6 +197,8 @@ export default function DraggableCard({
         retryAttempt={retryAttemptByIdentifier?.[issue.identifier]}
         maxRetries={maxRetries}
         syncing={syncingIdentifiers?.has(issue.identifier)}
+        dragHandleAttributes={attributes}
+        dragHandleRef={setHandleRef}
       />
     </div>
   );

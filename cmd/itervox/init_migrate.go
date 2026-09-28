@@ -13,6 +13,7 @@ import (
 	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
 	builtinprofiles "github.com/vnovick/itervox/internal/profiles"
+	"github.com/vnovick/itervox/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,7 +24,22 @@ type workflowMigrationResult struct {
 	Warnings   []string
 }
 
+// migrateWorkflowToSchema2 runs the whole read-modify-write of WORKFLOW.md
+// under workflow.WithEditLock (CORE-149): `itervox init --update` is a
+// separate process from a running daemon, so without the inter-process lock
+// a dashboard settings save landing between this function's read and its
+// final write would be silently overwritten.
 func migrateWorkflowToSchema2(workflowPath string, force bool, now time.Time) (workflowMigrationResult, error) {
+	var result workflowMigrationResult
+	err := workflow.WithEditLock(workflowPath, func() error {
+		var err error
+		result, err = migrateWorkflowToSchema2Locked(workflowPath, force, now)
+		return err
+	})
+	return result, err
+}
+
+func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Time) (workflowMigrationResult, error) {
 	var result workflowMigrationResult
 	original, err := os.ReadFile(workflowPath)
 	if err != nil {
@@ -437,6 +453,13 @@ func firstYouAreSentence(text string) string {
 	return strings.TrimSpace(match)
 }
 
+// workflowLockGitignoreEntry is the root .gitignore line for the sidecar
+// lock file workflow.WithEditLock and every WORKFLOW.md patcher take
+// (".<base>.lock" next to WORKFLOW.md; see internal/workflow/filelock.go).
+// Derived from workflow.LockFilePath so the two can never disagree (CORE-110:
+// LockFilePath had no production caller).
+var workflowLockGitignoreEntry = filepath.Base(workflow.LockFilePath("WORKFLOW.md"))
+
 func patchRootGitignoreForAgents(projectDir string) error {
 	if projectDir == "" {
 		projectDir = "."
@@ -471,6 +494,12 @@ func patchRootGitignoreForAgents(projectDir string) error {
 	// must never be committed; ensure the ignore entry exists (idempotent).
 	if !containsLine(lines, "WORKFLOW.md.bak") {
 		lines = append(lines, "WORKFLOW.md.bak")
+		changed = true
+	}
+	// CORE-149 — the inter-process WORKFLOW.md edit lock's sidecar file is
+	// transient runtime state; never commit it (idempotent).
+	if !containsLine(lines, workflowLockGitignoreEntry) {
+		lines = append(lines, workflowLockGitignoreEntry)
 		changed = true
 	}
 	if !changed {

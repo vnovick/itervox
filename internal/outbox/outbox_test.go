@@ -651,6 +651,14 @@ func TestLegacyEntryBackfillsCommentKey(t *testing.T) {
 	require.Len(t, entries, 1, "a legacy entry must load, not be dropped")
 	assert.NotEmpty(t, entries[0].CommentKey, "load must backfill a key")
 	assert.Equal(t, 2, entries[0].Attempts, "backfill must not reset delivery state")
+
+	// CORE-122: a crash after the flusher posts under the backfilled key but
+	// before anything persists must not hand the next run a different key —
+	// that is a second, un-deduplicated post (on Linear too: the key is the
+	// comment id).
+	reopened := mustNew(t, path).Snapshot()
+	require.Len(t, reopened, 1)
+	assert.Equal(t, entries[0].CommentKey, reopened[0].CommentKey, "the backfilled key must survive a reopen")
 }
 
 // TestOutboxDoesNotPersistZeroRateLimitedUntil pins the omitzero tags: a
@@ -692,6 +700,30 @@ func TestRateLimitThenOrdinaryFailureClearsRateLimitedUntil(t *testing.T) {
 	assert.Equal(t, 1, got.Attempts)
 	assert.Equal(t, 1, got.RateLimitedAttempts)
 }
+
+// CORE-044: a delivery failure stamps LastFailedAt so HEARTBEAT can pick the
+// most recently failing degraded entry; a rate-limit deferral is not a
+// failure and leaves it alone.
+func TestMarkFailed_StampsLastFailedAt(t *testing.T) {
+	dir := t.TempDir()
+	o := mustNew(t, filepath.Join(dir, "outbox.json"))
+	base := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	o.SetNow(func() time.Time { return base })
+	require.NoError(t, o.Enqueue(outbox.Entry{Kind: outbox.KindUpdateState, IssueID: "A", Identifier: "ENG-1", TargetState: "Done"}))
+	id := o.Snapshot()[0].ID
+	assert.True(t, o.Snapshot()[0].LastFailedAt.IsZero())
+
+	o.MarkFailed(id, errors.New("fail"), base.Add(time.Minute))
+	assert.True(t, o.Snapshot()[0].LastFailedAt.Equal(base.Add(time.Minute)))
+
+	o.MarkFailed(id, rlErr{reset: base.Add(time.Hour)}, base.Add(2*time.Minute))
+	assert.True(t, o.Snapshot()[0].LastFailedAt.Equal(base.Add(time.Minute)), "a rate-limit deferral is not a failure")
+}
+
+type rlErr struct{ reset time.Time }
+
+func (e rlErr) Error() string               { return "rate limited" }
+func (e rlErr) RateLimitResetAt() time.Time { return e.reset }
 
 // TestOutboxRateLimitResetClampedToMaxWindow pins the per-entry counterpart
 // of the tracker gate's 2-hour bound: a reset instant far beyond any real

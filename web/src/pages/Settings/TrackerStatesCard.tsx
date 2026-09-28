@@ -111,10 +111,14 @@ export function TrackerStatesCard({
         className="space-y-5 px-5 py-5"
       >
         <div>
-          <label className="mb-2 block text-xs font-medium tracking-wider uppercase">
+          <label
+            htmlFor="tracker-active-states"
+            className="mb-2 block text-xs font-medium tracking-wider uppercase"
+          >
             Active States
           </label>
           <TagInput
+            id="tracker-active-states"
             chips={activeStates}
             onChange={(chips) => {
               setValue('activeStates', chips, { shouldValidate: true });
@@ -123,17 +127,21 @@ export function TrackerStatesCard({
             addButtonClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:opacity-80"
           />
           {errors.activeStates && (
-            <p role="alert" className="text-theme-danger mt-1 text-xs">
+            <p role="alert" className="text-theme-danger-text mt-1 text-xs">
               {errors.activeStates.message}
             </p>
           )}
         </div>
 
         <div>
-          <label className="mb-2 block text-xs font-medium tracking-wider uppercase">
+          <label
+            htmlFor="tracker-backlog-states"
+            className="mb-2 block text-xs font-medium tracking-wider uppercase"
+          >
             Terminal States
           </label>
           <TagInput
+            id="tracker-backlog-states"
             chips={terminalStates}
             onChange={(chips) => {
               setValue('terminalStates', chips, { shouldValidate: true });
@@ -142,20 +150,24 @@ export function TrackerStatesCard({
             addButtonClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)] hover:opacity-80"
           />
           {errors.terminalStates && (
-            <p role="alert" className="text-theme-danger mt-1 text-xs">
+            <p role="alert" className="text-theme-danger-text mt-1 text-xs">
               {errors.terminalStates.message}
             </p>
           )}
         </div>
 
         <div>
-          <label className="mb-2 block text-xs font-medium tracking-wider uppercase">
+          <label
+            htmlFor="tracker-terminal-states"
+            className="mb-2 block text-xs font-medium tracking-wider uppercase"
+          >
             Completion State
           </label>
           <input
+            id="tracker-terminal-states"
             type="text"
             placeholder="e.g. In Review (leave empty to skip)"
-            className="border-theme-line bg-theme-panel-strong text-theme-text w-64 rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
+            className="border-theme-line bg-theme-panel-strong text-theme-text focus:border-theme-accent w-64 rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
             {...register('completionState')}
           />
           <p className="text-theme-muted mt-1 text-xs">
@@ -172,8 +184,8 @@ export function TrackerStatesCard({
           >
             {isSubmitting ? 'Saving…' : 'Save Changes'}
           </button>
-          {saveOk && <span className="text-theme-success text-sm">Saved successfully.</span>}
-          {saveError && <span className="text-theme-danger text-sm">{saveError}</span>}
+          {saveOk && <span className="text-theme-success-text text-sm">Saved successfully.</span>}
+          {saveError && <span className="text-theme-danger-text text-sm">{saveError}</span>}
         </div>
       </form>
     </div>

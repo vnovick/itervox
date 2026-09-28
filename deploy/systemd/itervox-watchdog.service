@@ -1,0 +1,16 @@
+[Unit]
+Description=Restart itervox when its event loop is wedged (CORE-113, optional)
+Documentation=https://itervox.dev
+After=itervox.service
+
+[Service]
+Type=oneshot
+# Root only because it may run `systemctl restart itervox`. It reads
+# GET /api/v1/ready (unauthenticated) and never touches daemon state.
+# Knobs (optional): ITERVOX_WATCHDOG_READY_URL, ITERVOX_WATCHDOG_FAILURES (default 3),
+# ITERVOX_WATCHDOG_SERVICE (default itervox).
+EnvironmentFile=-/etc/itervox/watchdog.env
+StateDirectory=itervox-watchdog
+ExecStart=/usr/local/bin/itervox-watchdog.sh
+NoNewPrivileges=true
+ProtectSystem=full

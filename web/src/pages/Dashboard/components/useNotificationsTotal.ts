@@ -12,6 +12,8 @@ export function useNotificationsTotal(issues: readonly TrackerIssue[]): number {
   const snapshot = useItervoxStore((s) => s.snapshot);
   return useMemo(() => {
     if (!snapshot) return 0;
-    return buildOperatorQueueItems(snapshot, issues).total;
+    // CORE-078 — the attention count (read-only resuming rows excluded), so
+    // the tab label matches the inbox, the nav badge and the page title.
+    return buildOperatorQueueItems(snapshot, issues).attention;
   }, [snapshot, issues]);
 }

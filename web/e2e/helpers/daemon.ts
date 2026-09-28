@@ -11,7 +11,7 @@
  * if you change the React bundle, rebuild before re-running.
  */
 import { spawn, ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,10 +108,21 @@ export async function startDaemon(): Promise<Daemon> {
     `server:\n  host: "127.0.0.1"\n  port: ${String(port)}\n  allow_unauthenticated_lan: false\n`,
   );
   // Inject a placeholder profile if the quickstart doesn't already define one.
+  // Schema 2 rejects a profile without soul_file + instructions_file (resolved
+  // relative to WORKFLOW.md), so write both files the way `itervox init` does.
   if (!/^\s*profiles:/m.test(workflow)) {
+    const agentDir = join(workdir, '.itervox', 'agents', 'echo');
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, 'SOUL.md'), 'You are a placeholder profile for e2e tests.\n');
+    writeFileSync(
+      join(agentDir, 'INSTRUCTIONS.md'),
+      'Do nothing; this profile only exists for e2e.\n',
+    );
     workflow = workflow.replace(
       /^(agent:\n(?:[ \t]+\S.*\n)*)/m,
-      `$1  profiles:\n    echo:\n      command: "echo profile placeholder"\n`,
+      `$1  profiles:\n    echo:\n      command: "echo profile placeholder"\n` +
+        `      soul_file: ".itervox/agents/echo/SOUL.md"\n` +
+        `      instructions_file: ".itervox/agents/echo/INSTRUCTIONS.md"\n`,
     );
   }
   writeFileSync(workflowPath, workflow);

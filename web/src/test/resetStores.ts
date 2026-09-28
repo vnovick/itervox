@@ -23,14 +23,12 @@ export function resetAllStores(): void {
     sseConnected: false,
     selectedIdentifier: null,
     activeIssueId: null,
-    tokenSamples: [],
   });
   useToastStore.setState({ toasts: [], _timers: new Map() });
   useUIStore.setState({
     dashboardViewMode: 'board',
     dashboardSearch: '',
     dashboardStateFilter: 'all',
-    dashboardSearchVisible: false,
     expandedRunningId: null,
     expandedPausedId: null,
     logsIssueSearch: '',

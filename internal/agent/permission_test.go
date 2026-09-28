@@ -38,12 +38,12 @@ func TestSandboxModeEmitsNoDangerousFlagForEitherBackend(t *testing.T) {
 	cases := map[string]string{
 		"claude direct":        strings.Join(buildDirectArgs(nil, "do it", PermissionSandbox), " "),
 		"claude direct/resume": strings.Join(buildDirectArgs(&session, "do it", PermissionSandbox), " "),
-		"claude shell":         buildShellCmd("claude", nil, "do it", PermissionSandbox),
-		"claude shell/resume":  buildShellCmd("claude", &session, "do it", PermissionSandbox),
-		"codex direct":         strings.Join(buildCodexDirectArgs(nil, "do it", "/ws", PermissionSandbox), " "),
-		"codex direct/resume":  strings.Join(buildCodexDirectArgs(&session, "do it", "/ws", PermissionSandbox), " "),
-		"codex shell":          buildCodexShellCmd("codex", nil, "do it", "/ws", PermissionSandbox),
-		"codex shell/resume":   buildCodexShellCmd("codex", &session, "do it", "/ws", PermissionSandbox),
+		"claude shell":         buildShellCmd("claude", nil, "do it", localPromptRedirect, PermissionSandbox),
+		"claude shell/resume":  buildShellCmd("claude", &session, "do it", localPromptRedirect, PermissionSandbox),
+		"codex direct":         strings.Join(buildCodexDirectArgs(nil, "/ws", PermissionSandbox), " "),
+		"codex direct/resume":  strings.Join(buildCodexDirectArgs(&session, "/ws", PermissionSandbox), " "),
+		"codex shell":          buildCodexShellCmd("codex", nil, "/ws", localPromptRedirect, PermissionSandbox),
+		"codex shell/resume":   buildCodexShellCmd("codex", &session, "/ws", localPromptRedirect, PermissionSandbox),
 	}
 	for name, got := range cases {
 		assert.NotContains(t, got, "--dangerously",
@@ -55,24 +55,24 @@ func TestSandboxModeEmitsNoDangerousFlagForEitherBackend(t *testing.T) {
 // usable at all: itervox is headless, so a mode that can pause for approval
 // hangs the turn until the timeout kills it and the issue fails.
 func TestSandboxModeStaysNonInteractive(t *testing.T) {
-	codex := buildCodexShellCmd("codex", nil, "do it", "/ws", PermissionSandbox)
+	codex := buildCodexShellCmd("codex", nil, "/ws", localPromptRedirect, PermissionSandbox)
 	assert.Contains(t, codex, "--sandbox workspace-write")
 	assert.Contains(t, codex, "--ask-for-approval never",
 		"without this a workspace-write sandbox still prompts, which hangs a headless run")
 
-	claude := buildShellCmd("claude", nil, "do it", PermissionSandbox)
+	claude := buildShellCmd("claude", nil, "do it", localPromptRedirect, PermissionSandbox)
 	assert.Contains(t, claude, "--permission-mode acceptEdits")
 }
 
 // TestBypassModeIsUnchanged pins that the default path emits exactly what it
 // emitted before #66 — the flags every existing deployment depends on.
 func TestBypassModeIsUnchanged(t *testing.T) {
-	claude := buildShellCmd("claude", nil, "do it", PermissionBypass)
+	claude := buildShellCmd("claude", nil, "do it", localPromptRedirect, PermissionBypass)
 	assert.Contains(t, claude, "--output-format stream-json")
 	assert.Contains(t, claude, "--verbose")
 	assert.Contains(t, claude, "--dangerously-skip-permissions")
 
-	codex := buildCodexShellCmd("codex", nil, "do it", "/ws", PermissionBypass)
+	codex := buildCodexShellCmd("codex", nil, "/ws", localPromptRedirect, PermissionBypass)
 	assert.Contains(t, codex, "--dangerously-bypass-approvals-and-sandbox")
 	assert.Contains(t, codex, "--skip-git-repo-check")
 }

@@ -8,8 +8,8 @@ const SOURCE_TONES: Record<string, string> = {
   automation: 'bg-theme-accent-soft text-theme-accent-strong',
   dashboard: 'bg-theme-bg-soft text-theme-text-secondary',
   system: 'bg-theme-bg-soft text-theme-muted',
-  tracker_observed: 'bg-theme-success-soft text-theme-success',
-  worker_lifecycle: 'bg-theme-warning-soft text-theme-warning',
+  tracker_observed: 'bg-theme-success-soft text-theme-success-text',
+  worker_lifecycle: 'bg-theme-warning-soft text-theme-warning-text',
 };
 
 function formatStatusTime(at: string): string {

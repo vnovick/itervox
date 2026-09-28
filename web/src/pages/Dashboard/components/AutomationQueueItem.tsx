@@ -20,7 +20,7 @@ export function AutomationQueueItem({
     >
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="text-theme-accent min-w-0 truncate font-mono text-xs font-semibold">
+          <span className="text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold">
             {row.automationId}
           </span>
           <span
@@ -38,7 +38,7 @@ export function AutomationQueueItem({
           onClick={() => {
             onSelectIssue(row.identifier);
           }}
-          className="text-theme-text hover:text-theme-accent min-w-0 truncate font-mono text-xs font-semibold"
+          className="text-theme-text hover:text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold"
         >
           {row.identifier}
         </button>
@@ -55,7 +55,7 @@ export function AutomationQueueItem({
           unresolved.map((blocker) => (
             <span
               key={blockerLabel(blocker)}
-              className="bg-theme-warning-soft text-theme-warning rounded px-1.5 py-0.5 font-mono text-[10px]"
+              className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 font-mono text-[10px]"
             >
               {blockerLabel(blocker)}
             </span>
@@ -87,7 +87,7 @@ export function AutomationQueueItem({
           onClick={() => {
             onSelectQueue(row.id);
           }}
-          className="border-theme-line text-theme-accent min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80"
+          className="border-theme-line text-theme-accent-text min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80"
         >
           Details
         </button>

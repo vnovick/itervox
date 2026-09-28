@@ -7,6 +7,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 // DispatchPRMergedAutomations is the public entry point invoked from outside
@@ -27,7 +28,7 @@ func (o *Orchestrator) DispatchPRMergedAutomations(ctx context.Context, issue do
 		if sendCtx.Err() != nil {
 			return
 		}
-		if !matchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{
@@ -54,6 +55,7 @@ func (o *Orchestrator) DispatchPRMergedAutomations(ctx context.Context, issue do
 			Automation: &dispatch,
 		}:
 		case <-sendCtx.Done():
+			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: pr_merged dispatch event not accepted before context done",
 				"identifier", issue.Identifier,
 				"automation", rule.ID,
@@ -93,7 +95,7 @@ func (o *Orchestrator) dispatchMatchingPRMergedAutomations(
 		return
 	}
 	for _, automation := range automations {
-		if !matchesAutomationFilter(issue, automation.MatchMode, automation.States, automation.LabelsAny, automation.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, automation.MatchMode, automation.States, automation.LabelsAny, automation.IdentifierRegex, nil, "") {
 			continue
 		}
 		key := prMergedDedupKey(issue.Identifier, event.PRURL, automation.ID)

@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestListClaudeModels_HitsAnthropicEndpoint exercises the real GET path
@@ -108,6 +110,9 @@ func TestListCodexModels_HitsOpenAIEndpoint(t *testing.T) {
 	if !ids["gpt-5.4-codex"] || !ids["gpt-5.3-codex"] {
 		t.Errorf("expected gpt-5.4-codex + gpt-5.3-codex; got %v", got)
 	}
+	if ids["text-embedding-3-small"] {
+		t.Errorf("non-codex/gpt IDs must be filtered out; got %v", got)
+	}
 }
 
 func TestListClaudeModels_FallsBackWithoutKey(t *testing.T) {
@@ -128,14 +133,39 @@ func TestListCodexModels_FallsBackWithoutKey(t *testing.T) {
 
 func TestListClaudeModels_FallsBackOnInvalidKey(t *testing.T) {
 	// With an invalid key, the API returns 401 and we fall back to defaults.
+	// Point at a fake server rather than the real Anthropic endpoint (CORE-132):
+	// without the override this test hit the real internet and passed on ANY
+	// failure, network-down included.
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+		http.Error(w, `{"error":"invalid_api_key"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
 	t.Setenv("ANTHROPIC_API_KEY", "invalid-key-xxx")
+	t.Setenv("ITERVOX_ANTHROPIC_API_BASE", srv.URL)
+
 	models := ListClaudeModels()
+	if !hit {
+		t.Fatal("fake Anthropic endpoint was never called")
+	}
 	assert.Equal(t, DefaultClaudeModels, models, "should return default models on API failure")
 }
 
 func TestListCodexModels_FallsBackOnInvalidKey(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+		http.Error(w, `{"error":"invalid_api_key"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
 	t.Setenv("OPENAI_API_KEY", "invalid-key-xxx")
+	t.Setenv("ITERVOX_OPENAI_API_BASE", srv.URL)
+
 	models := ListCodexModels()
+	if !hit {
+		t.Fatal("fake OpenAI endpoint was never called")
+	}
 	assert.Equal(t, DefaultCodexModels, models, "should return default models on API failure")
 }
 
@@ -156,8 +186,21 @@ func TestDefaultCodexModels_HasExpectedEntries(t *testing.T) {
 	assert.Contains(t, ids, "gpt-5.2-codex")
 }
 
-func TestModelOption_Fields(t *testing.T) {
+// TestModelOption_JSONFieldNames guards the wire contract with the
+// dashboard: web/src/types/schemas.ts's ModelOptionSchema expects lowercase
+// "id"/"label" keys (it feeds z.record(z.string(), z.array(ModelOptionSchema))
+// on Snapshot.availableModels). The previous version of this test
+// (TestModelOption_Fields) only asserted the struct literal back at itself
+// and would not have caught a renamed or mis-tagged JSON field.
+func TestModelOption_JSONFieldNames(t *testing.T) {
 	m := ModelOption{ID: "test-model", Label: "Test Model"}
-	assert.Equal(t, "test-model", m.ID)
-	assert.Equal(t, "Test Model", m.Label)
+
+	raw, err := json.Marshal(m)
+	require.NoError(t, err)
+
+	var asMap map[string]any
+	require.NoError(t, json.Unmarshal(raw, &asMap))
+
+	assert.Equal(t, "test-model", asMap["id"], "JSON key must be lowercase \"id\" to match web/src/types/schemas.ts's ModelOptionSchema")
+	assert.Equal(t, "Test Model", asMap["label"], "JSON key must be lowercase \"label\" to match web/src/types/schemas.ts's ModelOptionSchema")
 }

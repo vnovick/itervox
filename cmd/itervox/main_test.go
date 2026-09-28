@@ -22,6 +22,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent/agenttest"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
@@ -1199,14 +1200,14 @@ func initGitRepo(t *testing.T, dir string) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary is required for gitignore behavior checks")
 	}
-	cmd := exec.Command("git", "-C", dir, "init", "-q")
+	cmd := gitexec.Command(context.Background(), dir, "init", "-q")
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
 
 func gitPathIgnored(t *testing.T, dir string, rel string) bool {
 	t.Helper()
-	cmd := exec.Command("git", "-C", dir, "check-ignore", "--quiet", rel)
+	cmd := gitexec.Command(context.Background(), dir, "check-ignore", "--quiet", rel)
 	err := cmd.Run()
 	if err == nil {
 		return true

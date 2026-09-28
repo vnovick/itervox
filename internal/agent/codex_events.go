@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type codexRawEvent struct {
@@ -12,6 +13,8 @@ type codexRawEvent struct {
 	Item     *codexRawItem `json:"item"`
 	Usage    *codexUsage   `json:"usage"`
 	Error    *codexError   `json:"error"`
+	// Message is the top-level {"type":"error","message"} text (CORE-050).
+	Message string `json:"message"`
 }
 
 type codexError struct {
@@ -33,6 +36,7 @@ type codexRawItem struct {
 	SenderThreadID    string                 `json:"sender_thread_id"`
 	ReceiverThreadIDs []string               `json:"receiver_thread_ids"`
 	AgentsStates      map[string]codexThread `json:"agents_states"`
+	Message           string                 `json:"message"` // error items
 }
 
 type codexUsage struct {
@@ -164,6 +168,9 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 					Input: input,
 				}},
 			}, nil
+		case "error":
+			// CORE-050: error items were dropped as an unknown type.
+			return codexErrorEvent(raw.Item.Message), nil
 		default:
 			return StreamEvent{}, fmt.Errorf("codex: unknown item type %q", raw.Item.Type)
 		}
@@ -183,6 +190,10 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 		ev := StreamEvent{Type: EventResult, IsError: true}
 		if raw.Error != nil {
 			ev.ResultText = raw.Error.Message
+			ev.Limit = ClassifyLimitText(raw.Error.Message, time.Now(), time.Local)
+			if ev.Limit == nil && isCodexUsageLimitCode(raw.Error) {
+				ev.Limit = &LimitSignal{Kind: LimitKindQuota, Source: LimitSourceText, Message: boundLimitMessage(raw.Error.Message)}
+			}
 			ev.IsInputRequired = isInputRequiredMsg(raw.Error.Message)
 		}
 		if raw.Usage != nil {
@@ -194,7 +205,29 @@ func ParseCodexLine(line []byte) (StreamEvent, error) {
 		}
 		return ev, nil
 
+	case "error":
+		// CORE-050: the top-level ThreadErrorEvent (a fatal error, e.g. the
+		// usage limit) was skipped. Codex carries only a message, so the
+		// limit is detected from its text.
+		return codexErrorEvent(raw.Message), nil
+
 	default:
 		return StreamEvent{}, fmt.Errorf("codex: skip event type %q", raw.Type)
 	}
+}
+
+// codexErrorEvent builds the EventError for a Codex error event or item.
+func codexErrorEvent(msg string) StreamEvent {
+	return StreamEvent{
+		Type:    EventError,
+		Message: msg,
+		Limit:   ClassifyLimitText(msg, time.Now(), time.Local),
+	}
+}
+
+// isCodexUsageLimitCode reports a structured usage-limit code on a
+// turn.failed error, for Codex builds that set one.
+func isCodexUsageLimitCode(e *codexError) bool {
+	c := normalizeLimitText(e.Code + " " + e.Type)
+	return strings.Contains(c, "usage_limit") || strings.Contains(c, "insufficient_quota")
 }

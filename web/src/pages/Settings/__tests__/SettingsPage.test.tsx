@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import Settings from '../index';
 
 const workspaceCardMock = vi.fn(() => <div data-testid="workspace-card" />);
 const dependenciesCardMock = vi.fn(() => <div data-testid="dependencies-card" />);
 
+const pageMetaMock = vi.hoisted(() => vi.fn<(props: unknown) => null>(() => null));
 vi.mock('../../../components/common/PageMeta', () => ({
-  default: () => null,
+  default: (props: unknown) => pageMetaMock(props),
 }));
 
 vi.mock('../TrackerStatesCard', () => ({
@@ -35,6 +36,14 @@ vi.mock('../WorkspaceCard', () => ({
 
 vi.mock('../DependenciesCard', () => ({
   DependenciesCard: (props: unknown) => dependenciesCardMock(props),
+}));
+
+vi.mock('../CapacityCard', () => ({
+  CapacityCard: () => <div data-testid="capacity-card">capacity</div>,
+}));
+
+vi.mock('../RateLimitsFailoverCard', () => ({
+  RateLimitsFailoverCard: (props: unknown) => rateLimitsCardMock(props),
 }));
 
 vi.mock('../../../components/ui/button/ConfirmButton', () => ({
@@ -74,6 +83,12 @@ vi.mock('../useSettingsPageData', () => ({
   }),
 }));
 
+const rateLimitsCardMock = vi.hoisted(() =>
+  vi.fn<(props: unknown) => React.JSX.Element>(() => (
+    <div data-testid="rate-limits-card">rate limits</div>
+  )),
+);
+
 describe('Settings page', () => {
   beforeEach(() => {
     workspaceCardMock.mockClear();
@@ -99,6 +114,32 @@ describe('Settings page', () => {
       expect.objectContaining({
         mode: 'auto',
       }),
+    );
+  });
+
+  // CORE-093
+  it('renders Rate limits & failover section', () => {
+    render(<Settings />);
+    const section = screen.getByRole('region', { name: 'Rate limits & failover' });
+    expect(section).not.toBeNull();
+    expect(section).toContainElement(screen.getByTestId('rate-limits-card'));
+    expect(rateLimitsCardMock.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ maxSwitchesPerIssuePerWindow: 2, switchWindowHours: 6 }),
+    );
+  });
+
+  it('Capacity card renders adjacent to Retries', () => {
+    const { container } = render(<Settings />);
+    const retries = container.querySelector('#section-retries')?.closest('section');
+    const next = retries?.nextElementSibling;
+    expect(next?.querySelector('h2')).toHaveTextContent('Capacity');
+    expect(next).toContainElement(screen.getByTestId('capacity-card'));
+  });
+
+  it('page description names what Settings holds (no stale "profiles")', () => {
+    render(<Settings />);
+    expect(pageMetaMock.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ description: expect.not.stringContaining('profiles') }),
     );
   });
 });

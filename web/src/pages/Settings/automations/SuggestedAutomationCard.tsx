@@ -39,7 +39,7 @@ export function SuggestedAutomationCard({
         {suggestion.description}
       </p>
       {disabled && (
-        <p className="text-theme-danger text-[11px] leading-relaxed">
+        <p className="text-theme-danger-text text-[11px] leading-relaxed">
           Create and enable the <span className="font-medium">{suggestion.profile}</span> profile
           first.
         </p>

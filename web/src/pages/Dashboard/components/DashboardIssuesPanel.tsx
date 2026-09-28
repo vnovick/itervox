@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { FilterPill } from '../../../components/itervox/FilterPills';
-import { authedFetch } from '../../../auth/authedFetch';
+import { apiRequest } from '../../../auth/apiRequest';
 import { UnauthorizedError } from '../../../auth/UnauthorizedError';
 import { useSettingsActions } from '../../../hooks/useSettingsActions';
 import { useInvalidateIssues } from '../../../queries/issues';
@@ -121,7 +121,8 @@ export function DashboardIssuesPanel({
   // source of truth.
   const refreshMutation = useMutation({
     mutationFn: async () => {
-      await authedFetch('/api/v1/refresh', { method: 'POST' });
+      // A failed refresh request now reaches onError instead of being ignored.
+      await apiRequest('/api/v1/refresh', { op: 'refresh', method: 'POST' });
       await useItervoxStore.getState().refreshSnapshot();
     },
     onSuccess: () => {

@@ -65,11 +65,6 @@
       "Bash(find . -name *.go*)",
       "Bash(grep *)"
     ],
-    "deny": [
-      "Bash(git push*)",
-      "Bash(git commit*)",
-      "Bash(rm -rf*)",
-      "Bash(lefthook uninstall*)"
-    ]
+    "deny": ["Bash(git push*)", "Bash(rm -rf*)", "Bash(lefthook uninstall*)"]
   }
 }

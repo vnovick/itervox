@@ -12,6 +12,8 @@ interface TagInputProps {
   /** Optional suggestion list shown as quick-add pills and input autocomplete. */
   suggestions?: string[];
   suggestionLabel?: string;
+  /** id of the inline add input, so a <label htmlFor> can name it (CORE-088). */
+  id?: string;
 }
 
 /**
@@ -26,6 +28,7 @@ export function TagInput({
   placeholder = '+ Add state',
   suggestions = [],
   suggestionLabel = 'Suggestions',
+  id,
 }: TagInputProps) {
   const [inputValue, setInputValue] = useState('');
   const datalistId = useId();
@@ -78,6 +81,7 @@ export function TagInput({
 
       <div className="flex flex-wrap items-center gap-2">
         <input
+          id={id}
           type="text"
           list={availableSuggestions.length > 0 ? datalistId : undefined}
           value={inputValue}
@@ -91,7 +95,7 @@ export function TagInput({
             }
           }}
           placeholder={placeholder}
-          className="min-w-[11rem] flex-1 rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-xs text-[var(--text)] focus:outline-none"
+          className="focus:border-theme-accent min-w-[11rem] flex-1 rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-xs text-[var(--text)] focus:outline-none"
         />
         {availableSuggestions.length > 0 && (
           <datalist id={datalistId}>

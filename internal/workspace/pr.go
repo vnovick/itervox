@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // GetCurrentBranch returns the name of the current git branch in wsPath,
@@ -15,8 +17,7 @@ func GetCurrentBranch(ctx context.Context, wsPath string) string {
 	if wsPath == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = wsPath
+	cmd := gitexec.Command(ctx, wsPath, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -37,12 +38,10 @@ func CheckoutBranch(ctx context.Context, wsPath, branch string) error {
 		return nil
 	}
 	// Best-effort fetch — makes the branch available if it was pushed to origin.
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch)
-	fetchCmd.Dir = wsPath
+	fetchCmd := gitexec.Command(ctx, wsPath, "fetch", "origin", branch)
 	_ = fetchCmd.Run()
 
-	checkoutCmd := exec.CommandContext(ctx, "git", "checkout", branch)
-	checkoutCmd.Dir = wsPath
+	checkoutCmd := gitexec.Command(ctx, wsPath, "checkout", branch)
 	if out, err := checkoutCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
@@ -61,6 +60,8 @@ func FindOpenPRURL(ctx context.Context, wsPath string) string {
 		"--jq", `select(.state=="OPEN").url`,
 	)
 	cmd.Dir = wsPath
+	// gh resolves the repository and branch by running git itself.
+	cmd.Env = gitexec.Environ()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

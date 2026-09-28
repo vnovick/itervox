@@ -65,3 +65,24 @@ export function stateBadgeColor(state: string): BadgeColor {
   if (s.includes('todo')) return 'primary';
   return 'light';
 }
+
+/** Compact token count: 950, 12.3k, 1.2M. */
+export function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/**
+ * CORE-090 — age of an ISO timestamp relative to `now` ("5s", "3m", "2h");
+ * null when the timestamp is absent or unparsable (render '—').
+ */
+export function fmtAge(iso: string | null | undefined, now: number): string | null {
+  if (!iso) return null;
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return null;
+  const s = Math.max(0, Math.floor((now - at) / 1000));
+  if (s < 60) return `${String(s)}s`;
+  if (s < 3600) return `${String(Math.floor(s / 60))}m`;
+  return `${String(Math.floor(s / 3600))}h`;
+}

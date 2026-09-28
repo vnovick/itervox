@@ -77,7 +77,11 @@ type blockerCacheEntry struct {
 
 // Client is the GitHub Issues REST tracker adapter.
 type Client struct {
-	cfg           ClientConfig
+	cfg ClientConfig
+	// statesMu guards cfg.ActiveStates and cfg.TerminalStates, which
+	// SetStateLists replaces at runtime (CORE-160). Read them through
+	// activeStates / terminalStates.
+	statesMu      sync.RWMutex
 	httpClient    *http.Client
 	owner         string
 	repo          string
@@ -151,13 +155,13 @@ func (c *Client) storeBlockerState(id, state, url string) {
 func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
 	seen := make(map[string]struct{})
 	var all []domain.Issue
-	for _, activeState := range c.cfg.ActiveStates {
+	for _, activeState := range c.activeStates() {
 		q := url.Values{}
 		q.Set("state", "open")
 		q.Set("labels", activeState)
 		q.Set("per_page", strconv.Itoa(pageSize))
 		u := fmt.Sprintf("%s/repos/%s/%s/issues?%s", c.cfg.Endpoint, c.owner, c.repo, q.Encode())
-		issues, err := c.fetchPaginated(ctx, u, c.cfg.ActiveStates)
+		issues, err := c.fetchPaginated(ctx, u, c.activeStates())
 		if err != nil {
 			return nil, err
 		}
@@ -319,7 +323,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 	if !ok {
 		return nil, fmt.Errorf("github_fetch_issue_detail: unexpected issue shape")
 	}
-	derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+	derived := deriveState(raw, c.activeStates(), c.terminalStates())
 	issue := normalizeIssue(raw, derived)
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found or missing required fields", issueID)
@@ -406,7 +410,7 @@ func (c *Client) fetchSingleIssue(ctx context.Context, issueNumber string) (*dom
 		return nil, fmt.Errorf("github_unknown_payload: unexpected issue shape")
 	}
 
-	derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+	derived := deriveState(raw, c.activeStates(), c.terminalStates())
 	issue := normalizeIssue(raw, derived)
 	return issue, nil
 }
@@ -434,7 +438,7 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraState
 			if !ok {
 				continue
 			}
-			derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+			derived := deriveState(raw, c.activeStates(), c.terminalStates())
 			if derived == "" {
 				// Fall back to extraStates (e.g. backlog_states) so issues whose
 				// labels are not in active/terminal are still returned.
@@ -476,9 +480,9 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 
 	// Remove existing state labels (active + terminal + backlog).
 	// Use a fresh slice to avoid mutating cfg's backing arrays.
-	allStateLabels := make([]string, 0, len(c.cfg.ActiveStates)+len(c.cfg.TerminalStates)+len(c.cfg.BacklogStates))
-	allStateLabels = append(allStateLabels, c.cfg.ActiveStates...)
-	allStateLabels = append(allStateLabels, c.cfg.TerminalStates...)
+	allStateLabels := make([]string, 0, len(c.activeStates())+len(c.terminalStates())+len(c.cfg.BacklogStates))
+	allStateLabels = append(allStateLabels, c.activeStates()...)
+	allStateLabels = append(allStateLabels, c.terminalStates()...)
 	allStateLabels = append(allStateLabels, c.cfg.BacklogStates...)
 	for _, label := range allStateLabels {
 		if strings.EqualFold(label, stateName) {
@@ -631,7 +635,7 @@ func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateNa
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("github_create_issue: decode body: %w", err)
 	}
-	derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+	derived := deriveState(raw, c.activeStates(), c.terminalStates())
 	if derived == "" {
 		derived = stateName
 	}
@@ -1048,3 +1052,25 @@ func (c *Client) FindCommentByKey(ctx context.Context, issueID, key string) (*do
 // compile time instead of silently demoting the outbox flusher to
 // CreateComment for GitHub.
 var _ tracker.IdempotentCommenter = (*Client)(nil)
+
+// SetStateLists implements tracker.StateListSetter (CORE-160).
+func (c *Client) SetStateLists(active, terminal []string) {
+	c.statesMu.Lock()
+	defer c.statesMu.Unlock()
+	c.cfg.ActiveStates = append([]string(nil), active...)
+	c.cfg.TerminalStates = append([]string(nil), terminal...)
+}
+
+// activeStates returns a copy of the current active state labels.
+func (c *Client) activeStates() []string {
+	c.statesMu.RLock()
+	defer c.statesMu.RUnlock()
+	return append([]string(nil), c.cfg.ActiveStates...)
+}
+
+// terminalStates returns a copy of the current terminal state labels.
+func (c *Client) terminalStates() []string {
+	c.statesMu.RLock()
+	defer c.statesMu.RUnlock()
+	return append([]string(nil), c.cfg.TerminalStates...)
+}

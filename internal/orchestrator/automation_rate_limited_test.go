@@ -58,7 +58,13 @@ func TestIsRateLimitFailure_Classifier(t *testing.T) {
 func TestIsRateLimitFailureWithPatterns_OperatorOverride(t *testing.T) {
 	// Empty patterns → defaults still hit on "rate_limit_exceeded".
 	assert.True(t, IsRateLimitFailureWithPatterns("Error: rate_limit_exceeded", nil))
-	// Custom list rejects the default phrasing if not included.
+	// Custom list rejects the default phrasing if not included — the
+	// "replace" mode (CORE-100), which IsRateLimitFailureWithPatterns pins.
+	assert.False(t, IsRateLimitFailureWithPatternsMode(
+		"Error: rate_limit_exceeded",
+		[]string{"my-vendor-throttle"},
+		config.RateLimitPatternsModeReplace,
+	))
 	assert.False(t, IsRateLimitFailureWithPatterns(
 		"Error: rate_limit_exceeded",
 		[]string{"my-vendor-throttle"},
@@ -101,18 +107,19 @@ func TestAllowRateLimitSwitch_RollingWindowCap(t *testing.T) {
 	o := &Orchestrator{cfg: &config.Config{}}
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 2
 	o.cfg.Agent.SwitchWindowHours = 6
+	st := &State{}
 
 	now := time.Now()
-	require.True(t, o.allowRateLimitSwitch("issue-1", now), "first switch within cap")
-	o.recordRateLimitSwitch("issue-1", now)
-	require.True(t, o.allowRateLimitSwitch("issue-1", now), "second switch within cap")
-	o.recordRateLimitSwitch("issue-1", now)
-	assert.False(t, o.allowRateLimitSwitch("issue-1", now),
+	require.True(t, o.allowRateLimitSwitch(st, "issue-1", now), "first switch within cap")
+	o.recordRateLimitSwitch(st, "issue-1", now)
+	require.True(t, o.allowRateLimitSwitch(st, "issue-1", now), "second switch within cap")
+	o.recordRateLimitSwitch(st, "issue-1", now)
+	assert.False(t, o.allowRateLimitSwitch(st, "issue-1", now),
 		"third switch must be rejected once cap is reached within the window")
 
 	// Advance past the window — old stamps fall off, switch becomes available.
 	future := now.Add(7 * time.Hour)
-	assert.True(t, o.allowRateLimitSwitch("issue-1", future),
+	assert.True(t, o.allowRateLimitSwitch(st, "issue-1", future),
 		"after the window, the cap should reset")
 }
 
@@ -120,10 +127,11 @@ func TestAllowRateLimitSwitch_RollingWindowCap(t *testing.T) {
 func TestAllowRateLimitSwitch_ZeroMeansUnlimited(t *testing.T) {
 	o := &Orchestrator{cfg: &config.Config{}}
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 0
+	st := &State{}
 	now := time.Now()
 	for range 100 {
-		require.True(t, o.allowRateLimitSwitch("issue-1", now))
-		o.recordRateLimitSwitch("issue-1", now)
+		require.True(t, o.allowRateLimitSwitch(st, "issue-1", now))
+		o.recordRateLimitSwitch(st, "issue-1", now)
 	}
 }
 
@@ -132,15 +140,16 @@ func TestAllowRateLimitSwitch_ZeroMeansUnlimited(t *testing.T) {
 // are both throttled at the same time.
 func TestRateLimitCooldown_MutesPerProfileTuple(t *testing.T) {
 	o := &Orchestrator{cfg: &config.Config{}}
+	st := &State{}
 	now := time.Now()
-	o.setRateLimitCooldown("issue-1|claude-coder", now.Add(30*time.Minute))
+	o.setRateLimitCooldown(st, "issue-1|claude-coder", now.Add(30*time.Minute))
 
-	until, muted := o.rateLimitCooldownUntil("issue-1|claude-coder")
+	until, muted := o.rateLimitCooldownUntil(*st, "issue-1|claude-coder")
 	require.True(t, muted)
 	assert.True(t, now.Before(until), "muted until 30min ahead")
 
 	// Different (issue, profile) tuple — not muted.
-	_, otherMuted := o.rateLimitCooldownUntil("issue-1|codex-coder")
+	_, otherMuted := o.rateLimitCooldownUntil(*st, "issue-1|codex-coder")
 	assert.False(t, otherMuted, "cooldown is per-(issue, profile), not per-issue")
 }
 
@@ -227,8 +236,8 @@ func TestDispatchMatchingRateLimitedAutomations_InvalidProfileDoesNotConsumeCapC
 	assert.Empty(t, state.IssueBackends, "failed acceptance must not switch backend")
 	assert.Empty(t, state.AutoSwitchedIdentifiers, "failed acceptance must not mark auto-switch")
 	assert.Empty(t, state.AutoSwitchedAt, "failed acceptance must not record switch timestamp")
-	assert.True(t, o.allowRateLimitSwitch("id1", now), "failed acceptance must not burn switch cap")
-	_, muted := o.rateLimitCooldownUntil("id1|claude-coder")
+	assert.True(t, o.allowRateLimitSwitch(&state, "id1", now), "failed acceptance must not burn switch cap")
+	_, muted := o.rateLimitCooldownUntil(state, "id1|claude-coder")
 	assert.False(t, muted, "failed acceptance must not set cooldown")
 	assert.Never(t, func() bool {
 		return countMemoryTrackerComments(t, mt, "id1") > 0
@@ -540,7 +549,12 @@ func TestAutoSwitchedOverrides_PersistRoundtrip(t *testing.T) {
 		"ENG-1": time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC),
 		"ENG-3": time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC),
 	}
-	writer.saveAutoSwitchedToDisk(autoSwitched, profiles, backends, switchedAt)
+	writer.saveAutoSwitchedToDisk(&State{
+		AutoSwitchedIdentifiers: autoSwitched,
+		IssueProfiles:           profiles,
+		IssueBackends:           backends,
+		AutoSwitchedAt:          switchedAt,
+	})
 
 	// Step 2: a fresh "reader" orchestrator loads from the same file.
 	reader := &Orchestrator{cfg: &config.Config{}}
@@ -599,13 +613,12 @@ func TestAutoSwitchedOverrides_EmptyMapClearsFile(t *testing.T) {
 	path := tmp + "/auto_switched.json"
 	o := &Orchestrator{cfg: &config.Config{}}
 	o.SetAutoSwitchedFile(path)
-	o.saveAutoSwitchedToDisk(
-		map[string]struct{}{"ENG-1": {}},
-		map[string]string{"ENG-1": "x"},
-		nil,
-		map[string]time.Time{"ENG-1": time.Now()},
-	)
-	o.saveAutoSwitchedToDisk(map[string]struct{}{}, map[string]string{}, nil, nil)
+	o.saveAutoSwitchedToDisk(&State{
+		AutoSwitchedIdentifiers: map[string]struct{}{"ENG-1": {}},
+		IssueProfiles:           map[string]string{"ENG-1": "x"},
+		AutoSwitchedAt:          map[string]time.Time{"ENG-1": time.Now()},
+	})
+	o.saveAutoSwitchedToDisk(&State{AutoSwitchedIdentifiers: map[string]struct{}{}, IssueProfiles: map[string]string{}})
 
 	state := State{
 		IssueProfiles:           map[string]string{},
@@ -705,35 +718,32 @@ func TestRevertExpiredAutoSwitchesForTick_PersistsBeforeDispatch(t *testing.T) {
 	assert.Empty(t, loaded.AutoSwitchedIdentifiers)
 }
 
-// PruneRateLimitedMaps must drop switchHistory entries older than 2*window
+// pruneRateLimitedMaps must drop SwitchHistory entries older than 2*window
 // and cooldown entries whose deadline has passed (gap §1.1, §1.2).
 func TestPruneRateLimitedMaps_EvictsStale(t *testing.T) {
 	o := &Orchestrator{cfg: &config.Config{}}
 	o.cfg.Agent.SwitchWindowHours = 6
+	st := &State{}
 	now := time.Now()
 
 	// Old switch (12h ago = 2*window) → should be pruned.
-	o.recordRateLimitSwitch("issue-old", now.Add(-13*time.Hour))
+	o.recordRateLimitSwitch(st, "issue-old", now.Add(-13*time.Hour))
 	// Recent switch → should be kept.
-	o.recordRateLimitSwitch("issue-recent", now.Add(-1*time.Hour))
+	o.recordRateLimitSwitch(st, "issue-recent", now.Add(-1*time.Hour))
 	// Expired cooldown → should be pruned.
-	o.setRateLimitCooldown("a|p", now.Add(-1*time.Hour))
+	o.setRateLimitCooldown(st, "a|p", now.Add(-1*time.Hour))
 	// Active cooldown → should be kept.
-	o.setRateLimitCooldown("b|p", now.Add(1*time.Hour))
+	o.setRateLimitCooldown(st, "b|p", now.Add(1*time.Hour))
 
-	o.PruneRateLimitedMaps(now)
+	assert.Equal(t, 2, o.pruneRateLimitedMaps(st, now), "one history entry and one cooldown dropped")
 
-	o.switchHistoryMu.Lock()
-	_, oldKept := o.switchHistory["issue-old"]
-	_, recentKept := o.switchHistory["issue-recent"]
-	o.switchHistoryMu.Unlock()
+	_, oldKept := st.SwitchHistory["issue-old"]
+	_, recentKept := st.SwitchHistory["issue-recent"]
 	assert.False(t, oldKept, "stale switchHistory entry should be evicted")
 	assert.True(t, recentKept, "recent switchHistory entry should survive")
 
-	o.rateLimitCooldownMu.Lock()
-	_, expiredKept := o.rateLimitCooldown["a|p"]
-	_, activeKept := o.rateLimitCooldown["b|p"]
-	o.rateLimitCooldownMu.Unlock()
+	_, expiredKept := st.RateLimitCooldowns["a|p"]
+	_, activeKept := st.RateLimitCooldowns["b|p"]
 	assert.False(t, expiredKept, "expired cooldown entry should be evicted")
 	assert.True(t, activeKept, "active cooldown entry should survive")
 }
@@ -743,18 +753,17 @@ func TestRateLimitCapExhaustedCommentDedupeUsesResetWindow(t *testing.T) {
 	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = 1
 	o.cfg.Agent.SwitchWindowHours = 6
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
-	o.recordRateLimitSwitch("id1", now.Add(-2*time.Hour))
-	require.False(t, o.allowRateLimitSwitch("id1", now), "test setup must put issue at cap")
+	st := &State{}
+	o.recordRateLimitSwitch(st, "id1", now.Add(-2*time.Hour))
+	require.False(t, o.allowRateLimitSwitch(st, "id1", now), "test setup must put issue at cap")
 
-	assert.True(t, o.claimRateLimitCapComment("id1", now), "first cap comment should be claimed")
-	o.rateLimitCapCommentMu.Lock()
-	until := o.rateLimitCapCommentUntil["id1"]
-	o.rateLimitCapCommentMu.Unlock()
+	assert.True(t, o.claimRateLimitCapComment(st, "id1", now), "first cap comment should be claimed")
+	until := st.RateLimitCapCommentUntil["id1"]
 	assert.Equal(t, now.Add(4*time.Hour), until, "dedupe should open when the oldest switch leaves the window")
 
-	assert.False(t, o.claimRateLimitCapComment("id1", now.Add(time.Minute)),
+	assert.False(t, o.claimRateLimitCapComment(st, "id1", now.Add(time.Minute)),
 		"repeat cap comments inside the same closed window should be suppressed")
-	assert.True(t, o.claimRateLimitCapComment("id1", now.Add(4*time.Hour+time.Second)),
+	assert.True(t, o.claimRateLimitCapComment(st, "id1", now.Add(4*time.Hour+time.Second)),
 		"cap comments should be allowed again after the window opens")
 }
 
@@ -776,8 +785,8 @@ func TestDispatchMatchingRateLimitedAutomations_DedupesCapExhaustedComment(t *te
 		},
 	})
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
-	o.recordRateLimitSwitch("id1", now.Add(-time.Hour))
 	state := State{IssueProfiles: map[string]string{}}
+	o.recordRateLimitSwitch(&state, "id1", now.Add(-time.Hour))
 	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}
 
 	queued := o.dispatchMatchingRateLimitedAutomations(

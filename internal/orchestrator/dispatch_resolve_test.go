@@ -6,9 +6,11 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 )
 
-// TestResolveBackendForIssue covers the five resolution layers and their
-// interactions. Each row is one realistic configuration the orchestrator
-// can see in practice.
+// TestResolveBackendForIssue covers the resolution layers of
+// resolveDispatchTarget and their interactions. Each row is one realistic
+// configuration the orchestrator can see in practice. CORE-115: the three
+// rows that used to pair a claude/codex command with the other backend's
+// hint now keep the command's own backend (the pair was unrunnable).
 func TestResolveBackendForIssue(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -29,11 +31,19 @@ func TestResolveBackendForIssue(t *testing.T) {
 			wantBackend:    "claude",
 		},
 		{
-			name:           "default backend overrides inference",
+			name:           "default backend mismatching the command binary is refused",
 			defaultCmd:     "claude",
 			defaultBackend: "codex",
 			wantCmd:        "claude",
-			wantRunnerCmd:  "@@itervox-backend=codex claude",
+			wantRunnerCmd:  "claude",
+			wantBackend:    "claude",
+		},
+		{
+			name:           "default backend overrides inference for a wrapper",
+			defaultCmd:     "/opt/bin/agent",
+			defaultBackend: "codex",
+			wantCmd:        "/opt/bin/agent",
+			wantRunnerCmd:  "@@itervox-backend=codex /opt/bin/agent",
 			wantBackend:    "codex",
 		},
 		{
@@ -46,29 +56,48 @@ func TestResolveBackendForIssue(t *testing.T) {
 			wantBackend:   "codex",
 		},
 		{
-			name:          "profile.Backend overrides backend, keeps cmd",
-			defaultCmd:    "claude",
+			name:          "profile.Backend overrides backend, keeps cmd (wrapper)",
+			defaultCmd:    "my-agent",
 			profile:       &config.AgentProfile{Backend: "codex"},
-			wantCmd:       "claude",
-			wantRunnerCmd: "@@itervox-backend=codex claude",
+			wantCmd:       "my-agent",
+			wantRunnerCmd: "@@itervox-backend=codex my-agent",
 			wantBackend:   "codex",
 		},
 		{
-			name:          "per-issue override wins over everything",
+			name:          "profile.Backend mismatching the command binary is refused",
+			defaultCmd:    "claude",
+			profile:       &config.AgentProfile{Backend: "codex"},
+			wantCmd:       "claude",
+			wantRunnerCmd: "claude",
+			wantBackend:   "claude",
+		},
+		{
+			name:          "per-issue override wins over everything (wrapper)",
+			defaultCmd:    "claude",
+			profile:       &config.AgentProfile{Command: "run-agent.sh", Backend: "codex"},
+			issueOverride: "claude",
+			wantCmd:       "run-agent.sh", // profile.Command still applies for cmd
+			wantRunnerCmd: "@@itervox-backend=claude run-agent.sh",
+			wantBackend:   "claude",
+		},
+		{
+			name:          "per-issue override mismatching the command binary is refused",
 			defaultCmd:    "claude",
 			profile:       &config.AgentProfile{Command: "codex", Backend: "codex"},
 			issueOverride: "claude",
-			wantCmd:       "codex", // profile.Command still applies for cmd
-			wantRunnerCmd: "@@itervox-backend=claude codex",
-			wantBackend:   "claude",
+			wantCmd:       "codex",
+			wantRunnerCmd: "codex",
+			wantBackend:   "codex",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, runnerCmd, backend := resolveBackendForIssue(
-				tc.defaultCmd, tc.defaultBackend, tc.profile, tc.issueOverride,
-			)
+			got := resolveDispatchTarget(dispatchTargetInput{
+				DefaultCommand: tc.defaultCmd, DefaultBackend: tc.defaultBackend,
+				Profile: tc.profile, IssueBackend: tc.issueOverride,
+			})
+			cmd, runnerCmd, backend := got.Command, got.RunnerCommand, got.Backend
 			if cmd != tc.wantCmd {
 				t.Errorf("cmd: got %q, want %q", cmd, tc.wantCmd)
 			}

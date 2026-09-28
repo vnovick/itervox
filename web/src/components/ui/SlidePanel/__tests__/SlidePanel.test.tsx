@@ -1,4 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { useState } from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SlidePanel } from '../SlidePanel';
 
@@ -72,5 +73,59 @@ describe('SlidePanel', () => {
     expect(labelId).toBeTruthy();
     if (!labelId) throw new Error('aria-labelledby not set');
     expect(document.getElementById(labelId)).toHaveTextContent('T');
+  });
+
+  it('traps focus and restores to opener on close', async () => {
+    function Opener() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(true);
+            }}
+          >
+            open panel
+          </button>
+          <SlidePanel
+            isOpen={open}
+            onClose={() => {
+              setOpen(false);
+            }}
+            title="Detail"
+          >
+            <button type="button">first action</button>
+            <button type="button">last action</button>
+          </SlidePanel>
+        </>
+      );
+    }
+    render(<Opener />);
+    const opener = screen.getByRole('button', { name: 'open panel' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = screen.getByRole('dialog', { name: 'Detail' });
+    // Initial focus moves into the panel.
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    });
+    const closeBtn = screen.getByRole('button', { name: 'Close panel' });
+    const last = screen.getByRole('button', { name: 'last action' });
+
+    // Tab on the last focusable wraps to the first; Shift+Tab on the first wraps to the last.
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(document.activeElement).toBe(closeBtn);
+    fireEvent.keyDown(closeBtn, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    // Closing restores focus to the opener.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+    expect(document.activeElement).toBe(opener);
   });
 });

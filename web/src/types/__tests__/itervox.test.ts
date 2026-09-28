@@ -1,5 +1,5 @@
 import { describe, it, expectTypeOf } from 'vitest';
-import type { IssueLogEntry, LogEventType } from '../itervox';
+import type { IssueLogEntry, LogEventType } from '../schemas';
 
 describe('IssueLogEntry types', () => {
   it('event field is a LogEventType', () => {

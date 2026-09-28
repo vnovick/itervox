@@ -20,11 +20,13 @@ import {
 import { MarkdownPromptEditor } from './MarkdownPromptEditor';
 
 function ModelInput({
+  id,
   backend,
   value,
   onChange,
   dynamicModels,
 }: {
+  id?: string;
   backend: SupportedBackend;
   value: string;
   onChange: (v: string) => void;
@@ -35,6 +37,7 @@ function ModelInput({
   return (
     <>
       <select
+        id={id}
         value={isKnownModel ? value : '__custom__'}
         onChange={(e) => {
           const v = e.target.value;
@@ -65,14 +68,17 @@ function ModelInput({
 }
 
 function BackendSelect({
+  id,
   value,
   onChange,
 }: {
+  id?: string;
   value: SupportedBackend;
   onChange: (value: SupportedBackend) => void;
 }) {
   return (
     <select
+      id={id}
       value={value}
       onChange={(e) => {
         onChange(normalizeBackend(e.target.value));
@@ -164,12 +170,17 @@ export function ProfileEditorFields({
     <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
         <div>
-          <label className={fieldLabelCls}>Backend</label>
-          <BackendSelect value={backend} onChange={onBackendChange} />
+          <label htmlFor="profile-backend-select" className={fieldLabelCls}>
+            Backend
+          </label>
+          <BackendSelect id="profile-backend-select" value={backend} onChange={onBackendChange} />
         </div>
         <div>
-          <label className={fieldLabelCls}>Model</label>
+          <label htmlFor="profile-model-input" className={fieldLabelCls}>
+            Model
+          </label>
           <ModelInput
+            id="profile-model-input"
             backend={backend}
             value={model}
             onChange={onModelChange}
@@ -244,7 +255,7 @@ export function ProfileEditorFields({
                 Newly created follow-up issues will open in this tracker column/state.
               </p>
               {createIssueStateError && (
-                <p role="alert" className="text-theme-danger text-xs">
+                <p role="alert" className="text-theme-danger-text text-xs">
                   {createIssueStateError}
                 </p>
               )}

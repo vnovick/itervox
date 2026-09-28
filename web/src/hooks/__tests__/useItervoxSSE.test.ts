@@ -37,6 +37,10 @@ vi.mock('../../auth/authedEventStream', () => ({
 
 const mockSetSnapshot = vi.fn();
 const mockSetSseConnected = vi.fn();
+const mockSetLastMessageAt = vi.fn();
+const mockSetLastSnapshotAt = vi.fn();
+const mockRecordSnapshotParseFailure = vi.fn();
+const mockNoteSnapshotParsed = vi.fn();
 
 beforeEach(() => {
   streamHandles.length = 0;
@@ -46,11 +50,26 @@ beforeEach(() => {
       sel: (s: {
         setSnapshot: typeof mockSetSnapshot;
         setSseConnected: typeof mockSetSseConnected;
+        setLastMessageAt: typeof mockSetLastMessageAt;
+        setLastSnapshotAt: typeof mockSetLastSnapshotAt;
       }) => unknown,
-    ) => sel({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
+    ) =>
+      sel({
+        setSnapshot: mockSetSnapshot,
+        setSseConnected: mockSetSseConnected,
+        setLastMessageAt: mockSetLastMessageAt,
+        setLastSnapshotAt: mockSetLastSnapshotAt,
+      }),
   );
   Object.assign(useItervoxStore, {
-    getState: () => ({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
+    getState: () => ({
+      setSnapshot: mockSetSnapshot,
+      setSseConnected: mockSetSseConnected,
+      setLastMessageAt: mockSetLastMessageAt,
+      setLastSnapshotAt: mockSetLastSnapshotAt,
+      recordSnapshotParseFailure: mockRecordSnapshotParseFailure,
+      noteSnapshotParsed: mockNoteSnapshotParsed,
+    }),
   });
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,

@@ -51,7 +51,8 @@ describe('AppHeader', () => {
 
     renderWithRouter(<AppHeader />);
 
-    expect(screen.getByText('reply received')).toBeInTheDocument();
+    // CORE-076 — the state chip uses the shared STATUS_META label.
+    expect(screen.getByTestId('header-orchestrator-state')).toHaveTextContent('Resuming');
     expect(screen.getByText('1 resuming')).toBeInTheDocument();
   });
 
@@ -70,8 +71,8 @@ describe('AppHeader', () => {
 
     renderWithRouter(<AppHeader />);
 
-    expect(screen.getByText('input required')).toBeInTheDocument();
-    expect(screen.getByText('1 need input')).toBeInTheDocument();
+    expect(screen.getByTestId('header-orchestrator-state')).toHaveTextContent('Needs input');
+    expect(screen.getByText('1 needs input')).toBeInTheDocument();
   });
 
   it('renders the config-invalid banner when snapshot.configInvalid is set (T-26)', () => {
@@ -119,9 +120,49 @@ describe('AppHeader', () => {
 
     renderWithRouter(<AppHeader />);
 
-    expect(screen.getByText('input required')).toBeInTheDocument();
-    expect(screen.getByText('1 need input')).toBeInTheDocument();
+    expect(screen.getByTestId('header-orchestrator-state')).toHaveTextContent('Needs input');
+    expect(screen.getByText('1 needs input')).toBeInTheDocument();
     expect(screen.getByText('running/max')).toBeInTheDocument();
     expect(screen.getByText(/1 retrying/i)).toBeInTheDocument();
+  });
+  // CORE-086 — every count pill is a link to the dashboard section behind it.
+  // The status word comes from STATUS_META (M5 CORE-076): "needs input", not
+  // "need input" as the spec's regex had it.
+  it.each([
+    ['running', { running: [{ identifier: 'ENG-1' }] }, /running/, '/#running-sessions'],
+    ['paused', { paused: ['ENG-2'] }, /paused/, '/#running-sessions'],
+    [
+      'needs input',
+      {
+        inputRequired: [
+          { identifier: 'ENG-3', sessionId: 's', state: 'input_required', queuedAt: '' },
+        ],
+      },
+      /needs input/,
+      '/#attention-inbox',
+    ],
+    ['retrying', { retrying: [{ identifier: 'ENG-4' }] }, /retrying/, '/#retry-queue'],
+  ])(
+    'running, paused, need-input and retrying pills each link to their filtered dashboard view — %s',
+    (_label, snapshot, name, href) => {
+      setupStore(snapshot);
+      renderWithRouter(<AppHeader />);
+      const link = screen.getByRole('link', { name });
+      expect(link).toHaveAttribute('href', href);
+      expect(link).toHaveAccessibleName(/\d/);
+    },
+  );
+
+  it('pill links keep the dashboard filters when already on the dashboard', () => {
+    setupStore({ retrying: [{ identifier: 'ENG-4' }] });
+    render(
+      <MemoryRouter initialEntries={['/?view=list&q=eng']}>
+        <AppHeader />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('link', { name: /retrying/ })).toHaveAttribute(
+      'href',
+      '/?view=list&q=eng#retry-queue',
+    );
   });
 });

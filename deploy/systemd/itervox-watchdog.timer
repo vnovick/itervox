@@ -1,0 +1,10 @@
+[Unit]
+Description=Probe itervox event-loop liveness every minute (CORE-113, optional)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

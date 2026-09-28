@@ -69,16 +69,20 @@ export function ReviewerCard({
   return (
     <div className="space-y-4">
       <div>
-        <label className="text-theme-text-secondary mb-1 block text-xs font-medium">
+        <label
+          htmlFor="reviewer-profile-select"
+          className="text-theme-text-secondary mb-1 block text-xs font-medium"
+        >
           Reviewer profile
         </label>
         <select
+          id="reviewer-profile-select"
           value={profile}
           onChange={(e) => {
             const nextProfile = e.target.value;
             updatePending({ profile: nextProfile, ...(nextProfile === '' ? { auto: false } : {}) });
           }}
-          className="w-full cursor-pointer rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-[13px] text-[var(--text)] focus:outline-none"
+          className="focus:border-theme-accent w-full cursor-pointer rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-[13px] text-[var(--text)] focus:outline-none"
         >
           <option value="">None (disabled)</option>
           {availableProfiles.map((p) => (
@@ -114,7 +118,7 @@ export function ReviewerCard({
         </span>
       </label>
       {error && (
-        <p role="alert" className="text-theme-danger pl-6 text-[10px]">
+        <p role="alert" className="text-theme-danger-text pl-6 text-[10px]">
           {error}
         </p>
       )}

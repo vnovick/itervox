@@ -75,6 +75,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 	// re-reads cfg.Automations from the orchestrator each tick, so it picks up
 	// changes from orch.SetAutomationsCfg without any channel plumbing.
 	go func() {
+		defer failFastOnPanic("automation-scheduler")
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
@@ -83,8 +84,15 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			issues:          make(map[string]observedAutomationIssue),
 			trackerComments: make(map[string]map[string]observedAutomationComment),
 		}
+		// Start initialized: Orchestrator.Run already replays persisted
+		// input-required entries against the startup rules registered above,
+		// so this loop only replays rules hot-added later. Uninitialized, its
+		// first pass re-fired every entry it saw whenever it landed after the
+		// loop's first snapshot — a second responder run for the same blocked
+		// question once the first had released its claim.
 		inputRequiredState := inputRequiredReplayState{
-			issues: make(map[string]inputRequiredReplayIssueState),
+			initialized: true,
+			issues:      make(map[string]inputRequiredReplayIssueState),
 		}
 		runOnce := func(now time.Time) {
 			// Build a per-tick cfg view with runtime-mutable fields read
@@ -402,7 +410,7 @@ func runCronAutomation(
 		if shouldSkipAutomatedIssue(snap, cfg, issue) {
 			continue
 		}
-		if !matchesAutomationFilter(issue, entry, "") {
+		if !automationEntryMatches(issue, entry, "") {
 			continue
 		}
 		matches = append(matches, issue)
@@ -443,6 +451,14 @@ func runCronAutomation(
 	}
 }
 
+// automationEntryMatches applies the shared orchestrator.MatchesAutomationFilter
+// (CORE-111) to a compiled automation entry.
+func automationEntryMatches(issue domain.Issue, entry compiledAutomation, inputContext string) bool {
+	f := entry.cfg.Filter
+	return orchestrator.MatchesAutomationFilter(issue, f.MatchMode, f.States, f.LabelsAny,
+		entry.identifierRe, entry.inputContextRe, inputContext)
+}
+
 // shouldSkipAutomatedIssue is the watcher-side pre-filter that mirrors the
 // event-loop's TOCTOU re-check. Both call orchestrator.IneligibleReasonForAutomation
 // so they cannot drift — adding a new dispatch guard here is a one-place edit
@@ -450,52 +466,6 @@ func runCronAutomation(
 func shouldSkipAutomatedIssue(state orchestrator.State, cfg *config.Config, issue domain.Issue) bool {
 	reason := orchestrator.IneligibleReasonForAutomation(issue, state, cfg)
 	return reason != "" && !orchestrator.IsQueueableAutomationReason(reason)
-}
-
-func matchesAutomationFilter(issue domain.Issue, entry compiledAutomation, inputContext string) bool {
-	checks := make([]bool, 0, 4)
-	if entry.identifierRe != nil {
-		checks = append(checks, entry.identifierRe.MatchString(issue.Identifier))
-	}
-	if len(entry.cfg.Filter.States) > 0 {
-		checks = append(checks, slices.ContainsFunc(entry.cfg.Filter.States, func(s string) bool {
-			return strings.EqualFold(s, issue.State)
-		}))
-	}
-	if len(entry.cfg.Filter.LabelsAny) > 0 {
-		issueLabels := make([]string, 0, len(issue.Labels))
-		for _, label := range issue.Labels {
-			issueLabels = append(issueLabels, strings.ToLower(label))
-		}
-		ok := false
-		for _, wanted := range entry.cfg.Filter.LabelsAny {
-			if slices.Contains(issueLabels, strings.ToLower(wanted)) {
-				ok = true
-				break
-			}
-		}
-		checks = append(checks, ok)
-	}
-	if entry.inputContextRe != nil {
-		checks = append(checks, entry.inputContextRe.MatchString(inputContext))
-	}
-	if len(checks) == 0 {
-		return true
-	}
-	if entry.cfg.Filter.MatchMode == config.AutomationFilterMatchAny {
-		for _, check := range checks {
-			if check {
-				return true
-			}
-		}
-		return false
-	}
-	for _, check := range checks {
-		if !check {
-			return false
-		}
-	}
-	return true
 }
 
 func inputContextReFor(entry config.AutomationConfig) *regexp.Regexp {
@@ -605,7 +575,7 @@ func pollAutomationEvents(
 				if strings.EqualFold(prevIssue.State, issue.State) || !strings.EqualFold(issue.State, entry.cfg.Trigger.State) {
 					continue
 				}
-				if !matchesAutomationFilter(issue, entry, "") {
+				if !automationEntryMatches(issue, entry, "") {
 					continue
 				}
 				matches = append(matches, struct {
@@ -629,7 +599,7 @@ func pollAutomationEvents(
 				if prevIssue.InBacklog || !inBacklogNow {
 					continue
 				}
-				if !matchesAutomationFilter(issue, entry, "") {
+				if !automationEntryMatches(issue, entry, "") {
 					continue
 				}
 				matches = append(matches, struct {
@@ -646,7 +616,7 @@ func pollAutomationEvents(
 					},
 				})
 			case config.AutomationTriggerTrackerComment:
-				if !matchesAutomationFilter(issue, entry, "") {
+				if !automationEntryMatches(issue, entry, "") {
 					continue
 				}
 				detailed := getDetail(issue)

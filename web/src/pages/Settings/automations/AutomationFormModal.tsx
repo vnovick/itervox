@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Modal, ModalFooter } from '../../../components/ui/modal';
 import { inputCls } from '../formStyles';
 import { AutomationEditorFields } from './AutomationEditorFields';
+import { UnknownValueNotice } from '../../../components/itervox/UnknownValueNotice';
+import { unknownAutomationItems } from '../../../types/configRoundTrip';
 import { automationFormSchema, type AutomationFormValues } from './automationForm';
 import { useTestAutomation } from '../../../queries/automations';
 
@@ -45,6 +47,7 @@ export function AutomationFormModal({
   onClose: () => void;
   onSubmit: (values: AutomationFormValues) => Promise<AutomationSubmitResult>;
 }) {
+  const headingId = useId();
   const {
     register,
     handleSubmit,
@@ -92,10 +95,19 @@ export function AutomationFormModal({
   });
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} showCloseButton padded className="mx-4 my-8 max-w-5xl">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      showCloseButton
+      padded
+      className="mx-4 my-8 max-w-5xl"
+      ariaLabelledBy={headingId}
+    >
       <div className="space-y-5">
         <div>
-          <h2 className="text-theme-text text-lg font-semibold">{title}</h2>
+          <h2 id={headingId} className="text-theme-text text-lg font-semibold">
+            {title}
+          </h2>
           {subtitle && <p className="text-theme-text-secondary mt-1 text-sm">{subtitle}</p>}
         </div>
 
@@ -115,17 +127,19 @@ export function AutomationFormModal({
             <input
               id="automation-id-input"
               {...register('id')}
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer restores focus to the opener on close (M5-close)
               autoFocus
               placeholder="automation-name"
               className={`${inputCls} font-mono text-sm`}
             />
             {errors.id && (
-              <p role="alert" className="text-theme-danger mt-1 text-xs">
+              <p role="alert" className="text-theme-danger-text mt-1 text-xs">
                 {errors.id.message}
               </p>
             )}
           </div>
 
+          <UnknownValueNotice items={unknownAutomationItems(initialValues.unknownFields)} />
           <AutomationEditorFields
             values={values}
             availableProfiles={availableProfiles}
@@ -209,22 +223,22 @@ export function AutomationFormModal({
           />
 
           {errors.profile && (
-            <p role="alert" className="text-theme-danger text-xs">
+            <p role="alert" className="text-theme-danger-text text-xs">
               {errors.profile.message}
             </p>
           )}
           {errors.cron && (
-            <p role="alert" className="text-theme-danger text-xs">
+            <p role="alert" className="text-theme-danger-text text-xs">
               {errors.cron.message}
             </p>
           )}
           {errors.triggerState && (
-            <p role="alert" className="text-theme-danger text-xs">
+            <p role="alert" className="text-theme-danger-text text-xs">
               {errors.triggerState.message}
             </p>
           )}
           {errors.limit && (
-            <p role="alert" className="text-theme-danger text-xs">
+            <p role="alert" className="text-theme-danger-text text-xs">
               {errors.limit.message}
             </p>
           )}

@@ -1,3 +1,4 @@
+import { unknownValueLabel } from '../../../types/configRoundTrip';
 import { useMemo, useState } from 'react';
 import type { ProfileDef } from '../../../types/schemas';
 import { useSkillsInventory } from '../../../queries/skills';
@@ -90,7 +91,7 @@ export function ProfileRow({
         <span
           className={`rounded-[var(--radius-sm)] px-2.5 py-1 text-[11px] font-medium whitespace-nowrap ${
             isEnabled
-              ? 'bg-theme-success-soft text-theme-success'
+              ? 'bg-theme-success-soft text-theme-success-text'
               : 'bg-theme-panel text-theme-text-secondary'
           }`}
         >
@@ -98,7 +99,7 @@ export function ProfileRow({
         </span>
       </div>
 
-      {actionLabels.length > 0 && (
+      {(actionLabels.length > 0 || (def.unknownAllowedActions?.length ?? 0) > 0) && (
         <div className="mt-auto flex flex-wrap gap-1">
           {actionLabels.map((label) => (
             <span
@@ -106,6 +107,16 @@ export function ProfileRow({
               className="bg-theme-panel text-theme-text-secondary rounded-full px-2 py-0.5 text-[10px]"
             >
               {label}
+            </span>
+          ))}
+          {/* CORE-047 round 2: actions from a newer daemon, read-only. */}
+          {def.unknownAllowedActions?.map((raw) => (
+            <span
+              key={`unknown:${raw}`}
+              title={unknownValueLabel('action', raw)}
+              className="bg-theme-warning-soft text-theme-warning-text rounded-full px-2 py-0.5 text-[10px]"
+            >
+              {raw} (unknown)
             </span>
           ))}
         </div>
@@ -170,7 +181,7 @@ export function ProfileRow({
               setConfirmDelete(true);
             }}
             disabled={pendingAction !== null}
-            className="border-theme-danger text-theme-danger rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80 disabled:opacity-50"
+            className="border-theme-danger text-theme-danger-text rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80 disabled:opacity-50"
           >
             Delete
           </button>

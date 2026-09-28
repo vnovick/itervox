@@ -1,9 +1,12 @@
-import { useShallow } from 'zustand/react/shallow';
 import { useNavigate } from 'react-router';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { useUIStore } from '../../../store/uiStore';
 import { EMPTY_HISTORY } from '../../../utils/constants';
 import { automationsFiredToday } from './dashboardMetrics';
+import { STATUS_META, toneColor, type StatusKey } from '../../../lib/statusModel';
+import { useStatusSummary } from '../../../hooks/useStatusSummary';
+import { fmtTokens } from '../../../utils/format';
+import type { Totals } from '../../../types/schemas';
 
 // v0.2.0 audit P3-5 — the backward-compat re-export was bridge code from the
 // dashboardMetrics extraction; all production callers now import from
@@ -17,6 +20,8 @@ function StatTile({
   valueColor,
   onClick,
   testId,
+  statusKey,
+  statusCount,
 }: {
   label: string;
   value: string;
@@ -24,6 +29,8 @@ function StatTile({
   valueColor?: string;
   onClick?: () => void;
   testId?: string;
+  statusKey?: StatusKey;
+  statusCount?: number;
 }) {
   const isInteractive = !!onClick;
   return (
@@ -42,6 +49,8 @@ function StatTile({
           : undefined
       }
       data-testid={testId}
+      data-status-key={statusKey}
+      data-status-count={statusCount}
       className={`flex flex-col items-center rounded-[var(--radius-md)] bg-white/[0.04] px-4 py-3 ${
         isInteractive ? 'cursor-pointer hover:bg-white/[0.08]' : ''
       }`}
@@ -61,48 +70,38 @@ function StatTile({
 }
 
 export function HeroStats() {
-  const { running, paused, retrying, inputRequired, max, history } = useItervoxStore(
-    useShallow((s) => ({
-      running: s.snapshot?.running.length ?? 0,
-      paused: s.snapshot?.paused.length ?? 0,
-      retrying: s.snapshot?.retrying.length ?? 0,
-      inputRequired: (s.snapshot?.inputRequired ?? []).length,
-      max: s.snapshot?.maxConcurrentAgents ?? 0,
-      history: s.snapshot?.history ?? EMPTY_HISTORY,
-    })),
-  );
+  // CORE-076 — counts, labels and tones from the shared status model.
+  const summary = useStatusSummary();
+  const history = useItervoxStore((s) => s.snapshot?.history ?? EMPTY_HISTORY);
+  const totals = useItervoxStore((s) => s.snapshot?.totals);
+  const { running, maxAgents: max } = summary;
   const navigate = useNavigate();
   const setTimelineAutomationOnly = useUIStore((s) => s.setTimelineAutomationOnly);
   const automationsToday = automationsFiredToday(history);
+  const tile = (key: StatusKey, value: number, sub: string) => (
+    <StatTile
+      label={STATUS_META[key].label}
+      value={String(value)}
+      sub={sub}
+      statusKey={key}
+      statusCount={value}
+      valueColor={value > 0 ? toneColor(STATUS_META[key].tone) : undefined}
+    />
+  );
   return (
     <div
-      className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:w-auto lg:grid-cols-6"
+      // CORE-091 / CORE-175 note — seven tiles keep one row on desktop (M5);
+      // with the eighth (cost) tile, two rows of four until 2xl.
+      className={`grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:w-auto ${
+        totals ? 'lg:grid-cols-4 2xl:grid-cols-8' : 'lg:grid-cols-7'
+      }`}
       data-testid="hero-stats"
     >
-      <StatTile
-        label="Running"
-        value={String(running)}
-        sub="agents"
-        valueColor={running > 0 ? 'var(--success)' : undefined}
-      />
-      <StatTile
-        label="Paused"
-        value={String(paused)}
-        sub="issues"
-        valueColor={paused > 0 ? 'var(--warning)' : undefined}
-      />
-      <StatTile
-        label="Retrying"
-        value={String(retrying)}
-        sub="queued"
-        valueColor={retrying > 0 ? 'var(--danger)' : undefined}
-      />
-      <StatTile
-        label="Input Required"
-        value={String(inputRequired)}
-        sub="blocked"
-        valueColor={inputRequired > 0 ? 'var(--warning)' : undefined}
-      />
+      {tile('running', running, 'agents')}
+      {tile('paused', summary.paused, 'issues')}
+      {tile('retrying', summary.retrying, 'queued')}
+      {tile('input_required', summary.needsInput, 'waiting on you')}
+      {tile('pending_input_resume', summary.resuming, 'reply received')}
       <StatTile
         testId="hero-stat-automations-today"
         label="Automations"
@@ -126,6 +125,27 @@ export function HeroStats() {
               : undefined
         }
       />
+      {totals && <CostTile totals={totals} />}
     </div>
+  );
+}
+
+/**
+ * CORE-091 — daemon-session totals. The dollar figure is Claude's own
+ * client-side estimate (total_cost_usd), so it is always labelled
+ * "estimated"; Codex reports no cost, hence "Claude runs only" whenever a
+ * Codex run contributed tokens, and '—' (never $0) when nothing reported one.
+ */
+function CostTile({ totals }: { totals: Totals }) {
+  const tokens = totals.inputTokens + totals.outputTokens;
+  const codexRuns = totals.costCoverage?.codexRuns ?? 0;
+  const cost = totals.costUsdEstimated;
+  return (
+    <StatTile
+      testId="hero-stat-cost"
+      label="Est. cost"
+      value={cost === null ? '—' : `$${cost.toFixed(2)}`}
+      sub={`${fmtTokens(tokens)} tokens · ${codexRuns > 0 ? 'estimated, Claude runs only' : 'estimated'}`}
+    />
   );
 }

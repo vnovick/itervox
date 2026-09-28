@@ -26,13 +26,25 @@ test.describe('T-64 issue mutations smoke', () => {
     });
   });
 
-  test('Cancel button on running row → POST /api/v1/issues/<id>/terminate', async ({ page }) => {
+  // CORE-021 added a confirm step to this button and CORE-073 renamed it
+  // "Discard" (the spec's verb: /terminate moves the issue to the backlog).
+  // The request is unchanged.
+  test('Discard button on running row → confirm → POST /api/v1/issues/<id>/terminate', async ({
+    page,
+  }) => {
     const { api } = await bootApp(page, { scenario: activeRunScenario });
 
     const target = activeRunScenario.snapshot.running[0];
 
-    // Text content is "✕ Cancel" — match by the visible label.
-    await page.getByRole('button', { name: /^✕ Cancel$/ }).first().click();
+    await page
+      .getByTestId(`running-row-${target.identifier}`)
+      .getByRole('button', { name: /^✕ Discard$/ })
+      .click();
+    // First click only asks; nothing is sent yet.
+    expect(
+      api.recordedMutations.find((m) => m.url.endsWith(`/issues/${target.identifier}/terminate`)),
+    ).toBeUndefined();
+    await page.getByRole('button', { name: 'Yes, discard' }).click();
 
     expectMutation(api.recordedMutations, {
       method: 'POST',
@@ -54,8 +66,8 @@ test.describe('T-64 issue mutations smoke', () => {
   test('mutation paths emit Authorization: Bearer <token>', async ({ page }) => {
     const { api } = await bootApp(page, { scenario: quickstartScenario });
 
-    const requestPromise = page.waitForRequest((req) =>
-      req.url().endsWith('/api/v1/refresh') && req.method() === 'POST',
+    const requestPromise = page.waitForRequest(
+      (req) => req.url().endsWith('/api/v1/refresh') && req.method() === 'POST',
     );
     await page.getByRole('button', { name: 'Refresh issues' }).click();
     const request = await requestPromise;

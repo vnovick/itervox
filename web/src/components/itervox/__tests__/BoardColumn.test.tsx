@@ -42,7 +42,8 @@ vi.mock('../IssueCard', () => ({
     onSelect: (id: string) => void;
     syncing?: boolean;
   }) => (
-    <div
+    <button
+      type="button"
       data-testid="issue-card"
       data-syncing={syncing ? 'true' : 'false'}
       onClick={() => {
@@ -50,7 +51,7 @@ vi.mock('../IssueCard', () => ({
       }}
     >
       {issue.identifier}
-    </div>
+    </button>
   ),
 }));
 

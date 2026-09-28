@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PendingResumePanel } from '../PendingResumePanel';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { makePendingInputResumeRow, makeSnapshot } from '../../../test/fixtures/snapshots';
@@ -86,5 +86,64 @@ describe('PendingResumePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /open pending resume ENG-RESUME/i }));
 
     expect(onSelect).toHaveBeenCalledWith('ENG-RESUME');
+  });
+
+  // CORE-024 fix round 1 — scrollIntoView's `behavior` is an explicit
+  // argument, so the CSS `scroll-behavior: auto !important` under
+  // prefers-reduced-motion cannot override it; the component must pass
+  // 'auto' itself. Independently testable via a spied scrollIntoView — no
+  // computed styles involved.
+  describe('scroll-to-panel on #pending-resume (CORE-024)', () => {
+    const scrollIntoViewSpy = vi.fn();
+
+    beforeEach(() => {
+      scrollIntoViewSpy.mockClear();
+      Element.prototype.scrollIntoView = scrollIntoViewSpy;
+      useItervoxStore.setState({
+        snapshot: makeSnapshot({
+          inputRequired: [makePendingInputResumeRow({ identifier: 'ENG-RESUME' })],
+        }),
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('scrolls smoothly by default', () => {
+      render(
+        <MemoryRouter initialEntries={['/#pending-resume']}>
+          <PendingResumePanel onSelect={vi.fn()} />
+        </MemoryRouter>,
+      );
+      expect(scrollIntoViewSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    });
+
+    it('scrolls without animation when the user prefers reduced motion', () => {
+      vi.stubGlobal(
+        'matchMedia',
+        vi.fn().mockReturnValue({
+          matches: true,
+          media: '(prefers-reduced-motion: reduce)',
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+        }),
+      );
+      render(
+        <MemoryRouter initialEntries={['/#pending-resume']}>
+          <PendingResumePanel onSelect={vi.fn()} />
+        </MemoryRouter>,
+      );
+      expect(scrollIntoViewSpy).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' });
+    });
+
+    it('does not scroll when the hash does not match', () => {
+      render(
+        <MemoryRouter initialEntries={['/']}>
+          <PendingResumePanel onSelect={vi.fn()} />
+        </MemoryRouter>,
+      );
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    });
   });
 });

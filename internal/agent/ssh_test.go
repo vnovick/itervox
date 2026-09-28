@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +77,40 @@ func TestSSHStrictHostDefaultRejectsInvalidMode(t *testing.T) {
 	SetSSHStrictHostDefault("garbage-mode") // should be ignored
 	if got := sshStrictHostMode("any-host"); got != "accept-new" {
 		t.Errorf("default after invalid SetSSHStrictHostDefault = %q, want %q (ignored)", got, "accept-new")
+	}
+}
+
+// TestSSHStrictHostInvalidModeLogsWarning is CORE-140's runtime half: an
+// invalid mode reaching the setters (config validation is the primary gate)
+// must not be dropped silently — each rejected value logs a warning naming
+// it, and the effective mode is left unchanged.
+func TestSSHStrictHostInvalidModeLogsWarning(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		SetSSHStrictHostDefault("accept-new")
+		SetSSHStrictHostOverrides(nil)
+	})
+
+	SetSSHStrictHostDefault("strict")
+	SetSSHStrictHostOverrides(map[string]string{"prod.example.com": "Yes", "ok.example.com": "yes"})
+
+	out := buf.String()
+	if !strings.Contains(out, `mode=strict`) {
+		t.Errorf("invalid default mode must log a warning naming it; log output:\n%s", out)
+	}
+	if !strings.Contains(out, `host=prod.example.com`) || !strings.Contains(out, `mode=Yes`) {
+		t.Errorf("invalid per-host mode must log a warning naming host and mode; log output:\n%s", out)
+	}
+	if strings.Contains(out, "ok.example.com") {
+		t.Errorf("a valid per-host mode must not warn; log output:\n%s", out)
+	}
+	if got := sshStrictHostMode("any-host"); got != "accept-new" {
+		t.Errorf("default after invalid mode = %q, want accept-new (unchanged)", got)
+	}
+	if got := sshStrictHostMode("ok.example.com"); got != "yes" {
+		t.Errorf("valid override = %q, want yes", got)
 	}
 }

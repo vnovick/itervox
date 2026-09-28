@@ -1,0 +1,76 @@
+# CORE-060: Docker Compose template for itervox.
+#
+#   ITERVOX_REPO=https://github.com/you/project.git \
+#   ITERVOX_API_TOKEN=$(openssl rand -hex 32) \
+#   docker compose -f deploy/docker/docker-compose.yml up -d
+#
+# The image runs the daemon under tini as uid 10001 with HOME=/data, binds
+# 0.0.0.0 inside the container (ITERVOX_SERVER_HOST), and drains in-flight
+# agent turns on SIGTERM for --shutdown-grace (240s below).
+#
+# Credentials: list a variable here only as a bare name (no "=value"). A bare
+# name is passed through from your shell or a .env file next to this compose
+# file when it is set and left UNSET otherwise — an empty value would shadow
+# the same key in the checkout's .itervox/.env, which the daemon only fills in
+# for variables that are not already present.
+#
+# Cloud secret managers: inject secrets with your platform's native mechanism
+# (compose secrets / env_file, Cloud Run --set-secrets, ECS secrets, ACA
+# secretref). deploy/lib/fetch-secrets.sh is the systemd path; the image does
+# not ship the gcloud/aws/az CLIs it needs.
+
+name: itervox
+
+services:
+  itervox:
+    image: ${ITERVOX_IMAGE:-ghcr.io/vnovick/itervox:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+
+    # Drain window. SIGTERM starts a drain that waits up to --shutdown-grace
+    # for in-flight agent turns, then the daemon allows up to 30 s more for
+    # the generation to stop. stop_grace_period MUST be >= shutdown-grace
+    # + 35 s or Docker SIGKILLs a draining daemon mid-turn.
+    command: ["--workflow", "WORKFLOW.md", "--shutdown-grace", "240s"]
+    stop_grace_period: 300s
+    stop_signal: SIGTERM
+
+    # Liveness (restart decisions): /api/v1/health, which stays 200 while
+    # draining. Readiness for a load balancer is /api/v1/ready (503 while
+    # draining or when the tracker is failing); do not use it here — see the
+    # HEALTHCHECK comment in the Dockerfile.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/itervox-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    volumes:
+      # CORE-062: every state root lives under HOME=/data.
+      - itervox-data:/data
+
+    environment:
+      ITERVOX_REPO: ${ITERVOX_REPO:?set ITERVOX_REPO to the git URL of the project to operate on}
+      ITERVOX_API_TOKEN: ${ITERVOX_API_TOKEN:?set ITERVOX_API_TOKEN (openssl rand -hex 32)}
+      # Optional pass-throughs (bare names: unset stays unset).
+      ITERVOX_REPO_BRANCH:
+      LINEAR_API_KEY:
+      GITHUB_TOKEN:
+      GH_TOKEN:
+      ANTHROPIC_API_KEY:
+      CLAUDE_CODE_OAUTH_TOKEN:
+      OPENAI_API_KEY:
+
+    # Loopback only: front it with Caddy/a tunnel for remote access
+    # (deploy/caddy/Caddyfile), or change to "8090:8090" behind a firewall.
+    ports:
+      - "127.0.0.1:8090:8090"
+
+volumes:
+  itervox-data:
+    # To keep state on a host path (e.g. a persistent data disk) instead:
+    # driver: local
+    # driver_opts: { type: none, o: bind, device: /srv/itervox/data }

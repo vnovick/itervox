@@ -28,9 +28,9 @@ function badgeStyle(variant: BadgeVariant, color: BadgeColor): React.CSSProperti
   // light variant
   const styles: Record<BadgeColor, React.CSSProperties> = {
     primary: { background: 'var(--accent-soft)', color: 'var(--accent-strong)' },
-    success: { background: 'var(--success-soft)', color: 'var(--success)' },
-    error: { background: 'var(--danger-soft)', color: 'var(--danger)' },
-    warning: { background: 'var(--warning-soft)', color: 'var(--warning)' },
+    success: { background: 'var(--success-soft)', color: 'var(--success-text)' },
+    error: { background: 'var(--danger-soft)', color: 'var(--danger-text)' },
+    warning: { background: 'var(--warning-soft)', color: 'var(--warning-text)' },
     info: { background: 'var(--teal-soft)', color: 'var(--teal)' },
     light: { background: 'var(--bg-soft)', color: 'var(--text-secondary)' },
     dark: { background: 'var(--panel-strong)', color: 'var(--text)' },

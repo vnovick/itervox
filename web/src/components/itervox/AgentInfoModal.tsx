@@ -156,6 +156,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
       onClose={onClose}
       showCloseButton
       className="flex h-[85vh] w-[90vw] max-w-[1400px] flex-col overflow-hidden"
+      ariaLabel={profileName ? `Agent profile ${profileName}` : 'Agent profile'}
     >
       {profileName && color && (
         <div className="flex h-full flex-col" data-testid="agent-info-content">
