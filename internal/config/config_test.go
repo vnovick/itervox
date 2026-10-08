@@ -1462,6 +1462,37 @@ func TestReviewerProfilesAndQuorumParsed(t *testing.T) {
 	assert.Equal(t, config.ReviewQuorumMajority, cfg.Agent.ReviewQuorum)
 }
 
+// TestReviewerProfilesKeepsEveryEntryWithoutDisabledWarning pins #69: fan-out
+// is enabled (orchestrator.ReviewerProfileChain runs every entry), so loading
+// a multi-reviewer config must keep the full list, promote the first entry
+// into the singular reviewer_profile when that is unset, and must NOT log the
+// old "fan-out is disabled" warning that told operators only the first
+// reviewer runs.
+func TestReviewerProfilesKeepsEveryEntryWithoutDisabledWarning(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  reviewer_profiles:\n"+
+			"    - security\n"+
+			"    - correctness\n"))
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"security", "correctness"}, cfg.Agent.ReviewerProfiles,
+		"every listed reviewer must survive normalization")
+	assert.Equal(t, "security", cfg.Agent.ReviewerProfile,
+		"the first entry is promoted into reviewer_profile so validation and dispatch have a primary reviewer")
+	assert.NotContains(t, buf.String(), "disabled",
+		"no startup log may claim multi-reviewer fan-out is disabled")
+	assert.NotContains(t, buf.String(), "level=WARN",
+		"a reviewer_profiles-only config is valid and must not warn")
+}
+
 func TestReviewQuorumDefaultsToAnyBlock(t *testing.T) {
 	cfg, err := config.Load(workflowWithContent(t, minimal("")))
 	require.NoError(t, err)
