@@ -17,10 +17,36 @@ const GitHubIcon = () => (
   </svg>
 );
 
+const FileIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path
+      d="M3.5 1.5h6l3 3v10h-9z M9.5 1.5v3h3"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+type TrackerKind = 'linear' | 'github' | 'local' | 'memory';
+
+const TRACKER_LABEL: Record<TrackerKind, string> = {
+  linear: 'Linear',
+  github: 'GitHub',
+  local: 'Local files',
+  memory: 'Demo',
+};
+
+function TrackerIcon({ kind }: { kind: TrackerKind }) {
+  if (kind === 'linear') return <LinearIcon />;
+  if (kind === 'github') return <GitHubIcon />;
+  return <FileIcon />;
+}
+
 export function ProjectSelector() {
   const { trackerKind, activeProjectFilter } = useItervoxStore(
     useShallow((s) => ({
-      trackerKind: s.snapshot?.trackerKind as 'linear' | 'github' | undefined,
+      trackerKind: s.snapshot?.trackerKind as TrackerKind | undefined,
       activeProjectFilter: s.snapshot?.activeProjectFilter ?? EMPTY_PROJECT_FILTER,
     })),
   );
@@ -42,15 +68,16 @@ export function ProjectSelector() {
 
         {/* Active tracker — read-only badge, not a switcher */}
         <span
-          className="inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 text-[12px] font-medium capitalize"
+          data-testid="tracker-badge"
+          className="inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 text-[12px] font-medium"
           style={{
             background: 'var(--bg-elevated)',
             color: 'var(--text)',
             border: '1px solid var(--line)',
           }}
         >
-          {trackerKind === 'linear' ? <LinearIcon /> : <GitHubIcon />}
-          {trackerKind === 'linear' ? 'Linear' : 'GitHub'}
+          <TrackerIcon kind={trackerKind} />
+          {TRACKER_LABEL[trackerKind] ?? trackerKind}
         </span>
 
         {/* Active project filter chips — only shown when a filter is configured */}

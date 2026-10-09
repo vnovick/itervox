@@ -4,7 +4,7 @@
 
 **Itervox** is a long-running daemon (Go 1.26.9) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
-It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
+It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
 
 Config lives entirely in one `WORKFLOW.md` file per project (YAML front matter +
@@ -229,6 +229,11 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   to `<basename>.partial.md` so partials are visible to the next agent without
   being mistaken for completed work; `TerminalInputRequired` does not rename
   (the agent will resume).
+- **`.itervox/issues/*.md` is the local tracker's data (#85)** — committable
+  like `agents/` (`itervox init` adds the `!.itervox/issues/` carve-out). The
+  directory is the source of truth: `internal/tracker/local` rescans it on
+  every call, serves a malformed file's last good version and never writes
+  to it until it parses.
 
 When editing migration or schema-validation code, expect tests under
 `cmd/itervox/init_migrate.go`/`init.go` and `internal/config/validate*.go` to
@@ -239,7 +244,7 @@ gate the change.
 ## Package dependency order (no circular deps)
 
 ```
-domain ─────┬── tracker (interface + adapters: linear, github, memory)
+domain ─────┬── tracker (interface + adapters: linear, github, local, memory)
             ├── prompt (Liquid template rendering)
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)

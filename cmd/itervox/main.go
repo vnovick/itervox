@@ -40,6 +40,7 @@ import (
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
+	"github.com/vnovick/itervox/internal/tracker/local"
 	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -1722,11 +1723,20 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			CompletionState: cfg.Tracker.CompletionState,
 			Endpoint:        cfg.Tracker.Endpoint,
 		}), nil
+	case "local":
+		// #85: one Markdown file per issue under .itervox/issues/; the
+		// project_slug, when set, is the identifier prefix (default ITX).
+		return local.New(local.Config{
+			Dir:            config.LocalIssuesDir(cfg),
+			Prefix:         cfg.Tracker.ProjectSlug,
+			ActiveStates:   cfg.Tracker.ActiveStates,
+			TerminalStates: cfg.Tracker.TerminalStates,
+		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
 		return tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates), nil
 	default:
-		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, memory)", cfg.Tracker.Kind)
+		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, local, memory)", cfg.Tracker.Kind)
 	}
 }
 

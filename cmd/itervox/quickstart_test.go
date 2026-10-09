@@ -50,7 +50,8 @@ func repoWithRemote(t *testing.T, remote string) string {
 }
 
 // TestDetectQuickstartTrackerAndRunner (#74): the tracker comes from
-// --tracker, then a real LINEAR_API_KEY, then a github.com origin; the agent
+// --tracker, then a real LINEAR_API_KEY, then a github.com origin, then the
+// local file tracker (#85); the agent
 // from --runner, then claude, then codex on PATH.
 func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 	ghSSH := repoWithRemote(t, "git@github.com:acme/widgets.git")
@@ -61,7 +62,7 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 	cases := []struct {
 		name, dir, trackerFlag, runnerFlag, linearKey string
 		installed                                     []string
-		wantTracker, wantRunner, wantErr              string
+		wantTracker, wantRunner, wantErr, wantReason  string
 	}{
 		{name: "github ssh remote, claude", dir: ghSSH, installed: []string{"claude", "codex"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "github https remote, only codex", dir: ghHTTPS, installed: []string{"codex"}, wantTracker: "github", wantRunner: "codex"},
@@ -69,8 +70,10 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 		{name: "placeholder linear key is ignored", dir: ghSSH, linearKey: "lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", installed: []string{"claude"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "--tracker overrides detection", dir: gitlab, trackerFlag: "github", installed: []string{"claude"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "--runner overrides detection", dir: ghSSH, runnerFlag: "codex", installed: []string{"claude", "codex"}, wantTracker: "github", wantRunner: "codex"},
-		{name: "non-github remote without a key", dir: gitlab, installed: []string{"claude"}, wantErr: "origin git@gitlab.com:acme/widgets.git is not on github.com"},
-		{name: "no remote without a key", dir: noRemote, installed: []string{"claude"}, wantErr: "no origin remote and LINEAR_API_KEY is not set"},
+		// #85: with no service to detect, the local file tracker.
+		{name: "non-github remote without a key", dir: gitlab, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude", wantReason: "origin git@gitlab.com:acme/widgets.git is not on github.com"},
+		{name: "no remote without a key", dir: noRemote, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude", wantReason: "no origin remote and LINEAR_API_KEY is not set"},
+		{name: "--tracker local", dir: ghSSH, trackerFlag: "local", installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude"},
 		{name: "no agent CLI", dir: ghSSH, wantErr: "neither claude nor codex is on PATH"},
 		{name: "--runner not installed", dir: ghSSH, runnerFlag: "codex", installed: []string{"claude"}, wantErr: "--runner codex: codex is not on PATH"},
 	}
@@ -88,6 +91,7 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 			assert.Equal(t, tc.wantTracker, det.Tracker)
 			assert.Equal(t, tc.wantRunner, det.Runner)
 			assert.NotEmpty(t, det.TrackerReason)
+			assert.Contains(t, det.TrackerReason, tc.wantReason)
 			assert.NotEmpty(t, det.RunnerReason)
 		})
 	}

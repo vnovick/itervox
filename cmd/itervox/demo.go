@@ -17,8 +17,10 @@ import (
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/agent/demoagent"
+	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/tracker/local"
 )
 
 // `itervox demo` (#76): see Itervox working in about a minute with no
@@ -42,7 +44,7 @@ var demoSession *demoRun
 
 type demoRun struct {
 	dir     string
-	tracker *tracker.MemoryTracker
+	tracker tracker.Tracker
 	runner  agent.Runner
 
 	replyAfter  time.Duration
@@ -68,6 +70,7 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 	fs.SetOutput(out)
 	dir := fs.String("dir", "", "scratch directory for the demo (default: a new temporary directory)")
 	noOpen := fs.Bool("no-open", false, "do not open the dashboard in a browser")
+	trackerKind := fs.String("tracker", "memory", "demo issues: memory (in memory, gone on exit) or local (Markdown files in <dir>/.itervox/issues, kept)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil, false, nil
@@ -76,6 +79,9 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 	}
 	if fs.NArg() > 0 {
 		return nil, false, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *trackerKind != "memory" && *trackerKind != "local" {
+		return nil, false, fmt.Errorf("unknown --tracker %q (memory or local)", *trackerKind)
 	}
 	scratch := *dir
 	if scratch == "" {
@@ -99,7 +105,7 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 		// `itervox demo --dir` on a running demo does not rewrite (and
 		// reload) it before the pid lock refuses the second daemon.
 	case os.IsNotExist(readErr):
-		if err := os.WriteFile(workflowPath, []byte(demoWorkflow(scratch)), 0o644); err != nil {
+		if err := os.WriteFile(workflowPath, []byte(demoWorkflow(scratch, *trackerKind)), 0o644); err != nil {
 			return nil, false, err
 		}
 	default:
@@ -127,9 +133,21 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 	for i := range issues {
 		issues[i].State = "Todo"
 	}
+	active, terminal := []string{"Todo", "In Progress"}, []string{"Done", "Cancelled"}
+	var tr tracker.Tracker = tracker.NewMemoryTracker(issues, active, terminal)
+	if *trackerKind == "local" {
+		// #85: the same issues as files; a second demo in the same --dir
+		// keeps the board it left.
+		issuesDir := filepath.Join(scratch, ".itervox", "issues")
+		if err := seedDemoIssueFiles(issuesDir, issues); err != nil {
+			return nil, false, err
+		}
+		tr = local.New(local.Config{Dir: issuesDir, ActiveStates: active, TerminalStates: terminal})
+		_, _ = fmt.Fprintf(out, "itervox demo: issues are files in %s — edit one and watch the board\n", issuesDir)
+	}
 	demoSession = &demoRun{
 		dir:        scratch,
-		tracker:    tracker.NewMemoryTracker(issues, []string{"Todo", "In Progress"}, []string{"Done", "Cancelled"}),
+		tracker:    tr,
 		runner:     demoagent.NewDemoRunner(demoStep),
 		replyAfter: 6 * time.Second,
 		mergeAfter: 5 * time.Second,
@@ -146,15 +164,34 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 // demoWorkflowMarker marks a workflow written by `itervox demo`.
 const demoWorkflowMarker = "# itervox demo workflow"
 
-// demoWorkflow is the scratch WORKFLOW.md: memory tracker, a review column,
+// seedDemoIssueFiles writes the demo issues as local tracker files, leaving
+// any that already exist.
+func seedDemoIssueFiles(dir string, issues []domain.Issue) error {
+	for _, is := range issues {
+		path := filepath.Join(dir, is.Identifier+".md")
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		spec := local.IssueSpec{Title: is.Title, State: is.State, Priority: is.Priority, Labels: is.Labels, Created: is.CreatedAt}
+		if is.Description != nil {
+			spec.Body = *is.Description
+		}
+		if err := local.WriteIssue(dir, is.Identifier, spec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// demoWorkflow is the scratch WORKFLOW.md: memory (or local) tracker, a review column,
 // fast polling and retries, an OS-assigned loopback port without auth, and
 // workspaces inside the scratch directory.
-func demoWorkflow(scratch string) string {
+func demoWorkflow(scratch, trackerKind string) string {
 	return fmt.Sprintf(`---
 `+demoWorkflowMarker+` — written by `+"`itervox demo`"+`; safe to delete with its directory.
 itervox_schema_version: 2
 tracker:
-  kind: memory
+  kind: %s
   active_states: ["Todo", "In Progress"]
   working_state: "In Progress"
   completion_state: %q
@@ -176,7 +213,7 @@ server:
 ---
 
 Demo: work on {{ issue.identifier }} — {{ issue.title }}.
-`, demoStateInReview, filepath.Join(scratch, "workspaces"))
+`, trackerKind, demoStateInReview, filepath.Join(scratch, "workspaces"))
 }
 
 // attach points the controller at orch. run() calls it for every daemon

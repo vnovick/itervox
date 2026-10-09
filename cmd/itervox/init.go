@@ -39,7 +39,19 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 			slug = info.Owner + "/" + info.Repo
 		}
 	}
-	if trackerKind == "linear" {
+	switch trackerKind {
+	case "local":
+		// #85: issues are Markdown files; no service, no credentials.
+		b.WriteString("  # Issues are Markdown files in .itervox/issues/ (ITX-1.md, ITX-2.md, …).\n")
+		b.WriteString("  # Edit them by hand, from the dashboard, or let agents create them.\n")
+		b.WriteString("  # project_slug: ITX              # Optional — identifier prefix for new issues (default ITX).\n")
+		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
+		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\"]\n")
+		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
+		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
+		b.WriteString("  backlog_states: [\"Backlog\"]        # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
+	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
 		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
@@ -49,7 +61,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
 		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
 		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
-	} else {
+	default:
 		b.WriteString("  project_slug: " + slug + "\n")
 		b.WriteString("  # GitHub uses labels to map states. Labels must exist in your repo.\n")
 		b.WriteString("  # NOTE: GitHub Projects v2 'Status' field is separate from labels — Itervox\n")
@@ -257,7 +269,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 
 	b.WriteString("## Step 2 — Create a branch\n\n")
 	b.WriteString("```bash\n")
-	if trackerKind == "linear" {
+	if trackerKind == "linear" || trackerKind == "local" {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}\n")
 	} else {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | replace: \"#\", \"\" | downcase }}\n")
@@ -303,9 +315,16 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
 	b.WriteString("```\n\n---\n\n")
 
-	b.WriteString("## Step 6 — Post PR link to tracker\n\n")
-	b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
-	if trackerKind == "linear" {
+	if trackerKind == "local" {
+		b.WriteString("## Step 6 — Report\n\n")
+		b.WriteString("Finish with a short summary of what changed. Itervox adds the PR link, if you opened one, ")
+		b.WriteString("and a session summary as comments in the issue file (`.itervox/issues/{{ issue.identifier }}.md`).\n\n---\n\n")
+	} else {
+		b.WriteString("## Step 6 — Post PR link to tracker\n\n")
+		b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
+	}
+	switch trackerKind {
+	case "linear":
 		b.WriteString("Linear:\n\n")
 		b.WriteString("```bash\n")
 		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
@@ -314,7 +333,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 		b.WriteString("  -H \"Content-Type: application/json\" \\\n")
 		b.WriteString("  -d \"{\\\"query\\\":\\\"mutation { commentCreate(input: { issueId: \\\\\\\"{{ issue.id }}\\\\\\\", body: \\\\\\\"PR: ${PR_URL}\\\\\\\" }) { success } }\\\"}\"\n")
 		b.WriteString("```\n\n---\n\n")
-	} else {
+	case "github":
 		b.WriteString("GitHub:\n\n")
 		b.WriteString("```bash\n")
 		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
@@ -342,7 +361,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 // generates a WORKFLOW.md pre-filled with discovered values.
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	trackerKind := fs.String("tracker", "", "tracker kind: linear or github (required)")
+	trackerKind := fs.String("tracker", "", "tracker kind: linear, github or local (required)")
 	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
 	output := fs.String("output", "WORKFLOW.md", "output file path")
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
@@ -429,14 +448,14 @@ func runInit(args []string) {
 	}
 
 	switch *trackerKind {
-	case "linear", "github":
+	case "linear", "github", "local":
 		// valid
 	case "":
-		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear or github)")
+		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github or local)")
 		fs.Usage()
 		fatalExit(1)
 	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github)\n", *trackerKind)
+		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, local)\n", *trackerKind)
 		fatalExit(1)
 	}
 
@@ -490,6 +509,9 @@ func runInit(args []string) {
 	envDir := filepath.Join(outputDir, ".itervox")
 	envPath := filepath.Join(envDir, ".env")
 	ensureEnvStub(envDir, *trackerKind)
+	if *trackerKind == "local" {
+		seedLocalIssues(filepath.Join(envDir, "issues"), os.Stdout)
+	}
 
 	// Ensure .itervox runtime files are gitignored and the root .gitignore
 	// has carve-outs for agent / handoff dirs (no-op if root .gitignore
@@ -514,6 +536,9 @@ func runInit(args []string) {
 	//   never            — skip; operator will run the pass later
 	shouldAnalyze := decideInitDepsAnalysis(*analyzeMode, envPath)
 	switch {
+	case *trackerKind == "local" && *analyzeMode == "auto":
+		// #85: a new local tracker holds only the example issue.
+		fmt.Printf("itervox init: skipping initial dependency analysis (no issues yet; run \"Analyze dependencies\" from the dashboard once you have some)\n")
 	case !shouldAnalyze && *analyzeMode == "never":
 		fmt.Printf("itervox init: skipping initial dependency analysis (--analyze=never)\n")
 	case !shouldAnalyze:
@@ -540,7 +565,12 @@ func runInit(args []string) {
 	}
 
 	fmt.Printf("Next steps:\n")
-	fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
+	if *trackerKind == "local" {
+		fmt.Printf("  1. Write issues in %s (copy %s.md), and set state: Todo to start one\n",
+			filepath.Join(envDir, "issues"), localSeedIdentifier)
+	} else {
+		fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
+	}
 	runCmd := "itervox"
 	if *output != "WORKFLOW.md" {
 		runCmd = "itervox -workflow " + *output

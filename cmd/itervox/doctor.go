@@ -13,6 +13,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/skills"
+	"github.com/vnovick/itervox/internal/tracker/local"
 )
 
 // runDoctor is the entrypoint for `itervox doctor`. It runs a fast preflight
@@ -163,6 +164,9 @@ type DoctorReport struct {
 	// ProfileRefIssues are skill / subagent references in profile prompts
 	// that do not resolve (#86). Warnings only: they never fail doctor.
 	ProfileRefIssues []skills.InventoryIssue
+	// LocalIssueProblems are local tracker issue files that do not parse
+	// (#85). Warnings only: the daemon serves their last good version.
+	LocalIssueProblems []string
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -313,6 +317,13 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		report.ProfileRefIssues = checkProfileRefs(cfg, workflowPath)
 	}
 
+	// Local tracker issue files that do not parse (#85).
+	if cfg != nil && cfg.Tracker.Kind == "local" {
+		for _, p := range local.New(local.Config{Dir: config.LocalIssuesDir(cfg)}).Problems() {
+			report.LocalIssueProblems = append(report.LocalIssueProblems, p.Path+": "+p.Err)
+		}
+	}
+
 	// GitHub state labels: one read through the tracker client. An API
 	// failure is reported but never fails doctor.
 	if cfg != nil {
@@ -423,6 +434,9 @@ func renderDoctorReport(r DoctorReport) string {
 	}
 	renderLabelCheck(&b, r.Labels)
 	renderProfileRefIssues(&b, r.ProfileRefIssues)
+	for _, p := range r.LocalIssueProblems {
+		fmt.Fprintf(&b, "WARNING: issue file does not parse (Itervox keeps using its last good version and will not write to it until it is fixed): %s\n", p)
+	}
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
