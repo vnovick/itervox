@@ -1,0 +1,120 @@
+---
+title: Cross-review preset
+description: Claude writes, Codex reviews (or the reverse) — two read-only reviewers on different backends review every run.
+---
+
+A second model catches what the first one missed. The **cross-review** preset
+runs your implementer on one backend and has every successful run reviewed by
+two **read-only** reviewers, one on each backend:
+
+- `itervox init --runner claude --preset cross-review`: **Claude writes**; Codex and Claude review.
+- `itervox init --runner codex --preset cross-review`: **Codex writes**; Claude and Codex review.
+
+Without `--preset`, `itervox init` offers it (`[y/N]`) when run in a terminal
+with both the `claude` and `codex` CLIs installed. Both CLIs must be
+installed and signed in wherever the reviewers run.
+
+## What the preset writes
+
+```yaml
+agent:
+  command: claude
+  profiles:
+    implementer:
+      command: claude
+      soul_file: .itervox/agents/implementer/SOUL.md
+      instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
+    reviewer:
+      command: claude
+      soul_file: .itervox/agents/reviewer/SOUL.md
+      instructions_file: .itervox/agents/reviewer/INSTRUCTIONS.md
+      allowed_actions: [comment, comment_pr]
+    reviewer-codex:
+      command: codex
+      backend: codex
+      soul_file: .itervox/agents/reviewer-codex/SOUL.md
+      instructions_file: .itervox/agents/reviewer-codex/INSTRUCTIONS.md
+      allowed_actions: [comment, comment_pr]
+  reviewer_profile: reviewer-codex          # the dashboard's AI Review button
+  reviewer_profiles: [reviewer-codex, reviewer]
+  review_quorum: any_block                  # changes are requested if either reviewer blocks
+  auto_review: true
+```
+
+Both reviewer profiles get the read-only reviewer `SOUL.md` and
+`INSTRUCTIONS.md`. To add the preset to an existing workflow, copy these keys
+and the two reviewer profile directories.
+
+## How a review runs
+
+1. The implementer finishes successfully.
+2. With `auto_review`, the reviewers run **one after another** on the same
+   workspace, the other-backend reviewer first. Each judges the change on its
+   own.
+3. Each reviewer gets a small, purpose-built context instead of the whole
+   history:
+   - **`## Changes to Review`**: the diff of the branch against its base
+     (`workspace.base_branch`, or the blocker's branch for a stacked issue),
+     with a stat, cut at 40 KB.
+   - **`## Latest Handoff`**: only the implementer's most recent handoff.
+4. Each reviewer writes a verdict to `run.review_verdict_path`:
+
+   ```json
+   {"verdict": "block",
+    "reasons": ["missing test for the empty config"],
+    "comments": [{"path": "internal/foo.go", "line": 7, "body": "nil map write when cfg is empty"}]}
+   ```
+
+   `verdict` is `approve` or `block`; anything else, or no file at all,
+   counts as `block`.
+5. Itervox posts each verdict on the issue, then the combined result:
+
+   > **Review by `reviewer-codex` (codex): ❌ changes requested**
+   > - missing test for the empty config
+   >
+   > **Line comments**
+   > - `internal/foo.go:7` nil map write when cfg is empty
+
+   > **Review result: ❌ changes requested** (1 approve / 1 block, quorum `any_block`)
+
+When changes are requested, the issue stays in `completion_state` with the
+reasons on it. Move it back to an active state to have the implementer address
+them: the default prompt includes the issue's comments, and the latest handoff
+carries the context.
+
+## Reviewers are read-only
+
+A reviewer never edits files, commits, pushes or moves the issue; its output is
+the verdict. Itervox enforces what it can:
+
+- **No push or commit on its behalf.** For a reviewer run, Itervox does not
+  push the branch or commit the reviewer's handoff (it stays in the working
+  tree for the next implementer run).
+- **Changes are flagged.** Itervox records the branch before a reviewer runs and
+  compares it afterwards. A reviewer that committed (which any push needs), or
+  edited files outside `.itervox/`, gets a ⚠️ note on the issue naming what it
+  changed and where it pushed, and its verdict is recorded as a **block**,
+  whatever it said. Inspect those changes before merging.
+
+The agent CLIs themselves are not sandboxed from `git push`; the flag is what
+makes a push visible and stops it from approving its own change. For a hard
+block on Claude, register a `PreToolUse` **hook** that denies `git push`
+(a deny *rule* in `settings.json` is bypassed in Itervox's default
+permission mode; a hook is not). See [Agent permissions](/guides/agent-permissions/).
+
+## Expected cost
+
+Each reviewer is a separate agent run. With the preset, every successful
+implementer run is followed by **two more runs**: a typical issue costs about
+one implementer run plus two reviewer runs. Reviewer runs are usually shorter,
+since they read a diff rather than build the change, but each is a full session
+on its backend's plan or API account, Codex included.
+
+To spend less:
+
+- Drop to one reviewer: `reviewer_profiles: [reviewer-codex]` (or remove the
+  key and keep `reviewer_profile`).
+- Turn off `auto_review` and use the dashboard's **AI Review** button only on
+  the issues that need it.
+- Point a reviewer at a cheaper model in its `command`, for example
+  `claude --model <a smaller model>`.

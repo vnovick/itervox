@@ -215,3 +215,47 @@ func TestReadOnlyReviewerThatCommitsIsFlagged(t *testing.T) {
 	assert.NotContains(t, reviewerPrompt, "## Prior Agent Handoffs")
 	assert.Contains(t, reviewerPrompt, "You are read-only")
 }
+
+// TestReadOnlyReviewerRunCommitsNothing (#79): with a non-terminal
+// completion_state the reviewer runs to completion like a normal worker,
+// and Itervox still commits nothing on its behalf: the branch after the
+// review is exactly the branch the implementer left.
+func TestReadOnlyReviewerRunCommitsNothing(t *testing.T) {
+	ws := gitInitRepo(t)
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Tracker.WorkingState = "In Progress"
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.MaxTurns = 1
+	cfg.Agent.AutoReview = true
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Workspace.BaseBranch = "main"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer": {Command: "claude", Instructions: "Implement it."},
+		"reviewer":    {Command: "claude", Instructions: "Review it."},
+	}
+	mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	runner := &reviewScriptRunner{}
+	orch := orchestrator.New(cfg, mt, runner, &recordingWorkspaceProvider{path: ws})
+	orch.SetIssueProfile("ENG-1", "implementer")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	require.Eventually(t, func() bool {
+		issues, err := mt.FetchIssueStatesByIDs(context.Background(), []string{"id1"})
+		return strings.Contains(issueComments(t, mt), "Review by `reviewer` (claude): ✅ approve") &&
+			err == nil && len(issues) == 1 && issues[0].State == "In Review"
+	}, 6*time.Second, 25*time.Millisecond, "the reviewer completes and the issue returns to In Review")
+	time.Sleep(200 * time.Millisecond)
+
+	log, err := gitexec.Command(context.Background(), ws, "log", "--format=%s").Output()
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(log), "chore(itervox): record agent handoff"),
+		"only the implementer's handoff is committed, never the reviewer's: %s", log)
+	assert.NotContains(t, issueComments(t, mt), "changed the branch", "an untouched branch is not flagged")
+	entries, err := os.ReadDir(filepath.Join(ws, ".itervox", "handoff"))
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "the reviewer's handoff is written but left uncommitted")
+}

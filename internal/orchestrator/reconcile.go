@@ -201,7 +201,12 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			case <-time.After(100 * time.Millisecond):
 				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
-		} else if isActiveState(refreshedState, state) {
+		} else if isActiveState(refreshedState, state) || entry.Kind == "reviewer" {
+			// A reviewer runs, by design, on an issue the implementer just
+			// moved to tracker.completion_state, which is usually neither
+			// active nor terminal ("in-review"). Stopping it there killed
+			// every review before it finished (#79). A terminal state still
+			// stops it above.
 			entry.Issue.State = refreshedState
 			entry.LastEventAt = &now
 		} else {

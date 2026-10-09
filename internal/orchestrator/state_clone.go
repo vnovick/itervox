@@ -112,6 +112,7 @@ func copyReviewVerdictsMap(m map[string][]ReviewVerdict) map[string][]ReviewVerd
 		for i, rv := range v {
 			vs[i] = rv
 			vs[i].Reasons = cloneSlice(rv.Reasons)
+			vs[i].Comments = cloneSlice(rv.Comments)
 		}
 		cp[k] = vs
 	}

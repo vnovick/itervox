@@ -270,8 +270,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var reviewerBefore reviewerBranchState
 	reviewerTracked := false
 	if readOnlyReviewer && wsPath != "" {
-		reviewDiffBlock = buildReviewDiffBlock(ctx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
-		reviewerBefore, reviewerTracked = captureReviewerBranchState(ctx, wsPath)
+		// Own context: reconciliation may cancel a reviewer's ctx when the
+		// implementer's completion_state is terminal (see the #58 notes), and
+		// a missed snapshot would let a branch change go unflagged.
+		gitCtx, gitCancel := context.WithTimeout(context.Background(), postRunTimeout)
+		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
+		reviewerBefore, reviewerTracked = captureReviewerBranchState(gitCtx, wsPath)
+		gitCancel()
 	}
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
