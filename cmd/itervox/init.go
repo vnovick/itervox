@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -363,6 +364,9 @@ func runInit(args []string) {
 	// the pass when the env file looks populated; skip when it still has the
 	// placeholder hex chars from the scaffold.
 	analyzeMode := fs.String("analyze", "auto", "init-time dependency analysis: auto | always | never")
+	// #83: write the agent-ready GitHub issue template (or print the Linear
+	// one) without asking. Without it, init asks on stdin; EOF means no.
+	issueTemplate := fs.Bool("issue-template", false, "add the agent-ready issue template without asking (GitHub: .github/ISSUE_TEMPLATE/agent-task.md; Linear: print it)")
 	_ = fs.Parse(args)
 	switch *analyzeMode {
 	case "auto", "always", "never":
@@ -468,6 +472,7 @@ func runInit(args []string) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}
+	offerIssueTemplate(*dir, *trackerKind, *issueTemplate, bufio.NewReader(os.Stdin), os.Stdout)
 
 	// Create .itervox/.env if it doesn't exist.
 	outputDir := filepath.Dir(*output)

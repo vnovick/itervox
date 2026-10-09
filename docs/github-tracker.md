@@ -185,6 +185,19 @@ An issue is not dispatched until every blocker is closed or carries one of your 
 - A blank line, or any other word, ends the list.
 - An issue never blocks itself.
 
+## Agent-ready issue template
+
+Agents do much better with a well-specified issue. `itervox init` and `itervox quickstart` offer to add `.github/ISSUE_TEMPLATE/agent-task.md` when they write a new GitHub workflow (`[y/N]`; `itervox init --issue-template` or `itervox quickstart --yes` adds it without asking). It is never written over an existing file. Commit it, and **New issue** offers an "Agent task" template with these sections:
+
+- **Goal**: what should be true when the work is done.
+- **Acceptance criteria**: a checklist the agent works through.
+- **Likely files or areas**: where to start.
+- **How to verify**: the commands or steps that prove it works.
+- **Out of scope**: what not to change.
+- **Blockers**: one line per prerequisite, using a phrase from the list above, e.g. `Blocked by #12, #15`. Delete the line when there are none; left unfilled (`Blocked by #`) it declares nothing.
+
+The template sets no labels, so an issue created from it is not picked up until you give it an active-state label. For Linear, `itervox init --tracker linear` offers to print the same sections to paste into a Linear issue template.
+
 ## Identifiers
 
 A GitHub issue's identifier is its number with a hash: `#42`. That is what the dashboard, logs and `itervox` commands show. In prompt templates:
