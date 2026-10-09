@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // stubLookPath makes exactly the named CLIs "installed".
@@ -42,7 +43,7 @@ func repoWithRemote(t *testing.T, remote string) string {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 	if remote != "" {
-		out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", remote).CombinedOutput()
+		out, err := gitexec.Command(context.Background(), dir, "remote", "add", "origin", remote).CombinedOutput()
 		require.NoError(t, err, string(out))
 	}
 	return dir
