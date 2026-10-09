@@ -170,6 +170,22 @@ func secretStatus(line string) string {
 	return "set"
 }
 
+// resolveEnvLink follows path through symlinks, dangling ones included, so
+// the file the link points at is the one written.
+func resolveEnvLink(path string) string {
+	for range 40 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return path
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
+	}
+	return path
+}
+
 // setEnvSecret sets key in the dotenv file at path. It replaces a
 // placeholder or empty line for key, appends otherwise, and replaces a real
 // value only with replace. The file is written atomically, mode 0600; a
@@ -177,10 +193,9 @@ func secretStatus(line string) string {
 // keeps its owner (so a root-run rotation stays readable by the service
 // user).
 func setEnvSecret(path, key, value string, replace bool) error {
-	if target, err := filepath.EvalSymlinks(path); err == nil {
-		path = target
-	}
+	path = resolveEnvLink(path)
 	info, statErr := os.Stat(path)
+	ownerDir := filepath.Dir(path)
 	raw, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -212,11 +227,22 @@ func setEnvSecret(path, key, value string, replace bool) error {
 	if !replaced {
 		lines = append(lines, line)
 	}
+	content := strings.Join(lines, "\n") + "\n"
+	// The daemon loads the whole file or nothing: refuse to write a file
+	// it cannot load, whichever line is at fault.
+	if _, err := godotenv.Unmarshal(content); err != nil {
+		return fmt.Errorf("%s would not load (%v); fix that line first, nothing saved", path, err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if err := atomicfs.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+	if err := atomicfs.WriteFile(path, []byte(content), 0o600); err != nil {
 		return err
+	}
+	// Keep the owner (a root-run rotation stays readable by the service
+	// user); a new file takes its directory's owner.
+	if statErr != nil {
+		info, statErr = os.Stat(ownerDir)
 	}
 	if statErr == nil {
 		if st, ok := info.Sys().(*syscall.Stat_t); ok && os.Geteuid() == 0 {

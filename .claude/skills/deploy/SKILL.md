@@ -92,12 +92,12 @@ starting points, not parameterised for every answer above:
 
 | Module | Required `-var`s | Edit in `main.tf` |
 |---|---|---|
-| `gcp-vm` | `project_id`, `repo_url` | `region` in the provider; `itervox_version = "<tag>"` (the example says `"latest"`); the zone and `machine_type`; remove or adjust `secret_ids` / `secrets_map` unless those Secret Manager secrets exist |
+| `gcp-vm` | `project_id`, `repo_url` | `region` in the provider **and** the module's `region` input (it places the subnet, router and NAT; it must contain the zone); `itervox_version = "<tag>"` (the example says `"latest"`); the zone and `machine_type`; remove or adjust `secret_ids` / `secrets_map` unless those Secret Manager secrets exist |
 | `aws-ec2` | `vpc_id`, `subnet_id`, `repo_url` | `region` in the provider; add `itervox_version = "<tag>"` and `instance_type`; replace the placeholder `secret_arns` (it names account `123456789012`) or remove it and `secrets_map` |
 | `azure-vm` | `repo_url`, `admin_ssh_public_key` | add `itervox_version`, `location` and `vm_size`; `start_service` is `false` there, so start it in step 6 |
 
 Then `tofu init`, `tofu plan …` (free: show the summary), confirm, and
-`tofu apply`. The first-boot script runs bootstrap, so skip step 4. The data
+`tofu apply`. The first-boot script runs bootstrap, so skip step 4 except its last part: the project still needs a `WORKFLOW.md`. The data
 disk has `prevent_destroy`; say so before the user plans a teardown.
 
 ## 3. Reach the VM
@@ -125,7 +125,8 @@ file or secret manager (never a literal) and bootstrap runs with
 have one committed, bootstrap skips its doctor and says so. Either commit one
 first (`itervox init --tracker <kind>` locally, then push), or create it on
 the VM as the service user:
-`sudo -H -u itervox bash -c 'cd /srv/itervox/<repo> && itervox init --tracker <linear|github|local>'`.
+`sudo -H -u itervox bash -c 'cd /srv/itervox/<repo> && itervox init --tracker <linear|github|local>'`
+(`local` needs the same newer release as `itervox secret`).
 
 ## 5. Secrets (the user types them)
 

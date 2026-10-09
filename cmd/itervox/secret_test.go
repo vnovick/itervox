@@ -202,3 +202,38 @@ func TestSecretSetKeepsSymlinkAndOwner(t *testing.T) {
 		assert.Equal(t, uint32(4242), st.Uid, "the owner is kept")
 	}
 }
+
+// TestSecretSetGuardsTheWholeFile (#88): a file the daemon could not load
+// (another line is broken) is not written; a dangling symlink is written
+// through; a new file takes its directory's owner.
+func TestSecretSetGuardsTheWholeFile(t *testing.T) {
+	pipedSecret(t)
+	workflow, envPath := secretWorkflow(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(envPath), 0o755))
+	broken := "X=\"unterminated\n"
+	require.NoError(t, os.WriteFile(envPath, []byte(broken), 0o600))
+	var out, errOut bytes.Buffer
+	assert.Equal(t, 1, secret([]string{"set", "A", "--workflow", workflow}, strings.NewReader("v\n"), &out, &errOut))
+	assert.Contains(t, errOut.String(), "would not load")
+	data, _ := os.ReadFile(envPath)
+	assert.Equal(t, broken, string(data), "left as it was")
+
+	require.NoError(t, os.Remove(envPath))
+	target := filepath.Join(filepath.Dir(envPath), "real.env")
+	require.NoError(t, os.Symlink("real.env", envPath)) // dangling, relative
+	if os.Geteuid() == 0 {
+		require.NoError(t, os.Chown(filepath.Dir(envPath), 4343, 4343))
+	}
+	require.Equal(t, 0, secret([]string{"set", "A", "--workflow", workflow}, strings.NewReader("v\n"), &out, &errOut), errOut.String())
+	fi, err := os.Lstat(envPath)
+	require.NoError(t, err)
+	assert.NotZero(t, fi.Mode()&os.ModeSymlink, "the link is kept")
+	got, err := godotenv.Read(target)
+	require.NoError(t, err)
+	assert.Equal(t, "v", got["A"])
+	if os.Geteuid() == 0 {
+		info, err := os.Stat(target)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(4343), info.Sys().(*syscall.Stat_t).Uid, "a new file takes its directory's owner")
+	}
+}
