@@ -94,6 +94,41 @@ func TestCheckEvidenceSurvivesBookkeepingCommits(t *testing.T) {
 	v := checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks)
 	require.False(t, v.ok(), "code changed after the evidence was recorded")
 	assert.Contains(t, v.Missing[0], "is for commit")
+
+	// Moving code into .itervox/ is a code change too: git's rename
+	// detection would list only the destination path.
+	_, codeStamp := gitHEAD(t, dir)
+	writeEvidence(t, dir, `{"commit":"`+codeStamp+`","checks":[{"name":"test","command":"make test","output":"ok","passed":true}]}`)
+	require.True(t, checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks).ok())
+	gitRun(t, dir, "mv", "main.go", ".itervox/handoff/main.go")
+	gitRun(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "move")
+	assert.False(t, checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks).ok(),
+		"code moved into .itervox/handoff/ after the stamp")
+}
+
+// TestCheckEvidenceRejectsSymbolicStamp (#80): the stamp must be a hex
+// commit id; a ref name would follow the branch and never go stale.
+func TestCheckEvidenceRejectsSymbolicStamp(t *testing.T) {
+	dir, _ := gitRepoWithCommit(t)
+	rel := evidenceRelPathFor("implementer")
+	branch := gitRun(t, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	for _, stamp := range []string{"HEAD", branch, branch + "~0", "HEAD^{commit}"} {
+		writeEvidence(t, dir, `{"commit":"`+stamp+`","checks":[{"name":"test","command":"make test","output":"ok","passed":true}]}`)
+		v := checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks)
+		assert.False(t, v.ok(), "stamp %q", stamp)
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := gitexec.Command(context.Background(), dir, args...).CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
+func gitHEAD(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	return dir, gitRun(t, dir, "rev-parse", "HEAD")
 }
 
 func TestCheckEvidenceEntries(t *testing.T) {
