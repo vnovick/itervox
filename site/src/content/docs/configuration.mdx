@@ -944,7 +944,10 @@ ERROR: 2 state label(s) missing on owner/repo — issues in those states are nev
 
 Missing labels make doctor exit `1`. If the API cannot be reached or rejects
 the token, doctor prints `github labels: could not check …` and the exit code
-is unaffected. Linear workflows skip the check.
+is unaffected. When `tracker.api_key` is empty it prints `github labels: not
+checked` instead: plain `doctor` does not load `.itervox/.env`, so keep the token
+in the environment or run `itervox doctor --deploy`, which loads that file first.
+Linear workflows skip the check.
 
 `itervox doctor --fix` creates the missing labels after asking
 `Create N label(s) on owner/repo …? [y/N]`. Any answer other than `y`/`yes`,
