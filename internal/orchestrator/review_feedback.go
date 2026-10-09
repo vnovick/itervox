@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
@@ -128,12 +130,14 @@ func buildLatestHandoffBlock(wsPath string) string {
 }
 
 // reviewerBranchState is what a read-only reviewer must leave unchanged:
-// HEAD, the content of every changed file, and the remote-tracking refs (a
-// push from this worktree moves one).
+// HEAD, the content of every changed file, and the refs on the workspace's
+// remotes as the remotes themselves report them (git ls-remote), so a push
+// is seen whether it went through a remote name or its URL.
 type reviewerBranchState struct {
-	Head    string            `json:"head"`
-	Dirty   map[string]string `json:"dirty"`   // path -> content hash ("deleted" when gone)
-	Remotes map[string]string `json:"remotes"` // remote-tracking ref -> commit
+	Head        string            `json:"head"`
+	Dirty       map[string]string `json:"dirty"`        // path -> content hash ("deleted" when gone)
+	RemoteRefs  map[string]string `json:"remote_refs"`  // "<remote> <ref>" -> commit
+	ReflogCount int               `json:"reflog_count"` // entries in this worktree's HEAD reflog
 }
 
 // reviewerBookkeeping are the paths a reviewer is expected to write.
@@ -151,7 +155,7 @@ func captureReviewerBranchState(ctx context.Context, wsPath string) (reviewerBra
 	if err != nil {
 		return reviewerBranchState{}, false
 	}
-	st := reviewerBranchState{Head: strings.TrimSpace(head), Dirty: map[string]string{}, Remotes: map[string]string{}}
+	st := reviewerBranchState{Head: strings.TrimSpace(head), Dirty: map[string]string{}, RemoteRefs: map[string]string{}}
 	if out, err := git("status", "--porcelain", "-z", "--untracked-files=all"); err == nil {
 		entries := strings.Split(out, "\x00")
 		for i := 0; i < len(entries); i++ {
@@ -173,12 +177,23 @@ func captureReviewerBranchState(ctx context.Context, wsPath string) (reviewerBra
 			st.Dirty[path] = strings.TrimSpace(hash)
 		}
 	}
-	if out, err := git("for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"); err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-			if ref, sha, ok := strings.Cut(line, " "); ok {
-				st.Remotes[ref] = sha
+	if out, err := git("remote"); err == nil {
+		for _, remote := range strings.Fields(out) {
+			lsCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			refs, err := gitexec.Command(lsCtx, wsPath, "ls-remote", "--heads", "--tags", remote).Output()
+			cancel()
+			if err != nil {
+				continue // unreachable remote: its pushes cannot be checked
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(refs)), "\n") {
+				if sha, ref, ok := strings.Cut(line, "\t"); ok {
+					st.RemoteRefs[remote+" "+ref] = sha
+				}
 			}
 		}
+	}
+	if out, err := git("reflog", "show", "--format=%H", "HEAD"); err == nil {
+		st.ReflogCount = len(strings.Fields(out))
 	}
 	return st, true
 }
@@ -188,16 +203,19 @@ func reviewerBaselinePath(wsPath, identifier, profile string) string {
 	return filepath.Join(ReviewDir(wsPath, identifier, profile), "branch-before.json")
 }
 
-// reviewerBaseline returns the branch state the reviewer first found: the
-// one recorded by an earlier, unfinished attempt of this review, or a fresh
-// capture (recorded for any retry). Without it, a retry after a failed turn
-// would take its baseline after the reviewer's own commit and miss it.
-func reviewerBaseline(ctx context.Context, wsPath, identifier, profile string) (reviewerBranchState, bool) {
+// reviewerBaseline returns the branch state the reviewer first found. A new
+// review (fresh) records it; a retry of the same review (attempt > 0)
+// reuses the recorded one, so a change made before a failed turn is still
+// caught. A file left by an abandoned or crashed review is overwritten by
+// the next fresh review, never reused.
+func reviewerBaseline(ctx context.Context, wsPath, identifier, profile string, fresh bool) (reviewerBranchState, bool) {
 	path := reviewerBaselinePath(wsPath, identifier, profile)
-	if raw, err := os.ReadFile(path); err == nil { //nolint:gosec // daemon-controlled path
-		var st reviewerBranchState
-		if json.Unmarshal(raw, &st) == nil && st.Head != "" {
-			return st, true
+	if !fresh {
+		if raw, err := os.ReadFile(path); err == nil { //nolint:gosec // daemon-controlled path
+			var st reviewerBranchState
+			if json.Unmarshal(raw, &st) == nil && st.Head != "" {
+				return st, true
+			}
 		}
 	}
 	st, ok := captureReviewerBranchState(ctx, wsPath)
@@ -217,27 +235,42 @@ func clearReviewerBaseline(wsPath, identifier, profile string) {
 	_ = os.Remove(reviewerBaselinePath(wsPath, identifier, profile))
 }
 
+// visitedCommits are the commits this worktree's HEAD pointed at during
+// the review: the start, the end and every reflog entry added since.
+func visitedCommits(ctx context.Context, wsPath string, before, after reviewerBranchState) map[string]bool {
+	visited := map[string]bool{before.Head: true, after.Head: true}
+	if n := after.ReflogCount - before.ReflogCount; n > 0 {
+		out, err := gitexec.Command(ctx, wsPath, "reflog", "show", "--format=%H", "-n", strconv.Itoa(n), "HEAD").Output()
+		if err == nil {
+			for _, sha := range strings.Fields(string(out)) {
+				visited[sha] = true
+			}
+		}
+	}
+	return visited
+}
+
 // reviewerChanges describes how the branch changed between before and after;
 // empty when the reviewer left it alone.
 func reviewerChanges(ctx context.Context, wsPath string, before, after reviewerBranchState) []string {
 	var out []string
 	if after.Head != before.Head {
 		if gitexec.Command(ctx, wsPath, "merge-base", "--is-ancestor", before.Head, after.Head).Run() == nil {
-			out = append(out, fmt.Sprintf("committed (HEAD %s → %s)", short(before.Head), short(after.Head)))
+			out = append(out, fmt.Sprintf("HEAD moved forward %s → %s (a commit or pull)", short(before.Head), short(after.Head)))
 		} else {
-			out = append(out, fmt.Sprintf("moved HEAD %s → %s (a reset or checkout)", short(before.Head), short(after.Head)))
+			out = append(out, fmt.Sprintf("HEAD moved %s → %s (a reset or checkout)", short(before.Head), short(after.Head)))
 		}
 	}
+	// A remote ref that moved to a commit this worktree's HEAD visited was
+	// pushed from here. Other workers' pushes and fetches do not match.
+	visited := visitedCommits(ctx, wsPath, before, after)
 	var pushed []string
-	for ref, sha := range after.Remotes {
-		if before.Remotes[ref] == sha {
+	for key, sha := range after.RemoteRefs {
+		if before.RemoteRefs[key] == sha || !visited[sha] {
 			continue
 		}
-		// A push moves a remote-tracking ref to a commit this worktree has
-		// on a local branch; a fetch moves it to someone else's commit.
-		if refs, err := gitexec.Command(ctx, wsPath, "for-each-ref", "--contains", sha, "--format=%(refname)", "refs/heads").Output(); err == nil && strings.TrimSpace(string(refs)) != "" {
-			pushed = append(pushed, strings.TrimPrefix(ref, "refs/remotes/"))
-		}
+		remote, ref, _ := strings.Cut(key, " ")
+		pushed = append(pushed, remote+"/"+strings.TrimPrefix(strings.TrimPrefix(ref, "refs/heads/"), "refs/tags/"))
 	}
 	if len(pushed) > 0 {
 		sort.Strings(pushed)

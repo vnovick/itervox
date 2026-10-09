@@ -291,7 +291,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
 		// The baseline survives a failed or interrupted attempt: a retry
 		// compares against the branch as the reviewer first found it.
-		reviewerBefore, reviewerTracked = reviewerBaseline(gitCtx, wsPath, issue.Identifier, profileName)
+		reviewerBefore, reviewerTracked = reviewerBaseline(gitCtx, wsPath, issue.Identifier, profileName, attempt == 0)
 		gitCancel()
 		// A verdict left by an earlier review round must not be read as
 		// this run's: the reviewer writes a fresh one or counts as a block.
