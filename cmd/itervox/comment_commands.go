@@ -201,6 +201,9 @@ func (h *commentCommandHandler) poll(ctx context.Context) {
 		if tracker.IsManagedComment(domain.Comment{Body: c.Body}) {
 			continue // Itervox's own comment
 		}
+		if c.OnPullRequest {
+			continue // commands act on issues; a PR is not dispatched or labelled
+		}
 		cmd, ok := parseItervoxCommand(c.Body)
 		if !ok {
 			continue

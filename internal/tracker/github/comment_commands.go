@@ -25,6 +25,9 @@ type RepoComment struct {
 	Login       string // the author's GitHub login
 	UserType    string // "User" or "Bot"
 	CreatedAt   time.Time
+	// OnPullRequest is true for a pull request's conversation comment: the
+	// repository comment list includes them, since every PR is an issue.
+	OnPullRequest bool
 }
 
 // ListRepoCommentsSince returns the repository's issue comments created or
@@ -63,6 +66,9 @@ func (c *Client) ListRepoCommentsSince(ctx context.Context, since time.Time) ([]
 			if user, ok := raw["user"].(map[string]any); ok {
 				rc.Login, _ = user["login"].(string)
 				rc.UserType, _ = user["type"].(string)
+			}
+			if htmlURL, _ := raw["html_url"].(string); strings.Contains(htmlURL, "/pull/") {
+				rc.OnPullRequest = true
 			}
 			if t := tracker.ParseTime(raw["created_at"]); t != nil {
 				rc.CreatedAt = *t

@@ -1307,7 +1307,8 @@ func TestCommentCommandClientCalls(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 12, "body": "hi",
 			"issue_url": srv.URL + "/repos/owner/repo/issues/7", "created_at": "2026-10-09T12:02:00Z",
-			"user": map[string]any{"login": "dependabot[bot]", "type": "Bot"}}})
+			"html_url": "https://github.com/owner/repo/pull/7#issuecomment-12",
+			"user":     map[string]any{"login": "dependabot[bot]", "type": "Bot"}}})
 	})
 	mux.HandleFunc("/repos/owner/repo/collaborators/alice/permission", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"permission": "write", "role_name": "maintain"})
@@ -1336,6 +1337,8 @@ func TestCommentCommandClientCalls(t *testing.T) {
 		CreatedAt: time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC)}, got[0])
 	assert.Equal(t, "7", got[1].IssueNumber)
 	assert.Equal(t, "Bot", got[1].UserType)
+	assert.True(t, got[1].OnPullRequest, "a pull request's conversation comment is marked")
+	assert.False(t, got[0].OnPullRequest)
 
 	perm, err := c.CollaboratorPermission(ctx, "alice")
 	require.NoError(t, err)

@@ -222,12 +222,17 @@ func TestCommentCommandPermissions(t *testing.T) {
 		{"token user (agents post as it), even as admin", config.CommentCommandsConfig{}, "itervox-bot", "User", "/itervox stop", false},
 		{"token user allowed", config.CommentCommandsConfig{AllowTokenUser: true}, "itervox-bot", "User", "/itervox stop", true},
 		{"Itervox's own comment", config.CommentCommandsConfig{}, "alice", "User", tracker.MarkManagedComment("/itervox stop"), false},
+		{"on a pull request", config.CommentCommandsConfig{}, "alice", "PR", "/itervox stop", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cc.Enabled = true
 			f, h, _, _ := commandFixture(t, tc.cc)
 			f.mu.Lock()
-			f.comments = append(f.comments, github.RepoComment{ID: "9", IssueNumber: "42", Body: tc.body, Login: tc.login, UserType: tc.userType, CreatedAt: time.Now()})
+			userType, onPR := tc.userType, false
+			if userType == "PR" {
+				userType, onPR = "User", true
+			}
+			f.comments = append(f.comments, github.RepoComment{ID: "9", IssueNumber: "42", Body: tc.body, Login: tc.login, UserType: userType, CreatedAt: time.Now(), OnPullRequest: onPR})
 			f.mu.Unlock()
 			h.poll(context.Background())
 			assert.Equal(t, tc.wantActed, len(f.reactionsSnapshot()) > 0, "reactions: %v", f.reactionsSnapshot())
