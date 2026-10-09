@@ -98,6 +98,9 @@ func commentTexts(t *testing.T, front string) []string {
 // original key order survive; only migrated keys change and the schema
 // marker lands at the top of the front matter.
 func TestMigrateWorkflowToSchema2PreservesCommentsAndKeyOrder(t *testing.T) {
+	// The fixture's api_key is `$GITHUB_TOKEN`, resolved by config.Load; CI
+	// runners do not export it.
+	t.Setenv("GITHUB_TOKEN", "ghp_test_token")
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(workflowPath, []byte(schema1WorkflowWithComments), 0o644))
