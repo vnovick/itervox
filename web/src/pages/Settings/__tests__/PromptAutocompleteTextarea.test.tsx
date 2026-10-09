@@ -89,7 +89,7 @@ describe('PromptAutocompleteTextarea (#87)', () => {
     const box = screen.getByRole('textbox');
     typeText(box, '@code');
     expect(screen.getAllByRole('option')).toHaveLength(1);
-    fireEvent.keyDown(box, { key: 'Tab' });
+    fireEvent.keyDown(box, { key: 'Enter' });
     expect(box.value).toBe('@code-reviewer ');
   });
 
@@ -139,5 +139,38 @@ describe('PromptAutocompleteTextarea (#87)', () => {
     } finally {
       removeLayer('profile-dialog');
     }
+  });
+
+  it('never inserts at a caret that moved after the list opened', () => {
+    render(<Harness />);
+    const box = screen.getByRole('textbox');
+    typeText(box, 'Use /td');
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    // The caret moves with ArrowLeft.
+    box.setSelectionRange(4, 4);
+    fireEvent.keyUp(box, { key: 'ArrowLeft' });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(fireEvent.keyDown(box, { key: 'Enter' })).toBe(true); // a newline, not an insert
+    expect(box.value).toBe('Use /td');
+  });
+
+  it('checks the caret again on Enter even without a select event', () => {
+    render(<Harness />);
+    const box = screen.getByRole('textbox');
+    typeText(box, 'Use /td');
+    box.setSelectionRange(4, 4);
+    expect(fireEvent.keyDown(box, { key: 'Enter' })).toBe(true);
+    expect(box.value).toBe('Use /td');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  it('leaves Enter to an IME that is composing, and Tab to focus navigation', () => {
+    render(<Harness />);
+    const box = screen.getByRole('textbox');
+    typeText(box, '/td');
+    expect(fireEvent.keyDown(box, { key: 'Enter', isComposing: true })).toBe(true);
+    expect(fireEvent.keyDown(box, { key: 'Tab' })).toBe(true);
+    expect(box.value).toBe('/td');
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
   });
 });

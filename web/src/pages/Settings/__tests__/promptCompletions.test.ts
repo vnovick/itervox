@@ -144,6 +144,27 @@ describe('applyCompletion (#87)', () => {
     );
   });
 
+  it('replaces the rest of the word and a selection (no leftover text)', () => {
+    const inside = 'Use /td';
+    const ctx = completionContext(inside, 6);
+    if (!ctx) throw new Error('no context');
+    expect(applyCompletion(inside, 6, ctx, { label: 'tdd', kind: 'skill' }).text).toBe('Use /tdd ');
+    const sel = applyCompletion(
+      inside,
+      5,
+      { kind: 'reference', query: '', start: 5, trigger: '/' },
+      { label: 'tdd', kind: 'skill' },
+      7,
+    );
+    expect(sel.text).toBe('Use /tdd ');
+    const liquid = '{{ issue.ti';
+    const lctx = completionContext(liquid, 3);
+    if (!lctx) throw new Error('no context');
+    expect(applyCompletion(liquid, 3, lctx, { label: 'issue.title', kind: 'variable' }).text).toBe(
+      '{{ issue.title }}',
+    );
+  });
+
   it('completes a filter', () => {
     expect(insert('{{ issue.title |', 'downcase', 'filter').text).toBe('{{ issue.title | downcase');
   });
