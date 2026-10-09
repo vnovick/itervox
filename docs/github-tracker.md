@@ -41,7 +41,7 @@ An exported `GITHUB_TOKEN` in your shell works too.
 
 ## Authenticate gh
 
-The daemon and the agents use the `gh` CLI, not the token above, for pull-request work: detecting the PR for an issue (`gh pr view`), posting PR comments (`gh pr comment`), merging from the dashboard, and opening PRs from the agent's prompt. Authenticate it once on the machine that runs Itervox:
+The daemon and the agents call the `gh` CLI for pull-request work: detecting the PR for an issue (`gh pr view`), posting PR comments (`gh pr comment`), merging from the dashboard, and opening PRs from the agent's prompt. `gh` uses `GH_TOKEN` or `GITHUB_TOKEN` when one is in its environment (the daemon's environment includes `.itervox/.env`, so usually the same token as above), and otherwise its own login. Make sure it works on the machine that runs Itervox:
 
 ```bash
 gh auth login        # interactive
@@ -50,7 +50,7 @@ export GH_TOKEN=github_pat_xxxxxxxxxxxxxxxxxxxx
 gh auth status       # should report "Logged in to github.com"
 ```
 
-`itervox doctor --deploy` runs `gh auth status` for you and warns when `gh` is missing or logged out.
+`itervox doctor --deploy` runs `gh auth status` for you: a missing `gh` is a warning, a logged-out one a failure.
 
 ## Initialize WORKFLOW.md
 
@@ -79,7 +79,9 @@ tracker:
 
 You are working on {{ issue.identifier }}: {{ issue.title }}.
 
+{% if issue.description %}
 {{ issue.description }}
+{% endif %}
 
 Push your changes to a new branch and open a pull request whose body says "Closes {{ issue.identifier }}".
 ```
@@ -91,9 +93,9 @@ GitHub issues are only `open` or `closed`. Every other state Itervox needs — "
 | Field | What Itervox does with it |
 |---|---|
 | `active_states` | Fetches **open** issues carrying one of these labels and dispatches them. An open issue with none of them is never picked up. |
-| `working_state` | Adds this label (and removes the other state labels) when an agent starts. |
+| `working_state` | Adds this label when an agent starts, removing any `active_states`, `terminal_states` and `backlog_states` labels. |
 | `completion_state` | Adds this label when the agent finishes successfully. It does **not** close the issue. |
-| `terminal_states` | Issues with one of these labels are done. `closed` is special: any **closed** issue counts as terminal, labelled or not. |
+| `terminal_states` | Issues with one of these labels are done. `closed` is special: any **closed** issue counts as terminal, labelled or not. An **open** issue that carries both an active and a terminal label counts as active. |
 | `backlog_states` | Fetched and shown as the leftmost board column; never dispatched. |
 | `failed_state` | Added when retries are exhausted. |
 
@@ -145,7 +147,7 @@ GitHub has no priority field. Itervox reads priority from labels named `p0`, `p1
 | `p3` | 3 | |
 | none | — | after every prioritised issue |
 
-When several eligible issues compete for free agent slots, lower numbers go first and issues without a priority label go last. Any other label (`urgent`, `high`, `priority: high`) is ignored for ordering. The value is available to the prompt as `{{ issue.priority }}`.
+When several eligible issues compete for free agent slots, lower numbers go first and issues without a priority label go last. That holds for `dependencies.ordering: critical_path` (the default) and `simple`; under `critical_path_strict`, how many issues a candidate unblocks outranks its priority. If an issue carries more than one `p` label, the first one in its label list counts, not the lowest. Any other label (`urgent`, `high`, `priority: high`) is ignored for ordering.
 
 ```bash
 gh label create "p0" --color "b60205" --repo owner/repo
@@ -191,15 +193,25 @@ A GitHub issue's identifier is its number with a hash: `#42`. That is what the d
 |---|---|---|
 | `issue.identifier` | `#42` | Use this in prompts and PR bodies |
 | `issue.id` | `42` | The bare number |
-| `issue.title`, `issue.description`, `issue.url` | | |
+| `issue.title` | | Always set |
+| `issue.description` | | The issue body; **unset when the body is empty** |
+| `issue.url` | | The issue's GitHub URL |
 | `issue.labels` | `["todo", "bug"]` | Lower-cased label names |
-| `issue.priority` | `0`–`3` | From `p0`–`p3`; empty when unlabelled |
-| `issue.branch_name` | `feature/42-login` | The branch recorded for this issue, once an agent has created one |
+| `issue.priority` | `0`–`3` | From `p0`–`p3`; **unset when there is no priority label** |
+| `issue.branch_name` | `feature/42-login` | **Unset** until an agent has created a branch for the issue |
 | `issue.blocked_by` | | Blockers parsed from the body |
 
-There is no `issue.number`: templates render with strict variables, so `{{ issue.number }}` fails the dispatch with `undefined variable`.
+Templates render with strict variables: printing a variable that is unset fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`), and why the optional fields above need a guard:
 
-Branches: when an agent creates its feature branch, Itervox records it on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), because GitHub issues have no branch field. A retried run reads it back and continues on the same branch. The comment is posted only when the branch changes.
+```liquid
+{% if issue.description %}{{ issue.description }}{% endif %}
+Priority: {{ issue.priority | default: "none" }}
+Branch: {{ issue.branch_name | default: issue.identifier }}
+```
+
+`p0` is the number `0`, which Liquid treats as set, so these guards keep it.
+
+Branches: when an agent creates its feature branch, Itervox records it on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), because GitHub issues have no branch field. The first turn of every later run reads it back, so `{{ issue.branch_name }}` names the branch in the prompt and the marker is not posted again; it is re-posted only when the branch changes. The worktree itself is set up before that read: a retry continues on the branch of the issue's open pull request when there is one, or in the workspace left by the previous run when it still exists.
 
 Only issues are picked up. GitHub's issues API also returns pull requests, and a PR can carry the same labels, but Itervox skips every pull request.
 
@@ -221,7 +233,7 @@ Itervox polls every `polling.interval_ms`, dispatches labelled issues up to `age
 | Priority | `p0`–`p3` labels | Native priority field |
 | Blockers | Phrases in the issue body | Native "blocked by" relations, plus **sub-issue gating**: an unfinished child blocks its parent |
 | Sub-issues | Not read; a parent is never held back by its sub-issues | Gate the parent |
-| State refresh | One API request **per issue** (no batch endpoint); blocker states are also read per blocker, cached for 5 minutes | One batched GraphQL query |
+| State refresh | One API request **per issue** (no batch endpoint); blocker states are also read per blocker, cached for 5 minutes | Batched GraphQL queries (one per page of issues) |
 | Branch | Hidden marker comment on the issue | Native branch field |
 | Identifier | `#42` | `ENG-42` |
 
@@ -248,7 +260,9 @@ Labels are available to the prompt, so one workflow can brief agents differently
 ```liquid
 You are working on {{ issue.identifier }}: {{ issue.title }}.
 
+{% if issue.description %}
 {{ issue.description }}
+{% endif %}
 
 {% if issue.labels contains "bug" %}
 This is a bug. Reproduce it with a failing test, fix the root cause, and keep every existing test passing.
