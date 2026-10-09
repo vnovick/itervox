@@ -274,7 +274,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	readOnlyReviewer = readOnlyReviewer || (profileName != "" && o.isReviewerInjected(issue.Identifier))
 	reviewVerdictRel := ""
 	if readOnlyReviewer {
-		reviewVerdictRel = filepath.Join(".itervox", "review", issue.Identifier, profileName, ReviewVerdictFileName)
+		reviewVerdictRel = reviewVerdictRelPath(issue.Identifier, profileName)
 	}
 
 	// A read-only reviewer gets the diff against the base branch and the

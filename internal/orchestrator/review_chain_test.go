@@ -128,23 +128,23 @@ func TestReviewChainSingleProfileIsUnchanged(t *testing.T) {
 }
 
 // TestReviewVerdictPathOnlyForFanoutReviewers pins the injection boundary:
-// the verdict instruction reaches fan-out reviewers and nobody else, so
-// normal workers and single-reviewer setups see an unchanged prompt.
+// the verdict instruction reaches reviewers and nobody else, so normal
+// workers see an unchanged prompt.
 func TestReviewVerdictPathOnlyForFanoutReviewers(t *testing.T) {
 	// #79: every reviewer records a verdict, a single one included — it is
 	// what Itervox posts on the issue.
 	single := &config.Config{}
 	single.Agent.ReviewerProfile = "reviewer"
-	require.Equal(t, ".itervox/review/ENG-1/reviewer/verdict.json", reviewVerdictRelPathFor(single, "ENG-1", "reviewer"),
-		"a single reviewer records its verdict too")
+	require.True(t, isReviewerProfile(single, "reviewer"), "a single reviewer records its verdict too")
+	require.Equal(t, ".itervox/review/ENG-1/reviewer/verdict.json", reviewVerdictRelPath("ENG-1", "reviewer"))
 
 	fanout := &config.Config{}
 	fanout.Agent.ReviewerProfiles = []string{"security", "correctness"}
-	require.NotEmpty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "security"),
+	require.True(t, isReviewerProfile(fanout, "security"),
 		"a fan-out reviewer must be told where to record its verdict")
-	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "implementer"),
+	require.False(t, isReviewerProfile(fanout, "implementer"),
 		"a non-reviewer profile must never be asked for a verdict")
-	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", ""))
+	require.False(t, isReviewerProfile(fanout, ""))
 }
 
 // TestReviewVerdictBlockStatesTheFailClosedRule: the agent must be told that

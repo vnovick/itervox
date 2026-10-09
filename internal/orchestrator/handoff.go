@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/vnovick/itervox/internal/config"
 )
 
 // HandoffDirRelPath is the path (relative to the workspace root) where
@@ -100,14 +98,10 @@ func buildReviewVerdictBlock(verdictRelPath string) string {
 	}, "\n")
 }
 
-// reviewVerdictRelPathFor returns the workspace-relative path a reviewer
-// writes its verdict to, or "" when profileName is not a reviewer. Every
-// reviewer records a verdict (#79), a single one included: it is what Itervox
-// posts on the issue.
-func reviewVerdictRelPathFor(cfg *config.Config, identifier, profileName string) string {
-	if !isReviewerProfile(cfg, profileName) {
-		return ""
-	}
+// reviewVerdictRelPath returns the workspace-relative path a reviewer writes
+// its verdict to. Every reviewer records a verdict (#79), a single one
+// included: it is what Itervox posts on the issue.
+func reviewVerdictRelPath(identifier, profileName string) string {
 	return filepath.Join(".itervox", "review", identifier, profileName, ReviewVerdictFileName)
 }
 
