@@ -23,8 +23,11 @@ import (
 //
 // "@agent-" counts at the start of the text or after whitespace or one of
 // ( [ { , ; " ' ` * _ < > — so "`@agent-x`", "**@agent-x**" and
-// "<@agent-x>" are references, while "me@agent-x.com" and URLs are not
-// ("_" and "*" count only when they do not follow a letter or digit). A
+// "<@agent-x>" are references, while ordinary email addresses
+// ("me@agent-x.com", "ops_@agent-x.com") and URL paths are not ("_" and "*"
+// count only when they do not follow a letter or digit). A URL or address
+// with one of the other start characters right before "@agent-" is read as
+// a mention. A
 // name directly followed by a letter, digit or non-ASCII character, by an
 // underscore that continues the word ("@agent-foo_bar"), or ending in a
 // hyphen is not a valid name and is skipped rather than truncated.
@@ -43,9 +46,11 @@ import (
 // deliberately not checked: they also name built-in commands and file
 // paths. The list and mention limits only ever leave a reference
 // unchecked. Fence detection approximates Markdown containers (see
-// openFence): text that only looks like a fence in a list item or quote can
-// hide or expose a reference that a full Markdown parser would treat
-// differently.
+// openFence): in unusual layouts — a tab after a list marker, code lines
+// or a closing fence indented less than the opening fence, text that only
+// looks like a fence — a reference near a fence can be hidden or checked
+// where a full Markdown parser would treat it differently. HTML comments
+// and inline code are not skipped.
 
 const refNamePattern = "[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?"
 

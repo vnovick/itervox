@@ -124,7 +124,7 @@ Only these forms are checked:
 
 Names follow Claude Code's naming rule: lower-case letters, digits and hyphens, starting with a letter, with an optional `<plugin>:` prefix for a plugin's skills and agents. They are matched against the inventory case-insensitively.
 
-`@agent-` counts at the start of a line or after a space or one of `(` `[` `{` `,` `;` `"` `'` `` ` `` `*` `_` `<` `>`, so `` `@agent-x` ``, `**@agent-x**` and `<@agent-x>` are checked while email addresses and URLs are not (`_` and `*` count only when they do not follow a letter or digit). A name that runs on into letters, digits, non-ASCII characters or an underscore (`@agent-foo_bar`, `@agent-fooBar`), or that ends in a hyphen, is not a valid name and is skipped.
+`@agent-` counts at the start of a line or after a space or one of `(` `[` `{` `,` `;` `"` `'` `` ` `` `*` `_` `<` `>`, so `` `@agent-x` ``, `**@agent-x**` and `<@agent-x>` are checked while ordinary email addresses and URLs are not (`_` and `*` count only when they do not follow a letter or digit; a URL or address with one of the other characters right before `@agent-` is read as a mention). Mentions inside inline code and HTML comments are checked too. A name that runs on into letters, digits, non-ASCII characters or an underscore (`@agent-foo_bar`, `@agent-fooBar`), or that ends in a hyphen, is not a valid name and is skipped.
 
 A list counts only as one unbroken run of backticked names right before the noun, on one line: "`` `a` and the `b` skills ``" checks only `b`, and "`` the `a` skill (or `b`) ``", "etc.", lists wrapped onto a second line and table cells are not followed. Each of these limits can only leave a reference unchecked; none of them produces a warning.
 
