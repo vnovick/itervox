@@ -27,6 +27,7 @@ func runDoctor(args []string) {
 	deploy := false
 	fix := false
 	assumeYes := false
+	upgrade := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -43,6 +44,8 @@ func runDoctor(args []string) {
 			fix = true
 		case a == "--yes" || a == "-y":
 			assumeYes = true
+		case a == "--upgrade":
+			upgrade = true
 		case a == "-h" || a == "--help":
 			printDoctorUsage(os.Stdout)
 			return
@@ -56,6 +59,20 @@ func runDoctor(args []string) {
 	}
 	if clearStartupError {
 		clearStartupErrorMarker(workflowPath)
+	}
+	if upgrade {
+		// #82: only the v0.2.1 upgrade notes that apply, judged against the
+		// environment the daemon would have (.itervox/.env loaded, never
+		// overriding variables already set).
+		loadDotEnvFrom(filepath.Dir(workflowPath))
+		report, code := runUpgradeDoctor(workflowPath)
+		if _, err := io.WriteString(os.Stdout, report); err != nil {
+			fmt.Fprintf(os.Stderr, "doctor: write report: %v\n", err)
+		}
+		if code != 0 {
+			fatalExit(code)
+		}
+		return
 	}
 	if deploy {
 		// Probe with the credentials the daemon would have: it loads
@@ -84,9 +101,10 @@ func runDoctor(args []string) {
 }
 
 func printDoctorUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]]")
+	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]] [--upgrade]")
 	_, _ = fmt.Fprintln(w, "  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
 	_, _ = fmt.Fprintln(w, "  --fix                  create missing GitHub state labels (asks first; --yes / -y skips the prompt for CI)")
+	_, _ = fmt.Fprintln(w, "  --upgrade              print only the v0.2.1 upgrade notes that apply to this workflow and environment, each with its fix; exits 1 when any applies")
 	_, _ = fmt.Fprintln(w, "  --deploy               also probe agent credentials, gh auth, git push auth (dry-run), the tracker API and the daemon's /api/v1/ready; exits 1 on any [fail]")
 }
 

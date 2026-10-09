@@ -166,6 +166,56 @@ itervox init --update --workflow WORKFLOW.md
 
 ---
 
+## `itervox doctor` — Check a workflow
+
+```bash
+itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]] [--upgrade]
+```
+
+Validates `WORKFLOW.md` (schema 2, dispatch checks, profile commands, skill and subagent references, GitHub state labels) and the local daemon files. Exits `0` when clean, `1` on any warning or failed check, `2` when the check itself cannot run.
+
+| Flag | Description |
+|---|---|
+| `--workflow` | Path to `WORKFLOW.md` (default `WORKFLOW.md`) |
+| `--clear-startup-error` | Remove `.itervox/STARTUP_ERROR.md` after fixing its cause |
+| `--fix` | Create missing GitHub state labels after a `[y/N]` prompt; `--yes` / `-y` skips it |
+| `--deploy` | Also probe agent credentials, `gh auth`, git push auth (dry run), the tracker API and the running daemon's `/api/v1/ready` |
+| `--upgrade` | Print only the v0.2.1 upgrade notes that apply to this workflow and environment, each with its fix and a link to the note. See below. |
+
+### Upgrade check (`--upgrade`)
+
+`itervox doctor --upgrade` reads the workflow's front matter (raw, so a config that no longer loads is still explained), the environment with `.itervox/.env` loaded, and the machine, and prints each applicable note as:
+
+```text
+[note 19] A set PORT environment variable now moves the dashboard
+  why:  `PORT=3000` is set in this environment; the dashboard now binds that port instead of `server.port`
+  fix:  if `PORT` belongs to another project, unset it for the daemon or set `ITERVOX_SERVER_PORT`
+  see:  https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28 (note 19)
+```
+
+With nothing to change it prints one `upgrade: all clear` line and exits `0`; with any note it exits `1`. Run it before and after upgrading from v0.2.0 or earlier.
+
+| Note | Applies when |
+|---|---|
+| 5 — per-project workspace and log paths | `workspace.root` is unset and `~/.itervox/workspaces` still holds worktrees in the old shared layout, or `tracker.project_slug` is unset and `~/.itervox/logs` still holds shared runtime state |
+| 6 — `server.port` defaults to 8090 | no port is set (`server.port`, `ITERVOX_SERVER_PORT`, `PORT`) and another process already holds 8090 (this project's own daemon does not count) |
+| 9 — `dependencies.auto_analyze` deprecated | the key is set |
+| 10 — headless token no longer printed | an `itervox.service` unit is installed and no `ITERVOX_API_TOKEN` is pinned |
+| 11 — SSH host-key checking values validated | `agent.ssh_strict_host_checking` or a `ssh_strict_host_by_host` entry is not one of `yes`, `no`, `ask`, `accept-new`, `off` |
+| 12 — `.WORKFLOW.md.lock` | the `.gitignore` next to `WORKFLOW.md` does not ignore it |
+| 13, 14 — unauthenticated origin and host checks | `server.allow_unauthenticated: true` with no `server.allowed_hosts`, or entries that are URLs, paths or wildcards |
+| 15 — `itervox stop` and old PID files | `.itervox/daemon.pid` was written by a pre-v0.2.1 daemon |
+| 17, 22 — drain on SIGTERM, new systemd unit | the installed unit lacks `--shutdown-grace` or `KillMode=mixed` |
+| 19 — `PORT` moves the dashboard | `PORT` is set and `ITERVOX_SERVER_PORT` is not |
+| 20 — headless JSON stderr | `ITERVOX_LOG_FORMAT=json` |
+| Breaking — `allow_unauthenticated_lan` renamed | the old key is set |
+| `backend_fallback` validation | `agent.backend_fallback: false` (it used to mean on), or a shape that no longer loads |
+| CORE-115 — backend contradicts command | `agent` or a profile runs `claude`/`codex` but sets the other backend |
+
+Notes that change behaviour the same way for every install (dependency holds, rate-limit handling, outbox keys, log levels, API status codes, release packaging) have nothing in a workflow to check and are not reported; read them in the [v0.2.1 CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28).
+
+---
+
 ## `itervox clear` — Remove workspace directories
 
 Removes git worktree workspace directories that Itervox created under the workspace root configured in `WORKFLOW.md`.

@@ -15,6 +15,8 @@ which run it). Paths use the defaults: `--root /srv/itervox`, service user `iter
 
 ## Upgrade
 
+Upgrading from v0.2.0 or earlier: first run `itervox doctor --upgrade --workflow WORKFLOW.md` as the service user in the project directory. It prints only the v0.2.1 upgrade notes that apply to this workflow, environment and installed unit, each with the fix (exit `0` and an "all clear" line when none do).
+
 ```bash
 sudo itervox-upgrade.sh --version v0.2.2          # or --version latest
 ```
