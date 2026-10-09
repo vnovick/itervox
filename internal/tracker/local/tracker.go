@@ -425,7 +425,7 @@ func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateNam
 	}
 	ident := fmt.Sprintf("%s-%d", t.prefix, next)
 	now := t.now().UTC().Truncate(time.Second)
-	f := issueFile{Title: strings.TrimSpace(title), State: stateName, Body: newBody(body),
+	f := issueFile{Title: strings.TrimSpace(title), State: stateName, Body: strings.TrimSpace(body),
 		Created: &now, Updated: &now, Extra: map[string]any{}}
 	e := &entry{path: filepath.Join(t.dir, ident+".md")}
 	if _, err := os.Stat(e.path); err == nil {
@@ -453,18 +453,8 @@ func WriteIssue(dir, identifier string, f IssueSpec) error {
 		return fmt.Errorf("local tracker: %s already exists", path)
 	}
 	file := issueFile{Title: f.Title, State: f.State, Priority: f.Priority, Labels: f.Labels,
-		BlockedBy: f.BlockedBy, Body: newBody(f.Body), Created: f.Created, Updated: f.Created, Extra: map[string]any{}}
+		BlockedBy: f.BlockedBy, Body: strings.TrimSpace(f.Body), Created: f.Created, Updated: f.Created, Extra: map[string]any{}}
 	return atomicfs.WriteFile(path, file.render(), 0o644)
-}
-
-// newBody is a new issue's description. Text that would read as a comment
-// section is escaped, so it stays the description.
-func newBody(body string) string {
-	body = strings.TrimSpace(body)
-	if _, _, comments := splitComments(body); len(comments) > 0 {
-		return escapeStructure(body)
-	}
-	return body
 }
 
 // IssueSpec describes an issue for WriteIssue.

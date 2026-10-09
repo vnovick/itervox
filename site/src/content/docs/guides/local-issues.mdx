@@ -70,7 +70,7 @@ The schema is in docs/report.md.
 
 Other keys are kept when Itervox rewrites the file, but the front matter is rewritten in a standard layout: YAML comments in it are dropped and spacing may change. Put notes in the description instead.
 
-Everything after the front matter is the description, up to the last `## Comments` heading that has a comment under it. Each comment starts with `### <RFC 3339 time> — <author>`; text between the heading and the first comment is kept. A `## Comments` heading with no comment after it, or one inside a code block, is part of the description. When a comment Itervox writes contains a line that would read as that heading or a comment header, the line is written with a leading `\` (Markdown shows it unchanged), so no comment can rewrite the file's structure. Comments Itervox writes (the pull request link, the session summary, input-required questions) are signed `Itervox`.
+Everything after the front matter is the description, up to the last `## Comments` heading that has a comment under it. Each comment starts with `### <RFC 3339 time> — <author>`; text between the heading and the first comment is kept. A `## Comments` heading with no comment after it is part of the description. Code blocks are not special, so a fence never hides the comments. When text Itervox writes (a comment, or a new issue's description) contains a line that would read as that heading or a comment header, the line is written with a leading `\` (Markdown shows it unchanged) and read back without it, so no text can rewrite the file's structure. Comments Itervox writes (the pull request link, the session summary, input-required questions) are signed `Itervox`.
 
 ## Working with the files
 
