@@ -39,7 +39,18 @@ func restackEligible(state State, issue domain.Issue) bool {
 	if issue.Identifier == "" {
 		return false
 	}
-	if _, running := state.Running[issue.Identifier]; running {
+	// state.Running is keyed by issue ID; the identifier scan covers an
+	// issue value that carries no ID.
+	running := false
+	if _, ok := state.Running[issue.ID]; ok && issue.ID != "" {
+		running = true
+	}
+	for _, entry := range state.Running {
+		if entry != nil && entry.Issue.Identifier == issue.Identifier {
+			running = true
+		}
+	}
+	if running {
 		slog.Debug("orchestrator: skipping restack for a running issue",
 			"identifier", issue.Identifier)
 		return false

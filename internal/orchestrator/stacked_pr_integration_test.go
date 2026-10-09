@@ -47,6 +47,7 @@ echo "$*" >> "` + log + `"
 case "$*" in
   "pr view --json url,state "*) echo "` + prURL + `" ;;
   "pr view ` + prURL + ` --json baseRefName"*) cat "` + base + `" ;;
+  "pr view ` + prURL + ` --json state,headRefName,body,isDraft") echo '{"state":"OPEN","headRefName":"itervox/eng-2","body":"","isDraft":false}' ;;
   "pr edit ` + prURL + ` --base "*) printf '%s\n' "$5" > "` + base + `" ;;
 esac
 `
@@ -62,7 +63,7 @@ esac
 }
 
 // runStackedWorker dispatches ENG-2 once and waits for it to complete.
-func runStackedWorker(t *testing.T, stackedOn string) (prompt string, ghCalls []string) {
+func runStackedWorker(t *testing.T, stackedOn string, existingPR bool) (prompt string, ghCalls []string) {
 	t.Helper()
 	const prURL = "https://github.com/o/r/pull/12"
 	calls := installFakeGHForPR(t, prURL)
@@ -75,8 +76,14 @@ func runStackedWorker(t *testing.T, stackedOn string) (prompt string, ghCalls []
 	cfg.Dependencies.StackedPRs = true
 	cfg.PromptTemplate = "Implement {{ issue.identifier }}; open the PR against {{ run.pr_base_branch }}."
 
+	issue := makeIssue("id2", "ENG-2", "In Progress", nil, nil)
+	if existingPR {
+		// An open PR linked from the issue: the worker reuses its branch.
+		desc := "Follow-up to " + prURL
+		issue.Description = &desc
+	}
 	mt := tracker.NewMemoryTracker(
-		[]domain.Issue{makeIssue("id2", "ENG-2", "In Progress", nil, nil)},
+		[]domain.Issue{issue},
 		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates,
 	)
 	runner := &promptCaptureRunner{done: make(chan struct{}, 1)}
@@ -101,7 +108,7 @@ func runStackedWorker(t *testing.T, stackedOn string) (prompt string, ghCalls []
 // "Stacked Branch" prompt block) and sets it on the pull request the run
 // produced with `gh pr edit --base`.
 func TestStackedRunTargetsBlockerBranch(t *testing.T) {
-	prompt, calls := runStackedWorker(t, "itervox/eng-1")
+	prompt, calls := runStackedWorker(t, "itervox/eng-1", false)
 
 	assert.Contains(t, prompt, "open the PR against itervox/eng-1.")
 	assert.Contains(t, prompt, "## Stacked Branch")
@@ -114,11 +121,23 @@ func TestStackedRunTargetsBlockerBranch(t *testing.T) {
 // names workspace.base_branch, carries no stacked block, and the PR base is
 // not touched.
 func TestUnstackedRunKeepsDefaultBase(t *testing.T) {
-	prompt, calls := runStackedWorker(t, "")
+	prompt, calls := runStackedWorker(t, "", false)
 
 	assert.Contains(t, prompt, "open the PR against main.")
 	assert.NotContains(t, prompt, "## Stacked Branch")
 	for _, c := range calls {
 		assert.NotContains(t, c, "pr edit", "an unstacked run must not edit the PR base")
 	}
+}
+
+// TestStackedRunRetargetsExistingPullRequest: when the issue already links an
+// open pull request (the worker reuses its branch), a stacked run points that
+// PR at the blocker's branch too.
+func TestStackedRunRetargetsExistingPullRequest(t *testing.T) {
+	_, calls := runStackedWorker(t, "itervox/eng-1", true)
+	assert.Contains(t, calls, "pr view https://github.com/o/r/pull/12 --json state,headRefName,body,isDraft",
+		"the linked PR must have been detected; gh calls: %v", calls)
+	assert.NotContains(t, calls, "pr view --json url,state --jq select(.state==\"OPEN\").url",
+		"with a linked PR the post-run lookup is skipped")
+	assert.Contains(t, calls, "pr edit https://github.com/o/r/pull/12 --base itervox/eng-1")
 }

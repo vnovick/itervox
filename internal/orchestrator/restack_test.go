@@ -28,14 +28,16 @@ func restackState(running ...string) State {
 		Running:        map[string]*RunEntry{},
 		TerminalStates: []string{"Done"},
 	}
-	for _, id := range running {
-		st.Running[id] = &RunEntry{}
+	// Keyed by issue ID, as the event loop keys it (dispatch stores
+	// state.Running[issue.ID]).
+	for _, identifier := range running {
+		st.Running["id-"+identifier] = &RunEntry{Issue: domain.Issue{ID: "id-" + identifier, Identifier: identifier}}
 	}
 	return st
 }
 
 func blocked(identifier string, blockers ...domain.BlockerRef) domain.Issue {
-	return domain.Issue{Identifier: identifier, BlockedBy: blockers}
+	return domain.Issue{ID: "id-" + identifier, Identifier: identifier, BlockedBy: blockers}
 }
 
 func restackBlocker(id, state string) domain.BlockerRef {
@@ -194,4 +196,35 @@ func TestRestackRetargetSkipsWhenNoPullRequest(t *testing.T) {
 	o.restackUnblockedIssue(context.Background(), &state, blocked("ENG-2", restackBlocker("ENG-1", "Done")))
 	o.prRetargetWg.Wait()
 	assert.False(t, edited)
+}
+
+// TestBlockerLandingRetargetsDependentPullRequest drives #73's second case
+// through the dependency-audit transition the event loop uses: the dependent
+// is first audited while its blocker is live, then again once the blocker is
+// Done. The unblock transition restacks the worktree and points its pull
+// request at workspace.base_branch.
+func TestBlockerLandingRetargetsDependentPullRequest(t *testing.T) {
+	var mu sync.Mutex
+	var edits [][2]string
+	o := &Orchestrator{cfg: newRestackCfg("main"), workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "https://github.com/o/r/pull/2" }
+	o.setPRBase = func(_ context.Context, prURL, base string) (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		edits = append(edits, [2]string{prURL, base})
+		return true, nil
+	}
+	state := restackState()
+	now := time.Now()
+
+	o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state,
+		blocked("ENG-2", restackBlocker("ENG-1", "In Progress")), now)
+	o.prRetargetWg.Wait()
+	assert.Empty(t, edits, "nothing happens while the blocker is live")
+
+	o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state,
+		blocked("ENG-2", restackBlocker("ENG-1", "Done")), now.Add(time.Minute))
+	o.prRetargetWg.Wait()
+	assert.Equal(t, [][2]string{{"https://github.com/o/r/pull/2", "main"}}, edits,
+		"the blocker landing must retarget the dependent's PR to base_branch")
 }

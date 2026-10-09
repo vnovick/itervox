@@ -106,3 +106,48 @@ func TestEnsureWorkspaceFromReportsStackedOn(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reused.StackedOn, "the blocker's commits are not in this worktree's history")
 }
+
+// TestStackedOnRequiresTheBlockersOwnCommits pins review findings on #73:
+// StackedOn reflects the worktree's actual history, not the requested start
+// point, and a blocker branch with nothing of its own is not a stack base.
+func TestStackedOnRequiresTheBlockersOwnCommits(t *testing.T) {
+	t.Run("existing branch checked out as is", func(t *testing.T) {
+		mgr, root := worktreeManager(t)
+		gitIn(t, root, "checkout", "-q", "-b", "itervox/eng-1")
+		require.NoError(t, os.WriteFile(filepath.Join(root, "blocker-work"), []byte("x"), 0o644))
+		gitIn(t, root, "add", "-A")
+		gitIn(t, root, "commit", "-q", "-m", "blocker work")
+		gitIn(t, root, "checkout", "-q", "main")
+		// The dependent's branch already exists, based on main (e.g. its
+		// worktree was removed after a failed after_create hook).
+		gitIn(t, root, "branch", "itervox/eng-5", "main")
+
+		ws, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-5", "itervox/eng-5", "itervox/eng-1")
+		require.NoError(t, err)
+		require.True(t, ws.CreatedNow)
+		require.NoFileExists(t, filepath.Join(ws.Path, "blocker-work"))
+		require.Empty(t, ws.StackedOn, "the existing branch was checked out unchanged, so it is not stacked")
+	})
+
+	t.Run("blocker branch with no commits of its own", func(t *testing.T) {
+		mgr, root := worktreeManager(t)
+		gitIn(t, root, "branch", "itervox/eng-1", "main")
+		ws, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-2", "itervox/eng-2", "itervox/eng-1")
+		require.NoError(t, err)
+		require.Empty(t, ws.StackedOn, "a blocker equal to base adds nothing to stack on")
+	})
+
+	t.Run("blocker branch behind base", func(t *testing.T) {
+		mgr, root := worktreeManager(t)
+		gitIn(t, root, "branch", "itervox/eng-1", "main")
+		require.NoError(t, os.WriteFile(filepath.Join(root, "later-on-main"), []byte("x"), 0o644))
+		gitIn(t, root, "add", "-A")
+		gitIn(t, root, "commit", "-q", "-m", "later main work")
+		plain, err := mgr.EnsureWorkspace(context.Background(), "ENG-3", "itervox/eng-3")
+		require.NoError(t, err)
+		require.Empty(t, plain.StackedOn)
+		reused, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-3", "itervox/eng-3", "itervox/eng-1")
+		require.NoError(t, err)
+		require.Empty(t, reused.StackedOn, "retargeting to a stale blocker branch would widen the PR")
+	})
+}

@@ -700,15 +700,18 @@ branch, so it shows only this issue's changes:
   stacked run (and `workspace.base_branch` otherwise), and a stacked run also
   gets a `## Stacked Branch` block telling the agent to run
   `gh pr create --base <blocker-branch>`.
-- Itervox enforces it. After a stacked run, if the issue has an open pull
-  request, Itervox runs `gh pr edit <url> --base <blocker-branch>` unless the
+- Itervox enforces it. After a stacked run completes successfully (worker
+  runs only, not automation runs), if the issue has an open pull request —
+  one the run opened or one already linked from the issue — Itervox runs `gh pr edit <url> --base <blocker-branch>` unless the
   base already matches. GitHub only accepts a base branch that exists on the
   remote, so the blocker's branch must have been pushed; if `gh` refuses, the
   daemon logs a warning and the PR keeps its base.
 
-A run counts as stacked when its worktree was created from the blocker's
-branch, or is an existing worktree that has the blocker's branch in its
-history.
+A run counts as stacked when its worktree — new or reused — has the
+blocker's branch in its history and that branch has commits
+`workspace.base_branch` does not. A blocker branch with nothing of its own,
+or one that is behind `base_branch`, is not used as a PR base, and an
+existing branch that was checked out unchanged is not stacked.
 
 :::note[When stacking applies]
 Itervox does not dispatch an issue while any of its blockers is in a
@@ -716,7 +719,9 @@ non-terminal state (`blocked_by`), and stacking only considers non-terminal
 blockers. So a normal dispatch never stacks: by the time a dependent is
 picked up, its blocker is terminal and the worktree starts from
 `base_branch`. Stacking takes effect only on paths that do not apply the
-blocker gate, such as a retry that has to create a new worktree.
+blocker gate — a retry, a `backend_fallback` re-dispatch, a reviewer run or
+an input-required resume — typically when a blocker was added or reopened
+after the dependent was first dispatched.
 :::
 
 ```yaml
