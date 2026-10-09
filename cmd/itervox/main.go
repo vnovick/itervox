@@ -72,6 +72,7 @@ Commands:
              --workflow workflow path (default: <dir>/WORKFLOW.md)
              --yes, -y  answer yes to every confirmation
              --no-start run the checks only; do not start the daemon
+             --ready-timeout  how long to wait for the daemon (default: 90s)
 
   init    Scan a repository and generate a WORKFLOW.md starter file,
           or migrate an existing one with --update.

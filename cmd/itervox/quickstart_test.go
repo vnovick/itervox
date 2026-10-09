@@ -381,7 +381,7 @@ func TestQuickstartWaitsForReadyEndpoint(t *testing.T) {
 	t.Run("waits for 200", func(t *testing.T) {
 		ts, calls := readyServer(t, 3)
 		wf, itervoxDir := project(t)
-		fakeDaemon(t, "mkdir -p .itervox && echo '"+ts.URL+"/' > .itervox/dashboard_url && sleep 30")
+		fakeDaemon(t, "mkdir -p .itervox && echo '"+ts.URL+"/' > .itervox/dashboard_url && sleep 3")
 		var out strings.Builder
 		url, err := quickstartStartDaemon(wf, itervoxDir, 20*time.Second, &out)
 		require.NoError(t, err)
@@ -391,7 +391,7 @@ func TestQuickstartWaitsForReadyEndpoint(t *testing.T) {
 	t.Run("times out while not ready", func(t *testing.T) {
 		ts, _ := readyServer(t, -1)
 		wf, itervoxDir := project(t)
-		fakeDaemon(t, "mkdir -p .itervox && echo '"+ts.URL+"/' > .itervox/dashboard_url && sleep 30")
+		fakeDaemon(t, "mkdir -p .itervox && echo '"+ts.URL+"/' > .itervox/dashboard_url && sleep 3")
 		var out strings.Builder
 		_, err := quickstartStartDaemon(wf, itervoxDir, time.Second, &out)
 		require.Error(t, err)
@@ -407,4 +407,44 @@ func TestQuickstartWaitsForReadyEndpoint(t *testing.T) {
 		logged, _ := os.ReadFile(filepath.Join(itervoxDir, "logs", "quickstart-daemon.log"))
 		assert.Contains(t, string(logged), "startup failed", "daemon output goes to the quickstart log")
 	})
+}
+
+// TestQuickstartLoadsProjectEnvFromAnotherDirectory (review of #74): run with
+// --dir from elsewhere, quickstart reads the project's own .itervox/.env, so
+// a token already saved there is used instead of asking again.
+func TestQuickstartLoadsProjectEnvFromAnotherDirectory(t *testing.T) {
+	dir, wf, _ := quickstartGitHubProject(t, wantStateLabels)
+	raw, _ := os.ReadFile(wf)
+	require.NoError(t, os.WriteFile(wf, []byte(strings.Replace(string(raw), "api_key: test-token", "api_key: $GITHUB_TOKEN", 1)), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", ".env"), []byte("GITHUB_TOKEN=gho_saved_earlier\n"), 0o600))
+	t.Setenv("GITHUB_TOKEN", "") // registers the restore
+	require.NoError(t, os.Unsetenv("GITHUB_TOKEN"))
+	orig := quickstartGHToken
+	quickstartGHToken = func(context.Context) (string, error) { return "", errors.New("gh must not be needed") }
+	t.Cleanup(func() { quickstartGHToken = orig })
+
+	var out strings.Builder
+	code := quickstart(quickstartOptions{Dir: dir, NoStart: true}, strings.NewReader(""), &out)
+	assert.Equal(t, 0, code, out.String())
+	assert.Equal(t, "gho_saved_earlier", os.Getenv("GITHUB_TOKEN"))
+	envRaw, _ := os.ReadFile(filepath.Join(dir, ".itervox", ".env"))
+	assert.Equal(t, "GITHUB_TOKEN=gho_saved_earlier\n", string(envRaw))
+}
+
+// TestQuickstartClearsStaleRuntimeFiles (review of #74): after a daemon died
+// without cleaning up, its HEARTBEAT.md and dashboard_url no longer stop
+// quickstart at doctor.
+func TestQuickstartClearsStaleRuntimeFiles(t *testing.T) {
+	dir, wf, _ := quickstartGitHubProject(t, wantStateLabels)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox"), 0o755))
+	require.NoError(t, os.WriteFile(heartbeatPath(wf), []byte("Daemon: running\n"), 0o644))
+	require.NoError(t, os.WriteFile(dashboardURLFilePath(wf), []byte("http://127.0.0.1:1/\n"), 0o644))
+
+	var out strings.Builder
+	code := quickstart(quickstartOptions{Dir: dir, NoStart: true}, strings.NewReader(""), &out)
+	assert.Equal(t, 0, code, out.String())
+	assert.NoFileExists(t, heartbeatPath(wf))
+	assert.NoFileExists(t, dashboardURLFilePath(wf))
+	assert.Contains(t, out.String(), "left by a daemon that is no longer running")
 }

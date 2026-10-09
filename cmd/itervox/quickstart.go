@@ -124,7 +124,15 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 		return 1
 	}
+	if opts.Workflow != "" && opts.Dir == "." {
+		// --workflow alone: the repository is the workflow's directory.
+		dir = filepath.Dir(workflowPath)
+	}
 	itervoxDir := filepath.Join(filepath.Dir(workflowPath), ".itervox")
+	// main() loads .itervox/.env relative to the current directory; with
+	// --dir/--workflow the project's own file must be loaded too, or a token
+	// already saved there is not seen. Variables already set win.
+	loadDotEnvFrom(filepath.Dir(workflowPath))
 
 	// 1. Workflow: keep, migrate (asked) or create.
 	if _, statErr := os.Stat(workflowPath); statErr == nil {
@@ -158,6 +166,11 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		return 0
 	}
 
+	// A daemon that died without cleaning up leaves HEARTBEAT.md and
+	// dashboard_url behind; the next daemon rewrites both, and doctor would
+	// otherwise stop here on them.
+	quickstartClearStaleRuntimeFiles(workflowPath, out)
+
 	// 3. Tracker credential.
 	if code := quickstartCredential(workflowPath, itervoxDir, opts.Yes, reader, out); code != 0 {
 		return code
@@ -171,6 +184,11 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		return code
 	}
 	_, _ = fmt.Fprintf(out, "itervox quickstart: doctor checks passed\n")
+	for _, line := range strings.Split(report, "\n") {
+		if strings.HasPrefix(line, "WARNING:") {
+			_, _ = fmt.Fprintln(out, "  "+line)
+		}
+	}
 
 	if opts.NoStart {
 		_, _ = fmt.Fprintf(out, "itervox quickstart: not starting the daemon (--no-start); run `itervox -workflow %s`\n", workflowPath)
@@ -367,6 +385,21 @@ func quickstartRunningDaemon(workflowPath string) (string, bool) {
 	}
 	raw, _ := os.ReadFile(dashboardURLFilePath(workflowPath))
 	return strings.TrimSpace(string(raw)), true
+}
+
+// quickstartClearStaleRuntimeFiles removes HEARTBEAT.md and dashboard_url
+// when no live daemon owns this workflow. Both are runtime state the daemon
+// writes on every start (gitignored, never edited by hand), so removing a
+// dead daemon's copies loses nothing.
+func quickstartClearStaleRuntimeFiles(workflowPath string, out io.Writer) {
+	if pid, _, _, err := readPIDFile(workflowPath); err == nil && pid > 0 && processAlive(pid) {
+		return
+	}
+	for _, p := range []string{heartbeatPath(workflowPath), dashboardURLFilePath(workflowPath)} {
+		if err := os.Remove(p); err == nil {
+			_, _ = fmt.Fprintf(out, "itervox quickstart: removed %s left by a daemon that is no longer running\n", p)
+		}
+	}
 }
 
 // quickstartStartDaemon starts the daemon in its own session with output in
