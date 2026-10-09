@@ -28,16 +28,15 @@ const FileIcon = () => (
   </svg>
 );
 
-type TrackerKind = 'linear' | 'github' | 'local' | 'memory';
-
-const TRACKER_LABEL: Record<TrackerKind, string> = {
+// Unknown kinds (a newer daemon) show their raw name.
+const TRACKER_LABEL: Partial<Record<string, string>> = {
   linear: 'Linear',
   github: 'GitHub',
   local: 'Local files',
   memory: 'Demo',
 };
 
-function TrackerIcon({ kind }: { kind: TrackerKind }) {
+function TrackerIcon({ kind }: { kind: string }) {
   if (kind === 'linear') return <LinearIcon />;
   if (kind === 'github') return <GitHubIcon />;
   return <FileIcon />;
@@ -46,7 +45,7 @@ function TrackerIcon({ kind }: { kind: TrackerKind }) {
 export function ProjectSelector() {
   const { trackerKind, activeProjectFilter } = useItervoxStore(
     useShallow((s) => ({
-      trackerKind: s.snapshot?.trackerKind as TrackerKind | undefined,
+      trackerKind: s.snapshot?.trackerKind,
       activeProjectFilter: s.snapshot?.activeProjectFilter ?? EMPTY_PROJECT_FILTER,
     })),
   );

@@ -67,8 +67,15 @@ type entry struct {
 	file    issueFile
 	good    bool // file holds a successfully parsed version
 	stamp   stamp
+	readAt  time.Time // when the file was last read
 	problem string
 }
+
+// racyWindow is how close to its read a file's modification time may be
+// before the read is distrusted: a second edit in the same timestamp tick
+// (filesystems with coarse mtimes) would otherwise keep the same stamp and
+// never be read. Such a file is read again on the next call.
+const racyWindow = 2 * time.Second
 
 type stamp struct {
 	mod  time.Time
@@ -148,7 +155,7 @@ func (t *Tracker) refreshLocked() {
 		seen[ident] = true
 		st := stamp{mod: info.ModTime(), size: info.Size()}
 		e := t.entries[ident]
-		if e != nil && e.stamp == st {
+		if e != nil && e.stamp == st && st.mod.Before(e.readAt.Add(-racyWindow)) {
 			continue
 		}
 		if e == nil {
@@ -156,26 +163,33 @@ func (t *Tracker) refreshLocked() {
 			t.entries[ident] = e
 		}
 		e.stamp = st
-		data, err := os.ReadFile(path) //nolint:gosec // a file in the configured issues directory
-		if err == nil {
-			var f issueFile
-			if f, err = parseIssueFile(data); err == nil {
-				e.file, e.good, e.problem = f, true, ""
-				continue
-			}
-		}
-		msg := err.Error()
-		if msg != e.problem {
-			slog.Warn("local tracker: cannot read an issue file; serving its last good version, if any",
-				"path", path, "error", msg)
-		}
-		e.problem = msg
+		t.readLocked(e)
 	}
 	for ident := range t.entries {
 		if !seen[ident] {
 			delete(t.entries, ident)
 		}
 	}
+}
+
+// readLocked reads and parses e's file. On failure the last good version
+// stays and the problem is recorded (and logged when it changes).
+func (t *Tracker) readLocked(e *entry) {
+	e.readAt = time.Now() // compared with file mtimes, so the wall clock
+	data, err := os.ReadFile(e.path)
+	if err == nil {
+		var f issueFile
+		if f, err = parseIssueFile(data); err == nil {
+			e.file, e.good, e.problem = f, true, ""
+			return
+		}
+	}
+	msg := err.Error()
+	if msg != e.problem {
+		slog.Warn("local tracker: cannot read an issue file; serving its last good version, if any",
+			"path", e.path, "error", msg)
+	}
+	e.problem = msg
 }
 
 // issueLocked builds the domain issue for ident, resolving blocker states
@@ -308,7 +322,13 @@ func (t *Tracker) update(issueID string, change func(f *issueFile)) (issueFile, 
 	defer t.mu.Unlock()
 	t.refreshLocked()
 	e := t.entries[issueID]
-	if e == nil || !e.good {
+	if e == nil {
+		return issueFile{}, &tracker.NotFoundError{Adapter: "local", Identifier: issueID}
+	}
+	// Read the file itself, whatever its stamp says: the change is applied
+	// to what is on disk now, never over an edit the scan has not seen.
+	t.readLocked(e)
+	if !e.good {
 		return issueFile{}, &tracker.NotFoundError{Adapter: "local", Identifier: issueID}
 	}
 	if e.problem != "" {
@@ -335,7 +355,10 @@ func (t *Tracker) writeLocked(e *entry, f issueFile) error {
 		return fmt.Errorf("local tracker: write %s: %w", e.path, err)
 	}
 	e.file, e.good, e.problem = f, true, ""
+	e.readAt = time.Now() // compared with file mtimes, so the wall clock
 	if info, err := os.Stat(e.path); err == nil {
+		// An edit between the rename and this stat is caught by the racy
+		// window: the file is read again on the next call.
 		e.stamp = stamp{mod: info.ModTime(), size: info.Size()}
 	}
 	return nil
@@ -430,7 +453,7 @@ func WriteIssue(dir, identifier string, f IssueSpec) error {
 		return fmt.Errorf("local tracker: %s already exists", path)
 	}
 	file := issueFile{Title: f.Title, State: f.State, Priority: f.Priority, Labels: f.Labels,
-		BlockedBy: f.BlockedBy, Body: f.Body, Created: f.Created, Updated: f.Created, Extra: map[string]any{}}
+		BlockedBy: f.BlockedBy, Body: strings.TrimSpace(f.Body), Created: f.Created, Updated: f.Created, Extra: map[string]any{}}
 	return atomicfs.WriteFile(path, file.render(), 0o644)
 }
 

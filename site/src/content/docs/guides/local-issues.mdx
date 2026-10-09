@@ -68,13 +68,13 @@ The schema is in docs/report.md.
 | `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/configuration/#tracker) builds on a blocker's branch. |
 | `created`, `updated` | no | RFC 3339 times. Itervox sets `updated` on every write. |
 
-Other keys are kept as they are when Itervox rewrites the file.
+Other keys are kept when Itervox rewrites the file, but the front matter is rewritten in a standard layout: YAML comments in it are dropped and spacing may change. Put notes in the description instead.
 
-Everything after the front matter is the description, up to a `## Comments` heading. Each comment starts with `### <RFC 3339 time> — <author>`. A `## Comments` line inside a code block is part of the description. Comments Itervox writes (the pull request link, the session summary, input-required questions) are signed `Itervox`.
+Everything after the front matter is the description, up to the last `## Comments` heading that has a comment under it. Each comment starts with `### <RFC 3339 time> — <author>`; text between the heading and the first comment is kept. A `## Comments` heading with no comment after it is part of the description. Code blocks are not special, so a fence never hides the comments. When text Itervox writes (a comment, or a new issue's description) contains a line that would read as that heading or a comment header, the line is written with a leading `\` (Markdown shows it unchanged) and read back without it, so no text can rewrite the file's structure. Two consequences: a backslash you type before such a line yourself is removed the next time Itervox writes the file, and if a description quotes this format (a `## Comments` line followed by a comment header) and you then delete every comment by hand, the quoted example is read as the comments. Comments Itervox writes (the pull request link, the session summary, input-required questions) are signed `Itervox`.
 
 ## Working with the files
 
-- **By hand.** Create `ITX-2.md`, change `state: Backlog` to `state: Todo`, add a comment: the change appears on the next poll (`polling.interval_ms`), without a restart. Itervox re-reads only the files whose size or modification time changed.
+- **By hand.** Create `ITX-2.md`, change `state: Backlog` to `state: Todo`, add a comment: the change appears on the next poll (`polling.interval_ms`), without a restart. Itervox re-reads the files whose size or modification time changed, and any file changed within two seconds of its last read (for filesystems with coarse timestamps). Before writing a file it always reads it again, so a change is applied to what is on disk.
 - **From the dashboard.** Moving a card or posting a comment writes the file.
 - **By agents.** The agent actions that create issues, comment and move state work the same as with Linear or GitHub. A new issue takes the next free number for the prefix.
 
@@ -84,7 +84,7 @@ Itervox writes a file atomically (a temporary file, then a rename), so an editor
 
 A missing `title` or `state`, front matter that is not closed, a `priority` that is not a number or a time that is not RFC 3339 is reported, never fatal:
 
-- the daemon logs a warning once per change, and keeps using the last version it could read (a new file with an error is skipped);
+- the daemon logs a warning once per change, and keeps using the last version it could read. A file that does not parse when the daemon starts, or a new one, is left out until it is fixed: the board and dispatch do not see that issue;
 - Itervox will not write to the file until it parses again, so your edit is never overwritten;
 - `itervox doctor` lists it as a warning.
 

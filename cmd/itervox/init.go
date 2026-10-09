@@ -41,16 +41,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	}
 	switch trackerKind {
 	case "local":
-		// #85: issues are Markdown files; no service, no credentials.
-		b.WriteString("  # Issues are Markdown files in .itervox/issues/ (ITX-1.md, ITX-2.md, …).\n")
-		b.WriteString("  # Edit them by hand, from the dashboard, or let agents create them.\n")
-		b.WriteString("  # project_slug: ITX              # Optional — identifier prefix for new issues (default ITX).\n")
-		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
-		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\"]\n")
-		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
-		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
-		b.WriteString("  backlog_states: [\"Backlog\"]        # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
-		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
+		writeLocalTrackerBlock(&b)
 	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
 		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
@@ -238,7 +229,11 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("## Your issue\n\n")
 	b.WriteString("**{{ issue.identifier }}: {{ issue.title }}**\n\n")
 	b.WriteString("{% if issue.description %}\n{{ issue.description }}\n{% endif %}\n\n")
-	b.WriteString("Issue URL: {{ issue.url }}\n\n")
+	if trackerKind == "local" {
+		b.WriteString("Issue file: .itervox/issues/{{ issue.identifier }}.md\n\n")
+	} else {
+		b.WriteString("Issue URL: {{ issue.url }}\n\n")
+	}
 	b.WriteString("{% if issue.comments %}\n## Comments\n\n")
 	b.WriteString("{% for comment in issue.comments %}\n**{{ comment.author_name }}**: {{ comment.body }}\n\n{% endfor %}\n{% endif %}\n\n")
 	b.WriteString("---\n\n")
@@ -312,7 +307,11 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("git add <specific files>\n")
 	b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
 	b.WriteString("git push -u origin HEAD\n")
-	b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+	if trackerKind == "local" {
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Resolves {{ issue.identifier }}\"   # if the repository has a GitHub remote\n")
+	} else {
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+	}
 	b.WriteString("```\n\n---\n\n")
 
 	if trackerKind == "local" {
