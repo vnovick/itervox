@@ -115,6 +115,10 @@ type commentCommandHandler struct {
 	perms      map[string]cachedPermission
 	failures   map[string]int // comment ID → polls whose permission check failed
 	now        func() time.Time
+	// floor, when set, is the earliest creation time a comment may have:
+	// the time the handler started without a readable ledger, so neither
+	// enabling the feature nor losing the ledger replays recent commands.
+	floor time.Time
 }
 
 // commentCommandMaxCheckFailures bounds how long a comment whose author's
@@ -137,7 +141,9 @@ func newCommentCommandHandler(cfg config.CommentCommandsConfig, tr commentComman
 // loadLedger reads the ledger; without one, commands start from now, so
 // enabling the feature never replays a repository's old comments.
 func (h *commentCommandHandler) loadLedger() {
-	h.ledger = commentCommandLedger{Version: 1, Cursor: h.now().UTC(), Handled: map[string]time.Time{}}
+	start := h.now().UTC()
+	h.ledger = commentCommandLedger{Version: 1, Cursor: start, Handled: map[string]time.Time{}}
+	h.floor = start
 	raw, err := os.ReadFile(h.ledgerPath)
 	if err != nil {
 		return
@@ -151,12 +157,14 @@ func (h *commentCommandHandler) loadLedger() {
 		l.Handled = map[string]time.Time{}
 	}
 	h.ledger = l
+	h.floor = time.Time{}
 }
 
 func (h *commentCommandHandler) saveLedger() error {
 	// A comment created before the window can never be acted on again (see
 	// poll), so its record can go; nothing still inside the window is
-	// dropped.
+	// dropped. This is safe only because the cursor never moves back (see
+	// poll): a window that later reopened would find records gone.
 	for id, created := range h.ledger.Handled {
 		if created.Before(h.windowStart()) {
 			delete(h.ledger.Handled, id)
@@ -173,9 +181,16 @@ func (h *commentCommandHandler) saveLedger() error {
 }
 
 // windowStart is the earliest creation time a comment may have to be acted
-// on: the cursor less the clock-skew overlap.
+// on: the cursor less the clock-skew overlap, and never before the floor.
 func (h *commentCommandHandler) windowStart() time.Time {
-	return h.ledger.Cursor.Add(-commentCommandOverlap)
+	return laterTime(h.ledger.Cursor.Add(-commentCommandOverlap), h.floor)
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // poll reads new comments and acts on the commands among them.
@@ -195,9 +210,12 @@ func (h *commentCommandHandler) poll(ctx context.Context) {
 		return
 	}
 	var retryFrom time.Time // oldest command whose permission check failed
+	// The cursor moves only at the end of the poll: the record saves made
+	// while acting prune against the window this poll started with.
+	latest := h.ledger.Cursor
 	for _, c := range comments {
-		if c.CreatedAt.After(h.ledger.Cursor) {
-			h.ledger.Cursor = c.CreatedAt
+		if c.CreatedAt.After(latest) {
+			latest = c.CreatedAt
 		}
 		if _, done := h.ledger.Handled[c.ID]; done {
 			continue
@@ -222,10 +240,14 @@ func (h *commentCommandHandler) poll(ctx context.Context) {
 		}
 	}
 	// Keep a command whose check failed inside the next poll's window, so a
-	// longer outage than the overlap cannot drop it.
-	if !retryFrom.IsZero() && retryFrom.Before(h.ledger.Cursor) {
-		h.ledger.Cursor = retryFrom
+	// longer outage than the overlap cannot drop it: the cursor stays where
+	// it was (the command is inside that window, being listed by it). It
+	// never moves back, so the records pruned against an earlier window are
+	// never needed again.
+	if !retryFrom.IsZero() && retryFrom.Before(latest) {
+		latest = laterTime(h.ledger.Cursor, retryFrom)
 	}
+	h.ledger.Cursor = latest
 	if err := h.saveLedger(); err != nil {
 		slog.Warn("comment commands: saving the ledger failed", "error", err)
 	}
@@ -392,20 +414,28 @@ func (h *commentCommandHandler) reply(ctx context.Context, c github.RepoComment,
 
 // startCommentCommands polls for commands when tracker.comment_commands is
 // enabled and the tracker is GitHub.
-func startCommentCommands(ctx context.Context, cfg *config.Config, workflowPath string, tr tracker.Tracker, orch *orchestrator.Orchestrator) {
+//
+// The returned channel closes when the poller has stopped (after ctx is
+// cancelled); run() waits for it, so a WORKFLOW.md reload never has two
+// pollers sharing the ledger.
+func startCommentCommands(ctx context.Context, cfg *config.Config, workflowPath string, tr tracker.Tracker, orch *orchestrator.Orchestrator) <-chan struct{} {
+	done := make(chan struct{})
 	if !cfg.Tracker.CommentCommands.Enabled {
-		return
+		close(done)
+		return done
 	}
 	gh, ok := tr.(commentCommandTracker)
 	if !ok {
 		slog.Warn("comment commands: enabled, but the tracker cannot read repository comments (GitHub only)")
-		return
+		close(done)
+		return done
 	}
 	ledger := filepath.Join(filepath.Dir(workflowPath), ".itervox", "comment_commands.json")
 	h := newCommentCommandHandler(cfg.Tracker.CommentCommands, gh, orch, ledger)
 	slog.Info("comment commands: enabled", "ledger", ledger, "allow", cfg.Tracker.CommentCommands.Allow,
 		"allow_token_user", cfg.Tracker.CommentCommands.AllowTokenUser)
 	go func() {
+		defer close(done)
 		defer failFastOnPanic("comment-commands")
 		ticker := time.NewTicker(commentCommandPollInterval)
 		defer ticker.Stop()
@@ -418,4 +448,5 @@ func startCommentCommands(ctx context.Context, cfg *config.Config, workflowPath 
 			}
 		}
 	}()
+	return done
 }

@@ -342,7 +342,7 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 **Reviewer fan-out was ungated in #58.** `ReviewerProfileChain` previously
 truncated its result to one entry, which made `AdvanceReviewChain`,
-`ReadReviewVerdict`, `reviewVerdictRelPathFor`, `State.ReviewChainIndex`,
+`ReadReviewVerdict`, `reviewVerdictRelPath`, `State.ReviewChainIndex`,
 `State.ReviewOutcomes`, and `agent.review_quorum` statically unreachable. The
 truncation is gone and every one of those now has a live read site, so they must
 NOT be treated as dead code.

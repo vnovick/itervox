@@ -256,7 +256,10 @@ permission check per commenter, cached for 10 minutes.
   `.itervox/comment_commands.json` (gitignored runtime state) **before**
   Itervox acts, so neither a retry nor a restart repeats it. Commands posted
   while the daemon was down are picked up when it starts again; comments from
-  before the feature was first enabled are not. Only newly created comments
+  before the feature was first enabled are not. If that file is deleted or
+  unreadable, Itervox starts again from the current time, so no earlier
+  command is repeated (commands posted while the daemon was down are then
+  skipped too). Only newly created comments
   count: editing an older comment into a command does nothing. If a
   commenter's permission cannot be read, the command is retried for about
   five minutes, then ignored.

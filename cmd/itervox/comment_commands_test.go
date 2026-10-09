@@ -147,7 +147,8 @@ func commandFixture(t *testing.T, cc config.CommentCommandsConfig) (*fakeComment
 	t.Cleanup(func() { cancel(); <-done })
 	ledger := filepath.Join(t.TempDir(), "comment_commands.json")
 	h := newCommentCommandHandler(cc, f, orch, ledger)
-	h.ledger.Cursor = time.Now().Add(-time.Hour)
+	// As if a ledger from an earlier run existed: no floor.
+	h.ledger.Cursor, h.floor = time.Now().Add(-time.Hour), time.Time{}
 	return f, h, runs, ledger
 }
 
@@ -356,8 +357,97 @@ func (r *runningOrch) Snapshot() orchestrator.State {
 	return s
 }
 
-type failingPermTracker struct{ *fakeCommentTracker }
+// failingPermTracker fails every permission check, or only only's.
+type failingPermTracker struct {
+	*fakeCommentTracker
+	only string
+}
 
-func (f *failingPermTracker) CollaboratorPermission(context.Context, string) (string, error) {
+func (f *failingPermTracker) CollaboratorPermission(ctx context.Context, login string) (string, error) {
+	if f.only != "" && login != f.only {
+		return f.fakeCommentTracker.CollaboratorPermission(ctx, login)
+	}
 	return "", errors.New("503")
+}
+
+// TestCommentCommandRetryNeverReplaysAHandledCommand (#84): while one
+// command's permission check keeps failing, commands handled around it are
+// never acted on again — not on the next polls and not after a restart.
+func TestCommentCommandRetryNeverReplaysAHandledCommand(t *testing.T) {
+	f, h, _, ledger := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	failing := &failingPermTracker{fakeCommentTracker: f, only: "carol"}
+	h.tr = failing
+	ctx := context.Background()
+	t0 := time.Now().Add(-20 * time.Minute)
+	f.addComment("A", "carol", "/itervox stop", t0)                  // check fails
+	f.addComment("B", "alice", "/itervox stop", t0.Add(time.Second)) // acted on
+	h.poll(ctx)
+	require.Len(t, f.reactionsSnapshot(), 1)
+	f.addComment("D", "alice", "/itervox stop", t0.Add(10*time.Minute))
+	h.poll(ctx)
+	h.poll(ctx)
+	require.Len(t, f.reactionsSnapshot(), 2, "B is not acted on again while A is retried")
+
+	restarted := newCommentCommandHandler(h.cfg, failing, h.orch, ledger)
+	restarted.poll(ctx)
+	assert.Len(t, f.reactionsSnapshot(), 2, "nor after a restart")
+
+	// carol's check works again, and she has write access: A, kept inside
+	// the window while its check failed, now runs; B still does not repeat.
+	f.perms["carol"] = "write"
+	failing.only = "nobody"
+	restarted.poll(ctx)
+	var acted []string
+	for _, r := range f.reactionsSnapshot() {
+		acted = append(acted, strings.SplitN(r, ":", 2)[0])
+	}
+	assert.ElementsMatch(t, []string{"B", "D", "A"}, acted, "each acted on exactly once")
+}
+
+// TestCommentCommandCursorNeverMovesBack (#84): a failed check on a comment
+// just behind the cursor does not pull the cursor back over records already
+// pruned, which would replay their commands.
+func TestCommentCommandCursorNeverMovesBack(t *testing.T) {
+	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	failing := &failingPermTracker{fakeCommentTracker: f, only: "carol"}
+	h.tr = failing
+	ctx := context.Background()
+	now := time.Now()
+	f.addComment("E", "alice", "/itervox stop", now.Add(-150*time.Second))
+	f.addComment("F", "alice", "note", now)
+	h.poll(ctx) // E acted on; the cursor reaches F, and E's record is pruned
+	require.Len(t, f.reactionsSnapshot(), 1)
+	cursor := h.ledger.Cursor
+	f.addComment("A", "carol", "/itervox stop", now.Add(-time.Minute)) // listed late, check fails
+	h.poll(ctx)
+	assert.False(t, h.ledger.Cursor.Before(cursor), "the cursor never moves back")
+	h.poll(ctx)
+	assert.Len(t, f.reactionsSnapshot(), 1, "E is not acted on again")
+}
+
+// TestCommentCommandStartsFromNowWithoutALedger (#84): with no ledger (the
+// feature just enabled, or the file lost) recent commands are not replayed.
+func TestCommentCommandStartsFromNowWithoutALedger(t *testing.T) {
+	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	f.addComment("1", "alice", "/itervox stop", time.Now().Add(-time.Minute)) // inside the overlap
+	fresh := newCommentCommandHandler(h.cfg, f, h.orch, filepath.Join(t.TempDir(), "none.json"))
+	fresh.poll(context.Background())
+	assert.Empty(t, f.reactionsSnapshot())
+
+	corrupt := filepath.Join(t.TempDir(), "corrupt.json")
+	require.NoError(t, os.WriteFile(corrupt, []byte("{"), 0o600))
+	again := newCommentCommandHandler(h.cfg, f, h.orch, corrupt)
+	again.poll(context.Background())
+	assert.Empty(t, f.reactionsSnapshot())
+}
+
+// TestCommentCommandProfileOnlyAfterChecks (#84): `/itervox run <profile>`
+// on a closed issue is refused without changing the issue's profile.
+func TestCommentCommandProfileOnlyAfterChecks(t *testing.T) {
+	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	require.NoError(t, f.UpdateIssueState(context.Background(), "42", "Done"))
+	f.addComment("1", "alice", "/itervox run implementer", time.Now())
+	h.poll(context.Background())
+	assert.Contains(t, strings.Join(repliesOn42(t, f), "\n"), "the issue is closed")
+	assert.Empty(t, h.orch.Snapshot().IssueProfiles["#42"], "the profile is unchanged")
 }
