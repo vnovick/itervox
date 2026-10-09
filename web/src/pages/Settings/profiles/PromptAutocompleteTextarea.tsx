@@ -83,7 +83,7 @@ export function PromptAutocompleteTextarea({
       setOpen(null);
       return false;
     }
-    const next = applyCompletion(value, el.selectionStart, ctx, item);
+    const next = applyCompletion(value, el.selectionStart, ctx, item, el.selectionEnd);
     onChange(next.text);
     setOpen(null);
     requestAnimationFrame(() => {
@@ -141,8 +141,9 @@ export function PromptAutocompleteTextarea({
             refresh(event.currentTarget.value, event.currentTarget.selectionStart);
           }
         }}
-        onScroll={() => {
-          setOpen(null);
+        onScroll={(event) => {
+          // Follow the caret (typing can scroll a long prompt).
+          if (open) refresh(event.currentTarget.value, event.currentTarget.selectionStart);
         }}
         onClick={(event) => {
           refresh(event.currentTarget.value, event.currentTarget.selectionStart);

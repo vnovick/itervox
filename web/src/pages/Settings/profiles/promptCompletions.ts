@@ -198,9 +198,14 @@ export function applyCompletion(
   caret: number,
   ctx: CompletionContext,
   item: Completion,
+  selectionEnd = caret,
 ): { text: string; caret: number } {
   let insert = item.label;
-  const after = text.slice(caret);
+  // Replace the selection and the rest of the word the caret is in, so a
+  // caret inside `/td|d` or `{{ |issue.ti` never leaves the old text behind.
+  const end = Math.max(caret, selectionEnd);
+  const word = /^[\w.:-]*/.exec(text.slice(end))?.[0] ?? '';
+  const after = text.slice(end + word.length);
   if (ctx.kind === 'variable' || ctx.kind === 'filter') {
     const lead = text.slice(0, ctx.start);
     if (lead.endsWith('{{') || lead.endsWith('|')) insert = ' ' + insert;

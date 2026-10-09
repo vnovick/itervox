@@ -27,7 +27,7 @@ func TestPromptEditorVariablesAreBound(t *testing.T) {
 		block := string(src)[start:]
 		block = block[:strings.Index(block, "];")]
 		var out []string
-		for _, m := range regexp.MustCompile(`v\('([^']+)'`).FindAllStringSubmatch(block, -1) {
+		for _, m := range regexp.MustCompile(`v\(['"]([^'"]+)['"]`).FindAllStringSubmatch(block, -1) {
 			out = append(out, m[1])
 		}
 		require.NotEmpty(t, out, name)
@@ -39,12 +39,14 @@ func TestPromptEditorVariablesAreBound(t *testing.T) {
 	issue := domain.Issue{ID: s, Identifier: s, Title: s, Description: &s, Priority: &n, State: s, BranchName: &s,
 		URL: &s, Labels: []string{s}, BlockedBy: []domain.BlockerRef{{ID: &s}},
 		Comments: []domain.Comment{{Body: s}}, CreatedAt: &now, UpdatedAt: &now}
-	bindings := runBindings("t", "h", "b", "e", nil)
+	// Profile prompts get run.*; automation instructions also get trigger.*.
+	profile := runBindings("t", "h", "b", "e", nil)
+	automation := runBindings("t", "h", "b", "e", nil)
 	for k, v := range automationTriggerBindings(&AutomationDispatch{Trigger: AutomationTriggerContext{
 		FiredAt: now, ResolvedBlockers: []domain.BlockerRef{{ID: &s}}}}) {
-		bindings[k] = v
+		automation[k] = v
 	}
-	check := func(vars []string) {
+	check := func(vars []string, bindings map[string]any) {
 		var tpl strings.Builder
 		for _, v := range vars {
 			tpl.WriteString("{% if " + v + " == nil %}MISSING:" + v + " {% endif %}")
@@ -53,6 +55,6 @@ func TestPromptEditorVariablesAreBound(t *testing.T) {
 		require.NotContains(t, out, "{%", "the probe template must render")
 		require.Empty(t, strings.TrimSpace(out), "suggested but not bound: %s", out)
 	}
-	check(list("PROFILE_VARIABLES"))
-	check(list("TRIGGER_VARIABLES"))
+	check(list("PROFILE_VARIABLES"), profile)
+	check(list("TRIGGER_VARIABLES"), automation)
 }
