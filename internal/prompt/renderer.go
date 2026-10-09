@@ -2,7 +2,6 @@ package prompt
 
 import (
 	"fmt"
-	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -32,7 +31,7 @@ func RenderWith(tmpl string, issue domain.Issue, attempt *int, extra map[string]
 		return DefaultPrompt, nil
 	}
 
-	tpl, err := liquidEngine.ParseTemplate([]byte(tmpl))
+	tpl, err := liquidEngine.ParseTemplate([]byte(blankOptionalText(tmpl)))
 	if err != nil {
 		return "", fmt.Errorf("template_parse_error: %w", err)
 	}
@@ -44,47 +43,31 @@ func RenderWith(tmpl string, issue domain.Issue, attempt *int, extra map[string]
 	bindings["issue"] = issueToMap(issue)
 	bindings["attempt"] = attemptValue(attempt)
 
-	out, renderErr := renderBlankingOptional(tpl, bindings)
-	if renderErr != nil {
-		return "", fmt.Errorf("template_render_error: %w", renderErr)
+	out, err := tpl.Render(bindings)
+	if err != nil {
+		return "", fmt.Errorf("template_render_error: %w", err)
 	}
 
 	return string(out), nil
 }
 
-// optionalIssueText are the issue fields where "absent" and "empty" mean the
-// same thing to a prompt (#102). Unset, they bind as nil, so a guard such as
-// `{% if issue.description %}` skips its block (an empty string is truthy in
-// Liquid). Printed without a guard, strict variables would fail the render on
-// nil, so renderBlankingOptional renders them as empty text instead.
-var optionalIssueText = map[string]bool{"description": true, "branch_name": true, "url": true}
+// optionalTextRe finds a printed optional issue field (#102), in an output
+// tag or an assign: `{{ issue.description }}`, `{{- issue.url | strip -}}`,
+// `{{ issue["branch_name"] }}`, `{% assign d = issue.description %}`. These
+// are the fields where "absent" and "empty" mean the same thing to a prompt.
+var optionalTextRe = regexp.MustCompile(
+	`(\{\{-?\s*|\{%-?\s*assign\s+\w+\s*=\s*)` +
+		`(issue(?:\.(?:description|url|branch_name)|\[\s*(?:"(?:description|url|branch_name)"|'(?:description|url|branch_name)')\s*\]))` +
+		`(\s*(?:\||-?\}\}|-?%\}))`)
 
-// undefinedOutputRe extracts the variable a strict-variables error names,
-// e.g. `undefined variable in {{ issue.description | strip }}`.
-var undefinedOutputRe = regexp.MustCompile(`undefined variable in \{\{-?\s*issue\.([a-z_]+)\s*(?:\||-?\}\})`)
-
-// renderBlankingOptional renders tpl with strict variables. When the render
-// fails only because an unset optional issue field is printed, that field is
-// bound to "" and the template rendered again, still strictly, so a misspelt
-// variable (`{{ issue.descripton }}`) is still an error. Guards on the field
-// are unaffected unless the template also prints it unguarded.
-func renderBlankingOptional(tpl *liquid.Template, bindings map[string]any) ([]byte, error) {
-	issue, _ := bindings["issue"].(map[string]any)
-	for range len(optionalIssueText) + 1 {
-		out, err := tpl.Render(bindings)
-		if err == nil {
-			return out, nil
-		}
-		m := undefinedOutputRe.FindStringSubmatch(err.Error())
-		if m == nil || issue == nil || !optionalIssueText[m[1]] || issue[m[1]] != nil {
-			return nil, err
-		}
-		issue = maps.Clone(issue)
-		issue[m[1]] = ""
-		bindings = maps.Clone(bindings)
-		bindings["issue"] = issue
-	}
-	return nil, fmt.Errorf("template_render_error: unreachable")
+// blankOptionalText makes each printed optional issue field fall back to ""
+// when unset, by adding `| default: ""` right after it. The binding itself
+// stays nil, so a guard such as `{% if issue.description %}` keeps skipping
+// its block (an empty string is truthy in Liquid), while printing the field
+// no longer fails strict variables. A misspelt field is not matched and
+// still fails.
+func blankOptionalText(tmpl string) string {
+	return optionalTextRe.ReplaceAllString(tmpl, `${1}${2} | default: ""${3}`)
 }
 
 // RenderPromptOverlay renders a plain-text or Liquid prompt fragment using the
@@ -95,7 +78,7 @@ func RenderPromptOverlay(promptText string, issue domain.Issue, attempt *int, ex
 		return ""
 	}
 
-	tpl, err := liquidEngine.ParseTemplate([]byte(promptText))
+	tpl, err := liquidEngine.ParseTemplate([]byte(blankOptionalText(promptText)))
 	if err != nil {
 		// Not valid Liquid — return as plain text (backward-compatible).
 		return promptText
@@ -109,8 +92,8 @@ func RenderPromptOverlay(promptText string, issue domain.Issue, attempt *int, ex
 		bindings[key] = value
 	}
 
-	out, renderErr := renderBlankingOptional(tpl, bindings)
-	if renderErr != nil {
+	out, err := tpl.Render(bindings)
+	if err != nil {
 		return promptText
 	}
 

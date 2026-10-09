@@ -283,7 +283,7 @@ A GitHub issue's identifier is its number with a hash: `#42`. That is what the d
 | `issue.branch_name` | `itervox/42` | Empty on the first turn of the issue's first run; afterwards the branch recorded on the issue |
 | `issue.blocked_by` | | Blockers parsed from the body |
 
-Templates render with strict variables: printing a variable that does not exist fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`). `issue.description`, `issue.url` and `issue.branch_name` print as nothing when they are empty, and `{% if … %}` on them skips its block. `issue.priority` is unset without a priority label, and printing it then fails, so give it a default:
+Templates render with strict variables: printing a variable that does not exist fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`). `issue.description`, `issue.url` and `issue.branch_name` print as nothing when they are empty (with filters too: write `{{ issue.description | size }}`, not `.size`), and `{% if … %}` on them skips its block. `issue.priority` is unset without a priority label, and printing it then fails, so give it a default:
 
 ```liquid
 {% if issue.description %}## Description

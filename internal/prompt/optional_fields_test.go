@@ -62,3 +62,33 @@ func TestEmptyDescriptionGuardStillSkips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "no url", out)
 }
+
+// TestEmptyDescriptionGuardWithUnguardedPrint (#102): a template that both
+// guards the field and prints it unguarded still skips the guarded block,
+// and the other ways of printing the field render as nothing too.
+func TestEmptyDescriptionGuardWithUnguardedPrint(t *testing.T) {
+	issue := domain.Issue{Identifier: "#1"}
+	out, err := Render("{% if issue.description %}## Description{% endif %}[{{ issue.description }}]", issue, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", out)
+
+	out, err = Render("{% if issue.url %}Link: {{ issue.url }}{% else %}No link{% endif %} [{{ issue.url }}]", issue, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "No link []", out)
+
+	for _, tpl := range []string{
+		`[{{ issue["description"] }}]`,
+		`[{{ issue['branch_name'] }}]`,
+		`{% assign d = issue.description %}[{{ d }}]`,
+		`{%- assign d = issue.url -%}[{{ d }}]`,
+	} {
+		out, err := Render(tpl, issue, nil)
+		require.NoError(t, err, tpl)
+		assert.Equal(t, "[]", out, tpl)
+	}
+
+	d := "Text"
+	out, err = Render(`{% if issue.description %}Has {% endif %}{{ issue.description | downcase }}`, domain.Issue{Identifier: "#1", Description: &d}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Has text", out, "a set description is untouched")
+}
