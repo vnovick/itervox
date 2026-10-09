@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // schema1WorkflowWithComments is a schema-1 workflow modelled on this
@@ -66,6 +68,45 @@ Body {{ issue.identifier }}.
 `
 
 var commentLineRE = regexp.MustCompile(`#.*$`)
+
+// Test-only inspection helpers for the rewritten front matter.
+
+// yamlNodeMappingEntries returns the key names of a mapping node in order.
+func yamlNodeMappingEntries(m *yaml.Node) []string {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return nil
+	}
+	keys := make([]string, 0, len(m.Content)/2)
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		keys = append(keys, m.Content[i].Value)
+	}
+	return keys
+}
+
+// yamlNodeMappingFor returns the mapping node at `path` (dot-free: one key
+// per element) below `root`, or nil when any step is missing or not a
+// mapping. Used by tests to inspect the rewritten front matter.
+func yamlNodeMappingFor(root *yaml.Node, path ...string) *yaml.Node {
+	cur := root
+	for _, key := range path {
+		cur = yamlNodeGet(cur, key)
+		if cur == nil || cur.Kind != yaml.MappingNode {
+			return nil
+		}
+	}
+	return cur
+}
+
+// frontMatterKeyOrder parses a front-matter text and returns its top-level
+// key order; it is a test helper kept next to the production helpers so the
+// two cannot drift.
+func frontMatterKeyOrder(front string) ([]string, error) {
+	_, root, err := parseFrontMatterNode(front)
+	if err != nil {
+		return nil, fmt.Errorf("parse front matter: %w", err)
+	}
+	return yamlNodeMappingEntries(root), nil
+}
 
 // commentTexts returns every comment in the front matter (full-line and
 // trailing), trimmed, so the test can assert each one survives verbatim.

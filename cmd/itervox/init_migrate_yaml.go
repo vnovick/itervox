@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -160,18 +159,6 @@ func yamlNodeEnsureMap(m *yaml.Node, key string) *yaml.Node {
 	return child
 }
 
-// yamlNodeMappingEntries returns the key names of a mapping node in order.
-func yamlNodeMappingEntries(m *yaml.Node) []string {
-	if m == nil || m.Kind != yaml.MappingNode {
-		return nil
-	}
-	keys := make([]string, 0, len(m.Content)/2)
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		keys = append(keys, m.Content[i].Value)
-	}
-	return keys
-}
-
 func yamlKeyNode(key string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
 }
@@ -182,31 +169,6 @@ func yamlStringNode(value string) *yaml.Node {
 
 func yamlIntNode(value int) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(value)}
-}
-
-// yamlNodeMappingFor returns the mapping node at `path` (dot-free: one key
-// per element) below `root`, or nil when any step is missing or not a
-// mapping. Used by tests to inspect the rewritten front matter.
-func yamlNodeMappingFor(root *yaml.Node, path ...string) *yaml.Node {
-	cur := root
-	for _, key := range path {
-		cur = yamlNodeGet(cur, key)
-		if cur == nil || cur.Kind != yaml.MappingNode {
-			return nil
-		}
-	}
-	return cur
-}
-
-// frontMatterKeyOrder parses a front-matter text and returns its top-level
-// key order; it is a test helper kept next to the production helpers so the
-// two cannot drift.
-func frontMatterKeyOrder(front string) ([]string, error) {
-	_, root, err := parseFrontMatterNode(front)
-	if err != nil {
-		return nil, fmt.Errorf("parse front matter: %w", err)
-	}
-	return yamlNodeMappingEntries(root), nil
 }
 
 // topLevelKeyLineRE matches a column-0 mapping key line ("tracker:",
