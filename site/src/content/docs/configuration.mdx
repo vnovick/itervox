@@ -306,10 +306,11 @@ Both are optional and off unless you add them.
 
   ```markdown
   ---
+  <!-- itervox:shipped -->
   Shipped with [Itervox](https://github.com/vnovick/itervox)
   ```
 
-  Itervox adds it after the run with `gh pr edit`, once per PR (a hidden `<!-- itervox:shipped -->` marker prevents duplicates). The `gh` CLI must be authenticated for the repository.
+  Itervox adds it after a successful run with `gh pr edit`, once per PR: the hidden marker (or the visible line) means it is already there. Only a PR on the run's own branch gets it; a PR that is merely linked from the issue, which may be someone else's, is left alone. The `gh` CLI must be authenticated for the repository.
 - **README badge.** Paste this into your README:
 
   ```markdown
@@ -322,7 +323,7 @@ Both are optional and off unless you add them.
 |---|---|---|---|
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
-| `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run produces (after a successful worker run, not automation runs), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
+| `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run opens on its own branch (after a successful worker run, not automation runs; PRs merely linked from the issue are left alone), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
 | `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. |

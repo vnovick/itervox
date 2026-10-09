@@ -20,7 +20,7 @@ import (
 // runFooterWorker dispatches ENG-3 once with agent.pr_footer set to footer,
 // against a fake gh that reports prURL as the branch's open PR and keeps its
 // body in a file. Returns the final body and the gh calls.
-func runFooterWorker(t *testing.T, footer bool) (body string, calls []string) {
+func runFooterWorker(t *testing.T, footer, linked bool) (body string, calls []string) {
 	t.Helper()
 	const prURL = "https://github.com/o/r/pull/31"
 	dir := t.TempDir()
@@ -33,6 +33,7 @@ case "$*" in
   "pr view --json url,state "*) echo "` + prURL + `" ;;
   "pr view ` + prURL + ` --json body"*) cat "` + bodyFile + `" ;;
   "pr edit ` + prURL + ` --body-file -") cat > "` + bodyFile + `" ;;
+  "pr view ` + prURL + ` --json state,headRefName,body,isDraft") echo '{"state":"OPEN","headRefName":"feature/human","body":"","isDraft":false}' ;;
 esac
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755))
@@ -43,8 +44,13 @@ esac
 	cfg.Agent.MaxTurns = 1
 	cfg.Agent.PRFooter = footer
 	cfg.Tracker.CompletionState = "Done"
+	issue := makeIssue("id3", "ENG-3", "In Progress", nil, nil)
+	if linked {
+		desc := "Please finish " + prURL
+		issue.Description = &desc
+	}
 	mt := tracker.NewMemoryTracker(
-		[]domain.Issue{makeIssue("id3", "ENG-3", "In Progress", nil, nil)},
+		[]domain.Issue{issue},
 		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates,
 	)
 	runner := &promptCaptureRunner{done: make(chan struct{}, 1)}
@@ -67,12 +73,25 @@ esac
 // produced gets the footer appended to its body; with it off (the default)
 // the body is never read or edited.
 func TestPRFooterAddedOncePerPR(t *testing.T) {
-	body, _ := runFooterWorker(t, true)
+	body, _ := runFooterWorker(t, true, false)
 	assert.Equal(t, "Agent-written description.\n\n---\n"+workspace.PRFooterMarker+"\n"+workspace.PRFooterText+"\n", body)
 
-	body, calls := runFooterWorker(t, false)
+	body, calls := runFooterWorker(t, false, false)
 	assert.Equal(t, "Agent-written description.\n", body)
 	for _, c := range calls {
 		assert.NotContains(t, c, "--json body", "off by default: the body is not touched")
+	}
+}
+
+// TestPRFooterSkipsLinkedPullRequest (review of #81): a PR that is only
+// linked from the issue may be a person's, so its body is not edited even
+// with agent.pr_footer on.
+func TestPRFooterSkipsLinkedPullRequest(t *testing.T) {
+	body, calls := runFooterWorker(t, true, true)
+	assert.Contains(t, calls, "pr view https://github.com/o/r/pull/31 --json state,headRefName,body,isDraft",
+		"the linked PR must have been detected; gh calls: %v", calls)
+	assert.Equal(t, "Agent-written description.\n", body)
+	for _, c := range calls {
+		assert.NotContains(t, c, "--body-file", "a linked PR's body is not edited")
 	}
 }

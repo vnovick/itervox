@@ -103,7 +103,8 @@ const PRFooterMarker = "<!-- itervox:shipped -->"
 const PRFooterText = "Shipped with [Itervox](https://github.com/vnovick/itervox)"
 
 // EnsurePRFooter appends the Itervox footer to the body of the pull request
-// at prURL unless the body already carries PRFooterMarker, and reports
+// at prURL unless the body already carries PRFooterMarker or PRFooterText,
+// and reports
 // whether it edited the PR. The body is read and written with `gh pr view`
 // and `gh pr edit --body-file -`, so arbitrary body text round-trips.
 func EnsurePRFooter(ctx context.Context, prURL string) (bool, error) {
@@ -117,7 +118,10 @@ func EnsurePRFooter(ctx context.Context, prURL string) (bool, error) {
 		return false, fmt.Errorf("gh pr view %s: %w", prURL, err)
 	}
 	body := strings.TrimRight(string(out), "\n")
-	if strings.Contains(body, PRFooterMarker) {
+	// The marker is the reliable signal; the visible text also counts, so a
+	// body rewritten from a rendered view (HTML comments dropped) does not
+	// get a second footer.
+	if strings.Contains(body, PRFooterMarker) || strings.Contains(body, PRFooterText) {
 		return false, nil
 	}
 	if body != "" {

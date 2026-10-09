@@ -68,3 +68,13 @@ func readLinesJoined(t *testing.T, path string) string {
 	t.Helper()
 	return strings.Join(readLines(t, path), "\n")
 }
+
+// TestEnsurePRFooterRecognisesVisibleText (review of #81): a body that kept
+// the footer text but lost the hidden marker is not given a second footer.
+func TestEnsurePRFooterRecognisesVisibleText(t *testing.T) {
+	_, calls := fakeGHWithBody(t, "Body.\n\n---\n"+PRFooterText)
+	added, err := EnsurePRFooter(context.Background(), "https://github.com/o/r/pull/5")
+	require.NoError(t, err)
+	assert.False(t, added)
+	assert.NotContains(t, readLinesJoined(t, calls), "pr edit")
+}
