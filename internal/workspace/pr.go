@@ -94,3 +94,41 @@ func SetPRBase(ctx context.Context, prURL, base string) (bool, error) {
 	}
 	return true, nil
 }
+
+// PRFooterMarker marks the Itervox footer in a pull request body (#81); a body
+// that carries it is never edited again.
+const PRFooterMarker = "<!-- itervox:shipped -->"
+
+// PRFooterText is the footer EnsurePRFooter appends.
+const PRFooterText = "Shipped with [Itervox](https://github.com/vnovick/itervox)"
+
+// EnsurePRFooter appends the Itervox footer to the body of the pull request
+// at prURL unless the body already carries PRFooterMarker, and reports
+// whether it edited the PR. The body is read and written with `gh pr view`
+// and `gh pr edit --body-file -`, so arbitrary body text round-trips.
+func EnsurePRFooter(ctx context.Context, prURL string) (bool, error) {
+	if prURL == "" {
+		return false, nil
+	}
+	view := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "body", "--jq", ".body")
+	view.Env = gitexec.Environ()
+	out, err := view.Output()
+	if err != nil {
+		return false, fmt.Errorf("gh pr view %s: %w", prURL, err)
+	}
+	body := strings.TrimRight(string(out), "\n")
+	if strings.Contains(body, PRFooterMarker) {
+		return false, nil
+	}
+	if body != "" {
+		body += "\n\n"
+	}
+	body += "---\n" + PRFooterMarker + "\n" + PRFooterText + "\n"
+	edit := exec.CommandContext(ctx, "gh", "pr", "edit", prURL, "--body-file", "-")
+	edit.Env = gitexec.Environ()
+	edit.Stdin = strings.NewReader(body)
+	if out, err := edit.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("gh pr edit %s --body-file -: %w: %s", prURL, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
