@@ -25,6 +25,20 @@ unit, `bootstrap.sh`, per-cloud `provision.sh` scripts, a Caddyfile, and
 heartbeat monitoring.
 :::
 
+## Guided deployment with the deploy skill
+
+Itervox ships a Claude Code skill, [`.claude/skills/deploy/SKILL.md`](https://github.com/vnovick/itervox/blob/main/.claude/skills/deploy/SKILL.md), that walks an agent through this page: it asks for the cloud, region, size and access method, provisions with the scripts or OpenTofu modules below, bootstraps the VM, puts secrets in `.itervox/.env` with `itervox secret set` (so no key is ever printed), runs `itervox doctor --deploy`, starts the service and prints the tunnel command. It asks before creating anything billable.
+
+In the Itervox repository the skill is already there. To use it from another project, copy it in:
+
+```bash
+mkdir -p .claude/skills/deploy
+curl -fsSL https://raw.githubusercontent.com/vnovick/itervox/main/.claude/skills/deploy/SKILL.md \
+  -o .claude/skills/deploy/SKILL.md
+```
+
+Then ask Claude Code to "deploy itervox to GCP" (or AWS, or Azure). The skill fetches the deploy kit at the release it installs.
+
 ## Quick start
 
 ```bash
@@ -62,6 +76,8 @@ Disk fills faster than you expect: every issue gets its own git worktree, plus a
 
 Everything goes in `<repo>/.itervox/.env`, which the daemon loads at startup and
 injects into its own environment — so spawned agent subprocesses inherit it.
+Set values with [`itervox secret set KEY`](/cli/#itervox-secret--set-env-values-without-showing-them),
+which reads them with echo off, rather than in an editor or with `echo`.
 
 ```bash
 # tracker

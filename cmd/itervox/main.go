@@ -408,6 +408,9 @@ func main() {
 		case "deps":
 			runDeps(os.Args[2:])
 			return
+		case "secret":
+			runSecret(os.Args[2:])
+			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
 			return
