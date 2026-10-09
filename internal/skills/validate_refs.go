@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -12,22 +13,26 @@ import (
 // Profile prompt reference validation (#86): MISSING_SKILL_REF,
 // MISSING_SUBAGENT_REF and USER_SCOPE_REF_ON_SSH.
 //
-// A profile's SOUL.md / INSTRUCTIONS.md is free text, so only explicit,
-// unambiguous reference forms are checked — plain prose mentioning a word
-// never warns:
+// A profile's SOUL.md / INSTRUCTIONS.md is free text, so only forms that
+// ordinary prose does not produce are checked:
 //
-//	@agent-<name>              a subagent (Claude Code's @-mention form)
-//	`/<name>`                  a skill invoked as a slash command, in backticks
-//	`<name>` skill             a skill named in backticks, then the word "skill"
-//	`<name>` subagent|agent    a subagent named in backticks, then "subagent"/"agent"
+//	@agent-<name>                   a subagent (Claude Code's @-mention), at a word start
+//	`<name>` skill / skills         backticked name(s), then the word "skill(s)"
+//	`<name>` subagent / subagents   backticked name(s), then the word "subagent(s)"
 //
-// Names are matched case-insensitively. A plugin skill or agent also resolves
-// as `<plugin>:<name>`.
+// A list such as "`a`, `b` and `c` skills" names every item. Names follow
+// Claude Code's naming rule (lower-case letters, digits, hyphens), optionally
+// prefixed `<plugin>:`, and match case-insensitively. Fenced code blocks are
+// ignored. Slash commands (`/name`) are deliberately not checked: they also
+// name built-in commands and file paths, which would warn on valid text.
+
+const refNamePattern = "[a-zA-Z0-9][a-zA-Z0-9-]*(?::[a-zA-Z0-9][a-zA-Z0-9-]*)?"
 
 var (
-	refAgentMentionRe = regexp.MustCompile(`(?i)(?:^|[^\w@])@agent-([a-z0-9][a-z0-9_.:-]*)`)
-	refSlashSkillRe   = regexp.MustCompile("`/([a-zA-Z0-9][a-zA-Z0-9_.:-]*)`")
-	refNamedRe        = regexp.MustCompile("(?i)`([a-z0-9][a-z0-9_.:-]*)`\\s+(skill|subagent|agent)s?\\b")
+	refAgentMentionRe = regexp.MustCompile(`(?:^|[\s(\[{,;"'])@agent-(` + refNamePattern + `)`)
+	refNamedListRe    = regexp.MustCompile("(?i)(`" + refNamePattern + "`(?:\\s*(?:,|&|\\band\\b|\\bor\\b)\\s*`" + refNamePattern + "`)*)\\s+(skills?|subagents?)\\b")
+	refBacktickedRe   = regexp.MustCompile("`(" + refNamePattern + ")`")
+	refFencedBlockRe  = regexp.MustCompile("(?s)```.*?(?:```|$)")
 )
 
 // PromptRef is one explicit skill or subagent reference found in a profile
@@ -40,17 +45,15 @@ type PromptRef struct {
 // ExtractPromptRefs returns the explicit references in text, de-duplicated,
 // in order of first appearance.
 func ExtractPromptRefs(text string) []PromptRef {
-	var out []PromptRef
-	seen := map[string]bool{}
-	add := func(kind, name string) {
-		name = strings.TrimRight(name, ".:-")
-		key := kind + "|" + strings.ToLower(name)
-		if name == "" || seen[key] {
-			return
-		}
-		seen[key] = true
-		out = append(out, PromptRef{Kind: kind, Name: name})
-	}
+	// Blank out fenced blocks so positions (and line structure) are kept.
+	text = refFencedBlockRe.ReplaceAllStringFunc(text, func(block string) string {
+		return strings.Map(func(r rune) rune {
+			if r == '\n' {
+				return r
+			}
+			return ' '
+		}, block)
+	})
 	type hit struct {
 		pos        int
 		kind, name string
@@ -59,33 +62,82 @@ func ExtractPromptRefs(text string) []PromptRef {
 	for _, m := range refAgentMentionRe.FindAllStringSubmatchIndex(text, -1) {
 		hits = append(hits, hit{m[2], "subagent", text[m[2]:m[3]]})
 	}
-	for _, m := range refSlashSkillRe.FindAllStringSubmatchIndex(text, -1) {
-		hits = append(hits, hit{m[2], "skill", text[m[2]:m[3]]})
-	}
-	for _, m := range refNamedRe.FindAllStringSubmatchIndex(text, -1) {
+	for _, m := range refNamedListRe.FindAllStringSubmatchIndex(text, -1) {
 		kind := "skill"
-		if w := strings.ToLower(text[m[4]:m[5]]); w == "subagent" || w == "agent" {
+		if strings.HasPrefix(strings.ToLower(text[m[4]:m[5]]), "subagent") {
 			kind = "subagent"
 		}
-		hits = append(hits, hit{m[2], kind, text[m[2]:m[3]]})
+		list := text[m[2]:m[3]]
+		for _, n := range refBacktickedRe.FindAllStringSubmatchIndex(list, -1) {
+			hits = append(hits, hit{m[2] + n[2], kind, list[n[2]:n[3]]})
+		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].pos < hits[j].pos })
+	var out []PromptRef
+	seen := map[string]bool{}
 	for _, h := range hits {
-		add(h.kind, h.name)
+		key := h.kind + "|" + strings.ToLower(h.name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, PromptRef{Kind: h.kind, Name: h.name})
 	}
 	return out
 }
 
-// profileBackend returns "codex" or "claude" for a profile: the explicit
-// backend wins, otherwise a command naming codex means Codex.
-func profileBackend(p config.AgentProfile) string {
-	if b := strings.ToLower(strings.TrimSpace(p.Backend)); b != "" {
-		return b
+// RefBackendDefaults are the workflow-level agent settings a profile
+// inherits: agent.command and agent.backend.
+type RefBackendDefaults struct {
+	Command string
+	Backend string
+}
+
+// commandBinaryBackend is the backend a command's binary runs ("" for an
+// unrecognised wrapper), ignoring any backend hint.
+func commandBinaryBackend(command string) string {
+	if hinted, rest := config.ParseBackendHint(command); hinted != "" {
+		command = rest
 	}
-	if fields := strings.Fields(p.Command); len(fields) > 0 && strings.Contains(strings.ToLower(fields[0]), "codex") {
-		return "codex"
+	if base := filepath.Base(config.FirstCommandToken(command)); config.IsSupportedBackend(base) {
+		return base
 	}
-	return "claude"
+	return ""
+}
+
+// profileBackend mirrors the orchestrator's dispatch resolver
+// (internal/orchestrator/dispatch_resolve.go resolveDispatchTarget) for the
+// static part of the decision: the default command's backend, then
+// agent.backend, then the profile's command (which replaces the command and
+// its backend), then the profile's backend. A requested backend is honoured
+// only when the command's binary is unrecognised or already matches; a
+// conflicting request keeps the binary's backend. An undetermined backend
+// runs on the default (Claude) runner. Per-issue pins and rate-limit
+// switches are runtime decisions and are not modelled.
+func profileBackend(p config.AgentProfile, d RefBackendDefaults) string {
+	cmd := d.Command
+	backend := config.BackendFromCommand(cmd)
+	request := func(b string) {
+		b = strings.TrimSpace(b)
+		if b == "" {
+			return
+		}
+		if bin := commandBinaryBackend(cmd); bin != "" && bin != b {
+			backend = bin
+			return
+		}
+		backend = b
+	}
+	request(d.Backend)
+	if p.Command != "" {
+		cmd = p.Command
+		backend = config.BackendFromCommand(cmd)
+	}
+	request(p.Backend)
+	if backend != "codex" {
+		return "claude"
+	}
+	return backend
 }
 
 // refTarget is one resolvable name with where it comes from.
@@ -160,7 +212,7 @@ func resolvableNames(inv *Inventory, backend string) (skills, agents map[string]
 // reference, plus an info issue when a reference resolves only outside the
 // repository while SSH hosts are configured. Profiles are visited in name
 // order so the output is stable.
-func ValidateProfileRefs(inv *Inventory, profiles map[string]config.AgentProfile, sshHosts []string) []InventoryIssue {
+func ValidateProfileRefs(inv *Inventory, profiles map[string]config.AgentProfile, defaults RefBackendDefaults, sshHosts []string) []InventoryIssue {
 	if inv == nil || len(profiles) == 0 {
 		return nil
 	}
@@ -173,7 +225,7 @@ func ValidateProfileRefs(inv *Inventory, profiles map[string]config.AgentProfile
 	var issues []InventoryIssue
 	for _, name := range names {
 		p := profiles[name]
-		backend := profileBackend(p)
+		backend := profileBackend(p, defaults)
 		skillIdx, agentIdx := resolvableNames(inv, backend)
 		for _, ref := range ExtractPromptRefs(p.Soul + "\n" + p.Instructions) {
 			idx := skillIdx

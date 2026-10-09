@@ -157,6 +157,29 @@ const RECOMMENDATION_HELP: Partial<Record<string, { what: string; howToFix: stri
       'If you genuinely need different content per scope, that is fine — just verify the override is intentional.',
     ],
   },
+  MISSING_SKILL_REF: {
+    what: "A profile's SOUL.md or INSTRUCTIONS.md names a skill (`name` skill) that is not installed for that profile's backend, so the agent runs without it.",
+    howToFix: [
+      'Check the name for a typo against the Skills list above.',
+      'If the skill lives elsewhere, add it under .claude/skills/<name>/SKILL.md in the repository (Claude) or the Codex skill directory.',
+      'If the prompt no longer needs it, remove the reference.',
+    ],
+  },
+  MISSING_SUBAGENT_REF: {
+    what: 'A profile prompt names a subagent (@agent-name or `name` subagent) that is not defined in .claude/agents or an installed plugin, or the profile runs on Codex, which has no subagents.',
+    howToFix: [
+      'Check the name against the Subagents list above.',
+      'Add the definition as .claude/agents/<name>.md with name and description frontmatter.',
+      'For a Codex profile, drop the subagent reference or move the profile to Claude.',
+    ],
+  },
+  USER_SCOPE_REF_ON_SSH: {
+    what: "A referenced skill or subagent exists only in this machine's home directory or a plugin. Agents on SSH hosts see the repository's .claude/ directory, not your home, so it may be missing there.",
+    howToFix: [
+      "Commit the skill or subagent under the repository's .claude/ directory so it travels with the repo.",
+      'Or install it on every SSH host.',
+    ],
+  },
   ORPHAN_MCP: {
     what: 'An MCP server is configured but its name is never mentioned in any skill name, description, or body. The tool schema is loaded into every agent context unconditionally — pure overhead if no skill knows when to call it.',
     howToFix: [

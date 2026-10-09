@@ -28,7 +28,7 @@ The feature lives at **Settings → Skills Inventory**. No external dependencies
 
 ## Static analyzer (Phase 1)
 
-Seven production rules ship in `internal/skills/analyze.go`:
+Ten production rules ship in `internal/skills/analyze.go`:
 
 | Issue ID | Severity | What it catches |
 |---|---|---|
@@ -133,7 +133,7 @@ internal/skills/
 ├── runtime_claude.go    # Session-log JSONL parser
 ├── runtime_codex.go     # ~/.codex/history.jsonl + sessions/** parser
 ├── context_budget.go    # Per-profile cost estimator
-├── analyze.go           # Static analyzer (7 production rules + reserved schedule rule)
+├── analyze.go           # Static analyzer (10 production rules + reserved schedule rule)
 ├── analytics.go         # BuildAnalytics(inv, runtime, profiles)
 ├── recommend.go         # Runtime-side recommendation engine
 └── cache.go             # Cache + mtime-based Stale() check

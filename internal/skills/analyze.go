@@ -22,6 +22,9 @@ type AnalyzeInputs struct {
 	// SSHHosts are the configured agent SSH hosts; when set, a prompt
 	// reference that resolves only outside the repository gets an info issue.
 	SSHHosts []string
+	// BackendDefaults are agent.command / agent.backend, which decide the
+	// backend of a profile that does not set its own command.
+	BackendDefaults RefBackendDefaults
 }
 
 // Analyze runs every static-analysis rule against the inventory and returns
@@ -64,7 +67,7 @@ func Analyze(inv *Inventory, in AnalyzeInputs) []InventoryIssue {
 	issues = append(issues, detectStaleSchedule(inv, in)...)
 	issues = append(issues, detectInstructionShadowing(inv)...)
 	issues = append(issues, detectOrphanMCP(inv)...)
-	issues = append(issues, ValidateProfileRefs(inv, in.Profiles, in.SSHHosts)...)
+	issues = append(issues, ValidateProfileRefs(inv, in.Profiles, in.BackendDefaults, in.SSHHosts)...)
 
 	sort.SliceStable(issues, func(i, j int) bool { return issues[i].ID < issues[j].ID })
 	return issues

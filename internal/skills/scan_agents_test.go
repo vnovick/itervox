@@ -56,14 +56,18 @@ func TestScanClaudeAgentsProjectUserAndPlugin(t *testing.T) {
 	assert.Contains(t, got, "user/planner")
 	assert.Equal(t, "code reviewer", got["plugin:demo-plugin/reviewer"].Description)
 
-	assert.Contains(t, trackedInventoryFiles(inv, nil), filepath.Clean(reviewerPath),
-		"subagent files gate the cache's staleness check")
+	tracked := trackedInventoryFiles(inv, nil)
+	assert.Contains(t, tracked, filepath.Clean(reviewerPath), "subagent files gate the cache's staleness check")
+	assert.Contains(t, tracked, filepath.Join(proj, ".claude", "agents"),
+		"the agents directory is tracked too, so a newly added agent marks the cache stale")
 }
 
 func TestScanClaudeAgentsSkipsUserHomeWhenDisabled(t *testing.T) {
 	proj, home := t.TempDir(), t.TempDir()
+	writeAgent(t, proj, "local.md", "---\nname: local\n---\n")
 	writeAgent(t, home, "planner.md", "---\nname: planner\n---\n")
 	inv, err := Scan(proj, home, ScanOptions{SkipCodex: true, SkipUserHome: true, SkipPlugins: true})
 	require.NoError(t, err)
-	assert.Empty(t, inv.Subagents)
+	require.Len(t, inv.Subagents, 1, "the project agent is still scanned")
+	assert.Equal(t, "local", inv.Subagents[0].Name)
 }

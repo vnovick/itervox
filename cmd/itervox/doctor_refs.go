@@ -31,7 +31,8 @@ func checkProfileRefs(cfg *config.Config, workflowPath string) []skills.Inventor
 		projectDir = abs
 	}
 	inv, _ := skills.Scan(projectDir, doctorHomeDir(), skills.ScanOptions{})
-	return skills.ValidateProfileRefs(inv, cfg.Agent.Profiles, cfg.Agent.SSHHosts)
+	defaults := skills.RefBackendDefaults{Command: cfg.Agent.Command, Backend: cfg.Agent.Backend}
+	return skills.ValidateProfileRefs(inv, cfg.Agent.Profiles, defaults, cfg.Agent.SSHHosts)
 }
 
 func renderProfileRefIssues(b *strings.Builder, issues []skills.InventoryIssue) {

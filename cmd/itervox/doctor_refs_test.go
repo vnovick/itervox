@@ -27,7 +27,7 @@ func TestDoctorWarnsOnMissingProfileRefs(t *testing.T) {
 	write(".claude/agents/code-reviewer.md", "---\nname: code-reviewer\ndescription: Reviews\n---\n")
 	write(".claude/skills/verify/SKILL.md", "---\nname: verify-before-done\ndescription: Verify\n---\nBody\n")
 	write(".itervox/agents/impl/SOUL.md", "You are the implementer.\n")
-	write(".itervox/agents/impl/INSTRUCTIONS.md", "Run `/verify-before-done`, then ask @agent-code-reviewer and @agent-ghost-reviewer.\n")
+	write(".itervox/agents/impl/INSTRUCTIONS.md", "Use the `verify-before-done` skill, then ask @agent-code-reviewer and @agent-ghost-reviewer.\n")
 	write("WORKFLOW.md", `---
 itervox_schema_version: 2
 tracker:

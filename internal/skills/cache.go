@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -153,6 +154,11 @@ func trackedInventoryFiles(inv *Inventory, base []string) []string {
 	}
 	for _, agent := range inv.Subagents {
 		add(agent.FilePath)
+		// The containing directory's mtime changes when an agent file is
+		// added or removed next to it, so a new subagent marks the cache stale.
+		if agent.FilePath != "" && !strings.HasPrefix(agent.Source, "plugin:") {
+			add(filepath.Dir(agent.FilePath))
+		}
 	}
 	return out
 }

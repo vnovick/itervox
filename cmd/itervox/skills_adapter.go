@@ -89,6 +89,9 @@ func (a *orchestratorAdapter) skillsAnalyzeInputs() skills.AnalyzeInputs {
 		Profiles:               profiles,
 		RecentlyActiveProfiles: recentlyActive,
 		SSHHosts:               sshHosts,
+		// agent.command / agent.backend are read-only after startup (not in
+		// the cfgMu allowlist).
+		BackendDefaults: skills.RefBackendDefaults{Command: a.cfg.Agent.Command, Backend: a.cfg.Agent.Backend},
 	}
 }
 

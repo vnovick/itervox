@@ -113,18 +113,18 @@ Plain-text profile files (without any `{{ }}` syntax) are passed through unchang
 
 Agents run the Claude or Codex CLI inside the repository, so they load the repository's `.claude/skills`, `.claude/agents`, `CLAUDE.md` and `AGENTS.md` like any session would. A profile's `SOUL.md` and `INSTRUCTIONS.md` can therefore tell the agent to use them. Itervox checks those references against the [skills inventory](/guides/skills-inventory/), so a typo or a skill that only exists on your laptop is caught before an agent silently runs without it.
 
-Only these explicit forms are checked; ordinary prose never triggers a warning:
+Only these forms are checked. They are chosen so that ordinary prose does not match them:
 
 | Form | Refers to |
 |---|---|
-| `@agent-code-reviewer` | the `code-reviewer` subagent (Claude Code's @-mention form) |
-| `` `/verify-before-done` `` | the `verify-before-done` skill, as a slash command in backticks |
-| `` `verify-before-done` skill `` | the same skill, named in backticks followed by "skill" |
-| `` `code-reviewer` subagent `` or `` `code-reviewer` agent `` | the subagent, named in backticks |
+| `@agent-code-reviewer` | the `code-reviewer` subagent (Claude Code's @-mention form), at the start of a word |
+| `` `verify-before-done` skill `` | the `verify-before-done` skill: the name in backticks, then the word "skill" |
+| `` `code-reviewer` subagent `` | the subagent: the name in backticks, then the word "subagent" |
+| `` `a`, `b` and `c` skills `` | every name in the list |
 
-Names match case-insensitively. A plugin's skills and agents also resolve as `<plugin>:<name>`.
+Names follow Claude Code's naming rule (lower-case letters, digits and hyphens), match case-insensitively, and may carry a `<plugin>:` prefix for a plugin's skills and agents. Text inside fenced code blocks is ignored. Slash commands such as `` `/verify-before-done` `` are not checked, because the same form also names Claude Code's built-in commands and file paths; write "the `verify-before-done` skill" when you want the reference validated.
 
-Each reference is resolved for the profile's backend: a Claude profile sees Claude and shared skills, plugin skills and every subagent; a Codex profile sees Codex and shared skills and has no subagents. A missing reference is reported as `MISSING_SKILL_REF` or `MISSING_SUBAGENT_REF`:
+Each reference is resolved for the backend the profile actually runs on, worked out the same way the dispatcher does: the profile's `command` binary (or `agent.command`), then its `backend`. A Claude profile sees Claude and shared skills, plugin skills and every subagent; a Codex profile sees Codex and shared skills and has no subagents. A missing reference is reported as `MISSING_SKILL_REF` or `MISSING_SUBAGENT_REF`:
 
 - in the dashboard, in the Skills card's issues list (**Settings → Skills**);
 - by `itervox doctor`, as a `WARNING:` line. It does not change doctor's exit code, because the agent still runs.
