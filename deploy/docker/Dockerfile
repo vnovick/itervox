@@ -44,7 +44,7 @@
 # nodejs (18.x), so the CLIs and their Node runtime come from the official
 # node image (stage agent-clis) into /opt/agent.
 
-ARG GO_VERSION=1.25.13
+ARG GO_VERSION=1.26.9
 ARG NODE_VERSION=22.20.0
 
 # ── Stage 1: web bundle ─────────────────────────────────────────────────────

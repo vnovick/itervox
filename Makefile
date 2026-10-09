@@ -1,9 +1,9 @@
 .PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
-# always use go1.25.13, even on machines where /usr/local/go is an older version.
+# always use go1.26.9, even on machines where /usr/local/go is an older version.
 # Must stay in sync with the `go` directive in go.mod.
-export GOTOOLCHAIN := go1.25.13
+export GOTOOLCHAIN := go1.26.9
 GO_PACKAGES := ./cmd/... ./internal/...
 # Explicit go test timeout: internal/agent alone takes ~8-9 min under -race
 # (SSH process-group tests), too close to go test's 10-minute default.
