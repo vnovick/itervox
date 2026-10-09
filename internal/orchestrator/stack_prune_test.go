@@ -38,3 +38,31 @@ func TestStackMissExpiresWhenBlockerLeavesReview(t *testing.T) {
 	assert.NotContains(t, state.StackUnavailable, "ENG-2", "the blocker left review: the miss expires")
 	assert.Equal(t, "", IneligibleReason(dependent, state, cfg), "back in review: tried again")
 }
+
+// TestShouldBackOutUnstacked (#103): only a fresh, unstacked worktree of an
+// issue admitted for an in-review blocker backs out; an input-required
+// resume, a reused worktree or a stacked one never does.
+func TestShouldBackOutUnstacked(t *testing.T) {
+	assert.True(t, shouldBackOutUnstacked(true, false, "", "ENG-1@in review"))
+	assert.False(t, shouldBackOutUnstacked(true, true, "", "ENG-1@in review"), "input-required resume")
+	assert.False(t, shouldBackOutUnstacked(false, false, "", "ENG-1@in review"), "reused worktree")
+	assert.False(t, shouldBackOutUnstacked(true, false, "itervox/eng-1", "ENG-1@in review"), "stacked")
+	assert.False(t, shouldBackOutUnstacked(true, false, "", ""), "not admitted for a review blocker")
+}
+
+// TestStackOnReviewStateFromStart (#103): the review state is known before
+// the first tick publishes a snapshot, so a worker admitted on that tick
+// still sees why it was admitted (it read an empty value and ran unstacked).
+func TestStackOnReviewStateFromStart(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tracker.CompletionState = " In Review "
+	assert.Equal(t, "", NewState(cfg).StackOnReviewState, "stacked_prs off")
+	cfg.Dependencies.StackedPRs = true
+	assert.Equal(t, "in review", NewState(cfg).StackOnReviewState)
+
+	o := &Orchestrator{cfg: cfg}
+	o.lastSnap = State{} // a snapshot that predates any tick
+	ident, st := "ENG-1", "In Review"
+	issue := domain.Issue{Identifier: "ENG-2", BlockedBy: []domain.BlockerRef{{Identifier: &ident, State: &st}}}
+	assert.Equal(t, "ENG-1@in review", o.reviewStackKeyNow(issue))
+}

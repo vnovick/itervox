@@ -95,21 +95,26 @@ the verdict. Itervox enforces what it can:
   push the branch or commit the reviewer's handoff (it stays in the working
   tree for the next implementer run).
 - **Changes are flagged.** Itervox records the branch when a review starts and
-  compares it when the review ends. A reviewer that committed, moved `HEAD`
-  (a reset or checkout), pushed from the workspace (a remote-tracking ref
-  moved to a local commit, with or without a new commit), or edited any file
-  outside Itervox's own `.itervox/handoff/`, `.itervox/review/` and
-  `.itervox/evidence/` gets a ⚠️ note on the issue naming what it changed, and
-  its verdict is recorded as a **block**, whatever it said. The starting point
-  is kept across a failed or retried attempt, so a change made before a
-  failure is still caught. Inspect flagged changes before merging.
+  compares it when the review ends: `HEAD` (a commit, pull, reset or
+  checkout), every changed file outside Itervox's own `.itervox/handoff/`,
+  `.itervox/review/` and `.itervox/evidence/` (compared by content), and the
+  refs on each of the workspace's git remotes as the remote reports them
+  (`git ls-remote`). A remote ref that moved to a commit this worktree's
+  `HEAD` visited during the review counts as a push from the reviewer,
+  whether it used the remote's name or its URL, and even if it reset
+  afterwards; other workers' pushes and fetches do not. A flagged reviewer
+  gets a ⚠️ note on the issue naming what it changed, and its verdict is
+  recorded as a **block**, whatever it said. A retry of the same review keeps
+  the original starting point, so a change made before a failed turn is
+  still caught. Inspect flagged changes before merging.
 - **Fresh verdicts only.** A verdict file left by an earlier review round is
   removed before the reviewer runs, so a reviewer that records nothing counts
   as a block rather than repeating an old verdict.
-- **Not covered:** a workspace that is not a git work tree, and reviewers on
-  SSH worker hosts whose workspace is not on the daemon's machine. A change
-  undone before the review ends is invisible by nature; a push leaves the
-  remote changed, so it is caught.
+- **Not covered:** pushes to a repository that is not one of the
+  workspace's remotes (or a remote that cannot be reached when the review
+  starts or ends), a workspace that is not a git work tree, reviewers on SSH
+  worker hosts whose workspace is not on the daemon's machine, and local
+  edits undone before the review ends.
 
 The agent CLIs themselves are not sandboxed from `git push`; the flag is what
 makes a push visible and stops it from approving its own change. For a hard

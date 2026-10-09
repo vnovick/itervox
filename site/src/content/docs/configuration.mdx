@@ -785,6 +785,12 @@ to land as before. It gets another try once the blocker leaves review and
 comes back, or changes. While a stacked dependent runs, the Deps tab still
 lists its blocker, which has not landed yet.
 
+With `workspace.auto_clear: true` in the legacy layout (the repository at
+`workspace.root`, no `clone_url`), a blocker's finished run removes its
+worktree and local branch, so there is nothing local to stack on and
+dependents wait for the merge as before. Keep `auto_clear` off, or use
+`clone_url`, if you want stacking.
+
 Stacking also applies on paths that do not use the blocker gate (a retry, a
 `backend_fallback` re-dispatch, a reviewer run, an input-required resume),
 for example when a blocker was added or reopened after the dependent first

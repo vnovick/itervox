@@ -201,7 +201,7 @@ func TestReadOnlyReviewerThatCommitsIsFlagged(t *testing.T) {
 	comments := issueComments(t, mt)
 	assert.Contains(t, comments, "Review by `reviewer` (claude): ❌ changes requested",
 		"an approval from a reviewer that changed the branch counts as a block")
-	assert.Contains(t, comments, "⚠️ This reviewer changed the branch (committed")
+	assert.Contains(t, comments, "⚠️ This reviewer changed the branch (HEAD moved forward")
 
 	log, err := gitexec.Command(context.Background(), ws, "log", "--format=%s").Output()
 	require.NoError(t, err)
@@ -260,6 +260,24 @@ func TestReadOnlyReviewerRunCommitsNothing(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(ws, ".itervox", "handoff"))
 	require.NoError(t, err)
 	assert.Len(t, entries, 2, "the reviewer's handoff is written but left uncommitted")
+	_, err = os.Stat(filepath.Join(ws, ".itervox", "review", "ENG-1", "reviewer", "branch-before.json"))
+	assert.True(t, os.IsNotExist(err), "the review's baseline is dropped once the review was checked")
+}
+
+// TestCompletionStateFollowsSettings (#79): the completion state that keeps
+// a reviewer alive is re-read every tick, so a settings change applies.
+func TestCompletionStateFollowsSettings(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Tracker.CompletionState = "In Review"
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &reviewScriptRunner{}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	require.Eventually(t, func() bool { return orch.Snapshot().CompletionState == "In Review" }, 2*time.Second, 20*time.Millisecond)
+	orch.SetTrackerStatesCfg(cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, "Ready for Review")
+	require.Eventually(t, func() bool { return orch.Snapshot().CompletionState == "Ready for Review" }, 2*time.Second, 20*time.Millisecond)
 }
 
 // TestReconcileKeepsReviewerOnlyInCompletionState (#79): a reviewer run is
@@ -415,5 +433,5 @@ esac
 	require.NoError(t, err)
 	assert.Contains(t, string(remote), "chore(itervox): record agent handoff", "the implementer's run was pushed")
 	assert.NotContains(t, string(remote), "fix: reviewer corrections", "the reviewer's commit was not pushed by Itervox")
-	assert.Contains(t, issueComments(t, mt), "⚠️ This reviewer changed the branch (committed")
+	assert.Contains(t, issueComments(t, mt), "⚠️ This reviewer changed the branch (HEAD moved forward")
 }
