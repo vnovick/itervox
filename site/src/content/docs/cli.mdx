@@ -116,7 +116,7 @@ itervox init --tracker github --force
 itervox init --update --workflow WORKFLOW.md
 ```
 
-`itervox init --update` creates `WORKFLOW.md.bak`, extracts each legacy inline `agent.profiles.<name>.prompt` into `.itervox/agents/<name>/INSTRUCTIONS.md`, creates compact `SOUL.md` files, rewrites the profile to `soul_file` and `instructions_file`, and sets `itervox_schema_version: 2`. It also patches broad root `.gitignore` rules so `.itervox/agents/**` remains committable.
+`itervox init --update` creates `WORKFLOW.md.bak`, extracts each legacy inline `agent.profiles.<name>.prompt` into `.itervox/agents/<name>/INSTRUCTIONS.md`, creates compact `SOUL.md` files, rewrites the profile to `soul_file` and `instructions_file`, and sets `itervox_schema_version: 2` as the first key of the front matter. It also patches broad root `.gitignore` rules so `.itervox/agents/**` remains committable. Comments, key order, quoting and indent width in `WORKFLOW.md` are preserved — only the migrated keys change, so the diff against `WORKFLOW.md.bak` is small enough to review line by line.
 
 ---
 

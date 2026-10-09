@@ -13,6 +13,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **`itervox init --update` no longer drops comments or reorders `WORKFLOW.md` keys** (#71). The schema-2 migration decoded the front matter into a map and re-marshalled it, which deleted every comment (including the GitHub tracker label setup notes) and sorted all keys alphabetically, with `itervox_schema_version: 2` landing in the middle of the file. The migration now edits the YAML node tree: comments, key order, quoting, block scalars, flow sequences, blank lines between sections and the file's indent width are preserved, the schema marker is inserted as the first key, and only the migrated keys change. `WORKFLOW.md.bak` behaviour is unchanged.
 - **Removed a stale startup warning that claimed multi-reviewer fan-out was disabled** (#69). Fan-out has run every `agent.reviewer_profiles` entry since 0.2.1 (#58), but config loading still logged `multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs` whenever more than one reviewer was listed, so operators were told the opposite of what the daemon did. The warning and its stale rationale are gone; a `reviewer_profiles`-only config still promotes its first entry into `reviewer_profile` (now logged at INFO, since that configuration is valid). The 0.2.1 notes carried a contradictory "fan-out is disabled" bullet alongside the one announcing it runs; the wrong bullet is removed.
 
 ---
