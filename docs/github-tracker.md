@@ -198,7 +198,7 @@ A GitHub issue's identifier is its number with a hash: `#42`. That is what the d
 | `issue.url` | | The issue's GitHub URL |
 | `issue.labels` | `["todo", "bug"]` | Lower-cased label names |
 | `issue.priority` | `0`–`3` | From `p0`–`p3`; **unset when there is no priority label** |
-| `issue.branch_name` | `itervox/42` | **Unset** on the issue's first run; afterwards the branch recorded on the issue |
+| `issue.branch_name` | `itervox/42` | **Unset** on the first turn of the issue's first run; afterwards the branch recorded on the issue |
 | `issue.blocked_by` | | Blockers parsed from the body |
 
 Templates render with strict variables: printing a variable that is unset fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`), and why the optional fields above need a guard:
@@ -211,7 +211,7 @@ Branch: {{ issue.branch_name | default: issue.identifier }}
 
 `p0` is the number `0`, which Liquid treats as set, so these guards keep it.
 
-Branches: with `workspace.worktree: true`, which `itervox init` writes, each issue gets its own git worktree on a branch named after it, `itervox/42` for `#42`. A later run checks that branch out again when it still exists, so work continues where it stopped. When the issue body links an open pull request, the worktree uses the pull request's branch instead.
+Branches: with `workspace.worktree: true`, which `itervox init` writes, each issue gets its own git worktree on a branch named after it, `itervox/42` for `#42`. A later run checks that branch out again when it still exists, so work continues where it stopped. When the worktree is first created and the issue body links an open pull request (a `https://github.com/…/pull/N` URL, checked with `gh`), the worktree uses the pull request's branch instead.
 
 After a turn that ends on any branch other than `main`, `master` or `develop` (or a detached `HEAD`), Itervox records the branch on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), because GitHub issues have no branch field. With worktrees that happens after the first turn, since `itervox/42` already counts. The comment is posted again only when the branch changes. The first turn of each later run reads it back, so `{{ issue.branch_name }}` names the branch in the prompt.
 
