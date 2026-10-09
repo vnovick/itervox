@@ -1688,3 +1688,25 @@ func TestAgentPRFooter(t *testing.T) {
 		})
 	}
 }
+
+// TestProfileRequireEvidence (#80): require_evidence parses (normalised),
+// defaults to off, and rejects malformed check names.
+func TestProfileRequireEvidence(t *testing.T) {
+	load := func(profileBlock string) (*config.Config, error) {
+		content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nagent:\n  profiles:\n    impl:\n      command: claude\n" + profileBlock + "---\n\nPrompt.\n"
+		return config.Load(workflowWithContent(t, content))
+	}
+	cfg, err := load("")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Agent.Profiles["impl"].RequireEvidence, "off by default")
+
+	cfg, err = load("      require_evidence: [Test, lint, test, ' ci ']\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "lint", "ci"}, cfg.Agent.Profiles["impl"].RequireEvidence)
+
+	cfg, err = load("      require_evidence: [\"unit tests\"]\n")
+	require.NoError(t, err)
+	err = config.ValidateAgentProfiles(cfg.Agent.Profiles) // run by ValidateDispatch at startup and in doctor
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `require_evidence entry "unit tests"`)
+}

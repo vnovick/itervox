@@ -248,6 +248,11 @@ func ValidateAgentProfiles(profiles map[string]AgentProfile) error {
 		if slices.Contains(actions, AgentActionCreateIssue) && strings.TrimSpace(profile.CreateIssueState) == "" {
 			return fmt.Errorf("invalid profile %q: create_issue_state is required when create_issue is enabled", name)
 		}
+		for _, check := range profile.RequireEvidence {
+			if !evidenceCheckNameRe.MatchString(check) {
+				return fmt.Errorf("invalid profile %q: require_evidence entry %q must be a short name of lower-case letters, digits, '-' or '_' (e.g. test, lint, ci)", name, check)
+			}
+		}
 	}
 	return nil
 }

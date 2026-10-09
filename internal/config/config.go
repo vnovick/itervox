@@ -301,6 +301,13 @@ type AgentProfile struct {
 	// that can pause for approval hangs the turn until the timeout kills it.
 	// See internal/agent/permission.go (issue #66).
 	PermissionMode string
+	// RequireEvidence lists the checks a run of this profile must prove
+	// before Itervox moves its issue to completion_state (#80). Each name
+	// but "ci" must appear as a passing entry in the run's evidence file
+	// (run.evidence_path), recorded on the worktree's current commit; "ci"
+	// requires the run's pull request to have only passing checks. Empty
+	// (the default) turns the gate off. YAML key: require_evidence.
+	RequireEvidence []string
 }
 
 // AgentConfig holds agent runner settings.
@@ -1210,6 +1217,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
 				PermissionMode:   strField(m, "permission_mode", ""),
+				RequireEvidence:  NormalizeEvidenceChecks(strSliceField(m, "require_evidence", nil)),
 			}
 			continue
 		}
@@ -1225,6 +1233,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
 			PermissionMode:   strField(m, "permission_mode", ""),
+			RequireEvidence:  NormalizeEvidenceChecks(strSliceField(m, "require_evidence", nil)),
 		}
 	}
 	if len(profiles) == 0 {
