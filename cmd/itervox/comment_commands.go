@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -42,7 +41,6 @@ import (
 const (
 	commentCommandPollInterval = 30 * time.Second
 	commentCommandOverlap      = 2 * time.Minute // clock skew between GitHub and here
-	commentCommandLedgerMax    = 2000
 	commentCommandPermTTL      = 10 * time.Minute
 )
 
@@ -104,7 +102,7 @@ type commentCommandOrch interface {
 type commentCommandLedger struct {
 	Version int                  `json:"version"`
 	Cursor  time.Time            `json:"cursor"`
-	Handled map[string]time.Time `json:"handled"` // comment ID → when it was handled
+	Handled map[string]time.Time `json:"handled"` // comment ID → the comment's creation time
 }
 
 type commentCommandHandler struct {
@@ -115,8 +113,14 @@ type commentCommandHandler struct {
 	ledger     commentCommandLedger
 	tokenLogin string
 	perms      map[string]cachedPermission
+	failures   map[string]int // comment ID → polls whose permission check failed
 	now        func() time.Time
 }
+
+// commentCommandMaxCheckFailures bounds how long a comment whose author's
+// permission cannot be read keeps the cursor back: after this many polls it
+// is recorded as not authorized, so one broken check cannot pin the window.
+const commentCommandMaxCheckFailures = 10
 
 type cachedPermission struct {
 	perm string
@@ -125,7 +129,7 @@ type cachedPermission struct {
 
 func newCommentCommandHandler(cfg config.CommentCommandsConfig, tr commentCommandTracker, orch commentCommandOrch, ledgerPath string) *commentCommandHandler {
 	h := &commentCommandHandler{cfg: cfg, tr: tr, orch: orch, ledgerPath: ledgerPath,
-		perms: map[string]cachedPermission{}, now: time.Now}
+		perms: map[string]cachedPermission{}, failures: map[string]int{}, now: time.Now}
 	h.loadLedger()
 	return h
 }
@@ -150,19 +154,12 @@ func (h *commentCommandHandler) loadLedger() {
 }
 
 func (h *commentCommandHandler) saveLedger() error {
-	if len(h.ledger.Handled) > commentCommandLedgerMax {
-		type kv struct {
-			id string
-			at time.Time
-		}
-		all := make([]kv, 0, len(h.ledger.Handled))
-		for id, at := range h.ledger.Handled {
-			all = append(all, kv{id, at})
-		}
-		sort.Slice(all, func(i, j int) bool { return all[i].at.After(all[j].at) })
-		h.ledger.Handled = map[string]time.Time{}
-		for _, e := range all[:commentCommandLedgerMax] {
-			h.ledger.Handled[e.id] = e.at
+	// A comment created before the window can never be acted on again (see
+	// poll), so its record can go; nothing still inside the window is
+	// dropped.
+	for id, created := range h.ledger.Handled {
+		if created.Before(h.windowStart()) {
+			delete(h.ledger.Handled, id)
 		}
 	}
 	data, err := json.MarshalIndent(h.ledger, "", "  ")
@@ -175,6 +172,12 @@ func (h *commentCommandHandler) saveLedger() error {
 	return atomicfs.WriteFile(h.ledgerPath, data, 0o600)
 }
 
+// windowStart is the earliest creation time a comment may have to be acted
+// on: the cursor less the clock-skew overlap.
+func (h *commentCommandHandler) windowStart() time.Time {
+	return h.ledger.Cursor.Add(-commentCommandOverlap)
+}
+
 // poll reads new comments and acts on the commands among them.
 func (h *commentCommandHandler) poll(ctx context.Context) {
 	if h.tokenLogin == "" && !h.cfg.AllowTokenUser {
@@ -185,7 +188,8 @@ func (h *commentCommandHandler) poll(ctx context.Context) {
 		}
 		h.tokenLogin = login
 	}
-	comments, err := h.tr.ListRepoCommentsSince(ctx, h.ledger.Cursor.Add(-commentCommandOverlap))
+	windowStart := h.windowStart()
+	comments, err := h.tr.ListRepoCommentsSince(ctx, windowStart)
 	if err != nil {
 		slog.Warn("comment commands: listing comments failed", "error", err)
 		return
@@ -196,6 +200,11 @@ func (h *commentCommandHandler) poll(ctx context.Context) {
 			h.ledger.Cursor = c.CreatedAt
 		}
 		if _, done := h.ledger.Handled[c.ID]; done {
+			continue
+		}
+		// `since` matches edits too: an older comment edited into a command
+		// is not one. Only comments created inside the window count.
+		if c.CreatedAt.Before(windowStart) {
 			continue
 		}
 		if tracker.IsManagedComment(domain.Comment{Body: c.Body}) {
@@ -238,7 +247,7 @@ func (h *commentCommandHandler) authorized(ctx context.Context, c github.RepoCom
 		return false, "permission check failed: " + err.Error()
 	}
 	switch perm {
-	case "admin", "maintain", "write":
+	case "admin", "write":
 		return true, ""
 	}
 	return false, "permission " + perm
@@ -262,11 +271,18 @@ func (h *commentCommandHandler) permission(ctx context.Context, login string) (s
 func (h *commentCommandHandler) handle(ctx context.Context, c github.RepoComment, cmd itervoxCommand) (retry bool) {
 	ok, why := h.authorized(ctx, c)
 	if !ok && strings.HasPrefix(why, "permission check failed") {
-		// Not recorded: the check is retried on the next poll.
-		slog.Warn("comment commands: "+why, "comment_id", c.ID, "login", c.Login)
-		return true
+		h.failures[c.ID]++
+		if h.failures[c.ID] < commentCommandMaxCheckFailures {
+			// Not recorded: the check is retried on the next poll.
+			slog.Warn("comment commands: "+why, "comment_id", c.ID, "login", c.Login)
+			return true
+		}
+		slog.Warn("comment commands: giving up on a comment whose author's permission cannot be read",
+			"comment_id", c.ID, "login", c.Login, "attempts", h.failures[c.ID])
+		why = "permission unreadable"
 	}
-	h.ledger.Handled[c.ID] = h.now().UTC()
+	delete(h.failures, c.ID)
+	h.ledger.Handled[c.ID] = c.CreatedAt.UTC()
 	if err := h.saveLedger(); err != nil {
 		// Without a durable record the command could run twice; do not act.
 		delete(h.ledger.Handled, c.ID)
@@ -276,7 +292,7 @@ func (h *commentCommandHandler) handle(ctx context.Context, c github.RepoComment
 	if !ok {
 		slog.Info("comment commands: ignored a command from a user without access",
 			"comment_id", c.ID, "login", c.Login, "reason", why)
-		if h.cfg.ReplyToUnauthorized && why != "token user" && why != "bot" {
+		if h.cfg.ReplyToUnauthorized && why != "token user" && why != "bot" && why != "permission unreadable" {
 			h.reply(ctx, c, fmt.Sprintf("@%s only maintainers with write access can run `/itervox` commands here.", c.Login))
 		}
 		return false
@@ -328,10 +344,10 @@ func (h *commentCommandHandler) run(ctx context.Context, number, identifier, pro
 	if _, running := snap.Running[number]; running {
 		return "", fmt.Errorf("already running")
 	}
-	if profile != "" {
-		h.orch.SetIssueProfile(identifier, profile)
-	}
 	if _, paused := snap.PausedIdentifiers[identifier]; paused {
+		if profile != "" {
+			h.orch.SetIssueProfile(identifier, profile)
+		}
 		if err := h.orch.ResumeIssue(identifier); err != nil {
 			return "", err
 		}
@@ -346,6 +362,9 @@ func (h *commentCommandHandler) run(ctx context.Context, number, identifier, pro
 	state := issues[0].State
 	if slices.ContainsFunc(terminal, func(s string) bool { return strings.EqualFold(s, state) }) {
 		return "", fmt.Errorf("the issue is closed (%s)", state)
+	}
+	if profile != "" {
+		h.orch.SetIssueProfile(identifier, profile)
 	}
 	if !slices.ContainsFunc(active, func(s string) bool { return strings.EqualFold(s, state) }) {
 		if len(active) == 0 {

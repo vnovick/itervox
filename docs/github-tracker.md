@@ -233,9 +233,11 @@ permission check per commenter, cached for 10 minutes.
 
 ### Security model
 
-- **Who is obeyed.** Users with write access to the repository (`admin`,
-  `maintain` or `write`, from the collaborator permission API) and logins
-  listed in `allow`. Anyone else is ignored: no action and, unless
+- **Who is obeyed.** Users with write access to the repository (the
+  collaborator permission API's base level `admin` or `write`, which includes
+  `maintain` and custom roles built on write) and logins listed in `allow`.
+  The allow list matches login names only: if a listed account is deleted and
+  someone registers the name, they are obeyed, so keep it short and current. Anyone else is ignored: no action and, unless
   `reply_to_unauthorized` is set, no reply. In a public repository, anyone can
   comment, but only maintainers' commands do anything.
 - **Never obeyed.** Bot accounts (unless listed in `allow`), Itervox's own
@@ -244,12 +246,20 @@ permission check per commenter, cached for 10 minutes.
   `/itervox run`, could otherwise trigger commands. If Itervox posts as you
   (your personal token) and you want your own comments to count, set
   `allow_token_user: true` and accept that risk, or give Itervox a separate
-  bot token. That is the safer setup for a public repository.
+  bot token. That is the safer setup for a public repository. This only
+  covers agents that post as the token's account: an agent on an SSH worker,
+  or one whose `gh` is signed in as someone else, posts as that account, so
+  do not give agents a maintainer's credentials. Itervox reads the token's
+  login from `GET /user`; a token that cannot (some GitHub App tokens) stops
+  commands until `allow_token_user: true` is set.
 - **Once only.** Each comment is acted on at most once. Its ID is recorded in
   `.itervox/comment_commands.json` (gitignored runtime state) **before**
   Itervox acts, so neither a retry nor a restart repeats it. Commands posted
   while the daemon was down are picked up when it starts again; comments from
-  before the feature was first enabled are not.
+  before the feature was first enabled are not. Only newly created comments
+  count: editing an older comment into a command does nothing. If a
+  commenter's permission cannot be read, the command is retried for about
+  five minutes, then ignored.
 
 ## Identifiers
 

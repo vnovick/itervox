@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ type fakeCommentTracker struct {
 	tokenLogin string
 	reactions  []string // "<commentID>:<content>"
 	permCalls  atomic.Int32
+	edited     map[string]bool // listed whatever `since` says, as GitHub lists edited comments
 }
 
 func (f *fakeCommentTracker) ListRepoCommentsSince(_ context.Context, since time.Time) ([]github.RepoComment, error) {
@@ -63,7 +65,7 @@ func (f *fakeCommentTracker) ListRepoCommentsSince(_ context.Context, since time
 	defer f.mu.Unlock()
 	var out []github.RepoComment
 	for _, c := range f.comments {
-		if !c.CreatedAt.Before(since) {
+		if !c.CreatedAt.Before(since) || f.edited[c.ID] {
 			out = append(out, c)
 		}
 	}
@@ -291,8 +293,67 @@ func TestCommentCommandNotRecordedWhenPermissionCheckFails(t *testing.T) {
 
 	h.tr = f // the check works again
 	h.poll(context.Background())
-	_, recorded = h.ledger.Handled["1"]
-	assert.True(t, recorded, "retried once the permission check succeeds")
+	assert.True(t, h.ledger.Cursor.After(at), "retried once the check succeeds, then the cursor moves on")
+	assert.Empty(t, h.failures)
+}
+
+// TestCommentCommandGivesUpOnAPermanentlyFailingCheck (#84): a check that
+// never succeeds stops holding the cursor after a bounded number of polls.
+func TestCommentCommandGivesUpOnAPermanentlyFailingCheck(t *testing.T) {
+	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	h.tr = &failingPermTracker{fakeCommentTracker: f}
+	f.addComment("1", "carol", "/itervox stop", time.Now().Add(-5*time.Minute))
+	for i := 0; i < commentCommandMaxCheckFailures; i++ {
+		h.poll(context.Background())
+	}
+	_, recorded := h.ledger.Handled["1"]
+	assert.True(t, recorded, "recorded as not authorized after the bounded retries")
+	assert.Empty(t, f.reactionsSnapshot(), "never acted on")
+}
+
+// TestCommentCommandIgnoresEditedOldComments (#84): GitHub lists comments
+// by update time; an older comment edited into a command is not obeyed.
+func TestCommentCommandIgnoresEditedOldComments(t *testing.T) {
+	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	h.ledger.Cursor = time.Now()
+	f.addComment("1", "alice", "/itervox stop", time.Now().Add(-30*24*time.Hour))
+	f.edited = map[string]bool{"1": true} // edited today, so GitHub lists it
+	h.poll(context.Background())
+	assert.Empty(t, f.reactionsSnapshot())
+}
+
+// TestCommentCommandRecordsBeforeActing (#84): when the record cannot be
+// saved, the command is not acted on (it could otherwise run twice).
+func TestCommentCommandRecordsBeforeActing(t *testing.T) {
+	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	blocker := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o600))
+	h.ledgerPath = filepath.Join(blocker, "comment_commands.json") // parent is a file: saving fails
+	f.addComment("1", "alice", "/itervox stop", time.Now())
+	h.poll(context.Background())
+	assert.Empty(t, f.reactionsSnapshot(), "not acted on without a durable record")
+}
+
+// TestCommentCommandRunWhileRunning (#84): `/itervox run` on an issue that
+// is already running is refused, not dispatched twice.
+func TestCommentCommandRunWhileRunning(t *testing.T) {
+	f, h, runs, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
+	f.addComment("1", "alice", "/itervox run", time.Now())
+	h.poll(context.Background())
+	require.Eventually(t, func() bool { return runs.Load() > 0 }, 5*time.Second, 20*time.Millisecond)
+	h.orch = &runningOrch{commentCommandOrch: h.orch}
+	f.addComment("2", "alice", "/itervox run", time.Now())
+	h.poll(context.Background())
+	assert.Contains(t, strings.Join(repliesOn42(t, f), "\n"), "@alice `/itervox run`: already running")
+}
+
+// runningOrch reports issue 42 as running.
+type runningOrch struct{ commentCommandOrch }
+
+func (r *runningOrch) Snapshot() orchestrator.State {
+	s := r.commentCommandOrch.Snapshot()
+	s.Running = map[string]*orchestrator.RunEntry{"42": {}}
+	return s
 }
 
 type failingPermTracker struct{ *fakeCommentTracker }

@@ -85,9 +85,8 @@ func (c *Client) ListRepoCommentsSince(ctx context.Context, since time.Time) ([]
 	return out, nil
 }
 
-// CollaboratorPermission returns login's permission on the repository:
-// "admin", "maintain", "write", "triage", "read" or "none" (not a
-// collaborator).
+// CollaboratorPermission returns login's base permission on the
+// repository: "admin", "write", "read" or "none" (not a collaborator).
 func (c *Client) CollaboratorPermission(ctx context.Context, login string) (string, error) {
 	body, _, err := c.get(ctx, fmt.Sprintf("%s/repos/%s/%s/collaborators/%s/permission",
 		c.cfg.Endpoint, c.owner, c.repo, url.PathEscape(login)))
@@ -99,11 +98,9 @@ func (c *Client) CollaboratorPermission(ctx context.Context, login string) (stri
 		return "", err
 	}
 	obj, _ := body.(map[string]any)
-	// role_name carries maintain/triage; permission folds them into
-	// write/read for older API versions.
-	if role, _ := obj["role_name"].(string); role != "" {
-		return role, nil
-	}
+	// permission is the base level (admin, write, read, none): maintain and
+	// custom roles derived from write fold into "write", triage into
+	// "read". role_name would name a custom role instead, hiding its level.
 	perm, _ := obj["permission"].(string)
 	if perm == "" {
 		return "none", nil

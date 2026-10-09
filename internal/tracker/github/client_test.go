@@ -1311,7 +1311,7 @@ func TestCommentCommandClientCalls(t *testing.T) {
 			"user":     map[string]any{"login": "dependabot[bot]", "type": "Bot"}}})
 	})
 	mux.HandleFunc("/repos/owner/repo/collaborators/alice/permission", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"permission": "write", "role_name": "maintain"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"permission": "write", "role_name": "security-writer"})
 	})
 	mux.HandleFunc("/repos/owner/repo/collaborators/mallory/permission", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -1342,7 +1342,7 @@ func TestCommentCommandClientCalls(t *testing.T) {
 
 	perm, err := c.CollaboratorPermission(ctx, "alice")
 	require.NoError(t, err)
-	assert.Equal(t, "maintain", perm)
+	assert.Equal(t, "write", perm, "maintain (and custom roles derived from write) read as their base level")
 	perm, err = c.CollaboratorPermission(ctx, "mallory")
 	require.NoError(t, err)
 	assert.Equal(t, "none", perm, "not a collaborator")
