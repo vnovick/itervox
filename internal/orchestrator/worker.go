@@ -186,7 +186,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// worktree could not be stacked (the branch is not here), starting on
 		// base_branch would build on code the blocker has not landed: back
 		// out before any agent runs and let the issue wait for the blocker.
-		if ws.CreatedNow && !inputRequiredResume && stackedOn == "" && reviewStackKey(issue, o.Snapshot()) != "" {
+		if shouldBackOutUnstacked(ws.CreatedNow, inputRequiredResume, stackedOn, o.reviewStackKeyNow(issue)) {
 			slog.Info("worker: in-review blocker's branch not available to stack on; waiting for the blocker",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 			if o.logBuf != nil {

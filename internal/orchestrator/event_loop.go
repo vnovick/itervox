@@ -145,10 +145,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	state.ActiveStates = append([]string{}, o.cfg.Tracker.ActiveStates...)
 	state.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
-	state.StackOnReviewState = ""
-	if o.cfg.Dependencies.StackedPRs {
-		state.StackOnReviewState = strings.ToLower(strings.TrimSpace(o.cfg.Tracker.CompletionState))
-	}
+	state.StackOnReviewState = stackOnReviewState(o.cfg)
 	o.cfgMu.RUnlock()
 
 	// Gap D (Task 6 review): run the dependency-refresh watchdog before the

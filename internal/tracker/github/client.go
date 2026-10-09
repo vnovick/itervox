@@ -329,6 +329,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		return nil, fmt.Errorf("github_fetch_issue_detail: unexpected issue shape")
 	}
 	derived := deriveState(raw, c.activeStates(), c.terminalStates())
+	if derived == "" {
+		derived = matchStateLabel(raw, c.otherStateLabels())
+	}
 	issue := normalizeIssue(raw, derived)
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found or missing required fields", issueID)
@@ -525,6 +528,11 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	allStateLabels = append(allStateLabels, c.activeStates()...)
 	allStateLabels = append(allStateLabels, c.terminalStates()...)
 	allStateLabels = append(allStateLabels, c.cfg.BacklogStates...)
+	// The completion label too: an issue sent back from review must not
+	// keep reading as in review (#103).
+	if cs := strings.TrimSpace(c.cfg.CompletionState); cs != "" {
+		allStateLabels = append(allStateLabels, cs)
+	}
 	for _, label := range allStateLabels {
 		if strings.EqualFold(label, stateName) {
 			continue

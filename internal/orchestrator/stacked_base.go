@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -88,6 +89,36 @@ func reviewStackKey(issue domain.Issue, state State) string {
 		return ""
 	}
 	return *b.Identifier + "@" + strings.ToLower(strings.TrimSpace(*b.State))
+}
+
+// stackOnReviewState is State.StackOnReviewState for cfg: the lower-cased
+// completion_state when dependencies.stacked_prs is on, else "". Callers
+// outside the event loop hold cfgMu (CompletionState is runtime-mutable).
+func stackOnReviewState(cfg *config.Config) string {
+	if cfg == nil || !cfg.Dependencies.StackedPRs {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(cfg.Tracker.CompletionState))
+}
+
+// reviewStackKeyNow is reviewStackKey evaluated by a worker: the snapshot
+// supplies the terminal states, but the review state comes from config, not
+// from a snapshot that may predate the tick that admitted the issue.
+func (o *Orchestrator) reviewStackKeyNow(issue domain.Issue) string {
+	snap := o.Snapshot()
+	o.cfgMu.RLock()
+	snap.StackOnReviewState = stackOnReviewState(o.cfg)
+	snap.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
+	o.cfgMu.RUnlock()
+	return reviewStackKey(issue, snap)
+}
+
+// shouldBackOutUnstacked decides the #103 back-out: a fresh worktree for an
+// issue admitted because its blocker is in review (stackKey != "") that
+// could not be stacked. An input-required resume never backs out: it is the
+// same run continuing, and the gate-free paths keep their old behaviour.
+func shouldBackOutUnstacked(createdNow, inputRequiredResume bool, stackedOn, stackKey string) bool {
+	return createdNow && !inputRequiredResume && stackedOn == "" && stackKey != ""
 }
 
 // pruneStackUnavailable drops recorded stacking misses (#103) that no longer

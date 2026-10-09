@@ -252,3 +252,65 @@ func TestBackOutDeletesFreshDependentBranch(t *testing.T) {
 	err := gitexec.Command(context.Background(), root, "rev-parse", "--verify", "-q", "refs/heads/itervox/eng-2").Run()
 	assert.Error(t, err, "the fresh, empty branch is deleted")
 }
+
+// blockerStateTracker reports the dependent's blocker in a state the test
+// controls, the way a real tracker refreshes blocker states every poll.
+type blockerStateTracker struct {
+	*tracker.MemoryTracker
+	state atomic.Value // string
+}
+
+func (b *blockerStateTracker) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
+	issues, err := b.MemoryTracker.FetchCandidateIssues(ctx)
+	st := b.state.Load().(string)
+	for i := range issues {
+		refs := append([]domain.BlockerRef(nil), issues[i].BlockedBy...) // never write the tracker's own slice
+		for j := range refs {
+			refs[j].State = &st
+		}
+		issues[i].BlockedBy = refs
+	}
+	return issues, err
+}
+
+// TestStackMissExpiresLive (#103): on the real tick path, a recorded miss is
+// dropped when the blocker leaves review, so when it comes back with its
+// branch now available the dependent is admitted and stacked.
+func TestStackMissExpiresLive(t *testing.T) {
+	root := gitRepoForStacking(t, "")
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 1
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Workspace.Root = root
+	cfg.Workspace.Worktree = true
+	cfg.Workspace.BaseBranch = "main"
+	cfg.Dependencies.StackedPRs = true
+	bt := &blockerStateTracker{MemoryTracker: tracker.NewMemoryTracker(reviewBlockedIssues(), cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+	bt.state.Store("In Review")
+	runner := &promptCaptureRunner{done: make(chan struct{}, 1)}
+	orch := orchestrator.New(cfg, bt, runner, workspace.NewManager(cfg))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	require.Eventually(t, func() bool { return orch.Snapshot().StackUnavailable["ENG-2"] != "" }, 5*time.Second, 20*time.Millisecond)
+	bt.state.Store("In Progress") // the blocker goes back to work
+	require.Eventually(t, func() bool { return orch.Snapshot().StackUnavailable["ENG-2"] == "" }, 5*time.Second, 20*time.Millisecond,
+		"the miss expires on a live tick")
+	assert.Equal(t, 0, runnerCalls(runner))
+
+	git := func(args ...string) {
+		out, err := gitexec.Command(context.Background(), root, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	git("checkout", "-q", "-b", "itervox/eng-1")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "blocker.go"), []byte("package x\n"), 0o644))
+	git("add", "blocker.go")
+	git("commit", "-q", "-m", "blocker work")
+	git("checkout", "-q", "main")
+	bt.state.Store("In Review") // back in review, branch now present
+	require.Eventually(t, func() bool { return runnerCalls(runner) > 0 }, 5*time.Second, 20*time.Millisecond)
+	_, prompts := runner.snapshot()
+	assert.Contains(t, prompts[0], "## Stacked Branch")
+}
