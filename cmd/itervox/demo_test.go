@@ -34,13 +34,20 @@ func TestDemoDaemonCompletesAnIssue(t *testing.T) {
 		k, _, _ := strings.Cut(kv, "=")
 		switch k {
 		case "HOME", "PATH", daemonChildArgsEnv, "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-			"LINEAR_API_KEY", "GITHUB_TOKEN":
+			"LINEAR_API_KEY", "GITHUB_TOKEN", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
+			"XDG_CACHE_HOME", "XDG_DATA_HOME", "GH_CONFIG_DIR":
 			continue
 		}
 		env = append(env, kv)
 	}
-	// No claude or codex anywhere on PATH.
-	env = append(env, "HOME="+home, "PATH=/usr/bin:/bin", daemonChildArgsEnv+"="+string(raw))
+	// No claude or codex anywhere on PATH, but a gh that, like the real
+	// one, creates its state directory under $XDG_STATE_HOME (default
+	// ~/.local/state) on every call. CI runners ship gh, so a demo that let
+	// it write there failed the HOME check below.
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "gh"), []byte(
+		"#!/bin/sh\nmkdir -p \"${XDG_STATE_HOME:-$HOME/.local/state}/gh\"\nexit 1\n"), 0o755))
+	env = append(env, "HOME="+home, "PATH="+bin+":/usr/bin:/bin", daemonChildArgsEnv+"="+string(raw))
 
 	logPath := filepath.Join(t.TempDir(), "demo.out")
 	logf, err := os.Create(logPath)
