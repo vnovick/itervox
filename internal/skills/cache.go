@@ -174,6 +174,8 @@ func TrackedPathsFor(projectDir, homeDir string) []string {
 			filepath.Join(projectDir, ".mcp.json"),
 			filepath.Join(projectDir, "CLAUDE.md"),
 			filepath.Join(projectDir, "AGENTS.md"),
+			// Directory mtime: catches the first agent file added (#86).
+			filepath.Join(projectDir, ".claude", "agents"),
 		)
 	}
 	if homeDir != "" {
@@ -182,6 +184,7 @@ func TrackedPathsFor(projectDir, homeDir string) []string {
 			filepath.Join(homeDir, ".claude", "CLAUDE.md"),
 			filepath.Join(homeDir, ".mcp.json"),
 			filepath.Join(homeDir, ".agents", ".skill-lock.json"),
+			filepath.Join(homeDir, ".claude", "agents"),
 		)
 	}
 	return paths

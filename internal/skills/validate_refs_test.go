@@ -30,6 +30,20 @@ func refIssueKeys(issues []InventoryIssue) []string {
 	return out
 }
 
+func TestExtractPromptRefsListsAndFences(t *testing.T) {
+	text := "Use the `a`, `b`, and `c` skills; then the `d`/`e` + `f` skills.\n" +
+		"Text with ``` mid-line does not open a fence. Ask @agent-after-inline.\n" +
+		"~~~\nAsk @agent-in-tilde-fence.\n~~~\n" +
+		"   ```go\nUse the `in-backtick-fence` skill.\n   ```\n" +
+		"Finally ask @agent-last."
+	assert.Equal(t, []PromptRef{
+		{Kind: "skill", Name: "a"}, {Kind: "skill", Name: "b"}, {Kind: "skill", Name: "c"},
+		{Kind: "skill", Name: "d"}, {Kind: "skill", Name: "e"}, {Kind: "skill", Name: "f"},
+		{Kind: "subagent", Name: "after-inline"},
+		{Kind: "subagent", Name: "last"},
+	}, ExtractPromptRefs(text))
+}
+
 func TestExtractPromptRefsRecognisedForms(t *testing.T) {
 	text := "Ask @agent-code-reviewer first (or @agent-planner).\n" +
 		"Use the `verify-before-done` skill, then the `skill-a`, `demo-plugin:skill-b` and `go-hygiene` skills.\n" +
@@ -59,6 +73,11 @@ func TestExtractPromptRefsIgnoresOrdinaryProse(t *testing.T) {
 		"See https://example.com/@agent-foo/profile and email me@agent-x.com.",
 		"Plain prose about a reviewer skill and the code-reviewer subagent.",
 		"```\nExample: ask @agent-ghost and use the `ghost` skill.\n```",
+		"~~~\nAsk @agent-ghost\n~~~",
+		"Put it in the `codex` skills directory, the `parser` skills module and the `max-retries` skills option.",
+		"Give `x` skill-level guidance; `README` skill notes; `1` skill point.",
+		"Mention `foo`\n\nskills header",
+		"Edit the `planner` subagent file.",
 	} {
 		assert.Empty(t, ExtractPromptRefs(text), "must not be a reference: %q", text)
 	}
@@ -75,7 +94,7 @@ func TestValidateProfileRefsWarnsOnMissingOnly(t *testing.T) {
 				"Hand off to @agent-code-reviewer and the `demo-plugin:reviewer` subagent.\n" +
 				"Then use the `verify-befor-done` skill and ask @agent-security-auditor.",
 		},
-		"clean": {Command: "claude", Instructions: "Ask @agent-reviewer. Use the `VERIFY-BEFORE-DONE` skill."},
+		"clean": {Command: "claude", Instructions: "Ask @agent-reviewer. Use the `verify-before-done` skill."},
 	}
 	issues := ValidateProfileRefs(refInventory(), profiles, RefBackendDefaults{}, nil)
 	assert.Equal(t, []string{
@@ -106,6 +125,8 @@ func TestProfileBackendMatchesDispatchResolver(t *testing.T) {
 		{"agent.command codex inherited", RefBackendDefaults{Command: "codex"}, config.AgentProfile{}, "codex"},
 		{"agent.backend on a wrapper default", RefBackendDefaults{Command: "./run-agent", Backend: "codex"}, config.AgentProfile{}, "codex"},
 		{"profile command replaces default backend", RefBackendDefaults{Command: "codex"}, config.AgentProfile{Command: "claude"}, "claude"},
+		{"padded backend is used verbatim and falls back to claude", RefBackendDefaults{}, config.AgentProfile{Command: "./wrap", Backend: " codex"}, "claude"},
+		{"backend hint in the command", RefBackendDefaults{}, config.AgentProfile{Command: "@@itervox-backend=codex ./wrap"}, "codex"},
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, profileBackend(tc.profile, tc.defaults), tc.name)

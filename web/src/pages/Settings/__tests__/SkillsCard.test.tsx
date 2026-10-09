@@ -116,6 +116,50 @@ describe('SkillsCard', () => {
     expect(screen.getByText(/failed to load skills inventory/i)).toBeInTheDocument();
   });
 
+  it('explains the profile reference rules when expanded', () => {
+    skillMocks.useSkillsIssues.mockReturnValue({
+      data: [
+        {
+          ID: 'MISSING_SUBAGENT_REF',
+          Severity: 'warn',
+          Title: 'Profile "impl" references unknown subagent "ghost"',
+          Description: 'No subagent named ghost.',
+          Affected: ['impl', 'ghost'],
+        },
+        {
+          ID: 'MISSING_SKILL_REF',
+          Severity: 'warn',
+          Title: 'Profile "impl" references unknown skill "verify"',
+          Description: 'No skill named verify.',
+          Affected: ['impl', 'verify'],
+        },
+        {
+          ID: 'USER_SCOPE_REF_ON_SSH',
+          Severity: 'info',
+          Title: 'Profile "impl" references skill "notes" that only exists outside the repository',
+          Description: 'Only in user scope.',
+          Affected: ['impl', 'notes'],
+        },
+      ],
+    });
+    render(<SkillsCard />);
+
+    fireEvent.click(screen.getByText('Profile "impl" references unknown subagent "ghost"'));
+    expect(
+      screen.getByText(/Add the definition as \.claude\/agents\/<name>\.md/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Profile "impl" references unknown skill "verify"'));
+    expect(
+      screen.getByText(/Check the name for a typo against the Skills list/),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByText(
+        'Profile "impl" references skill "notes" that only exists outside the repository',
+      ),
+    );
+    expect(screen.getByText(/so it travels with the repo/)).toBeInTheDocument();
+  });
+
   it('offers a first scan when inventory is unavailable', () => {
     skillMocks.useSkillsInventory.mockReturnValue({ data: null, isLoading: false, error: null });
 

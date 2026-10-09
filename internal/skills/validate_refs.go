@@ -17,23 +17,63 @@ import (
 // ordinary prose does not produce are checked:
 //
 //	@agent-<name>                   a subagent (Claude Code's @-mention), at a word start
-//	`<name>` skill / skills         backticked name(s), then the word "skill(s)"
-//	`<name>` subagent / subagents   backticked name(s), then the word "subagent(s)"
+//	`<name>` skill / skills         backticked name(s), then the word "skill(s)" on the same line
+//	`<name>` subagent / subagents   backticked name(s), then the word "subagent(s)" on the same line
 //
-// A list such as "`a`, `b` and `c` skills" names every item. Names follow
-// Claude Code's naming rule (lower-case letters, digits, hyphens), optionally
-// prefixed `<plugin>:`, and match case-insensitively. Fenced code blocks are
-// ignored. Slash commands (`/name`) are deliberately not checked: they also
-// name built-in commands and file paths, which would warn on valid text.
+// A list such as "`a`, `b`, and `c` skills" (separators , & / ; + and or,
+// in any combination) names every item. Names follow Claude Code's naming
+// rule (lower-case letters, digits, hyphens, starting with a letter),
+// optionally prefixed `<plugin>:`, and are matched against the inventory
+// case-insensitively. "skill"/"subagent" must end a word (not "skill-level")
+// and must not be followed by a word that makes it a noun modifier
+// ("skills directory", "subagent file", …). Fenced code blocks (``` or ~~~
+// at the start of a line) are ignored. Slash commands (`/name`) are
+// deliberately not checked: they also name built-in commands and file paths.
 
-const refNamePattern = "[a-zA-Z0-9][a-zA-Z0-9-]*(?::[a-zA-Z0-9][a-zA-Z0-9-]*)?"
+const refNamePattern = "[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?"
+
+// refListSep is one or more list separators between backticked names.
+const refListSep = "(?:[ \\t]*(?:,|&|/|;|\\+|\\band\\b|\\bor\\b)[ \\t]*)+"
+
+// refNounModifiers follow "skill(s)"/"subagent(s)" when the phrase describes
+// files or configuration rather than naming one.
+const refNounModifiers = "(?:directory|directories|dir|dirs|folder|folders|file|files|module|modules|option|options|setting|settings|path|paths|list|lists|format|level|name|names|field|fields|section|sections|header|headers|config|configuration|schema|tree|table)"
 
 var (
 	refAgentMentionRe = regexp.MustCompile(`(?:^|[\s(\[{,;"'])@agent-(` + refNamePattern + `)`)
-	refNamedListRe    = regexp.MustCompile("(?i)(`" + refNamePattern + "`(?:\\s*(?:,|&|\\band\\b|\\bor\\b)\\s*`" + refNamePattern + "`)*)\\s+(skills?|subagents?)\\b")
+	refNamedListRe    = regexp.MustCompile("(`" + refNamePattern + "`(?:" + refListSep + "`" + refNamePattern + "`)*)[ \\t]+(?i:(skills?|subagents?))(?:[^\\w-]|$)")
+	refNounAfterRe    = regexp.MustCompile("^(?i)[ \\t]+" + refNounModifiers + "\\b")
 	refBacktickedRe   = regexp.MustCompile("`(" + refNamePattern + ")`")
-	refFencedBlockRe  = regexp.MustCompile("(?s)```.*?(?:```|$)")
+	refFenceLineRe    = regexp.MustCompile("^[ ]{0,3}(```|~~~)")
 )
+
+// blankFencedBlocks replaces the content of Markdown fenced code blocks
+// (opened by ``` or ~~~ at the start of a line, up to three spaces of
+// indent, and closed by the same marker) with spaces, keeping newlines so
+// positions stay stable. An unclosed fence runs to the end of the text, as
+// in Markdown.
+func blankFencedBlocks(text string) string {
+	lines := strings.SplitAfter(text, "\n")
+	fence := ""
+	for i, line := range lines {
+		m := refFenceLineRe.FindStringSubmatch(line)
+		switch {
+		case fence == "" && m != nil:
+			fence = m[1]
+		case fence != "" && m != nil && m[1] == fence:
+			fence = ""
+		case fence == "":
+			continue
+		}
+		lines[i] = strings.Map(func(r rune) rune {
+			if r == '\n' {
+				return r
+			}
+			return ' '
+		}, line)
+	}
+	return strings.Join(lines, "")
+}
 
 // PromptRef is one explicit skill or subagent reference found in a profile
 // prompt.
@@ -45,15 +85,7 @@ type PromptRef struct {
 // ExtractPromptRefs returns the explicit references in text, de-duplicated,
 // in order of first appearance.
 func ExtractPromptRefs(text string) []PromptRef {
-	// Blank out fenced blocks so positions (and line structure) are kept.
-	text = refFencedBlockRe.ReplaceAllStringFunc(text, func(block string) string {
-		return strings.Map(func(r rune) rune {
-			if r == '\n' {
-				return r
-			}
-			return ' '
-		}, block)
-	})
+	text = blankFencedBlocks(text)
 	type hit struct {
 		pos        int
 		kind, name string
@@ -63,6 +95,9 @@ func ExtractPromptRefs(text string) []PromptRef {
 		hits = append(hits, hit{m[2], "subagent", text[m[2]:m[3]]})
 	}
 	for _, m := range refNamedListRe.FindAllStringSubmatchIndex(text, -1) {
+		if refNounAfterRe.MatchString(text[m[5]:]) {
+			continue // "`x` skills directory" describes files, not a skill
+		}
 		kind := "skill"
 		if strings.HasPrefix(strings.ToLower(text[m[4]:m[5]]), "subagent") {
 			kind = "subagent"
@@ -117,8 +152,10 @@ func commandBinaryBackend(command string) string {
 func profileBackend(p config.AgentProfile, d RefBackendDefaults) string {
 	cmd := d.Command
 	backend := config.BackendFromCommand(cmd)
+	// Values are used exactly as configured, like the resolver: a padded
+	// " codex" becomes a hint ParseBackendHint rejects, and the run falls
+	// back to the Claude runner.
 	request := func(b string) {
-		b = strings.TrimSpace(b)
 		if b == "" {
 			return
 		}
