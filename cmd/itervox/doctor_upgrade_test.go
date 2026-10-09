@@ -167,11 +167,21 @@ func TestUpgradeDoctorRules(t *testing.T) {
 			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  command: codex\n  backend: codex"}},
 		{note: "upgrade notes (CORE-115)",
 			applies:    upgradeFixture{front: cleanFront + "\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_backend: codex"},
-			notApplies: upgradeFixture{front: cleanFront + "\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_profile: codex-impl\n      switch_to_backend: codex"}},
+			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    codex-impl:\n      command: codex\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_profile: codex-impl\n      switch_to_backend: codex"}},
+		{note: "upgrade notes (CORE-115)", // v0.2.0 accepted a switch profile whose command contradicts switch_to_backend
+			applies:    upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    fallback:\n      command: claude\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_profile: fallback\n      switch_to_backend: codex"},
+			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    fallback:\n      command: claude\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_profile: fallback\n      switch_to_backend: claude"}},
 		{note: "breaking (#48)",
 			applies:    upgradeFixture{front: cleanFront, homeFiles: map[string]string{".itervox/logs/github/o_r/paused.json": "{}"}},
 			notApplies: upgradeFixture{front: cleanFront, homeFiles: map[string]string{".itervox/logs/github/o_r/paused.json": "{}"}, env: map[string]string{"ITERVOX_API_TOKEN": "pinned"}},
 			alsoNotes:  []string{"note 5"}},
+		{note: "breaking (#48)", // a non-loopback bind already required a token; slugless shared state is not this project's
+			applies:    upgradeFixture{front: cleanFront, homeFiles: map[string]string{".itervox/logs/github/o_r/paused.json": "{}"}},
+			notApplies: upgradeFixture{front: cleanFront + "\n  host: 0.0.0.0", homeFiles: map[string]string{".itervox/logs/github/o_r/paused.json": "{}"}},
+			alsoNotes:  []string{"note 5"}},
+		{note: "note 5", // another slugless project's v0.2.0 state: note 5 (the dir was shared), but not #48
+			applies:    upgradeFixture{front: "tracker:\n  kind: github\nserver:\n  port: 8091", homeFiles: map[string]string{".itervox/logs/paused.json": "{}"}},
+			notApplies: upgradeFixture{front: cleanFront}},
 		{note: "breaking (#48)", // a fresh install never served without a token
 			applies:    upgradeFixture{front: cleanFront, files: map[string]string{".itervox/daemon.pid": "123\t/x/WORKFLOW.md\n"}},
 			notApplies: upgradeFixture{front: cleanFront},
