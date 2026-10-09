@@ -60,6 +60,17 @@ func TestDeploySkillReferencesExist(t *testing.T) {
 		assert.Contains(t, bootstrap, f+")", "bootstrap.sh has no %s", f)
 	}
 
+	// Every module input the OpenTofu table names exists in that module.
+	identRe := regexp.MustCompile("`([a-z]+(?:_[a-z]+)+)`")
+	for _, mod := range []string{"gcp-vm", "aws-ec2", "azure-vm"} {
+		row := regexp.MustCompile("(?m)^\\| `" + mod + "` \\|.*$").FindString(skill)
+		require.NotEmpty(t, row, mod)
+		vars := repoFile(t, "deploy/terraform/"+mod+"/variables.tf") + repoFile(t, "deploy/terraform/"+mod+"/examples/basic/main.tf")
+		for _, m := range identRe.FindAllStringSubmatch(row, -1) {
+			assert.Contains(t, vars, m[1], "%s has no input %s", mod, m[1])
+		}
+	}
+
 	main := repoFile(t, "cmd/itervox/main.go")
 	for _, cmd := range []string{"secret", "doctor"} {
 		assert.Contains(t, main, `case "`+cmd+`":`)
@@ -76,7 +87,7 @@ func TestDeployDocsPinTheLatestRelease(t *testing.T) {
 	latest := "v" + m[1]
 	versionRe := regexp.MustCompile(`--version (v\d+\.\d+\.\d+)`)
 	found := 0
-	for _, doc := range []string{"deploy/README.md", "site/src/content/docs/guides/deployment.mdx"} {
+	for _, doc := range []string{"deploy/README.md", "site/src/content/docs/guides/deployment.mdx", "deploy/upgrade.sh", "docs/deploy-runbook.md"} {
 		for _, v := range versionRe.FindAllStringSubmatch(repoFile(t, doc), -1) {
 			found++
 			assert.Equal(t, latest, v[1], "%s pins %s; the latest release is %s", doc, v[1], latest)

@@ -27,15 +27,17 @@ heartbeat monitoring.
 
 ## Guided deployment with the deploy skill
 
-Itervox ships a Claude Code skill, [`.claude/skills/deploy/SKILL.md`](https://github.com/vnovick/itervox/blob/main/.claude/skills/deploy/SKILL.md), that walks an agent through this page: it asks for the cloud, region, size and access method, provisions with the scripts or OpenTofu modules below, bootstraps the VM, puts secrets in `.itervox/.env` with `itervox secret set` (so no key is ever printed), runs `itervox doctor --deploy`, starts the service and prints the tunnel command. It asks before creating anything billable.
+Itervox ships a Claude Code skill, [`.claude/skills/deploy/SKILL.md`](https://github.com/vnovick/itervox/blob/main/.claude/skills/deploy/SKILL.md), that walks an agent through this page: it asks for the cloud, region, size and access method, provisions with the scripts or OpenTofu modules below, bootstraps the VM, has you type secrets into `itervox secret set` on the VM (so no key is printed or passes through the agent), runs `itervox doctor --deploy`, starts the service and prints the tunnel command. It asks before creating anything billable.
 
-In the Itervox repository the skill is already there. To use it from another project, copy it in:
+In the Itervox repository the skill is already there. To use it from another project, copy it in from a release that includes it (v0.2.2 or later):
 
 ```bash
 mkdir -p .claude/skills/deploy
-curl -fsSL https://raw.githubusercontent.com/vnovick/itervox/main/.claude/skills/deploy/SKILL.md \
+curl -fsSL https://raw.githubusercontent.com/vnovick/itervox/v0.2.2/.claude/skills/deploy/SKILL.md \
   -o .claude/skills/deploy/SKILL.md
 ```
+
+The secrets step needs the same release on the VM: `itervox secret` is not in v0.2.1 and earlier, and there the skill has you edit `.itervox/.env` yourself.
 
 Then ask Claude Code to "deploy itervox to GCP" (or AWS, or Azure). The skill fetches the deploy kit at the release it installs.
 

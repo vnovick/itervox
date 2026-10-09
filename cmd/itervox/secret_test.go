@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/joho/godotenv"
@@ -36,6 +37,12 @@ func TestSecretSetRoundTripsThroughDotenv(t *testing.T) {
 		"C": `it's "quoted" \ and $HOME`,
 		"D": "  spaced value = with equals  ",
 		"E": "trailing'",
+		"F": `ends with a backslash\`,
+		"G": `it's "wrapped"`,
+		"H": `\n literal, ${VAR}, ` + "`tick`" + `, ünïcode, #lead`,
+		"I": `=starts with equals`,
+		"J": `$dollar at start`,
+		"K": `back\slash 'and' quote\`,
 	}
 	workflow, envPath := secretWorkflow(t)
 	for k, v := range values {
@@ -62,7 +69,7 @@ func TestSecretSetRefusesToOverwriteWithoutReplace(t *testing.T) {
 	pipedSecret(t)
 	workflow, envPath := secretWorkflow(t)
 	require.NoError(t, os.MkdirAll(filepath.Dir(envPath), 0o755))
-	require.NoError(t, os.WriteFile(envPath, []byte("# header\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nTOKEN=real\nTOKEN=dupe\n"), 0o644))
+	require.NoError(t, os.WriteFile(envPath, []byte("# header\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nTOKEN=real\nTOKEN=dupe\nREALX=abc-xxxxxxxx-123\n"), 0o644))
 
 	run := func(args ...string) (int, string) {
 		var out, errOut bytes.Buffer
@@ -77,8 +84,12 @@ func TestSecretSetRefusesToOverwriteWithoutReplace(t *testing.T) {
 	code, msg = run("--replace", "TOKEN", "--workflow", workflow)
 	require.Equal(t, 0, code, msg)
 
+	code, _ = run("REALX", "--workflow", workflow)
+	assert.Equal(t, 1, code, "a real value containing x's is not a placeholder")
+
 	got, err := godotenv.Read(envPath)
 	require.NoError(t, err)
+	assert.Equal(t, "abc-xxxxxxxx-123", got["REALX"])
 	assert.Equal(t, "new-value", got["LINEAR_API_KEY"])
 	assert.Equal(t, "new-value", got["TOKEN"], "the later duplicate no longer overrides the rotation")
 	data, _ := os.ReadFile(envPath)
@@ -115,6 +126,25 @@ func TestSecretListShowsStatusNotValues(t *testing.T) {
 	assert.NotContains(t, out.String(), "s3cret")
 }
 
+// TestSecretRefusesAValueDotenvCannotCarry (#88): a value no .env form
+// reads back unchanged is refused, and the file is left untouched.
+func TestSecretRefusesAValueDotenvCannotCarry(t *testing.T) {
+	pipedSecret(t)
+	workflow, envPath := secretWorkflow(t)
+	var out, errOut bytes.Buffer
+	code := secret([]string{"set", "A", "--workflow", workflow}, strings.NewReader(`it's "x" #\`+"\n"), &out, &errOut)
+	if code == 0 {
+		got, err := godotenv.Read(envPath)
+		require.NoError(t, err)
+		assert.Equal(t, `it's "x" #\`, got["A"], "when it is accepted it must read back exactly")
+		return
+	}
+	assert.Equal(t, 1, code)
+	assert.Contains(t, errOut.String(), "nothing saved")
+	_, err := os.Stat(envPath)
+	assert.True(t, os.IsNotExist(err))
+}
+
 // TestSecretRejectsBadInput (#88).
 func TestSecretRejectsBadInput(t *testing.T) {
 	pipedSecret(t)
@@ -141,4 +171,34 @@ func TestSecretRejectsBadInput(t *testing.T) {
 	}
 	_, err := os.Stat(envPath)
 	assert.True(t, os.IsNotExist(err), "nothing was written")
+}
+
+// TestSecretSetKeepsSymlinkAndOwner (#88): a symlinked .env is written
+// through to its target, and a file root rewrites keeps its owner, so the
+// service user can still read it.
+func TestSecretSetKeepsSymlinkAndOwner(t *testing.T) {
+	pipedSecret(t)
+	workflow, envPath := secretWorkflow(t)
+	target := filepath.Join(t.TempDir(), "real.env")
+	require.NoError(t, os.WriteFile(target, []byte("A=\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Dir(envPath), 0o755))
+	require.NoError(t, os.Symlink(target, envPath))
+	if os.Geteuid() == 0 {
+		require.NoError(t, os.Chown(target, 4242, 4242))
+	}
+	var out, errOut bytes.Buffer
+	require.Equal(t, 0, secret([]string{"set", "A", "--workflow", workflow}, strings.NewReader("v\n"), &out, &errOut), errOut.String())
+
+	fi, err := os.Lstat(envPath)
+	require.NoError(t, err)
+	assert.NotZero(t, fi.Mode()&os.ModeSymlink, "the link is kept")
+	got, err := godotenv.Read(target)
+	require.NoError(t, err)
+	assert.Equal(t, "v", got["A"])
+	if os.Geteuid() == 0 {
+		info, err := os.Stat(target)
+		require.NoError(t, err)
+		st := info.Sys().(*syscall.Stat_t)
+		assert.Equal(t, uint32(4242), st.Uid, "the owner is kept")
+	}
 }

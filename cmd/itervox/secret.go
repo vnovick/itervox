@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/charmbracelet/x/term"
+	"github.com/joho/godotenv"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
 )
@@ -120,21 +122,65 @@ func readSecretValue(key string, in io.Reader, errOut io.Writer) (string, error)
 	return value, nil
 }
 
-// quoteEnvValue quotes value so godotenv (which the daemon loads .env with)
-// reads it back unchanged: single quotes are literal; a value containing a
-// single quote is double-quoted with \, " and $ escaped.
-func quoteEnvValue(value string) string {
-	if !strings.Contains(value, "'") {
-		return "'" + value + "'"
+// envLine renders key=value so that godotenv, which the daemon loads .env
+// with, reads exactly value back. godotenv has no quoting that holds every
+// value (a value ending in a backslash cannot be quoted, and its own Marshal
+// output does not always parse), so the candidate forms are tried in turn
+// and the first that round-trips is used; a value none can carry is refused.
+func envLine(key, value string) (string, error) {
+	esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`)
+	for _, line := range []string{
+		key + "='" + value + "'",
+		key + `="` + esc.Replace(value) + `"`,
+		key + "=" + value,
+	} {
+		if m, err := godotenv.Unmarshal(line); err == nil && len(m) == 1 && m[key] == value {
+			return line, nil
+		}
 	}
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`)
-	return `"` + r.Replace(value) + `"`
+	return "", errors.New("this value cannot be written to a .env file so that it reads back unchanged (for example, quotes combined with a trailing backslash); nothing saved")
+}
+
+// placeholderRe is an `itervox init` stub value such as
+// lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: a prefix, then only x's.
+var placeholderRe = regexp.MustCompile(`^[A-Za-z_]*x{8,}$`)
+
+// envValue is the value godotenv reads from one KEY=... line ("" when the
+// line does not parse, e.g. `KEY= # fill me`).
+func envValue(line string) string {
+	m, err := godotenv.Unmarshal(line)
+	if err != nil {
+		return ""
+	}
+	for _, v := range m {
+		return v
+	}
+	return ""
+}
+
+// secretStatus is "empty", "placeholder" or "set" for a line's value.
+func secretStatus(line string) string {
+	v := strings.TrimSpace(envValue(line))
+	switch {
+	case v == "":
+		return "empty"
+	case placeholderRe.MatchString(v):
+		return "placeholder"
+	}
+	return "set"
 }
 
 // setEnvSecret sets key in the dotenv file at path. It replaces a
 // placeholder or empty line for key, appends otherwise, and replaces a real
-// value only with replace. The file is written atomically, mode 0600.
+// value only with replace. The file is written atomically, mode 0600; a
+// symlinked file is written through to its target, and an existing file
+// keeps its owner (so a root-run rotation stays readable by the service
+// user).
 func setEnvSecret(path, key, value string, replace bool) error {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
+	info, statErr := os.Stat(path)
 	raw, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -143,10 +189,13 @@ func setEnvSecret(path, key, value string, replace bool) error {
 	if len(raw) > 0 {
 		lines = strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	}
-	line := key + "=" + quoteEnvValue(value)
+	line, err := envLine(key, value)
+	if err != nil {
+		return err
+	}
 	replaced := false
 	for i, l := range lines {
-		k, v, ok := strings.Cut(strings.TrimSpace(l), "=")
+		k, _, ok := strings.Cut(strings.TrimSpace(l), "=")
 		if !ok || strings.TrimSpace(strings.TrimPrefix(k, "export ")) != key {
 			continue
 		}
@@ -154,7 +203,7 @@ func setEnvSecret(path, key, value string, replace bool) error {
 			lines[i] = "" // a later duplicate would win over the new value
 			continue
 		}
-		if isRealSecret(strings.Trim(v, `"' `)) && !replace {
+		if secretStatus(l) == "set" && !replace {
 			return fmt.Errorf("%s already sets %s; pass --replace to rotate it", path, key)
 		}
 		lines[i] = line
@@ -166,7 +215,17 @@ func setEnvSecret(path, key, value string, replace bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return atomicfs.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	if err := atomicfs.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		return err
+	}
+	if statErr == nil {
+		if st, ok := info.Sys().(*syscall.Stat_t); ok && os.Geteuid() == 0 {
+			if err := os.Chown(path, int(st.Uid), int(st.Gid)); err != nil {
+				return fmt.Errorf("keep the owner of %s: %w", path, err)
+			}
+		}
+	}
+	return nil
 }
 
 // secretList prints each variable in the file with whether it is set, a
@@ -182,19 +241,11 @@ func secretList(path string, out, errOut io.Writer) int {
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
-		k, v, ok := strings.Cut(t, "=")
+		k, _, ok := strings.Cut(t, "=")
 		if !ok {
 			continue
 		}
-		v = strings.Trim(v, `"' `)
-		status := "set"
-		switch {
-		case v == "":
-			status = "empty"
-		case !isRealSecret(v):
-			status = "placeholder"
-		}
-		_, _ = fmt.Fprintf(out, "%s: %s\n", strings.TrimSpace(strings.TrimPrefix(k, "export ")), status)
+		_, _ = fmt.Fprintf(out, "%s: %s\n", strings.TrimSpace(strings.TrimPrefix(k, "export ")), secretStatus(t))
 	}
 	return 0
 }
