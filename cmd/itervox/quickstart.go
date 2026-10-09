@@ -149,7 +149,7 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 			return 1
 		}
 		_, _ = fmt.Fprintf(out, "itervox quickstart: tracker %s (%s), agent %s (%s)\n", det.Tracker, det.TrackerReason, det.Runner, det.RunnerReason)
-		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, out); err != nil {
+		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, "", out); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 			return 1
 		}

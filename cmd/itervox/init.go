@@ -126,16 +126,13 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("\n")
 	b.WriteString("    ## Your task\n")
 	b.WriteString("\n")
-	b.WriteString("    Review the pull request created for this issue.\n")
+	b.WriteString("    Review the change made for this issue. You are a read-only reviewer:\n")
+	b.WriteString("    do not edit files, commit, push or move the issue.\n")
 	b.WriteString("\n")
-	b.WriteString("    1. Run `gh pr diff` to read the PR changes\n")
-	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues, code style\n")
-	b.WriteString("    3. If you find problems:\n")
-	b.WriteString("       - Fix them directly in the workspace\n")
-	b.WriteString("       - Commit and push: `git add -A && git commit -m \"fix: reviewer corrections\" && git push`\n")
-	b.WriteString("       - Post a comment on the tracker issue summarising what you fixed\n")
-	b.WriteString("    4. If the PR is clean:\n")
-	b.WriteString("       - Post an approval comment: \"AI review passed — no issues found\"\n")
+	b.WriteString("    1. Read the \"Changes to Review\" block (the diff against the base branch) and the latest handoff\n")
+	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues\n")
+	b.WriteString("    3. Record your verdict as the \"Review Verdict (required)\" block describes: approve, or\n")
+	b.WriteString("       block with the reasons and line comments the implementer must address\n")
 	b.WriteString("\n")
 	b.WriteString("    Be concise. Focus on real bugs, not style preferences.\n")
 
@@ -366,6 +363,8 @@ func runInit(args []string) {
 	analyzeMode := fs.String("analyze", "auto", "init-time dependency analysis: auto | always | never")
 	// #83: write the agent-ready GitHub issue template (or print the Linear
 	// one) without asking. Without it, init asks on stdin; EOF means no.
+	// #79: two read-only reviewers on different backends review every run.
+	preset := fs.String("preset", "", "workflow preset: cross-review (the runner writes; a reviewer on each backend reviews every run). Without it, init offers the preset on a terminal when both claude and codex are installed")
 	issueTemplate := fs.Bool("issue-template", false, "add the agent-ready issue template without asking (GitHub: .github/ISSUE_TEMPLATE/agent-task.md; Linear: print it)")
 	_ = fs.Parse(args)
 	switch *analyzeMode {
@@ -468,7 +467,17 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 
-	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, os.Stdout); err != nil {
+	switch *preset {
+	case "", presetCrossReview:
+	default:
+		fmt.Fprintf(os.Stderr, "itervox init: unknown --preset %q (valid: %s)\n", *preset, presetCrossReview)
+		fatalExit(2)
+	}
+	if *preset == "" {
+		*preset = offerCrossReviewPreset(*runner, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
+	}
+
+	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, *preset, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}

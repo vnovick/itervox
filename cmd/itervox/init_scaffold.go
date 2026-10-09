@@ -15,7 +15,9 @@ import (
 // check whether output already exists — callers decide that. Shared by
 // `itervox init` and `itervox quickstart` (#74), which is why it reports
 // errors instead of exiting.
-func scaffoldWorkflow(output, dir, trackerKind, runner string, out io.Writer) error {
+//
+// preset is "" or presetCrossReview (#79).
+func scaffoldWorkflow(output, dir, trackerKind, runner, preset string, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "itervox init: scanning %s...\n", dir)
 	info := scanRepo(dir)
 
@@ -43,6 +45,12 @@ func scaffoldWorkflow(output, dir, trackerKind, runner string, out io.Writer) er
 	_, _ = fmt.Fprintf(out, "  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
 
 	content := generateWorkflow(trackerKind, runner, info, output)
+	if preset == presetCrossReview {
+		var err error
+		if content, err = applyCrossReviewPreset(content, runner); err != nil {
+			return err
+		}
+	}
 
 	if err := writeInitWorkflow(output, []byte(content)); err != nil {
 		return fmt.Errorf("itervox init: write %s: %w", output, err)
@@ -50,6 +58,12 @@ func scaffoldWorkflow(output, dir, trackerKind, runner string, out io.Writer) er
 	_, _ = fmt.Fprintf(out, "itervox init: wrote %s\n", output)
 	if err := writeInitAgentFiles(output, runner); err != nil {
 		return err
+	}
+	if preset == presetCrossReview {
+		if err := writeCrossReviewerFiles(output, runner); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(out, "itervox init: cross-review preset: %s writes, reviewed by %s and reviewer (any_block, auto_review)\n", runner, crossReviewerProfile(runner))
 	}
 	_, _ = fmt.Fprintf(out, "itervox init: wrote .itervox/agents profiles\n")
 	// P0-A — scaffold built-in profile files to disk so operators see them
