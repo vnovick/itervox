@@ -22,7 +22,7 @@ query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: 
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier url state { name } }
+          issue { id identifier url branchName state { name } }
         }
       }
       children(first: $relationFirst) {
@@ -52,7 +52,7 @@ query ItervoxIssueDetail($id: String!) {
     inverseRelations(first: 50) {
       nodes {
         type
-        issue { id identifier url state { name } }
+        issue { id identifier url branchName state { name } }
       }
     }
     children(first: 50) {
@@ -129,7 +129,7 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier url state { name } }
+          issue { id identifier url branchName state { name } }
         }
       }
       children(first: $relationFirst) {
@@ -161,7 +161,7 @@ query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relatio
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier url state { name } }
+          issue { id identifier url branchName state { name } }
         }
       }
       children(first: $relationFirst) {
@@ -215,7 +215,7 @@ query ItervoxLinearIssueDetailsById($ids: [ID!]!, $first: Int!, $relationFirst: 
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier url state { name } }
+          issue { id identifier url branchName state { name } }
         }
       }
       children(first: $relationFirst) {
@@ -254,7 +254,7 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
       inverseRelations(first: $relationFirst) {
         nodes {
           type
-          issue { id identifier url state { name } }
+          issue { id identifier url branchName state { name } }
         }
       }
       children(first: $relationFirst) {

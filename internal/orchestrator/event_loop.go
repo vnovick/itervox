@@ -226,6 +226,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// whenever cfg.Tracker.Outbox is false (the kill switch), in which
 	// case this returns an empty set and mutates nothing.
 	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
+	pruneStackUnavailable(&state, issues)
 
 	// unified-dependency-graph Task 4 — recompute the inferred-dependency
 	// gating layer against this tick's candidate set before the audit/dispatch

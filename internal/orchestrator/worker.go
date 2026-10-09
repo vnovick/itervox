@@ -186,14 +186,21 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// worktree could not be stacked (the branch is not here), starting on
 		// base_branch would build on code the blocker has not landed: back
 		// out before any agent runs and let the issue wait for the blocker.
-		if ws.CreatedNow && stackedOn == "" && reviewStackKey(issue, o.Snapshot()) != "" {
+		if ws.CreatedNow && !inputRequiredResume && stackedOn == "" && reviewStackKey(issue, o.Snapshot()) != "" {
 			slog.Info("worker: in-review blocker's branch not available to stack on; waiting for the blocker",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 			if o.logBuf != nil {
 				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO",
 					"worker: blocker is in review but its branch is not available here to stack on; waiting for it to land", runLogID))
 			}
-			if err := o.workspace.RemoveWorkspace(ctx, issue.Identifier, branchName); err != nil {
+			// Delete the branch only if it carries nothing of its own: a
+			// branch that existed before (someone's work) is only checked
+			// out into the new worktree, and must survive the back-out.
+			removeBranch := ""
+			if !branchCarriesOwnCommits(ctx, wsPath, branchName) {
+				removeBranch = branchName
+			}
+			if err := o.workspace.RemoveWorkspace(ctx, issue.Identifier, removeBranch); err != nil {
 				slog.Warn("worker: remove unstacked workspace failed",
 					"issue_identifier", issue.Identifier, "error", err)
 			}

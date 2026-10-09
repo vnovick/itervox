@@ -132,7 +132,8 @@ only the event loop mutates them.
   (`reviewStackAdmits`) and stacked on the blocker's branch; a fresh worktree
   that could not be stacked exits `TerminalStackUnavailable` before any agent
   runs, and the event loop records the blocker so the issue waits for it.
-  Session-scoped, not persisted.
+  `pruneStackUnavailable` drops a record each tick once it no longer
+  matches the candidate's blocker. Session-scoped, not persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is

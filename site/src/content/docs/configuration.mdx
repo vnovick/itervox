@@ -771,11 +771,18 @@ on: an issue whose **only** unresolved blocker is in
 is dispatched right away, stacked on that blocker's branch. That is what
 makes a chain of dependent issues move without waiting for each merge.
 
+The blocker's branch is the one its own run used: the tracker's branch name
+when the tracker reports one (Linear), otherwise `itervox/<identifier>`. On
+GitHub, a blocker counts as in review when it carries the `completion_state`
+label.
+
 If the blocker's branch is not available in this checkout, the dependent is
 **not** started on `base_branch`, which would lack the blocker's code: the
-fresh worktree is removed before any agent runs, and the issue waits for its
-blocker to land as before (the dashboard keeps showing `blocked_by`). It gets
-another try when the blocker changes state.
+fresh worktree is removed before any agent runs (a dependent branch that
+already has commits of its own is kept), and the issue waits for its blocker
+to land as before. It gets another try once the blocker leaves review and
+comes back, or changes. While a stacked dependent runs, the Deps tab still
+lists its blocker, which has not landed yet.
 
 Stacking also applies on paths that do not use the blocker gate (a retry, a
 `backend_fallback` re-dispatch, a reviewer run, an input-required resume),

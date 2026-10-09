@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -34,6 +35,7 @@ import (
 // lives, not in dispatch policy.
 func stackedBaseBranch(state State, issue domain.Issue) string {
 	var candidate string
+	var candidateBranch *string
 	var live int
 	for _, blocker := range issue.BlockedBy {
 		if blocker.State != nil && isTerminalState(*blocker.State, state) {
@@ -53,11 +55,14 @@ func stackedBaseBranch(state State, issue domain.Issue) string {
 			return "" // the sole live blocker cannot name a branch
 		}
 		candidate = *blocker.Identifier
+		candidateBranch = blocker.BranchName
 	}
 	if candidate == "" {
 		return ""
 	}
-	return workspace.ResolveWorktreeBranch(nil, candidate)
+	// The blocker's worker resolved its branch the same way: the tracker's
+	// branch name (Linear) when set, else itervox/<identifier>.
+	return workspace.ResolveWorktreeBranch(candidateBranch, candidate)
 }
 
 // reviewStackKey identifies the in-review blocker an issue may stack on
@@ -83,6 +88,38 @@ func reviewStackKey(issue domain.Issue, state State) string {
 		return ""
 	}
 	return *b.Identifier + "@" + strings.ToLower(strings.TrimSpace(*b.State))
+}
+
+// pruneStackUnavailable drops recorded stacking misses (#103) that no longer
+// describe the issue: its blocker left review, changed, or the issue is no
+// longer a candidate. A blocker that goes back to review later is tried
+// again rather than staying held until a restart.
+func pruneStackUnavailable(state *State, candidates []domain.Issue) {
+	if len(state.StackUnavailable) == 0 {
+		return
+	}
+	current := make(map[string]string, len(candidates))
+	for _, issue := range candidates {
+		current[issue.Identifier] = reviewStackKey(issue, *state)
+	}
+	for ident, key := range state.StackUnavailable {
+		if current[ident] != key {
+			delete(state.StackUnavailable, ident)
+		}
+	}
+}
+
+// branchCarriesOwnCommits reports whether the branch checked out in wsPath
+// has commits no other branch, tag or remote ref has: deleting it would
+// lose work. Fails safe: any git error counts as "carries commits".
+func branchCarriesOwnCommits(ctx context.Context, wsPath, branchName string) bool {
+	out, err := gitexec.Command(ctx, wsPath, "rev-list", "--count", "HEAD", "--not",
+		// With --branches, git matches --exclude without the refs/heads/ prefix.
+		"--exclude="+branchName, "--branches", "--tags", "--remotes").Output()
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(out)) != "0"
 }
 
 // reviewStackAdmits reports whether the dispatch gate lets issue through

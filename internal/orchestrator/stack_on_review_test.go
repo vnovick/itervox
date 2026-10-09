@@ -3,6 +3,8 @@ package orchestrator_test
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -140,4 +143,112 @@ func TestReviewStackGate(t *testing.T) {
 
 	state.StackOnReviewState = ""
 	assert.Contains(t, orchestrator.IneligibleReason(dependent, state, cfg), "blocked_by", "stacked_prs off")
+}
+
+// gitRepoForStacking makes a repo at root (the legacy worktree layout: root
+// itself is the repo) with main and the given blocker branch carrying its
+// own commit.
+func gitRepoForStacking(t *testing.T, blockerBranch string) string {
+	t.Helper()
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		out, err := gitexec.Command(context.Background(), root, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@t")
+	git("config", "user.name", "t")
+	git("commit", "-q", "--allow-empty", "-m", "base")
+	if blockerBranch != "" {
+		git("checkout", "-q", "-b", blockerBranch)
+		require.NoError(t, os.WriteFile(filepath.Join(root, "blocker.go"), []byte("package x\n"), 0o644))
+		git("add", "blocker.go")
+		git("commit", "-q", "-m", "blocker work")
+		git("checkout", "-q", "main")
+	}
+	return root
+}
+
+// runReviewStackReal dispatches ENG-2 (blocked by ENG-1, in review, whose
+// tracker branch is blockerBranchName) with a real workspace.Manager.
+func runReviewStackReal(t *testing.T, root string, blockerBranchName *string, wait func(*orchestrator.Orchestrator, *promptCaptureRunner) bool) *promptCaptureRunner {
+	t.Helper()
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 1
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Workspace.Root = root
+	cfg.Workspace.Worktree = true
+	cfg.Workspace.BaseBranch = "main"
+	cfg.Dependencies.StackedPRs = true
+	issues := reviewBlockedIssues()
+	issues[1].BlockedBy[0].BranchName = blockerBranchName
+	mt := tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	runner := &promptCaptureRunner{done: make(chan struct{}, 1)}
+	orch := orchestrator.New(cfg, mt, runner, workspace.NewManager(cfg))
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	t.Cleanup(cancel)
+	go orch.Run(ctx) //nolint:errcheck
+	require.Eventually(t, func() bool { return wait(orch, runner) }, 6*time.Second, 20*time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+	return runner
+}
+
+// TestDependentStacksOnTrackerBranchOfBlockerInReview (#103): with a real
+// workspace.Manager, the dependent's worktree is created from the blocker's
+// branch as the tracker names it (Linear's branchName), so the blocker's
+// work is in the dependent's worktree.
+func TestDependentStacksOnTrackerBranchOfBlockerInReview(t *testing.T) {
+	branch := "alex/eng-1-add-parser"
+	root := gitRepoForStacking(t, branch)
+	runner := runReviewStackReal(t, root, &branch, func(_ *orchestrator.Orchestrator, r *promptCaptureRunner) bool {
+		return runnerCalls(r) > 0
+	})
+	_, prompts := runner.snapshot()
+	require.NotEmpty(t, prompts)
+	assert.Contains(t, prompts[0], "## Stacked Branch")
+	assert.Contains(t, prompts[0], branch)
+	_, err := os.Stat(filepath.Join(root, "worktrees", "ENG-2", "blocker.go"))
+	assert.NoError(t, err, "the blocker's work is in the dependent's worktree")
+}
+
+// TestBackOutKeepsExistingDependentBranch (#103): when the in-review
+// blocker's branch is missing, the back-out removes the fresh worktree but
+// never deletes a dependent branch that already carries someone's work.
+func TestBackOutKeepsExistingDependentBranch(t *testing.T) {
+	root := gitRepoForStacking(t, "") // no blocker branch: stacking fails
+	git := func(args ...string) string {
+		out, err := gitexec.Command(context.Background(), root, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+		return strings.TrimSpace(string(out))
+	}
+	git("checkout", "-q", "-b", "itervox/eng-2")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "work.go"), []byte("package x\n"), 0o644))
+	git("add", "work.go")
+	git("commit", "-q", "-m", "precious work")
+	work := git("rev-parse", "HEAD")
+	git("checkout", "-q", "main")
+
+	runner := runReviewStackReal(t, root, nil, func(o *orchestrator.Orchestrator, _ *promptCaptureRunner) bool {
+		return o.Snapshot().StackUnavailable["ENG-2"] != ""
+	})
+	assert.Equal(t, 0, runnerCalls(runner), "no agent runs on an unstacked worktree")
+	assert.Equal(t, work, git("rev-parse", "itervox/eng-2"), "the existing branch and its work survive the back-out")
+	_, err := os.Stat(filepath.Join(root, "worktrees", "ENG-2"))
+	assert.True(t, os.IsNotExist(err), "the fresh worktree is removed")
+}
+
+// TestBackOutDeletesFreshDependentBranch: a branch the back-out itself just
+// created (nothing of its own) is deleted with the worktree, so a later
+// dispatch starts from a fresh base instead of a stale empty branch.
+func TestBackOutDeletesFreshDependentBranch(t *testing.T) {
+	root := gitRepoForStacking(t, "")
+	runner := runReviewStackReal(t, root, nil, func(o *orchestrator.Orchestrator, _ *promptCaptureRunner) bool {
+		return o.Snapshot().StackUnavailable["ENG-2"] != ""
+	})
+	assert.Equal(t, 0, runnerCalls(runner))
+	err := gitexec.Command(context.Background(), root, "rev-parse", "--verify", "-q", "refs/heads/itervox/eng-2").Run()
+	assert.Error(t, err, "the fresh, empty branch is deleted")
 }
