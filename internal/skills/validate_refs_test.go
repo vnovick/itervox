@@ -70,6 +70,38 @@ func TestExtractPromptRefsFenceRules(t *testing.T) {
 		ExtractPromptRefs("````md\n```\n@agent-ghost\n```\n````\nAsk @agent-after."))
 }
 
+// TestExtractPromptRefsFenceContainers pins the container cases found in
+// review 4: container-looking lines inside a fence do not close it, and a
+// fence opened in a quote or list item ends with that container.
+func TestExtractPromptRefsFenceContainers(t *testing.T) {
+	for name, tc := range map[string]struct {
+		text string
+		want []PromptRef
+	}{
+		"list-marker fence line inside a fence": {
+			"```markdown\n- ```\nAsk @agent-ghost-list.\n```\nAsk @agent-real.\n", nil,
+		},
+		"four-space fence line inside a fence": {
+			"```\n    ```\nAsk @agent-ghost-indent4.\n```\nAsk @agent-real.\n", nil,
+		},
+		"quote fence ends with the quote": {
+			"> ```\n> some code\n\nAsk @agent-real.\n\n```\nAsk @agent-ghost-b.\n```\n", nil,
+		},
+		"list fence ends with the item": {
+			"- ```\n  code @agent-ghost\nAsk @agent-real.\n", nil,
+		},
+		"list fence closed at the item's indent": {
+			"- ```\n  code @agent-ghost\n  ```\n  Ask @agent-real.\n", nil,
+		},
+	} {
+		want := tc.want
+		if want == nil {
+			want = []PromptRef{{Kind: "subagent", Name: "real"}}
+		}
+		assert.Equal(t, want, ExtractPromptRefs(tc.text), name)
+	}
+}
+
 // TestExtractPromptRefsAgentMentionBoundaries pins the "@agent-" start and
 // end rules found in review.
 func TestExtractPromptRefsAgentMentionBoundaries(t *testing.T) {
@@ -87,6 +119,10 @@ func TestExtractPromptRefsAgentMentionBoundaries(t *testing.T) {
 		"Ask @agent-fooBar.",
 		"Ask @agent-foo9_x.",
 		"Ask @agent-foo__bar.",
+		"Ask @agent-fooé.",
+		"Ask @agent-foo-.",
+		"Mail ops_@agent-corp.com.",
+		"See https://x.io/a_@agent-path and x*@agent-y.",
 	} {
 		assert.Empty(t, ExtractPromptRefs(text), "invalid name must be skipped, not truncated: %q", text)
 	}
@@ -241,4 +277,27 @@ func TestAnalyzeIncludesProfileRefIssues(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "Analyze surfaces reference issues to the dashboard: %+v", issues)
+}
+
+// TestValidateProfileRefsSSHInfoSkipsProjectPlugins: a plugin installed under
+// the repository's .claude/plugins travels with the repo, so its skills and
+// agents get no USER_SCOPE_REF_ON_SSH note; a user-scope plugin's do.
+func TestValidateProfileRefsSSHInfoSkipsProjectPlugins(t *testing.T) {
+	inv := &Inventory{
+		Plugins: []Plugin{
+			{Name: "repo-plugin", Provider: "claude", Source: "project", Skills: []Skill{{Name: "repo-skill"}}},
+			{Name: "home-plugin", Provider: "claude", Source: "user", Skills: []Skill{{Name: "home-skill"}}},
+		},
+		Subagents: []Subagent{
+			{Name: "repo-agent", Provider: "claude", Source: "plugin:repo-plugin"},
+			{Name: "home-agent", Provider: "claude", Source: "plugin:home-plugin"},
+		},
+	}
+	profiles := map[string]config.AgentProfile{
+		"impl": {Instructions: "Use the `repo-skill` and `home-skill` skills; ask @agent-repo-agent and @agent-home-agent."},
+	}
+	assert.Equal(t, []string{
+		"USER_SCOPE_REF_ON_SSH:impl:home-skill",
+		"USER_SCOPE_REF_ON_SSH:impl:home-agent",
+	}, refIssueKeys(ValidateProfileRefs(inv, profiles, RefBackendDefaults{}, []string{"build-box"})))
 }

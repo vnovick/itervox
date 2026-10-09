@@ -41,7 +41,7 @@ Ten production rules ship in `internal/skills/analyze.go`:
 | `ORPHAN_MCP` | info | Configured MCP server name never appears in any skill name, description, or body |
 | `MISSING_SKILL_REF` | warn | A profile's `SOUL.md` / `INSTRUCTIONS.md` names a skill that is not found for that profile's backend (`internal/skills/validate_refs.go`) |
 | `MISSING_SUBAGENT_REF` | warn | A profile prompt names a subagent that is not found, or any subagent from a Codex profile |
-| `USER_SCOPE_REF_ON_SSH` | info | A referenced skill or subagent exists only in user or plugin scope while SSH hosts are configured, so remote hosts may not have it |
+| `USER_SCOPE_REF_ON_SSH` | info | A referenced skill or subagent exists only in user scope or a user-installed plugin while SSH hosts are configured, so remote hosts may not have it |
 
 `STALE_SCHEDULE` remains in code as a reserved analyzer for future schedule
 inventory sources, but v0.2.0 does not populate `Inventory.Schedules` from the

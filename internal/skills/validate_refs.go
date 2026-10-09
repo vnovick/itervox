@@ -23,10 +23,11 @@ import (
 //
 // "@agent-" counts at the start of the text or after whitespace or one of
 // ( [ { , ; " ' ` * _ < > — so "`@agent-x`", "**@agent-x**" and
-// "<@agent-x>" are references, while "me@agent-x.com" and URLs are not. A
-// name directly followed by a letter or digit, or by an underscore that
-// continues the word ("@agent-foo_bar"), is not a valid name and is
-// skipped rather than truncated.
+// "<@agent-x>" are references, while "me@agent-x.com" and URLs are not
+// ("_" and "*" count only when they do not follow a letter or digit). A
+// name directly followed by a letter, digit or non-ASCII character, by an
+// underscore that continues the word ("@agent-foo_bar"), or ending in a
+// hyphen is not a valid name and is skipped rather than truncated.
 //
 // A list such as "`a`, `b`, and `c` skills" (separators , & / ; + and or,
 // in any combination, on one line) names every item. Only a contiguous run
@@ -40,8 +41,11 @@ import (
 // modifier ("skills directory", "subagent file", …). Fenced code blocks are
 // ignored (see blankFencedBlocks). Slash commands (`/name`) are
 // deliberately not checked: they also name built-in commands and file
-// paths. Every limit errs towards not checking a reference, never towards
-// a false warning.
+// paths. The list and mention limits only ever leave a reference
+// unchecked. Fence detection approximates Markdown containers (see
+// openFence): text that only looks like a fence in a list item or quote can
+// hide or expose a reference that a full Markdown parser would treat
+// differently.
 
 const refNamePattern = "[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?"
 
@@ -59,76 +63,145 @@ var (
 	refBacktickedRe   = regexp.MustCompile("`(" + refNamePattern + ")`")
 )
 
-// refFenceContainerRe strips the container prefix of a line: blockquote
-// markers and a list-item marker, with their indentation.
-var refFenceContainerRe = regexp.MustCompile(`^[ \t]*(?:>[ \t]?[ \t]*)*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?[ \t]*`)
+// refListMarkerRe matches a list-item marker and the spaces after it.
+var refListMarkerRe = regexp.MustCompile(`^(?:[-*+]|[0-9]{1,9}[.)])(?: +|$)`)
 
-// refFence is an open fenced code block: its marker character and length.
+// refFence is an open fenced code block.
 type refFence struct {
-	char byte
-	n    int
+	char   byte // '`' or '~'
+	n      int  // length of the opening run
+	quotes int  // blockquote depth the fence sits in
+	base   int  // content column of its list item (0 outside a list)
 }
 
-// fenceRun returns the fence marker a line's content starts with — three or
-// more of the same "`" or "~" — and what follows it, or ok=false.
-func fenceRun(line string) (f refFence, rest string, ok bool) {
-	content := refFenceContainerRe.ReplaceAllString(strings.TrimRight(line, "\r\n"), "")
-	if len(content) < 3 || (content[0] != '`' && content[0] != '~') {
-		return refFence{}, "", false
+// leadingSpaces counts a line's indentation (a tab advances to the next
+// multiple of four) and returns the rest of the line.
+func leadingSpaces(s string) (int, string) {
+	col := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ':
+			col++
+		case '\t':
+			col += 4 - col%4
+		default:
+			return col, s[i:]
+		}
 	}
+	return col, ""
+}
+
+// stripQuotes removes up to limit blockquote markers (all of them when
+// limit < 0) and returns how many it removed.
+func stripQuotes(line string, limit int) (int, string) {
 	n := 0
-	for n < len(content) && content[n] == content[0] {
+	for limit < 0 || n < limit {
+		ind, rest := leadingSpaces(line)
+		if ind > 3 || !strings.HasPrefix(rest, ">") {
+			break
+		}
+		line = strings.TrimPrefix(rest[1:], " ")
 		n++
 	}
-	if n < 3 {
-		return refFence{}, "", false
+	return n, line
+}
+
+// fenceRun reports whether s starts with a fence marker — three or more of
+// the same "`" or "~" — and returns its character, length and the rest.
+func fenceRun(s string) (char byte, n int, rest string, ok bool) {
+	if len(s) < 3 || (s[0] != '`' && s[0] != '~') {
+		return 0, 0, "", false
 	}
-	return refFence{char: content[0], n: n}, content[n:], true
+	for n < len(s) && s[n] == s[0] {
+		n++
+	}
+	return s[0], n, s[n:], n >= 3
+}
+
+// openFence returns the fence a line opens, if any. It is lenient about
+// containers: a fence counts after blockquote markers, a list-item marker
+// and any indentation, so fences in list items and quotes are found without
+// tracking the list structure. A fence indented four or more columns is
+// taken to be inside a list item whose content starts at that column.
+func openFence(line string) (*refFence, bool) {
+	quotes, rest := stripQuotes(line, -1)
+	col, rest := leadingSpaces(rest)
+	inList := col >= 4
+	if m := refListMarkerRe.FindString(rest); m != "" {
+		rest = rest[len(m):]
+		var more int
+		more, rest = leadingSpaces(rest)
+		col += len(m) + more
+		inList = true
+	}
+	char, n, info, ok := fenceRun(rest)
+	if !ok || (char == '`' && strings.Contains(info, "`")) {
+		return nil, false
+	}
+	f := &refFence{char: char, n: n, quotes: quotes}
+	if inList {
+		f.base = col
+	}
+	return f, true
 }
 
 // blankFencedBlocks replaces the content of Markdown fenced code blocks with
 // spaces, keeping newlines so positions stay stable. It follows CommonMark's
 // fence rules: a fence is a run of three or more "`" or "~" (a backtick
 // fence's info string may not contain a backtick) and is closed by a run of
-// the same character at least as long with nothing else on the line; an
-// unclosed fence runs to the end of the text. It is deliberately lenient
-// about containers — a fence counts after any blockquote ">" markers, a
-// list-item marker and any indentation — so a fence inside a list item or a
-// quote is still skipped. Erring this way can only hide a reference, never
-// invent one.
+// the same character at least as long, indented at most three columns
+// within its container, with nothing else on the line. A fence also ends
+// with its container: a line with fewer blockquote markers, or a non-blank
+// line indented less than its list item's content. An unclosed fence runs
+// to the end of the text. Container detection is approximate (see
+// openFence); the package doc lists what that can get wrong.
 func blankFencedBlocks(text string) string {
 	lines := strings.SplitAfter(text, "\n")
 	var open *refFence
 	for i, line := range lines {
-		f, rest, ok := fenceRun(line)
-		switch {
-		case open == nil && ok && (f.char != '`' || !strings.Contains(rest, "`")):
-			open = &f
-		case open != nil && ok && f.char == open.char && f.n >= open.n && strings.TrimSpace(rest) == "":
-			open = nil
-		case open == nil:
-			continue
-		}
-		lines[i] = strings.Map(func(r rune) rune {
-			if r == '\n' {
-				return r
+		body := strings.TrimRight(line, "\r\n")
+		if open != nil {
+			quotes, rest := stripQuotes(body, open.quotes)
+			ind, content := leadingSpaces(rest)
+			ended := quotes < open.quotes || (open.base > 0 && content != "" && ind < open.base)
+			if !ended {
+				if char, n, after, ok := fenceRun(content); ok && ind-open.base <= 3 &&
+					char == open.char && n >= open.n && strings.TrimSpace(after) == "" {
+					open = nil
+				}
+				lines[i] = blankLine(line)
+				continue
 			}
-			return ' '
-		}, line)
+			open = nil // the container ended; this line is ordinary text again
+		}
+		if f, ok := openFence(body); ok {
+			open = f
+			lines[i] = blankLine(line)
+		}
 	}
 	return strings.Join(lines, "")
 }
 
+func blankLine(line string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' {
+			return r
+		}
+		return ' '
+	}, line)
+}
+
 // mentionNameContinues reports whether the text right after an @agent-
-// name continues it with characters a name cannot hold: a letter or digit,
-// or underscores followed by one ("_" or "__" alone may close emphasis, as
-// in "_@agent-x_").
+// name continues it with characters a name cannot hold: a letter, digit or
+// non-ASCII character, or underscores followed by one ("_" or "__" alone
+// may close emphasis, as in "_@agent-x_").
 func mentionNameContinues(after string) bool {
 	rest := strings.TrimLeft(after, "_")
-	if rest == "" {
-		return false
-	}
-	c := rest[0]
+	return rest != "" && (isNameByte(rest[0]) || rest[0] >= 0x80)
+}
+
+// isNameByte reports whether c is an ASCII letter or digit.
+func isNameByte(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
@@ -149,8 +222,11 @@ func ExtractPromptRefs(text string) []PromptRef {
 	}
 	var hits []hit
 	for _, m := range refAgentMentionRe.FindAllStringSubmatchIndex(text, -1) {
-		if mentionNameContinues(text[m[3]:]) {
-			continue // "@agent-foo_bar" / "@agent-fooBar" is not a valid name
+		if mentionNameContinues(text[m[3]:]) || strings.HasSuffix(text[m[2]:m[3]], "-") {
+			continue // "@agent-foo_bar" / "@agent-fooBar" / "@agent-foo-" is not a valid name
+		}
+		if m[0] > 0 && (text[m[0]] == '_' || text[m[0]] == '*') && isNameByte(text[m[0]-1]) {
+			continue // "ops_@agent-corp.com", ".../a_@agent-x": inside a word, not emphasis
 		}
 		hits = append(hits, hit{m[2], "subagent", text[m[2]:m[3]]})
 	}
@@ -274,7 +350,18 @@ func (t *refTarget) onlyOutsideRepo() bool {
 // by lower-cased name, plus `<plugin>:<name>` for plugin entries.
 func resolvableNames(inv *Inventory, backend string) (skills, agents map[string]*refTarget) {
 	skills, agents = map[string]*refTarget{}, map[string]*refTarget{}
+	projectPlugins := map[string]bool{}
+	for _, p := range inv.Plugins {
+		if p.Source == "project" {
+			projectPlugins[p.Name] = true
+		}
+	}
 	put := func(m map[string]*refTarget, name, source string) {
+		// A plugin installed in the repository travels with it like any
+		// other project file.
+		if plugin, ok := strings.CutPrefix(source, "plugin:"); ok && projectPlugins[plugin] {
+			source = "project"
+		}
 		k := strings.ToLower(name)
 		if m[k] == nil {
 			m[k] = &refTarget{}
