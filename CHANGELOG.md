@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
+
 ### Added
 
 - **DCO sign-off and Contributor License Agreement for external contributions**: every commit in a pull request from a fork must carry a `Signed-off-by:` matching its author email ([Developer Certificate of Origin 1.1](DCO), checked by the repo's own `scripts/check-dco.sh` in `.github/workflows/dco.yml`, tested by `make dco-test`), and first-time external contributors sign the [Individual CLA](CLA.md) by commenting on their pull request (`.github/workflows/cla.yml`, signatures kept on the `cla-signatures` branch); companies use the [Corporate CLA](CLA-CORPORATE.md). The CLA is a license grant, not an assignment: contributors keep their copyright and the project owner may also distribute contributions under other licenses, including proprietary ones. Both checks skip branches pushed to this repository and allowlisted maintainer and bot accounts. See CONTRIBUTING.md.
