@@ -1,7 +1,5 @@
 import { MarkdownPromptEditor } from '../profiles/MarkdownPromptEditor';
 import { PROFILE_VARIABLES, TRIGGER_VARIABLES } from '../profiles/promptCompletions';
-
-const AUTOMATION_VARIABLES = [...PROFILE_VARIABLES, ...TRIGGER_VARIABLES];
 import { checkboxCls, fieldLabelCls, helperTextCls, selectCls } from '../formStyles';
 import type { AutomationFormValues } from './automationForm';
 import {
@@ -14,6 +12,8 @@ import { AutomationInstructionsPanel } from './AutomationInstructionsPanel';
 import { CronScheduleFields } from './CronScheduleFields';
 import { RateLimitedFieldsBlock } from './RateLimitedFieldsBlock';
 import { BlockersResolvedFieldsBlock } from './BlockersResolvedFieldsBlock';
+
+const AUTOMATION_VARIABLES = [...PROFILE_VARIABLES, ...TRIGGER_VARIABLES];
 
 // Composes extracted automation editor sections while the parent owns form state.
 export function AutomationEditorFields({

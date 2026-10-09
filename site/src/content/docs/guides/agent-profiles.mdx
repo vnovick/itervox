@@ -30,11 +30,11 @@ The SOUL, INSTRUCTIONS and automation instruction editors suggest what you can r
 
 | Type | Suggests | Inserted |
 |---|---|---|
-| `/` or `@` at the start of a word | Skills and subagents from the [skills inventory](/guides/skills-inventory/): project, user and plugin, each with its description and source | The name, after the `/` or `@` you typed |
+| `/` or `@` at the start of a word (or after `(`) | Skills and subagents from the [skills inventory](/guides/skills-inventory/): project, user and plugin, each with its description and source | The name, after the `/` or `@` you typed |
 | `{{` | The Liquid variables profile prompts get: `issue.*`, `attempt` and `run.*` (automation instructions also get `trigger.*`) | The variable, and a closing ` }}` when there is none |
 | `\|` inside `{{ … }}` | Common Liquid filters (`default`, `downcase`, `replace`, `join`, …) | The filter name |
 
-Use the arrow keys to move through the list, Enter or Tab to insert, and Escape to close it (a second Escape closes the dialog). The list is announced to screen readers with the number of suggestions. Skills and subagents appear once the daemon has finished its first inventory scan.
+Use the arrow keys to move through the list, Enter to insert, and Escape to close it (a second Escape closes the dialog). Tab still moves focus. Moving the caret away closes the list, and Enter then types a newline. The list is announced to screen readers with the number of suggestions. Skills and subagents come from the inventory scan: if the editor opened before the daemon's first scan finished, click **Re-scan** (or **Run first scan**) on the Skills card, or reopen the page, to see them. A plugin skill with the same name as a project or user skill is listed once.
 
 ## How profiles work
 
