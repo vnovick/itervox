@@ -110,6 +110,18 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 	for _, k := range []string{"ITERVOX_SERVER_PORT", "ITERVOX_SERVER_HOST", "PORT", "ITERVOX_API_TOKEN", "ITERVOX_DRY_RUN"} {
 		_ = os.Unsetenv(k)
 	}
+	// Tools the daemon runs (gh for PR lookups, git) keep config, state and
+	// caches under the XDG directories, by default in HOME (gh creates
+	// ~/.local/state/gh on every call). Point them into the scratch
+	// directory so the demo writes nothing outside it; this also keeps the
+	// demo away from the operator's own gh login.
+	xdg := filepath.Join(scratch, ".xdg")
+	for k, sub := range map[string]string{
+		"XDG_CONFIG_HOME": "config", "XDG_STATE_HOME": "state", "XDG_CACHE_HOME": "cache",
+		"XDG_DATA_HOME": "data", "GH_CONFIG_DIR": "gh",
+	} {
+		_ = os.Setenv(k, filepath.Join(xdg, sub))
+	}
 
 	issues := tracker.GenerateDemoIssues(10)
 	for i := range issues {
