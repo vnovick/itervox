@@ -157,7 +157,7 @@ func readEvidenceFile(ctx context.Context, wsPath, relPath string) (map[string]b
 	}
 	if head := worktreeHEAD(ctx, wsPath); head != "" {
 		commit := strings.ToLower(strings.TrimSpace(ev.Commit))
-		if len(commit) < 7 || !strings.HasPrefix(head, commit) {
+		if len(commit) < 7 || !evidenceCoversHEAD(ctx, wsPath, commit, head) {
 			return nil, fmt.Sprintf("the evidence in `%s` is for commit %q, not the current %s", relPath, ev.Commit, head[:12])
 		}
 	}
@@ -169,6 +169,38 @@ func readEvidenceFile(ctx context.Context, wsPath, relPath string) (map[string]b
 		}
 	}
 	return passed, ""
+}
+
+// evidenceCoversHEAD reports whether evidence stamped with commit still
+// holds for head: commit is head, or an ancestor of it where every later
+// change is Itervox's own bookkeeping under .itervox/ (the handoff commit the
+// worker makes after the run, or the agent committing its evidence file).
+// Any code change after the stamp means the checks ran on other code.
+func evidenceCoversHEAD(ctx context.Context, wsPath, commit, head string) bool {
+	if strings.HasPrefix(head, commit) {
+		return true
+	}
+	out, err := gitexec.Command(ctx, wsPath, "rev-parse", "--verify", "--quiet", commit+"^{commit}").Output()
+	if err != nil {
+		return false
+	}
+	stamp := strings.TrimSpace(string(out))
+	if gitexec.Command(ctx, wsPath, "merge-base", "--is-ancestor", stamp, head).Run() != nil {
+		return false
+	}
+	changed, err := gitexec.Command(ctx, wsPath, "diff", "--name-only", stamp, head).Output()
+	if err != nil {
+		return false
+	}
+	for _, f := range strings.Split(strings.TrimSpace(string(changed)), "\n") {
+		if f == "" {
+			continue
+		}
+		if !strings.HasPrefix(f, HandoffDirRelPath+"/") && !strings.HasPrefix(f, EvidenceDirRelPath+"/") {
+			return false
+		}
+	}
+	return true
 }
 
 // worktreeHEAD is the full HEAD commit of wsPath, or "" outside a git work

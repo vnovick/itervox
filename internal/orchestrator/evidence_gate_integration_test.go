@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
 )
@@ -23,20 +25,44 @@ import (
 // way the "Evidence (required)" prompt block asks.
 type evidenceRunner struct {
 	evidence string // JSON written to .itervox/evidence/implementer.json; "" writes nothing
-	mu       sync.Mutex
-	prompts  []string
+	// gitCommit makes the agent commit a code change first and replace
+	// "HEAD" in evidence with the resulting commit, as the prompt asks.
+	gitCommit bool
+	mu        sync.Mutex
+	prompts   []string
 }
 
 func (r *evidenceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, workspacePath, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.prompts = append(r.prompts, prompt)
 	r.mu.Unlock()
-	if r.evidence != "" {
+	evidence := r.evidence
+	if r.gitCommit {
+		git := func(args ...string) (string, error) {
+			out, err := gitexec.Command(context.Background(), workspacePath, args...).CombinedOutput()
+			return strings.TrimSpace(string(out)), err
+		}
+		if err := os.WriteFile(filepath.Join(workspacePath, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			return agent.TurnResult{}, err
+		}
+		if _, err := git("add", "main.go"); err != nil {
+			return agent.TurnResult{}, err
+		}
+		if out, err := git("commit", "-q", "-m", "implement"); err != nil {
+			return agent.TurnResult{}, fmt.Errorf("commit: %v: %s", err, out)
+		}
+		head, err := git("rev-parse", "HEAD")
+		if err != nil {
+			return agent.TurnResult{}, err
+		}
+		evidence = strings.ReplaceAll(evidence, `"HEAD"`, `"`+head+`"`)
+	}
+	if evidence != "" {
 		dir := filepath.Join(workspacePath, ".itervox", "evidence")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return agent.TurnResult{}, err
 		}
-		if err := os.WriteFile(filepath.Join(dir, "implementer.json"), []byte(r.evidence), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "implementer.json"), []byte(evidence), 0o644); err != nil {
 			return agent.TurnResult{}, err
 		}
 	}
@@ -46,6 +72,11 @@ func (r *evidenceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent
 // runEvidenceWorker dispatches ENG-1 once under the implementer profile and
 // returns the orchestrator, the tracker and the runner after the run ended.
 func runEvidenceWorker(t *testing.T, required []string, evidence string) (*orchestrator.Orchestrator, *tracker.MemoryTracker, *evidenceRunner) {
+	t.Helper()
+	return runEvidenceWorkerIn(t, t.TempDir(), &evidenceRunner{evidence: evidence}, required)
+}
+
+func runEvidenceWorkerIn(t *testing.T, wsPath string, runner *evidenceRunner, required []string) (*orchestrator.Orchestrator, *tracker.MemoryTracker, *evidenceRunner) {
 	t.Helper()
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
@@ -58,8 +89,7 @@ func runEvidenceWorker(t *testing.T, required []string, evidence string) (*orche
 		[]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
 		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates,
 	)
-	runner := &evidenceRunner{evidence: evidence}
-	orch := orchestrator.New(cfg, mt, runner, &recordingWorkspaceProvider{path: t.TempDir()})
+	orch := orchestrator.New(cfg, mt, runner, &recordingWorkspaceProvider{path: wsPath})
 	orch.SetIssueProfile("ENG-1", "implementer")
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	t.Cleanup(cancel)
@@ -106,6 +136,30 @@ func TestEvidenceGateMovesRunWithPassingEvidence(t *testing.T) {
 	orch, mt, _ := runEvidenceWorker(t, []string{"test", "lint"}, ev)
 	assert.Nil(t, orch.Snapshot().InputRequiredIssues["ENG-1"])
 	assert.Equal(t, "Done", issueState(t, mt))
+}
+
+// TestEvidenceGateMovesRunWithPassingEvidenceInGitWorkspace (#80): in a git
+// worktree the agent stamps its evidence with its last commit; the handoff
+// commit the worker makes afterwards must not invalidate it.
+func TestEvidenceGateMovesRunWithPassingEvidenceInGitWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "-q", "--allow-empty", "-m", "base"},
+	} {
+		out, err := gitexec.Command(context.Background(), ws, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	ev := `{"commit":"HEAD","checks":[{"name":"test","command":"go test ./...","output":"ok  pkg 0.1s","passed":true}]}`
+	orch, mt, _ := runEvidenceWorkerIn(t, ws, &evidenceRunner{evidence: ev, gitCommit: true}, []string{"test"})
+	assert.Nil(t, orch.Snapshot().InputRequiredIssues["ENG-1"])
+	assert.Equal(t, "Done", issueState(t, mt))
+	log, err := gitexec.Command(context.Background(), ws, "log", "--format=%s").Output()
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "chore(itervox): record agent handoff",
+		"the worker's handoff commit landed after the evidence stamp")
 }
 
 // TestEvidenceGateRejectsFailingEvidence: an entry that did not pass does

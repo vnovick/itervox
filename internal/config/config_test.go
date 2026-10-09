@@ -1709,4 +1709,15 @@ func TestProfileRequireEvidence(t *testing.T) {
 	err = config.ValidateAgentProfiles(cfg.Agent.Profiles) // run by ValidateDispatch at startup and in doctor
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `require_evidence entry "unit tests"`)
+
+	// A scalar is an error, never a silent "off": `true` reads as turning
+	// the gate on.
+	for _, scalar := range []string{"true", "test", `"test, lint"`} {
+		_, err = load("      require_evidence: " + scalar + "\n")
+		require.Error(t, err, scalar)
+		assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names", scalar)
+	}
+	_, err = load("      require_evidence: [test, 3]\n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "require_evidence entries must be names")
 }

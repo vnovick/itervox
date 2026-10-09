@@ -1206,6 +1206,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if len(allowed) == 0 && builtin != nil {
 				allowed = NormalizeAllowedActions(builtin.DefaultActions)
 			}
+			requireEvidence, err := evidenceChecksField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:          cmd,
 				SoulFile:         soulFile,
@@ -1217,13 +1221,17 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
 				PermissionMode:   strField(m, "permission_mode", ""),
-				RequireEvidence:  NormalizeEvidenceChecks(strSliceField(m, "require_evidence", nil)),
+				RequireEvidence:  requireEvidence,
 			}
 			continue
 		}
 		cmd := strField(m, "command", "")
 		if cmd == "" {
 			continue
+		}
+		requireEvidence, err := evidenceChecksField(m, name)
+		if err != nil {
+			return nil, err
 		}
 		profiles[name] = AgentProfile{
 			Command:          cmd,
@@ -1233,7 +1241,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
 			PermissionMode:   strField(m, "permission_mode", ""),
-			RequireEvidence:  NormalizeEvidenceChecks(strSliceField(m, "require_evidence", nil)),
+			RequireEvidence:  requireEvidence,
 		}
 	}
 	if len(profiles) == 0 {

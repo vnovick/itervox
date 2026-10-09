@@ -61,6 +61,41 @@ func TestCheckEvidenceCommitStamp(t *testing.T) {
 	assert.False(t, checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks).ok(), "no commit stamp in a git worktree")
 }
 
+// TestCheckEvidenceSurvivesBookkeepingCommits (#80): evidence stamped on the
+// agent's last commit still counts after commits that only touch .itervox/
+// (the worker's handoff commit, or the agent committing the evidence file),
+// but not after a code change.
+func TestCheckEvidenceSurvivesBookkeepingCommits(t *testing.T) {
+	dir, stamp := gitRepoWithCommit(t)
+	rel := evidenceRelPathFor("implementer")
+	commit := func(path string) {
+		t.Helper()
+		full := filepath.Join(dir, path)
+		if _, err := os.Stat(full); err != nil { // keep an existing file (the evidence) as is
+			require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+			require.NoError(t, os.WriteFile(full, []byte(path), 0o644))
+		}
+		for _, args := range [][]string{
+			{"add", "-f", path},
+			{"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", path},
+		} {
+			out, err := gitexec.Command(context.Background(), dir, args...).CombinedOutput()
+			require.NoError(t, err, "git %v: %s", args, out)
+		}
+	}
+	writeEvidence(t, dir, `{"commit":"`+stamp+`","checks":[{"name":"test","command":"make test","output":"ok","passed":true}]}`)
+
+	commit(".itervox/handoff/2026-10-09T12-00-00Z_implementer.md")
+	commit(rel)
+	assert.True(t, checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks).ok(),
+		"only .itervox/ bookkeeping changed since the stamp")
+
+	commit("main.go")
+	v := checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks)
+	require.False(t, v.ok(), "code changed after the evidence was recorded")
+	assert.Contains(t, v.Missing[0], "is for commit")
+}
+
 func TestCheckEvidenceEntries(t *testing.T) {
 	dir := t.TempDir() // not a git work tree: the commit stamp cannot be checked
 	rel := evidenceRelPathFor("implementer")
