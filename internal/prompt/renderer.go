@@ -67,8 +67,21 @@ var optionalTextRe = regexp.MustCompile(
 // no longer fails strict variables. A misspelt field is not matched and
 // still fails.
 func blankOptionalText(tmpl string) string {
-	return optionalTextRe.ReplaceAllString(tmpl, `${1}${2} | default: ""${3}`)
+	// Text in {% raw %} and {% comment %} blocks is not template code (a
+	// prompt may show the agent Liquid examples): it is left as written.
+	var b strings.Builder
+	last := 0
+	for _, loc := range verbatimBlockRe.FindAllStringIndex(tmpl, -1) {
+		b.WriteString(optionalTextRe.ReplaceAllString(tmpl[last:loc[0]], `${1}${2} | default: ""${3}`))
+		b.WriteString(tmpl[loc[0]:loc[1]])
+		last = loc[1]
+	}
+	b.WriteString(optionalTextRe.ReplaceAllString(tmpl[last:], `${1}${2} | default: ""${3}`))
+	return b.String()
 }
+
+// verbatimBlockRe matches a raw or comment block, tags included.
+var verbatimBlockRe = regexp.MustCompile(`(?s)\{%-?\s*(raw|comment)\s*-?%\}.*?\{%-?\s*end(?:raw|comment)\s*-?%\}`)
 
 // RenderPromptOverlay renders a plain-text or Liquid prompt fragment using the
 // standard issue/attempt bindings plus optional extra bindings, returning the

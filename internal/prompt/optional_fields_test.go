@@ -91,4 +91,8 @@ func TestEmptyDescriptionGuardWithUnguardedPrint(t *testing.T) {
 	out, err = Render(`{% if issue.description %}Has {% endif %}{{ issue.description | downcase }}`, domain.Issue{Identifier: "#1", Description: &d}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Has text", out, "a set description is untouched")
+
+	out, err = Render(`{% raw %}{{ issue.description }}{% endraw %}[{{ issue.description }}]`, issue, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "{{ issue.description }}[]", out, "raw text is shown as written")
 }
