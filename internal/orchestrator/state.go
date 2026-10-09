@@ -737,6 +737,7 @@ func NewState(cfg *config.Config) State {
 		PRMergedDispatched: make(map[string]struct{}),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
+		StackOnReviewState: stackOnReviewState(cfg),
 		StackUnavailable:   make(map[string]string),
 		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
