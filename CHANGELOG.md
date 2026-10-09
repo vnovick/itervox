@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
+
 ### Fixed
 
 - **Removed a stale startup warning that claimed multi-reviewer fan-out was disabled** (#69). Fan-out has run every `agent.reviewer_profiles` entry since 0.2.1 (#58), but config loading still logged `multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs` whenever more than one reviewer was listed, so operators were told the opposite of what the daemon did. The warning and its stale rationale are gone; a `reviewer_profiles`-only config still promotes its first entry into `reviewer_profile` (now logged at INFO, since that configuration is valid). The 0.2.1 notes carried a contradictory "fan-out is disabled" bullet alongside the one announcing it runs; the wrong bullet is removed.
