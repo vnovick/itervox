@@ -60,6 +60,40 @@ func stackedBaseBranch(state State, issue domain.Issue) string {
 	return workspace.ResolveWorktreeBranch(nil, candidate)
 }
 
+// reviewStackKey identifies the in-review blocker an issue may stack on
+// (#73 follow-up), or "" when it may not: dependencies.stacked_prs is on,
+// the issue has exactly one unresolved blocker, that blocker is in
+// tracker.completion_state (its work is done and in review, not merged) and
+// it has an identifier, which names the branch to stack on. The key carries
+// the blocker's state so a recorded miss (State.StackUnavailable) expires
+// when the blocker moves.
+func reviewStackKey(issue domain.Issue, state State) string {
+	if state.StackOnReviewState == "" {
+		return ""
+	}
+	unresolved := unresolvedBlockers(issue, state)
+	if len(unresolved) != 1 {
+		return ""
+	}
+	b := unresolved[0]
+	if b.State == nil || !strings.EqualFold(strings.TrimSpace(*b.State), state.StackOnReviewState) {
+		return ""
+	}
+	if b.Identifier == nil || *b.Identifier == "" {
+		return ""
+	}
+	return *b.Identifier + "@" + strings.ToLower(strings.TrimSpace(*b.State))
+}
+
+// reviewStackAdmits reports whether the dispatch gate lets issue through
+// despite its blocker: the blocker is in review, so the work can start
+// stacked on the blocker's branch, unless stacking on this same blocker
+// already failed.
+func reviewStackAdmits(issue domain.Issue, state State) bool {
+	key := reviewStackKey(issue, state)
+	return key != "" && state.StackUnavailable[issue.Identifier] != key
+}
+
 // ensureWorkspaceMaybeStacked creates the issue's workspace, basing it on a
 // blocker's branch when stacked PRs are enabled and exactly one live blocker
 // makes that unambiguous.

@@ -181,6 +181,25 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		// #73 follow-up: an issue whose only blocker is in review is admitted
+		// so it can start stacked on that blocker's branch. If the fresh
+		// worktree could not be stacked (the branch is not here), starting on
+		// base_branch would build on code the blocker has not landed: back
+		// out before any agent runs and let the issue wait for the blocker.
+		if ws.CreatedNow && stackedOn == "" && reviewStackKey(issue, o.Snapshot()) != "" {
+			slog.Info("worker: in-review blocker's branch not available to stack on; waiting for the blocker",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO",
+					"worker: blocker is in review but its branch is not available here to stack on; waiting for it to land", runLogID))
+			}
+			if err := o.workspace.RemoveWorkspace(ctx, issue.Identifier, branchName); err != nil {
+				slog.Warn("worker: remove unstacked workspace failed",
+					"issue_identifier", issue.Identifier, "error", err)
+			}
+			o.sendExit(ctx, issue, attempt, TerminalStackUnavailable, nil)
+			return
+		}
 		if inputRequiredResume && ws.CreatedNow {
 			skipFreshDispatchSetup = false
 			slog.Info("worker: input-required resume recreated workspace, rerunning setup",

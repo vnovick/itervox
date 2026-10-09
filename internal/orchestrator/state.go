@@ -137,6 +137,13 @@ const (
 	// through to the normal failed path when no fallback is eligible
 	// (CORE-051).
 	TerminalRateLimited TerminalReason = "rate_limited"
+	// TerminalStackUnavailable is used when a dependent was admitted because
+	// its only blocker is in review (dependencies.stacked_prs) but its
+	// worktree could not be stacked on the blocker's branch: running it on
+	// base_branch would build on code the blocker has not landed yet. No
+	// agent ran; the event loop records the miss in State.StackUnavailable
+	// so the issue waits for the blocker like any other.
+	TerminalStackUnavailable TerminalReason = "stack_unavailable"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).
@@ -621,6 +628,17 @@ type State struct {
 	// goroutine) only sends the event. unified-dependency-graph Task 6.
 	DepsOverrides map[string]time.Time
 
+	// StackOnReviewState is tracker.completion_state, lower-cased, when
+	// dependencies.stacked_prs is on, and "" otherwise. Snapshotted each tick
+	// under cfgMu. An issue whose ONLY unresolved blocker is in this state
+	// may dispatch, stacked on that blocker's branch (#73 follow-up).
+	StackOnReviewState string
+	// StackUnavailable records, per dependent identifier, the review blocker
+	// (stackKey) its worktree could not be stacked on. While that blocker is
+	// unchanged the dependent waits for it as before; a new blocker or state
+	// gives stacking another try. Event-loop state, not persisted.
+	StackUnavailable map[string]string
+
 	// PendingReviews holds reviewer dispatches refused while draining
 	// (M4-close BH-M4-2), keyed by issue identifier. Persisted to
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
@@ -714,6 +732,7 @@ func NewState(cfg *config.Config) State {
 		PRMergedDispatched: make(map[string]struct{}),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
+		StackUnavailable:   make(map[string]string),
 		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
 	}

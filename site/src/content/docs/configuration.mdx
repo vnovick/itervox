@@ -765,13 +765,23 @@ the first condition is checked.
 
 :::note[When stacking applies]
 Itervox does not dispatch an issue while any of its blockers is in a
-non-terminal state (`blocked_by`), and stacking only considers non-terminal
-blockers. So a normal dispatch never stacks: by the time a dependent is
-picked up, its blocker is terminal and the worktree starts from
-`base_branch`. Stacking takes effect only on paths that do not apply the
-blocker gate — a retry, a `backend_fallback` re-dispatch, a reviewer run or
-an input-required resume — typically when a blocker was added or reopened
-after the dependent was first dispatched.
+non-terminal state (`blocked_by`), with one exception when `stacked_prs` is
+on: an issue whose **only** unresolved blocker is in
+`tracker.completion_state` (its work is done and in review, not yet merged)
+is dispatched right away, stacked on that blocker's branch. That is what
+makes a chain of dependent issues move without waiting for each merge.
+
+If the blocker's branch is not available in this checkout, the dependent is
+**not** started on `base_branch`, which would lack the blocker's code: the
+fresh worktree is removed before any agent runs, and the issue waits for its
+blocker to land as before (the dashboard keeps showing `blocked_by`). It gets
+another try when the blocker changes state.
+
+Stacking also applies on paths that do not use the blocker gate (a retry, a
+`backend_fallback` re-dispatch, a reviewer run, an input-required resume),
+for example when a blocker was added or reopened after the dependent first
+started. Once the blocker lands, the dependent is restacked onto
+`base_branch` and its pull request retargeted.
 :::
 
 ```yaml

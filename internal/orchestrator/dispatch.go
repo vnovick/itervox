@@ -93,7 +93,7 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 			return "per_state_limit"
 		}
 	}
-	if blocker, blocked := firstUnresolvedBlocker(issue, state); blocked {
+	if blocker, blocked := firstUnresolvedBlocker(issue, state); blocked && !reviewStackAdmits(issue, state) {
 		return IneligibleBlockedByPrefix + blockerIdentifier(blocker)
 	}
 	for _, entry := range state.InferredDeps[issue.Identifier] {
