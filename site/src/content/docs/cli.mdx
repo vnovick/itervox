@@ -64,8 +64,8 @@ itervox quickstart [--tracker github|linear] [--runner claude|codex] [--dir .] [
 |---|---|---|
 | `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com. |
 | `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
-| `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). The project's `.itervox/.env` is loaded from there even when you run quickstart from elsewhere. |
-| `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. |
+| `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
+| `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
 | `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels). |
 | `--no-start` | `false` | Stop after the checks; do not start the daemon. |
 | `--ready-timeout` | `90s` | How long to wait for the daemon to report ready. |
