@@ -65,6 +65,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 
 | Scenario | Risk | Action |
 |---|---|---|
+| Upgrading Itervox from v0.2.0 or earlier | Medium | Run `itervox doctor --upgrade`: it prints only the v0.2.1 upgrade notes that apply to this workflow and environment, each with its fix. |
 | New minor Go release | Low | Update `go.mod`, run `go test ./cmd/... ./internal/...` and `go test -race ./cmd/... ./internal/...`. |
 | New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `itervox --dry-run` and verify dispatch logs show agent starting. |
 | New Codex release | Medium | Same as above. |

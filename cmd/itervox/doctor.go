@@ -64,9 +64,17 @@ func runDoctor(args []string) {
 		// #82: only the v0.2.1 upgrade notes that apply, judged against the
 		// environment the daemon would have (.itervox/.env loaded, never
 		// overriding variables already set).
+		if deploy || fix {
+			fmt.Fprintln(os.Stderr, "doctor: --upgrade runs on its own; run --deploy or --fix separately")
+			fatalExit(2)
+		}
 		loadDotEnvFrom(filepath.Dir(workflowPath))
 		report, code := runUpgradeDoctor(workflowPath)
-		if _, err := io.WriteString(os.Stdout, report); err != nil {
+		dst := os.Stdout
+		if code == 2 {
+			dst = os.Stderr // the check could not run
+		}
+		if _, err := io.WriteString(dst, report); err != nil {
 			fmt.Fprintf(os.Stderr, "doctor: write report: %v\n", err)
 		}
 		if code != 0 {

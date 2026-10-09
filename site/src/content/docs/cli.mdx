@@ -193,26 +193,26 @@ Validates `WORKFLOW.md` (schema 2, dispatch checks, profile commands, skill and 
   see:  https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28 (note 19)
 ```
 
-With nothing to change it prints one `upgrade: all clear` line and exits `0`; with any note it exits `1`. Run it before and after upgrading from v0.2.0 or earlier.
+With nothing to change it prints one `upgrade: all clear` line and exits `0`; with any note it exits `1`; when the workflow cannot be read it exits `2`. It runs on its own: combine it with `--deploy` or `--fix` and it exits `2`. Run it before and after upgrading from v0.2.0 or earlier.
 
 | Note | Applies when |
 |---|---|
-| 5 — per-project workspace and log paths | `workspace.root` is unset and `~/.itervox/workspaces` still holds worktrees in the old shared layout, or `tracker.project_slug` is unset and `~/.itervox/logs` still holds shared runtime state |
+| 5 — per-project workspace and log paths | `workspace.root` is unset and `~/.itervox/workspaces` still holds worktrees in the old shared layout, or this project's v0.2.0 log directory (`~/.itervox/logs/<kind>/<slug>`, or `~/.itervox/logs` with no slug) still holds runtime state |
 | 6 — `server.port` defaults to 8090 | no port is set (`server.port`, `ITERVOX_SERVER_PORT`, `PORT`) and another process already holds 8090 (this project's own daemon does not count) |
 | 9 — `dependencies.auto_analyze` deprecated | the key is set |
-| 10 — headless token no longer printed | an `itervox.service` unit is installed and no `ITERVOX_API_TOKEN` is pinned |
+| 10 — headless token no longer printed | an `itervox.service` unit is installed and `ITERVOX_API_TOKEN` is pinned neither in the environment, `.itervox/.env`, nor `/etc/itervox/secrets.env` / `/run/itervox/env` |
 | 11 — SSH host-key checking values validated | `agent.ssh_strict_host_checking` or a `ssh_strict_host_by_host` entry is not one of `yes`, `no`, `ask`, `accept-new`, `off` |
 | 12 — `.WORKFLOW.md.lock` | the `.gitignore` next to `WORKFLOW.md` does not ignore it |
-| 13, 14 — unauthenticated origin and host checks | `server.allow_unauthenticated: true` with no `server.allowed_hosts`, or entries that are URLs, paths or wildcards |
+| 13, 14 — unauthenticated origin and host checks | `server.allow_unauthenticated: true` (or the old `_lan` key) with no `server.allowed_hosts` |
 | 15 — `itervox stop` and old PID files | `.itervox/daemon.pid` was written by a pre-v0.2.1 daemon |
 | 17, 22 — drain on SIGTERM, new systemd unit | the installed unit lacks `--shutdown-grace` or `KillMode=mixed` |
-| 19 — `PORT` moves the dashboard | `PORT` is set and `ITERVOX_SERVER_PORT` is not |
+| 19 — `PORT` moves the dashboard | `PORT` is set (even empty) and `ITERVOX_SERVER_PORT` is not; an invalid value is reported as a startup failure |
 | 20 — headless JSON stderr | `ITERVOX_LOG_FORMAT=json` |
+| Breaking (#48) — token auth on loopback | this project ran a pre-v0.2.1 daemon (state in its v0.2.0 log directory, or an old PID file) on a loopback or default host, auth is not disabled, and no `ITERVOX_API_TOKEN` is pinned |
 | Breaking — `allow_unauthenticated_lan` renamed | the old key is set |
-| `backend_fallback` validation | `agent.backend_fallback: false` (it used to mean on), or a shape that no longer loads |
-| CORE-115 — backend contradicts command | `agent` or a profile runs `claude`/`codex` but sets the other backend |
+| CORE-115 — backend contradicts command | `agent`, a profile, or a `rate_limited` rule's `switch_to_backend` (without `switch_to_profile`) asks for the other backend than its command runs; `agent.command` defaults to `claude` |
 
-Notes that change behaviour the same way for every install (dependency holds, rate-limit handling, outbox keys, log levels, API status codes, release packaging) have nothing in a workflow to check and are not reported; read them in the [v0.2.1 CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28).
+Not reported: notes that apply the same way to every install (1–4, 7, 8, 16, 18, 21, 25–27), deployment packaging (23, 24, 28–30), and keys that are new in v0.2.1, so no earlier config has them (`agent.backend_fallback`, `server.allowed_hosts` entry format). A malformed new key makes the config fail to load, which plain `itervox doctor` reports. Read every note in the [v0.2.1 CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28).
 
 ---
 

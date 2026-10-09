@@ -19,6 +19,7 @@ type upgradeFixture struct {
 	files     map[string]string // project-relative files to create
 	homeFiles map[string]string // home-relative files to create
 	unit      string            // installed systemd unit content ("" = none)
+	secrets   string            // service EnvironmentFile content ("" = none)
 }
 
 func (f upgradeFixture) probe(t *testing.T) upgradeProbe {
@@ -42,15 +43,24 @@ func (f upgradeFixture) probe(t *testing.T) upgradeProbe {
 		write(dir, "itervox.service", f.unit)
 		units = []string{filepath.Join(dir, "itervox.service")}
 	}
+	var secrets []string
+	if f.secrets != "" {
+		write(dir, "secrets.env", f.secrets)
+		secrets = []string{filepath.Join(dir, "secrets.env")}
+	}
 	front, err := readRawFrontMatter(workflow)
 	require.NoError(t, err)
 	return upgradeProbe{
 		WorkflowPath: workflow,
 		Front:        front,
-		Getenv:       func(k string) string { return f.env[k] },
+		Lookup: func(k string) (string, bool) {
+			v, ok := f.env[k]
+			return v, ok
+		},
 		Home:         home,
 		PortInUse:    func(int) bool { return f.portInUse },
 		SystemdUnits: units,
+		SecretFiles:  secrets,
 	}
 }
 
@@ -91,66 +101,85 @@ func TestUpgradeDoctorRules(t *testing.T) {
 		note       string
 		applies    upgradeFixture
 		notApplies upgradeFixture
+		alsoNotes  []string // other notes the applies fixture necessarily triggers
 	}{
-		{"note 5",
-			upgradeFixture{front: "tracker:\n  kind: linear\nserver:\n  port: 0", homeFiles: map[string]string{".itervox/workspaces/ENG-1/.git": "gitdir: x"}},
-			upgradeFixture{front: "tracker:\n  kind: linear\nserver:\n  port: 0\nworkspace:\n  root: ~/.itervox/workspaces", homeFiles: map[string]string{".itervox/workspaces/ENG-1/.git": "gitdir: x"}}},
-		{"note 5",
-			upgradeFixture{front: "tracker:\n  kind: linear\nserver:\n  port: 0", homeFiles: map[string]string{".itervox/logs/paused.json": "{}"}},
-			upgradeFixture{front: "tracker:\n  kind: linear\n  project_slug: p\nserver:\n  port: 0", homeFiles: map[string]string{".itervox/logs/paused.json": "{}"}}},
-		{"note 6",
-			upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: true},
-			upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: false}},
-		{"note 6",
-			upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: true},
-			upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: true,
+		{note: "note 5",
+			applies:    upgradeFixture{front: "tracker:\n  kind: linear\nserver:\n  port: 0", homeFiles: map[string]string{".itervox/workspaces/ENG-1/.git": "gitdir: x"}},
+			notApplies: upgradeFixture{front: "tracker:\n  kind: linear\nserver:\n  port: 0\nworkspace:\n  root: ~/.itervox/workspaces", homeFiles: map[string]string{".itervox/workspaces/ENG-1/.git": "gitdir: x"}}},
+		{note: "note 5",
+			applies:    upgradeFixture{front: "tracker:\n  kind: linear\nserver:\n  port: 0\n  allow_unauthenticated: true\n  allowed_hosts: [a.example.com]", homeFiles: map[string]string{".itervox/logs/paused.json": "{}"}},
+			notApplies: upgradeFixture{front: "tracker:\n  kind: linear\n  project_slug: p\nserver:\n  port: 0", homeFiles: map[string]string{".itervox/logs/paused.json": "{}"}}},
+		{note: "note 5", // v0.2.0 kept a slug project's state in logs/<kind>/<slug>
+			applies:    upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: true\n  allowed_hosts: [a.example.com]", homeFiles: map[string]string{".itervox/logs/github/o_r/history.json": "{}"}},
+			notApplies: upgradeFixture{front: cleanFront, homeFiles: map[string]string{".itervox/logs/github/other_repo/history.json": "{}"}}},
+		{note: "note 6",
+			applies:    upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: true},
+			notApplies: upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: false}},
+		{note: "note 6",
+			applies: upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: true},
+			notApplies: upgradeFixture{front: "tracker:\n  kind: github\n  project_slug: o/r", portInUse: true,
 				files: map[string]string{".itervox/dashboard_url": "http://127.0.0.1:8090/?token=x"}}},
-		{"note 9",
-			upgradeFixture{front: cleanFront + "\ndependencies:\n  auto_analyze: false"},
-			upgradeFixture{front: cleanFront + "\ndependencies:\n  analysis_mode: manual"}},
-		{"note 10",
-			upgradeFixture{front: cleanFront, unit: currentUnit},
-			upgradeFixture{front: cleanFront, unit: currentUnit, env: map[string]string{"ITERVOX_API_TOKEN": "pinned"}}},
-		{"note 11",
-			upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_by_host:\n    build1: Yes"},
-			upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_checking: \"yes\"\n  ssh_strict_host_by_host:\n    build1: accept-new"}},
-		{"note 12",
-			upgradeFixture{front: cleanFront, files: map[string]string{".gitignore": "node_modules/\n"}},
-			upgradeFixture{front: cleanFront, files: map[string]string{".gitignore": "node_modules/\n.WORKFLOW.md.lock\n"}}},
-		{"notes 13 and 14",
-			upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: true"},
-			upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: true\n  allowed_hosts: [itervox.example.com]"}},
-		{"notes 13 and 14",
-			upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: true\n  allowed_hosts: [\"https://itervox.example.com\"]"},
-			upgradeFixture{front: cleanFront + "\n  allowed_hosts: [\"https://itervox.example.com\"]"}},
-		{"note 15",
-			upgradeFixture{front: cleanFront, files: map[string]string{".itervox/daemon.pid": "123\t/x/WORKFLOW.md\n"}},
-			upgradeFixture{front: cleanFront, files: map[string]string{".itervox/daemon.pid": "123\t/x/WORKFLOW.md\tflock\n"}}},
-		{"notes 17 and 22",
-			upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_API_TOKEN": "x"}, unit: "[Service]\nExecStart=/usr/local/bin/itervox\nTimeoutStopSec=90\n"},
-			upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_API_TOKEN": "x"}, unit: currentUnit}},
-		{"note 19",
-			upgradeFixture{front: cleanFront, env: map[string]string{"PORT": "3000"}},
-			upgradeFixture{front: cleanFront, env: map[string]string{"PORT": "3000", "ITERVOX_SERVER_PORT": "8091"}}},
-		{"note 20",
-			upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_LOG_FORMAT": "json"}},
-			upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_LOG_FORMAT": "text"}}},
-		{"breaking",
-			upgradeFixture{front: cleanFront + "\n  allow_unauthenticated_lan: false"},
-			upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: false"}},
-		{"upgrade notes (backend_fallback)",
-			upgradeFixture{front: cleanFront + "\nagent:\n  backend_fallback: false"},
-			upgradeFixture{front: cleanFront + "\nagent:\n  backend_fallback: true"}},
-		{"upgrade notes (backend_fallback)",
-			upgradeFixture{front: cleanFront + "\nagent:\n  backend_fallback:\n    enabled: \"false\""},
-			upgradeFixture{front: cleanFront + "\nagent:\n  backend_fallback:\n    enabled: false\n    chain: [claude, codex]"}},
-		{"upgrade notes (CORE-115)",
-			upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    impl:\n      command: claude\n      backend: codex"},
-			upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    impl:\n      command: my-wrapper\n      backend: codex"}},
+		{note: "note 9",
+			applies:    upgradeFixture{front: cleanFront + "\ndependencies:\n  auto_analyze: false"},
+			notApplies: upgradeFixture{front: cleanFront + "\ndependencies:\n  analysis_mode: manual"}},
+		{note: "note 10",
+			applies:    upgradeFixture{front: cleanFront, unit: currentUnit},
+			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, env: map[string]string{"ITERVOX_API_TOKEN": "pinned"}}},
+		{note: "note 10",
+			applies:    upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "GITHUB_TOKEN=x\n"},
+			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "ITERVOX_API_TOKEN=pinned\n"}},
+		{note: "note 11",
+			applies:    upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_by_host:\n    build1: Yes"},
+			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_checking: \"yes\"\n  ssh_strict_host_by_host:\n    build1: accept-new"}},
+		{note: "note 12",
+			applies:    upgradeFixture{front: cleanFront, files: map[string]string{".gitignore": "node_modules/\n"}},
+			notApplies: upgradeFixture{front: cleanFront, files: map[string]string{".gitignore": "node_modules/\n.WORKFLOW.md.lock\n"}}},
+		{note: "notes 13 and 14",
+			applies:    upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: true"},
+			notApplies: upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: true\n  allowed_hosts: [itervox.example.com]"}},
+		{note: "note 15",
+			applies:    upgradeFixture{front: cleanFront, files: map[string]string{".itervox/daemon.pid": "123\t/x/WORKFLOW.md\n"}},
+			notApplies: upgradeFixture{front: cleanFront, files: map[string]string{".itervox/daemon.pid": "123\t/x/WORKFLOW.md\tflock\n"}},
+			alsoNotes:  []string{"breaking (#48)"}}, // an old daemon ran here on loopback without a token
+		{note: "notes 17 and 22",
+			applies:    upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_API_TOKEN": "x"}, unit: "[Service]\nExecStart=/usr/local/bin/itervox\nTimeoutStopSec=90\n"},
+			notApplies: upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_API_TOKEN": "x"}, unit: currentUnit}},
+		{note: "note 19",
+			applies:    upgradeFixture{front: cleanFront, env: map[string]string{"PORT": "3000"}},
+			notApplies: upgradeFixture{front: cleanFront, env: map[string]string{"PORT": "3000", "ITERVOX_SERVER_PORT": "8091"}}},
+		{note: "note 19", // set but empty is present, and invalid
+			applies:    upgradeFixture{front: cleanFront, env: map[string]string{"PORT": ""}},
+			notApplies: upgradeFixture{front: cleanFront, env: map[string]string{"PORT": "", "ITERVOX_SERVER_PORT": "8091"}}},
+		{note: "note 19",
+			applies:    upgradeFixture{front: cleanFront, env: map[string]string{"PORT": "70000"}},
+			notApplies: upgradeFixture{front: cleanFront}},
+		{note: "note 20",
+			applies:    upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_LOG_FORMAT": "json"}},
+			notApplies: upgradeFixture{front: cleanFront, env: map[string]string{"ITERVOX_LOG_FORMAT": "text"}}},
+		{note: "breaking",
+			applies:    upgradeFixture{front: cleanFront + "\n  allow_unauthenticated_lan: false"},
+			notApplies: upgradeFixture{front: cleanFront + "\n  allow_unauthenticated: false"}},
+		{note: "upgrade notes (CORE-115)",
+			applies:    upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    impl:\n      command: claude\n      backend: codex"},
+			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  profiles:\n    impl:\n      command: my-wrapper\n      backend: codex"}},
+		{note: "upgrade notes (CORE-115)", // agent.command defaults to claude
+			applies:    upgradeFixture{front: cleanFront + "\nagent:\n  backend: codex"},
+			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  command: codex\n  backend: codex"}},
+		{note: "upgrade notes (CORE-115)",
+			applies:    upgradeFixture{front: cleanFront + "\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_backend: codex"},
+			notApplies: upgradeFixture{front: cleanFront + "\nautomations:\n  - id: rl\n    profile: impl\n    trigger:\n      type: rate_limited\n    policy:\n      switch_to_profile: codex-impl\n      switch_to_backend: codex"}},
+		{note: "breaking (#48)",
+			applies:    upgradeFixture{front: cleanFront, homeFiles: map[string]string{".itervox/logs/github/o_r/paused.json": "{}"}},
+			notApplies: upgradeFixture{front: cleanFront, homeFiles: map[string]string{".itervox/logs/github/o_r/paused.json": "{}"}, env: map[string]string{"ITERVOX_API_TOKEN": "pinned"}},
+			alsoNotes:  []string{"note 5"}},
+		{note: "breaking (#48)", // a fresh install never served without a token
+			applies:    upgradeFixture{front: cleanFront, files: map[string]string{".itervox/daemon.pid": "123\t/x/WORKFLOW.md\n"}},
+			notApplies: upgradeFixture{front: cleanFront},
+			alsoNotes:  []string{"note 15"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.note, func(t *testing.T) {
-			assert.Equal(t, []string{tc.note}, notesFor(t, tc.applies), "applies")
+			assert.ElementsMatch(t, append([]string{tc.note}, tc.alsoNotes...), notesFor(t, tc.applies), "applies")
 			assert.NotContains(t, notesFor(t, tc.notApplies), tc.note, "does not apply")
 		})
 	}
@@ -191,6 +220,6 @@ func TestUpgradeDoctorReportsFixAndLink(t *testing.T) {
 // explain a config that v0.2.1 refuses to load, so it reads the front matter
 // raw instead of through config.Load.
 func TestUpgradeDoctorReadsConfigsThatNoLongerLoad(t *testing.T) {
-	notes := notesFor(t, upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_checking: strict\n  backend_fallback: \"off\""})
-	assert.Equal(t, []string{"note 11", "upgrade notes (backend_fallback)"}, notes)
+	notes := notesFor(t, upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_checking: strict\n  ssh_strict_host_by_host:\n    b1: Yes"})
+	assert.Equal(t, []string{"note 11"}, notes)
 }

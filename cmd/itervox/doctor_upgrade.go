@@ -33,14 +33,34 @@ type upgradeProbe struct {
 	WorkflowPath string
 	// Front is the WORKFLOW.md front matter as plain YAML maps.
 	Front map[string]any
-	// Getenv reads the daemon's environment (with .itervox/.env loaded).
-	Getenv func(string) string
+	// Lookup reads the daemon's environment (with .itervox/.env loaded);
+	// a variable that is set but empty is present.
+	Lookup func(string) (string, bool)
 	// Home is the user's home directory ("" when unknown).
 	Home string
 	// PortInUse reports whether another process holds 127.0.0.1:port.
 	PortInUse func(port int) bool
 	// SystemdUnits are the installed itervox.service paths to inspect.
 	SystemdUnits []string
+	// SecretFiles are the service environment files (EnvironmentFile=) a
+	// unit may pin ITERVOX_API_TOKEN in.
+	SecretFiles []string
+}
+
+func (p upgradeProbe) getenv(key string) string {
+	if p.Lookup == nil {
+		return ""
+	}
+	v, _ := p.Lookup(key)
+	return v
+}
+
+func (p upgradeProbe) isSet(key string) bool {
+	if p.Lookup == nil {
+		return false
+	}
+	_, ok := p.Lookup(key)
+	return ok
 }
 
 // upgradeFinding is one note that applies, with what to do about it.
@@ -58,10 +78,13 @@ type upgradeRule struct {
 	Check func(p upgradeProbe) (detail, fix string, applies bool)
 }
 
-// upgradeRules are the v0.2.1 behaviour changes that can be detected from
-// the workflow, the environment or the machine. Notes that change behaviour
-// for every install the same way (tracker rate-limit handling, outbox keys,
-// log levels) have nothing in a config to look at and are left out.
+// upgradeRules are the v0.2.1 breaking and behaviour changes that depend on
+// something this command can read: the workflow, the environment, the
+// project's runtime files or the machine. Left out: notes that apply the
+// same way to every install (1–4, 7, 8, 16, 18, 21, 25–27), deployment
+// packaging (23, 24, 28–30), and keys that are new in v0.2.1, so no earlier
+// config has them (backend_fallback, the allowed_hosts entry format). A
+// malformed new key is reported by plain `itervox doctor` as a load failure.
 var upgradeRules = []upgradeRule{
 	{"note 5", "Default workspace and log paths are now per project", rulePerProjectPaths},
 	{"note 6", "server.port now defaults to a fixed 8090", ruleFixedPort},
@@ -74,8 +97,8 @@ var upgradeRules = []upgradeRule{
 	{"notes 17 and 22", "SIGTERM now drains, and the systemd unit changed", ruleSystemdUnit},
 	{"note 19", "A set PORT environment variable now moves the dashboard", rulePortEnv},
 	{"note 20", "Headless --log-format json now also makes stderr JSON", ruleLogFormatJSON},
+	{"breaking (#48)", "Bearer-token auth is now on by default on loopback too", ruleLoopbackAuth},
 	{"breaking", "server.allow_unauthenticated_lan was renamed to server.allow_unauthenticated", ruleAllowUnauthenticatedRename},
-	{"upgrade notes (backend_fallback)", "A mistyped agent.backend_fallback now fails config loading", ruleBackendFallback},
 	{"upgrade notes (CORE-115)", "A backend that contradicts the command is no longer applied", ruleBackendContradictsCommand},
 }
 
@@ -131,10 +154,11 @@ func newUpgradeProbe(workflowPath string) (upgradeProbe, error) {
 	return upgradeProbe{
 		WorkflowPath: workflowPath,
 		Front:        front,
-		Getenv:       os.Getenv,
+		Lookup:       os.LookupEnv,
 		Home:         home,
 		PortInUse:    loopbackPortInUse,
 		SystemdUnits: existingFiles("/etc/systemd/system/itervox.service", "/lib/systemd/system/itervox.service"),
+		SecretFiles:  []string{"/etc/itervox/secrets.env", "/run/itervox/env"},
 	}, nil
 }
 
@@ -219,13 +243,9 @@ func rulePerProjectPaths(p upgradeProbe) (string, string, bool) {
 			}
 		}
 	}
-	if strValue(section(p.Front, "tracker"), "project_slug") == "" {
-		logs := filepath.Join(p.Home, ".itervox", "logs")
-		for _, f := range []string{"automation_queue.json", "history.json", "paused.json", "input_required.json"} {
-			if _, err := os.Stat(filepath.Join(logs, f)); err == nil {
-				found = append(found, fmt.Sprintf("runtime state in the shared %s (%s)", logs, f))
-				break
-			}
+	if logs := v020LogsDir(p); logs != "" {
+		if f := runtimeStateIn(logs); f != "" {
+			found = append(found, fmt.Sprintf("runtime state in the v0.2.0 log directory %s (%s)", logs, f))
 		}
 	}
 	if len(found) == 0 {
@@ -239,7 +259,7 @@ func rulePerProjectPaths(p upgradeProbe) (string, string, bool) {
 // ruleFixedPort (note 6): with no explicit port the daemon binds 8090, which
 // fails when another daemon (or anything else) already holds it.
 func ruleFixedPort(p upgradeProbe) (string, string, bool) {
-	if hasKey(section(p.Front, "server"), "port") || p.Getenv("ITERVOX_SERVER_PORT") != "" || p.Getenv("PORT") != "" {
+	if hasKey(section(p.Front, "server"), "port") || p.isSet(config.EnvServerPort) || p.isSet(config.EnvGenericPort) {
 		return "", "", false
 	}
 	if p.PortInUse == nil || !p.PortInUse(config.DefaultServerPort) {
@@ -340,18 +360,7 @@ func ruleUnauthenticatedHosts(p upgradeProbe) (string, string, bool) {
 		return "", "", false
 	}
 	if list, ok := srv["allowed_hosts"].([]any); ok && len(list) > 0 {
-		var bad []string
-		for _, e := range list {
-			s := fmt.Sprint(e)
-			if strings.Contains(s, "://") || strings.Contains(s, "/") || strings.Contains(s, "*") {
-				bad = append(bad, s)
-			}
-		}
-		if len(bad) == 0 {
-			return "", "", false
-		}
-		return "server.allowed_hosts has entries that are URLs, paths or wildcards (" + strings.Join(bad, ", ") + "); the config no longer loads",
-			"write bare host names, e.g. `allowed_hosts: [itervox.example.com]`", true
+		return "", "", false
 	}
 	return "the daemon runs without a token (`allow_unauthenticated: true`) and lists no `server.allowed_hosts`: requests to any host NAME other than localhost or `server.host` are refused (403 `host_not_allowed`), and cross-origin writes get 403 `cross_origin_forbidden`",
 		"if you reach it through a reverse proxy, tunnel, MagicDNS or container service name, add that name to `server.allowed_hosts`; if a web page on another origin calls the API, set `ITERVOX_API_TOKEN` and send it as a bearer token", true
@@ -381,23 +390,24 @@ func ruleSystemdUnit(p upgradeProbe) (string, string, bool) {
 	return "", "", false
 }
 
-// rulePortEnv (note 19).
+// rulePortEnv (note 19). Judged as applyServerEnv does: the first PRESENT
+// of ITERVOX_SERVER_PORT and PORT wins, and only the winner is validated.
 func rulePortEnv(p upgradeProbe) (string, string, bool) {
-	port := p.Getenv("PORT")
-	if port == "" || p.Getenv("ITERVOX_SERVER_PORT") != "" {
+	if p.isSet(config.EnvServerPort) || !p.isSet(config.EnvGenericPort) {
 		return "", "", false
 	}
-	if _, err := strconv.Atoi(port); err != nil {
-		return fmt.Sprintf("`PORT=%s` is set and is not a number: the daemon now refuses to start", port),
+	port := p.getenv(config.EnvGenericPort)
+	if _, err := config.ParseBindPort(port); err != nil {
+		return fmt.Sprintf("`PORT=%q` is set and invalid (%v): the daemon now refuses to start", port, err),
 			"unset `PORT` for the daemon, or set `ITERVOX_SERVER_PORT` (which wins over `PORT`)", true
 	}
-	return fmt.Sprintf("`PORT=%s` is set in this environment; the dashboard now binds that port instead of `server.port`", port),
+	return fmt.Sprintf("`PORT=%s` is set in this environment; the dashboard now binds that port instead of `server.port`", strings.TrimSpace(port)),
 		"if `PORT` belongs to another project, unset it for the daemon or set `ITERVOX_SERVER_PORT`", true
 }
 
 // ruleLogFormatJSON (note 20).
 func ruleLogFormatJSON(p upgradeProbe) (string, string, bool) {
-	if !strings.EqualFold(strings.TrimSpace(p.Getenv("ITERVOX_LOG_FORMAT")), "json") {
+	if !strings.EqualFold(strings.TrimSpace(p.getenv("ITERVOX_LOG_FORMAT")), "json") {
 		return "", "", false
 	}
 	return "`ITERVOX_LOG_FORMAT=json` is set: under systemd or in a container, stderr records are now JSON too",
@@ -414,41 +424,6 @@ func ruleAllowUnauthenticatedRename(p upgradeProbe) (string, string, bool) {
 		"rename it to `server.allow_unauthenticated`", true
 }
 
-// ruleBackendFallback: `backend_fallback: false` used to turn fallback ON
-// with the default chain; other shapes now fail loading.
-func ruleBackendFallback(p upgradeProbe) (string, string, bool) {
-	ag := section(p.Front, "agent")
-	v, ok := ag["backend_fallback"]
-	if !ok || v == nil {
-		return "", "", false
-	}
-	switch t := v.(type) {
-	case bool:
-		if !t {
-			return "`agent.backend_fallback: false` used to turn fallback ON with the default chain; it now means off",
-				"set `backend_fallback: true` if you relied on the fallback, or delete the line", true
-		}
-		return "", "", false
-	case map[string]any:
-		if e, has := t["enabled"]; has {
-			if _, isBool := e.(bool); !isBool {
-				return fmt.Sprintf("`agent.backend_fallback.enabled: %v` is not a boolean; the config no longer loads", e),
-					"use `enabled: true` or `enabled: false` (unquoted)", true
-			}
-		}
-		if c, has := t["chain"]; has && c != nil {
-			if _, isList := c.([]any); !isList {
-				return fmt.Sprintf("`agent.backend_fallback.chain: %v` is not a list; the config no longer loads", c),
-					"write the chain as a list, e.g. `chain: [claude, codex]`", true
-			}
-		}
-		return "", "", false
-	default:
-		return fmt.Sprintf("`agent.backend_fallback: %v` is neither a boolean nor a map; the config no longer loads", v),
-			"use `backend_fallback: true` / `false`, or a map with `enabled` and `chain`", true
-	}
-}
-
 // ruleBackendContradictsCommand (CORE-115).
 func ruleBackendContradictsCommand(p upgradeProbe) (string, string, bool) {
 	ag := section(p.Front, "agent")
@@ -459,7 +434,11 @@ func ruleBackendContradictsCommand(p upgradeProbe) (string, string, bool) {
 			bad = append(bad, fmt.Sprintf("%s runs %s but sets backend %s", where, cmdBackend, backend))
 		}
 	}
-	check("agent", strValue(ag, "command"), strValue(ag, "backend"))
+	defaultCommand := strValue(ag, "command")
+	if defaultCommand == "" {
+		defaultCommand = "claude" // config.Load's default agent.command
+	}
+	check("agent", defaultCommand, strValue(ag, "backend"))
 	if profiles, ok := ag["profiles"].(map[string]any); ok {
 		names := make([]string, 0, len(profiles))
 		for n := range profiles {
@@ -469,6 +448,17 @@ func ruleBackendContradictsCommand(p upgradeProbe) (string, string, bool) {
 		for _, n := range names {
 			pm, _ := profiles[n].(map[string]any)
 			check("profile "+n, strValue(pm, "command"), strValue(pm, "backend"))
+		}
+	}
+	// A rate_limited rule that switches backend without switching profile
+	// keeps the issue's command; over the default command that is refused.
+	if autos, ok := p.Front["automations"].([]any); ok {
+		for _, a := range autos {
+			am, _ := a.(map[string]any)
+			pol := section(am, "policy")
+			if to := strValue(pol, "switch_to_backend"); to != "" && strValue(pol, "switch_to_profile") == "" {
+				check(fmt.Sprintf("automation %v (switch_to_backend over agent.command)", am["id"]), defaultCommand, to)
+			}
 		}
 	}
 	if len(bad) == 0 {
@@ -482,8 +472,13 @@ func ruleBackendContradictsCommand(p upgradeProbe) (string, string, bool) {
 // ?token= URL to the journal, so an operator who copied it from there needs
 // another source.
 func ruleHeadlessToken(p upgradeProbe) (string, string, bool) {
-	if len(p.SystemdUnits) == 0 || p.Getenv("ITERVOX_API_TOKEN") != "" || p.Getenv("ITERVOX_PRINT_TOKEN") != "" {
+	if len(p.SystemdUnits) == 0 || p.getenv("ITERVOX_API_TOKEN") != "" || p.getenv("ITERVOX_PRINT_TOKEN") != "" {
 		return "", "", false
+	}
+	for _, f := range p.SecretFiles {
+		if raw, err := os.ReadFile(f); err == nil && strings.Contains(string(raw), "ITERVOX_API_TOKEN=") {
+			return "", "", false // pinned for the service
+		}
 	}
 	if v, ok := section(p.Front, "server")["allow_unauthenticated"].(bool); ok && v {
 		return "", "", false // no token at all
@@ -507,4 +502,64 @@ func ruleLegacyPIDFile(p upgradeProbe) (string, string, bool) {
 	}
 	return fmt.Sprintf("%s was written by a pre-v0.2.1 daemon (no pid lock)", pidPath),
 		"stop that daemon with the old binary before upgrading, or run `itervox stop --legacy` after confirming the listed PIDs are itervox", true
+}
+
+// v020LogsDir is where a v0.2.0 daemon kept this project's logs and runtime
+// state: ~/.itervox/logs/<kind>/<slug>, or the shared ~/.itervox/logs with
+// no slug. v0.2.1 moved both to a directory keyed by the workflow path.
+func v020LogsDir(p upgradeProbe) string {
+	if p.Home == "" {
+		return ""
+	}
+	base := filepath.Join(p.Home, ".itervox", "logs")
+	tr := section(p.Front, "tracker")
+	kind, slug := strValue(tr, "kind"), strValue(tr, "project_slug")
+	if kind == "" || slug == "" {
+		return base
+	}
+	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(slug)
+	return filepath.Join(base, kind, safe)
+}
+
+// runtimeStateIn returns the first daemon state file found directly in dir.
+func runtimeStateIn(dir string) string {
+	for _, f := range []string{"automation_queue.json", "history.json", "paused.json", "input_required.json", "auto_switched.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			return f
+		}
+	}
+	return ""
+}
+
+// ranBeforeV021 reports signs that a pre-v0.2.1 daemon ran this project:
+// state in its v0.2.0 log directory, or a PID record without the lock
+// marker. A fresh install has neither.
+func ranBeforeV021(p upgradeProbe) bool {
+	if logs := v020LogsDir(p); logs != "" && runtimeStateIn(logs) != "" {
+		return true
+	}
+	_, _, legacy := ruleLegacyPIDFile(p)
+	return legacy
+}
+
+// ruleLoopbackAuth (Changed, breaking, #48): before v0.2.1 a loopback daemon
+// served the API without a token; now every bind requires one. Only an
+// upgraded project is affected, since a fresh one never had it otherwise.
+func ruleLoopbackAuth(p upgradeProbe) (string, string, bool) {
+	srv := section(p.Front, "server")
+	for _, k := range []string{"allow_unauthenticated", "allow_unauthenticated_lan"} {
+		if v, ok := srv[k].(bool); ok && v {
+			return "", "", false // auth is off on purpose
+		}
+	}
+	switch strValue(srv, "host") {
+	case "", "127.0.0.1", "localhost", "::1", "[::1]":
+	default:
+		return "", "", false // a non-loopback bind already required a token
+	}
+	if p.getenv("ITERVOX_API_TOKEN") != "" || !ranBeforeV021(p) {
+		return "", "", false
+	}
+	return "this project ran a pre-v0.2.1 daemon on loopback, where the API needed no token; it now answers 401 without one, so local scripts, bookmarks and the Vite dev proxy need the token",
+		"pin `ITERVOX_API_TOKEN` in `.itervox/.env` (or read `<logs-dir>/api-token`, rewritten on every start) and send it as `Authorization: Bearer`; or set `server.allow_unauthenticated: true` to opt out", true
 }
