@@ -851,15 +851,6 @@ func (o *Orchestrator) reviewerChainCfg() []string {
 	return ReviewerProfileChain(o.cfg)
 }
 
-// reviewVerdictRelPathCfg is reviewVerdictRelPathFor read under cfgMu. Called
-// from runWorker — a worker goroutine — which must never touch o.cfg
-// directly; see reviewerChainCfg for the writer it races.
-func (o *Orchestrator) reviewVerdictRelPathCfg(identifier, profileName string) string {
-	o.cfgMu.RLock()
-	defer o.cfgMu.RUnlock()
-	return reviewVerdictRelPathFor(o.cfg, identifier, profileName)
-}
-
 // DepsAnalyzerProfileCfg returns the configured deps-analyzer profile name
 // under cfgMu. Empty means the analyzer is disabled and the dashboard's
 // "Analyze dependencies" button stays disabled. v0.2.0 todolist6.
