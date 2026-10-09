@@ -269,6 +269,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// configuration (reviewer_profile and reviewer_profiles).
 	readOnlyReviewer := isReviewerProfile(o.cfg, profileName)
 	o.cfgMu.RUnlock()
+	// A reviewer rerouted by backend_fallback runs under another profile
+	// name; the reviewer-injected marker still identifies it.
+	readOnlyReviewer = readOnlyReviewer || (profileName != "" && o.isReviewerInjected(issue.Identifier))
+	reviewVerdictRel := ""
+	if readOnlyReviewer {
+		reviewVerdictRel = filepath.Join(".itervox", "review", issue.Identifier, profileName, ReviewVerdictFileName)
+	}
 
 	// A read-only reviewer gets the diff against the base branch and the
 	// latest handoff instead of the whole handoff history, and the branch is
@@ -282,8 +289,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// a missed snapshot would let a branch change go unflagged.
 		gitCtx, gitCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
-		reviewerBefore, reviewerTracked = captureReviewerBranchState(gitCtx, wsPath)
+		// The baseline survives a failed or interrupted attempt: a retry
+		// compares against the branch as the reviewer first found it.
+		reviewerBefore, reviewerTracked = reviewerBaseline(gitCtx, wsPath, issue.Identifier, profileName)
 		gitCancel()
+		// A verdict left by an earlier review round must not be read as
+		// this run's: the reviewer writes a fresh one or counts as a block.
+		if err := os.Remove(filepath.Join(wsPath, reviewVerdictRel)); err != nil && !os.IsNotExist(err) {
+			slog.Warn("worker: cannot clear an earlier review verdict", "issue_identifier", issue.Identifier, "error", err)
+		}
 	}
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
@@ -507,7 +521,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		// #58/#79 — a reviewer run is told where to record its verdict.
 		// Empty (and therefore a no-op) for normal workers.
-		if verdictPath := o.reviewVerdictRelPathCfg(issue.Identifier, profileName); verdictPath != "" {
+		if verdictPath := reviewVerdictRel; verdictPath != "" {
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 
@@ -1002,9 +1016,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// (its verdict then counts as a block), and post its verdict, reasons
 	// and line comments on the issue.
 	//
-	// Not gated on ctx: when tracker.completion_state moved the issue
-	// terminal, reconciliation cancels the reviewer's context although the
-	// review itself completed (see the #58 notes in the exit handler).
+	// Uses its own context: reconciliation may cancel the reviewer's ctx
+	// right after a completed review when tracker.completion_state is
+	// terminal (see the #58 notes in the exit handler).
 	if readOnlyReviewer && wsPath != "" && !automationRun {
 		reviewCtx, reviewCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		defer reviewCancel()
@@ -1023,6 +1037,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 			flagReviewerVerdict(wsPath, issue.Identifier, profileName, changes)
 		}
+		clearReviewerBaseline(wsPath, issue.Identifier, profileName)
 		verdict, verdictErr := ReadReviewVerdict(wsPath, issue.Identifier, profileName, time.Now())
 		body := formatReviewVerdictComment(profileName, displayBackend, verdict, verdictErr, changes)
 		if err := o.writeSink().CreateComment(reviewCtx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {

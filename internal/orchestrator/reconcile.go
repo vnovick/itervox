@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
@@ -201,12 +202,14 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			case <-time.After(100 * time.Millisecond):
 				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
-		} else if isActiveState(refreshedState, state) || entry.Kind == "reviewer" {
+		} else if isActiveState(refreshedState, state) ||
+			(entry.Kind == "reviewer" && state.CompletionState != "" && strings.EqualFold(refreshedState, state.CompletionState)) {
 			// A reviewer runs, by design, on an issue the implementer just
 			// moved to tracker.completion_state, which is usually neither
 			// active nor terminal ("in-review"). Stopping it there killed
-			// every review before it finished (#79). A terminal state still
-			// stops it above.
+			// every review before it finished (#79). Any other non-active
+			// state (an operator moving the issue to backlog) still stops it,
+			// as does a terminal state above.
 			entry.Issue.State = refreshedState
 			entry.LastEventAt = &now
 		} else {

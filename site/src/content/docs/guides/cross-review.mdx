@@ -77,6 +77,10 @@ and the two reviewer profile directories.
 
    > **Review result: ❌ changes requested** (1 approve / 1 block, quorum `any_block`)
 
+While a reviewer runs, the issue may sit in `completion_state` (for example
+`in-review`); the review is not stopped there. Moving the issue anywhere else
+(backlog, say) stops it like any other run.
+
 When changes are requested, the issue stays in `completion_state` with the
 reasons on it. Move it back to an active state to have the implementer address
 them: the default prompt includes the issue's comments, and the latest handoff
@@ -90,11 +94,22 @@ the verdict. Itervox enforces what it can:
 - **No push or commit on its behalf.** For a reviewer run, Itervox does not
   push the branch or commit the reviewer's handoff (it stays in the working
   tree for the next implementer run).
-- **Changes are flagged.** Itervox records the branch before a reviewer runs and
-  compares it afterwards. A reviewer that committed (which any push needs), or
-  edited files outside `.itervox/`, gets a ⚠️ note on the issue naming what it
-  changed and where it pushed, and its verdict is recorded as a **block**,
-  whatever it said. Inspect those changes before merging.
+- **Changes are flagged.** Itervox records the branch when a review starts and
+  compares it when the review ends. A reviewer that committed, moved `HEAD`
+  (a reset or checkout), pushed from the workspace (a remote-tracking ref
+  moved to a local commit, with or without a new commit), or edited any file
+  outside Itervox's own `.itervox/handoff/`, `.itervox/review/` and
+  `.itervox/evidence/` gets a ⚠️ note on the issue naming what it changed, and
+  its verdict is recorded as a **block**, whatever it said. The starting point
+  is kept across a failed or retried attempt, so a change made before a
+  failure is still caught. Inspect flagged changes before merging.
+- **Fresh verdicts only.** A verdict file left by an earlier review round is
+  removed before the reviewer runs, so a reviewer that records nothing counts
+  as a block rather than repeating an old verdict.
+- **Not covered:** a workspace that is not a git work tree, and reviewers on
+  SSH worker hosts whose workspace is not on the daemon's machine. A change
+  undone before the review ends is invisible by nature; a push leaves the
+  remote changed, so it is caught.
 
 The agent CLIs themselves are not sandboxed from `git push`; the flag is what
 makes a push visible and stops it from approving its own change. For a hard
