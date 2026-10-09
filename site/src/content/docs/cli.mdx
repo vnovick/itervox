@@ -60,11 +60,11 @@ itervox demo [--dir <scratch>] [--no-open]
 
 Runs a throwaway daemon against ten fake `DEMO-n` issues with a scripted agent, and opens the dashboard. It needs no tracker account, no API keys and no `claude` or `codex` on your `PATH`.
 
-Within about a minute the board shows issues moving through **In Progress** (with streamed agent activity and a fake pull request), **input required** (DEMO-2 and DEMO-7 ask a question that the demo answers itself after a few seconds), **a failure and a retry** (DEMO-4 and DEMO-9 fail their first run), **In Review**, and **Done** (the demo stands in for the reviewer after a few seconds). The header shows a **Demo mode** badge.
+Within about a minute the board shows issues moving through **In Progress** (with streamed agent activity and a fake pull request, linked in a comment on the issue), **input required** (DEMO-2 and DEMO-7 ask a question that the demo answers itself after a few seconds), **a failure and a retry** (DEMO-4 and DEMO-9 fail their first run), **In Review**, and **Done** (the demo stands in for the reviewer after a few seconds). The header shows a **Demo mode** badge.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--dir` | a new temporary directory | Scratch directory for the demo. |
+| `--dir` | a new temporary directory | Scratch directory for the demo. A directory that already holds a non-demo `WORKFLOW.md` is refused, so a real project's workflow is never overwritten; a previous demo's directory is reused. |
 | `--no-open` | `false` | Do not open the dashboard in a browser; the URL is in `<dir>/.itervox/dashboard_url`. |
 
 Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `logs/`, `workspaces/` and `.itervox/`. The dashboard listens on an OS-assigned port on `127.0.0.1` without a token. `ITERVOX_SERVER_PORT`, `ITERVOX_SERVER_HOST`, `PORT`, `ITERVOX_API_TOKEN` and `ITERVOX_DRY_RUN` are ignored for the demo. Stop it with `q` in the terminal UI, `Ctrl-C`, or `itervox stop -workflow <dir>/WORKFLOW.md`, then delete the directory.

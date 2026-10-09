@@ -1,7 +1,8 @@
 // Package demoagent holds the scripted agent behind `itervox demo` (#76).
-// It reuses the TurnResult shapes of the agenttest scenarios, but lives in
-// its own package because it is compiled into the binary (agenttest's
-// helpers are test-only).
+// It follows the agenttest scenarios (success, input required, fail then
+// retry) but is its own implementation: it is compiled into the binary, it
+// streams progress, and it scripts each issue by identifier, none of which
+// the test-only agenttest runners do.
 package demoagent
 
 import (
@@ -38,7 +39,7 @@ type DemoRunner struct {
 
 // NewDemoRunner returns a DemoRunner with the given step.
 func NewDemoRunner(step time.Duration) *DemoRunner {
-	return &DemoRunner{Step: step, PRBaseURL: "https://example.com/itervox-demo/pull/", turns: map[string]int{}}
+	return &DemoRunner{Step: step, PRBaseURL: defaultPRBaseURL, turns: map[string]int{}}
 }
 
 // Turns reports how many turns identifier has run.
@@ -120,6 +121,9 @@ func (r *DemoRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress f
 	}
 
 	url := r.PRBaseURL + strconv.Itoa(100+n)
+	if r.PRBaseURL == defaultPRBaseURL {
+		url = PRURL(identifier)
+	}
 	if err := step("claude: text", "text", "Tests pass. Opening a pull request."); err != nil {
 		return res, err
 	}
@@ -131,6 +135,13 @@ func (r *DemoRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress f
 		return res, err
 	}
 	return res, nil
+}
+
+const defaultPRBaseURL = "https://example.com/itervox-demo/pull/"
+
+// PRURL is the fake pull request URL for a demo issue.
+func PRURL(identifier string) string {
+	return defaultPRBaseURL + strconv.Itoa(100+demoNumber(identifier))
 }
 
 // demoNumber returns n for "DEMO-n" (0 when it does not parse).

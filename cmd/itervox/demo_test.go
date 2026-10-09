@@ -122,3 +122,42 @@ func getJSON(client *http.Client, url string, v any) error {
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
 }
+
+// TestPrepareDemoNeverOverwritesAWorkflow (review of #76): --dir pointed at
+// a real project is refused without touching its WORKFLOW.md; a previous
+// demo's workflow is reused unchanged; an empty directory gets a new one.
+func TestPrepareDemoNeverOverwritesAWorkflow(t *testing.T) {
+	for _, k := range []string{"ITERVOX_SERVER_PORT", "ITERVOX_SERVER_HOST", "PORT", "ITERVOX_API_TOKEN", "ITERVOX_DRY_RUN"} {
+		t.Setenv(k, "") // restored after prepareDemo unsets them
+	}
+	t.Cleanup(func() { demoSession = nil })
+
+	project := t.TempDir()
+	mine := []byte("---\nitervox_schema_version: 2\n---\nMINE\n")
+	require.NoError(t, os.WriteFile(filepath.Join(project, "WORKFLOW.md"), mine, 0o644))
+	var out strings.Builder
+	_, ok, err := prepareDemo([]string{"--dir", project, "--no-open"}, &out)
+	require.Error(t, err)
+	assert.False(t, ok)
+	assert.Contains(t, err.Error(), "is not a demo workflow")
+	after, _ := os.ReadFile(filepath.Join(project, "WORKFLOW.md"))
+	assert.Equal(t, string(mine), string(after), "the project's workflow is untouched")
+
+	empty := t.TempDir()
+	args, ok, err := prepareDemo([]string{"--dir", empty, "--no-open"}, &out)
+	require.NoError(t, err)
+	require.True(t, ok)
+	wf := filepath.Join(empty, "WORKFLOW.md")
+	assert.Equal(t, []string{"itervox", "-workflow", wf, "-logs-dir", filepath.Join(empty, "logs")}, args)
+	first, err := os.ReadFile(wf)
+	require.NoError(t, err)
+	assert.Contains(t, string(first), demoWorkflowMarker)
+	info1, _ := os.Stat(wf)
+
+	time.Sleep(20 * time.Millisecond)
+	_, ok, err = prepareDemo([]string{"--dir", empty, "--no-open"}, &out)
+	require.NoError(t, err)
+	require.True(t, ok)
+	info2, _ := os.Stat(wf)
+	assert.Equal(t, info1.ModTime(), info2.ModTime(), "a demo workflow is reused, not rewritten")
+}

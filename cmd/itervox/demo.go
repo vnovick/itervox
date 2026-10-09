@@ -89,8 +89,21 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 		return nil, false, err
 	}
 	workflowPath := filepath.Join(scratch, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(demoWorkflow(scratch)), 0o644); err != nil {
-		return nil, false, err
+	existing, readErr := os.ReadFile(workflowPath)
+	switch {
+	case readErr == nil && !strings.Contains(string(existing), demoWorkflowMarker):
+		// --dir pointed at a real project: never touch its workflow.
+		return nil, false, fmt.Errorf("%s already exists and is not a demo workflow; pick an empty --dir (or omit it)", workflowPath)
+	case readErr == nil:
+		// A previous demo's workflow: reuse it as is, so a second
+		// `itervox demo --dir` on a running demo does not rewrite (and
+		// reload) it before the pid lock refuses the second daemon.
+	case os.IsNotExist(readErr):
+		if err := os.WriteFile(workflowPath, []byte(demoWorkflow(scratch)), 0o644); err != nil {
+			return nil, false, err
+		}
+	default:
+		return nil, false, readErr
 	}
 	// The demo's own settings win over a developer shell: these would move
 	// the bind or turn on token auth or dry-run.
@@ -118,11 +131,15 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 	return []string{"itervox", "-workflow", workflowPath, "-logs-dir", filepath.Join(scratch, "logs")}, true, nil
 }
 
+// demoWorkflowMarker marks a workflow written by `itervox demo`.
+const demoWorkflowMarker = "# itervox demo workflow"
+
 // demoWorkflow is the scratch WORKFLOW.md: memory tracker, a review column,
 // fast polling and retries, an OS-assigned loopback port without auth, and
 // workspaces inside the scratch directory.
 func demoWorkflow(scratch string) string {
 	return fmt.Sprintf(`---
+`+demoWorkflowMarker+` — written by `+"`itervox demo`"+`; safe to delete with its directory.
 itervox_schema_version: 2
 tracker:
   kind: memory
@@ -200,6 +217,7 @@ func (d *demoRun) control(ctx context.Context) {
 			since, seen := reviewing[issue.ID]
 			if !seen {
 				reviewing[issue.ID] = now
+				_, _ = d.tracker.CreateComment(ctx, issue.ID, "🔗 Pull request created: "+demoagent.PRURL(issue.Identifier)+" (demo)")
 				continue
 			}
 			if now.Sub(since) >= d.mergeAfter {
@@ -239,5 +257,9 @@ func openBrowser(url string) error {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }() // reap the opener so it does not linger as a zombie
+	return nil
 }
