@@ -545,7 +545,7 @@ agent:
   ]}
   ```
 
-  A check counts when it has `passed: true` and a non-empty `command` and `output`. In a git worktree the evidence must name the commit the checks ran on (a 7+ character prefix is enough), and the only later commits allowed are ones that touch nothing outside `.itervox/` (such as the handoff commit Itervox makes after the run). Proof from before a code change never counts for new code.
+  A check counts when it has `passed: true` and a non-empty `command` and `output`. In a git worktree the evidence must name the commit the checks ran on by its id (a 7+ character prefix is enough; a branch name such as `HEAD` does not count), and the only later commits allowed are ones that touch nothing outside `.itervox/` (moving code into it counts as a change) (such as the handoff commit Itervox makes after the run). Proof from before a code change never counts for new code.
 - **`ci`**: the run's pull request must have only passing checks (`gh pr checks`; skipped checks count as passing). Pending, failing or unreadable checks, or no pull request, keep it unmet.
 
 Without the evidence, the issue is **not moved**: the run ends **input required** with a "Needs evidence before moving to …" reason listing each missing check, shown in the dashboard and posted on the issue. Reply (for example "run the tests and record them", or once CI is green) to resume the agent; the resumed run is checked again and moves the issue once the evidence is in place.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/config"
@@ -177,6 +178,11 @@ func readEvidenceFile(ctx context.Context, wsPath, relPath string) (map[string]b
 // worker makes after the run, or the agent committing its evidence file).
 // Any code change after the stamp means the checks ran on other code.
 func evidenceCoversHEAD(ctx context.Context, wsPath, commit, head string) bool {
+	// Only a hex commit id counts: a ref name ("main", the issue branch)
+	// would resolve to whatever it points at later and never go stale.
+	if !evidenceCommitRe.MatchString(commit) {
+		return false
+	}
 	if strings.HasPrefix(head, commit) {
 		return true
 	}
@@ -188,7 +194,7 @@ func evidenceCoversHEAD(ctx context.Context, wsPath, commit, head string) bool {
 	if gitexec.Command(ctx, wsPath, "merge-base", "--is-ancestor", stamp, head).Run() != nil {
 		return false
 	}
-	changed, err := gitexec.Command(ctx, wsPath, "diff", "--name-only", stamp, head).Output()
+	changed, err := gitexec.Command(ctx, wsPath, "diff", "--no-renames", "--name-only", stamp, head).Output()
 	if err != nil {
 		return false
 	}
@@ -202,6 +208,10 @@ func evidenceCoversHEAD(ctx context.Context, wsPath, commit, head string) bool {
 	}
 	return true
 }
+
+// evidenceCommitRe is the shape of an evidence commit stamp: an
+// abbreviated or full hex commit id, lower-cased by the caller.
+var evidenceCommitRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 // worktreeHEAD is the full HEAD commit of wsPath, or "" outside a git work
 // tree (directory workspaces), where the commit stamp cannot be checked.

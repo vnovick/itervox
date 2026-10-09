@@ -1720,4 +1720,16 @@ func TestProfileRequireEvidence(t *testing.T) {
 	_, err = load("      require_evidence: [test, 3]\n")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "require_evidence entries must be names")
+
+	// The schema-2 (file-backed profiles) branch parses it the same way.
+	loadV2 := func(value string) (*config.Config, error) {
+		block := "      command: claude\n" + schema2ProfileFileFields(t, "      ") + "      require_evidence: " + value + "\n"
+		return config.Load(workflowWithContent(t, minimalV2("agent:\n  profiles:\n    impl:\n"+block)))
+	}
+	cfg, err = loadV2("[Test, lint]")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "lint"}, cfg.Agent.Profiles["impl"].RequireEvidence)
+	_, err = loadV2("true")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names")
 }
