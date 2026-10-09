@@ -201,7 +201,7 @@ A GitHub issue's identifier is its number with a hash: `#42`. That is what the d
 | `issue.url` | | The issue's GitHub URL |
 | `issue.labels` | `["todo", "bug"]` | Lower-cased label names |
 | `issue.priority` | `0`–`3` | From `p0`–`p3`; **unset when there is no priority label** |
-| `issue.branch_name` | `feature/42-login` | **Unset** until an agent has created a branch for the issue |
+| `issue.branch_name` | `itervox/42` | **Unset** on the issue's first run; afterwards the branch recorded on the issue |
 | `issue.blocked_by` | | Blockers parsed from the body |
 
 Templates render with strict variables: printing a variable that is unset fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`), and why the optional fields above need a guard:
@@ -214,7 +214,9 @@ Branch: {{ issue.branch_name | default: issue.identifier }}
 
 `p0` is the number `0`, which Liquid treats as set, so these guards keep it.
 
-Branches: when an agent creates its feature branch, Itervox records it on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), because GitHub issues have no branch field. The first turn of every later run reads it back, so `{{ issue.branch_name }}` names the branch in the prompt and the marker is not posted again; it is re-posted only when the branch changes. The worktree itself is set up before that read: a retry continues on the branch of the issue's open pull request when there is one, or in the workspace left by the previous run when it still exists.
+Branches: with `workspace.worktree: true`, which `itervox init` writes, each issue gets its own git worktree on a branch named after it, `itervox/42` for `#42`. A later run checks that branch out again when it still exists, so work continues where it stopped. When the issue body links an open pull request, the worktree uses the pull request's branch instead.
+
+After a turn that ends on any branch other than `main`, `master` or `develop` (or a detached `HEAD`), Itervox records the branch on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), because GitHub issues have no branch field. With worktrees that happens after the first turn, since `itervox/42` already counts. The comment is posted again only when the branch changes. The first turn of each later run reads it back, so `{{ issue.branch_name }}` names the branch in the prompt.
 
 Only issues are picked up. GitHub's issues API also returns pull requests, and a PR can carry the same labels, but Itervox skips every pull request.
 
@@ -240,7 +242,7 @@ Itervox polls every `polling.interval_ms`, dispatches labelled issues up to `age
 | Branch | Hidden marker comment on the issue | Native branch field |
 | Identifier | `#42` | `ENG-42` |
 
-The per-issue reads are why polling cost grows with the number of running issues on GitHub. The 5,000 requests per hour of an authenticated token is plenty for a handful of concurrent agents at the default interval; lower `polling.interval_ms` only if you need faster pickup. If GitHub does rate-limit Itervox, it waits for the published reset, and queued comments and label changes show a **rate limited until HH:MM** chip in the dashboard's Outbox panel. They are never dropped or posted twice.
+The per-issue reads are why polling cost grows with the number of running issues on GitHub. The 5,000 requests per hour of an authenticated token is plenty for a handful of concurrent agents at the default interval; lower `polling.interval_ms` only if you need faster pickup. If GitHub does rate-limit Itervox, it waits for the published reset, and queued comments and label changes show a **rate limited until HH:MM** chip in the dashboard's Outbox panel. They are held until the reset, not dropped or posted twice.
 
 ## GitHub Enterprise
 
