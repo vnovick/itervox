@@ -29,6 +29,7 @@ var verdictPathRe = regexp.MustCompile("run\\.review_verdict_path: `([^`]+)`")
 // commitAsReviewer, also commits a change, which reviewers must not do.
 type reviewScriptRunner struct {
 	commitAsReviewer bool
+	skipVerdict      bool
 	mu               sync.Mutex
 	commands         []string
 	prompts          []string
@@ -38,8 +39,9 @@ func (r *reviewScriptRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(a
 	r.mu.Lock()
 	r.commands = append(r.commands, command)
 	r.prompts = append(r.prompts, prompt)
+	skip := r.skipVerdict
 	r.mu.Unlock()
-	if m := verdictPathRe.FindStringSubmatch(prompt); m != nil {
+	if m := verdictPathRe.FindStringSubmatch(prompt); m != nil && !skip {
 		verdict := `{"verdict":"approve","reasons":["looks correct"]}`
 		if strings.HasPrefix(command, "codex") {
 			verdict = `{"verdict":"block","reasons":["missing test for the empty config"],` +
@@ -258,4 +260,160 @@ func TestReadOnlyReviewerRunCommitsNothing(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(ws, ".itervox", "handoff"))
 	require.NoError(t, err)
 	assert.Len(t, entries, 2, "the reviewer's handoff is written but left uncommitted")
+}
+
+// TestReconcileKeepsReviewerOnlyInCompletionState (#79): a reviewer run is
+// kept while its issue sits in completion_state, but an operator moving the
+// issue elsewhere (backlog) still stops it, as it stops any worker.
+func TestReconcileKeepsReviewerOnlyInCompletionState(t *testing.T) {
+	for _, tc := range []struct {
+		trackerState string
+		kept         bool
+	}{{"In Review", true}, {"Backlog", false}, {"In Progress", true}} {
+		t.Run(tc.trackerState, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Tracker.CompletionState = "In Review"
+			mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", tc.trackerState, nil, nil)},
+				cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+			state := orchestrator.NewState(cfg)
+			state.Running["id1"] = &orchestrator.RunEntry{Issue: makeIssue("id1", "ENG-1", "In Review", nil, nil), Kind: "reviewer"}
+			events := make(chan orchestrator.OrchestratorEvent, 4)
+			state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, func(string) {})
+			_, running := state.Running["id1"]
+			assert.Equal(t, tc.kept, running)
+		})
+	}
+}
+
+// TestReviewerVerdictIsNotReusedAcrossRounds (#79): a reviewer that records
+// no verdict in a later round is a block ("no verdict recorded"), not the
+// earlier round's verdict posted again.
+func TestReviewerVerdictIsNotReusedAcrossRounds(t *testing.T) {
+	ws := gitInitRepo(t)
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Tracker.WorkingState = "In Progress"
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.MaxTurns = 1
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{"reviewer": {Command: "claude", Instructions: "Review it."}}
+	mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", "In Review", nil, nil)},
+		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	runner := &reviewScriptRunner{}
+	orch := orchestrator.New(cfg, mt, runner, &recordingWorkspaceProvider{path: ws})
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	require.Eventually(t, func() bool { return orch.DispatchReviewer("ENG-1") == nil }, 2*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return strings.Contains(issueComments(t, mt), "Review by `reviewer` (claude): ✅ approve")
+	}, 6*time.Second, 25*time.Millisecond)
+
+	runner.mu.Lock()
+	runner.skipVerdict = true // round 2: the reviewer writes nothing
+	runner.mu.Unlock()
+	require.Eventually(t, func() bool {
+		_, running := orch.Snapshot().Running["id1"]
+		return !running && orch.DispatchReviewer("ENG-1") == nil
+	}, 3*time.Second, 25*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return strings.Contains(issueComments(t, mt), "no verdict recorded")
+	}, 6*time.Second, 25*time.Millisecond, "round 2 must not reuse round 1's approval")
+	assert.Equal(t, 1, strings.Count(issueComments(t, mt), "✅ approve"))
+}
+
+// TestEveryChainReviewerGetsTheReviewerTemplate (#79): reviewers 2..n of a
+// chain render reviewer_prompt like the first, not the implementer prompt.
+func TestEveryChainReviewerGetsTheReviewerTemplate(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Tracker.CompletionState = "Done"
+	cfg.Agent.MaxTurns = 1
+	cfg.Agent.AutoReview = true
+	cfg.PromptTemplate = "IMPLEMENTER TEMPLATE {{ issue.identifier }}"
+	cfg.Agent.ReviewerPrompt = "REVIEWER TEMPLATE {{ issue.identifier }}"
+	cfg.Agent.ReviewerProfile = "reviewer-codex"
+	cfg.Agent.ReviewerProfiles = []string{"reviewer-codex", "reviewer"}
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer":    {Command: "claude"},
+		"reviewer":       {Command: "claude"},
+		"reviewer-codex": {Command: "codex", Backend: "codex"},
+	}
+	mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", "In Progress", nil, nil)},
+		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	runner := &reviewScriptRunner{}
+	orch := orchestrator.New(cfg, mt, runner, &recordingWorkspaceProvider{path: t.TempDir()})
+	orch.SetIssueProfile("ENG-1", "implementer")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	require.Eventually(t, func() bool { return strings.Contains(issueComments(t, mt), "Review result") }, 6*time.Second, 25*time.Millisecond)
+
+	_, prompts := runner.snapshot()
+	require.Len(t, prompts, 3)
+	assert.True(t, strings.HasPrefix(prompts[0], "IMPLEMENTER TEMPLATE ENG-1"))
+	assert.True(t, strings.HasPrefix(prompts[1], "REVIEWER TEMPLATE ENG-1"), "first reviewer")
+	assert.True(t, strings.HasPrefix(prompts[2], "REVIEWER TEMPLATE ENG-1"), "second reviewer of the chain")
+}
+
+// TestOrchestratorNeverPushesForAReviewer (#79): on a PR-continuation run
+// Itervox pushes the implementer's work, but never the branch after a
+// reviewer run: a reviewer's local commit does not reach the remote through
+// Itervox (and is flagged).
+func TestOrchestratorNeverPushesForAReviewer(t *testing.T) {
+	ws := gitInitRepo(t)
+	origin := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "--bare", "-b", "main"}} {
+		out, err := gitexec.Command(context.Background(), origin, args...).CombinedOutput()
+		require.NoError(t, err, "%s", out)
+	}
+	for _, args := range [][]string{{"remote", "add", "origin", origin}, {"push", "-q", "origin", "itervox/eng-1"}} {
+		out, err := gitexec.Command(context.Background(), ws, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	const prURL = "https://github.com/o/r/pull/9"
+	ghDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(ghDir, "gh"), []byte(`#!/bin/sh
+case "$*" in
+  "pr view `+prURL+` --json state,headRefName,body,isDraft") echo '{"state":"OPEN","headRefName":"itervox/eng-1","body":"","isDraft":false}' ;;
+esac
+`), 0o755))
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Tracker.WorkingState = "In Progress"
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.MaxTurns = 1
+	cfg.Agent.AutoReview = true
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Workspace.BaseBranch = "main"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"implementer": {Command: "claude", Instructions: "Implement it."},
+		"reviewer":    {Command: "claude", Instructions: "Review it."},
+	}
+	issue := makeIssue("id1", "ENG-1", "In Progress", nil, nil)
+	desc := "Follow-up on " + prURL
+	issue.Description = &desc
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	runner := &reviewScriptRunner{commitAsReviewer: true}
+	orch := orchestrator.New(cfg, mt, runner, &recordingWorkspaceProvider{path: ws})
+	orch.SetIssueProfile("ENG-1", "implementer")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	require.Eventually(t, func() bool {
+		_, running := orch.Snapshot().Running["id1"]
+		issues, err := mt.FetchIssueStatesByIDs(context.Background(), []string{"id1"})
+		return strings.Contains(issueComments(t, mt), "Review by `reviewer`") && !running &&
+			err == nil && issues[0].State == "In Review"
+	}, 6*time.Second, 25*time.Millisecond, "the reviewer run finishes completely (a push would come after its comment)")
+	time.Sleep(200 * time.Millisecond)
+
+	remote, err := gitexec.Command(context.Background(), origin, "log", "--format=%s", "itervox/eng-1").Output()
+	require.NoError(t, err)
+	assert.Contains(t, string(remote), "chore(itervox): record agent handoff", "the implementer's run was pushed")
+	assert.NotContains(t, string(remote), "fix: reviewer corrections", "the reviewer's commit was not pushed by Itervox")
+	assert.Contains(t, issueComments(t, mt), "⚠️ This reviewer changed the branch (committed")
 }
