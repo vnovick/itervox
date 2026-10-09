@@ -2,6 +2,8 @@ package prompt
 
 import (
 	"fmt"
+	"maps"
+	"regexp"
 	"strings"
 	"time"
 
@@ -42,12 +44,47 @@ func RenderWith(tmpl string, issue domain.Issue, attempt *int, extra map[string]
 	bindings["issue"] = issueToMap(issue)
 	bindings["attempt"] = attemptValue(attempt)
 
-	out, err := tpl.Render(bindings)
-	if err != nil {
-		return "", fmt.Errorf("template_render_error: %w", err)
+	out, renderErr := renderBlankingOptional(tpl, bindings)
+	if renderErr != nil {
+		return "", fmt.Errorf("template_render_error: %w", renderErr)
 	}
 
 	return string(out), nil
+}
+
+// optionalIssueText are the issue fields where "absent" and "empty" mean the
+// same thing to a prompt (#102). Unset, they bind as nil, so a guard such as
+// `{% if issue.description %}` skips its block (an empty string is truthy in
+// Liquid). Printed without a guard, strict variables would fail the render on
+// nil, so renderBlankingOptional renders them as empty text instead.
+var optionalIssueText = map[string]bool{"description": true, "branch_name": true, "url": true}
+
+// undefinedOutputRe extracts the variable a strict-variables error names,
+// e.g. `undefined variable in {{ issue.description | strip }}`.
+var undefinedOutputRe = regexp.MustCompile(`undefined variable in \{\{-?\s*issue\.([a-z_]+)\s*(?:\||-?\}\})`)
+
+// renderBlankingOptional renders tpl with strict variables. When the render
+// fails only because an unset optional issue field is printed, that field is
+// bound to "" and the template rendered again, still strictly, so a misspelt
+// variable (`{{ issue.descripton }}`) is still an error. Guards on the field
+// are unaffected unless the template also prints it unguarded.
+func renderBlankingOptional(tpl *liquid.Template, bindings map[string]any) ([]byte, error) {
+	issue, _ := bindings["issue"].(map[string]any)
+	for range len(optionalIssueText) + 1 {
+		out, err := tpl.Render(bindings)
+		if err == nil {
+			return out, nil
+		}
+		m := undefinedOutputRe.FindStringSubmatch(err.Error())
+		if m == nil || issue == nil || !optionalIssueText[m[1]] || issue[m[1]] != nil {
+			return nil, err
+		}
+		issue = maps.Clone(issue)
+		issue[m[1]] = ""
+		bindings = maps.Clone(bindings)
+		bindings["issue"] = issue
+	}
+	return nil, fmt.Errorf("template_render_error: unreachable")
 }
 
 // RenderPromptOverlay renders a plain-text or Liquid prompt fragment using the
@@ -72,8 +109,8 @@ func RenderPromptOverlay(promptText string, issue domain.Issue, attempt *int, ex
 		bindings[key] = value
 	}
 
-	out, err := tpl.Render(bindings)
-	if err != nil {
+	out, renderErr := renderBlankingOptional(tpl, bindings)
+	if renderErr != nil {
 		return promptText
 	}
 
