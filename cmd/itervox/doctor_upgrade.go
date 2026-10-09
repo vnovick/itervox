@@ -450,21 +450,29 @@ func ruleBackendContradictsCommand(p upgradeProbe) (string, string, bool) {
 			check("profile "+n, strValue(pm, "command"), strValue(pm, "backend"))
 		}
 	}
-	// A rate_limited rule that switches backend without switching profile
-	// keeps the issue's command; over the default command that is refused.
+	// A rate_limited rule's switch_to_backend must match the command of its
+	// switch_to_profile (or agent.command when that profile sets none):
+	// v0.2.0 started with a contradiction, v0.2.1 refuses to (CORE-010).
+	profiles, _ := ag["profiles"].(map[string]any)
 	if autos, ok := p.Front["automations"].([]any); ok {
 		for _, a := range autos {
 			am, _ := a.(map[string]any)
 			pol := section(am, "policy")
-			if to := strValue(pol, "switch_to_backend"); to != "" && strValue(pol, "switch_to_profile") == "" {
-				check(fmt.Sprintf("automation %v (switch_to_backend over agent.command)", am["id"]), defaultCommand, to)
+			to := strValue(pol, "switch_to_backend")
+			if to == "" {
+				continue
 			}
+			command := defaultCommand
+			if pm, ok := profiles[strValue(pol, "switch_to_profile")].(map[string]any); ok && strValue(pm, "command") != "" {
+				command = strValue(pm, "command")
+			}
+			check(fmt.Sprintf("automation %v (switch_to_backend over profile %q)", am["id"], strValue(pol, "switch_to_profile")), command, to)
 		}
 	}
 	if len(bad) == 0 {
 		return "", "", false
 	}
-	return strings.Join(bad, "; ") + "; the backend is now refused with a warning instead of applied",
+	return strings.Join(bad, "; ") + "; the backend is now refused with a warning instead of applied, and a rate_limited rule with such a switch stops the config from loading",
 		"set a backend only for wrapper commands, or point the profile at the other backend's command", true
 }
 
@@ -497,7 +505,7 @@ func ruleLegacyPIDFile(p upgradeProbe) (string, string, bool) {
 		return "", "", false
 	}
 	fields := strings.Split(strings.TrimSpace(string(raw)), "\t")
-	if len(fields) >= 3 && fields[2] == pidRecordLockMarker {
+	if len(fields) >= 3 && fields[len(fields)-1] == pidRecordLockMarker {
 		return "", "", false
 	}
 	return fmt.Sprintf("%s was written by a pre-v0.2.1 daemon (no pid lock)", pidPath),
@@ -532,11 +540,15 @@ func runtimeStateIn(dir string) string {
 }
 
 // ranBeforeV021 reports signs that a pre-v0.2.1 daemon ran this project:
-// state in its v0.2.0 log directory, or a PID record without the lock
-// marker. A fresh install has neither.
+// state in its v0.2.0 per-slug log directory, or a PID record without the
+// lock marker. The slugless v0.2.0 directory (~/.itervox/logs) was shared by
+// every slugless project, so state there says nothing about THIS project.
 func ranBeforeV021(p upgradeProbe) bool {
-	if logs := v020LogsDir(p); logs != "" && runtimeStateIn(logs) != "" {
-		return true
+	tr := section(p.Front, "tracker")
+	if strValue(tr, "kind") != "" && strValue(tr, "project_slug") != "" {
+		if logs := v020LogsDir(p); logs != "" && runtimeStateIn(logs) != "" {
+			return true
+		}
 	}
 	_, _, legacy := ruleLegacyPIDFile(p)
 	return legacy
@@ -553,13 +565,13 @@ func ruleLoopbackAuth(p upgradeProbe) (string, string, bool) {
 		}
 	}
 	switch strValue(srv, "host") {
-	case "", "127.0.0.1", "localhost", "::1", "[::1]":
+	case "", "127.0.0.1", "localhost", "::1": // v0.2.0's token-free binds
 	default:
 		return "", "", false // a non-loopback bind already required a token
 	}
 	if p.getenv("ITERVOX_API_TOKEN") != "" || !ranBeforeV021(p) {
 		return "", "", false
 	}
-	return "this project ran a pre-v0.2.1 daemon on loopback, where the API needed no token; it now answers 401 without one, so local scripts, bookmarks and the Vite dev proxy need the token",
-		"pin `ITERVOX_API_TOKEN` in `.itervox/.env` (or read `<logs-dir>/api-token`, rewritten on every start) and send it as `Authorization: Bearer`; or set `server.allow_unauthenticated: true` to opt out", true
+	return "this project (or another checkout with the same tracker kind and slug) ran a pre-v0.2.1 daemon on loopback, where the API needed no token; it now answers 401 without one, so local scripts, bookmarks and the Vite dev proxy need the token",
+		"pin `ITERVOX_API_TOKEN` in `.itervox/.env` (or read `<logs-dir>/api-token`, rewritten on every start) and send it as `Authorization: Bearer`; or set `server.allow_unauthenticated: true` to opt out. This note stops once the token is pinned or the old v0.2.0 state is deleted", true
 }

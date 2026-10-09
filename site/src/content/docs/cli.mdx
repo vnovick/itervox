@@ -208,11 +208,11 @@ With nothing to change it prints one `upgrade: all clear` line and exits `0`; wi
 | 17, 22 — drain on SIGTERM, new systemd unit | the installed unit lacks `--shutdown-grace` or `KillMode=mixed` |
 | 19 — `PORT` moves the dashboard | `PORT` is set (even empty) and `ITERVOX_SERVER_PORT` is not; an invalid value is reported as a startup failure |
 | 20 — headless JSON stderr | `ITERVOX_LOG_FORMAT=json` |
-| Breaking (#48) — token auth on loopback | this project ran a pre-v0.2.1 daemon (state in its v0.2.0 log directory, or an old PID file) on a loopback or default host, auth is not disabled, and no `ITERVOX_API_TOKEN` is pinned |
+| Breaking (#48) — token auth on loopback | this project ran a pre-v0.2.1 daemon (state in its v0.2.0 per-slug log directory, or an old PID file) on a loopback or default host, auth is not disabled, and no `ITERVOX_API_TOKEN` is pinned |
 | Breaking — `allow_unauthenticated_lan` renamed | the old key is set |
-| CORE-115 — backend contradicts command | `agent`, a profile, or a `rate_limited` rule's `switch_to_backend` (without `switch_to_profile`) asks for the other backend than its command runs; `agent.command` defaults to `claude` |
+| CORE-115 — backend contradicts command | `agent`, a profile, or a `rate_limited` rule's `switch_to_backend` asks for the other backend than the command runs (the rule's `switch_to_profile` command, else `agent.command`, which defaults to `claude`); such a rule now stops the config from loading |
 
-Not reported: notes that apply the same way to every install (1–4, 7, 8, 16, 18, 21, 25–27), deployment packaging (23, 24, 28–30), and keys that are new in v0.2.1, so no earlier config has them (`agent.backend_fallback`, `server.allowed_hosts` entry format). A malformed new key makes the config fail to load, which plain `itervox doctor` reports. Read every note in the [v0.2.1 CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28).
+Not reported: notes with nothing to change in a config (1–4, 7, 8, 16, 18, 21, 25–27; note 2 concerns Linear only and note 4 only setups that use a project filter, but neither needs a config change), deployment packaging (23, 24, 28–30), and keys that are new in v0.2.1, so no earlier config has them (`agent.backend_fallback`, `server.allowed_hosts` entry format). A malformed new key makes the config fail to load, which plain `itervox doctor` reports. Read every note in the [v0.2.1 CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28).
 
 ---
 
