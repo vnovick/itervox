@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 )
 
@@ -16,19 +17,31 @@ import (
 // A profile's SOUL.md / INSTRUCTIONS.md is free text, so only forms that
 // ordinary prose does not produce are checked:
 //
-//	@agent-<name>                   a subagent (Claude Code's @-mention), at a word start
+//	@agent-<name>                   a subagent (Claude Code's @-mention)
 //	`<name>` skill / skills         backticked name(s), then the word "skill(s)" on the same line
 //	`<name>` subagent / subagents   backticked name(s), then the word "subagent(s)" on the same line
 //
+// "@agent-" counts at the start of the text or after whitespace or one of
+// ( [ { , ; " ' ` * _ < > — so "`@agent-x`", "**@agent-x**" and
+// "<@agent-x>" are references, while "me@agent-x.com" and URLs are not. A
+// name directly followed by a letter or digit, or by an underscore that
+// continues the word ("@agent-foo_bar"), is not a valid name and is
+// skipped rather than truncated.
+//
 // A list such as "`a`, `b`, and `c` skills" (separators , & / ; + and or,
-// in any combination) names every item. Names follow Claude Code's naming
-// rule (lower-case letters, digits, hyphens, starting with a letter),
-// optionally prefixed `<plugin>:`, and are matched against the inventory
-// case-insensitively. "skill"/"subagent" must end a word (not "skill-level")
-// and must not be followed by a word that makes it a noun modifier
-// ("skills directory", "subagent file", …). Fenced code blocks (``` or ~~~
-// at the start of a line) are ignored. Slash commands (`/name`) are
-// deliberately not checked: they also name built-in commands and file paths.
+// in any combination, on one line) names every item. Only a contiguous run
+// of backticked names directly before the noun counts: "`a` and the `b`
+// skills" names only b, and "(or `b`)", "etc.", lists wrapped across lines
+// and table cells are not followed. Names follow Claude Code's naming rule
+// (lower-case letters, digits, hyphens, starting with a letter), optionally
+// prefixed `<plugin>:`, and are matched against the inventory
+// case-insensitively. "skill"/"subagent" must end a word (not
+// "skill-level") and must not be followed by a word that makes it a noun
+// modifier ("skills directory", "subagent file", …). Fenced code blocks are
+// ignored (see blankFencedBlocks). Slash commands (`/name`) are
+// deliberately not checked: they also name built-in commands and file
+// paths. Every limit errs towards not checking a reference, never towards
+// a false warning.
 
 const refNamePattern = "[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?"
 
@@ -40,29 +53,60 @@ const refListSep = "(?:[ \\t]*(?:,|&|/|;|\\+|\\band\\b|\\bor\\b)[ \\t]*)+"
 const refNounModifiers = "(?:directory|directories|dir|dirs|folder|folders|file|files|module|modules|option|options|setting|settings|path|paths|list|lists|format|level|name|names|field|fields|section|sections|header|headers|config|configuration|schema|tree|table)"
 
 var (
-	refAgentMentionRe = regexp.MustCompile(`(?:^|[\s(\[{,;"'])@agent-(` + refNamePattern + `)`)
+	refAgentMentionRe = regexp.MustCompile("(?:^|[\\s(\\[{,;\"'`*_<>])@agent-(" + refNamePattern + ")")
 	refNamedListRe    = regexp.MustCompile("(`" + refNamePattern + "`(?:" + refListSep + "`" + refNamePattern + "`)*)[ \\t]+(?i:(skills?|subagents?))(?:[^\\w-]|$)")
 	refNounAfterRe    = regexp.MustCompile("^(?i)[ \\t]+" + refNounModifiers + "\\b")
 	refBacktickedRe   = regexp.MustCompile("`(" + refNamePattern + ")`")
-	refFenceLineRe    = regexp.MustCompile("^[ ]{0,3}(```|~~~)")
 )
 
-// blankFencedBlocks replaces the content of Markdown fenced code blocks
-// (opened by ``` or ~~~ at the start of a line, up to three spaces of
-// indent, and closed by the same marker) with spaces, keeping newlines so
-// positions stay stable. An unclosed fence runs to the end of the text, as
-// in Markdown.
+// refFenceContainerRe strips the container prefix of a line: blockquote
+// markers and a list-item marker, with their indentation.
+var refFenceContainerRe = regexp.MustCompile(`^[ \t]*(?:>[ \t]?[ \t]*)*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?[ \t]*`)
+
+// refFence is an open fenced code block: its marker character and length.
+type refFence struct {
+	char byte
+	n    int
+}
+
+// fenceRun returns the fence marker a line's content starts with — three or
+// more of the same "`" or "~" — and what follows it, or ok=false.
+func fenceRun(line string) (f refFence, rest string, ok bool) {
+	content := refFenceContainerRe.ReplaceAllString(strings.TrimRight(line, "\r\n"), "")
+	if len(content) < 3 || (content[0] != '`' && content[0] != '~') {
+		return refFence{}, "", false
+	}
+	n := 0
+	for n < len(content) && content[n] == content[0] {
+		n++
+	}
+	if n < 3 {
+		return refFence{}, "", false
+	}
+	return refFence{char: content[0], n: n}, content[n:], true
+}
+
+// blankFencedBlocks replaces the content of Markdown fenced code blocks with
+// spaces, keeping newlines so positions stay stable. It follows CommonMark's
+// fence rules: a fence is a run of three or more "`" or "~" (a backtick
+// fence's info string may not contain a backtick) and is closed by a run of
+// the same character at least as long with nothing else on the line; an
+// unclosed fence runs to the end of the text. It is deliberately lenient
+// about containers — a fence counts after any blockquote ">" markers, a
+// list-item marker and any indentation — so a fence inside a list item or a
+// quote is still skipped. Erring this way can only hide a reference, never
+// invent one.
 func blankFencedBlocks(text string) string {
 	lines := strings.SplitAfter(text, "\n")
-	fence := ""
+	var open *refFence
 	for i, line := range lines {
-		m := refFenceLineRe.FindStringSubmatch(line)
+		f, rest, ok := fenceRun(line)
 		switch {
-		case fence == "" && m != nil:
-			fence = m[1]
-		case fence != "" && m != nil && m[1] == fence:
-			fence = ""
-		case fence == "":
+		case open == nil && ok && (f.char != '`' || !strings.Contains(rest, "`")):
+			open = &f
+		case open != nil && ok && f.char == open.char && f.n >= open.n && strings.TrimSpace(rest) == "":
+			open = nil
+		case open == nil:
 			continue
 		}
 		lines[i] = strings.Map(func(r rune) rune {
@@ -73,6 +117,19 @@ func blankFencedBlocks(text string) string {
 		}, line)
 	}
 	return strings.Join(lines, "")
+}
+
+// mentionNameContinues reports whether the text right after an @agent-
+// name continues it with characters a name cannot hold: a letter or digit,
+// or underscores followed by one ("_" or "__" alone may close emphasis, as
+// in "_@agent-x_").
+func mentionNameContinues(after string) bool {
+	rest := strings.TrimLeft(after, "_")
+	if rest == "" {
+		return false
+	}
+	c := rest[0]
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // PromptRef is one explicit skill or subagent reference found in a profile
@@ -92,6 +149,9 @@ func ExtractPromptRefs(text string) []PromptRef {
 	}
 	var hits []hit
 	for _, m := range refAgentMentionRe.FindAllStringSubmatchIndex(text, -1) {
+		if mentionNameContinues(text[m[3]:]) {
+			continue // "@agent-foo_bar" / "@agent-fooBar" is not a valid name
+		}
 		hits = append(hits, hit{m[2], "subagent", text[m[2]:m[3]]})
 	}
 	for _, m := range refNamedListRe.FindAllStringSubmatchIndex(text, -1) {
@@ -140,41 +200,51 @@ func commandBinaryBackend(command string) string {
 	return ""
 }
 
-// profileBackend mirrors the orchestrator's dispatch resolver
+// ProfileBackend returns the runner ("claude" or "codex") a profile runs on.
+// It replays the orchestrator's dispatch resolver
 // (internal/orchestrator/dispatch_resolve.go resolveDispatchTarget) for the
-// static part of the decision: the default command's backend, then
-// agent.backend, then the profile's command (which replaces the command and
-// its backend), then the profile's backend. A requested backend is honoured
-// only when the command's binary is unrecognised or already matches; a
-// conflicting request keeps the binary's backend. An undetermined backend
-// runs on the default (Claude) runner. Per-issue pins and rate-limit
-// switches are runtime decisions and are not modelled.
-func profileBackend(p config.AgentProfile, d RefBackendDefaults) string {
+// static part of the decision and then routes the resulting runner command
+// the way agent.MultiRunner does, so the answer is the runner that would
+// actually execute: the default command, then agent.backend, then the
+// profile's command (which replaces the command), then the profile's
+// backend. A requested backend is honoured only when the command's binary
+// is unrecognised or already matches; a conflicting request keeps the
+// binary. MultiRunner routes by agent.BackendFromCommand of the runner
+// command and sends anything other than codex to the default (Claude)
+// runner. Per-issue pins and rate-limit switches are runtime decisions and
+// are not modelled.
+func ProfileBackend(p config.AgentProfile, d RefBackendDefaults) string {
 	cmd := d.Command
-	backend := config.BackendFromCommand(cmd)
-	// Values are used exactly as configured, like the resolver: a padded
-	// " codex" becomes a hint ParseBackendHint rejects, and the run falls
-	// back to the Claude runner.
+	runner := cmd
 	request := func(b string) {
 		if b == "" {
 			return
 		}
 		if bin := commandBinaryBackend(cmd); bin != "" && bin != b {
-			backend = bin
+			runner = stripBackendHint(cmd)
 			return
 		}
-		backend = b
+		runner = agent.CommandWithBackendHint(cmd, b)
 	}
 	request(d.Backend)
 	if p.Command != "" {
 		cmd = p.Command
-		backend = config.BackendFromCommand(cmd)
+		runner = cmd
 	}
 	request(p.Backend)
-	if backend != "codex" {
-		return "claude"
+	if agent.BackendFromCommand(runner) == "codex" {
+		return "codex"
 	}
-	return backend
+	return "claude"
+}
+
+// stripBackendHint returns command without a leading backend hint (the
+// resolver's helper of the same name).
+func stripBackendHint(command string) string {
+	if hinted, rest := config.ParseBackendHint(command); hinted != "" {
+		return rest
+	}
+	return command
 }
 
 // refTarget is one resolvable name with where it comes from.
@@ -262,7 +332,7 @@ func ValidateProfileRefs(inv *Inventory, profiles map[string]config.AgentProfile
 	var issues []InventoryIssue
 	for _, name := range names {
 		p := profiles[name]
-		backend := profileBackend(p, defaults)
+		backend := ProfileBackend(p, defaults)
 		skillIdx, agentIdx := resolvableNames(inv, backend)
 		for _, ref := range ExtractPromptRefs(p.Soul + "\n" + p.Instructions) {
 			idx := skillIdx

@@ -32,6 +32,12 @@ type Inventory struct {
 	Runtime      *RuntimeEvidenceSnapshot
 	Analytics    *AnalyticsSnapshot
 	Issues       []InventoryIssue
+	// WatchDirs are directories whose mtime gates the cache's staleness check
+	// (every directory the subagent scanner walked, plus the agents roots it
+	// looked for), so an agent file added to an existing — even empty —
+	// directory, or a root that appears later, marks the inventory stale.
+	// Not part of the API payload.
+	WatchDirs []string `json:"-"`
 }
 
 // Skill describes a single SKILL.md (or equivalent) entry discovered under

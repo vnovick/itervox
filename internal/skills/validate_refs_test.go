@@ -44,6 +44,65 @@ func TestExtractPromptRefsListsAndFences(t *testing.T) {
 	}, ExtractPromptRefs(text))
 }
 
+// TestExtractPromptRefsFenceRules pins CommonMark fence handling found in
+// review: fences inside list items and blockquotes, longer fences that a
+// shorter run does not close, closing lines that carry text, and backtick
+// info strings.
+func TestExtractPromptRefsFenceRules(t *testing.T) {
+	for name, text := range map[string]string{
+		"list item, four-space indent":            "1. Step one:\n\n    ```\n    Ask @agent-ghost.\n    ```\n",
+		"fence on the list marker line":           "- ```\n  Ask @agent-ghost.\n  ```\n",
+		"blockquote":                              "> ```\n> Ask @agent-ghost.\n> ```\n",
+		"nested blockquote":                       "> > ~~~\n> > Use the `ghost` skill.\n> > ~~~\n",
+		"four-backtick fence not closed by three": "````\n```\nAsk @agent-ghost.\n```\n````\n",
+		"closing line with text does not close":   "```\n``` not a close\nAsk @agent-ghost.\n```\n",
+		"tilde fence not closed by backticks":     "~~~\n```\nAsk @agent-ghost.\n~~~\n",
+		"unclosed fence runs to the end":          "```\nAsk @agent-ghost.",
+	} {
+		assert.Empty(t, ExtractPromptRefs(text), name)
+	}
+	// A backtick run whose "info string" holds a backtick is inline code,
+	// not a fence, so the text after it is still checked.
+	assert.Equal(t, []PromptRef{{Kind: "subagent", Name: "real"}},
+		ExtractPromptRefs("```inline ` code```\nAsk @agent-real."))
+	// Text after a properly closed long fence is checked again.
+	assert.Equal(t, []PromptRef{{Kind: "subagent", Name: "after"}},
+		ExtractPromptRefs("````md\n```\n@agent-ghost\n```\n````\nAsk @agent-after."))
+}
+
+// TestExtractPromptRefsAgentMentionBoundaries pins the "@agent-" start and
+// end rules found in review.
+func TestExtractPromptRefsAgentMentionBoundaries(t *testing.T) {
+	text := "Ask `@agent-in-code`, **@agent-bold**, _@agent-em_, __@agent-strong__, <@agent-angle> and >@agent-quoted."
+	assert.Equal(t, []PromptRef{
+		{Kind: "subagent", Name: "in-code"},
+		{Kind: "subagent", Name: "bold"},
+		{Kind: "subagent", Name: "em"},
+		{Kind: "subagent", Name: "strong"},
+		{Kind: "subagent", Name: "angle"},
+		{Kind: "subagent", Name: "quoted"},
+	}, ExtractPromptRefs(text))
+	for _, text := range []string{
+		"Ask @agent-foo_bar.",
+		"Ask @agent-fooBar.",
+		"Ask @agent-foo9_x.",
+		"Ask @agent-foo__bar.",
+	} {
+		assert.Empty(t, ExtractPromptRefs(text), "invalid name must be skipped, not truncated: %q", text)
+	}
+}
+
+// TestExtractPromptRefsDocumentedListLimits pins the list forms the package
+// doc says are not followed, so the documentation stays true.
+func TestExtractPromptRefsDocumentedListLimits(t *testing.T) {
+	assert.Equal(t, []PromptRef{{Kind: "skill", Name: "b"}},
+		ExtractPromptRefs("Use `a` and the `b` skills."))
+	assert.Equal(t, []PromptRef{{Kind: "skill", Name: "a"}},
+		ExtractPromptRefs("Use the `a` skill (or `b`)."))
+	assert.Equal(t, []PromptRef{{Kind: "skill", Name: "b"}},
+		ExtractPromptRefs("Use `a`,\n`b` skills."))
+}
+
 func TestExtractPromptRefsRecognisedForms(t *testing.T) {
 	text := "Ask @agent-code-reviewer first (or @agent-planner).\n" +
 		"Use the `verify-before-done` skill, then the `skill-a`, `demo-plugin:skill-b` and `go-hygiene` skills.\n" +
@@ -129,7 +188,7 @@ func TestProfileBackendMatchesDispatchResolver(t *testing.T) {
 		{"backend hint in the command", RefBackendDefaults{}, config.AgentProfile{Command: "@@itervox-backend=codex ./wrap"}, "codex"},
 	}
 	for _, tc := range cases {
-		assert.Equal(t, tc.want, profileBackend(tc.profile, tc.defaults), tc.name)
+		assert.Equal(t, tc.want, ProfileBackend(tc.profile, tc.defaults), tc.name)
 	}
 }
 

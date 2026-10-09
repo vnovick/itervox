@@ -95,9 +95,9 @@ Scanner failures are best-effort. If one scanner fails but another source succee
 
 ### Scan freshness
 
-The Settings UI shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`; click **Re-scan** to refresh the inventory and recommendations.
+The Settings UI shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
 
-Automatic stale detection is intentionally limited to the files the scanner tracks from known roots. Newly-created files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred so v0.2.0 does not add a noisy filesystem watcher.
+Automatic stale detection is intentionally limited to the files the scanner tracks from known roots. Subagents are the exception: every `.claude/agents` directory (and each subfolder in it) is watched, so adding an agent file marks the inventory stale. Newly-created skill files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred so v0.2.0 does not add a noisy filesystem watcher.
 
 ---
 

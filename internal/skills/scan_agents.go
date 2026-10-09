@@ -16,8 +16,10 @@ import (
 // (subdirectories included) whose YAML frontmatter has a `name`. Plugin
 // agents are added by subagentsFromPlugins. Malformed files are skipped with
 // an slog.Warn, as for skills. homeDir == "" disables the user-home walk.
-func scanClaudeAgents(projectDir, homeDir string) ([]Subagent, error) {
-	var out []Subagent
+//
+// watch lists the directories whose mtime should gate a rescan: each agents
+// root (present or not) and every directory walked beneath it.
+func scanClaudeAgents(projectDir, homeDir string) (out []Subagent, watch []string, err error) {
 	seen := make(map[string]struct{}, 8)
 	add := func(a Subagent) {
 		key := a.Name + "|" + a.Source
@@ -35,7 +37,10 @@ func scanClaudeAgents(projectDir, homeDir string) ([]Subagent, error) {
 		if root.dir == "" {
 			continue
 		}
-		walked, err := walkClaudeAgents(filepath.Join(root.dir, ".claude", "agents"), root.source)
+		agentsRoot := filepath.Join(root.dir, ".claude", "agents")
+		watch = append(watch, agentsRoot)
+		walked, dirs, err := walkClaudeAgents(agentsRoot, root.source)
+		watch = append(watch, dirs...)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -44,29 +49,32 @@ func scanClaudeAgents(projectDir, homeDir string) ([]Subagent, error) {
 			add(a)
 		}
 	}
-	return out, errors.Join(errs...)
+	return out, watch, errors.Join(errs...)
 }
 
-// walkClaudeAgents walks one .claude/agents root. A missing root returns
-// (nil, nil).
-func walkClaudeAgents(root, source string) ([]Subagent, error) {
+// walkClaudeAgents walks one .claude/agents root and returns its agents and
+// every directory it walked. A missing root returns (nil, nil, nil).
+func walkClaudeAgents(root, source string) (out []Subagent, dirs []string, err error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if !info.IsDir() {
-		return nil, nil
+		return nil, nil, nil
 	}
-	var out []Subagent
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			slog.Warn("skills: agents walk error", "path", path, "err", err)
 			return nil
 		}
-		if d.IsDir() || !strings.EqualFold(filepath.Ext(d.Name()), ".md") {
+		if d.IsDir() {
+			dirs = append(dirs, path)
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(d.Name()), ".md") {
 			return nil
 		}
 		if a, ok := parseAgentFile(path, source); ok {
@@ -74,7 +82,7 @@ func walkClaudeAgents(root, source string) ([]Subagent, error) {
 		}
 		return nil
 	})
-	return out, walkErr
+	return out, dirs, walkErr
 }
 
 // agentFrontmatter is the subset of a subagent's frontmatter we read.

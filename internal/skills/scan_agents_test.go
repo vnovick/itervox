@@ -71,3 +71,36 @@ func TestScanClaudeAgentsSkipsUserHomeWhenDisabled(t *testing.T) {
 	require.Len(t, inv.Subagents, 1, "the project agent is still scanned")
 	assert.Equal(t, "local", inv.Subagents[0].Name)
 }
+
+// TestCacheStalenessTracksAgentDirectories pins #86's cache behaviour found
+// in review: optional paths that do not exist (no .claude/agents, no
+// CLAUDE.md) must not keep the inventory permanently stale, while the first
+// agents directory appearing, an agent added to it, and an agent added to an
+// empty subdirectory each mark it stale.
+func TestCacheStalenessTracksAgentDirectories(t *testing.T) {
+	proj, home := t.TempDir(), t.TempDir()
+	c := NewCache()
+	refresh := func() {
+		t.Helper()
+		require.NoError(t, c.Refresh(func() (*Inventory, error) {
+			return Scan(proj, home, ScanOptions{SkipCodex: true})
+		}, TrackedPathsFor(proj, home)))
+		require.False(t, c.Stale(), "fresh refresh is not stale")
+	}
+
+	refresh()
+	assert.False(t, c.Stale(), "absent optional paths stay not-stale")
+
+	writeAgent(t, proj, "first.md", "---\nname: first\n---\n")
+	assert.True(t, c.Stale(), "the agents directory appearing marks the cache stale")
+	refresh()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(proj, ".claude", "agents", "team"), 0o755))
+	assert.True(t, c.Stale(), "a new subdirectory changes the agents root mtime")
+	refresh()
+
+	writeAgent(t, proj, filepath.Join("team", "second.md"), "---\nname: second\n---\n")
+	assert.True(t, c.Stale(), "an agent added to an existing empty subdirectory marks the cache stale")
+	refresh()
+	assert.Len(t, c.Get().Subagents, 2)
+}

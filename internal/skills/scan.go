@@ -56,10 +56,11 @@ func Scan(projectDir, homeDir string, opts ScanOptions) (*Inventory, error) {
 	}
 
 	// Subagents (#86): project + user .claude/agents, then plugin agents.
-	agents, err := scanClaudeAgents(projectDir, effectiveHome)
+	agents, agentDirs, err := scanClaudeAgents(projectDir, effectiveHome)
 	if err != nil {
 		errs = append(errs, err)
 	}
+	inv.WatchDirs = append(inv.WatchDirs, agentDirs...)
 	inv.Subagents = append(inv.Subagents, agents...)
 	inv.Subagents = append(inv.Subagents, subagentsFromPlugins(inv.Plugins)...)
 
