@@ -25,6 +25,8 @@ func TestInitLocalTrackerWorkflow(t *testing.T) {
 	assert.Contains(t, content, "kind: local")
 	assert.NotContains(t, content, "api_key")
 	assert.NotContains(t, content, "gh issue comment", "no GitHub step for a local tracker")
+	assert.NotContains(t, content, "issue.url", "local issues have no URL")
+	assert.Contains(t, content, "Issue file: .itervox/issues/{{ issue.identifier }}.md")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	require.NoError(t, writeInitAgentFiles(path, "claude"))
 

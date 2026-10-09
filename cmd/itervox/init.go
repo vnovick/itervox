@@ -238,7 +238,11 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("## Your issue\n\n")
 	b.WriteString("**{{ issue.identifier }}: {{ issue.title }}**\n\n")
 	b.WriteString("{% if issue.description %}\n{{ issue.description }}\n{% endif %}\n\n")
-	b.WriteString("Issue URL: {{ issue.url }}\n\n")
+	if trackerKind == "local" {
+		b.WriteString("Issue file: .itervox/issues/{{ issue.identifier }}.md\n\n")
+	} else {
+		b.WriteString("Issue URL: {{ issue.url }}\n\n")
+	}
 	b.WriteString("{% if issue.comments %}\n## Comments\n\n")
 	b.WriteString("{% for comment in issue.comments %}\n**{{ comment.author_name }}**: {{ comment.body }}\n\n{% endfor %}\n{% endif %}\n\n")
 	b.WriteString("---\n\n")
@@ -312,7 +316,11 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("git add <specific files>\n")
 	b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
 	b.WriteString("git push -u origin HEAD\n")
-	b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+	if trackerKind == "local" {
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Resolves {{ issue.identifier }}\"   # if the repository has a GitHub remote\n")
+	} else {
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+	}
 	b.WriteString("```\n\n---\n\n")
 
 	if trackerKind == "local" {

@@ -36,9 +36,13 @@ import (
 //	A comment body.
 //
 // The file name (without .md) is the issue identifier. `## Comments` is the
-// last level-2 heading of that name; each comment starts with a
-// `### <RFC 3339 time> — <author>` line. Front matter keys Itervox does not
-// know are kept.
+// last level-2 heading of that name that is followed by at least one comment;
+// each comment starts with a `### <RFC 3339 time> — <author>` line. Text
+// between the heading and the first comment is kept. Inside a comment body a
+// line that would read as that heading or as a comment header is written
+// with a leading backslash (Markdown shows it unchanged) and read back
+// without it, so no comment text can change the file's structure. Front
+// matter keys Itervox does not know are kept.
 
 // commentsHeading starts the comment section.
 const commentsHeading = "## Comments"
@@ -58,7 +62,9 @@ type issueFile struct {
 	Updated   *time.Time
 	Extra     map[string]any // unknown front matter keys, kept on rewrite
 	Body      string         // the description
-	Comments  []fileComment
+	// CommentsPreamble is text between `## Comments` and the first comment.
+	CommentsPreamble string
+	Comments         []fileComment
 }
 
 type fileComment struct {
@@ -127,7 +133,7 @@ func parseIssueFile(data []byte) (issueFile, error) {
 	if f.Updated, err = timeKey(raw, "updated"); err != nil {
 		return issueFile{}, err
 	}
-	f.Body, f.Comments = splitComments(strings.TrimLeft(body, "\n"))
+	f.Body, f.CommentsPreamble, f.Comments = splitComments(strings.TrimLeft(body, "\n"))
 	return f, nil
 }
 
@@ -185,51 +191,130 @@ func timeKey(m map[string]any, key string) (*time.Time, error) {
 	return nil, fmt.Errorf("%s must be an RFC 3339 time, got %v", key, v)
 }
 
-// splitComments separates the description from the comment section.
-func splitComments(body string) (string, []fileComment) {
-	lines := strings.Split(body, "\n")
-	idx := -1
+// isStructural reports whether line, outside a code fence, would read as
+// the comments heading or a comment header.
+func isStructural(line string) bool {
+	l := strings.TrimRight(line, " ")
+	if l == commentsHeading {
+		return true
+	}
+	if m := commentHeaderRe.FindStringSubmatch(l); m != nil {
+		_, err := time.Parse(time.RFC3339, m[1])
+		return err == nil
+	}
+	return false
+}
+
+// escapeStructure adds a backslash to each line outside a fence that is a
+// structural line after any leading backslashes; unescapeStructure removes
+// one, so any text round-trips.
+func escapeStructure(text string) string {
+	return mapUnfenced(text, func(l string) string {
+		if isStructural(strings.TrimLeft(l, `\`)) {
+			return `\` + l
+		}
+		return l
+	})
+}
+
+func unescapeStructure(text string) string {
+	return mapUnfenced(text, func(l string) string {
+		if strings.HasPrefix(l, `\`) && isStructural(strings.TrimLeft(l, `\`)) {
+			return l[1:]
+		}
+		return l
+	})
+}
+
+func mapUnfenced(text string, f func(string) string) string {
+	lines := strings.Split(text, "\n")
 	inFence := false
 	for i, l := range lines {
 		if strings.HasPrefix(strings.TrimSpace(l), "```") {
 			inFence = !inFence
+			continue
 		}
-		if !inFence && strings.TrimRight(l, " ") == commentsHeading {
-			idx = i // the last one wins: a description may quote the heading
+		if !inFence {
+			lines[i] = f(l)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// commentHeaderAt parses line as a comment header.
+func commentHeaderAt(line string) (fileComment, bool) {
+	m := commentHeaderRe.FindStringSubmatch(strings.TrimRight(line, " "))
+	if m == nil {
+		return fileComment{}, false
+	}
+	at, err := time.Parse(time.RFC3339, m[1])
+	if err != nil {
+		return fileComment{}, false
+	}
+	return fileComment{At: at, Author: strings.TrimSpace(m[2])}, true
+}
+
+// splitComments separates the description, the text before the first
+// comment, and the comments. A `## Comments` heading with no comment after
+// it is part of the description.
+func splitComments(body string) (desc, preamble string, comments []fileComment) {
+	lines := strings.Split(body, "\n")
+	// unfenced[i] is true when line i is outside a code fence.
+	unfenced := make([]bool, len(lines))
+	inFence := false
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "```") {
+			inFence = !inFence
+			continue
+		}
+		unfenced[i] = !inFence
+	}
+	idx := -1
+	for i := len(lines) - 1; i >= 0 && idx < 0; i-- {
+		if !unfenced[i] || strings.TrimRight(lines[i], " ") != commentsHeading {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if _, ok := commentHeaderAt(lines[j]); ok && unfenced[j] {
+				idx = i
+				break
+			}
 		}
 	}
 	if idx < 0 {
-		return strings.TrimRight(body, "\n"), nil
+		return strings.TrimRight(body, "\n"), "", nil
 	}
-	desc := strings.TrimRight(strings.Join(lines[:idx], "\n"), "\n")
-	var comments []fileComment
+	desc = strings.TrimRight(strings.Join(lines[:idx], "\n"), "\n")
 	var cur *fileComment
 	var buf []string
 	flush := func() {
-		if cur != nil {
-			cur.Body = strings.Trim(strings.Join(buf, "\n"), "\n")
+		text := unescapeStructure(strings.Trim(strings.Join(buf, "\n"), "\n"))
+		if cur == nil {
+			preamble = text
+		} else {
+			cur.Body = text
 			comments = append(comments, *cur)
 		}
 		buf = nil
 	}
+	// A header inside a code fence belongs to the comment; render closes any
+	// fence a comment leaves open.
 	inFence = false
 	for _, l := range lines[idx+1:] {
+		if !inFence {
+			if c, ok := commentHeaderAt(l); ok {
+				flush()
+				cur = &c
+				continue
+			}
+		}
 		if strings.HasPrefix(strings.TrimSpace(l), "```") {
 			inFence = !inFence
-		}
-		if !inFence {
-			if m := commentHeaderRe.FindStringSubmatch(strings.TrimRight(l, " ")); m != nil {
-				if at, err := time.Parse(time.RFC3339, m[1]); err == nil {
-					flush()
-					cur = &fileComment{At: at, Author: strings.TrimSpace(m[2])}
-					continue
-				}
-			}
 		}
 		buf = append(buf, l)
 	}
 	flush()
-	return desc, comments
+	return desc, preamble, comments
 }
 
 // render serialises f in the canonical layout.
@@ -275,11 +360,30 @@ func (f issueFile) render() []byte {
 	}
 	if len(f.Comments) > 0 {
 		b.WriteString("\n" + commentsHeading + "\n")
+		if f.CommentsPreamble != "" {
+			b.WriteString("\n" + escapeStructure(f.CommentsPreamble) + "\n")
+		}
 		for _, c := range f.Comments {
-			fmt.Fprintf(&b, "\n### %s — %s\n\n%s\n", c.At.UTC().Format(time.RFC3339), c.Author, c.Body)
+			author := strings.TrimSpace(strings.ReplaceAll(c.Author, "\n", " "))
+			fmt.Fprintf(&b, "\n### %s — %s\n\n%s\n", c.At.UTC().Format(time.RFC3339), author, closeFences(escapeStructure(c.Body)))
 		}
 	}
 	return b.Bytes()
+}
+
+// closeFences closes a code fence a comment left open, so it cannot hide
+// the next comment's header.
+func closeFences(text string) string {
+	open := false
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "```") {
+			open = !open
+		}
+	}
+	if open {
+		return text + "\n```"
+	}
+	return text
 }
 
 // quoteAll renders list items as YAML flow scalars.

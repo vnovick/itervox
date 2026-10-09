@@ -274,3 +274,111 @@ func TestWriteIssueRefusesToOverwrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Example", is.Title)
 }
+
+// TestLocalIssueCommentsCannotChangeTheFileStructure (#85): comment text
+// that looks like the comments heading or a comment header, or leaves a
+// code fence open, reads back exactly after a restart and never moves text
+// into the description or invents a comment.
+func TestLocalIssueCommentsCannotChangeTheFileStructure(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: T\nstate: Todo\n---\n\nDesc.\n")
+	bodies := []string{
+		"first",
+		"Summary\n\n## Comments\n\nnone",
+		"log:\n### 2026-01-01T00:00:00Z — bot\nline",
+		"literal \\## Comments and\n\\## Comments\n\\\\### 2026-01-01T00:00:00Z — x",
+		"```\nunclosed fence\n### 2026-01-01T00:00:00Z — hidden",
+		"last",
+	}
+	for _, b := range bodies {
+		_, err := tr.CreateComment(ctx, "ITX-1", b)
+		require.NoError(t, err)
+	}
+	restarted := New(Config{Dir: dir})
+	is, err := restarted.FetchIssueDetail(ctx, "ITX-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Desc.", *is.Description)
+	require.Len(t, is.Comments, len(bodies))
+	for i, b := range bodies {
+		want := b
+		if i == 4 {
+			want += "\n```" // the fence is closed so the next comment is not hidden
+		}
+		assert.Equal(t, want, is.Comments[i].Body, "comment %d", i)
+		assert.Equal(t, ItervoxAuthor, is.Comments[i].AuthorName)
+	}
+
+	// A new issue whose body looks like a comment section keeps it as the
+	// description.
+	created, err := restarted.CreateIssue(ctx, "", "Spec", "Intro\n\n## Comments\n\n### 2026-01-01T00:00:00Z — x\n\ny", "Todo")
+	require.NoError(t, err)
+	got, err := New(Config{Dir: dir}).FetchIssueDetail(ctx, created.Identifier)
+	require.NoError(t, err)
+	assert.Empty(t, got.Comments)
+	assert.Contains(t, *got.Description, "Intro")
+}
+
+// TestLocalIssueKeepsTextUnderTheCommentsHeading (#85): a `## Comments`
+// heading with no comment after it is description, and text between the
+// heading and the first comment is kept when Itervox rewrites the file.
+func TestLocalIssueKeepsTextUnderTheCommentsHeading(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"),
+		"---\ntitle: T\nstate: Todo\n---\n\nIntro.\n\n## Comments\n\nPlease comment on the PR, not here.\n\nMore spec text.\n")
+	require.NoError(t, tr.UpdateIssueState(ctx, "ITX-1", "In Progress"))
+	is, err := New(Config{Dir: dir}).FetchIssueDetail(ctx, "ITX-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Intro.\n\n## Comments\n\nPlease comment on the PR, not here.\n\nMore spec text.", *is.Description)
+
+	writeRaw(t, filepath.Join(dir, "ITX-2.md"),
+		"---\ntitle: T\nstate: Todo\n---\n\nD.\n\n## Comments\n\nOperator note without a header.\n\n### 2026-10-09T12:00:00Z — alex\n\nHi.\n")
+	_, err = tr.CreateComment(ctx, "ITX-2", "Reply.")
+	require.NoError(t, err)
+	data, err := os.ReadFile(filepath.Join(dir, "ITX-2.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "Operator note without a header.")
+	is, err = New(Config{Dir: dir}).FetchIssueDetail(ctx, "ITX-2")
+	require.NoError(t, err)
+	require.Len(t, is.Comments, 2)
+	assert.Equal(t, "alex", is.Comments[0].AuthorName)
+	assert.Equal(t, "D.", *is.Description)
+}
+
+// TestLocalTrackerNeverOverwritesAnUnseenEdit (#85): an edit the scan cannot
+// see (same size, modification time restored) is still read before Itervox
+// writes the file, so it is kept, and an edit inside the same timestamp tick
+// as the last read is picked up on the next call.
+func TestLocalTrackerNeverOverwritesAnUnseenEdit(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	p := filepath.Join(dir, "ITX-1.md")
+	writeRaw(t, p, "---\ntitle: T\nstate: Todo\n---\n")
+	old := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(p, old, old))
+	is, err := tr.FetchIssueDetail(ctx, "ITX-1")
+	require.NoError(t, err)
+	require.Equal(t, "Todo", is.State)
+
+	require.NoError(t, os.WriteFile(p, []byte("---\ntitle: T\nstate: Done\n---\n"), 0o644)) // same size
+	require.NoError(t, os.Chtimes(p, old, old))
+	require.NoError(t, tr.SetIssueBranch(ctx, "ITX-1", "itervox/itx-1"))
+	is, err = tr.FetchIssueDetail(ctx, "ITX-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Done", is.State, "the operator's edit was kept")
+	require.NotNil(t, is.BranchName)
+
+	// Same size and the same (recent) mtime as the read: read again.
+	p2 := filepath.Join(dir, "ITX-2.md")
+	now := time.Now()
+	require.NoError(t, os.WriteFile(p2, []byte("---\ntitle: T\nstate: Todo\n---\n"), 0o644))
+	require.NoError(t, os.Chtimes(p2, now, now))
+	_, err = tr.FetchIssueDetail(ctx, "ITX-2")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(p2, []byte("---\ntitle: T\nstate: Done\n---\n"), 0o644))
+	require.NoError(t, os.Chtimes(p2, now, now))
+	is, err = tr.FetchIssueDetail(ctx, "ITX-2")
+	require.NoError(t, err)
+	assert.Equal(t, "Done", is.State)
+}
