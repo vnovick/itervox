@@ -170,6 +170,9 @@ func blockerRefFromNode(node map[string]any) domain.BlockerRef {
 	if u, ok := node["url"].(string); ok && u != "" {
 		ref.URL = &u
 	}
+	if b, ok := node["branchName"].(string); ok && b != "" {
+		ref.BranchName = &b
+	}
 	if s, ok := node["state"].(map[string]any); ok {
 		if name, ok := s["name"].(string); ok && name != "" {
 			ref.State = &name
