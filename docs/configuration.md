@@ -737,6 +737,32 @@ overflow the log writer and make every log write fail). The startup line `loggin
 effect. Per-issue logs under `<logs-dir>` have their own size cap and
 rotation and are not affected.
 
+### GitHub state labels: `itervox doctor --fix`
+
+The GitHub tracker maps every state to an issue label: `active_states`,
+`working_state`, `completion_state`, `terminal_states` (except `closed`,
+GitHub's native state), `backlog_states` and `failed_state`. A state whose
+label does not exist on the repository matches no issue, so nothing is
+dispatched or moved and nothing reports why.
+
+`itervox doctor` reads the repository's labels with `tracker.api_key` and
+lists each missing one with the command that creates it:
+
+```
+ERROR: 2 state label(s) missing on owner/repo — issues in those states are never dispatched or moved. Create them with `itervox doctor --fix`, or:
+  gh label create "in-review" --color "d93f0b" --repo owner/repo
+  gh label create "backlog" --color "f9f9f9" --repo owner/repo
+```
+
+Missing labels make doctor exit `1`. If the API cannot be reached or rejects
+the token, doctor prints `github labels: could not check …` and the exit code
+is unaffected. Linear workflows skip the check.
+
+`itervox doctor --fix` creates the missing labels after asking
+`Create N label(s) on owner/repo …? [y/N]`. Any answer other than `y`/`yes`,
+including no input at all, creates nothing. Pass `--yes` (or `-y`) to skip the
+prompt in CI. The token needs write access to the repository.
+
 ### Deployment preflight: `itervox doctor --deploy`
 
 `itervox doctor --deploy [--workflow PATH]` runs the normal doctor checks

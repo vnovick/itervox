@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`itervox doctor` checks GitHub state labels; `doctor --fix` creates the missing ones** (#75). The GitHub tracker maps every state to an issue label, and a state whose label does not exist matched nothing: no issue was dispatched or moved and nothing reported why. Doctor now lists each configured state label missing on the repository (active, working, completion, terminal except `closed`, backlog and failed states, case-insensitive) with the exact `gh label create` command, and exits `1`. API failures are reported but never fail doctor; Linear workflows skip the check. `itervox doctor --fix` creates the missing labels after a `[y/N]` prompt; `--yes` / `-y` skips it for CI.
+
 ### Security
 
 - **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.

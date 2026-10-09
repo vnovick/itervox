@@ -24,6 +24,8 @@ func runDoctor(args []string) {
 	workflowPath := "WORKFLOW.md"
 	clearStartupError := false
 	deploy := false
+	fix := false
+	assumeYes := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -36,6 +38,10 @@ func runDoctor(args []string) {
 			clearStartupError = true
 		case a == "--deploy":
 			deploy = true
+		case a == "--fix":
+			fix = true
+		case a == "--yes" || a == "-y":
+			assumeYes = true
 		case a == "-h" || a == "--help":
 			printDoctorUsage(os.Stdout)
 			return
@@ -56,7 +62,13 @@ func runDoctor(args []string) {
 		// variables already set).
 		loadDotEnvFrom(filepath.Dir(workflowPath))
 	}
-	report, exitCode := runDoctorChecks(workflowPath, os.Stdout)
+	var report string
+	var exitCode int
+	if fix {
+		report, exitCode = runDoctorFix(workflowPath, assumeYes, os.Stdin, os.Stdout)
+	} else {
+		report, exitCode = runDoctorChecks(workflowPath, os.Stdout)
+	}
 	if deploy {
 		deployReport, deployCode := runDeployDoctor(workflowPath, defaultDeployProbeEnv())
 		report += deployReport
@@ -71,8 +83,9 @@ func runDoctor(args []string) {
 }
 
 func printDoctorUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy]")
+	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]]")
 	_, _ = fmt.Fprintln(w, "  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
+	_, _ = fmt.Fprintln(w, "  --fix                  create missing GitHub state labels (asks first; --yes / -y skips the prompt for CI)")
 	_, _ = fmt.Fprintln(w, "  --deploy               also probe agent credentials, gh auth, git push auth (dry-run), the tracker API and the daemon's /api/v1/ready; exits 1 on any [fail]")
 }
 
@@ -117,9 +130,38 @@ type DoctorReport struct {
 	// in the environment the daemon was started from, and whose path changes
 	// on every version switch.
 	UnresolvableProfileCommands []string
+	// Labels is the GitHub state-label check (#75). Zero value when the
+	// tracker is not GitHub.
+	Labels LabelCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
+	report, _ := collectDoctorReport(workflowPath)
+	return renderDoctorReport(report), doctorExitCode(report)
+}
+
+// runDoctorFix runs the checks, offers to create missing GitHub state labels,
+// and re-checks the labels so the printed report and exit code reflect what
+// is on the repository afterwards.
+func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writer) (string, int) {
+	report, cfg := collectDoctorReport(workflowPath)
+	if len(report.Labels.Missing) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), labelCheckTimeout)
+		created, err := fixMissingLabels(ctx, cfg, report.Labels, assumeYes, in, out)
+		if err != nil {
+			_, _ = fmt.Fprintf(out, "ERROR: %v\n", err)
+		}
+		if len(created) > 0 {
+			report.Labels = checkGitHubLabels(ctx, cfg)
+		}
+		cancel()
+	}
+	return renderDoctorReport(report), doctorExitCode(report)
+}
+
+// collectDoctorReport runs every check and returns the report with the
+// loaded config (nil when the workflow did not load).
+func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	report := DoctorReport{Workflow: workflowPath}
 
 	cfg, err := config.Load(workflowPath)
@@ -236,6 +278,20 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 		}
 	}
 
+	// GitHub state labels: one read through the tracker client. An API
+	// failure is reported but never fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), labelCheckTimeout)
+		report.Labels = checkGitHubLabels(ctx, cfg)
+		cancel()
+	}
+
+	return report, cfg
+}
+
+// doctorExitCode maps a report to doctor's exit code: 1 when any check found
+// a broken configuration, 0 otherwise.
+func doctorExitCode(report DoctorReport) int {
 	exitCode := 0
 	switch {
 	case !report.SchemaPassed:
@@ -257,8 +313,12 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 		exitCode = 1
 	case report.DashboardURL != "" && !report.DashboardURLReachable:
 		exitCode = 1
+	case len(report.Labels.Missing) > 0:
+		// A missing state label means issues in that state are never
+		// dispatched or moved, with no error anywhere else.
+		exitCode = 1
 	}
-	return renderDoctorReport(report), exitCode
+	return exitCode
 }
 
 // probeDashboardHealth GETs `<url>api/v1/health` with a short timeout.
@@ -326,6 +386,7 @@ func renderDoctorReport(r DoctorReport) string {
 			fmt.Fprintf(&b, "dashboard URL: %s (NOT reachable — daemon may have died after writing this file)\n", r.DashboardURL)
 		}
 	}
+	renderLabelCheck(&b, r.Labels)
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
