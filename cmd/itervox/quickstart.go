@@ -364,7 +364,7 @@ func setEnvFileVar(path, key, value string) error {
 // EOF) is no. yes answers it without reading.
 func confirmPrompt(in *bufio.Reader, out io.Writer, yes bool, question string) bool {
 	if yes {
-		_, _ = fmt.Fprintf(out, "%s [y/N] y (--yes)\n", question)
+		_, _ = fmt.Fprintf(out, "%s [y/N] y (preset)\n", question)
 		return true
 	}
 	_, _ = fmt.Fprintf(out, "%s [y/N] ", question)

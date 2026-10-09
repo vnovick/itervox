@@ -472,7 +472,6 @@ func runInit(args []string) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}
-	offerIssueTemplate(*dir, *trackerKind, *issueTemplate, bufio.NewReader(os.Stdin), os.Stdout)
 
 	// Create .itervox/.env if it doesn't exist.
 	outputDir := filepath.Dir(*output)
@@ -489,6 +488,12 @@ func runInit(args []string) {
 	if err := finalizeItervoxGitignore(envDir); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
 	}
+
+	// #83 — after every file init needs is written, so an interrupted
+	// prompt never leaves a half-initialised project. Asked only on a
+	// terminal: init used to be non-interactive, and a pipe that never
+	// closes must not hang it.
+	initIssueTemplateStep(*dir, *trackerKind, *issueTemplate, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
 
 	// Phase 1.3 — best-effort one-shot dependency analysis pass. Default
 	// behaviour ("auto") skips when the .env stub still has placeholder hex

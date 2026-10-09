@@ -7,9 +7,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/vnovick/itervox/internal/templates"
 )
+
+// stdinIsTerminal reports whether init can ask a question.
+var stdinIsTerminal = func() bool { return term.IsTerminal(os.Stdin.Fd()) }
+
+// initIssueTemplateStep is init's issue-template step: with
+// --issue-template it adds the template without asking; otherwise it asks
+// only when stdin is a terminal, and says how to add it later when not.
+func initIssueTemplateStep(repoDir, trackerKind string, flag, interactive bool, in *bufio.Reader, out io.Writer) {
+	if trackerKind != "github" && trackerKind != "linear" {
+		return
+	}
+	if !flag && !interactive {
+		_, _ = fmt.Fprintf(out, "issue template: not offered (no terminal); re-run init with --issue-template, or see the GitHub Issues guide\n")
+		return
+	}
+	offerIssueTemplate(repoDir, trackerKind, flag, in, out)
+}
 
 // agentTaskTemplateRel is where the agent-ready GitHub issue template goes.
 var agentTaskTemplateRel = filepath.Join(".github", "ISSUE_TEMPLATE", "agent-task.md")
@@ -39,7 +58,7 @@ func offerIssueTemplate(repoDir, trackerKind string, yes bool, in *bufio.Reader,
 		if !confirmPrompt(in, out, yes, "Print an agent-ready issue template to paste into Linear (Settings → Templates)?") {
 			return
 		}
-		_, _ = fmt.Fprintf(out, "\n----- agent-ready issue template -----\n%s----- end -----\n\n", templates.AgentTaskBody)
+		_, _ = fmt.Fprintf(out, "\n----- agent-ready issue template -----\n%s----- end -----\n\n", linearTemplateBody())
 	}
 }
 
@@ -60,4 +79,15 @@ func writeFileExclusive(path string, data []byte) error {
 		return err
 	}
 	return f.Close()
+}
+
+// linearTemplateBody is AgentTaskBody with a Blockers section for Linear,
+// where Itervox reads blockers from Linear's own "blocked by" relation, not
+// from phrases in the description.
+func linearTemplateBody() string {
+	body := string(templates.AgentTaskBody)
+	if i := strings.Index(body, "## Blockers"); i >= 0 {
+		body = body[:i] + "## Blockers\n\n<!-- Add them with Linear's \"Blocked by\" relation; Itervox reads that, not this text. -->\n"
+	}
+	return body
 }

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +58,9 @@ func TestOfferIssueTemplate(t *testing.T) {
 		dir := t.TempDir()
 		var out strings.Builder
 		offerIssueTemplate(dir, "linear", false, bufioReader("y\n"), &out)
-		assert.Contains(t, out.String(), string(templates.AgentTaskBody))
+		assert.Contains(t, out.String(), linearTemplateBody())
+		assert.Contains(t, out.String(), "## Acceptance criteria")
+		assert.NotContains(t, out.String(), "Blocked by #", "Linear blockers come from its relation, not text")
 		assert.NoDirExists(t, filepath.Join(dir, ".github"))
 
 		var declined strings.Builder
@@ -72,4 +77,41 @@ func TestWriteFileExclusiveRefusesExisting(t *testing.T) {
 	assert.Contains(t, err.Error(), "not overwriting")
 	raw, _ := os.ReadFile(path)
 	assert.Equal(t, "one", string(raw))
+}
+
+// TestInitIssueTemplateStepNeverBlocksWithoutTerminal (review of #83): init
+// used to be non-interactive, so without a terminal it must not read stdin
+// — a pipe that never closes would hang it — and with --issue-template it
+// writes without asking.
+func TestInitIssueTemplateStepNeverBlocksWithoutTerminal(t *testing.T) {
+	pr, pw := io.Pipe() // never written or closed
+	t.Cleanup(func() { _ = pw.Close() })
+
+	dir := t.TempDir()
+	var out strings.Builder
+	done := make(chan struct{})
+	go func() {
+		initIssueTemplateStep(dir, "github", false, false, bufio.NewReader(pr), &out)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("init's issue-template step blocked on stdin without a terminal")
+	}
+	assert.Contains(t, out.String(), "not offered (no terminal)")
+	assert.NoFileExists(t, filepath.Join(dir, agentTaskTemplateRel))
+
+	var flagged strings.Builder
+	initIssueTemplateStep(dir, "github", true, false, bufio.NewReader(pr), &flagged)
+	assert.FileExists(t, filepath.Join(dir, agentTaskTemplateRel), "--issue-template writes without asking")
+
+	other := t.TempDir()
+	var asked strings.Builder
+	initIssueTemplateStep(other, "github", false, true, bufioReader("y\n"), &asked)
+	assert.FileExists(t, filepath.Join(other, agentTaskTemplateRel), "a terminal is asked")
+
+	var memory strings.Builder
+	initIssueTemplateStep(t.TempDir(), "memory", true, true, bufioReader("y\n"), &memory)
+	assert.Empty(t, memory.String())
 }

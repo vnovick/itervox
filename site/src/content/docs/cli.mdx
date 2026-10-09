@@ -114,7 +114,7 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 | `--dir` | string | `.` | Directory to scan for repo metadata |
 | `--force` | bool | `false` | Overwrite output file if it already exists |
 | `--update` | bool | `false` | Migrate an existing workflow to the latest schema without requiring `--tracker` |
-| `--issue-template` | bool | `false` | Add the agent-ready issue template without asking: `.github/ISSUE_TEMPLATE/agent-task.md` for GitHub (never over an existing file), printed for Linear. Without it, a new workflow's init asks `[y/N]`; no terminal input means no. See [Agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). |
+| `--issue-template` | bool | `false` | Add the agent-ready issue template without asking: `.github/ISSUE_TEMPLATE/agent-task.md` for GitHub (never over an existing file), printed for Linear. Without it, init asks `[y/N]` when run in a terminal and skips the question otherwise (it never waits on a pipe). See [Agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). |
 
 ### Auto-detection
 
