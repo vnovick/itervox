@@ -151,6 +151,9 @@ func trackedInventoryFiles(inv *Inventory, base []string) []string {
 	for _, doc := range inv.Instructions {
 		add(doc.FilePath)
 	}
+	for _, agent := range inv.Subagents {
+		add(agent.FilePath)
+	}
 	return out
 }
 

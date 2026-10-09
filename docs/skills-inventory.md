@@ -12,6 +12,7 @@ The feature lives at **Settings → Skills Inventory**. No external dependencies
 |---|---|---|
 | Claude skills (project) | `<project>/.claude/skills/<name>/SKILL.md` | claude |
 | Claude skills (user) | `~/.claude/skills/<name>/SKILL.md` | claude |
+| Claude subagents | `<project>/.claude/agents/**/*.md`, `~/.claude/agents/**/*.md`, plus agents declared by plugin manifests (source `plugin:<name>`) | claude |
 | Claude plugins | `<dir>/.claude/plugins/<name>/plugin.json` | claude |
 | MCP servers | `.claude/settings.json::mcpServers`, `.mcp.json::mcpServers` | claude |
 | Hooks | `.claude/settings.json::hooks` (flat or nested form) | claude |
@@ -38,6 +39,9 @@ Seven production rules ship in `internal/skills/analyze.go`:
 | `LARGE_CONTEXT` | warn | Estimated profile cost > 50K tokens |
 | `INSTRUCTION_SHADOWING` | info | Same filename in multiple scopes (project / user / system) |
 | `ORPHAN_MCP` | info | Configured MCP server name never appears in any skill name, description, or body |
+| `MISSING_SKILL_REF` | warn | A profile's `SOUL.md` / `INSTRUCTIONS.md` names a skill that is not found for that profile's backend (`internal/skills/validate_refs.go`) |
+| `MISSING_SUBAGENT_REF` | warn | A profile prompt names a subagent that is not found, or any subagent from a Codex profile |
+| `USER_SCOPE_REF_ON_SSH` | info | A referenced skill or subagent exists only in user or plugin scope while SSH hosts are configured, so remote hosts may not have it |
 
 `STALE_SCHEDULE` remains in code as a reserved analyzer for future schedule
 inventory sources, but v0.2.0 does not populate `Inventory.Schedules` from the

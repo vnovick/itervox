@@ -18,11 +18,13 @@ import {
   useSkillsAnalyticsRecommendations,
 } from '../../queries/skills';
 import type { Skill } from '../../types/schemas';
+import { SubagentsList } from './SubagentsList';
 
-type SectionKey = 'skills' | 'plugins' | 'mcp' | 'hooks' | 'instructions';
+type SectionKey = 'skills' | 'subagents' | 'plugins' | 'mcp' | 'hooks' | 'instructions';
 
 const SECTION_LABELS: Record<SectionKey, string> = {
   skills: 'Skills',
+  subagents: 'Subagents',
   plugins: 'Plugins',
   mcp: 'MCP Servers',
   hooks: 'Hooks',
@@ -223,6 +225,7 @@ export function SkillsCard() {
 
   const counts: Record<SectionKey, number> = {
     skills: inventory.Skills?.length ?? 0,
+    subagents: inventory.Subagents?.length ?? 0,
     plugins: inventory.Plugins?.length ?? 0,
     mcp: inventory.MCPServers?.length ?? 0,
     hooks: inventory.Hooks?.length ?? 0,
@@ -231,6 +234,12 @@ export function SkillsCard() {
 
   const tokens: Record<SectionKey, number> = {
     skills: (inventory.Skills ?? []).reduce((sum, s) => sum + s.ApproxTokens, 0),
+    // Only a subagent's name and description sit in the main context; its
+    // body loads when the subagent is invoked.
+    subagents: (inventory.Subagents ?? []).reduce(
+      (sum, a) => sum + Math.ceil(((a.Description ?? '').length + a.Name.length) / 4),
+      0,
+    ),
     plugins: (inventory.Plugins ?? []).reduce((sum, p) => sum + p.ApproxTokens, 0),
     mcp: counts.mcp * 800,
     hooks: (inventory.Hooks ?? []).reduce((sum, h) => sum + h.ApproxTokens, 0),
@@ -319,7 +328,7 @@ export function SkillsCard() {
       {/* Capability catalog */}
       <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
         <p className="text-theme-text mb-2 text-sm font-medium">Capabilities</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {(Object.keys(counts) as SectionKey[]).map((key) => (
             <button
               key={key}
@@ -377,9 +386,9 @@ export function SkillsCard() {
         </div>
         <p className="text-theme-muted mt-3 text-[10px] italic">
           Token counts are approximate (skill body bytes ÷ 4, 800 × MCP server count, hook command
-          bytes × 2 ÷ 4). Useful for ratio comparisons, not absolute claims. Run sessions with{' '}
-          <code className="font-mono">CLAUDE_CODE_LOG_DIR</code> set to refine the MCP figure with
-          observed tool loads.
+          bytes × 2 ÷ 4, subagent name + description ÷ 4). Useful for ratio comparisons, not
+          absolute claims. Run sessions with <code className="font-mono">CLAUDE_CODE_LOG_DIR</code>{' '}
+          set to refine the MCP figure with observed tool loads.
         </p>
       </div>
     </div>
@@ -641,6 +650,8 @@ function ExpandedSection({
   inventory: NonNullable<ReturnType<typeof useSkillsInventory>['data']>;
 }) {
   switch (sectionKey) {
+    case 'subagents':
+      return <SubagentsList subagents={inventory.Subagents} />;
     case 'skills': {
       const items = inventory.Skills ?? [];
       return (

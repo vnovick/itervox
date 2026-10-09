@@ -109,6 +109,30 @@ profiles:
 
 Plain-text profile files (without any `{{ }}` syntax) are passed through unchanged.
 
+### Skills and subagents in prompts
+
+Agents run the Claude or Codex CLI inside the repository, so they load the repository's `.claude/skills`, `.claude/agents`, `CLAUDE.md` and `AGENTS.md` like any session would. A profile's `SOUL.md` and `INSTRUCTIONS.md` can therefore tell the agent to use them. Itervox checks those references against the [skills inventory](/guides/skills-inventory/), so a typo or a skill that only exists on your laptop is caught before an agent silently runs without it.
+
+Only these explicit forms are checked; ordinary prose never triggers a warning:
+
+| Form | Refers to |
+|---|---|
+| `@agent-code-reviewer` | the `code-reviewer` subagent (Claude Code's @-mention form) |
+| `` `/verify-before-done` `` | the `verify-before-done` skill, as a slash command in backticks |
+| `` `verify-before-done` skill `` | the same skill, named in backticks followed by "skill" |
+| `` `code-reviewer` subagent `` or `` `code-reviewer` agent `` | the subagent, named in backticks |
+
+Names match case-insensitively. A plugin's skills and agents also resolve as `<plugin>:<name>`.
+
+Each reference is resolved for the profile's backend: a Claude profile sees Claude and shared skills, plugin skills and every subagent; a Codex profile sees Codex and shared skills and has no subagents. A missing reference is reported as `MISSING_SKILL_REF` or `MISSING_SUBAGENT_REF`:
+
+- in the dashboard, in the Skills card's issues list (**Settings → Skills**);
+- by `itervox doctor`, as a `WARNING:` line. It does not change doctor's exit code, because the agent still runs.
+
+When `agent.ssh_hosts` is set, a reference that resolves only through your home directory or a plugin also gets an info-level `USER_SCOPE_REF_ON_SSH` note: agents on remote hosts see the repository's `.claude/` directory, not this machine's home. Commit the skill or subagent under `.claude/` to make it travel with the repo.
+
+The Skills card lists subagents in their own **Subagents** section, with source (project, user or plugin), model, tools and file size.
+
 ### Handoff protocol (v0.2.0)
 
 When multiple profiles run on the same issue, each one can leave a Markdown deliverable in `.itervox/handoff/` so subsequent profiles can read it. The orchestrator generates two values per dispatch and surfaces them in the agent's prompt as a `## Run Context` block:

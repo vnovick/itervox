@@ -19,6 +19,9 @@ type AnalyzeInputs struct {
 	// LargeContextThreshold is the per-profile token ceiling above which the
 	// LARGE_CONTEXT issue fires. Default 50_000 if zero.
 	LargeContextThreshold int
+	// SSHHosts are the configured agent SSH hosts; when set, a prompt
+	// reference that resolves only outside the repository gets an info issue.
+	SSHHosts []string
 }
 
 // Analyze runs every static-analysis rule against the inventory and returns
@@ -35,9 +38,12 @@ type AnalyzeInputs struct {
 //   - STALE_SCHEDULE           — reserved for future schedule inventory inputs
 //   - INSTRUCTION_SHADOWING    — same instruction filename across scopes
 //   - ORPHAN_MCP               — MCP server name never appears in skill names/descriptions/bodies
+//   - MISSING_SKILL_REF        — a profile prompt names a skill not found for its backend (#86)
+//   - MISSING_SUBAGENT_REF     — a profile prompt names a subagent not found (#86)
+//   - USER_SCOPE_REF_ON_SSH    — a referenced skill/subagent exists only outside the repo while SSH hosts are set (#86)
 //
 // The remaining design-draft rules (DUPLICATE_CROSS_RUNTIME_SKILL,
-// MISSING_SKILL_REF, HOOK_CONFLICT, REDUNDANT_HOOK, MODEL_MISMATCH,
+// HOOK_CONFLICT, REDUNDANT_HOOK, MODEL_MISMATCH,
 // CAPABILITY_OVERLAP, MISSING_ACTION) are tracked in deferred_290426.md and
 // land in a follow-up — each requires either heavier text similarity or a
 // specific feature (teams mode) outside the Phase-1 scope.
@@ -58,6 +64,7 @@ func Analyze(inv *Inventory, in AnalyzeInputs) []InventoryIssue {
 	issues = append(issues, detectStaleSchedule(inv, in)...)
 	issues = append(issues, detectInstructionShadowing(inv)...)
 	issues = append(issues, detectOrphanMCP(inv)...)
+	issues = append(issues, ValidateProfileRefs(inv, in.Profiles, in.SSHHosts)...)
 
 	sort.SliceStable(issues, func(i, j int) bool { return issues[i].ID < issues[j].ID })
 	return issues

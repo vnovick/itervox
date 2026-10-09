@@ -22,6 +22,7 @@ type Inventory struct {
 	Profiles     map[string]ProfileCapabilities // reserved daemon-managed profile graph
 	Capabilities []Capability                   // reserved normalized graph nodes
 	Skills       []Skill                        // Claude + Codex + shared
+	Subagents    []Subagent                     // Claude Code subagents: .claude/agents (project, user) + plugin agents
 	Plugins      []Plugin
 	MCPServers   []MCPServer
 	Hooks        []HookEntry
@@ -44,6 +45,20 @@ type Skill struct {
 	ApproxTokens    int
 	TriggerPatterns []string
 	bodyText        string
+}
+
+// Subagent is a Claude Code subagent definition: a Markdown file with YAML
+// frontmatter under `.claude/agents/` (project or user) or one declared by a
+// plugin manifest (#86). Codex has no subagent concept.
+type Subagent struct {
+	Name         string
+	Description  string
+	Tools        []string // from the `tools` frontmatter; empty means "inherits all tools"
+	Model        string   // from the `model` frontmatter; empty means "inherit"
+	Provider     string   // always "claude"
+	Source       string   // "project" | "user" | "plugin:{name}"
+	FilePath     string
+	ApproxTokens int
 }
 
 // Capability is the reserved normalized graph node for a later phase. v0.2.0

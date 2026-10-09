@@ -29,6 +29,18 @@ const inventory = {
       TriggerPatterns: ['/graphify'],
     },
   ],
+  Subagents: [
+    {
+      Name: 'code-reviewer',
+      Description: 'Reviews diffs.',
+      Tools: ['Read', 'Grep'],
+      Model: 'sonnet',
+      Provider: 'claude',
+      Source: 'project',
+      FilePath: '/repo/.claude/agents/code-reviewer.md',
+      ApproxTokens: 300,
+    },
+  ],
   Plugins: [
     {
       Name: 'github-tools',
@@ -193,6 +205,9 @@ describe('SkillsCard', () => {
 
     render(<SkillsCard />);
 
+    fireEvent.click(screen.getByRole('button', { name: /subagents/i }));
+    expect(screen.getByText('@agent-code-reviewer')).toBeInTheDocument();
+    expect(screen.getByText(/project · sonnet · Read, Grep · 300 tok/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /plugins/i }));
     expect(screen.getByText('github-tools')).toBeInTheDocument();
     expect(screen.getByText(/Plugin \(github\)/)).toBeInTheDocument();
