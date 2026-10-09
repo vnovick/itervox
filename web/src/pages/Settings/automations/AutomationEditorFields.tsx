@@ -1,4 +1,7 @@
 import { MarkdownPromptEditor } from '../profiles/MarkdownPromptEditor';
+import { PROFILE_VARIABLES, TRIGGER_VARIABLES } from '../profiles/promptCompletions';
+
+const AUTOMATION_VARIABLES = [...PROFILE_VARIABLES, ...TRIGGER_VARIABLES];
 import { checkboxCls, fieldLabelCls, helperTextCls, selectCls } from '../formStyles';
 import type { AutomationFormValues } from './automationForm';
 import {
@@ -229,6 +232,7 @@ export function AutomationEditorFields({
         value={values.instructions}
         onChange={onInstructionsChange}
         label="Instructions"
+        variables={AUTOMATION_VARIABLES}
         placeholder="Write small automation-specific instructions in Markdown. These are layered on top of the selected profile."
         helperText={
           <>
