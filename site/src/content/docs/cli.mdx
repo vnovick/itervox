@@ -31,10 +31,8 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
 
-> **Note (post-v0.2):** the `-demo` flag was removed in favour of an embedded
-> quickstart template. To explore itervox without a real tracker, drop a
-> `WORKFLOW.md` with `tracker.kind: memory` in your project (the template
-> ships in `internal/templates/quickstart.md`) and run the daemon as usual.
+> To try Itervox without a tracker account, API keys or an agent CLI, run
+> [`itervox demo`](#itervox-demo--try-it-in-30-seconds).
 
 ### Examples
 
@@ -51,6 +49,25 @@ itervox -verbose -shutdown-grace 60s
 # Write logs to a specific directory
 itervox -logs-dir /var/log/itervox
 ```
+
+---
+
+## `itervox demo` — Try it in 30 seconds
+
+```bash
+itervox demo [--dir <scratch>] [--no-open]
+```
+
+Runs a throwaway daemon against ten fake `DEMO-n` issues with a scripted agent, and opens the dashboard. It needs no tracker account, no API keys and no `claude` or `codex` on your `PATH`.
+
+Within about a minute the board shows issues moving through **In Progress** (with streamed agent activity and a fake pull request), **input required** (DEMO-2 and DEMO-7 ask a question that the demo answers itself after a few seconds), **a failure and a retry** (DEMO-4 and DEMO-9 fail their first run), **In Review**, and **Done** (the demo stands in for the reviewer after a few seconds). The header shows a **Demo mode** badge.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dir` | a new temporary directory | Scratch directory for the demo. |
+| `--no-open` | `false` | Do not open the dashboard in a browser; the URL is in `<dir>/.itervox/dashboard_url`. |
+
+Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `logs/`, `workspaces/` and `.itervox/`. The dashboard listens on an OS-assigned port on `127.0.0.1` without a token. `ITERVOX_SERVER_PORT`, `ITERVOX_SERVER_HOST`, `PORT`, `ITERVOX_API_TOKEN` and `ITERVOX_DRY_RUN` are ignored for the demo. Stop it with `q` in the terminal UI, `Ctrl-C`, or `itervox stop -workflow <dir>/WORKFLOW.md`, then delete the directory.
 
 ---
 

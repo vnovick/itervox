@@ -62,6 +62,11 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: itervox [command] [flags]
 
 Commands:
+  demo    Try Itervox in about a minute: a throwaway board with fake
+          issues and a scripted agent (no tracker, keys or agent CLI).
+             --dir      scratch directory (default: a new temp dir)
+             --no-open  do not open the dashboard in a browser
+
   quickstart  From a repository to a running board in one command:
           detect the tracker and agent CLI, write (or migrate) WORKFLOW.md,
           set up the tracker token and GitHub labels (asks first), run
@@ -383,6 +388,17 @@ func main() {
 		case "quickstart":
 			runQuickstart(os.Args[2:])
 			return
+		case "demo":
+			runArgs, ok, err := prepareDemo(os.Args[2:], os.Stdout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "itervox demo: %v\n", err)
+				fatalExit(2)
+			}
+			if !ok {
+				return
+			}
+			// Continue into run mode against the scratch workflow.
+			os.Args = runArgs
 		case "models":
 			runModels(os.Args[2:])
 			return
@@ -793,6 +809,12 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		},
 	)
 	runner = commandResolverRunner{inner: runner}
+	if demoSession != nil {
+		// `itervox demo` (#76): the session's memory tracker and scripted
+		// runner; no agent CLI is needed, so none is validated below.
+		tr = demoSession.tracker
+		runner = demoSession.runner
+	}
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -802,12 +824,14 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// A missing default binary is a hard error — fail before entering the
 	// dispatch loop so the user sees it immediately rather than at dispatch time.
 	validatedBackends := make(map[string]struct{})
-	if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
-		return fmt.Errorf("agent startup: %w", err)
-	}
-	for name, profile := range cfg.Agent.Profiles {
-		if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
-			slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
+	if demoSession == nil {
+		if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
+			return fmt.Errorf("agent startup: %w", err)
+		}
+		for name, profile := range cfg.Agent.Profiles {
+			if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
+				slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
+			}
 		}
 	}
 	wm := workspace.NewManager(cfg)
@@ -839,6 +863,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		logBuf.SetLogDir(filepath.Join(filepath.Dir(logFile), "issues"))
 	}
 	orch := orchestrator.New(cfg, tr, runner, wm)
+	if demoSession != nil {
+		demoSession.attach(orch)
+	}
 	if os.Getenv("ITERVOX_DRY_RUN") == "1" {
 		orch.DryRun = true
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
