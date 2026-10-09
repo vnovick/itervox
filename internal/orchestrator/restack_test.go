@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 func newRestackCfg(base string) *config.Config {
@@ -119,4 +122,76 @@ func TestMarkRestackConflictDoesNotClobberExistingContext(t *testing.T) {
 	o.markRestackConflict(&st, domain.Issue{Identifier: "ENG-2"}, time.Now())
 
 	assert.Equal(t, "original question", st.InputRequiredIssues["ENG-2"].Context)
+}
+
+// restackFakeProvider is a workspace provider whose RestackWorktree returns a
+// fixed outcome.
+type restackFakeProvider struct {
+	outcome workspace.RestackOutcome
+}
+
+func (p *restackFakeProvider) EnsureWorkspace(_ context.Context, identifier, _ string) (workspace.Workspace, error) {
+	return workspace.Workspace{Path: "/tmp/ws", Identifier: identifier}, nil
+}
+func (p *restackFakeProvider) RemoveWorkspace(context.Context, string, string) error { return nil }
+func (p *restackFakeProvider) ResolvePath(string) string                             { return "/tmp/ws-ENG-2" }
+func (p *restackFakeProvider) RestackWorktree(context.Context, string, string, string) (workspace.RestackOutcome, error) {
+	return p.outcome, nil
+}
+
+// TestRestackRetargetsPullRequestToBaseBranch (#73): once a dependent has been
+// restacked onto workspace.base_branch (or already sits there), its open pull
+// request is pointed at base_branch too. A conflicted or skipped restack
+// leaves the PR alone.
+func TestRestackRetargetsPullRequestToBaseBranch(t *testing.T) {
+	issue := blocked("ENG-2", restackBlocker("ENG-1", "Done"))
+	for _, tc := range []struct {
+		outcome    workspace.RestackOutcome
+		wantEdited bool
+	}{
+		{workspace.RestackRebased, true},
+		{workspace.RestackUpToDate, true},
+		{workspace.RestackSkippedDirty, false},
+		{workspace.RestackConflict, false},
+	} {
+		var mu sync.Mutex
+		var lookups []string
+		var edits [][2]string
+		o := &Orchestrator{cfg: newRestackCfg("main"), workspace: &restackFakeProvider{outcome: tc.outcome}}
+		o.findOpenPRURL = func(_ context.Context, wsPath string) string {
+			mu.Lock()
+			defer mu.Unlock()
+			lookups = append(lookups, wsPath)
+			return "https://github.com/o/r/pull/2"
+		}
+		o.setPRBase = func(_ context.Context, prURL, base string) (bool, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			edits = append(edits, [2]string{prURL, base})
+			return true, nil
+		}
+		state := restackState()
+		conflicted := o.restackUnblockedIssue(context.Background(), &state, issue)
+		o.prRetargetWg.Wait()
+		assert.Equal(t, tc.outcome == workspace.RestackConflict, conflicted, "outcome %v", tc.outcome)
+		if tc.wantEdited {
+			assert.Equal(t, []string{"/tmp/ws-ENG-2"}, lookups, "outcome %v", tc.outcome)
+			assert.Equal(t, [][2]string{{"https://github.com/o/r/pull/2", "main"}}, edits, "outcome %v", tc.outcome)
+		} else {
+			assert.Empty(t, edits, "outcome %v must not touch the PR", tc.outcome)
+		}
+	}
+}
+
+// TestRestackRetargetSkipsWhenNoPullRequest: no open PR for the worktree, no
+// edit.
+func TestRestackRetargetSkipsWhenNoPullRequest(t *testing.T) {
+	o := &Orchestrator{cfg: newRestackCfg("main"), workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "" }
+	edited := false
+	o.setPRBase = func(context.Context, string, string) (bool, error) { edited = true; return true, nil }
+	state := restackState()
+	o.restackUnblockedIssue(context.Background(), &state, blocked("ENG-2", restackBlocker("ENG-1", "Done")))
+	o.prRetargetWg.Wait()
+	assert.False(t, edited)
 }

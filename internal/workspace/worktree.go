@@ -110,7 +110,13 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 		if err := AssertContained(root, wtPath); err != nil {
 			return Workspace{}, err
 		}
-		return Workspace{Path: wtPath, Identifier: identifier, CreatedNow: false}, nil
+		ws := Workspace{Path: wtPath, Identifier: identifier, CreatedNow: false}
+		// A reused worktree is still stacked when the requested branch is in
+		// its history. `merge-base --is-ancestor` fails for a missing ref too.
+		if requestedStart != "" && gitexec.Command(ctx, wtPath, "merge-base", "--is-ancestor", requestedStart, "HEAD").Run() == nil {
+			ws.StackedOn = requestedStart
+		}
+		return ws, nil
 	}
 
 	// Ensure the worktrees/ parent directory exists.
@@ -139,8 +145,10 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 	// against a missing ref would fail the whole dispatch. Stacking is a
 	// review-ergonomics improvement, so it degrades to the normal base rather
 	// than blocking work.
+	stackedOn := ""
 	if requestedStart != "" && m.refExists(ctx, gitDir, requestedStart) {
 		startPoint = requestedStart
+		stackedOn = requestedStart
 		slog.Info("workspace: stacking worktree on blocker branch",
 			"identifier", identifier, "branch", branchName, "base", startPoint)
 	}
@@ -163,7 +171,7 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 		return Workspace{}, err
 	}
 
-	return Workspace{Path: wtPath, Identifier: identifier, CreatedNow: true}, nil
+	return Workspace{Path: wtPath, Identifier: identifier, CreatedNow: true, StackedOn: stackedOn}, nil
 }
 
 // runGitWorktreeAdd runs git worktree add. If createBranch is true it passes

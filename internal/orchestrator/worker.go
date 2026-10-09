@@ -119,6 +119,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	skipFreshDispatchSetup := inputRequiredResume
 
 	wsPath := ""
+	stackedOn := "" // the blocker branch this worktree is stacked on (#73)
 	branchName := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
 	activeBranchName := branchName
 
@@ -179,6 +180,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			return
 		}
 		wsPath = ws.Path
+		stackedOn = ws.StackedOn
 		if inputRequiredResume && ws.CreatedNow {
 			skipFreshDispatchSetup = false
 			slog.Info("worker: input-required resume recreated workspace, rerunning setup",
@@ -361,7 +363,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
 	// CORE-101: the Liquid `run` object for the WORKFLOW.md body, profile
 	// SOUL/INSTRUCTIONS and automation instructions.
-	runVars := runBindings(runTimestamp, runHandoffRelPath, switchNotice)
+	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), switchNotice)
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -435,6 +437,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + priorHandoffs
 		}
 		renderedPrompt += "\n\n" + buildRunContextBlock(runTimestamp, runHandoffRelPath)
+		if block := buildStackedPRBlock(stackedOn); block != "" {
+			renderedPrompt += "\n\n" + block
+		}
 		// CORE-101: daemon-owned, after the envelope and handoffs and before
 		// every profile block, so an instructions_file cannot drop it.
 		if block := buildBackendSwitchNoticeBlock(switchNotice); block != "" {
@@ -903,6 +908,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				openedPRBranch = activeBranchName
 			}
 		}
+	}
+
+	// Stacked PRs (#73): a pull request from a stacked worktree must target
+	// the blocker's branch, or it shows the blocker's commits too. The agent
+	// is told the base in its prompt; this makes it so whatever the agent did.
+	if stackedOn != "" && detectedPRURL != "" && !automationRun {
+		baseCtx, baseCancel := context.WithTimeout(context.Background(), postRunTimeout)
+		o.retargetPRBase(baseCtx, issue.Identifier, detectedPRURL, stackedOn, "stacked on blocker branch")
+		baseCancel()
 	}
 
 	// Build session summary once — reused for handoff synthesis, the PR

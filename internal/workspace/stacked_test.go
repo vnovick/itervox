@@ -70,3 +70,39 @@ func TestEnsureWorkspaceEqualsEmptyStartPoint(t *testing.T) {
 	_, isStacked := provider.(workspace.StackedProvider)
 	require.True(t, isStacked, "Manager must satisfy the optional StackedProvider interface")
 }
+
+// TestEnsureWorkspaceFromReportsStackedOn (#73): the returned workspace says
+// which branch it is stacked on — for a new worktree created from the
+// blocker's branch, for a reused worktree whose history contains it, and not
+// at all when stacking fell back to base_branch.
+func TestEnsureWorkspaceFromReportsStackedOn(t *testing.T) {
+	mgr, root := worktreeManager(t)
+	gitIn(t, root, "checkout", "-q", "-b", "itervox/eng-1")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "blocker-work"), []byte("x"), 0o644))
+	gitIn(t, root, "add", "-A")
+	gitIn(t, root, "commit", "-q", "-m", "blocker work")
+	gitIn(t, root, "checkout", "-q", "main")
+
+	ws, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-2", "itervox/eng-2", "itervox/eng-1")
+	require.NoError(t, err)
+	require.True(t, ws.CreatedNow)
+	require.Equal(t, "itervox/eng-1", ws.StackedOn, "new worktree created from the blocker's branch")
+
+	again, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-2", "itervox/eng-2", "itervox/eng-1")
+	require.NoError(t, err)
+	require.False(t, again.CreatedNow)
+	require.Equal(t, "itervox/eng-1", again.StackedOn, "reused worktree still has the blocker in its history")
+
+	missing, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-3", "itervox/eng-3", "itervox/never-existed")
+	require.NoError(t, err)
+	require.Empty(t, missing.StackedOn, "fell back to base_branch, so not stacked")
+
+	// A worktree created from main is not stacked on a blocker branch that has
+	// commits main lacks, even when that branch is requested on reuse.
+	plain, err := mgr.EnsureWorkspace(context.Background(), "ENG-4", "itervox/eng-4")
+	require.NoError(t, err)
+	require.Empty(t, plain.StackedOn)
+	reused, err := mgr.EnsureWorkspaceFrom(context.Background(), "ENG-4", "itervox/eng-4", "itervox/eng-1")
+	require.NoError(t, err)
+	require.Empty(t, reused.StackedOn, "the blocker's commits are not in this worktree's history")
+}
