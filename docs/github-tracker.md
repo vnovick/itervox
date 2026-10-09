@@ -198,6 +198,59 @@ Agents do much better with a well-specified issue. `itervox init` and `itervox q
 
 The template sets no labels, so an issue created from it is not picked up until you give it an active-state label. For Linear, `itervox init` and `itervox quickstart` offer to print the same sections to paste into a Linear issue template; its Blockers section points to Linear's own "Blocked by" relation, which is what Itervox reads there.
 
+## Comment commands
+
+Maintainers can drive Itervox from an issue comment, without the dashboard or
+a label change. Off by default; turn it on in `WORKFLOW.md`:
+
+```yaml
+tracker:
+  kind: github
+  comment_commands:
+    enabled: true
+    # allow: [trusted-contributor]   # extra logins, besides users with write access
+    # allow_token_user: false        # see "Security model"
+    # reply_to_unauthorized: false   # reply to commands from users without access
+```
+
+The command must start the comment's first line:
+
+| Command | What it does |
+|---|---|
+| `/itervox run` | Dispatches the issue: a paused issue is resumed; one outside the active states is moved to the first active state (`tracker.active_states[0]`), and the next poll picks it up like any other. Blockers still apply. |
+| `/itervox run <profile>` | The same, under that agent profile. |
+| `/itervox stop` | Stops the issue's running agent and pauses the issue (the dashboard's **Cancel**). |
+| `/itervox review` | Dispatches the configured `agent.reviewer_profile`. |
+
+Itervox acknowledges a command with a 👍 reaction on the comment, or 😕 and a
+short reply when it cannot do it (an unknown profile, nothing to stop, no
+reviewer configured). Replies carry Itervox's managed marker and are never
+read as commands.
+
+Itervox reads the repository's comments with **one request per 30 seconds**
+(`GET /repos/{owner}/{repo}/issues/comments?since=…`), not per issue, plus a
+permission check per commenter, cached for 10 minutes.
+
+### Security model
+
+- **Who is obeyed.** Users with write access to the repository (`admin`,
+  `maintain` or `write`, from the collaborator permission API) and logins
+  listed in `allow`. Anyone else is ignored: no action and, unless
+  `reply_to_unauthorized` is set, no reply. In a public repository, anyone can
+  comment, but only maintainers' commands do anything.
+- **Never obeyed.** Bot accounts (unless listed in `allow`), Itervox's own
+  comments, and the account Itervox's token belongs to. Agents use that
+  account too, so an agent, or an issue that talks an agent into writing
+  `/itervox run`, could otherwise trigger commands. If Itervox posts as you
+  (your personal token) and you want your own comments to count, set
+  `allow_token_user: true` and accept that risk, or give Itervox a separate
+  bot token. That is the safer setup for a public repository.
+- **Once only.** Each comment is acted on at most once. Its ID is recorded in
+  `.itervox/comment_commands.json` (gitignored runtime state) **before**
+  Itervox acts, so neither a retry nor a restart repeats it. Commands posted
+  while the daemon was down are picked up when it starts again; comments from
+  before the feature was first enabled are not.
+
 ## Identifiers
 
 A GitHub issue's identifier is its number with a hash: `#42`. That is what the dashboard, logs and `itervox` commands show. In prompt templates:
