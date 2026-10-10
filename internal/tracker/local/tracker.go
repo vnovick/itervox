@@ -112,12 +112,15 @@ func (t *Tracker) SetStateLists(active, terminal []string) {
 	t.terminal = append([]string{}, terminal...)
 }
 
-// Problems lists the files that currently fail to parse.
+// Problems lists the files that currently fail to parse, and the issues
+// directory itself when it cannot be listed.
 func (t *Tracker) Problems() []Problem {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.refreshLocked()
 	var out []Problem
+	if err := t.refreshLocked(); err != nil {
+		out = append(out, Problem{Path: t.dir, Err: err.Error()})
+	}
 	for _, e := range t.entries {
 		if e.problem != "" {
 			out = append(out, Problem{Path: e.path, Err: e.problem})
@@ -127,15 +130,19 @@ func (t *Tracker) Problems() []Problem {
 	return out
 }
 
-// refreshLocked re-reads changed files and drops deleted ones.
-func (t *Tracker) refreshLocked() {
+// refreshLocked re-reads changed files and drops deleted ones. A missing
+// directory means no issues; any other failure to list it is returned and
+// the last good scan is kept, because callers treat an absent issue as
+// deleted (reconcile stops its worker) and a read error is not a deletion.
+func (t *Tracker) refreshLocked() error {
 	dirEntries, err := os.ReadDir(t.dir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("local tracker: cannot read the issues directory", "dir", t.dir, "error", err)
+		if os.IsNotExist(err) {
+			t.entries = map[string]*entry{}
+			return nil
 		}
-		t.entries = map[string]*entry{}
-		return
+		slog.Warn("local tracker: cannot read the issues directory", "dir", t.dir, "error", err)
+		return fmt.Errorf("local tracker: read %s: %w", t.dir, err)
 	}
 	seen := map[string]bool{}
 	for _, de := range dirEntries {
@@ -170,6 +177,7 @@ func (t *Tracker) refreshLocked() {
 			delete(t.entries, ident)
 		}
 	}
+	return nil
 }
 
 // readLocked reads and parses e's file. On failure the last good version
@@ -251,17 +259,19 @@ func matchesState(state string, states []string) bool {
 	return false
 }
 
-func (t *Tracker) issuesWhere(keep func(domain.Issue) bool) []domain.Issue {
+func (t *Tracker) issuesWhere(keep func(domain.Issue) bool) ([]domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.refreshLocked()
+	if err := t.refreshLocked(); err != nil {
+		return nil, err
+	}
 	var out []domain.Issue
 	for _, id := range t.sortedIdentifiersLocked() {
 		if is, ok := t.issueLocked(id); ok && keep(is) {
 			out = append(out, is)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // FetchCandidateIssues returns the issues in an active state.
@@ -269,7 +279,7 @@ func (t *Tracker) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error
 	t.mu.Lock()
 	active := append([]string{}, t.active...)
 	t.mu.Unlock()
-	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, active) }), nil
+	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, active) })
 }
 
 // FetchIssuesByStates returns the issues in any of stateNames.
@@ -277,7 +287,7 @@ func (t *Tracker) FetchIssuesByStates(_ context.Context, stateNames []string) ([
 	if len(stateNames) == 0 {
 		return []domain.Issue{}, nil
 	}
-	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, stateNames) }), nil
+	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, stateNames) })
 }
 
 // FetchIssueStatesByIDs returns the issues with the given IDs; unknown IDs
@@ -290,7 +300,7 @@ func (t *Tracker) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) ([
 	for _, id := range issueIDs {
 		want[id] = true
 	}
-	return t.issuesWhere(func(is domain.Issue) bool { return want[is.ID] }), nil
+	return t.issuesWhere(func(is domain.Issue) bool { return want[is.ID] })
 }
 
 // FetchIssueDetailsByIDs is FetchIssueStatesByIDs: comments are always
@@ -303,7 +313,9 @@ func (t *Tracker) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string)
 func (t *Tracker) FetchIssueDetail(_ context.Context, issueID string) (*domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.refreshLocked()
+	if err := t.refreshLocked(); err != nil {
+		return nil, err
+	}
 	is, ok := t.issueLocked(issueID)
 	if !ok {
 		return nil, &tracker.NotFoundError{Adapter: "local", Identifier: issueID}
@@ -320,7 +332,9 @@ func (t *Tracker) FetchIssueByIdentifier(ctx context.Context, identifier string)
 func (t *Tracker) update(issueID string, change func(f *issueFile)) (issueFile, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.refreshLocked()
+	if err := t.refreshLocked(); err != nil {
+		return issueFile{}, err
+	}
 	e := t.entries[issueID]
 	if e == nil {
 		return issueFile{}, &tracker.NotFoundError{Adapter: "local", Identifier: issueID}
@@ -416,7 +430,9 @@ func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateNam
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.refreshLocked()
+	if err := t.refreshLocked(); err != nil {
+		return nil, err
+	}
 	next := 1
 	for id := range t.entries {
 		if p, n := splitIdent(id); strings.EqualFold(p, t.prefix) && n >= next {
