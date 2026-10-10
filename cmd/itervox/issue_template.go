@@ -24,10 +24,27 @@ func initIssueTemplateStep(repoDir, trackerKind string, flag, interactive bool, 
 		return
 	}
 	if !flag && !interactive {
-		_, _ = fmt.Fprintf(out, "issue template: not offered (no terminal); re-run init with --issue-template, or see the GitHub Issues guide\n")
+		_, _ = fmt.Fprintf(out, "issue template: not offered (no terminal); add it later with `itervox init --tracker %s --issue-template` (keeps the existing workflow)\n", trackerKind)
 		return
 	}
 	offerIssueTemplate(repoDir, trackerKind, flag, in, out)
+}
+
+// issueTemplateOnly is init's template-only path: with --issue-template and
+// a workflow already at output (and no --force), it adds just the issue
+// template and reports true, leaving the workflow and every other file as
+// they are. Without it, the hint above led into init's existing-workflow
+// refusal.
+func issueTemplateOnly(output, repoDir, trackerKind string, flag, force bool, out io.Writer) bool {
+	if !flag || force {
+		return false
+	}
+	if _, err := os.Stat(output); err != nil {
+		return false
+	}
+	_, _ = fmt.Fprintf(out, "issue template: %s exists; adding only the issue template\n", output)
+	offerIssueTemplate(repoDir, trackerKind, true, bufio.NewReader(strings.NewReader("")), out)
+	return true
 }
 
 // agentTaskTemplateRel is where the agent-ready GitHub issue template goes.

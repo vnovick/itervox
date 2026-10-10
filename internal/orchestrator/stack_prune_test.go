@@ -43,11 +43,10 @@ func TestStackMissExpiresWhenBlockerLeavesReview(t *testing.T) {
 // issue admitted for an in-review blocker backs out; an input-required
 // resume, a reused worktree or a stacked one never does.
 func TestShouldBackOutUnstacked(t *testing.T) {
-	assert.True(t, shouldBackOutUnstacked(true, false, "", "ENG-1@in review"))
-	assert.False(t, shouldBackOutUnstacked(true, true, "", "ENG-1@in review"), "input-required resume")
-	assert.False(t, shouldBackOutUnstacked(false, false, "", "ENG-1@in review"), "reused worktree")
-	assert.False(t, shouldBackOutUnstacked(true, false, "itervox/eng-1", "ENG-1@in review"), "stacked")
-	assert.False(t, shouldBackOutUnstacked(true, false, "", ""), "not admitted for a review blocker")
+	assert.True(t, shouldBackOutUnstacked(false, "", "ENG-1@in review"), "fresh or reused, an unstacked worktree backs out")
+	assert.False(t, shouldBackOutUnstacked(true, "", "ENG-1@in review"), "input-required resume")
+	assert.False(t, shouldBackOutUnstacked(false, "itervox/eng-1", "ENG-1@in review"), "stacked")
+	assert.False(t, shouldBackOutUnstacked(false, "", ""), "not admitted for a review blocker")
 }
 
 // TestStackOnReviewStateFromStart (#103): the review state is known before

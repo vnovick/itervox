@@ -187,7 +187,7 @@ An issue is not dispatched until every blocker is closed or carries one of your 
 
 ## Agent-ready issue template
 
-Agents do much better with a well-specified issue. `itervox init` and `itervox quickstart` offer to add `.github/ISSUE_TEMPLATE/agent-task.md` when they write a new GitHub workflow (`[y/N]`; `itervox init --issue-template` or `itervox quickstart --yes` adds it without asking). `init` asks only when run in a terminal; otherwise it skips the question and says so. It is never written over an existing file. Commit it, and **New issue** offers an "Agent task" template with these sections:
+Agents do much better with a well-specified issue. `itervox init` and `itervox quickstart` offer to add `.github/ISSUE_TEMPLATE/agent-task.md` when they write a new GitHub workflow (`[y/N]`; `itervox init --issue-template` or `itervox quickstart --yes` adds it without asking). `init` asks only when run in a terminal; otherwise it skips the question and says so. To add it to a project that already has a workflow, run `itervox init --tracker github --issue-template`: with a `WORKFLOW.md` present it adds only the template and leaves everything else as it is. It is never written over an existing file. Commit it, and **New issue** offers an "Agent task" template with these sections:
 
 - **Goal**: what should be true when the work is done.
 - **Acceptance criteria**: a checklist the agent works through.
