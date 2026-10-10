@@ -165,6 +165,19 @@ describe('applyCompletion (#87)', () => {
     );
   });
 
+  it('keeps template punctuation after the word (#109 review)', () => {
+    const at = (text: string, caret: number, label: string, kind: Completion['kind']) => {
+      const ctx = completionContext(text, caret);
+      if (!ctx) throw new Error('no context');
+      return applyCompletion(text, caret, ctx, { label, kind }).text;
+    };
+    const filter = '{{ issue.title | default: "fallback" }}';
+    expect(at(filter, filter.indexOf('def') + 3, 'default', 'filter')).toBe(filter);
+    const trimmed = '{{ issue.ti -}}';
+    expect(at(trimmed, 11, 'issue.title', 'variable')).toBe('{{ issue.title -}}');
+    expect(at('{{ issue.ti-}}', 11, 'issue.title', 'variable')).toBe('{{ issue.title-}}');
+  });
+
   it('completes a filter', () => {
     expect(insert('{{ issue.title |', 'downcase', 'filter').text).toBe('{{ issue.title | downcase');
   });
