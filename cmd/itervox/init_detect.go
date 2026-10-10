@@ -44,9 +44,21 @@ func scanRepo(dir string) repoInfo {
 		if info.Repo != "" {
 			info.ProjectName = info.Repo
 		}
-		if info.Owner != "" && info.Repo != "" {
+		switch {
+		case gitRemoteHost(info.RemoteURL) != "github.com":
+			// GitLab, Bitbucket, a self-hosted server: clone what origin
+			// says; rebuilding it as a github.com URL names a repository
+			// that does not exist.
+			info.CloneURL = info.RemoteURL
+		case info.Owner != "" && info.Repo != "":
 			info.CloneURL = fmt.Sprintf("git@github.com:%s/%s.git", info.Owner, info.Repo)
 		}
+	} else if out, err := gitexec.Command(context.Background(), dir, "-C", dir, "rev-parse", "--show-toplevel").Output(); err == nil {
+		// A repository with no remote (the local tracker's quickstart case,
+		// #85): workspaces clone the repository itself, and a worker's
+		// `git push origin <branch>` lands back in it.
+		info.CloneURL = strings.TrimSpace(string(out))
+		info.ProjectName = filepath.Base(info.CloneURL)
 	}
 
 	if out, err := gitexec.Command(context.Background(), dir, "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {

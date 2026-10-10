@@ -325,10 +325,10 @@ func (f issueFile) render() []byte {
 		writeKV("priority", *f.Priority)
 	}
 	if len(f.Labels) > 0 {
-		b.WriteString("labels: [" + strings.Join(quoteAll(f.Labels), ", ") + "]\n")
+		b.Write(flowList("labels", f.Labels))
 	}
 	if len(f.BlockedBy) > 0 {
-		b.WriteString("blocked_by: [" + strings.Join(quoteAll(f.BlockedBy), ", ") + "]\n")
+		b.Write(flowList("blocked_by", f.BlockedBy))
 	}
 	if f.Branch != "" {
 		writeKV("branch", f.Branch)
@@ -364,14 +364,16 @@ func (f issueFile) render() []byte {
 	return b.Bytes()
 }
 
-// quoteAll renders list items as YAML flow scalars.
-func quoteAll(items []string) []string {
-	out := make([]string, len(items))
-	for i, it := range items {
-		node := &yaml.Node{Kind: yaml.ScalarNode, Value: it}
-		s, _ := yaml.Marshal(node)
-		out[i] = strings.TrimSpace(string(s))
+// flowList renders `key: ["a", "b"]`. The sequence is marshalled whole,
+// each item double-quoted, so commas, quotes and line breaks in an item
+// survive a rewrite and parse back as the same single item.
+func flowList(key string, items []string) []byte {
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+	for _, it := range items {
+		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it, Style: yaml.DoubleQuotedStyle})
 	}
+	doc := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Value: key}, seq}}
+	out, _ := yaml.Marshal(doc)
 	return out
 }
 
