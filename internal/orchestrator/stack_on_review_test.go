@@ -253,6 +253,32 @@ func TestBackOutDeletesFreshDependentBranch(t *testing.T) {
 	assert.Error(t, err, "the fresh, empty branch is deleted")
 }
 
+// TestBackOutHoldsReusedUnstackedWorktree (#103 review): a dependent whose
+// worktree already exists from base_branch (made before the dependency was
+// added) is admitted for its in-review blocker but not stacked on it. No
+// agent runs, the issue waits for the blocker, and the existing worktree and
+// its work are kept.
+func TestBackOutHoldsReusedUnstackedWorktree(t *testing.T) {
+	branch := "alex/eng-1-add-parser"
+	root := gitRepoForStacking(t, branch)
+	wt := filepath.Join(root, "worktrees", "ENG-2")
+	git := func(dir string, args ...string) {
+		out, err := gitexec.Command(context.Background(), dir, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	git(root, "worktree", "add", "-q", "-b", "itervox/eng-2", wt, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(wt, "work.go"), []byte("package x\n"), 0o644))
+	git(wt, "add", "work.go")
+	git(wt, "commit", "-q", "-m", "earlier work")
+
+	runner := runReviewStackReal(t, root, &branch, func(o *orchestrator.Orchestrator, _ *promptCaptureRunner) bool {
+		return o.Snapshot().StackUnavailable["ENG-2"] != ""
+	})
+	assert.Equal(t, 0, runnerCalls(runner), "no agent runs without the blocker's code")
+	assert.FileExists(t, filepath.Join(wt, "work.go"), "the reused worktree and its work are kept")
+	assert.NoFileExists(t, filepath.Join(wt, "blocker.go"))
+}
+
 // blockerStateTracker reports the dependent's blocker in a state the test
 // controls, the way a real tracker refreshes blocker states every poll.
 type blockerStateTracker struct {

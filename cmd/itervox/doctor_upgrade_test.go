@@ -128,6 +128,21 @@ func TestUpgradeDoctorRules(t *testing.T) {
 		{note: "note 10",
 			applies:    upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "GITHUB_TOKEN=x\n"},
 			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "ITERVOX_API_TOKEN=pinned\n"}},
+		// #82 review: read as the daemon reads them. A false or unparsable
+		// ITERVOX_PRINT_TOKEN does not print the URL; an empty or commented
+		// ITERVOX_API_TOKEN pins nothing.
+		{note: "note 10",
+			applies:    upgradeFixture{front: cleanFront, unit: currentUnit, env: map[string]string{"ITERVOX_PRINT_TOKEN": "false"}},
+			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, env: map[string]string{"ITERVOX_PRINT_TOKEN": "1"}}},
+		{note: "note 10",
+			applies:    upgradeFixture{front: cleanFront, unit: currentUnit, env: map[string]string{"ITERVOX_PRINT_TOKEN": "0", "ITERVOX_API_TOKEN": ""}},
+			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "ITERVOX_PRINT_TOKEN=true\n"}},
+		{note: "note 10",
+			applies:    upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "ITERVOX_API_TOKEN=\nITERVOX_PRINT_TOKEN=no\n"},
+			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "ITERVOX_API_TOKEN=\"pinned\"\n"}},
+		{note: "note 10",
+			applies:    upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "# ITERVOX_API_TOKEN=example\n"},
+			notApplies: upgradeFixture{front: cleanFront, unit: currentUnit, secrets: "# old\n ITERVOX_API_TOKEN = pinned \n"}},
 		{note: "note 11",
 			applies:    upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_by_host:\n    build1: Yes"},
 			notApplies: upgradeFixture{front: cleanFront + "\nagent:\n  ssh_strict_host_checking: \"yes\"\n  ssh_strict_host_by_host:\n    build1: accept-new"}},

@@ -548,7 +548,7 @@ agent:
   ]}
   ```
 
-  A check counts when it has `passed: true` and a non-empty `command` and `output`. In a git worktree the evidence must name the commit the checks ran on by its id (a 7+ character prefix is enough; a branch name such as `HEAD` does not count), and the only later commits allowed are ones that touch nothing outside `.itervox/` (moving code into it counts as a change) (such as the handoff commit Itervox makes after the run). Proof from before a code change never counts for new code.
+  A check counts when it has `passed: true` and a non-empty `command` and `output`. In a git worktree the evidence must name the commit the checks ran on by its id (a 7+ character prefix is enough; a branch name such as `HEAD` does not count), and the only later commits allowed are ones that touch nothing outside `.itervox/` (moving code into it counts as a change) (such as the handoff commit Itervox makes after the run). Proof from before a code change never counts for new code. A staged or unstaged change to a tracked file outside `.itervox/handoff/` and `.itervox/evidence/` also voids the evidence: the checks did not run on it.
 - **`ci`**: the run's pull request must have only passing checks (`gh pr checks`; skipped checks count as passing). Pending, failing or unreadable checks, or no pull request, keep it unmet.
 
 Without the evidence, the issue is **not moved**: the run ends **input required** with a "Needs evidence before moving to …" reason listing each missing check, shown in the dashboard and posted on the issue. Reply (for example "run the tests and record them", or once CI is green) to resume the agent; the resumed run is checked again and moves the issue once the evidence is in place.
@@ -783,7 +783,10 @@ If the blocker's branch is not available in this checkout, the dependent is
 **not** started on `base_branch`, which would lack the blocker's code: the
 fresh worktree is removed before any agent runs (a dependent branch that
 already has commits of its own is kept), and the issue waits for its blocker
-to land as before. It gets another try once the blocker leaves review and
+to land as before. The same applies to a dependent whose worktree already
+exists but is not stacked on the blocker (for example, one made from
+`base_branch` before the dependency was added): no agent runs and the issue
+waits, and that worktree is kept as it is. It gets another try once the blocker leaves review and
 comes back, or changes. While a stacked dependent runs, the Deps tab still
 lists its blocker, which has not landed yet.
 
@@ -827,7 +830,7 @@ drift behind subsequent merges. Three cases are refused rather than forced:
 
 | Situation | Behaviour |
 |---|---|
-| The dependent is **running** | Skipped. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; it is picked up on a later cycle instead. |
+| The dependent is **running** | Deferred. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; the restack (and the pull request retarget) runs on the first dependency audit after the run ends, unless the issue is blocked again by then. |
 | The worktree has **uncommitted changes** | Skipped. That work is unpushed and unbacked-up. |
 | The rebase **conflicts** | Aborted — the branch is left byte-identical — and the issue moves to `input_required` with the reason. A conflict needs an owner; resolving it automatically would be a guess. |
 
