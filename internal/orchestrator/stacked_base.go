@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -34,6 +36,7 @@ import (
 // lives, not in dispatch policy.
 func stackedBaseBranch(state State, issue domain.Issue) string {
 	var candidate string
+	var candidateBranch *string
 	var live int
 	for _, blocker := range issue.BlockedBy {
 		if blocker.State != nil && isTerminalState(*blocker.State, state) {
@@ -53,11 +56,113 @@ func stackedBaseBranch(state State, issue domain.Issue) string {
 			return "" // the sole live blocker cannot name a branch
 		}
 		candidate = *blocker.Identifier
+		candidateBranch = blocker.BranchName
 	}
 	if candidate == "" {
 		return ""
 	}
-	return workspace.ResolveWorktreeBranch(nil, candidate)
+	// The blocker's worker resolved its branch the same way: the tracker's
+	// branch name (Linear) when set, else itervox/<identifier>.
+	return workspace.ResolveWorktreeBranch(candidateBranch, candidate)
+}
+
+// reviewStackKey identifies the in-review blocker an issue may stack on
+// (#73 follow-up), or "" when it may not: dependencies.stacked_prs is on,
+// the issue has exactly one unresolved blocker, that blocker is in
+// tracker.completion_state (its work is done and in review, not merged) and
+// it has an identifier, which names the branch to stack on. The key carries
+// the blocker's state so a recorded miss (State.StackUnavailable) expires
+// when the blocker moves.
+func reviewStackKey(issue domain.Issue, state State) string {
+	if state.StackOnReviewState == "" {
+		return ""
+	}
+	unresolved := unresolvedBlockers(issue, state)
+	if len(unresolved) != 1 {
+		return ""
+	}
+	b := unresolved[0]
+	if b.State == nil || !strings.EqualFold(strings.TrimSpace(*b.State), state.StackOnReviewState) {
+		return ""
+	}
+	if b.Identifier == nil || *b.Identifier == "" {
+		return ""
+	}
+	return *b.Identifier + "@" + strings.ToLower(strings.TrimSpace(*b.State))
+}
+
+// stackOnReviewState is State.StackOnReviewState for cfg: the lower-cased
+// completion_state when dependencies.stacked_prs is on, else "". Callers
+// outside the event loop hold cfgMu (CompletionState is runtime-mutable).
+func stackOnReviewState(cfg *config.Config) string {
+	if cfg == nil || !cfg.Dependencies.StackedPRs {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(cfg.Tracker.CompletionState))
+}
+
+// reviewStackKeyNow is reviewStackKey evaluated by a worker: the snapshot
+// supplies the terminal states, but the review state comes from config, not
+// from a snapshot that may predate the tick that admitted the issue.
+func (o *Orchestrator) reviewStackKeyNow(issue domain.Issue) string {
+	snap := o.Snapshot()
+	o.cfgMu.RLock()
+	snap.StackOnReviewState = stackOnReviewState(o.cfg)
+	snap.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
+	o.cfgMu.RUnlock()
+	return reviewStackKey(issue, snap)
+}
+
+// shouldBackOutUnstacked decides the #103 back-out: an issue admitted
+// because its blocker is in review (stackKey != "") whose worktree is not
+// stacked on that blocker. That holds for a reused worktree as much as a
+// fresh one: one made from base_branch before the dependency existed would
+// otherwise run without the blocker's code. Only a fresh worktree is removed
+// (see the caller). An input-required resume never backs out: it is the same
+// run continuing, and the gate-free paths keep their old behaviour.
+func shouldBackOutUnstacked(inputRequiredResume bool, stackedOn, stackKey string) bool {
+	return !inputRequiredResume && stackedOn == "" && stackKey != ""
+}
+
+// pruneStackUnavailable drops recorded stacking misses (#103) that no longer
+// describe the issue: its blocker left review, changed, or the issue is no
+// longer a candidate. A blocker that goes back to review later is tried
+// again rather than staying held until a restart.
+func pruneStackUnavailable(state *State, candidates []domain.Issue) {
+	if len(state.StackUnavailable) == 0 {
+		return
+	}
+	current := make(map[string]string, len(candidates))
+	for _, issue := range candidates {
+		current[issue.Identifier] = reviewStackKey(issue, *state)
+	}
+	for ident, key := range state.StackUnavailable {
+		if current[ident] != key {
+			delete(state.StackUnavailable, ident)
+		}
+	}
+}
+
+// branchCarriesOwnCommits reports whether the branch checked out in wsPath
+// has commits no other branch, tag or remote ref has: deleting it would
+// lose work. Fails safe: any git error counts as "carries commits".
+func branchCarriesOwnCommits(ctx context.Context, wsPath, branchName string) bool {
+	out, err := gitexec.Command(ctx, wsPath, "rev-list", "--count", "HEAD", "--not",
+		// With --branches, git matches --exclude without the refs/heads/ prefix.
+		"--exclude="+branchName, "--branches", "--tags", "--remotes").Output()
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(out)) != "0"
+}
+
+// reviewStackAdmits reports whether the dispatch gate lets issue through
+// despite its blocker: the blocker is in review, so the work can start
+// stacked on the blocker's branch, unless stacking on this same blocker
+// already failed.
+func reviewStackAdmits(issue domain.Issue, state State) bool {
+	key := reviewStackKey(issue, state)
+	return key != "" && state.StackUnavailable[issue.Identifier] != key
 }
 
 // ensureWorkspaceMaybeStacked creates the issue's workspace, basing it on a

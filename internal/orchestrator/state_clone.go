@@ -62,6 +62,7 @@ func (s State) Clone() State {
 	c.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
+	c.StackUnavailable = maps.Clone(s.StackUnavailable)
 	c.PendingReviews = maps.Clone(s.PendingReviews) // value type, no reference fields
 	c.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
