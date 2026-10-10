@@ -103,6 +103,10 @@ type commentCommandLedger struct {
 	Version int                  `json:"version"`
 	Cursor  time.Time            `json:"cursor"`
 	Handled map[string]time.Time `json:"handled"` // comment ID → the comment's creation time
+	// Floor is when commands were enabled: nothing created before it is
+	// ever acted on, across restarts too (the cursor's overlap window
+	// would otherwise reach back past it after a quick restart).
+	Floor time.Time `json:"floor,omitempty"`
 }
 
 type commentCommandHandler struct {
@@ -142,7 +146,7 @@ func newCommentCommandHandler(cfg config.CommentCommandsConfig, tr commentComman
 // enabling the feature never replays a repository's old comments.
 func (h *commentCommandHandler) loadLedger() {
 	start := h.now().UTC()
-	h.ledger = commentCommandLedger{Version: 1, Cursor: start, Handled: map[string]time.Time{}}
+	h.ledger = commentCommandLedger{Version: 1, Cursor: start, Handled: map[string]time.Time{}, Floor: start}
 	h.floor = start
 	raw, err := os.ReadFile(h.ledgerPath)
 	if err != nil {
@@ -157,7 +161,7 @@ func (h *commentCommandHandler) loadLedger() {
 		l.Handled = map[string]time.Time{}
 	}
 	h.ledger = l
-	h.floor = time.Time{}
+	h.floor = l.Floor // zero for a ledger written before the floor was kept
 }
 
 func (h *commentCommandHandler) saveLedger() error {
@@ -255,14 +259,16 @@ func (h *commentCommandHandler) poll(ctx context.Context) {
 
 // authorized reports whether c's author may run commands, and why not.
 func (h *commentCommandHandler) authorized(ctx context.Context, c github.RepoComment) (bool, string) {
+	// The token's own account first, even when it is allow-listed: agents
+	// post with that token, so only allow_token_user lets it run commands.
+	if h.tokenLogin != "" && strings.EqualFold(c.Login, h.tokenLogin) {
+		return false, "token user"
+	}
 	if slices.ContainsFunc(h.cfg.Allow, func(a string) bool { return strings.EqualFold(a, c.Login) }) {
 		return true, ""
 	}
 	if strings.EqualFold(c.UserType, "Bot") {
 		return false, "bot"
-	}
-	if h.tokenLogin != "" && strings.EqualFold(c.Login, h.tokenLogin) {
-		return false, "token user"
 	}
 	perm, err := h.permission(ctx, c.Login)
 	if err != nil {
