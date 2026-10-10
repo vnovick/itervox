@@ -455,3 +455,26 @@ func TestQuickstartClearsStaleRuntimeFiles(t *testing.T) {
 	assert.NoFileExists(t, dashboardURLFilePath(wf))
 	assert.Contains(t, out.String(), "left by a daemon that is no longer running")
 }
+
+// TestScanRepoCloneSource (#108 review): the workspace clone source is a
+// repository that exists. A github.com origin is cloned over SSH, any other
+// origin as written, and a repository with no remote (the local tracker's
+// case) is cloned from itself.
+func TestScanRepoCloneSource(t *testing.T) {
+	gh := scanRepo(repoWithRemote(t, "https://github.com/acme/widgets"))
+	assert.Equal(t, "git@github.com:acme/widgets.git", gh.CloneURL)
+
+	gitlab := scanRepo(repoWithRemote(t, "git@gitlab.com:acme/widgets.git"))
+	assert.Equal(t, "git@gitlab.com:acme/widgets.git", gitlab.CloneURL)
+
+	dir := repoWithRemote(t, "")
+	local := scanRepo(dir)
+	top, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	got, err := filepath.EvalSymlinks(local.CloneURL)
+	require.NoError(t, err)
+	assert.Equal(t, top, got, "no remote: workspaces clone the repository itself")
+	wf := generateWorkflow("local", "claude", local, filepath.Join(dir, "WORKFLOW.md"))
+	assert.Contains(t, wf, "  clone_url: "+local.CloneURL+"\n")
+	assert.NotContains(t, wf, "git@github.com:owner/")
+}
