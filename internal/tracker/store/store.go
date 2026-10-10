@@ -118,6 +118,9 @@ type Store struct {
 	// local change, so a pull that started before it does not undo it.
 	gen     int64
 	touched map[string]int64
+	// scope counts runtime scope changes (active states, project filter): a
+	// pull that started under an older scope is discarded, not committed.
+	scope int64
 }
 
 // The adapters' optional interfaces the base Store forwards. Wrap refuses an
@@ -275,19 +278,38 @@ func (s *Store) ensureSynced(ctx context.Context) error {
 	return s.sync(ctx, true)
 }
 
+// scopeRetries bounds how often a pull is redone because the scope changed
+// while it ran.
+const scopeRetries = 3
+
+// errScopeChanged is returned when the scope kept changing under every pull.
+var errScopeChanged = errors.New("store: tracker scope changed during the pull; pulling again on the next read")
+
 // sync pulls every view. With onlyIfUnsynced it does nothing when another
 // caller pulled while this one waited, which is what makes a cold start one
-// pull however many readers race it.
+// pull however many readers race it. A pull overtaken by a scope change is
+// discarded and redone under the new scope.
 func (s *Store) sync(ctx context.Context, onlyIfUnsynced bool) error {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
+	for range scopeRetries {
+		done, err := s.pullOnce(ctx, onlyIfUnsynced)
+		if done || err != nil {
+			return err
+		}
+	}
+	return errScopeChanged
+}
 
+// pullOnce is one pull; done is false when the scope changed while it ran
+// and nothing was committed. Caller holds syncMu.
+func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool) (done bool, err error) {
 	s.mu.Lock()
 	if onlyIfUnsynced && s.synced {
 		s.mu.Unlock()
-		return nil
+		return true, nil
 	}
-	startGen := s.gen
+	startGen, startScope := s.gen, s.scope
 	ttl := viewTTLSyncs * s.cfg.SyncInterval
 	type pull struct {
 		key    string
@@ -315,10 +337,14 @@ func (s *Store) sync(ctx context.Context, onlyIfUnsynced bool) error {
 		s.mu.Lock()
 		s.lastErr = err
 		s.mu.Unlock()
-		return err
+		return false, err
 	}
 
 	s.mu.Lock()
+	if s.scope != startScope {
+		s.mu.Unlock()
+		return false, nil
+	}
 	issues := make(map[string]domain.Issue, len(cands))
 	ids := func(list []domain.Issue) []string {
 		out := make([]string, 0, len(list))
@@ -362,7 +388,7 @@ func (s *Store) sync(ctx context.Context, onlyIfUnsynced bool) error {
 	s.mu.Unlock()
 
 	s.persist()
-	return nil
+	return true, nil
 }
 
 // fileLocked is the persisted form of the current data. Caller holds mu.
@@ -496,7 +522,7 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 	s.mu.Unlock()
 
 	s.mu.Lock()
-	startGen := s.gen
+	startGen, startScope := s.gen, s.scope
 	s.mu.Unlock()
 	issues, err := s.up.FetchIssuesByStates(ctx, stateNames)
 	if err != nil {
@@ -504,21 +530,37 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, iss := range issues {
-		// A local change made while this fetch ran is newer than it.
-		if s.touched[iss.ID] > startGen {
-			continue
-		}
-		s.placeLocked(iss)
+	if s.scope != startScope {
+		// Fetched under a scope since replaced: answer, but keep nothing.
+		return issues, nil
 	}
-	// Registered last: the tracker said these issues match this state set,
-	// whatever their state is named (GitHub's "closed").
+	// movedLocally: Itervox changed the issue while this fetch ran, so the
+	// fetch is older than the store's copy.
+	movedLocally := func(id string) bool { return s.touched[id] > startGen }
 	v := &view{States: slices.Clone(stateNames), LastRead: s.now()}
 	for _, iss := range issues {
+		if movedLocally(iss.ID) {
+			// Membership follows the newer local state.
+			if cur, ok := s.issues[iss.ID]; !ok || !containsFold(stateNames, cur.State) {
+				continue
+			}
+		} else {
+			s.placeLocked(iss)
+		}
+		// Otherwise the tracker said it matches this set, whatever its state
+		// is named (GitHub's "closed").
 		v.IDs = append(v.IDs, iss.ID)
 	}
+	// Issues Itervox moved into this set while the fetch ran.
+	for id := range s.touched {
+		if movedLocally(id) && !slices.Contains(v.IDs, id) {
+			if cur, ok := s.issues[id]; ok && containsFold(stateNames, cur.State) {
+				v.IDs = append(v.IDs, id)
+			}
+		}
+	}
 	s.views[key] = v
-	return issues, nil
+	return s.listLocked(v.IDs), nil
 }
 
 // FetchIssueStatesByIDs implements tracker.Tracker from the tracker (see
@@ -653,6 +695,7 @@ func (s *Store) invalidate(active []string) {
 		s.active = slices.Clone(active)
 	}
 	s.synced = false
+	s.scope++
 }
 
 // linearStore is a Store over an adapter that also batches detail reads and
