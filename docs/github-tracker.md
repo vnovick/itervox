@@ -241,7 +241,7 @@ permission check per commenter, cached for 10 minutes.
   `reply_to_unauthorized` is set, no reply. In a public repository, anyone can
   comment, but only maintainers' commands do anything.
 - **Never obeyed.** Bot accounts (unless listed in `allow`), Itervox's own
-  comments, and the account Itervox's token belongs to. Agents use that
+  comments, and the account Itervox's token belongs to, even if it is listed in `allow`. Agents use that
   account too, so an agent, or an issue that talks an agent into writing
   `/itervox run`, could otherwise trigger commands. If Itervox posts as you
   (your personal token) and you want your own comments to count, set
