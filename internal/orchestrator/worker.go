@@ -1584,6 +1584,7 @@ func formatResetsAt(limit *agent.LimitSignal) string {
 
 // deliverExit sends a worker exit event to the event loop.
 func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev OrchestratorEvent) {
+	o.exitsSent.Store(issue.ID, time.Now())
 	// If the worker context is already cancelled (e.g. user-triggered pause via
 	// CancelIssue), the exit event must still reach the event loop so that
 	// PausedIdentifiers is set correctly.  Fall back to a background-derived
