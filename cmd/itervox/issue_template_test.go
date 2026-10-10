@@ -100,6 +100,7 @@ func TestInitIssueTemplateStepNeverBlocksWithoutTerminal(t *testing.T) {
 		t.Fatal("init's issue-template step blocked on stdin without a terminal")
 	}
 	assert.Contains(t, out.String(), "not offered (no terminal)")
+	assert.Contains(t, out.String(), "itervox init --tracker github --issue-template")
 	assert.NoFileExists(t, filepath.Join(dir, agentTaskTemplateRel))
 
 	var flagged strings.Builder
@@ -114,4 +115,27 @@ func TestInitIssueTemplateStepNeverBlocksWithoutTerminal(t *testing.T) {
 	var memory strings.Builder
 	initIssueTemplateStep(t.TempDir(), "memory", true, true, bufioReader("y\n"), &memory)
 	assert.Empty(t, memory.String())
+}
+
+// TestIssueTemplateOnlyKeepsTheWorkflow: the command init's no-terminal hint
+// names (`init --issue-template` on an existing workflow) adds the template
+// and leaves the workflow untouched, instead of hitting init's
+// existing-workflow refusal. Without the flag, or with --force, init runs
+// as before.
+func TestIssueTemplateOnlyKeepsTheWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	wf := filepath.Join(dir, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(wf, []byte("keep me"), 0o600))
+
+	var out strings.Builder
+	assert.False(t, issueTemplateOnly(wf, dir, "github", false, false, &out), "no flag: normal init")
+	assert.False(t, issueTemplateOnly(wf, dir, "github", true, true, &out), "--force: normal init")
+	assert.False(t, issueTemplateOnly(filepath.Join(dir, "missing.md"), dir, "github", true, false, &out), "no workflow: normal init")
+	assert.NoFileExists(t, filepath.Join(dir, agentTaskTemplateRel))
+
+	require.True(t, issueTemplateOnly(wf, dir, "github", true, false, &out))
+	assert.FileExists(t, filepath.Join(dir, agentTaskTemplateRel))
+	got, err := os.ReadFile(wf)
+	require.NoError(t, err)
+	assert.Equal(t, "keep me", string(got), "the workflow is untouched")
 }

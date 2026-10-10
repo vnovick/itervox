@@ -182,3 +182,37 @@ func TestBuildEvidenceBlock(t *testing.T) {
 	ciOnly := buildEvidenceBlock([]string{"ci"}, "x")
 	assert.NotContains(t, ciOnly, "run.evidence_path", "ci alone needs no evidence file")
 }
+
+// TestCheckEvidenceRejectsUncommittedSourceChanges (#80 review): evidence
+// stamped on HEAD does not count while a tracked file has a staged or
+// unstaged change on top of it, since the checks did not run on that code.
+// Changes under the handoff and evidence directories are bookkeeping and
+// still pass, as do untracked files.
+func TestCheckEvidenceRejectsUncommittedSourceChanges(t *testing.T) {
+	dir, _ := gitRepoWithCommit(t)
+	rel := evidenceRelPathFor("implementer")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644))
+	handoff := filepath.Join(dir, HandoffDirRelPath, "h.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(handoff), 0o755))
+	require.NoError(t, os.WriteFile(handoff, []byte("h"), 0o644))
+	gitRun(t, dir, "add", "-f", "main.go", handoff)
+	gitRun(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "code")
+	_, head := gitHEAD(t, dir)
+	writeEvidence(t, dir, `{"commit":"`+head+`","checks":[{"name":"test","command":"make test","output":"ok","passed":true}]}`)
+	check := func() evidenceVerdict {
+		return checkEvidence(context.Background(), dir, rel, []string{"test"}, "", noChecks)
+	}
+	require.True(t, check().ok(), "clean tree")
+
+	require.NoError(t, os.WriteFile(handoff, []byte("later"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("untracked"), 0o644))
+	assert.True(t, check().ok(), "bookkeeping edits and untracked files do not count")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main // changed\n"), 0o644))
+	v := check()
+	require.False(t, v.ok(), "unstaged change")
+	assert.Contains(t, v.Missing[0], "`main.go` has uncommitted changes")
+
+	gitRun(t, dir, "add", "main.go")
+	assert.False(t, check().ok(), "staged change")
+}

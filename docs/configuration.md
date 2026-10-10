@@ -226,7 +226,7 @@ script.
 | `enabled` | Optional boolean. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | Optional list of daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | Required when `allowed_actions` includes `create_issue`; the tracker state/column for follow-up issues. |
-| `require_evidence` | Optional list of checks (e.g. `[test, lint, ci]`) a run must prove before the issue moves to `completion_state`: named checks as passing entries in `.itervox/evidence/<profile>.json` (`run.evidence_path`) stamped with the commit they ran on (later commits may only touch `.itervox/`), `ci` as all-passing PR checks. Without it the run ends input-required with a "Needs evidence" reason. Off by default; must be a list. See the site's [Done needs evidence](https://itervox.dev/configuration/#done-needs-evidence). |
+| `require_evidence` | Optional list of checks (e.g. `[test, lint, ci]`) a run must prove before the issue moves to `completion_state`: named checks as passing entries in `.itervox/evidence/<profile>.json` (`run.evidence_path`) stamped with the commit they ran on (later commits may only touch `.itervox/`, and no tracked file may have an uncommitted change), `ci` as all-passing PR checks. Without it the run ends input-required with a "Needs evidence" reason. Off by default; must be a list. See the site's [Done needs evidence](https://itervox.dev/configuration/#done-needs-evidence). |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same
 Liquid bindings as the main workflow prompt. Automation `instructions` are
