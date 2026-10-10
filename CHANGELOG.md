@@ -9,7 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- **`itervox doctor` checks GitHub state labels; `doctor --fix` creates the missing ones** (#75). The GitHub tracker maps every state to an issue label, and a state whose label does not exist matched nothing: no issue was dispatched or moved and nothing reported why. Doctor now lists each configured state label missing on the repository (active, working, completion, terminal except `closed`, backlog and failed states, case-insensitive) with the exact `gh label create` command, and exits `1`. API failures are reported but never fail doctor; Linear workflows skip the check. `itervox doctor --fix` creates the missing labels after a `[y/N]` prompt; `--yes` / `-y` skips it for CI.
+- **`itervox doctor` checks GitHub state labels; `doctor --fix` creates the missing ones** (#75). The GitHub tracker maps every state to an issue label, and a state whose label does not exist matched nothing: no issue was dispatched or moved and nothing reported why. Doctor now lists each configured state label missing on the repository (active, working, completion, terminal except `closed`, backlog and failed states, case-insensitive) with the exact `gh label create` command, and exits `1`. API failures are reported but never fail doctor; Linear workflows skip the check. `itervox doctor --fix` creates the missing labels after a `[y/N]` prompt (the API time limit starts after the answer); `--yes` / `-y` skips it for CI. A repair that fails part-way exits `1` and still lists the labels it did not create.
 
 ### Security
 
