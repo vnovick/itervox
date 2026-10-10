@@ -54,6 +54,34 @@ itervox -logs-dir /var/log/itervox
 
 ---
 
+## `itervox quickstart` — From a repository to a running board
+
+```bash
+itervox quickstart [--tracker github|linear] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com. |
+| `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
+| `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
+| `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
+| `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels). |
+| `--no-start` | `false` | Stop after the checks; do not start the daemon. |
+| `--ready-timeout` | `90s` | How long to wait for the daemon to report ready. |
+
+Steps, in order:
+
+1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
+2. If a daemon is already running for this workflow, print its dashboard URL and stop. Otherwise remove a `HEARTBEAT.md` and `dashboard_url` left behind by a daemon that died (the next daemon rewrites both).
+3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set.
+4. Run `itervox doctor --fix`: missing GitHub state labels are created after confirmation. Any doctor error stops quickstart with the report.
+5. Start the daemon in its own session (output in `.itervox/logs/quickstart-daemon.log`), wait until it publishes `.itervox/dashboard_url` and `GET /api/v1/ready` returns 200, then print the URL and where the API token is: `<logs-dir>/api-token` for a generated token, or your `ITERVOX_API_TOKEN`.
+
+Exit code `0` when the board is running (or already was, or `--no-start` passed the checks); `1` when a step stopped it.
+
+---
+
 ## `itervox init` — Generate WORKFLOW.md
 
 Scans the repository and generates a `WORKFLOW.md` starter file pre-populated with detected project metadata.

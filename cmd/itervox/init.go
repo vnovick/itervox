@@ -10,7 +10,6 @@ import (
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
-	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/templates"
 )
 
@@ -465,48 +464,7 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 
-	fmt.Printf("itervox init: scanning %s...\n", *dir)
-	info := scanRepo(*dir)
-
-	if info.RemoteURL != "" {
-		fmt.Printf("  git remote : %s\n", info.RemoteURL)
-	}
-	fmt.Printf("  branch     : %s\n", info.DefaultBranch)
-	fmt.Printf("  runner     : %s\n", *runner)
-	if info.HasClaudeMD {
-		fmt.Printf("  CLAUDE.md  : found — prompt will reference it\n")
-	} else {
-		fmt.Printf("  CLAUDE.md  : not found — add one for best results\n")
-	}
-	if info.HasAgentsMD {
-		fmt.Printf("  AGENTS.md  : found — prompt will reference it\n")
-	}
-	for _, s := range info.Stacks {
-		fmt.Printf("  stack      : %s (%s)\n", s.Name, strings.Join(s.Commands, ", "))
-	}
-
-	// Discover available models from provider APIs (best-effort).
-	fmt.Printf("itervox init: discovering available models...\n")
-	info.ClaudeModels = agent.ListClaudeModels()
-	info.CodexModels = agent.ListCodexModels()
-	fmt.Printf("  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
-
-	content := generateWorkflow(*trackerKind, *runner, info, *output)
-
-	if err := writeInitWorkflow(*output, []byte(content)); err != nil {
-		fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", *output, err)
-		fatalExit(1)
-	}
-	fmt.Printf("itervox init: wrote %s\n", *output)
-	if err := writeInitAgentFiles(*output, *runner); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		fatalExit(1)
-	}
-	fmt.Printf("itervox init: wrote .itervox/agents profiles\n")
-	// P0-A — scaffold built-in profile files to disk so operators see them
-	// in version control next to their custom profiles. Idempotent; uses
-	// writeFileIfMissing semantics so operator edits are preserved.
-	if err := writeBuiltinProfileFilesIfMissing(*output, profiles.Names()); err != nil {
+	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}
