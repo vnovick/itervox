@@ -8,6 +8,7 @@ import { STATUS_META, type StatusKey } from '../lib/statusModel';
 import { useStatusSummary } from '../hooks/useStatusSummary';
 import { useConnectionState } from '../hooks/useConnectionState';
 import { SchemaDriftBanner } from '../components/itervox/SchemaDriftBanner';
+import { DemoModeBadge } from '../components/itervox/DemoModeBadge';
 import { useDashboardHref } from '../hooks/useDashboardHref';
 import { useUIStore } from '../store/uiStore';
 
@@ -57,10 +58,11 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
   // CORE-076 — every count, label and tone comes from the shared status
   // model (lib/statusModel), the same derivation LiveOpsStrip, HeroStats and
   // the operator queue use.
-  const { projectName, configInvalid } = useItervoxStore(
+  const { projectName, configInvalid, demoMode } = useItervoxStore(
     useShallow((s) => ({
       projectName: s.snapshot?.projectName ?? '',
       configInvalid: s.snapshot?.configInvalid ?? null,
+      demoMode: s.snapshot?.demoMode ?? false,
     })),
   );
   const {
@@ -155,6 +157,8 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             {projectName}
           </span>
         )}
+
+        {demoMode && <DemoModeBadge />}
 
         {/* Orchestrator state */}
         <span
