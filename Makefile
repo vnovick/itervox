@@ -1,4 +1,4 @@
-.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.9, even on machines where /usr/local/go is an older version.
@@ -119,6 +119,14 @@ lint: lint-go
 GO_TEST_TAGS ?= sshmatrix
 test:
 	go test -race -timeout $(GO_TEST_TIMEOUT) -tags $(GO_TEST_TAGS) $(GO_PACKAGES) -count=1
+
+# chaos runs the orchestrator and tracker tests over and over while busy
+# loops saturate every CPU (#126); the ordering races this catches only show
+# up under load. Settings: CHAOS_PACKAGES, CHAOS_RUN, CHAOS_COUNT, CHAOS_CPU,
+# CHAOS_HOGS, CHAOS_TIMEOUT, CHAOS_OUT (see scripts/chaos.sh). Not part of
+# verify: it takes tens of minutes. CI runs it nightly (.github/workflows/chaos.yml).
+chaos:
+	@bash scripts/chaos.sh
 
 # Run tests with coverage and generate an HTML report (coverage.html).
 coverage:
