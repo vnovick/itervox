@@ -1176,6 +1176,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	if completionState != "" && ctx.Err() == nil && !automationRun {
+		// From here the run only finishes; mark it before the issue turns
+		// terminal in the tracker, so a reconcile tick between this move and
+		// the exit below leaves the run to that exit (see pendingExits).
+		o.exitsSent.Store(issue.ID, time.Now())
 		slog.Info("worker: transitioning to completion state",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "target_state", completionState)
 		if o.logBuf != nil {
