@@ -28,7 +28,10 @@ type evidenceRunner struct {
 	// gitCommit makes the agent commit a code change first and replace
 	// "HEAD" in evidence with the resulting commit, as the prompt asks.
 	gitCommit bool
-	mu        sync.Mutex
+	// dirtyAfter leaves a further, uncommitted change to main.go after the
+	// commit the evidence is stamped with (needs gitCommit).
+	dirtyAfter bool
+	mu         sync.Mutex
 	prompts   []string
 }
 
@@ -56,6 +59,11 @@ func (r *evidenceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent
 			return agent.TurnResult{}, err
 		}
 		evidence = strings.ReplaceAll(evidence, `"HEAD"`, `"`+head+`"`)
+		if r.dirtyAfter {
+			if err := os.WriteFile(filepath.Join(workspacePath, "main.go"), []byte("package main // untested\n"), 0o644); err != nil {
+				return agent.TurnResult{}, err
+			}
+		}
 	}
 	if evidence != "" {
 		dir := filepath.Join(workspacePath, ".itervox", "evidence")
@@ -160,6 +168,28 @@ func TestEvidenceGateMovesRunWithPassingEvidenceInGitWorkspace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(log), "chore(itervox): record agent handoff",
 		"the worker's handoff commit landed after the evidence stamp")
+}
+
+// TestEvidenceGateHoldsRunWithUncommittedChanges (#80 review): evidence
+// stamped on the agent's commit does not move the issue while a tracked file
+// still has an uncommitted change on top of that commit.
+func TestEvidenceGateHoldsRunWithUncommittedChanges(t *testing.T) {
+	ws := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "-q", "--allow-empty", "-m", "base"},
+	} {
+		out, err := gitexec.Command(context.Background(), ws, args...).CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	ev := `{"commit":"HEAD","checks":[{"name":"test","command":"go test ./...","output":"ok  pkg 0.1s","passed":true}]}`
+	orch, mt, _ := runEvidenceWorkerIn(t, ws, &evidenceRunner{evidence: ev, gitCommit: true, dirtyAfter: true}, []string{"test"})
+	entry := orch.Snapshot().InputRequiredIssues["ENG-1"]
+	require.NotNil(t, entry, "the run must be held for input")
+	assert.Contains(t, entry.Context, "`main.go` has uncommitted changes")
+	assert.Equal(t, "In Progress", issueState(t, mt))
 }
 
 // TestEvidenceGateRejectsFailingEvidence: an entry that did not pass does

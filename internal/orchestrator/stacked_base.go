@@ -113,12 +113,15 @@ func (o *Orchestrator) reviewStackKeyNow(issue domain.Issue) string {
 	return reviewStackKey(issue, snap)
 }
 
-// shouldBackOutUnstacked decides the #103 back-out: a fresh worktree for an
-// issue admitted because its blocker is in review (stackKey != "") that
-// could not be stacked. An input-required resume never backs out: it is the
-// same run continuing, and the gate-free paths keep their old behaviour.
-func shouldBackOutUnstacked(createdNow, inputRequiredResume bool, stackedOn, stackKey string) bool {
-	return createdNow && !inputRequiredResume && stackedOn == "" && stackKey != ""
+// shouldBackOutUnstacked decides the #103 back-out: an issue admitted
+// because its blocker is in review (stackKey != "") whose worktree is not
+// stacked on that blocker. That holds for a reused worktree as much as a
+// fresh one: one made from base_branch before the dependency existed would
+// otherwise run without the blocker's code. Only a fresh worktree is removed
+// (see the caller). An input-required resume never backs out: it is the same
+// run continuing, and the gate-free paths keep their old behaviour.
+func shouldBackOutUnstacked(inputRequiredResume bool, stackedOn, stackKey string) bool {
+	return !inputRequiredResume && stackedOn == "" && stackKey != ""
 }
 
 // pruneStackUnavailable drops recorded stacking misses (#103) that no longer

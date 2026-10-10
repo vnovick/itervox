@@ -110,7 +110,9 @@ the verdict. Itervox enforces what it can:
 - **Fresh verdicts only.** A verdict file left by an earlier review round is
   removed before the reviewer runs, so a reviewer that records nothing counts
   as a block rather than repeating an old verdict.
-- **Not covered:** pushes to a repository that is not one of the
+- **Not covered:** deleting a remote branch (`git push origin --delete`),
+  which cannot be told apart from another clone deleting it; pushes to a
+  repository that is not one of the
   workspace's remotes (or a remote that cannot be reached when the review
   starts or ends), a workspace that is not a git work tree, reviewers on SSH
   worker hosts whose workspace is not on the daemon's machine, and local
