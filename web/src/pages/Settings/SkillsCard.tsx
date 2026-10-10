@@ -176,8 +176,9 @@ const RECOMMENDATION_HELP: Partial<Record<string, { what: string; howToFix: stri
   USER_SCOPE_REF_ON_SSH: {
     what: "A referenced skill or subagent exists only in this machine's home directory or a plugin. Agents on SSH hosts see the repository's .claude/ directory, not your home, so it may be missing there.",
     howToFix: [
-      "Commit the skill or subagent under the repository's .claude/ directory so it travels with the repo.",
-      'Or install it on every SSH host.',
+      "Claude profile: commit the skill or subagent under the repository's .claude/ directory so it travels with the repo.",
+      'Codex profile: Codex reads no skills from the repository, so install the skill on every SSH host (for example under ~/.codex/skills/).',
+      'Either backend: installing it on every SSH host also works.',
     ],
   },
   ORPHAN_MCP: {
