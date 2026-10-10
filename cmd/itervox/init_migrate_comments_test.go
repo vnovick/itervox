@@ -272,3 +272,68 @@ func TestParseFrontMatterNodeEdgeCases(t *testing.T) {
 	_, _, err := parseFrontMatterNode("- a\n- b\n")
 	require.Error(t, err, "a sequence is not a workflow front matter")
 }
+
+// TestMigrateWorkflowToSchema2ResolvesAliasesAndMergeKeys (#71 review): a
+// profile that is an alias of an anchored mapping, or that merges one with
+// `<<`, migrates to the same effective profile. The alias used to be
+// replaced by an empty map (losing command and backend), and a prompt
+// inherited through `<<` survived the migration, so the result failed to
+// load. The anchor itself is left as written.
+func TestMigrateWorkflowToSchema2ResolvesAliasesAndMergeKeys(t *testing.T) {
+	const legacy = `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+profile_defaults: &custom
+  command: codex exec
+  backend: codex
+  prompt: Do the work.
+agent:
+  command: claude
+  profiles:
+    aliased: *custom
+    merged:
+      <<: *custom
+      command: claude
+---
+
+Body.
+`
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(workflowPath, []byte(legacy), 0o644))
+
+	result, err := migrateWorkflowToSchema2(workflowPath, false, time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.True(t, result.Changed)
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err, "the migrated workflow loads")
+	aliased := cfg.Agent.Profiles["aliased"]
+	assert.Equal(t, "codex exec", aliased.Command)
+	assert.Equal(t, "codex", aliased.Backend)
+	merged := cfg.Agent.Profiles["merged"]
+	assert.Equal(t, "claude", merged.Command, "an own key still wins over the merge")
+	assert.Equal(t, "codex", merged.Backend, "merged keys are kept")
+	for _, name := range []string{"aliased", "merged"} {
+		raw, err := os.ReadFile(filepath.Join(dir, ".itervox", "agents", name, "INSTRUCTIONS.md"))
+		require.NoError(t, err)
+		assert.Contains(t, string(raw), "Do the work.", name)
+	}
+
+	rewritten, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	front, _, _ := splitWorkflowFrontMatter(string(rewritten))
+	assert.Contains(t, front, "profile_defaults: &custom", "the anchor is left as written")
+}
+
+// TestCheckMigratedProfilesRefusesAMismatch: the guard refuses output whose
+// profile does not read back as the migration meant.
+func TestCheckMigratedProfilesRefusesAMismatch(t *testing.T) {
+	want := map[string]any{"p": map[string]any{"command": "codex", "soul_file": "s"}}
+	assert.NoError(t, checkMigratedProfiles([]byte("agent:\n  profiles:\n    p: {command: codex, soul_file: s}\n"), want, []string{"p"}))
+	err := checkMigratedProfiles([]byte("agent:\n  profiles:\n    p: {soul_file: s, prompt: x}\n"), want, []string{"p"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `profile "p" would not read back as migrated`)
+}
