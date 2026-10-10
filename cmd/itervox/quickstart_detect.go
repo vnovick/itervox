@@ -12,7 +12,7 @@ import (
 // and environment (#74), with the reason for each choice so the operator can
 // see why.
 type quickstartDetection struct {
-	Tracker       string // "github" | "linear"
+	Tracker       string // "github" | "linear" | "local"
 	TrackerReason string
 	Runner        string // "claude" | "codex"
 	RunnerReason  string
@@ -23,7 +23,8 @@ type quickstartDetection struct {
 // Tracker: --tracker wins; otherwise a real LINEAR_API_KEY in the
 // environment means Linear (a key is a deliberate signal, and many GitHub
 // repositories track work in Linear); otherwise an origin remote on
-// github.com means GitHub Issues. Runner: --runner wins; otherwise claude,
+// github.com means GitHub Issues; otherwise the local file tracker (#85),
+// which needs no account. Runner: --runner wins; otherwise claude,
 // then codex, whichever is on PATH first.
 func detectQuickstart(dir, trackerFlag, runnerFlag string) (quickstartDetection, error) {
 	var det quickstartDetection
@@ -40,7 +41,8 @@ func detectQuickstart(dir, trackerFlag, runnerFlag string) (quickstartDetection,
 		if remote != "" {
 			reason = "origin " + remote + " is not on github.com"
 		}
-		return det, fmt.Errorf("could not choose a tracker: %s and LINEAR_API_KEY is not set; pass --tracker github or --tracker linear", reason)
+		det.Tracker = "local"
+		det.TrackerReason = reason + " and LINEAR_API_KEY is not set; issues are files in .itervox/issues/ (pass --tracker github or --tracker linear to use a service)"
 	}
 
 	if runnerFlag != "" {

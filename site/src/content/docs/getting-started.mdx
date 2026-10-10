@@ -21,7 +21,7 @@ Or download the latest release from [GitHub Releases](https://github.com/vnovick
 - **An AI agent CLI** — one of:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
   - [Codex](https://github.com/openai/codex) (`codex`)
-- **A project tracker** — Linear or GitHub Issues
+- **A project tracker** — Linear or GitHub Issues, or none: the [local tracker](/guides/local-issues/) keeps issues as Markdown files in your repository
 
 ## Try it first: `itervox demo`
 
@@ -41,7 +41,7 @@ itervox quickstart
 
 It takes you from a repository to a running board:
 
-1. **Detects** the tracker and the agent CLI. `LINEAR_API_KEY` set → Linear; otherwise an `origin` remote on github.com → GitHub Issues. The agent is `claude` if it is on your `PATH`, otherwise `codex`. Override either with `--tracker github|linear` and `--runner claude|codex`.
+1. **Detects** the tracker and the agent CLI. `LINEAR_API_KEY` set → Linear; otherwise an `origin` remote on github.com → GitHub Issues; otherwise the [local tracker](/guides/local-issues/). The agent is `claude` if it is on your `PATH`, otherwise `codex`. Override either with `--tracker github|linear|local` and `--runner claude|codex`.
 2. **Writes `WORKFLOW.md`** (schema 2) and the `.itervox/agents/` profiles, the same files `itervox init` writes. An existing schema-2 workflow is used as it is; an older one is migrated with `itervox init --update` only after you confirm.
 3. **Sets up the tracker token.** For GitHub without `GITHUB_TOKEN`, it offers your `gh` CLI's token (`gh auth token`) and saves it to the gitignored `.itervox/.env` if you agree. For Linear, put `LINEAR_API_KEY` in `.itervox/.env` first.
 4. **Creates missing GitHub state labels** after asking (the same step as `itervox doctor --fix`).

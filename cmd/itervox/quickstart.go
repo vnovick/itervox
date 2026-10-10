@@ -84,7 +84,7 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 	opts := quickstartOptions{ReadyTimeout: quickstartDefaultReadyTimeout}
 	fs.StringVar(&opts.Dir, "dir", ".", "repository directory")
 	fs.StringVar(&opts.Workflow, "workflow", "", "workflow path (default <dir>/WORKFLOW.md)")
-	fs.StringVar(&opts.Tracker, "tracker", "", "tracker kind for a new workflow: github or linear (default: detected)")
+	fs.StringVar(&opts.Tracker, "tracker", "", "tracker kind for a new workflow: github, linear or local (default: detected)")
 	fs.StringVar(&opts.Runner, "runner", "", "agent CLI for a new workflow: claude or codex (default: detected)")
 	fs.BoolVar(&opts.Yes, "yes", false, "answer yes to every confirmation")
 	fs.BoolVar(&opts.Yes, "y", false, "shorthand for --yes")
@@ -97,9 +97,9 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 		return opts, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	switch opts.Tracker {
-	case "", "github", "linear":
+	case "", "github", "linear", "local":
 	default:
-		return opts, fmt.Errorf("unknown --tracker %q (github or linear)", opts.Tracker)
+		return opts, fmt.Errorf("unknown --tracker %q (github, linear or local)", opts.Tracker)
 	}
 	switch opts.Runner {
 	case "", "claude", "codex":
@@ -155,6 +155,9 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 			return 1
 		}
 		ensureEnvStub(itervoxDir, det.Tracker)
+		if det.Tracker == "local" {
+			seedLocalIssues(filepath.Join(itervoxDir, "issues"), out)
+		}
 		if err := finalizeItervoxGitignore(itervoxDir); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 		}
