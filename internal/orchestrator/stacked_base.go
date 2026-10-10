@@ -2,6 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -88,4 +91,70 @@ func (o *Orchestrator) ensureWorkspaceMaybeStacked(
 // setter (it is absent from CLAUDE.md's cfgMu allowlist), so no lock is taken.
 func (o *Orchestrator) stackedPRsEnabled() bool {
 	return o != nil && o.cfg != nil && o.cfg.Dependencies.StackedPRs
+}
+
+// prBaseBranch is the branch a pull request opened by this run should target
+// (#73), exposed to prompts as `run.pr_base_branch`: the blocker's branch
+// when the worktree is stacked on it, otherwise workspace.base_branch.
+// Workspace config has no runtime setter, so no lock is taken.
+func (o *Orchestrator) prBaseBranch(stackedOn string) string {
+	if stackedOn != "" {
+		return stackedOn
+	}
+	if o == nil || o.cfg == nil {
+		return ""
+	}
+	return o.cfg.Workspace.BaseBranch
+}
+
+// buildStackedPRBlock tells the agent that its worktree is stacked and which
+// base its pull request must use (#73). Empty when the run is not stacked, so
+// unstacked prompts are unchanged.
+func buildStackedPRBlock(stackedOn string) string {
+	if stackedOn == "" {
+		return ""
+	}
+	return strings.Join([]string{
+		"## Stacked Branch",
+		"",
+		fmt.Sprintf("- run.pr_base_branch: `%s`", stackedOn),
+		"",
+		fmt.Sprintf("This branch is stacked on its blocker's branch `%s`. Open the pull request against it", stackedOn),
+		fmt.Sprintf("(`gh pr create --base %s`), not the default branch, so it shows only this issue's changes.", stackedOn),
+		"Itervox also sets this base on the pull request after the run.",
+	}, "\n")
+}
+
+func (o *Orchestrator) prURLFinder() func(ctx context.Context, wsPath string) string {
+	if o.findOpenPRURL != nil {
+		return o.findOpenPRURL
+	}
+	return workspace.FindOpenPRURL
+}
+
+func (o *Orchestrator) prBaseSetter() func(ctx context.Context, prURL, base string) (bool, error) {
+	if o.setPRBase != nil {
+		return o.setPRBase
+	}
+	return workspace.SetPRBase
+}
+
+// retargetPRBase points prURL at base and logs the outcome. Best-effort:
+// GitHub refuses a base branch that is not on the remote, and a failure here
+// only leaves the PR's diff wider than it needs to be, so it is logged, not
+// returned.
+func (o *Orchestrator) retargetPRBase(ctx context.Context, identifier, prURL, base, why string) {
+	changed, err := o.prBaseSetter()(ctx, prURL, base)
+	switch {
+	case err != nil:
+		slog.Warn("orchestrator: could not set pull request base (non-fatal)",
+			"identifier", identifier, "pr_url", prURL, "base", base, "reason", why, "error", err)
+	case changed:
+		slog.Info("orchestrator: pull request base set",
+			"identifier", identifier, "pr_url", prURL, "base", base, "reason", why)
+		if o.logBuf != nil {
+			o.logBuf.Add(identifier, makeBufLine("INFO",
+				fmt.Sprintf("worker: pr_base_set url=%s base=%s", prURL, base)))
+		}
+	}
 }
