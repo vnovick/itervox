@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,7 +22,7 @@ import (
 // with the exact `gh label create` command, and `doctor --fix` creates them.
 
 // labelCheckTimeout bounds the whole label probe (list + optional creates).
-const labelCheckTimeout = 15 * time.Second
+var labelCheckTimeout = 15 * time.Second // var: tests shorten it
 
 // defaultLabelColors are the colours `itervox init`'s GitHub template
 // suggests; any other state label gets defaultLabelColor.
@@ -48,27 +49,40 @@ func labelColor(name string) string {
 }
 
 // githubStateLabels returns every state name the GitHub tracker reads or
-// writes as a label, de-duplicated case-insensitively in config order.
-// "closed" is GitHub's native issue state, not a label, so it is skipped.
+// writes as a label, de-duplicated case-insensitively in config order. Only
+// a terminal state of "closed" is GitHub's native issue state (the adapter
+// lists closed issues for it); every other field is read or written as a
+// literal label, "closed" included, so it is checked like any other.
 func githubStateLabels(t config.TrackerConfig) []string {
 	var out []string
 	seen := map[string]bool{}
-	add := func(names ...string) {
+	add := func(native bool, names ...string) {
 		for _, n := range names {
 			n = strings.TrimSpace(n)
 			key := strings.ToLower(n)
-			if n == "" || key == "closed" || seen[key] {
+			if n == "" || (native && key == "closed") || seen[key] {
 				continue
 			}
 			seen[key] = true
 			out = append(out, n)
 		}
 	}
-	add(t.ActiveStates...)
-	add(t.WorkingState, t.CompletionState)
-	add(t.TerminalStates...)
-	add(t.BacklogStates...)
-	add(t.FailedState)
+	add(false, t.ActiveStates...)
+	add(false, t.WorkingState, t.CompletionState)
+	add(true, t.TerminalStates...)
+	add(false, t.BacklogStates...)
+	add(false, t.FailedState)
+	return out
+}
+
+// withoutLabels returns names minus drop, compared case-insensitively.
+func withoutLabels(names, drop []string) []string {
+	var out []string
+	for _, n := range names {
+		if !slices.ContainsFunc(drop, func(d string) bool { return strings.EqualFold(d, n) }) {
+			out = append(out, n)
+		}
+	}
 	return out
 }
 
@@ -170,7 +184,7 @@ func renderLabelCheck(b *strings.Builder, lc LabelCheck) {
 // set it asks for confirmation on in and creates nothing on any answer other
 // than y/yes (including EOF, so a non-interactive run without --yes is safe).
 // It returns the labels it created and the first creation error.
-func fixMissingLabels(ctx context.Context, cfg *config.Config, lc LabelCheck, assumeYes bool, in io.Reader, out io.Writer) ([]string, error) {
+func fixMissingLabels(cfg *config.Config, lc LabelCheck, assumeYes bool, in io.Reader, out io.Writer) ([]string, error) {
 	if !lc.Ran || len(lc.Missing) == 0 {
 		return nil, nil
 	}
@@ -184,6 +198,10 @@ func fixMissingLabels(ctx context.Context, cfg *config.Config, lc LabelCheck, as
 			return nil, nil
 		}
 	}
+	// The deadline starts after the answer: a person may take any time to
+	// read the prompt, and that must not eat the API calls' budget.
+	ctx, cancel := context.WithTimeout(context.Background(), labelCheckTimeout)
+	defer cancel()
 	client := newLabelChecker(cfg)
 	var created []string
 	for _, n := range lc.Missing {
