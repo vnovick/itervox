@@ -244,6 +244,7 @@ func (d *demoRun) control(ctx context.Context) {
 
 // demoOpenWhenReady waits for the daemon to publish its URL, then opens it.
 func demoOpenWhenReady(workflowPath string, out io.Writer) {
+	defer orchestrator.RecoverGoroutine("demo-open-browser", "", nil)
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if raw, err := os.ReadFile(dashboardURLFilePath(workflowPath)); err == nil {
@@ -272,6 +273,9 @@ func openBrowser(url string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }() // reap the opener so it does not linger as a zombie
+	go func() {
+		defer orchestrator.RecoverGoroutine("demo-browser-reaper", "", nil)
+		_ = cmd.Wait() // reap the opener so it does not linger as a zombie
+	}()
 	return nil
 }
