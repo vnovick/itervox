@@ -427,3 +427,57 @@ func TestLocalTrackerNeverOverwritesAnUnseenEdit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Done", is.State)
 }
+
+// TestLocalTrackerRewriteKeepsListItems (#108 review): a rewrite keeps each
+// label as one item, whatever it contains (a comma, a line break, quotes),
+// and the file still loads after a restart.
+func TestLocalTrackerRewriteKeepsListItems(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"),
+		"---\ntitle: One\nstate: Todo\nlabels: ['area,backend', \"line\\nbreak\", 'say \"hi\"', \"x: y\"]\n---\n")
+	before, err := tr.FetchIssueDetail(ctx, "ITX-1")
+	require.NoError(t, err)
+	require.Len(t, before.Labels, 4)
+
+	require.NoError(t, tr.UpdateIssueState(ctx, "ITX-1", "Done"))
+	_, err = tr.CreateComment(ctx, "ITX-1", "noted")
+	require.NoError(t, err)
+
+	after, err := New(Config{Dir: dir, ActiveStates: []string{"Todo"}}).FetchIssueDetail(ctx, "ITX-1")
+	require.NoError(t, err, "the rewritten file loads after a restart")
+	assert.Equal(t, before.Labels, after.Labels)
+	assert.Equal(t, "Done", after.State)
+}
+
+// TestLocalTrackerDirectoryReadErrorIsNotDeletion (#108 review): when the
+// issues directory cannot be listed, reads fail and Problems says why; the
+// issues are not reported as gone (reconcile would stop their workers).
+func TestLocalTrackerDirectoryReadErrorIsNotDeletion(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
+	got, err := tr.FetchIssueStatesByIDs(ctx, []string{"ITX-1"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	// A regular file where the directory was: listing it fails with an
+	// error other than "does not exist", as a permission error would (and
+	// unlike chmod 000, also for root).
+	moved := dir + ".moved"
+	require.NoError(t, os.Rename(dir, moved))
+	writeRaw(t, dir, "not a directory")
+	_, err = tr.FetchIssueStatesByIDs(ctx, []string{"ITX-1"})
+	require.Error(t, err, "a read error is reported, not an empty result")
+	_, err = tr.FetchCandidateIssues(ctx)
+	require.Error(t, err)
+	problems := tr.Problems()
+	require.Len(t, problems, 1)
+	assert.Equal(t, dir, problems[0].Path)
+
+	require.NoError(t, os.Remove(dir))
+	require.NoError(t, os.Rename(moved, dir))
+	got, err = tr.FetchIssueStatesByIDs(ctx, []string{"ITX-1"})
+	require.NoError(t, err)
+	assert.Len(t, got, 1, "the issue is still there once the directory is readable")
+}
