@@ -256,6 +256,8 @@ func TestQuickstartWritesNewWorkflow(t *testing.T) {
 	assert.Equal(t, 2, front.Version)
 	assert.Equal(t, "github", front.Tracker.Kind)
 	assert.FileExists(t, filepath.Join(dir, ".itervox", ".env"))
+	assert.Contains(t, out.String(), "Add an agent-ready issue template", "quickstart offers the issue template (#83)")
+	assert.NoFileExists(t, filepath.Join(dir, agentTaskTemplateRel), "declined (EOF): not written")
 }
 
 // TestQuickstartUsesGHTokenAfterConfirmation: with no GITHUB_TOKEN, the gh
