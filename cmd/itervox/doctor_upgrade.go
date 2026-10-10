@@ -480,19 +480,58 @@ func ruleBackendContradictsCommand(p upgradeProbe) (string, string, bool) {
 // ?token= URL to the journal, so an operator who copied it from there needs
 // another source.
 func ruleHeadlessToken(p upgradeProbe) (string, string, bool) {
-	if len(p.SystemdUnits) == 0 || p.getenv("ITERVOX_API_TOKEN") != "" || p.getenv("ITERVOX_PRINT_TOKEN") != "" {
+	if len(p.SystemdUnits) == 0 {
 		return "", "", false
 	}
+	// Read the settings as the daemon does: a pinned token is a non-empty
+	// value (an empty one makes the daemon generate a token), and the URL
+	// is printed only for a value ParseBool reads as true.
+	pinned := p.getenv("ITERVOX_API_TOKEN") != ""
+	prints := shouldPrintDashboardToken(false, p.getenv(printTokenEnv), false)
 	for _, f := range p.SecretFiles {
-		if raw, err := os.ReadFile(f); err == nil && strings.Contains(string(raw), "ITERVOX_API_TOKEN=") {
-			return "", "", false // pinned for the service
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
 		}
+		if v, ok := envFileValue(string(raw), "ITERVOX_API_TOKEN"); ok && v != "" {
+			pinned = true // pinned for the service
+		}
+		if v, ok := envFileValue(string(raw), printTokenEnv); ok && shouldPrintDashboardToken(false, v, false) {
+			prints = true
+		}
+	}
+	if pinned || prints {
+		return "", "", false
 	}
 	if v, ok := section(p.Front, "server")["allow_unauthenticated"].(bool); ok && v {
 		return "", "", false // no token at all
 	}
 	return fmt.Sprintf("itervox runs as a service (%s) with an auto-generated token, which is no longer printed on stderr (the journal)", p.SystemdUnits[0]),
 		"read `<logs-dir>/api-token` (the startup log line names the path), pin `ITERVOX_API_TOKEN` in `.itervox/.env`, or set `ITERVOX_PRINT_TOKEN=1`", true
+}
+
+// envFileValue returns the value an environment file (systemd
+// EnvironmentFile= format: KEY=VALUE lines, # and ; comments, optional
+// quotes) assigns to key, the last assignment winning, and whether it
+// assigns one at all.
+func envFileValue(raw, key string) (string, bool) {
+	value, found := "", false
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' || line[0] == ';' {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != key {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
+		value, found = v, true
+	}
+	return value, found
 }
 
 // ruleLegacyPIDFile (note 15): a daemon started by a pre-v0.2.1 binary wrote
