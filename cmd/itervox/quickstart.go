@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/orchestrator"
 )
 
 // `itervox quickstart` (#74): one command from a repository to a running
@@ -469,7 +470,12 @@ func quickstartStartDaemon(workflowPath, itervoxDir string, timeout time.Duratio
 	}
 	_, _ = fmt.Fprintf(out, "itervox quickstart: started the daemon (pid %d, log %s); waiting for it to be ready...\n", cmd.Process.Pid, logPath)
 	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
+	go func() {
+		defer orchestrator.RecoverGoroutine("quickstart-daemon-wait", "", func() {
+			exited <- errors.New("waiting for the daemon panicked")
+		})
+		exited <- cmd.Wait()
+	}()
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(timeout)
