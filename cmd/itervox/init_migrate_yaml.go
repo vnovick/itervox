@@ -149,14 +149,103 @@ func yamlNodeDelete(m *yaml.Node, key string) bool {
 
 // yamlNodeEnsureMap returns the mapping node stored under `key`, creating an
 // empty one (appended) when the key is absent or its value is not a mapping
-// (for example a bare `agent:` with a null value).
+// (for example a bare `agent:` with a null value). A value that is an alias
+// of a mapping, or a mapping with merge keys (`<<: *anchor`), is replaced by
+// a plain mapping with the same effective entries first: editing the alias
+// would edit every other user of the anchor (or, replaced by an empty map,
+// lose its values), and a key deleted from a mapping would come back through
+// its merge.
 func yamlNodeEnsureMap(m *yaml.Node, key string) *yaml.Node {
-	if existing := yamlNodeGet(m, key); existing != nil && existing.Kind == yaml.MappingNode {
-		return existing
+	if existing := yamlNodeGet(m, key); existing != nil {
+		if existing.Kind == yaml.MappingNode && !yamlHasMergeKey(existing) {
+			return existing
+		}
+		if plain, ok := yamlEffectiveMap(existing); ok {
+			yamlNodeSet(m, key, plain)
+			return plain
+		}
 	}
 	child := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	yamlNodeSet(m, key, child)
 	return child
+}
+
+// yamlIsMergeKey reports whether k is a YAML merge key (`<<`).
+func yamlIsMergeKey(k *yaml.Node) bool {
+	return k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "!!merge" || k.Tag == "")
+}
+
+func yamlHasMergeKey(m *yaml.Node) bool {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if yamlIsMergeKey(m.Content[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// yamlEffectiveMap returns a new mapping node holding n's effective entries:
+// an alias is followed, merge keys are expanded (own keys win, then merged
+// mappings in order), and every value is a copy, so the result can be edited
+// without touching the anchor. ok is false when n is not a mapping.
+func yamlEffectiveMap(n *yaml.Node) (*yaml.Node, bool) {
+	src := n
+	for src != nil && src.Kind == yaml.AliasNode {
+		src = src.Alias
+	}
+	if src == nil || src.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	out := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: src.Style,
+		HeadComment: n.HeadComment, LineComment: n.LineComment, FootComment: n.FootComment}
+	seen := map[string]bool{}
+	var merges []*yaml.Node
+	for i := 0; i+1 < len(src.Content); i += 2 {
+		k, v := src.Content[i], src.Content[i+1]
+		if yamlIsMergeKey(k) {
+			merges = append(merges, v)
+			continue
+		}
+		seen[k.Value] = true
+		out.Content = append(out.Content, yamlCopyNode(k), yamlCopyNode(v))
+	}
+	for _, merge := range merges {
+		sources := []*yaml.Node{merge}
+		if merge.Kind == yaml.SequenceNode {
+			sources = merge.Content
+		}
+		for _, s := range sources {
+			eff, ok := yamlEffectiveMap(s)
+			if !ok {
+				continue
+			}
+			for j := 0; j+1 < len(eff.Content); j += 2 {
+				if k := eff.Content[j]; !seen[k.Value] {
+					seen[k.Value] = true
+					out.Content = append(out.Content, k, eff.Content[j+1])
+				}
+			}
+		}
+	}
+	return out, true
+}
+
+// yamlCopyNode deep-copies n. Anchors are dropped from the copy (the
+// original keeps them, so aliases elsewhere still resolve), and aliases are
+// kept pointing at their original anchors.
+func yamlCopyNode(n *yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	c := *n
+	c.Anchor = ""
+	if n.Kind != yaml.AliasNode && len(n.Content) > 0 {
+		c.Content = make([]*yaml.Node, len(n.Content))
+		for i, child := range n.Content {
+			c.Content[i] = yamlCopyNode(child)
+		}
+	}
+	return &c
 }
 
 func yamlKeyNode(key string) *yaml.Node {
