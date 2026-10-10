@@ -466,6 +466,11 @@ type State struct {
 	// ForceReanalyze holds identifiers queued for forced PR re-analysis.
 	// These bypass the "existing open PR = skip" guard on next dispatch.
 	ForceReanalyze map[string]struct{}
+	// PendingRestacks holds the identifiers of dependents whose blockers
+	// landed while they were running (#73): the restack is skipped then and
+	// run by the first dependency audit that finds the issue idle. Session
+	// state, not persisted.
+	PendingRestacks map[string]struct{}
 	// PrevActiveIdentifiers is the set of issue identifiers that were fetched
 	// as active on the previous tick. Used by the auto-resume guard to
 	// distinguish "issue came back to active after being absent" (safe to
