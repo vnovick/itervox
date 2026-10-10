@@ -148,7 +148,7 @@ func commandFixture(t *testing.T, cc config.CommentCommandsConfig) (*fakeComment
 	ledger := filepath.Join(t.TempDir(), "comment_commands.json")
 	h := newCommentCommandHandler(cc, f, orch, ledger)
 	// As if a ledger from an earlier run existed: no floor.
-	h.ledger.Cursor, h.floor = time.Now().Add(-time.Hour), time.Time{}
+	h.ledger.Cursor, h.floor, h.ledger.Floor = time.Now().Add(-time.Hour), time.Time{}, time.Time{}
 	return f, h, runs, ledger
 }
 
@@ -224,6 +224,8 @@ func TestCommentCommandPermissions(t *testing.T) {
 		{"bot", config.CommentCommandsConfig{}, "alice", "Bot", "/itervox stop", false},
 		{"token user (agents post as it), even as admin", config.CommentCommandsConfig{}, "itervox-bot", "User", "/itervox stop", false},
 		{"token user allowed", config.CommentCommandsConfig{AllowTokenUser: true}, "itervox-bot", "User", "/itervox stop", true},
+		{"token user on the allow list still needs allow_token_user", config.CommentCommandsConfig{Allow: []string{"itervox-bot"}}, "itervox-bot", "User", "/itervox stop", false},
+		{"token user allow-listed and allowed", config.CommentCommandsConfig{Allow: []string{"itervox-bot"}, AllowTokenUser: true}, "itervox-bot", "User", "/itervox stop", true},
 		{"Itervox's own comment", config.CommentCommandsConfig{}, "alice", "User", tracker.MarkManagedComment("/itervox stop"), false},
 		{"on a pull request", config.CommentCommandsConfig{}, "alice", "PR", "/itervox stop", false},
 	} {
@@ -430,9 +432,15 @@ func TestCommentCommandCursorNeverMovesBack(t *testing.T) {
 func TestCommentCommandStartsFromNowWithoutALedger(t *testing.T) {
 	f, h, _, _ := commandFixture(t, config.CommentCommandsConfig{Enabled: true})
 	f.addComment("1", "alice", "/itervox stop", time.Now().Add(-time.Minute)) // inside the overlap
-	fresh := newCommentCommandHandler(h.cfg, f, h.orch, filepath.Join(t.TempDir(), "none.json"))
+	freshLedger := filepath.Join(t.TempDir(), "none.json")
+	fresh := newCommentCommandHandler(h.cfg, f, h.orch, freshLedger)
 	fresh.poll(context.Background())
 	assert.Empty(t, f.reactionsSnapshot())
+	// A restart soon after enabling (cursor still within the overlap of the
+	// pre-enable comment) keeps the enable-time floor (#107 review).
+	restarted := newCommentCommandHandler(h.cfg, f, h.orch, freshLedger)
+	restarted.poll(context.Background())
+	assert.Empty(t, f.reactionsSnapshot(), "a command from before enabling is never acted on, across restarts")
 
 	corrupt := filepath.Join(t.TempDir(), "corrupt.json")
 	require.NoError(t, os.WriteFile(corrupt, []byte("{"), 0o600))
