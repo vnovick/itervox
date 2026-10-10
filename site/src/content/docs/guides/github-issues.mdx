@@ -129,7 +129,7 @@ tracker:
     - backlog               # optional: enables the backlog panel in TUI/dashboard
 ```
 
-Create these labels in your GitHub repository before running Itervox. Then assign the `todo` label to issues you want agents to pick up.
+Create these labels in your GitHub repository before running Itervox. `itervox doctor` lists any that are missing, and `itervox doctor --fix` creates them. Then assign the `todo` label to issues you want agents to pick up.
 
 When an agent creates its feature branch, Itervox records the branch on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), so a retried or resumed run continues on the same branch. GitHub Issues has no branch field, which is why a comment is used. The comment is posted only when the branch changes, so retries do not notify watchers again.
 
