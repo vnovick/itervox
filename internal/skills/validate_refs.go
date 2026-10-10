@@ -441,14 +441,28 @@ func ValidateProfileRefs(inv *Inventory, profiles map[string]config.AgentProfile
 					ID:       "USER_SCOPE_REF_ON_SSH",
 					Severity: "info",
 					Title:    fmt.Sprintf("Profile %q references %s %q that only exists outside the repository", name, ref.Kind, ref.Name),
-					Description: fmt.Sprintf("%s %q was found only in user or plugin scope on this machine. Agents on SSH hosts (%s) see the repository's .claude/ directory but not this machine's home directory or plugins, so the %s may be missing there. Commit it under .claude/ to make it travel with the repo.",
-						capitalize(ref.Kind), ref.Name, strings.Join(sshHosts, ", "), ref.Kind),
+					Description: fmt.Sprintf("%s %q was found only in user or plugin scope on this machine. Agents on SSH hosts (%s) see the repository but not this machine's home directory or plugins, so the %s may be missing there. %s",
+						capitalize(ref.Kind), ref.Name, strings.Join(sshHosts, ", "), ref.Kind, sshScopeRemedy(backend, ref.Kind)),
 					Affected: []string{name, ref.Name},
 				})
 			}
 		}
 	}
 	return issues
+}
+
+// sshScopeRemedy is the fix for USER_SCOPE_REF_ON_SSH on backend. Claude reads
+// skills and subagents from the repository's .claude/ directory; Codex reads
+// no skills from the repository (only from the home directory or a plugin),
+// so for Codex the fix is to install the skill on every host.
+func sshScopeRemedy(backend, kind string) string {
+	if backend == "codex" {
+		return "Codex does not read skills from the repository, so install it on every SSH host (for example under ~/.codex/skills/)."
+	}
+	if kind == "subagent" {
+		return "Commit it under .claude/agents/ to make it travel with the repo, or install it on every SSH host."
+	}
+	return "Commit it under .claude/skills/ to make it travel with the repo, or install it on every SSH host."
 }
 
 func missingRefIssue(profile, backend string, ref PromptRef) InventoryIssue {

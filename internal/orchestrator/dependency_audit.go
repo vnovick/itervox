@@ -216,6 +216,18 @@ func (o *Orchestrator) auditFetchedIssueDependenciesAndDispatch(
 			o.markRestackConflict(state, issue, now)
 		}
 		o.dispatchMatchingBlockersResolvedAutomations(ctx, state, issue, entry, now)
+	} else if _, pending := state.PendingRestacks[issue.Identifier]; pending {
+		// A restack deferred because the dependent was running (#73).
+		// Once it is blocked again, the next unblock restacks it anyway.
+		switch {
+		case entry.Status != DependencyAuditUnblocked:
+			delete(state.PendingRestacks, issue.Identifier)
+		case !issueRunning(*state, issue):
+			delete(state.PendingRestacks, issue.Identifier)
+			if conflicted := o.restackUnblockedIssue(ctx, state, issue); conflicted {
+				o.markRestackConflict(state, issue, now)
+			}
+		}
 	}
 	return entry
 }
