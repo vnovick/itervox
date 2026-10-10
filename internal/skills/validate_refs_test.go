@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/config"
 )
 
@@ -264,6 +265,22 @@ func TestValidateProfileRefsSSHInfo(t *testing.T) {
 	}, refIssueKeys(issues))
 	assert.Equal(t, "info", issues[0].Severity)
 	assert.Contains(t, issues[0].Description, "build-box")
+	assert.Contains(t, issues[0].Description, "Commit it under .claude/skills/")
+	assert.Contains(t, issues[1].Description, "Commit it under .claude/agents/")
+}
+
+// TestValidateProfileRefsSSHInfoForCodex (#86 review): a Codex profile's
+// user-scope skill is not fixed by committing it under .claude/ (Codex
+// resolves no Claude-provider skills), so the advice is to install it on
+// every SSH host instead.
+func TestValidateProfileRefsSSHInfoForCodex(t *testing.T) {
+	profiles := map[string]config.AgentProfile{
+		"codex-impl": {Command: "codex", Instructions: "Use the `codex-only` skill."},
+	}
+	issues := ValidateProfileRefs(refInventory(), profiles, RefBackendDefaults{}, []string{"build-box"})
+	require.Equal(t, []string{"USER_SCOPE_REF_ON_SSH:codex-impl:codex-only"}, refIssueKeys(issues))
+	assert.NotContains(t, issues[0].Description, ".claude/")
+	assert.Contains(t, issues[0].Description, "install it on every SSH host")
 }
 
 func TestAnalyzeIncludesProfileRefIssues(t *testing.T) {
