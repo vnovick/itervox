@@ -43,7 +43,12 @@ func TestDeploySkillReferencesExist(t *testing.T) {
 	for _, mod := range []string{"gcp-vm", "aws-ec2", "azure-vm"} {
 		_, err := os.Stat(filepath.Join("..", "..", "deploy", "terraform", mod, "examples", "basic"))
 		assert.NoError(t, err, mod)
+		// The skill copies the example out of the kit, so it must say to
+		// repoint the example's relative module source (#88 review).
+		assert.Contains(t, repoFile(t, "deploy/terraform/"+mod+"/examples/basic/main.tf"), `source = "../.."`, mod)
 	}
+	assert.Contains(t, skill, "replace it with the absolute path of\n`deploy/terraform/<module>`",
+		"copied examples need their module source repointed")
 
 	flagRe := regexp.MustCompile(`(--[a-z][a-z-]*)`)
 	for _, cloud := range []string{"gcp", "aws", "azure"} {

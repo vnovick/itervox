@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -145,22 +146,23 @@ func envLine(key, value string) (string, error) {
 // lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: a prefix, then only x's.
 var placeholderRe = regexp.MustCompile(`^[A-Za-z_]*x{8,}$`)
 
-// envValue is the value godotenv reads from one KEY=... line ("" when the
-// line does not parse, e.g. `KEY= # fill me`).
-func envValue(line string) string {
-	m, err := godotenv.Unmarshal(line)
+// errUnparsable is returned for a dotenv file the daemon's loader rejects.
+// It never carries the parser's error: godotenv quotes the input around the
+// fault, which is secret values.
+var errUnparsable = errors.New("does not parse as a dotenv file (the daemon would not load it); fix it first, nothing saved")
+
+// parseEnv parses a whole dotenv file the way the daemon loads it.
+func parseEnv(content string) (map[string]string, error) {
+	m, err := godotenv.Unmarshal(content)
 	if err != nil {
-		return ""
+		return nil, errUnparsable
 	}
-	for _, v := range m {
-		return v
-	}
-	return ""
+	return m, nil
 }
 
-// secretStatus is "empty", "placeholder" or "set" for a line's value.
-func secretStatus(line string) string {
-	v := strings.TrimSpace(envValue(line))
+// secretStatus is "empty", "placeholder" or "set" for a value.
+func secretStatus(value string) string {
+	v := strings.TrimSpace(value)
 	switch {
 	case v == "":
 		return "empty"
@@ -208,6 +210,15 @@ func setEnvSecret(path, key, value string, replace bool) error {
 	if err != nil {
 		return err
 	}
+	// Decide on the value the daemon would load (the last assignment
+	// wins), before touching any line.
+	before, err := parseEnv(string(raw))
+	if err != nil {
+		return fmt.Errorf("%s %w", path, err)
+	}
+	if secretStatus(before[key]) == "set" && !replace {
+		return fmt.Errorf("%s already sets %s; pass --replace to rotate it", path, key)
+	}
 	replaced := false
 	for i, l := range lines {
 		k, _, ok := strings.Cut(strings.TrimSpace(l), "=")
@@ -215,11 +226,8 @@ func setEnvSecret(path, key, value string, replace bool) error {
 			continue
 		}
 		if replaced {
-			lines[i] = "" // a later duplicate would win over the new value
+			lines[i] = "" // a rotated value leaves no older copy behind
 			continue
-		}
-		if secretStatus(l) == "set" && !replace {
-			return fmt.Errorf("%s already sets %s; pass --replace to rotate it", path, key)
 		}
 		lines[i] = line
 		replaced = true
@@ -228,10 +236,11 @@ func setEnvSecret(path, key, value string, replace bool) error {
 		lines = append(lines, line)
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	// The daemon loads the whole file or nothing: refuse to write a file
-	// it cannot load, whichever line is at fault.
-	if _, err := godotenv.Unmarshal(content); err != nil {
-		return fmt.Errorf("%s would not load (%v); fix that line first, nothing saved", path, err)
+	// The edit is line-based; prove it changed exactly key, so a line
+	// inside another (multi-line) value is never rewritten.
+	after, err := parseEnv(content)
+	if err != nil || after[key] != value || !sameOtherValues(before, after, key) {
+		return fmt.Errorf("%s: cannot set %s without changing other lines of the file (is %s inside a multi-line value?); edit it by hand, nothing saved", path, key, key)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -254,24 +263,58 @@ func setEnvSecret(path, key, value string, replace bool) error {
 	return nil
 }
 
-// secretList prints each variable in the file with whether it is set, a
-// placeholder or empty, never its value.
+// sameOtherValues reports whether a and b agree on every variable but key.
+func sameOtherValues(a, b map[string]string, key string) bool {
+	for k, v := range a {
+		if w, ok := b[k]; k != key && (!ok || w != v) {
+			return false
+		}
+	}
+	for k := range b {
+		if _, ok := a[k]; !ok && k != key {
+			return false
+		}
+	}
+	return true
+}
+
+// secretList prints each variable the daemon would load, in file order,
+// with whether it is set, a placeholder or empty, never its value. Names
+// come from the parsed file, so the continuation lines of a multi-line value
+// are never printed.
 func secretList(path string, out, errOut io.Writer) int {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "itervox secret list: %v\n", err)
 		return 1
 	}
+	vars, err := parseEnv(string(raw))
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "itervox secret list: %s %v\n", path, err)
+		return 1
+	}
+	// File order for the names godotenv parsed; a line that only looks like
+	// an assignment (inside a quoted value) names nothing it parsed, or
+	// a variable printed once anyway.
+	var names []string
+	seen := map[string]bool{}
 	for _, l := range strings.Split(string(raw), "\n") {
-		t := strings.TrimSpace(l)
-		if t == "" || strings.HasPrefix(t, "#") {
-			continue
+		k, _, ok := strings.Cut(strings.TrimSpace(l), "=")
+		k = strings.TrimSpace(strings.TrimPrefix(k, "export "))
+		if _, parsed := vars[k]; ok && parsed && !seen[k] {
+			seen[k] = true
+			names = append(names, k)
 		}
-		k, _, ok := strings.Cut(t, "=")
-		if !ok {
-			continue
+	}
+	rest := make([]string, 0)
+	for k := range vars {
+		if !seen[k] {
+			rest = append(rest, k)
 		}
-		_, _ = fmt.Fprintf(out, "%s: %s\n", strings.TrimSpace(strings.TrimPrefix(k, "export ")), secretStatus(t))
+	}
+	slices.Sort(rest)
+	for _, k := range append(names, rest...) {
+		_, _ = fmt.Fprintf(out, "%s: %s\n", k, secretStatus(vars[k]))
 	}
 	return 0
 }

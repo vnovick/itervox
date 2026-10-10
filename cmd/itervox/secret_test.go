@@ -237,3 +237,79 @@ func TestSecretSetGuardsTheWholeFile(t *testing.T) {
 		assert.Equal(t, uint32(4343), info.Sys().(*syscall.Stat_t).Uid, "a new file takes its directory's owner")
 	}
 }
+
+// TestSecretNeverDisclosesTheFile (#88 review): neither a malformed file's
+// parse error nor a multi-line value's continuation lines reach the output,
+// and a later duplicate assignment (the value the daemon loads) is guarded
+// by --replace like any other.
+func TestSecretNeverDisclosesTheFile(t *testing.T) {
+	const secretText = "synthetic-secret"
+	setup := func(t *testing.T, content string) (workflow, envPath string) {
+		t.Helper()
+		pipedSecret(t)
+		workflow, envPath = secretWorkflow(t)
+		require.NoError(t, os.MkdirAll(filepath.Dir(envPath), 0o755))
+		require.NoError(t, os.WriteFile(envPath, []byte(content), 0o600))
+		return workflow, envPath
+	}
+	unchanged := func(t *testing.T, envPath, content string) {
+		t.Helper()
+		data, err := os.ReadFile(envPath)
+		require.NoError(t, err)
+		assert.Equal(t, content, string(data), "a refused write leaves the file as it was")
+	}
+
+	t.Run("malformed file", func(t *testing.T) {
+		content := "BAD-KEY=" + secretText + "\n"
+		workflow, envPath := setup(t, content)
+		var out, errOut bytes.Buffer
+		assert.Equal(t, 1, secret([]string{"set", "TOKEN", "--workflow", workflow}, strings.NewReader("replacement\n"), &out, &errOut))
+		assert.Equal(t, 1, secret([]string{"list", "--workflow", workflow}, nil, &out, &errOut))
+		all := out.String() + errOut.String()
+		assert.NotContains(t, all, secretText)
+		assert.NotContains(t, all, "replacement")
+		assert.Contains(t, errOut.String(), "does not parse")
+		unchanged(t, envPath, content)
+	})
+
+	t.Run("multi-line value", func(t *testing.T) {
+		content := "TOKEN=\"first-line\nLEAKY_LINE=" + secretText + "\nlast-line\"\nOTHER=x\n"
+		workflow, envPath := setup(t, content)
+		var out, errOut bytes.Buffer
+		require.Equal(t, 0, secret([]string{"list", "--workflow", workflow}, nil, &out, &errOut), errOut.String())
+		assert.Equal(t, "TOKEN: set\nOTHER: set\n", out.String())
+
+		// A key named like a continuation line would rewrite TOKEN's value.
+		out.Reset()
+		errOut.Reset()
+		assert.Equal(t, 1, secret([]string{"set", "LEAKY_LINE", "--workflow", workflow}, strings.NewReader("v\n"), &out, &errOut))
+		assert.NotContains(t, out.String()+errOut.String(), secretText)
+		unchanged(t, envPath, content)
+	})
+
+	t.Run("assignment-like line inside another value", func(t *testing.T) {
+		// Rotating K must not blank the "K=" line inside TOKEN's value.
+		content := "K=x\nTOKEN=\"a\nK=" + secretText + "\nb\"\n"
+		workflow, envPath := setup(t, content)
+		var out, errOut bytes.Buffer
+		assert.Equal(t, 1, secret([]string{"set", "K", "--replace", "--workflow", workflow}, strings.NewReader("v\n"), &out, &errOut))
+		assert.NotContains(t, out.String()+errOut.String(), secretText)
+		unchanged(t, envPath, content)
+	})
+
+	t.Run("duplicate assignment", func(t *testing.T) {
+		content := "TOKEN=\nTOKEN=real-existing\n"
+		workflow, envPath := setup(t, content)
+		var out, errOut bytes.Buffer
+		assert.Equal(t, 1, secret([]string{"set", "TOKEN", "--workflow", workflow}, strings.NewReader("replacement\n"), &out, &errOut))
+		assert.Contains(t, errOut.String(), "--replace")
+		unchanged(t, envPath, content)
+
+		require.Equal(t, 0, secret([]string{"set", "TOKEN", "--replace", "--workflow", workflow}, strings.NewReader("replacement\n"), &out, &errOut), errOut.String())
+		got, err := godotenv.Read(envPath)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"TOKEN": "replacement"}, got)
+		data, _ := os.ReadFile(envPath)
+		assert.NotContains(t, string(data), "real-existing", "rotation leaves no old copy")
+	})
+}

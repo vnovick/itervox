@@ -87,7 +87,12 @@ Each prints the exact bootstrap and tunnel commands for what it created
 (instance ID, data-disk device path). Keep that block; steps 3 and 7 use it.
 
 **OpenTofu**: copy `deploy/terraform/<gcp-vm|aws-ec2|azure-vm>/examples/basic`
-to a directory of the user's and edit it before planning. The examples are
+to a directory of the user's and edit it before planning. First point the
+module at the kit: the example's `source = "../.."` only resolves inside the
+kit, so in the copy replace it with the absolute path of
+`deploy/terraform/<module>` in the user's checkout (for example
+`source = "/home/me/itervox/deploy/terraform/aws-ec2"`). `tofu init` fails
+with "Unreadable module directory" if this is missed. The examples are
 starting points, not parameterised for every answer above:
 
 | Module | Required `-var`s | Edit in `main.tf` |
