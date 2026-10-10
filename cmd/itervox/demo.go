@@ -205,7 +205,7 @@ agent:
   max_retries: 2
   max_retry_backoff_ms: 3000
 workspace:
-  root: %s
+  root: %q
 server:
   host: 127.0.0.1
   port: 0

@@ -134,6 +134,10 @@ only the event loop mutates them.
   runs, and the event loop records the blocker so the issue waits for it.
   `pruneStackUnavailable` drops a record each tick once it no longer
   matches the candidate's blocker. Session-scoped, not persisted.
+- `PendingRestacks` holds dependents whose blockers landed while they were
+  running: the restack is never run under an agent, so it is deferred to the
+  first dependency audit that finds the issue idle (dropped if it is blocked
+  again). Event-loop state, session-scoped, not persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
