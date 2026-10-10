@@ -503,7 +503,7 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 					replacement = append(replacement, lvl3+"require_evidence:")
 					for _, check := range entry.RequireEvidence {
 						if check != "" {
-							replacement = append(replacement, lvl4+"- "+check)
+							replacement = append(replacement, lvl4+"- "+strconv.Quote(check))
 						}
 					}
 				}
