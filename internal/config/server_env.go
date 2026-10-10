@@ -106,3 +106,8 @@ func parseBindPort(raw string) (int, error) {
 	}
 	return n, nil
 }
+
+// ParseBindPort validates a port value exactly as ITERVOX_SERVER_PORT and
+// PORT are validated at startup (trimmed, an integer in 0-65535), so tools
+// such as `itervox doctor --upgrade` judge a value the way the daemon will.
+func ParseBindPort(raw string) (int, error) { return parseBindPort(raw) }
