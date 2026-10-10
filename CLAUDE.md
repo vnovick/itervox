@@ -72,6 +72,20 @@ Workers communicate back via `o.events chan OrchestratorEvent`.
   └──────────────────────────────────────────────────┘
 ```
 
+### Runs have an ID and a lifecycle (#125)
+
+Every dispatch calls `startRun` (`internal/orchestrator/run.go`), which gives the
+Running entry a `RunID` (also its log `SessionID`) and puts the run handle in the
+worker's context. Every `EventWorkerUpdate`/`EventWorkerExited` the worker sends,
+and every synthetic exit reconcile or stall detection sends, carries that
+`RunID`. The loop applies an event only to the run it names: an exit or update
+from a superseded run (stopped, then the issue dispatched again) changes nothing.
+`RunEntry.Phase` (`dispatched → running → finishing → exited`) is event-loop
+state. The worker reports `finishing` through its run handle (`markFinishing`)
+before it moves the issue to `completion_state` and before it sends its exit;
+reconcile and stall detection fold that in with `observeFinishing` and leave a
+finishing run to its own exit. Do not key new run bookkeeping by issue ID alone.
+
 ### `orchestrator.State` is a value type
 
 `State` is a plain struct passed by value into reconcile/dispatch functions.
