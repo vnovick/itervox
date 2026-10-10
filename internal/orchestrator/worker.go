@@ -1593,12 +1593,21 @@ func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev O
 		return
 	default:
 	}
+	// While the loop runs it reads every event until it closes loopExited,
+	// so wait on that alone. Also giving up on the worker's context lost the
+	// exit when a stop's cancel landed mid-send, and the exit collection then
+	// waited out its whole deadline for it. Before Run there is no loop to
+	// close anything, so the worker's context still bounds the wait.
+	var giveUp <-chan struct{}
+	if orchDone == nil {
+		giveUp = sendCtx.Done()
+	}
 	select {
 	case o.events <- ev:
 	case <-orchDone:
 		slog.Warn("worker: exit event dropped (orchestrator exited)",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
-	case <-sendCtx.Done():
+	case <-giveUp:
 		slog.Warn("worker: exit event not delivered (orchestrator shutting down)",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 	}
