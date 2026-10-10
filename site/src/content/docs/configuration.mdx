@@ -830,7 +830,7 @@ drift behind subsequent merges. Three cases are refused rather than forced:
 
 | Situation | Behaviour |
 |---|---|
-| The dependent is **running** | Skipped. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; it is picked up on a later cycle instead. |
+| The dependent is **running** | Deferred. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; the restack (and the pull request retarget) runs on the first dependency audit after the run ends, unless the issue is blocked again by then. |
 | The worktree has **uncommitted changes** | Skipped. That work is unpushed and unbacked-up. |
 | The rebase **conflicts** | Aborted — the branch is left byte-identical — and the issue moves to `input_required` with the reason. A conflict needs an owner; resolving it automatically would be a guess. |
 
