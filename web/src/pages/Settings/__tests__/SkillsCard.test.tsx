@@ -158,6 +158,7 @@ describe('SkillsCard', () => {
       ),
     );
     expect(screen.getByText(/so it travels with the repo/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex reads no skills from the repository/)).toBeInTheDocument();
   });
 
   it('offers a first scan when inventory is unavailable', () => {

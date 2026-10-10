@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vnovick/itervox/internal/config"
 )
 
 // TestDemoDaemonCompletesAnIssue (#76) starts the real `itervox demo` (the
@@ -167,4 +169,20 @@ func TestPrepareDemoNeverOverwritesAWorkflow(t *testing.T) {
 	require.True(t, ok)
 	info2, _ := os.Stat(wf)
 	assert.Equal(t, info1.ModTime(), info2.ModTime(), "a demo workflow is reused, not rewritten")
+}
+
+// TestDemoWorkflowKeepsWorkspacesInScratch (#76 review): the workspace root
+// is written as a quoted YAML string, so a scratch path with " #" (a YAML
+// comment) or ": " still loads as itself and workspaces stay inside the
+// scratch directory.
+func TestDemoWorkflowKeepsWorkspacesInScratch(t *testing.T) {
+	for _, name := range []string{"demo # scratch", "demo: scratch", `demo "q" \ x`} {
+		scratch := filepath.Join(t.TempDir(), name)
+		require.NoError(t, os.MkdirAll(scratch, 0o755))
+		wf := filepath.Join(scratch, "WORKFLOW.md")
+		require.NoError(t, os.WriteFile(wf, []byte(demoWorkflow(scratch)), 0o600))
+		cfg, err := config.Load(wf)
+		require.NoError(t, err, name)
+		assert.Equal(t, filepath.Join(scratch, "workspaces"), cfg.Workspace.Root, name)
+	}
 }

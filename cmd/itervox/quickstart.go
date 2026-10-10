@@ -357,6 +357,11 @@ func setEnvFileVar(path, key, value string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	// WriteFile's mode applies only to a new file: make an existing one
+	// private before the secret goes into it.
+	if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
@@ -380,12 +385,42 @@ func confirmPrompt(in *bufio.Reader, out io.Writer, yes bool, question string) b
 // quickstartRunningDaemon reports whether a live daemon owns this workflow,
 // with the dashboard URL it published.
 func quickstartRunningDaemon(workflowPath string) (string, bool) {
-	pid, _, _, err := readPIDFile(workflowPath)
-	if err != nil || pid <= 0 || !processAlive(pid) {
+	if !daemonOwnsWorkflow(workflowPath) {
 		return "", false
 	}
 	raw, _ := os.ReadFile(dashboardURLFilePath(workflowPath))
 	return strings.TrimSpace(string(raw)), true
+}
+
+// daemonOwnsWorkflow reports whether a live daemon owns workflowPath's PID
+// record, by the rule `itervox stop` uses: a record written with the lock
+// counts only while a process holds the lock (its PID may belong to an
+// unrelated process after a crash); a legacy record, or one on a platform
+// without the lock, by its PID alone.
+func daemonOwnsWorkflow(workflowPath string) bool {
+	pidPath, err := pidFilePath(workflowPath)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+	rec, err := parsePIDRecord(data)
+	if err != nil || rec.pid <= 0 {
+		return false
+	}
+	if rec.locked {
+		state, release, _ := probePIDLock(pidPath)
+		release()
+		switch state {
+		case lockHeldByOther:
+			return true
+		case lockFree:
+			return false
+		}
+	}
+	return processAlive(rec.pid)
 }
 
 // quickstartClearStaleRuntimeFiles removes HEARTBEAT.md and dashboard_url
@@ -393,7 +428,7 @@ func quickstartRunningDaemon(workflowPath string) (string, bool) {
 // writes on every start (gitignored, never edited by hand), so removing a
 // dead daemon's copies loses nothing.
 func quickstartClearStaleRuntimeFiles(workflowPath string, out io.Writer) {
-	if pid, _, _, err := readPIDFile(workflowPath); err == nil && pid > 0 && processAlive(pid) {
+	if daemonOwnsWorkflow(workflowPath) {
 		return
 	}
 	for _, p := range []string{heartbeatPath(workflowPath), dashboardURLFilePath(workflowPath)} {
