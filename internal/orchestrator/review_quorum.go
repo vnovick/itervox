@@ -42,6 +42,10 @@ type ReviewVerdict struct {
 	// Reasons is the reviewer's rationale, surfaced to the operator. Not
 	// interpreted by the quorum.
 	Reasons []string `json:"reasons,omitempty"`
+	// Comments are line-level findings (#79), posted on the issue with the
+	// verdict so the implementer can address them. Not interpreted by the
+	// quorum.
+	Comments []ReviewComment `json:"comments,omitempty"`
 	// RecordedAt is when the orchestrator ingested the verdict.
 	RecordedAt time.Time `json:"recordedAt"`
 }
@@ -59,6 +63,13 @@ func NormalizeReviewVerdict(raw string) string {
 		return ReviewVerdictApprove
 	}
 	return ReviewVerdictBlock
+}
+
+// ReviewComment is one line-level review finding.
+type ReviewComment struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+	Body string `json:"body"`
 }
 
 // ReviewOutcome is the combined result of every reviewer that ran.
@@ -289,6 +300,9 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 			outcome.Quorum, outcome.Approvals, outcome.Blocks,
 			map[bool]string{true: "BLOCKED", false: "passed"}[outcome.Blocked])))
 	}
+	// #79: the closed quorum goes on the issue next to each reviewer's
+	// verdict comment, posted off the event loop.
+	o.postReviewComment(issue.ID, issue.Identifier, formatReviewOutcomeComment(outcome, state.ReviewVerdicts[issue.Identifier]))
 	return state
 }
 

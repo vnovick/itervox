@@ -273,7 +273,40 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	hookTimeoutMs := o.cfg.Hooks.TimeoutMs
 	profilesSnap := make(map[string]config.AgentProfile, len(o.cfg.Agent.Profiles))
 	maps.Copy(profilesSnap, o.cfg.Agent.Profiles)
+	// #79: reviewers are read-only. Decided once per run from the reviewer
+	// configuration (reviewer_profile and reviewer_profiles).
+	readOnlyReviewer := isReviewerProfile(o.cfg, profileName)
 	o.cfgMu.RUnlock()
+	// A reviewer rerouted by backend_fallback runs under another profile
+	// name; the reviewer-injected marker still identifies it.
+	readOnlyReviewer = readOnlyReviewer || (profileName != "" && o.isReviewerInjected(issue.Identifier))
+	reviewVerdictRel := ""
+	if readOnlyReviewer {
+		reviewVerdictRel = reviewVerdictRelPath(issue.Identifier, profileName)
+	}
+
+	// A read-only reviewer gets the diff against the base branch and the
+	// latest handoff instead of the whole handoff history, and the branch is
+	// snapshotted so a reviewer that changes it anyway can be flagged.
+	reviewDiffBlock := ""
+	var reviewerBefore reviewerBranchState
+	reviewerTracked := false
+	if readOnlyReviewer && wsPath != "" {
+		// Own context: reconciliation may cancel a reviewer's ctx when the
+		// implementer's completion_state is terminal (see the #58 notes), and
+		// a missed snapshot would let a branch change go unflagged.
+		gitCtx, gitCancel := context.WithTimeout(context.Background(), postRunTimeout)
+		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
+		// The baseline survives a failed or interrupted attempt: a retry
+		// compares against the branch as the reviewer first found it.
+		reviewerBefore, reviewerTracked = reviewerBaseline(gitCtx, wsPath, issue.Identifier, profileName, attempt == 0)
+		gitCancel()
+		// A verdict left by an earlier review round must not be read as
+		// this run's: the reviewer writes a fresh one or counts as a block.
+		if err := os.Remove(filepath.Join(wsPath, reviewVerdictRel)); err != nil && !os.IsNotExist(err) {
+			slog.Warn("worker: cannot clear an earlier review verdict", "issue_identifier", issue.Identifier, "error", err)
+		}
+	}
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
 	// Resolved once from the same cfgMu snapshot as the rest of the profile,
@@ -429,12 +462,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			attemptPtr = &a
 		}
 		o.cfgMu.RLock()
-		isReviewer := profileName != "" && profileName == o.cfg.Agent.ReviewerProfile
 		reviewerTmpl := o.cfg.Agent.ReviewerPrompt
 		o.cfgMu.RUnlock()
 
 		promptTemplate := o.cfg.PromptTemplate
-		if isReviewer && reviewerTmpl != "" {
+		if readOnlyReviewer && reviewerTmpl != "" {
 			promptTemplate = reviewerTmpl
 		}
 		renderedPrompt, err := prompt.RenderWith(promptTemplate, issue, attemptPtr, runVars)
@@ -473,7 +505,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// where to write its own deliverable. runTimestamp / runHandoffRelPath
 		// are generated once per worker invocation above the turn loop so the
 		// agent sees a stable path across all turns of this run.
-		if priorHandoffs := buildHandoffContextBlock(wsPath, DefaultHandoffBudgetBytes); priorHandoffs != "" {
+		if readOnlyReviewer {
+			if latest := buildLatestHandoffBlock(wsPath); latest != "" {
+				renderedPrompt += "\n\n" + latest
+			}
+			if reviewDiffBlock != "" {
+				renderedPrompt += "\n\n" + reviewDiffBlock
+			}
+		} else if priorHandoffs := buildHandoffContextBlock(wsPath, DefaultHandoffBudgetBytes); priorHandoffs != "" {
 			renderedPrompt += "\n\n" + priorHandoffs
 		}
 		renderedPrompt += "\n\n" + buildRunContextBlock(runTimestamp, runHandoffRelPath)
@@ -488,10 +527,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if block := buildBackendSwitchNoticeBlock(switchNotice); block != "" {
 			renderedPrompt += "\n\n" + block
 		}
-		// #58 — when this run is one profile of a multi-reviewer chain, tell
-		// the agent where to record its verdict. Empty (and therefore a
-		// no-op) for normal workers and single-reviewer setups.
-		if verdictPath := o.reviewVerdictRelPathCfg(issue.Identifier, profileName); verdictPath != "" {
+		// #58/#79 — a reviewer run is told where to record its verdict.
+		// Empty (and therefore a no-op) for normal workers.
+		if verdictPath := reviewVerdictRel; verdictPath != "" {
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 
@@ -982,6 +1020,40 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// anything computed in the PR blocks.
 	sessionComment := sessionCommentForRun(allTextBlocks, issue.Identifier)
 
+	// #79 — a read-only reviewer's result: flag it if it changed the branch
+	// (its verdict then counts as a block), and post its verdict, reasons
+	// and line comments on the issue.
+	//
+	// Uses its own context: reconciliation may cancel the reviewer's ctx
+	// right after a completed review when tracker.completion_state is
+	// terminal (see the #58 notes in the exit handler).
+	if readOnlyReviewer && wsPath != "" && !automationRun {
+		reviewCtx, reviewCancel := context.WithTimeout(context.Background(), postRunTimeout)
+		defer reviewCancel()
+		var changes []string
+		if reviewerTracked {
+			if after, ok := captureReviewerBranchState(reviewCtx, wsPath); ok {
+				changes = reviewerChanges(reviewCtx, wsPath, reviewerBefore, after)
+			}
+		}
+		if len(changes) > 0 {
+			slog.Warn("worker: read-only reviewer changed the branch; its verdict counts as a block",
+				"issue_identifier", issue.Identifier, "profile", profileName, "changes", strings.Join(changes, "; "))
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
+					"worker: reviewer changed the branch ("+strings.Join(changes, "; ")+"); verdict recorded as block", runLogID))
+			}
+			flagReviewerVerdict(wsPath, issue.Identifier, profileName, changes)
+		}
+		clearReviewerBaseline(wsPath, issue.Identifier, profileName)
+		verdict, verdictErr := ReadReviewVerdict(wsPath, issue.Identifier, profileName, time.Now())
+		body := formatReviewVerdictComment(profileName, displayBackend, verdict, verdictErr, changes)
+		if err := o.writeSink().CreateComment(reviewCtx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
+			slog.Warn("worker: posting review verdict failed (ignored)",
+				"issue_identifier", issue.Identifier, "error", err)
+		}
+	}
+
 	// F2 — "update the shared state" is part of the definition of done. A
 	// worker that exits clean without writing its handoff deliverable must
 	// not reach TerminalSucceeded unmodified: synthesize the handoff from
@@ -1023,9 +1095,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// workspace `git add` fails and we skip the commit silently (previous
 		// behavior — the file remains in the working tree, no Warn spam on
 		// every success); other commit failures log.
-		if staged, err := workspace.CommitPathOnly(ctx, wsPath, HandoffDirRelPath, "chore(itervox): record agent handoff"); staged && err != nil {
-			slog.Warn("worker: handoff commit failed (file remains uncommitted)",
-				"issue_identifier", issue.Identifier, "error", err)
+		// A read-only reviewer's run never commits (#79): its handoff stays in
+		// the working tree for the next implementer run to commit.
+		if !readOnlyReviewer {
+			if staged, err := workspace.CommitPathOnly(ctx, wsPath, HandoffDirRelPath, "chore(itervox): record agent handoff"); staged && err != nil {
+				slog.Warn("worker: handoff commit failed (file remains uncommitted)",
+					"issue_identifier", issue.Identifier, "error", err)
+			}
 		}
 	}
 
@@ -1036,8 +1112,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if prCtx != nil && ctx.Err() == nil && !automationRun {
 		postRunCtx, postRunCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		defer postRunCancel()
-		// Push so the remote branch reflects the agent's changes.
-		if wsPath != "" {
+		// Push so the remote branch reflects the agent's changes. Never for a
+		// read-only reviewer (#79): it has no changes of its own to publish.
+		if wsPath != "" && !readOnlyReviewer {
 			pushCmd := gitexec.Command(postRunCtx, wsPath, "push", "origin", prCtx.Branch)
 			if err := pushCmd.Run(); err != nil {
 				slog.Warn("worker: git push failed (non-fatal)",

@@ -128,23 +128,23 @@ func TestReviewChainSingleProfileIsUnchanged(t *testing.T) {
 }
 
 // TestReviewVerdictPathOnlyForFanoutReviewers pins the injection boundary:
-// the verdict instruction reaches fan-out reviewers and nobody else, so
-// normal workers and single-reviewer setups see an unchanged prompt.
+// the verdict instruction reaches reviewers and nobody else, so normal
+// workers see an unchanged prompt.
 func TestReviewVerdictPathOnlyForFanoutReviewers(t *testing.T) {
+	// #79: every reviewer records a verdict, a single one included — it is
+	// what Itervox posts on the issue.
 	single := &config.Config{}
 	single.Agent.ReviewerProfile = "reviewer"
-	require.Empty(t, reviewVerdictRelPathFor(single, "ENG-1", "reviewer"),
-		"a single-reviewer setup must not get verdict plumbing")
+	require.True(t, isReviewerProfile(single, "reviewer"), "a single reviewer records its verdict too")
+	require.Equal(t, ".itervox/review/ENG-1/reviewer/verdict.json", reviewVerdictRelPath("ENG-1", "reviewer"))
 
-	// A real fan-out chain DOES get verdict plumbing: the file only earns its
-	// keep when a later reviewer will read it, and with #58 ungated one will.
 	fanout := &config.Config{}
 	fanout.Agent.ReviewerProfiles = []string{"security", "correctness"}
-	require.NotEmpty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "security"),
+	require.True(t, isReviewerProfile(fanout, "security"),
 		"a fan-out reviewer must be told where to record its verdict")
-	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", "implementer"),
+	require.False(t, isReviewerProfile(fanout, "implementer"),
 		"a non-reviewer profile must never be asked for a verdict")
-	require.Empty(t, reviewVerdictRelPathFor(fanout, "ENG-1", ""))
+	require.False(t, isReviewerProfile(fanout, ""))
 }
 
 // TestReviewVerdictBlockStatesTheFailClosedRule: the agent must be told that
@@ -154,5 +154,6 @@ func TestReviewVerdictBlockStatesTheFailClosedRule(t *testing.T) {
 	block := buildReviewVerdictBlock(".itervox/review/ENG-1/security/verdict.json")
 	require.Contains(t, block, ".itervox/review/ENG-1/security/verdict.json")
 	require.Contains(t, block, "is recorded as `block`")
-	require.Contains(t, block, "independent reviewers")
+	require.Contains(t, block, "You are read-only: do not edit files, commit, push or move the issue.")
+	require.Contains(t, block, `"comments": [{"path"`)
 }

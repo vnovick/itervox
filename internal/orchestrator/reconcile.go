@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
@@ -175,6 +176,15 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			entry.LastEventAt = &now
 			continue
 		}
+		// A reviewer runs, by design, on an issue the implementer just moved to
+		// tracker.completion_state. That state may itself be terminal ("Done"),
+		// so it is checked before the terminal stop below; otherwise every
+		// reconcile tick killed the review before it finished.
+		if entry.Kind == "reviewer" && isReviewState(refreshedState, state) {
+			entry.Issue.State = refreshedState
+			entry.LastEventAt = &now
+			continue
+		}
 		if isTerminalState(refreshedState, state) {
 			slog.Info("reconciliation: terminal state, stopping worker",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier, "state", refreshedState)
@@ -229,6 +239,13 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 		}
 	}
 	return state
+}
+
+// isReviewState reports whether s is tracker.completion_state, where a
+// reviewer runs (#79). Any other non-active state (an operator moving the
+// issue to backlog or cancelling it) still stops the reviewer.
+func isReviewState(s string, state State) bool {
+	return state.CompletionState != "" && strings.EqualFold(s, state.CompletionState)
 }
 
 // pendingExits returns the Running IDs whose worker has sent its exit during

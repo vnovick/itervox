@@ -5,12 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/vnovick/itervox/internal/config"
 )
 
 // HandoffDirRelPath is the path (relative to the workspace root) where
@@ -66,8 +63,8 @@ func buildRunContextBlock(runTimestamp, handoffPath string) string {
 	}, "\n")
 }
 
-// buildReviewVerdictBlock renders the instruction telling a fan-out reviewer
-// where to record its machine-readable verdict (#58).
+// buildReviewVerdictBlock renders the instruction telling a reviewer where
+// to record its machine-readable verdict (#58; every reviewer since #79).
 //
 // This block is REQUIRED for multi-reviewer setups to work: a reviewer that
 // exits without writing this file is recorded as a BLOCK (fail-closed, see
@@ -81,31 +78,30 @@ func buildReviewVerdictBlock(verdictRelPath string) string {
 		"",
 		fmt.Sprintf("- run.review_verdict_path: `%s`", verdictRelPath),
 		"",
-		"You are one of several independent reviewers on this issue. Judge it on",
-		"its own merits — do not assume a previous reviewer was right.",
+		"Judge the change on its own merits; if other reviewers ran before you,",
+		"do not assume they were right.",
+		"",
+		"You are read-only: do not edit files, commit, push or move the issue.",
+		"Itervox flags a reviewer that changes the branch and counts its verdict",
+		"as a block. Ask for fixes in your verdict instead; Itervox posts it on",
+		"the issue for the implementer.",
 		"",
 		"Before exiting you MUST write JSON to `run.review_verdict_path`:",
 		"",
 		"```json",
-		`{"verdict": "approve", "reasons": ["why you approved"]}`,
+		`{"verdict": "block", "reasons": ["what must change and why"],`,
+		` "comments": [{"path": "internal/foo/bar.go", "line": 42, "body": "nil map write when cfg is empty"}]}`,
 		"```",
 		"",
 		"`verdict` is `approve` or `block`. Anything else — including not writing",
-		"the file at all — is recorded as `block`.",
+		"the file at all — is recorded as `block`. `comments` is optional.",
 	}, "\n")
 }
 
-// reviewVerdictRelPathFor returns the workspace-relative path a reviewer
-// writes its verdict to, or "" when this run is not part of a multi-reviewer
-// chain (single-reviewer and normal worker runs are unaffected).
-func reviewVerdictRelPathFor(cfg *config.Config, identifier, profileName string) string {
-	chain := ReviewerProfileChain(cfg)
-	if len(chain) <= 1 || profileName == "" {
-		return ""
-	}
-	if !slices.Contains(chain, profileName) {
-		return ""
-	}
+// reviewVerdictRelPath returns the workspace-relative path a reviewer writes
+// its verdict to. Every reviewer records a verdict (#79), a single one
+// included: it is what Itervox posts on the issue.
+func reviewVerdictRelPath(identifier, profileName string) string {
 	return filepath.Join(".itervox", "review", identifier, profileName, ReviewVerdictFileName)
 }
 
