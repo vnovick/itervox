@@ -192,6 +192,13 @@ export function matchCompletions(
   return [...prefix, ...contains].slice(0, limit);
 }
 
+/** The rest of the word after the caret, per context. */
+const WORD_AFTER: Record<CompletionContext['kind'], RegExp> = {
+  reference: /^[\w.:-]*/,
+  variable: /^[\w.]*/,
+  filter: /^\w*/,
+};
+
 /** Inserts item for ctx, returning the new text and caret. */
 export function applyCompletion(
   text: string,
@@ -203,13 +210,15 @@ export function applyCompletion(
   let insert = item.label;
   // Replace the selection and the rest of the word the caret is in, so a
   // caret inside `/td|d` or `{{ |issue.ti` never leaves the old text behind.
+  // The word's characters depend on the context, so punctuation that
+  // belongs to the template (a filter's `:`, a `-}}` closer) is kept.
   const end = Math.max(caret, selectionEnd);
-  const word = /^[\w.:-]*/.exec(text.slice(end))?.[0] ?? '';
+  const word = WORD_AFTER[ctx.kind].exec(text.slice(end))?.[0] ?? '';
   const after = text.slice(end + word.length);
   if (ctx.kind === 'variable' || ctx.kind === 'filter') {
     const lead = text.slice(0, ctx.start);
     if (lead.endsWith('{{') || lead.endsWith('|')) insert = ' ' + insert;
-    if (ctx.kind === 'variable' && !/^\s*(\||}})/.test(after)) insert += ' }}';
+    if (ctx.kind === 'variable' && !/^\s*(\||-?}})/.test(after)) insert += ' }}';
   } else if (!/^\s/.test(after)) {
     insert += ' ';
   }
