@@ -48,7 +48,15 @@ This single command:
 4. **Rewrites each profile** to reference `soul_file` and `instructions_file` instead of `prompt:`.
 5. **Scaffolds the `deps-analyzer` profile** and sets `agent.deps_analyzer_profile` if the workflow predates dependency analysis.
 6. **Patches `.gitignore`**: adds carve-outs so `.itervox/agents/**` and `.itervox/handoff/**` stay committable under a broad `.itervox/` ignore, and ignores `WORKFLOW.md.bak` and `.WORKFLOW.md.lock` (the transient inter-process edit lock every `WORKFLOW.md` writer takes).
-7. **Stamps `itervox_schema_version: 2`** in the front matter.
+7. **Stamps `itervox_schema_version: 2`** as the first key of the front matter.
+
+The rewrite edits the YAML node tree instead of re-serialising a map, so your
+comments (including the GitHub label setup notes many workflows carry), key
+order, quoting style and indent width all survive. Only the migrated keys
+change; `diff WORKFLOW.md.bak WORKFLOW.md` shows just the schema marker, the
+profile file references and any scaffolded `deps-analyzer` profile. The one
+cosmetic change is that a trailing comment is re-aligned to a single space
+after the value.
 
 The command is idempotent — re-running it on an already-migrated workflow reports
 "already uses schema 2" and changes nothing.
