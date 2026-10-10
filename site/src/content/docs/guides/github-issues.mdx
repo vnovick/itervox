@@ -131,6 +131,8 @@ tracker:
 
 Create these labels in your GitHub repository before running Itervox. Then assign the `todo` label to issues you want agents to pick up.
 
+When an agent creates its feature branch, Itervox records the branch on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), so a retried or resumed run continues on the same branch. GitHub Issues has no branch field, which is why a comment is used. The comment is posted only when the branch changes, so retries do not notify watchers again.
+
 Only issues are picked up. GitHub's issues API also lists pull requests, and a pull request can carry the same labels, but Itervox skips every pull request: one labelled `todo` is never dispatched, and closed or merged pull requests never appear in the done column.
 
 ### GitHub Projects (v2) are not supported
