@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -126,9 +127,19 @@ func TestSetEnvFileVar(t *testing.T) {
 	raw, _ = os.ReadFile(p)
 	assert.True(t, strings.HasSuffix(string(raw), "OTHER=1\nNEW=v\n"))
 
+	// #74 review: an existing world-readable file is made private before
+	// the secret goes into it.
+	loose := filepath.Join(dir, "loose.env")
+	require.NoError(t, os.WriteFile(loose, []byte("GITHUB_TOKEN=\n"), 0o644))
+	require.NoError(t, os.Chmod(loose, 0o644))
+	require.NoError(t, setEnvFileVar(loose, "GITHUB_TOKEN", "gho_real"))
+	info, err := os.Stat(loose)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "an existing file is made private")
+
 	fresh := filepath.Join(dir, "sub", ".env")
 	require.NoError(t, setEnvFileVar(fresh, "GITHUB_TOKEN", "gho_real"))
-	info, err := os.Stat(fresh)
+	info, err = os.Stat(fresh)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
@@ -448,4 +459,44 @@ func TestQuickstartClearsStaleRuntimeFiles(t *testing.T) {
 	assert.NoFileExists(t, heartbeatPath(wf))
 	assert.NoFileExists(t, dashboardURLFilePath(wf))
 	assert.Contains(t, out.String(), "left by a daemon that is no longer running")
+}
+
+// TestQuickstartRunningDaemonNeedsTheLock (#74 review): a PID record written
+// with the lock counts as a running daemon only while a process holds the
+// lock. After a crash its PID may belong to an unrelated live process:
+// quickstart must not report "already running" for it, and treats the
+// runtime files as stale.
+func TestQuickstartRunningDaemonNeedsTheLock(t *testing.T) {
+	if !pidLockSupported {
+		t.Skip("no pid lock on this platform")
+	}
+	dir := t.TempDir()
+	wf := filepath.Join(dir, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(wf, []byte("---\n---\n"), 0o600))
+	pidPath, err := pidFilePath(wf)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(pidPath), 0o755))
+	abs, err := filepath.Abs(wf)
+	require.NoError(t, err)
+	// A live PID (this test) that holds no lock: a reused PID.
+	require.NoError(t, os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\t%s\t%s\n", os.Getpid(), abs, pidRecordLockMarker)), 0o600))
+	require.NoError(t, os.WriteFile(dashboardURLFilePath(wf), []byte("http://127.0.0.1:1/\n"), 0o600))
+
+	_, running := quickstartRunningDaemon(wf)
+	assert.False(t, running, "a live PID without the lock is not a daemon")
+	var out strings.Builder
+	quickstartClearStaleRuntimeFiles(wf, &out)
+	assert.NoFileExists(t, dashboardURLFilePath(wf), "its runtime files are stale")
+
+	// The lock held: a daemon owns the workflow.
+	lockPath := pidLockPath(pidPath)
+	require.NoError(t, ensurePrivateDir(filepath.Dir(lockPath)))
+	release, acquired, err := tryLockPIDFile(lockPath)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	defer release()
+	require.NoError(t, os.WriteFile(dashboardURLFilePath(wf), []byte("http://127.0.0.1:1/\n"), 0o600))
+	url, running := quickstartRunningDaemon(wf)
+	assert.True(t, running)
+	assert.Equal(t, "http://127.0.0.1:1/", url)
 }
