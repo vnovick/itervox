@@ -276,17 +276,18 @@ A GitHub issue's identifier is its number with a hash: `#42`. That is what the d
 | `issue.identifier` | `#42` | Use this in prompts and PR bodies |
 | `issue.id` | `42` | The bare number |
 | `issue.title` | | Always set |
-| `issue.description` | | The issue body; **unset when the body is empty** |
+| `issue.description` | | The issue body; empty when the body is empty |
 | `issue.url` | | The issue's GitHub URL |
 | `issue.labels` | `["todo", "bug"]` | Lower-cased label names |
 | `issue.priority` | `0`–`3` | From `p0`–`p3`; **unset when there is no priority label** |
-| `issue.branch_name` | `itervox/42` | **Unset** on the first turn of the issue's first run; afterwards the branch recorded on the issue |
+| `issue.branch_name` | `itervox/42` | Empty on the first turn of the issue's first run; afterwards the branch recorded on the issue |
 | `issue.blocked_by` | | Blockers parsed from the body |
 
-Templates render with strict variables: printing a variable that is unset fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`), and why the optional fields above need a guard:
+Templates render with strict variables: printing a variable that does not exist fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`). `issue.description`, `issue.url` and `issue.branch_name` print as nothing when they are empty (with filters too: write `{{ issue.description | size }}`, not `.size`), and `{% if … %}` on them skips its block. `issue.priority` is unset without a priority label, and printing it then fails, so give it a default:
 
 ```liquid
-{% if issue.description %}{{ issue.description }}{% endif %}
+{% if issue.description %}## Description
+{{ issue.description }}{% endif %}
 Priority: {{ issue.priority | default: "none" }}
 Branch: {{ issue.branch_name | default: issue.identifier }}
 ```

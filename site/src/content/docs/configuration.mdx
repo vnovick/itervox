@@ -1124,11 +1124,11 @@ The body of `WORKFLOW.md` (everything after the closing `---`) is a [Liquid](htt
 |---|---|---|
 | `issue.identifier` | string | Tracker-specific issue ID (e.g. `"ENG-42"` for Linear, `"#123"` for GitHub). |
 | `issue.title` | string | Issue title. |
-| `issue.description` | string | Issue body/description. May be empty — use `{% if issue.description %}` to guard. |
+| `issue.description` | string | Issue body/description. When empty it prints as nothing, and `{% if issue.description %}` skips its block. |
 | `issue.url` | string | Full URL to the issue in the tracker. |
-| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues. |
+| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues; empty prints as nothing. |
 | `issue.labels` | string[] | Labels attached to the issue. Iterable with `{% for label in issue.labels %}`. |
-| `issue.priority` | string | Priority label (Linear: `"urgent"`, `"high"`, `"medium"`, `"low"`, `"no priority"`; GitHub: empty string). |
+| `issue.priority` | number | Priority number (Linear 0 none, 1 urgent … 4 low; GitHub `p0`–`p3` as 0–3). Unset when the tracker gives none (a GitHub issue without a `p` label), and printing it then fails under strict variables: use `{{ issue.priority \| default: "none" }}`. |
 | `issue.comments` | object[] | Comments on the issue. Each comment has `author_name`, `body`, and `created_at` fields. |
 | `id` | string | Internal tracker issue ID. |
 | `state` | string | Current issue state (e.g. `"Todo"`, `"In Progress"`). |
