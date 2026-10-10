@@ -363,7 +363,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
 	// CORE-101: the Liquid `run` object for the WORKFLOW.md body, profile
 	// SOUL/INSTRUCTIONS and automation instructions.
-	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), switchNotice)
+	runEvidenceRelPath := ""
+	evidenceBlock := ""
+	if required := profilesSnap[profileName].RequireEvidence; len(required) > 0 {
+		runEvidenceRelPath = evidenceRelPathFor(profileName)
+		evidenceBlock = buildEvidenceBlock(required, runEvidenceRelPath)
+	}
+	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -439,6 +445,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		renderedPrompt += "\n\n" + buildRunContextBlock(runTimestamp, runHandoffRelPath)
 		if block := buildStackedPRBlock(stackedOn); block != "" {
 			renderedPrompt += "\n\n" + block
+		}
+		if evidenceBlock != "" {
+			renderedPrompt += "\n\n" + evidenceBlock
 		}
 		// CORE-101: daemon-owned, after the envelope and handoffs and before
 		// every profile block, so an instructions_file cannot drop it.
@@ -1037,7 +1046,32 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// transitioning state on a cancelled run would wrongly move a paused issue.
 	o.cfgMu.RLock()
 	completionState := o.cfg.Tracker.CompletionState
+	isReviewerRun := profileName != "" && (profileName == o.cfg.Agent.ReviewerProfile || containsString(o.cfg.Agent.ReviewerProfiles, profileName))
 	o.cfgMu.RUnlock()
+
+	// "Done needs evidence" (#80): a profile with require_evidence moves its
+	// issue on only with proof. Without it the run ends input-required with
+	// the reason and the issue stays where it is. Reviewer and automation
+	// runs do not move the issue for themselves, so they are not gated.
+	if required := profilesSnap[profileName].RequireEvidence; len(required) > 0 &&
+		completionState != "" && ctx.Err() == nil && !automationRun && !isReviewerRun {
+		evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
+		verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, detectedPRURL, o.prChecksReader())
+		evCancel()
+		if !verdict.ok() {
+			slog.Info("worker: holding issue for evidence (require_evidence)",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "missing", len(verdict.Missing))
+			o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
+				workerHost, profileName, activeBranchName, evidenceHoldContext(completionState, verdict), "",
+				buildInputRequiredExitRunEntry(issue, attempt, startedAt, turn, runLogID, workerHost, backend,
+					cumulativeInput, cumulativeCached, cumulativeOutput, agent.TurnResult{}))
+			return
+		}
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", "worker: evidence checks passed", runLogID))
+		}
+	}
+
 	if completionState != "" && ctx.Err() == nil && !automationRun {
 		// From here the run only finishes; mark it before the issue turns
 		// terminal in the tracker, so a reconcile tick between this move and

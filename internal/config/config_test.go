@@ -1688,3 +1688,48 @@ func TestAgentPRFooter(t *testing.T) {
 		})
 	}
 }
+
+// TestProfileRequireEvidence (#80): require_evidence parses (normalised),
+// defaults to off, and rejects malformed check names.
+func TestProfileRequireEvidence(t *testing.T) {
+	load := func(profileBlock string) (*config.Config, error) {
+		content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nagent:\n  profiles:\n    impl:\n      command: claude\n" + profileBlock + "---\n\nPrompt.\n"
+		return config.Load(workflowWithContent(t, content))
+	}
+	cfg, err := load("")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Agent.Profiles["impl"].RequireEvidence, "off by default")
+
+	cfg, err = load("      require_evidence: [Test, lint, test, ' ci ']\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "lint", "ci"}, cfg.Agent.Profiles["impl"].RequireEvidence)
+
+	cfg, err = load("      require_evidence: [\"unit tests\"]\n")
+	require.NoError(t, err)
+	err = config.ValidateAgentProfiles(cfg.Agent.Profiles) // run by ValidateDispatch at startup and in doctor
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `require_evidence entry "unit tests"`)
+
+	// A scalar is an error, never a silent "off": `true` reads as turning
+	// the gate on.
+	for _, scalar := range []string{"true", "test", `"test, lint"`} {
+		_, err = load("      require_evidence: " + scalar + "\n")
+		require.Error(t, err, scalar)
+		assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names", scalar)
+	}
+	_, err = load("      require_evidence: [test, 3]\n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "require_evidence entries must be names")
+
+	// The schema-2 (file-backed profiles) branch parses it the same way.
+	loadV2 := func(value string) (*config.Config, error) {
+		block := "      command: claude\n" + schema2ProfileFileFields(t, "      ") + "      require_evidence: " + value + "\n"
+		return config.Load(workflowWithContent(t, minimalV2("agent:\n  profiles:\n    impl:\n"+block)))
+	}
+	cfg, err = loadV2("[Test, lint]")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "lint"}, cfg.Agent.Profiles["impl"].RequireEvidence)
+	_, err = loadV2("true")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names")
+}

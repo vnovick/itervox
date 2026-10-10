@@ -89,6 +89,10 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		Enabled:          func() *bool { enabled := def.Enabled; return &enabled }(),
 		AllowedActions:   config.NormalizeAllowedActions(def.AllowedActions),
 		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
+		// Not edited by the dashboard: carried over from the saved profile
+		// so a dashboard save does not strip them from WORKFLOW.md.
+		PermissionMode:  existingProfile.PermissionMode,
+		RequireEvidence: existingProfile.RequireEvidence,
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {
