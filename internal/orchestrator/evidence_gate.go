@@ -161,6 +161,11 @@ func readEvidenceFile(ctx context.Context, wsPath, relPath string) (map[string]b
 		if len(commit) < 7 || !evidenceCoversHEAD(ctx, wsPath, commit, head) {
 			return nil, fmt.Sprintf("the evidence in `%s` is for commit %q, not the current %s", relPath, ev.Commit, head[:12])
 		}
+		// The stamp names a commit, so a staged or unstaged change to a
+		// tracked file on top of it is code the checks did not run on.
+		if dirty := uncommittedChange(ctx, wsPath); dirty != "" {
+			return nil, fmt.Sprintf("`%s` has uncommitted changes the evidence in `%s` does not cover; commit them and run the checks again", dirty, relPath)
+		}
 	}
 	passed := map[string]bool{}
 	for _, c := range ev.Checks {
@@ -202,11 +207,36 @@ func evidenceCoversHEAD(ctx context.Context, wsPath, commit, head string) bool {
 		if f == "" {
 			continue
 		}
-		if !strings.HasPrefix(f, HandoffDirRelPath+"/") && !strings.HasPrefix(f, EvidenceDirRelPath+"/") {
+		if !isEvidenceBookkeeping(f) {
 			return false
 		}
 	}
 	return true
+}
+
+// uncommittedChange returns a tracked file with a staged or unstaged change
+// in wsPath outside Itervox's bookkeeping directories (handoff, evidence), or
+// "" when there is none. A failing git status counts as a change.
+func uncommittedChange(ctx context.Context, wsPath string) string {
+	out, err := gitexec.Command(ctx, wsPath, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--no-renames").Output()
+	if err != nil {
+		return "(git status failed)"
+	}
+	for _, rec := range strings.Split(string(out), "\x00") {
+		if len(rec) < 4 { // "XY path"
+			continue
+		}
+		if f := rec[3:]; !isEvidenceBookkeeping(f) {
+			return f
+		}
+	}
+	return ""
+}
+
+// isEvidenceBookkeeping reports whether a repository path is Itervox's own
+// bookkeeping, which may change after the evidence stamp.
+func isEvidenceBookkeeping(f string) bool {
+	return strings.HasPrefix(f, HandoffDirRelPath+"/") || strings.HasPrefix(f, EvidenceDirRelPath+"/")
 }
 
 // evidenceCommitRe is the shape of an evidence commit stamp: an
