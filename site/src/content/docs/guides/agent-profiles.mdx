@@ -142,7 +142,7 @@ Each reference is resolved for the backend the profile runs on. Itervox works th
 - in the dashboard, in the Skills card's issues list (**Settings → Skills**);
 - by `itervox doctor`, as a `WARNING:` line. It does not change doctor's exit code, because the agent still runs.
 
-When `agent.ssh_hosts` is set, a reference that resolves only through your home directory or a plugin installed there also gets an info-level `USER_SCOPE_REF_ON_SSH` note: agents on remote hosts see the repository's `.claude/` directory, not this machine's home. Commit the skill or subagent under `.claude/` to make it travel with the repo.
+When `agent.ssh_hosts` is set, a reference that resolves only through your home directory or a plugin installed there also gets an info-level `USER_SCOPE_REF_ON_SSH` note: agents on remote hosts see the repository, not this machine's home. For a Claude profile, commit the skill or subagent under `.claude/` to make it travel with the repo. Codex reads no skills from the repository, so for a Codex profile install the skill on every SSH host (for example under `~/.codex/skills/`); that works for either backend.
 
 The Skills card lists subagents in their own **Subagents** section, with source (project, user or plugin), model, tools and file size.
 

@@ -228,3 +228,66 @@ func TestBlockerLandingRetargetsDependentPullRequest(t *testing.T) {
 	assert.Equal(t, [][2]string{{"https://github.com/o/r/pull/2", "main"}}, edits,
 		"the blocker landing must retarget the dependent's PR to base_branch")
 }
+
+// TestRestackDeferredWhileRunningRunsOnceIdle (#73 review): when a
+// dependent's blocker lands while it runs, the unblock transition is consumed
+// without a restack (rebasing under an agent is never safe). The restack and
+// pull-request retarget then run on the first audit that finds the issue
+// idle, and only once.
+func TestRestackDeferredWhileRunningRunsOnceIdle(t *testing.T) {
+	cfg := newRestackCfg("main")
+	var mu sync.Mutex
+	var edits [][2]string
+	o := &Orchestrator{cfg: cfg, workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "https://github.com/o/r/pull/2" }
+	o.setPRBase = func(_ context.Context, prURL, base string) (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		edits = append(edits, [2]string{prURL, base})
+		return true, nil
+	}
+	editCount := func() int {
+		o.prRetargetWg.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		return len(edits)
+	}
+	state := NewState(cfg)
+	state.TerminalStates = []string{"Done"}
+	now := time.Now()
+	audit := func(blockerState string) {
+		o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state, blocked("ENG-2", restackBlocker("ENG-1", blockerState)), now)
+		now = now.Add(time.Second)
+	}
+
+	audit("In Progress") // blocked
+	state.Running["id-ENG-2"] = &RunEntry{Issue: domain.Issue{ID: "id-ENG-2", Identifier: "ENG-2"}}
+	audit("Done") // unblocked while running
+	assert.Zero(t, editCount(), "no restack under a running agent")
+	assert.Contains(t, state.PendingRestacks, "ENG-2")
+
+	audit("Done") // still running
+	assert.Zero(t, editCount())
+
+	delete(state.Running, "id-ENG-2")
+	audit("Done") // idle: the deferred restack runs
+	assert.Equal(t, 1, editCount())
+	assert.NotContains(t, state.PendingRestacks, "ENG-2")
+
+	audit("Done")
+	assert.Equal(t, 1, editCount(), "only once")
+}
+
+// TestRestackDeferredDroppedWhenBlockedAgain: a deferred restack is dropped
+// once the dependent is blocked again; its next unblock restacks it anyway.
+func TestRestackDeferredDroppedWhenBlockedAgain(t *testing.T) {
+	cfg := newRestackCfg("main")
+	o := &Orchestrator{cfg: cfg, workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "" }
+	state := NewState(cfg)
+	state.TerminalStates = []string{"Done"}
+	state.PendingRestacks = map[string]struct{}{"ENG-2": {}}
+	o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state,
+		blocked("ENG-2", restackBlocker("ENG-1", "In Progress")), time.Now())
+	assert.NotContains(t, state.PendingRestacks, "ENG-2")
+}

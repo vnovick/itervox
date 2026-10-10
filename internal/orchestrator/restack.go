@@ -39,18 +39,7 @@ func restackEligible(state State, issue domain.Issue) bool {
 	if issue.Identifier == "" {
 		return false
 	}
-	// state.Running is keyed by issue ID; the identifier scan covers an
-	// issue value that carries no ID.
-	running := false
-	if _, ok := state.Running[issue.ID]; ok && issue.ID != "" {
-		running = true
-	}
-	for _, entry := range state.Running {
-		if entry != nil && entry.Issue.Identifier == issue.Identifier {
-			running = true
-		}
-	}
-	if running {
+	if issueRunning(state, issue) {
 		slog.Debug("orchestrator: skipping restack for a running issue",
 			"identifier", issue.Identifier)
 		return false
@@ -61,6 +50,21 @@ func restackEligible(state State, issue domain.Issue) bool {
 		}
 	}
 	return true
+}
+
+// issueRunning reports whether issue has a run in state.Running. Running is
+// keyed by issue ID; the identifier scan covers an issue value that carries
+// no ID.
+func issueRunning(state State, issue domain.Issue) bool {
+	if _, ok := state.Running[issue.ID]; ok && issue.ID != "" {
+		return true
+	}
+	for _, entry := range state.Running {
+		if entry != nil && entry.Issue.Identifier == issue.Identifier {
+			return true
+		}
+	}
+	return false
 }
 
 // restackUnblockedIssue replays this issue's worktree onto the base branch now
@@ -93,7 +97,22 @@ func (o *Orchestrator) restackUnblockedIssue(
 		return false
 	}
 	base := o.baseBranchForRestack()
-	if base == "" || !restackEligible(*state, issue) {
+	if base == "" {
+		return false
+	}
+	// A running dependent is never rebased under its agent. The unblock
+	// transition that called us is consumed, so remember the restack and
+	// run it on the first audit that finds the issue idle (#73 review).
+	if issue.Identifier != "" && issueRunning(*state, issue) {
+		if state.PendingRestacks == nil {
+			state.PendingRestacks = map[string]struct{}{}
+		}
+		state.PendingRestacks[issue.Identifier] = struct{}{}
+		slog.Info("orchestrator: dependent is running; restack deferred until it is idle",
+			"identifier", issue.Identifier)
+		return false
+	}
+	if !restackEligible(*state, issue) {
 		return false
 	}
 
