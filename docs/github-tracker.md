@@ -1,9 +1,6 @@
----
-title: GitHub Issues
-description: Set up Itervox to resolve GitHub Issues with AI agents — state labels, priority labels, blocker phrases, identifiers and gh auth.
-sidebar:
-  order: 4
----
+# GitHub tracker setup
+
+> Mirrors the site guide `site/src/content/docs/guides/github-issues.mdx` (published at https://itervox.dev/guides/github-issues/). Keep the two in sync.
 
 This guide connects Itervox to a GitHub repository so agents pick up issues and open pull requests. GitHub is the quickest tracker to start with, but it works differently from Linear in a few ways that matter: **states are labels**, **priority is a label**, and **blockers are phrases in the issue body**. Each is covered below.
 

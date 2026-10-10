@@ -41,6 +41,8 @@ For GitHub Issues:
 itervox init --tracker github --runner claude
 ```
 
+GitHub tracks states as **labels**, so create them before the first run (`itervox doctor --fix` does it for you), and authenticate the `gh` CLI. The [GitHub Issues guide](/guides/github-issues/) covers labels, `p0`–`p3` priority labels, blocker phrases, `#42` identifiers and `gh auth`.
+
 ### 2. Configure secrets
 
 Create a `.itervox/.env` file (gitignored) with your API keys:

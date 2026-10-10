@@ -152,7 +152,16 @@ func ghLabelCreateCommand(repo, name string) string {
 	return fmt.Sprintf("gh label create %q --color %q --repo %s", name, labelColor(name), repo)
 }
 
+// githubSetupGuideURL is printed with every GitHub label problem so the
+// operator lands on the full setup guide (#77).
+const githubSetupGuideURL = "https://itervox.dev/guides/github-issues/"
+
 func renderLabelCheck(b *strings.Builder, lc LabelCheck) {
+	defer func() {
+		if lc.APIError != "" || lc.SkipReason != "" || len(lc.Missing) > 0 {
+			fmt.Fprintf(b, "  GitHub setup guide (labels, priority, blockers, gh auth): %s\n", githubSetupGuideURL)
+		}
+	}()
 	switch {
 	case lc.APIError != "":
 		fmt.Fprintf(b, "github labels: could not check %s — %s\n", lc.Repo, lc.APIError)
