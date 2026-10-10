@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -161,6 +162,9 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
+	// LabelFixError is why `doctor --fix` did not finish repairing the
+	// labels (a failed create or re-check). Non-empty means exit 1.
+	LabelFixError string
 	// ProfileRefIssues are skill / subagent references in profile prompts
 	// that do not resolve (#86). Warnings only: they never fail doctor.
 	ProfileRefIssues []skills.InventoryIssue
@@ -176,19 +180,30 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 
 // runDoctorFix runs the checks, offers to create missing GitHub state labels,
 // and re-checks the labels so the printed report and exit code reflect what
-// is on the repository afterwards.
+// is on the repository afterwards. A repair that failed, or whose re-check
+// failed, keeps the exit code non-zero and the labels still known missing.
 func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writer) (string, int) {
 	report, cfg := collectDoctorReport(workflowPath)
 	if len(report.Labels.Missing) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), labelCheckTimeout)
-		created, err := fixMissingLabels(ctx, cfg, report.Labels, assumeYes, in, out)
+		created, err := fixMissingLabels(cfg, report.Labels, assumeYes, in, out)
 		if err != nil {
 			_, _ = fmt.Fprintf(out, "ERROR: %v\n", err)
+			report.LabelFixError = err.Error()
 		}
 		if len(created) > 0 {
-			report.Labels = checkGitHubLabels(ctx, cfg)
+			// Its own deadline: the answer to the prompt may have taken
+			// any time.
+			ctx, cancel := context.WithTimeout(context.Background(), labelCheckTimeout)
+			recheck := checkGitHubLabels(ctx, cfg)
+			cancel()
+			if recheck.Ran {
+				report.Labels = recheck
+			} else {
+				report.Labels.Missing = withoutLabels(report.Labels.Missing, created)
+				report.LabelFixError = strings.TrimPrefix(strings.Join([]string{report.LabelFixError,
+					"could not re-check the labels after creating some: " + cmp.Or(recheck.APIError, recheck.SkipReason)}, "; "), "; ")
+			}
 		}
-		cancel()
 	}
 	return renderDoctorReport(report), doctorExitCode(report)
 }
@@ -363,6 +378,8 @@ func doctorExitCode(report DoctorReport) int {
 		// A missing state label means issues in that state are never
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
+	case report.LabelFixError != "":
+		exitCode = 1
 	}
 	return exitCode
 }
@@ -433,6 +450,9 @@ func renderDoctorReport(r DoctorReport) string {
 		}
 	}
 	renderLabelCheck(&b, r.Labels)
+	if r.LabelFixError != "" {
+		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
+	}
 	renderProfileRefIssues(&b, r.ProfileRefIssues)
 	for _, p := range r.LocalIssueProblems {
 		fmt.Fprintf(&b, "WARNING: issue file does not parse (Itervox keeps using its last good version and will not write to it until it is fixed): %s\n", p)
