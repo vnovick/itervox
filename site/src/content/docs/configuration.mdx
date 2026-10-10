@@ -780,7 +780,10 @@ If the blocker's branch is not available in this checkout, the dependent is
 **not** started on `base_branch`, which would lack the blocker's code: the
 fresh worktree is removed before any agent runs (a dependent branch that
 already has commits of its own is kept), and the issue waits for its blocker
-to land as before. It gets another try once the blocker leaves review and
+to land as before. The same applies to a dependent whose worktree already
+exists but is not stacked on the blocker (for example, one made from
+`base_branch` before the dependency was added): no agent runs and the issue
+waits, and that worktree is kept as it is. It gets another try once the blocker leaves review and
 comes back, or changes. While a stacked dependent runs, the Deps tab still
 lists its blocker, which has not landed yet.
 
