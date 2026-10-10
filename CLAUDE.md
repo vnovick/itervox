@@ -126,6 +126,10 @@ only the event loop mutates them.
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- `PendingRestacks` holds dependents whose blockers landed while they were
+  running: the restack is never run under an agent, so it is deferred to the
+  first dependency audit that finds the issue idle (dropped if it is blocked
+  again). Event-loop state, session-scoped, not persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
