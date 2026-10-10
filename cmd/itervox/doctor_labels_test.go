@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,6 +27,11 @@ type fakeLabelRepo struct {
 	created  []string
 	requests int
 	listErr  int // non-zero: GET /labels answers with this status
+	// createFailAfter > 0: POSTs after that many successes fail with 500.
+	createFailAfter int
+	// listFailAfterCreate: GET /labels fails once a POST has been made.
+	listFailAfterCreate bool
+	posts               int
 }
 
 func (f *fakeLabelRepo) serve(t *testing.T) *httptest.Server {
@@ -40,8 +48,8 @@ func (f *fakeLabelRepo) serve(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
-			if f.listErr != 0 {
-				w.WriteHeader(f.listErr)
+			if f.listErr != 0 || (f.listFailAfterCreate && f.posts > 0) {
+				w.WriteHeader(cmp.Or(f.listErr, http.StatusBadGateway))
 				_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
 				return
 			}
@@ -51,6 +59,12 @@ func (f *fakeLabelRepo) serve(t *testing.T) *httptest.Server {
 			}
 			_ = json.NewEncoder(w).Encode(out)
 		case http.MethodPost:
+			f.posts++
+			if f.createFailAfter > 0 && f.posts > f.createFailAfter {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"boom"}`))
+				return
+			}
 			var in map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&in)
 			f.labels = append(f.labels, in["name"])
@@ -104,6 +118,28 @@ func TestGitHubStateLabelsDedupesAndSkipsClosed(t *testing.T) {
 		FailedState:     "failed",
 	})
 	assert.Equal(t, []string{"todo", "in-progress", "in-review", "done", "backlog", "failed"}, got)
+}
+
+// TestGitHubStateLabelsKeepsClosedOutsideTerminalStates (#75 review): only a
+// terminal "closed" is GitHub's native state. Active states are fetched as
+// literal labels and working/completion/backlog/failed states are written as
+// labels, so a "closed" there is a label that must exist.
+func TestGitHubStateLabelsKeepsClosedOutsideTerminalStates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  config.TrackerConfig
+	}{
+		{"active", config.TrackerConfig{ActiveStates: []string{"closed"}}},
+		{"working", config.TrackerConfig{WorkingState: "closed"}},
+		{"completion", config.TrackerConfig{CompletionState: "Closed"}},
+		{"backlog", config.TrackerConfig{BacklogStates: []string{"closed"}}},
+		{"failed", config.TrackerConfig{FailedState: "closed"}},
+	} {
+		got := githubStateLabels(tc.cfg)
+		require.Len(t, got, 1, tc.name)
+		assert.True(t, strings.EqualFold(got[0], "closed"), tc.name)
+	}
+	assert.Empty(t, githubStateLabels(config.TrackerConfig{TerminalStates: []string{"closed"}}), "terminal: native state")
 }
 
 // TestDoctorGitHubLabelsAllPresent: every configured state label exists
@@ -224,4 +260,54 @@ func TestDoctorFixAsksBeforeCreating(t *testing.T) {
 	report, _ := runDoctorFix(wf, false, strings.NewReader("y\n"), &out)
 	assert.Len(t, repo.created, 5)
 	assert.Contains(t, report, "github labels: OK")
+}
+
+// slowYes answers "y" only after delay, like a person reading the prompt.
+type slowYes struct {
+	delay time.Duration
+	done  bool
+}
+
+func (r *slowYes) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	time.Sleep(r.delay)
+	r.done = true
+	return copy(p, "y\n"), nil
+}
+
+// TestDoctorFixDeadlineStartsAfterTheAnswer (#75 review): the API deadline
+// starts once the operator has answered, so a slow "y" still creates the
+// labels instead of failing with an expired context.
+func TestDoctorFixDeadlineStartsAfterTheAnswer(t *testing.T) {
+	old := labelCheckTimeout
+	labelCheckTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { labelCheckTimeout = old })
+	repo := &fakeLabelRepo{labels: []string{"todo"}}
+	wf := writeLabelWorkflow(t, "github", repo.serve(t).URL)
+
+	var out strings.Builder
+	report, code := runDoctorFix(wf, false, &slowYes{delay: 600 * time.Millisecond}, &out)
+	assert.NotContains(t, out.String(), "deadline exceeded")
+	assert.Len(t, repo.created, 5)
+	assert.Contains(t, report, "github labels: OK")
+	assert.Equal(t, 0, code)
+}
+
+// TestDoctorFixPartialFailureStaysNonZero (#75 review): a repair that created
+// some labels and then failed, followed by a re-check that also failed, exits
+// 1 and still reports the labels that were not created, instead of an empty
+// missing list and exit 0.
+func TestDoctorFixPartialFailureStaysNonZero(t *testing.T) {
+	repo := &fakeLabelRepo{labels: []string{"todo"}, createFailAfter: 1, listFailAfterCreate: true}
+	wf := writeLabelWorkflow(t, "github", repo.serve(t).URL)
+
+	var out strings.Builder
+	report, code := runDoctorFix(wf, true, strings.NewReader(""), &out)
+	require.Len(t, repo.created, 1)
+	assert.Contains(t, out.String(), "ERROR: create label")
+	assert.Contains(t, report, "ERROR: 4 state label(s) missing")
+	assert.Contains(t, report, "label repair incomplete")
+	assert.Equal(t, 1, code)
 }
