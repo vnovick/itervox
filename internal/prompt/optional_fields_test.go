@@ -96,3 +96,28 @@ func TestEmptyDescriptionGuardWithUnguardedPrint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "{{ issue.description }}[]", out, "raw text is shown as written")
 }
+
+// TestOptionalFieldsLeaveOtherTemplateTextAlone (#111 review): the blank
+// fallback changes only outputs. Assigns keep nil (an alias guard still
+// skips), quoted strings inside tags are not rewritten, and a raw or comment
+// block ends only at its own closing tag.
+func TestOptionalFieldsLeaveOtherTemplateTextAlone(t *testing.T) {
+	issue := domain.Issue{Identifier: "#1"}
+	for _, c := range []struct{ name, tpl, want string }{
+		{"alias guard", `{% assign d = issue.description %}{% if d %}HAS{% else %}NONE{% endif %}[{{ d }}]`, "NONE[]"},
+		{"double quoted", `{% assign example = "{{ issue.description }}" %}{{ example }}`, "{{ issue.description }}"},
+		{"single quoted", `{% assign example = '{{ issue.description }}' %}{{ example }}`, "{{ issue.description }}"},
+		{"raw holding endcomment", `{% raw %}{% endcomment %}{{ issue.description }}{% endraw %}`, "{% endcomment %}{{ issue.description }}"},
+		{"comment holding endraw", `{% comment %}{% endraw %}{{ issue.description }}{% endcomment %}[{{ issue.url }}]`, "[]"},
+		{"trim markers", "[{{- issue.branch_name -}}]", "[]"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out, err := Render(c.tpl, issue, nil)
+			require.NoError(t, err)
+			assert.Equal(t, c.want, out)
+		})
+	}
+
+	_, err := Render(`{% assign d = issue.description %}{{ dd }}`, issue, nil)
+	assert.Error(t, err, "a misspelt alias still fails strict variables")
+}
