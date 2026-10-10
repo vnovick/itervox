@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
+
+### Fixed
+
+- **Removed a stale startup warning that claimed multi-reviewer fan-out was disabled** (#69). Fan-out has run every `agent.reviewer_profiles` entry since 0.2.1 (#58), but config loading still logged `multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs` whenever more than one reviewer was listed, so operators were told the opposite of what the daemon did. The warning and its stale rationale are gone; a `reviewer_profiles`-only config still promotes its first entry into `reviewer_profile` (now logged at INFO, since that configuration is valid). The 0.2.1 notes carried a contradictory "fan-out is disabled" bullet alongside the one announcing it runs; the wrong bullet is removed.
+
+---
+
 ## [0.2.1] — 2026-09-28
 
 Dependency autonomy, a write-ahead outbox for tracker writes, and the security and ops fixes that accumulated alongside them. Itervox now only picks up issues that are not blocked, orders work by what unblocks the most downstream effort, detects dependency cycles, keeps its dependency analysis fresh on its own, and captures far more real dependencies from both trackers — while making roughly 10x fewer tracker requests on the hot paths.
@@ -219,7 +231,6 @@ Tracker writes can no longer post a comment twice, and a Linear rate limit is no
 - **A malformed persisted outbox entry could wedge an issue's write queue silently.** Entries are validated on load, not only on enqueue, and an undeliverable entry now accrues attempts so it backs off and surfaces as degraded instead of retrying at full tick rate behind a healthy-looking badge.
 - **Incremental dependency analysis eroded its own graph.** An inferred edge spanning a changed and an unchanged issue was dropped and could not be re-derived, because the unchanged endpoint never reached the analyzer. With auto-analysis on by default and no scheduled full pass, repeated runs degraded the graph and silently un-gated dispatch. Boundary-spanning edges now bring their unchanged endpoint into the pass.
 - **A cosmetic `server.host` edit could kill the daemon.** The reload path compared the literal `host:port` string, so `127.0.0.1` to `localhost` looked like a move; the new listener bound before the old one closed, collided with itself, and exited via a path that skipped cleanup of `daemon.pid`, `dashboard_url`, and `HEARTBEAT.md` — leaving `itervox doctor` reporting a daemon that had died. Rebinds are now decided on the resolved address and release the old socket first.
-- **Reviewer fan-out (`agent.reviewer_profiles`) is disabled in this release.** A config listing several reviewers runs only the first, with a startup warning, and a config setting only `reviewer_profiles` now starts instead of hard-failing. The chain did not advance past the first reviewer, and the workspace was cleared while a reviewer was still live. The machinery ships intact but gated.
 - **One transient accept failure could wedge the HTTP listener for the life of the process.** The daemon's accept loop replaced `http.Server.Serve`'s, which backs off and retries temporary errors — without that, a single fd-exhaustion blip (`EMFILE`/`ENFILE`) ended accepts while the socket stayed bound, so the port still showed LISTEN, clients hung, and a config reload could not recover it. Temporary accept errors now retry on net/http's 5ms-doubling-to-1s schedule.
 - **A config reload could briefly run two orchestrators against one outbox file.** `run()` waited for the HTTP server when the orchestrator exited first, but returned immediately in the opposite case — which is the one a reload actually takes, since shutting down the HTTP generation is a channel close while the orchestrator is still draining. The reload loop then opened a second `.itervox/outbox.json` handle, and two handles rewriting the whole file each persist can erase one another's durable entries. Both exit paths now wait, with a bounded grace and a warning if it is exceeded.
 - **The input-required reply check no longer scales its request rate with the backlog.** It spent one tracker request per stuck issue per tick, uncapped and in randomized map order, so a 19-issue backlog cost roughly 2,280 requests/hour against Linear's 2,500/hour ceiling before any real work (issue #42). It now spends a fixed budget per tick, least-recently-checked first, so cost is constant in backlog size and every entry is still reached within a couple of minutes. The pending-resume path gained the same bound on its failing-fetch retries.

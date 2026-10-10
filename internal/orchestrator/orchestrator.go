@@ -370,6 +370,12 @@ type Orchestrator struct {
 	// that must correct a ledger synchronously at shutdown (BH5) can do so
 	// without being overwritten. Nil until Run starts.
 	loopExited atomic.Pointer[chan struct{}]
+	// exitsSent records, per issue ID, when a worker started finishing: its
+	// move to tracker.completion_state, or delivering its exit (deliverExit).
+	// Worker goroutines write it; the event loop copies
+	// it into State.ExitPending before reconciling and deletes an entry once
+	// that exit is handled. See ReconcileTrackerStates.
+	exitsSent sync.Map
 
 	// started is set to true at the beginning of Run. It guards SetHistoryFile
 	// and SetHistoryKey: calling either after Run starts is a programming error

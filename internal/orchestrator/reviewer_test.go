@@ -721,23 +721,6 @@ func (t *noCandidateTracker) SetIssueBranch(ctx context.Context, issueID, branch
 var _ = strings.Split
 var _ = bytes.Buffer{}
 
-// TestMultiReviewerConfigFallsBackToSingleReviewer pins that reviewer
-// fan-out is DISABLED for this release and, critically, that a config which
-// requests it degrades to the working single-reviewer path instead of
-// misbehaving.
-//
-// Three reproduced failures gate the feature (see
-// orchestrator.ReviewerProfileChain). The one this test guards is the worst:
-// with tracker.completion_state set — the realistic configuration — the
-// worker moves the issue terminal before the reviewer finishes,
-// ReconcileTrackerStates stops the reviewer, and because that is not a
-// TerminalSucceeded exit the chain never advances, so chain[0] is
-// re-dispatched forever. Measured before the gate: 10+ RunTurn calls in ~1s,
-// against 2 for a single-reviewer config that was otherwise identical.
-//
-// The assertion is therefore an upper bound on dispatches, not a lower one:
-// a regression here shows up as runaway agent spawning, which on a real
-// tracker means real API spend and real duplicated work.
 // TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping is issue #58's
 // end-to-end acceptance, and the test that the two gated lifecycle defects
 // made impossible to pass.
