@@ -441,6 +441,12 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 
+	// #83: `init --issue-template` on an existing workflow adds only the
+	// template (the hint init prints when it cannot ask points here).
+	if issueTemplateOnly(*output, *dir, *trackerKind, *issueTemplate, *force, os.Stdout) {
+		return
+	}
+
 	switch *runner {
 	case "claude", "codex":
 		// valid
