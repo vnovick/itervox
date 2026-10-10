@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	builtinprofiles "github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
 
 type workflowMigrationResult struct {
@@ -262,6 +264,13 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	if err != nil {
 		return result, fmt.Errorf("itervox init --update: marshal %s: %w", workflowPath, err)
 	}
+	// The edits went to two copies, the node tree (written) and the decoded
+	// map (what the migration meant). Refuse to replace the workflow when
+	// the written profiles would not read back as meant, rather than leave a
+	// workflow that no longer loads.
+	if err := checkMigratedProfiles(encoded, profiles, result.Profiles); err != nil {
+		return result, fmt.Errorf("itervox init --update: %s left unchanged: %w", workflowPath, err)
+	}
 	var out bytes.Buffer
 	out.WriteString("---\n")
 	out.WriteString(restoreTopLevelBlankLines(front, string(encoded)))
@@ -275,6 +284,23 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	}
 	result.Changed = true
 	return result, nil
+}
+
+// checkMigratedProfiles decodes the migrated front matter and checks that
+// each migrated profile reads back with exactly the fields the migration
+// meant it to have (aliases and merge keys resolved as YAML resolves them).
+func checkMigratedProfiles(encoded []byte, want map[string]any, names []string) error {
+	var got map[string]any
+	if err := yaml.Unmarshal(encoded, &got); err != nil {
+		return fmt.Errorf("the migrated front matter does not parse: %w", err)
+	}
+	gotProfiles := yamlMap(yamlMap(got["agent"])["profiles"])
+	for _, name := range names {
+		if !reflect.DeepEqual(yamlMap(gotProfiles[name]), yamlMap(want[name])) {
+			return fmt.Errorf("profile %q would not read back as migrated (got %v, want %v)", name, gotProfiles[name], want[name])
+		}
+	}
+	return nil
 }
 
 func splitWorkflowFrontMatter(content string) (front string, body string, ok bool) {
