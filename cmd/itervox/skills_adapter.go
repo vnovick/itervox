@@ -74,15 +74,24 @@ func (a *orchestratorAdapter) Issues() []skills.InventoryIssue {
 }
 
 func (a *orchestratorAdapter) skillsAnalyzeInputs() skills.AnalyzeInputs {
+	// Agent.Profiles and Agent.SSHHosts are cfgMu-guarded with live writers:
+	// read them through the orchestrator's locked accessors whenever one
+	// exists; a.cfg is the no-orchestrator (tests) fallback only.
 	profiles := a.cfg.Agent.Profiles
+	sshHosts := a.cfg.Agent.SSHHosts
 	var recentlyActive map[string]struct{}
 	if a.orch != nil {
 		profiles = a.orch.ProfilesCfg()
+		sshHosts, _ = a.orch.SSHHostsCfg()
 		recentlyActive = recentlyActiveProfilesFromState(a.orch.RunHistory(), a.orch.Snapshot())
 	}
 	return skills.AnalyzeInputs{
 		Profiles:               profiles,
 		RecentlyActiveProfiles: recentlyActive,
+		SSHHosts:               sshHosts,
+		// agent.command / agent.backend are read-only after startup (not in
+		// the cfgMu allowlist).
+		BackendDefaults: skills.RefBackendDefaults{Command: a.cfg.Agent.Command, Backend: a.cfg.Agent.Backend},
 	}
 }
 

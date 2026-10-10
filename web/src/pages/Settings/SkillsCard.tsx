@@ -18,11 +18,13 @@ import {
   useSkillsAnalyticsRecommendations,
 } from '../../queries/skills';
 import type { Skill } from '../../types/schemas';
+import { SubagentsList } from './SubagentsList';
 
-type SectionKey = 'skills' | 'plugins' | 'mcp' | 'hooks' | 'instructions';
+type SectionKey = 'skills' | 'subagents' | 'plugins' | 'mcp' | 'hooks' | 'instructions';
 
 const SECTION_LABELS: Record<SectionKey, string> = {
   skills: 'Skills',
+  subagents: 'Subagents',
   plugins: 'Plugins',
   mcp: 'MCP Servers',
   hooks: 'Hooks',
@@ -155,6 +157,30 @@ const RECOMMENDATION_HELP: Partial<Record<string, { what: string; howToFix: stri
       'If you genuinely need different content per scope, that is fine — just verify the override is intentional.',
     ],
   },
+  MISSING_SKILL_REF: {
+    what: "A profile's SOUL.md or INSTRUCTIONS.md names a skill (`name` skill) that is not installed for that profile's backend, so the agent runs without it.",
+    howToFix: [
+      'Check the name for a typo against the Skills list above.',
+      'If the skill lives elsewhere, add it under .claude/skills/<name>/SKILL.md in the repository (Claude) or the Codex skill directory.',
+      'If the prompt no longer needs it, remove the reference.',
+    ],
+  },
+  MISSING_SUBAGENT_REF: {
+    what: 'A profile prompt names a subagent (@agent-name or `name` subagent) that is not defined in .claude/agents or an installed plugin, or the profile runs on Codex, which has no subagents.',
+    howToFix: [
+      'Check the name against the Subagents list above.',
+      'Add the definition as .claude/agents/<name>.md with name and description frontmatter.',
+      'For a Codex profile, drop the subagent reference or move the profile to Claude.',
+    ],
+  },
+  USER_SCOPE_REF_ON_SSH: {
+    what: "A referenced skill or subagent exists only in this machine's home directory or a plugin. Agents on SSH hosts see the repository's .claude/ directory, not your home, so it may be missing there.",
+    howToFix: [
+      "Claude profile: commit the skill or subagent under the repository's .claude/ directory so it travels with the repo.",
+      'Codex profile: Codex reads no skills from the repository, so install the skill on every SSH host (for example under ~/.codex/skills/).',
+      'Either backend: installing it on every SSH host also works.',
+    ],
+  },
   ORPHAN_MCP: {
     what: 'An MCP server is configured but its name is never mentioned in any skill name, description, or body. The tool schema is loaded into every agent context unconditionally — pure overhead if no skill knows when to call it.',
     howToFix: [
@@ -223,6 +249,7 @@ export function SkillsCard() {
 
   const counts: Record<SectionKey, number> = {
     skills: inventory.Skills?.length ?? 0,
+    subagents: inventory.Subagents?.length ?? 0,
     plugins: inventory.Plugins?.length ?? 0,
     mcp: inventory.MCPServers?.length ?? 0,
     hooks: inventory.Hooks?.length ?? 0,
@@ -231,6 +258,12 @@ export function SkillsCard() {
 
   const tokens: Record<SectionKey, number> = {
     skills: (inventory.Skills ?? []).reduce((sum, s) => sum + s.ApproxTokens, 0),
+    // Only a subagent's name and description sit in the main context; its
+    // body loads when the subagent is invoked.
+    subagents: (inventory.Subagents ?? []).reduce(
+      (sum, a) => sum + Math.ceil(((a.Description ?? '').length + a.Name.length) / 4),
+      0,
+    ),
     plugins: (inventory.Plugins ?? []).reduce((sum, p) => sum + p.ApproxTokens, 0),
     mcp: counts.mcp * 800,
     hooks: (inventory.Hooks ?? []).reduce((sum, h) => sum + h.ApproxTokens, 0),
@@ -319,7 +352,7 @@ export function SkillsCard() {
       {/* Capability catalog */}
       <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
         <p className="text-theme-text mb-2 text-sm font-medium">Capabilities</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {(Object.keys(counts) as SectionKey[]).map((key) => (
             <button
               key={key}
@@ -377,9 +410,9 @@ export function SkillsCard() {
         </div>
         <p className="text-theme-muted mt-3 text-[10px] italic">
           Token counts are approximate (skill body bytes ÷ 4, 800 × MCP server count, hook command
-          bytes × 2 ÷ 4). Useful for ratio comparisons, not absolute claims. Run sessions with{' '}
-          <code className="font-mono">CLAUDE_CODE_LOG_DIR</code> set to refine the MCP figure with
-          observed tool loads.
+          bytes × 2 ÷ 4, subagent name + description ÷ 4). Useful for ratio comparisons, not
+          absolute claims. Run sessions with <code className="font-mono">CLAUDE_CODE_LOG_DIR</code>{' '}
+          set to refine the MCP figure with observed tool loads.
         </p>
       </div>
     </div>
@@ -641,6 +674,8 @@ function ExpandedSection({
   inventory: NonNullable<ReturnType<typeof useSkillsInventory>['data']>;
 }) {
   switch (sectionKey) {
+    case 'subagents':
+      return <SubagentsList subagents={inventory.Subagents} />;
     case 'skills': {
       const items = inventory.Skills ?? [];
       return (

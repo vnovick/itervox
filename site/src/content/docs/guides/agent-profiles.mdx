@@ -109,6 +109,43 @@ profiles:
 
 Plain-text profile files (without any `{{ }}` syntax) are passed through unchanged.
 
+### Skills and subagents in prompts
+
+Agents run the Claude or Codex CLI inside the repository, so they load the repository's `.claude/skills`, `.claude/agents`, `CLAUDE.md` and `AGENTS.md` like any session would. A profile's `SOUL.md` and `INSTRUCTIONS.md` can therefore tell the agent to use them. Itervox checks those references against the [skills inventory](/guides/skills-inventory/), so a typo or a skill that only exists on your laptop is caught before an agent silently runs without it.
+
+Only these forms are checked:
+
+| Form | Refers to |
+|---|---|
+| `@agent-code-reviewer` | the `code-reviewer` subagent (Claude Code's @-mention form) |
+| `` `verify-before-done` skill `` | the `verify-before-done` skill: the name in backticks, then the word "skill" on the same line |
+| `` `code-reviewer` subagent `` | the subagent: the name in backticks, then the word "subagent" |
+| `` `a`, `b`, and `c` skills `` | every name in the list (separators `,` `&` `/` `;` `+` `and` `or`, in any combination) |
+
+Names follow Claude Code's naming rule: lower-case letters, digits and hyphens, starting with a letter, with an optional `<plugin>:` prefix for a plugin's skills and agents. They are matched against the inventory case-insensitively.
+
+`@agent-` counts at the start of a line or after a space or one of `(` `[` `{` `,` `;` `"` `'` `` ` `` `*` `_` `<` `>`, so `` `@agent-x` ``, `**@agent-x**` and `<@agent-x>` are checked while ordinary email addresses and URLs are not (`_` and `*` count only when they do not follow a letter or digit; a URL or address with one of the other characters right before `@agent-` is read as a mention). Mentions inside inline code and HTML comments are checked too. A name that runs on into letters, digits, non-ASCII characters or an underscore (`@agent-foo_bar`, `@agent-fooBar`), or that ends in a hyphen, is not a valid name and is skipped.
+
+A list counts only as one unbroken run of backticked names right before the noun, on one line: "`` `a` and the `b` skills ``" checks only `b`, and "`` the `a` skill (or `b`) ``", "etc.", lists wrapped onto a second line and table cells are not followed. Each of these limits can only leave a reference unchecked; none of them produces a warning.
+
+Fenced code blocks are ignored, following Markdown's rules: a fence is three or more backticks or tildes and closes on a line holding the same character at least as many times and nothing else, indented no more than three spaces within its list item or quote; an unclosed fence runs to the end of the file. Fences inside list items and blockquotes count too, and end when their list item or quote ends. Itervox does not fully parse Markdown lists, so in unusual layouts (for example a fence indented four spaces that is not inside a list) a reference near a fence can be skipped or checked differently from how a Markdown renderer would show it.
+
+The forms keep most prose from matching: "`claude` agent", "`SKILL.md` skill files", "skill-level", and "the `codex` skills directory" (or file, module, option, setting and similar words after "skill") are not read as references. Two things still are:
+
+- Any sentence that puts a backticked name right before "skill" or "subagent", whatever the verb. "Do not use the `legacy-deploy` skill" warns if `legacy-deploy` is not installed, the same as "use the `legacy-deploy` skill". Rephrase such sentences without the backticks.
+- Any `@agent-<name>` written as above, for example "cc: @agent-ops-team".
+
+Slash commands such as `` `/verify-before-done` `` are not checked, because the same form also names Claude Code's built-in commands and file paths. Write "the `verify-before-done` skill" when you want the reference validated.
+
+Each reference is resolved for the backend the profile runs on. Itervox works this out the way the dispatcher does, using the same helpers: it builds the command the dispatcher would hand to the agent runner from `agent.command` and `agent.backend`, then the profile's own `command` (which replaces the default) and `backend`, and routes it the way the runner does. A requested backend that conflicts with a recognised `claude` or `codex` binary is ignored, and anything that does not route to Codex runs on Claude. A test checks this against the dispatcher's resolver for every combination of a large set of commands and backends. Per-issue backend overrides and rate-limit fallbacks are decided at dispatch time and are not taken into account. A Claude profile sees Claude and shared skills, plugin skills and every subagent; a Codex profile sees Codex and shared skills and has no subagents. A missing reference is reported as `MISSING_SKILL_REF` or `MISSING_SUBAGENT_REF`:
+
+- in the dashboard, in the Skills card's issues list (**Settings → Skills**);
+- by `itervox doctor`, as a `WARNING:` line. It does not change doctor's exit code, because the agent still runs.
+
+When `agent.ssh_hosts` is set, a reference that resolves only through your home directory or a plugin installed there also gets an info-level `USER_SCOPE_REF_ON_SSH` note: agents on remote hosts see the repository, not this machine's home. For a Claude profile, commit the skill or subagent under `.claude/` to make it travel with the repo. Codex reads no skills from the repository, so for a Codex profile install the skill on every SSH host (for example under `~/.codex/skills/`); that works for either backend.
+
+The Skills card lists subagents in their own **Subagents** section, with source (project, user or plugin), model, tools and file size.
+
 ### Handoff protocol (v0.2.0)
 
 When multiple profiles run on the same issue, each one can leave a Markdown deliverable in `.itervox/handoff/` so subsequent profiles can read it. The orchestrator generates two values per dispatch and surfaces them in the agent's prompt as a `## Run Context` block:
