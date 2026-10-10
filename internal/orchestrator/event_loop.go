@@ -177,7 +177,6 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// release the workerCancels-map entry even if the EventWorkerExited
 	// send drops under load (T-09).
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
-	state.ExitPending = o.pendingExits(state)
 	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
 
 	// 4. Fetch candidates and dispatch eligible issues.
@@ -1166,6 +1165,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			BranchName:         branchNameValue(resumeIssue.BranchName),
 			StartedAt:          now,
 		}
+		workerCtx = o.startRun(workerCtx, state.Running[entry.IssueID])
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
@@ -1309,6 +1309,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
+	workerCtx = o.startRun(workerCtx, state.Running[issue.ID])
 
 	// Register the cancel func in the concurrent-safe map so CancelIssue (called
 	// from HTTP handler goroutines) can reach it without going through the snapshot,
@@ -1485,6 +1486,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
+	workerCtx = o.startRun(workerCtx, state.Running[issue.ID])
 
 	o.workerCancelsMu.Lock()
 	o.workerCancels[issue.Identifier] = workerCancel
@@ -1556,7 +1558,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	}()
 	switch ev.Type {
 	case EventWorkerUpdate:
-		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil {
+		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil && !entry.isStaleFor(ev.RunID) {
+			if entry.Phase == RunDispatched {
+				entry.Phase = RunRunning
+			}
 			// CORE-091: fold the update into the session totals before the
 			// entry takes the new counts.
 			state.Totals.accountRunUpdate(entry, ev.RunEntry)
@@ -1834,9 +1839,18 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.applyClearBackendBreaker(&state, ev.Identifier)
 
 	case EventWorkerExited:
-		o.exitsSent.Delete(ev.IssueID)
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
+		if liveEntry != nil && liveEntry.isStaleFor(ev.RunID) {
+			// #125: the exit of a run that is no longer the issue's current
+			// one (reconcile or stall detection already stopped it, and the
+			// issue was dispatched again). It must not touch the new run.
+			o.handleStaleExit(ev, liveEntry)
+			return state
+		}
+		if liveEntry != nil {
+			liveEntry.Phase = RunExited
+		}
 		delete(state.Running, ev.IssueID)
 
 		if ev.RunEntry == nil {
