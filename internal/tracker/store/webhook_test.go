@@ -285,45 +285,57 @@ func TestWebhooksKeepListPullsAtTheSafetyNet(t *testing.T) {
 	assert.Greater(t, len(got), 1, "new issues reached the board")
 }
 
-// gatedTracker holds a full pull's candidate read until released, so a
-// local change can land while the pull is in flight.
+// gatedTracker holds one full pull's candidate read, once armed, until
+// released, so a local change can land while that pull is in flight.
 type gatedTracker struct {
 	*countingTracker
+	mu      sync.Mutex
 	entered chan struct{}
 	release chan struct{}
 }
 
+// arm makes the next candidate read wait for release; it reports entering on
+// the returned channel.
+func (g *gatedTracker) arm() (entered <-chan struct{}, release chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.entered, g.release = make(chan struct{}, 1), make(chan struct{})
+	return g.entered, g.release
+}
+
 func (g *gatedTracker) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
 	out, err := g.countingTracker.FetchCandidateIssues(ctx)
-	select {
-	case g.entered <- struct{}{}:
-		<-g.release
-	default:
+	g.mu.Lock()
+	entered, release := g.entered, g.release
+	g.entered, g.release = nil, nil
+	g.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{} // buffered: never lost, never blocks
+		<-release
 	}
 	return out, err
 }
 
 // A removal made while a pull is in flight is not undone by that pull.
 func TestForgetSurvivesAConcurrentPull(t *testing.T) {
-	g := &gatedTracker{countingTracker: newCounting(issue("1", "Todo"), issue("2", "Todo")),
-		entered: make(chan struct{}), release: make(chan struct{})}
+	g := &gatedTracker{countingTracker: newCounting(issue("1", "Todo"), issue("2", "Todo"))}
 	_, s, err := store.Wrap(g, storeConfig(t, t.TempDir()))
 	require.NoError(t, err)
-	done := make(chan error, 1)
-	go func() { _, err := s.FetchCandidateIssues(t.Context()); done <- err }() // the cold pull, held
-	<-g.entered
-	close(g.release)
-	require.NoError(t, <-done)
-	got, _ := s.FetchCandidateIssues(t.Context())
+	got, err := s.FetchCandidateIssues(t.Context()) // the cold pull, not gated
+	require.NoError(t, err)
 	require.Len(t, got, 2)
 
 	// A second pull reads issue 1, then the removal lands before it commits.
-	g.entered, g.release = make(chan struct{}), make(chan struct{})
+	entered, release := g.arm()
 	pulled := make(chan error, 1)
 	go func() { pulled <- s.RequestSyncNowForTest(t.Context()) }()
-	<-g.entered
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pull never reached the tracker")
+	}
 	s.Forget("1")
-	close(g.release)
+	close(release)
 	require.NoError(t, <-pulled)
 	got, _ = s.FetchCandidateIssues(t.Context())
 	assert.Equal(t, []string{"ENG-2"}, identifiers(got), "the pull that read issue 1 before its removal does not bring it back")
