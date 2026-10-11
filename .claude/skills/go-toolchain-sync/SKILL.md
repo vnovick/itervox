@@ -1,6 +1,6 @@
 ---
 name: go-toolchain-sync
-description: Use when editing go.mod, Makefile, bumping the Go toolchain version, addressing govulncheck stdlib vulnerabilities, or when `make verify` fails with `go: go.mod requires go >= X.Y.Z (running go X.Y.Z; GOTOOLCHAIN=goX.Y.Z)`. Keeps the two Go version pins (`go.mod` and `Makefile`) in lockstep.
+description: 'Use when editing go.mod, Makefile, bumping the Go toolchain version, addressing govulncheck stdlib vulnerabilities, or when `make verify` fails with `go: go.mod requires go >= X.Y.Z (running go X.Y.Z; GOTOOLCHAIN=goX.Y.Z)`. Keeps the two Go version pins (`go.mod` and `Makefile`) in lockstep.'
 ---
 
 # go-toolchain-sync
