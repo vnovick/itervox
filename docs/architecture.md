@@ -202,6 +202,10 @@ extracts inline `agent.profiles.<name>.prompt` content into per-profile
 `INSTRUCTIONS.md` files, generates starter `SOUL.md` files, writes a
 `WORKFLOW.md.bak`, patches the root `.gitignore` so `.itervox/agents/**` is
 committable, and stamps `itervox_schema_version: 2` on the migrated file.
+The rewrite edits the YAML node tree (`yaml.v3` `Node`) rather than
+re-marshalling a map, so comments, key order, scalar styles and the file's
+indent width are preserved; `itervox_schema_version: 2` is inserted as the
+first key and only the migrated keys change (#71).
 
 ### Built-in profile registry
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -49,8 +50,16 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	if !ok {
 		return result, fmt.Errorf("itervox init --update: %s has no YAML front matter", workflowPath)
 	}
+	// #71 — parse the front matter once into a yaml.v3 Node tree. The
+	// analysis below reads a decoded map (cheap and already proven), but
+	// every mutation is applied to the tree and the tree is re-encoded, so
+	// comments, key order and scalar styles survive the rewrite.
+	docNode, rootNode, err := parseFrontMatterNode(front)
+	if err != nil {
+		return result, fmt.Errorf("itervox init --update: parse %s: %w", workflowPath, err)
+	}
 	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(front), &doc); err != nil {
+	if err := rootNode.Decode(&doc); err != nil {
 		return result, fmt.Errorf("itervox init --update: parse %s: %w", workflowPath, err)
 	}
 	if doc == nil {
@@ -146,12 +155,16 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	}
 	result.BackupPath = backupPath
 
-	doc["itervox_schema_version"] = config.LatestWorkflowSchemaVersion
+	// The schema marker goes at the top of the front matter (or stays where
+	// it already is), never in alphabetical position.
+	yamlNodeInsertFirst(rootNode, "itervox_schema_version", yamlIntNode(config.LatestWorkflowSchemaVersion))
+	agentNode := yamlNodeEnsureMap(rootNode, "agent")
 	if agent == nil {
 		agent = make(map[string]any)
 		doc["agent"] = agent
 	}
 	if profiles != nil {
+		profilesNode := yamlNodeEnsureMap(agentNode, "profiles")
 		for _, name := range names {
 			profile := yamlMap(profiles[name])
 			if profile == nil {
@@ -163,6 +176,10 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			instructionsRel := filepath.ToSlash(filepath.Join(".itervox", "agents", name, "INSTRUCTIONS.md"))
 			profile["soul_file"] = soulRel
 			profile["instructions_file"] = instructionsRel
+			profileNode := yamlNodeEnsureMap(profilesNode, name)
+			yamlNodeDelete(profileNode, "prompt")
+			yamlNodeSet(profileNode, "soul_file", yamlStringNode(soulRel))
+			yamlNodeSet(profileNode, "instructions_file", yamlStringNode(instructionsRel))
 			if err := writeMigratedAgentFiles(workflowPath, name, profile, promptText, force, now); err != nil {
 				return result, err
 			}
@@ -174,17 +191,25 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			profiles = make(map[string]any)
 			agent["profiles"] = profiles
 		}
+		profilesNode := yamlNodeEnsureMap(agentNode, "profiles")
 		runner := detectMigrationRunner(profiles)
 		if depsAnalyzerProfileMissing {
 			command, backend := initProfileCommand(runner)
+			soulRel := filepath.ToSlash(filepath.Join(".itervox", "agents", initDepsAnalyzerProfileName, "SOUL.md"))
+			instructionsRel := filepath.ToSlash(filepath.Join(".itervox", "agents", initDepsAnalyzerProfileName, "INSTRUCTIONS.md"))
 			depsEntry := map[string]any{
 				"command":           command,
-				"soul_file":         filepath.ToSlash(filepath.Join(".itervox", "agents", initDepsAnalyzerProfileName, "SOUL.md")),
-				"instructions_file": filepath.ToSlash(filepath.Join(".itervox", "agents", initDepsAnalyzerProfileName, "INSTRUCTIONS.md")),
+				"soul_file":         soulRel,
+				"instructions_file": instructionsRel,
 			}
+			depsNode := yamlNodeEnsureMap(profilesNode, initDepsAnalyzerProfileName)
+			yamlNodeSet(depsNode, "command", yamlStringNode(command))
 			if backend != "" {
 				depsEntry["backend"] = backend
+				yamlNodeSet(depsNode, "backend", yamlStringNode(backend))
 			}
+			yamlNodeSet(depsNode, "soul_file", yamlStringNode(soulRel))
+			yamlNodeSet(depsNode, "instructions_file", yamlStringNode(instructionsRel))
 			profiles[initDepsAnalyzerProfileName] = depsEntry
 			if err := writeDepsAnalyzerProfileFiles(workflowPath, runner); err != nil {
 				return result, err
@@ -193,6 +218,7 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 		}
 		if depsAnalyzerFieldUnset {
 			agent["deps_analyzer_profile"] = initDepsAnalyzerProfileName
+			yamlNodeSet(agentNode, "deps_analyzer_profile", yamlStringNode(initDepsAnalyzerProfileName))
 		}
 	}
 	// v0.2.0 todolist5 — legacy `agent.reviewer_prompt` migration. Append the
@@ -205,6 +231,7 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			return result, err
 		}
 		delete(agent, "reviewer_prompt")
+		yamlNodeDelete(agentNode, "reviewer_prompt")
 		result.Warnings = append(result.Warnings,
 			"agent.reviewer_prompt migrated into the reviewer profile's INSTRUCTIONS.md and removed from WORKFLOW.md. Review the appended section before the next reviewer run.")
 	}
@@ -233,13 +260,20 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 		}
 	}
 
-	encoded, err := yaml.Marshal(doc)
+	encoded, err := encodeFrontMatterNode(docNode, detectFrontMatterIndent(front))
 	if err != nil {
 		return result, fmt.Errorf("itervox init --update: marshal %s: %w", workflowPath, err)
 	}
+	// The edits went to two copies, the node tree (written) and the decoded
+	// map (what the migration meant). Refuse to replace the workflow when
+	// the written profiles would not read back as meant, rather than leave a
+	// workflow that no longer loads.
+	if err := checkMigratedProfiles(encoded, profiles, result.Profiles); err != nil {
+		return result, fmt.Errorf("itervox init --update: %s left unchanged: %w", workflowPath, err)
+	}
 	var out bytes.Buffer
 	out.WriteString("---\n")
-	out.Write(encoded)
+	out.WriteString(restoreTopLevelBlankLines(front, string(encoded)))
 	out.WriteString("---\n")
 	out.WriteString(body)
 	if body != "" && !strings.HasSuffix(body, "\n") {
@@ -250,6 +284,23 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	}
 	result.Changed = true
 	return result, nil
+}
+
+// checkMigratedProfiles decodes the migrated front matter and checks that
+// each migrated profile reads back with exactly the fields the migration
+// meant it to have (aliases and merge keys resolved as YAML resolves them).
+func checkMigratedProfiles(encoded []byte, want map[string]any, names []string) error {
+	var got map[string]any
+	if err := yaml.Unmarshal(encoded, &got); err != nil {
+		return fmt.Errorf("the migrated front matter does not parse: %w", err)
+	}
+	gotProfiles := yamlMap(yamlMap(got["agent"])["profiles"])
+	for _, name := range names {
+		if !reflect.DeepEqual(yamlMap(gotProfiles[name]), yamlMap(want[name])) {
+			return fmt.Errorf("profile %q would not read back as migrated (got %v, want %v)", name, gotProfiles[name], want[name])
+		}
+	}
+	return nil
 }
 
 func splitWorkflowFrontMatter(content string) (front string, body string, ok bool) {
