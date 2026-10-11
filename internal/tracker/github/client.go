@@ -403,6 +403,31 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 }
 
 // fetchSingleIssue fetches one GitHub issue by its number (as string ID).
+// FetchIssuesInScope implements tracker.ScopedFetcher (#131). The repository
+// is the scope, so every issue that still exists in it is in scope: one read
+// per issue, no list request, deleted issues left out. A transferred issue
+// answers with a redirect to its new repository; the issue that comes back
+// then has another number and is left out too.
+func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	got, err := c.FetchIssueStatesByIDs(ctx, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	asked := make(map[string]bool, len(issueIDs))
+	for _, id := range issueIDs {
+		asked[id] = true
+	}
+	out := got[:0]
+	for _, iss := range got {
+		if asked[iss.ID] {
+			out = append(out, iss)
+		}
+	}
+	return out, nil
+}
+
+var _ tracker.ScopedFetcher = (*Client)(nil)
+
 func (c *Client) fetchSingleIssue(ctx context.Context, issueNumber string) (*domain.Issue, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/%s", c.cfg.Endpoint, c.owner, c.repo, issueNumber)
 	body, _, err := c.get(ctx, url)

@@ -9,6 +9,8 @@ internal/agent/ssh.go SSHStrictHostDefault | read accessor used by cmd/itervox a
 internal/metrics/counters.go TrackerRequestCount | counter reader used by internal/tracker tests (cross-package)
 internal/metrics/counters.go EventsDroppedCount | counter reader used by internal/orchestrator tests (cross-package)
 internal/metrics/counters.go ClientErrorCount | counter reader used by internal/server tests (cross-package)
+internal/metrics/counters.go WebhookCount | counter reader used by internal/tracker/webhook and internal/tracker/store tests (cross-package)
+internal/metrics/counters.go StorePullCount | counter reader used by internal/tracker/store tests (cross-package)
 internal/tracker/ratelimit_gate.go RateLimitGate.Clear | used by cmd/itervox outbox flusher tests to reset the shared gate (cross-package)
 internal/tracker/ratelimit_retry.go HasWriteIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
 internal/tracker/ratelimit_retry.go HasReadIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
