@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -20,8 +21,8 @@ import (
 func TestStartRunGivesEachDispatchItsOwnIdentity(t *testing.T) {
 	o := New(dependencyAuditConfig(), tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
 	first, second := &RunEntry{}, &RunEntry{}
-	ctx1 := o.startRun(t.Context(), first)
-	ctx2 := o.startRun(t.Context(), second)
+	ctx1 := o.startRun(t.Context(), nil, first)
+	ctx2 := o.startRun(t.Context(), nil, second)
 
 	require.NotEmpty(t, first.RunID)
 	assert.NotEqual(t, first.RunID, second.RunID)
@@ -43,7 +44,7 @@ func TestStaleExitLeavesTheCurrentRunAlone(t *testing.T) {
 	workerCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	current := &RunEntry{Issue: issue, StartedAt: time.Now(), WorkerCancel: cancel}
-	o.startRun(workerCtx, current)
+	o.startRun(workerCtx, nil, current)
 	state.Running[issue.ID] = current
 	state.Claimed[issue.ID] = struct{}{}
 	o.workerCancelsMu.Lock()
@@ -83,7 +84,7 @@ func TestStaleUpdateLeavesTheCurrentRunAlone(t *testing.T) {
 	o := New(dependencyAuditConfig(), tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
 	state := NewState(dependencyAuditConfig())
 	current := &RunEntry{Issue: domain.Issue{ID: "id1", Identifier: "ENG-1"}, StartedAt: time.Now()}
-	o.startRun(t.Context(), current)
+	o.startRun(t.Context(), nil, current)
 	state.Running["id1"] = current
 
 	state = o.handleEvent(t.Context(), state, OrchestratorEvent{
@@ -113,7 +114,7 @@ func TestReconcileFoldsTheWorkersFinishingReport(t *testing.T) {
 	state := NewState(cfg)
 	entry := &RunEntry{Issue: domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}, StartedAt: time.Now()}
 	o := New(cfg, tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
-	workerCtx := o.startRun(t.Context(), entry)
+	workerCtx := o.startRun(t.Context(), nil, entry)
 	state.Running["id1"] = entry
 	markFinishing(workerCtx)
 
@@ -132,7 +133,7 @@ func TestReconcileFoldsTheWorkersFinishingReport(t *testing.T) {
 func TestDeliverExitCarriesTheRunAndMarksItFinishing(t *testing.T) {
 	o := New(dependencyAuditConfig(), tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
 	entry := &RunEntry{}
-	workerCtx := o.startRun(t.Context(), entry)
+	workerCtx := o.startRun(t.Context(), nil, entry)
 	o.sendExit(workerCtx, domain.Issue{ID: "id1", Identifier: "ENG-1"}, 0, TerminalFailed, nil)
 
 	ev := <-o.events
@@ -234,7 +235,7 @@ func TestInputRequiredExitSurvivesCancelMidSend(t *testing.T) {
 		o.events <- OrchestratorEvent{Type: EventDispatchAutomation}
 	}
 	entry := &RunEntry{}
-	ctx, cancel := context.WithCancel(o.startRun(t.Context(), entry))
+	ctx, cancel := context.WithCancel(o.startRun(t.Context(), nil, entry))
 	issue := domain.Issue{ID: "id1", Identifier: "ENG-1"}
 	sent := make(chan struct{})
 	go func() {
@@ -268,7 +269,7 @@ func TestSnapshotsDoNotCarryTheRunHandle(t *testing.T) {
 	o := New(dependencyAuditConfig(), tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
 	state := NewState(dependencyAuditConfig())
 	entry := &RunEntry{Issue: domain.Issue{ID: "id1", Identifier: "ENG-1"}}
-	o.startRun(t.Context(), entry)
+	o.startRun(t.Context(), nil, entry)
 	state.Running["id1"] = entry
 
 	snap := state.Clone().Running["id1"]
@@ -306,7 +307,7 @@ func TestReconcileSeesARunThatStartsFinishingDuringTheFetch(t *testing.T) {
 	state := NewState(cfg)
 	state.TerminalStates = []string{"Done"}
 	entry := &RunEntry{Issue: domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}, StartedAt: time.Now()}
-	workerCtx := o.startRun(t.Context(), entry)
+	workerCtx := o.startRun(t.Context(), nil, entry)
 	state.Running["id1"] = entry
 	tr := &finishingDuringFetchTracker{
 		MemoryTracker: tracker.NewMemoryTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1", State: "In Progress"}},
@@ -319,4 +320,38 @@ func TestReconcileSeesARunThatStartsFinishingDuringTheFetch(t *testing.T) {
 	require.Contains(t, state.Running, "id1", "the finishing run is left to its own exit")
 	assert.Equal(t, RunFinishing, state.Running["id1"].Phase)
 	assert.Empty(t, events, "no reconciliation exit")
+}
+
+// TestStaleExitAfterTheReplacementExitedKeepsItsRetry (#139 review): run A is
+// stopped and replaced by run B; B fails and schedules its retry; only then
+// does A's own failure exit arrive. With no Running entry left, the exit is
+// still recognised as A's by the issue's latest run ID and must not
+// overwrite B's retry.
+func TestStaleExitAfterTheReplacementExitedKeepsItsRetry(t *testing.T) {
+	o := New(dependencyAuditConfig(), tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
+	state := NewState(dependencyAuditConfig())
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "T", State: "In Progress"}
+
+	a := &RunEntry{Issue: issue, StartedAt: time.Now()}
+	o.startRun(t.Context(), &state, a)
+	// Reconcile stops A: its entry is removed without A's exit.
+	b := &RunEntry{Issue: issue, StartedAt: time.Now()}
+	o.startRun(t.Context(), &state, b)
+	state.Running[issue.ID] = b
+	state.Claimed[issue.ID] = struct{}{}
+
+	exit := func(runID string, attempt int) {
+		state = o.handleEvent(t.Context(), state, OrchestratorEvent{
+			Type: EventWorkerExited, IssueID: issue.ID, RunID: runID,
+			RunEntry: &RunEntry{Issue: issue, TerminalReason: TerminalFailed, RetryAttempt: &attempt},
+			Error:    errors.New("turn failed"),
+		})
+	}
+	exit(b.RunID, 3)
+	require.Contains(t, state.RetryAttempts, issue.ID)
+	require.Equal(t, 4, state.RetryAttempts[issue.ID].Attempt, "B's retry")
+
+	exit(a.RunID, 0)
+	assert.Equal(t, 4, state.RetryAttempts[issue.ID].Attempt, "A's late exit leaves B's retry alone")
+	assert.Equal(t, b.RunID, state.LatestRunID[issue.ID])
 }
