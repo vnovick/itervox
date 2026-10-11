@@ -1234,3 +1234,54 @@ func TestSetIssueBranchFailsOpenWhenCommentsUnreadable(t *testing.T) {
 	require.NoError(t, ghclient.NewClient(defaultConfig(ts.URL)).SetIssueBranch(context.Background(), "42", "feature/x"))
 	assert.Equal(t, 1, thread.posts)
 }
+
+// TestListLabelsFollowsPagination pins #75's label read: every page of
+// GET /repos/{o}/{r}/labels is followed via the Link header.
+func TestListLabelsFollowsPagination(t *testing.T) {
+	var ts *httptest.Server
+	calls := 0
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/repos/owner/repo/labels", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "done"}})
+			return
+		}
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/labels?page=2>; rel="next"`, ts.URL))
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "todo"}, {"name": "bug"}})
+	}))
+	defer ts.Close()
+
+	names, err := ghclient.NewClient(defaultConfig(ts.URL)).ListLabels(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"todo", "bug", "done"}, names)
+	assert.Equal(t, 2, calls)
+}
+
+// TestCreateLabelSendsNameAndColor pins the request body and the status
+// handling of CreateLabel: 201 succeeds, anything else is an error naming
+// the label.
+func TestCreateLabelSendsNameAndColor(t *testing.T) {
+	var got map[string]string
+	status := http.StatusCreated
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/repos/owner/repo/labels", r.URL.Path)
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	c := ghclient.NewClient(defaultConfig(ts.URL))
+
+	require.NoError(t, c.CreateLabel(context.Background(), "in-review", "#d93f0b"))
+	assert.Equal(t, map[string]string{"name": "in-review", "color": "d93f0b"}, got, "leading # is stripped")
+
+	status = http.StatusUnprocessableEntity
+	err := c.CreateLabel(context.Background(), "done", "0e8a16")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"done"`)
+	assert.Contains(t, err.Error(), "422")
+}

@@ -369,7 +369,7 @@ open http://127.0.0.1:8090
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
 | `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
-| `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md` |
+| `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md`, and on a GitHub tracker list missing state labels (`--fix` creates them) |
 | `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |
 | `itervox stop` | Gracefully stop a running daemon (signals only a daemon holding the project's pid lock; `--legacy` for pre-v0.2.1 daemons) |
 | `itervox action <subcommand>` | Daemon-backed agent actions: `comment`, `comment-pr`, `merge-pr`, `create-issue`, `move-state`, `provide-input` |
