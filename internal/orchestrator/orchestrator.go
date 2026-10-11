@@ -358,6 +358,9 @@ type Orchestrator struct {
 	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
 	// means workspace.EnsurePRFooter.
 	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)
+	// readPRChecks is the gh seam for require_evidence "ci" (#80); nil means
+	// workspace.ReadPRChecks.
+	readPRChecks func(ctx context.Context, prURL string) (workspace.PRChecks, error)
 
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather

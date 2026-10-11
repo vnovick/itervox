@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -135,4 +137,45 @@ func EnsurePRFooter(ctx context.Context, prURL string) (bool, error) {
 		return false, fmt.Errorf("gh pr edit %s --body-file -: %w: %s", prURL, err, strings.TrimSpace(string(out)))
 	}
 	return true, nil
+}
+
+// PRChecks summarises the CI checks on a pull request (#80).
+type PRChecks struct {
+	Total, Passed, Pending, Failed int
+}
+
+// Green reports whether every check passed (skipped checks count as
+// passed) and there is at least one.
+func (c PRChecks) Green() bool { return c.Total > 0 && c.Pending == 0 && c.Failed == 0 }
+
+// ReadPRChecks reads the checks on prURL with `gh pr checks --json`. gh
+// exits non-zero while checks are pending or failing, so the JSON is parsed
+// whenever there is any; an error means it could not be read at all (no
+// checks reported, gh missing, not authenticated).
+func ReadPRChecks(ctx context.Context, prURL string) (PRChecks, error) {
+	var sum PRChecks
+	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", prURL, "--json", "name,bucket")
+	cmd.Env = gitexec.Environ()
+	out, err := cmd.Output()
+	var rows []struct {
+		Bucket string `json:"bucket"`
+	}
+	if jsonErr := json.Unmarshal(out, &rows); jsonErr != nil || len(rows) == 0 {
+		if err == nil {
+			err = errors.New("no checks reported")
+		}
+		return sum, fmt.Errorf("gh pr checks %s: %w", prURL, err)
+	}
+	for _, r := range rows {
+		sum.Total++
+		switch r.Bucket {
+		case "pass", "skipping":
+			sum.Passed++
+		case "pending":
+			sum.Pending++
+		default: // fail, cancel
+			sum.Failed++
+		}
+	}
+	return sum, nil
 }
