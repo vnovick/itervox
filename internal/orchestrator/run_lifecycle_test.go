@@ -278,3 +278,45 @@ func TestSnapshotsDoNotCarryTheRunHandle(t *testing.T) {
 	assert.Equal(t, RunDispatched, snap.Phase)
 	assert.NotNil(t, entry.run, "the live entry keeps its handle")
 }
+
+// finishingDuringFetchTracker plays a worker that finishes while
+// reconciliation's tracker fetch is in flight: during the fetch it reports
+// the run finishing and then moves the issue to the completion state, in the
+// worker's order (mark, then move).
+type finishingDuringFetchTracker struct {
+	*tracker.MemoryTracker
+	workerCtx context.Context
+}
+
+func (f *finishingDuringFetchTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]domain.Issue, error) {
+	markFinishing(f.workerCtx)
+	if err := f.UpdateIssueState(ctx, "id1", "Done"); err != nil {
+		return nil, err
+	}
+	return f.MemoryTracker.FetchIssueStatesByIDs(ctx, ids)
+}
+
+// TestReconcileSeesARunThatStartsFinishingDuringTheFetch (#89 review): a run
+// that starts finishing while reconciliation's tracker fetch is in flight is
+// left to its own exit, because the finishing report is read after the
+// fetch, not before it.
+func TestReconcileSeesARunThatStartsFinishingDuringTheFetch(t *testing.T) {
+	cfg := dependencyAuditConfig()
+	o := New(cfg, tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
+	state := NewState(cfg)
+	state.TerminalStates = []string{"Done"}
+	entry := &RunEntry{Issue: domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}, StartedAt: time.Now()}
+	workerCtx := o.startRun(t.Context(), entry)
+	state.Running["id1"] = entry
+	tr := &finishingDuringFetchTracker{
+		MemoryTracker: tracker.NewMemoryTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1", State: "In Progress"}},
+			cfg.Tracker.ActiveStates, []string{"Done"}),
+		workerCtx: workerCtx,
+	}
+	events := make(chan OrchestratorEvent, 4)
+
+	state = ReconcileTrackerStates(t.Context(), state, tr, events, nil)
+	require.Contains(t, state.Running, "id1", "the finishing run is left to its own exit")
+	assert.Equal(t, RunFinishing, state.Running["id1"].Phase)
+	assert.Empty(t, events, "no reconciliation exit")
+}
