@@ -126,6 +126,14 @@ only the event loop mutates them.
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- `StackOnReviewState` (tick snapshot of `tracker.completion_state` when
+  `dependencies.stacked_prs` is on) and `StackUnavailable` are event-loop
+  state. An issue whose only unresolved blocker is in review is admitted
+  (`reviewStackAdmits`) and stacked on the blocker's branch; a fresh worktree
+  that could not be stacked exits `TerminalStackUnavailable` before any agent
+  runs, and the event loop records the blocker so the issue waits for it.
+  `pruneStackUnavailable` drops a record each tick once it no longer
+  matches the candidate's blocker. Session-scoped, not persisted.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked

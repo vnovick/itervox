@@ -36,7 +36,12 @@ type ClientConfig struct {
 	ActiveStates   []string
 	TerminalStates []string
 	BacklogStates  []string
-	Endpoint       string
+	// CompletionState is tracker.completion_state (e.g. "in-review"). An
+	// issue whose only state label is this one reads as this state rather
+	// than "" — a blocker in review must be told apart from an unlabelled
+	// one for stacked PRs (#103). Snapshotted when the client is built.
+	CompletionState string
+	Endpoint        string
 }
 
 // rateLimitSnapshot holds the most recent X-RateLimit-* values observed.
@@ -324,6 +329,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		return nil, fmt.Errorf("github_fetch_issue_detail: unexpected issue shape")
 	}
 	derived := deriveState(raw, c.activeStates(), c.terminalStates())
+	if derived == "" {
+		derived = matchStateLabel(raw, c.otherStateLabels())
+	}
 	issue := normalizeIssue(raw, derived)
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found or missing required fields", issueID)
@@ -408,8 +416,34 @@ func (c *Client) fetchSingleIssue(ctx context.Context, issueNumber string) (*dom
 	}
 
 	derived := deriveState(raw, c.activeStates(), c.terminalStates())
+	if derived == "" {
+		derived = matchStateLabel(raw, c.otherStateLabels())
+	}
 	issue := normalizeIssue(raw, derived)
 	return issue, nil
+}
+
+// otherStateLabels are the configured state labels that are neither active
+// nor terminal: backlog states and the completion state.
+func (c *Client) otherStateLabels() []string {
+	out := append([]string{}, c.cfg.BacklogStates...)
+	if s := strings.TrimSpace(c.cfg.CompletionState); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+// matchStateLabel returns the first of states the issue carries as a label
+// (case-insensitive), or "".
+func matchStateLabel(raw map[string]any, states []string) string {
+	for _, label := range extractLabels(raw) {
+		for _, st := range states {
+			if strings.EqualFold(label, st) {
+				return st
+			}
+		}
+	}
+	return ""
 }
 
 // fetchPaginated follows Link header pagination for a GitHub list endpoint.
@@ -494,6 +528,11 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	allStateLabels = append(allStateLabels, c.activeStates()...)
 	allStateLabels = append(allStateLabels, c.terminalStates()...)
 	allStateLabels = append(allStateLabels, c.cfg.BacklogStates...)
+	// The completion label too: an issue sent back from review must not
+	// keep reading as in review (#103).
+	if cs := strings.TrimSpace(c.cfg.CompletionState); cs != "" {
+		allStateLabels = append(allStateLabels, cs)
+	}
 	for _, label := range allStateLabels {
 		if strings.EqualFold(label, stateName) {
 			continue

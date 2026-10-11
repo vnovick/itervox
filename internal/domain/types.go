@@ -84,6 +84,10 @@ type BlockerRef struct {
 	State      *string
 	URL        *string
 	Origin     string
+	// BranchName is the blocker's own branch when the tracker reports one
+	// (Linear's branchName). Stacked PRs (#73, #103) stack on it; without
+	// it the branch is derived from the identifier.
+	BranchName *string
 }
 
 // BlockerOriginSubIssue is the BlockerRef.Origin value for refs derived from

@@ -1716,7 +1716,10 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			BacklogStates:  cfg.Tracker.BacklogStates,
-			Endpoint:       cfg.Tracker.Endpoint,
+			// Read once at startup; the client is rebuilt on a WORKFLOW.md
+			// reload.
+			CompletionState: cfg.Tracker.CompletionState,
+			Endpoint:        cfg.Tracker.Endpoint,
 		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
