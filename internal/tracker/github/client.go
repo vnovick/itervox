@@ -352,12 +352,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				continue
 			}
 			// Extract branch name from hidden itervox marker; skip adding to Comments.
-			if branch, ok := strings.CutPrefix(body, itervoxBranchPrefix); ok {
-				branch = strings.TrimSuffix(strings.TrimSpace(branch), "-->")
-				branch = strings.TrimSpace(branch)
-				if branch != "" {
-					b := branch
-					issue.BranchName = &b // last marker wins (most recent)
+			if strings.HasPrefix(body, itervoxBranchPrefix) {
+				if branch, ok := parseBranchMarker(body); ok {
+					issue.BranchName = &branch // last marker wins (most recent)
 				}
 				continue
 			}
@@ -552,10 +549,54 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 // comment so it survives round-trips without polluting the issue UI.
 const itervoxBranchPrefix = "<!-- itervox:branch:"
 
+// parseBranchMarker returns the branch named by a hidden itervox branch
+// marker comment body, or ok=false when body is not a marker.
+func parseBranchMarker(body string) (branch string, ok bool) {
+	rest, isMarker := strings.CutPrefix(body, itervoxBranchPrefix)
+	if !isMarker {
+		return "", false
+	}
+	branch = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest), "-->"))
+	return branch, branch != ""
+}
+
+// latestBranchMarker scans every comment page of issueID and returns the
+// branch named by the most recent marker ("" when there is none).
+func (c *Client) latestBranchMarker(ctx context.Context, issueID string) (string, error) {
+	latest := ""
+	for page := 1; ; page++ {
+		comments, link, err := c.fetchCommentPage(ctx, issueID, page)
+		if err != nil {
+			return "", err
+		}
+		for _, cm := range comments {
+			body, _ := cm["body"].(string)
+			if branch, ok := parseBranchMarker(body); ok {
+				latest = branch
+			}
+		}
+		// No Link header parses as ("", nil); a header without rel="next"
+		// as ErrMissingPageLink. Either way this was the last page.
+		if next, err := ParseNextLink(link); err != nil || next == "" {
+			return latest, nil //nolint:nilerr // a missing next link ends pagination, it is not a failure
+		}
+	}
+}
+
 // SetIssueBranch posts a hidden HTML comment recording the branch name on the
 // GitHub issue. FetchIssueDetail scans for this comment to restore BranchName
 // on subsequent fetches, enabling retried workers to resume the correct branch.
+//
+// It posts only when the latest marker names a different branch (#72): every
+// comment notifies the issue's watchers, and a worker that starts without the
+// stored branch (its first-turn FetchIssueDetail failed, so it fell back to the
+// list-fetched issue, which never carries one) would otherwise re-post an
+// identical marker on each retry. A failed marker read fails open and posts,
+// because losing the branch is worse than a duplicate comment.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
+	if latest, err := c.latestBranchMarker(ctx, issueID); err == nil && latest == branchName {
+		return nil
+	}
 	body := itervoxBranchPrefix + branchName + " -->"
 	_, err := c.CreateComment(ctx, issueID, body)
 	return err

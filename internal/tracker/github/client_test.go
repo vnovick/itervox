@@ -1106,3 +1106,131 @@ func TestFetchPaginatedKeepsIssueWithNullPullRequest(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"#40"}, identifiers(result))
 }
+
+// fakeIssueThread is a minimal stateful GitHub: one issue (#42) whose comment
+// thread persists across clients, so a test can play several worker runs
+// against the same tracker state. Comments are served pageSize per page with
+// a rel="next" Link header, like the real API.
+type fakeIssueThread struct {
+	mu       sync.Mutex
+	comments []string
+	posts    int
+	pageSize int
+	failGets bool // GET comments returns 500
+}
+
+func (f *fakeIssueThread) serve(t *testing.T) *httptest.Server {
+	var ts *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/issues/42", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ghIssue(42, "Issue 42", "open", []string{"todo"}))
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			var in map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			f.comments = append(f.comments, in["body"])
+			f.posts++
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": float64(len(f.comments)), "body": in["body"]})
+		case http.MethodGet:
+			if f.failGets {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			if page < 1 {
+				page = 1
+			}
+			size := f.pageSize
+			if size == 0 {
+				size = 100
+			}
+			start := min((page-1)*size, len(f.comments))
+			end := min(start+size, len(f.comments))
+			if end < len(f.comments) {
+				w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/issues/42/comments?page=%d>; rel="next"`, ts.URL, page+1))
+			}
+			out := make([]map[string]any, 0, end-start)
+			for i := start; i < end; i++ {
+				out = append(out, map[string]any{"id": float64(i + 1), "body": f.comments[i]})
+			}
+			_ = json.NewEncoder(w).Encode(out)
+		default:
+			t.Errorf("unexpected %s", r.Method)
+		}
+	})
+	ts = httptest.NewServer(mux)
+	return ts
+}
+
+// TestBranchMarkerNotRepostedAcrossRuns pins #72. Run 1 records branch
+// feature/x. Run 2 is a retry whose first-turn FetchIssueDetail failed, so it
+// starts from the list-fetched issue (no BranchName) and calls SetIssueBranch
+// with the same branch again: that must not post a second marker comment.
+// Before the fix every such call posted, notifying the issue's watchers.
+func TestBranchMarkerNotRepostedAcrossRuns(t *testing.T) {
+	thread := &fakeIssueThread{}
+	ts := thread.serve(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	run1 := ghclient.NewClient(defaultConfig(ts.URL))
+	require.NoError(t, run1.SetIssueBranch(ctx, "42", "feature/x"))
+	require.Equal(t, 1, thread.posts)
+
+	// Happy path: a retry's FetchIssueDetail restores the branch, so the
+	// worker's comparison (worker.go branch tracking) never calls SetIssueBranch.
+	run2 := ghclient.NewClient(defaultConfig(ts.URL))
+	detail, err := run2.FetchIssueDetail(ctx, "42")
+	require.NoError(t, err)
+	require.NotNil(t, detail.BranchName)
+	assert.Equal(t, "feature/x", *detail.BranchName)
+
+	// Fallback path: the worker had no stored branch and calls again.
+	require.NoError(t, run2.SetIssueBranch(ctx, "42", "feature/x"))
+	require.NoError(t, ghclient.NewClient(defaultConfig(ts.URL)).SetIssueBranch(ctx, "42", "feature/x"))
+	assert.Equal(t, 1, thread.posts, "same branch across runs must post exactly one marker")
+}
+
+// TestSetIssueBranchPostsWhenLatestMarkerDiffers pins that only the LATEST
+// marker counts: switching branches posts, and switching back to an earlier
+// branch posts again so FetchIssueDetail's last-marker-wins read stays right.
+// Markers are spread across comment pages to exercise pagination.
+func TestSetIssueBranchPostsWhenLatestMarkerDiffers(t *testing.T) {
+	thread := &fakeIssueThread{pageSize: 2}
+	thread.comments = []string{"human comment", "<!-- itervox:branch:feature/a -->", "another", "more"}
+	ts := thread.serve(t)
+	defer ts.Close()
+	ctx := context.Background()
+	c := ghclient.NewClient(defaultConfig(ts.URL))
+
+	require.NoError(t, c.SetIssueBranch(ctx, "42", "feature/a"))
+	assert.Equal(t, 0, thread.posts, "marker for feature/a on page 1 is still the latest")
+
+	require.NoError(t, c.SetIssueBranch(ctx, "42", "feature/b"))
+	require.NoError(t, c.SetIssueBranch(ctx, "42", "feature/a"))
+	assert.Equal(t, 2, thread.posts, "a different latest branch posts each time")
+
+	detail, err := c.FetchIssueDetail(ctx, "42")
+	require.NoError(t, err)
+	require.NotNil(t, detail.BranchName)
+	assert.Equal(t, "feature/a", *detail.BranchName)
+}
+
+// TestSetIssueBranchFailsOpenWhenCommentsUnreadable pins that a failed marker
+// read still records the branch: a duplicate comment is cheaper than a retry
+// that cannot find its branch.
+func TestSetIssueBranchFailsOpenWhenCommentsUnreadable(t *testing.T) {
+	thread := &fakeIssueThread{failGets: true}
+	ts := thread.serve(t)
+	defer ts.Close()
+
+	require.NoError(t, ghclient.NewClient(defaultConfig(ts.URL)).SetIssueBranch(context.Background(), "42", "feature/x"))
+	assert.Equal(t, 1, thread.posts)
+}
