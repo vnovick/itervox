@@ -68,3 +68,29 @@ func FindOpenPRURL(ctx context.Context, wsPath string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// SetPRBase points the pull request at prURL to base (#73) and reports
+// whether it changed anything. It reads the current base first so an already
+// correct PR is left alone (no edit, no notification), then runs
+// `gh pr edit <url> --base <base>`. GitHub refuses a base branch that does
+// not exist on the remote; that error is returned for the caller to log.
+func SetPRBase(ctx context.Context, prURL, base string) (bool, error) {
+	if prURL == "" || base == "" {
+		return false, nil
+	}
+	view := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "baseRefName", "--jq", ".baseRefName")
+	view.Env = gitexec.Environ()
+	out, err := view.Output()
+	if err != nil {
+		return false, fmt.Errorf("gh pr view %s: %w", prURL, err)
+	}
+	if strings.TrimSpace(string(out)) == base {
+		return false, nil
+	}
+	edit := exec.CommandContext(ctx, "gh", "pr", "edit", prURL, "--base", base)
+	edit.Env = gitexec.Environ()
+	if out, err := edit.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("gh pr edit %s --base %s: %w: %s", prURL, base, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}

@@ -345,6 +345,17 @@ type Orchestrator struct {
 	// rewrite from stale memory.
 	commentWg sync.WaitGroup
 
+	// prRetargetWg tracks the background `gh pr edit --base` calls that
+	// retarget a stacked pull request after its dependent was restacked onto
+	// workspace.base_branch (#73), so Run waits for them like the comments.
+	prRetargetWg sync.WaitGroup
+
+	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
+	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.
+	// Tests replace them.
+	findOpenPRURL func(ctx context.Context, wsPath string) string
+	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather
 	// than mislabelling it a user cancel (#42-F).

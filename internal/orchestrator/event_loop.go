@@ -130,6 +130,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
 	o.commentWg.Wait()
+	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
 	return loopErr
 }

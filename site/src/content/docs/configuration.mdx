@@ -671,7 +671,7 @@ Tracker-declared blockers (`issue.BlockedBy`) always hard-block dispatch and are
 | `ordering` | string | `"critical_path"` | Dispatch ordering strategy. One of `critical_path`, `critical_path_strict`, or `simple` — see [Ordering modes](#ordering-modes). An unrecognized value falls back to the default with a warning. |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it surfaces as needing attention. **An explicit `0` disables escalation** and is preserved as a meaningful value; only a negative value falls back to the default. |
 | `analysis_mode` | string | `"auto"` | How the LLM dependency analyzer is triggered. `auto`: on the scheduler's debounce/min-interval rules. `manual`: only via the Deps tab's Analyze button or `POST /api/v1/deps/analyze`. The blocker audit is unaffected. Runtime-editable from Settings → Dependencies. `auto_analyze` (bool) is a deprecated alias: `false` = `manual`. Changing the mode from the dashboard leaves the old `auto_analyze` line in `WORKFLOW.md`; delete it by hand to stop the "both set" warning on every reload. |
-| `stacked_prs` | bool | `false` | Branch an issue's worktree from its single live blocker's branch. Does not set the PR base — see below. |
+| `stacked_prs` | bool | `false` | Branch an issue's worktree from its single live blocker's branch and point its pull request at that branch — see below. |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between scheduled analysis passes. Non-positive values fall back to the default — the analyzer must not run every tick. |
 | `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before analysis starts, so it waits for state to settle rather than racing an in-flight dispatch. |
 
@@ -693,12 +693,37 @@ Set `dependencies.stacked_prs: true` to have an issue's worktree branch from
 its blocker instead of `workspace.base_branch`, so the work starts from the
 blocker's commits rather than duplicating them.
 
-:::caution[The PR base is not set yet]
-This currently changes only where the **branch starts**. Nothing sets the pull
-request's base branch, so a PR opened from a stacked branch still diffs against
-the default branch and therefore still shows the blocker's commits. Reviewing
-each piece in isolation needs the PR base too — tracked in
-[#60](https://github.com/vnovick/itervox/issues/60).
+**Pull request base.** A stacked run's pull request targets the blocker's
+branch, so it shows only this issue's changes:
+
+- The prompt says so. `{{ run.pr_base_branch }}` is the blocker's branch on a
+  stacked run (and `workspace.base_branch` otherwise), and a stacked run also
+  gets a `## Stacked Branch` block telling the agent to run
+  `gh pr create --base <blocker-branch>`.
+- Itervox enforces it. After a stacked run completes successfully (not for
+  automation runs, which are blocker-gated anyway), if the issue has an open pull request —
+  one the run opened or one already linked from the issue — Itervox runs `gh pr edit <url> --base <blocker-branch>` unless the
+  base already matches. GitHub only accepts a base branch that exists on the
+  remote, so the blocker's branch must have been pushed; if `gh` refuses, the
+  daemon logs a warning and the PR keeps its base.
+
+A run counts as stacked when its worktree — new or reused — has the
+blocker's branch in its history and that branch has commits
+`workspace.base_branch` does not. A blocker branch with nothing of its own,
+or one that is behind `base_branch`, is not used as a PR base. An existing
+branch is checked out as it is, so it counts as stacked only if it was
+already built on the blocker. If `base_branch` does not exist locally, only
+the first condition is checked.
+
+:::note[When stacking applies]
+Itervox does not dispatch an issue while any of its blockers is in a
+non-terminal state (`blocked_by`), and stacking only considers non-terminal
+blockers. So a normal dispatch never stacks: by the time a dependent is
+picked up, its blocker is terminal and the worktree starts from
+`base_branch`. Stacking takes effect only on paths that do not apply the
+blocker gate — a retry, a `backend_fallback` re-dispatch, a reviewer run or
+an input-required resume — typically when a blocker was added or reopened
+after the dependent was first dispatched.
 :::
 
 ```yaml
@@ -728,18 +753,19 @@ drift behind subsequent merges. Three cases are refused rather than forced:
 
 | Situation | Behaviour |
 |---|---|
-| The dependent is **running** | Skipped. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; it is picked up on a later cycle instead. |
+| The dependent is **running** | Deferred. Rebasing a worktree an agent has checked out moves `HEAD` under a live process; the restack (and the pull request retarget) runs on the first dependency audit after the run ends, unless the issue is blocked again by then. |
 | The worktree has **uncommitted changes** | Skipped. That work is unpushed and unbacked-up. |
 | The rebase **conflicts** | Aborted — the branch is left byte-identical — and the issue moves to `input_required` with the reason. A conflict needs an owner; resolving it automatically would be a guess. |
 
 An issue that still has another live blocker is never restacked, matching the
 rule that stacking only happens with exactly one live blocker.
 
-:::caution[The PR base is still not updated]
-Restacking rewrites the branch, not the pull request. If the blocker's branch
-was deleted by its merge, update the dependent PR's base to `base_branch`
-yourself.
-:::
+After a restack — or when the branch already sits on `base_branch` — Itervox
+points the dependent's open pull request at `base_branch` with
+`gh pr edit --base`, off the event loop. A skipped (running or dirty) or
+conflicted restack leaves the pull request alone. Restacking does not push:
+until the rebased branch is pushed, the pull request still shows its old
+commits.
 
 ### Ordering modes
 

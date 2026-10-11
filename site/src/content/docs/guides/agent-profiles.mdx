@@ -154,6 +154,7 @@ When multiple profiles run on the same issue, each one can leave a Markdown deli
 |---|---|
 | `run.timestamp` | The dispatch instant, formatted ISO8601 with `:` replaced by `-` so it is filename-safe (e.g. `2026-05-26T14-30-45Z`). |
 | `run.handoff_path` | The canonical destination for this run's deliverable: `.itervox/handoff/<run.timestamp>_<profile-name>.md`. |
+| `run.pr_base_branch` | The branch a pull request from this run should target: the blocker's branch when the worktree is [stacked](/configuration/#stacked-worktrees), otherwise `workspace.base_branch`. Not in the Run Context block; a stacked run gets it in a `## Stacked Branch` block. |
 
 The orchestrator also prepends a `## Prior Agent Handoffs` block to the prompt containing every prior agent's deliverable on this branch in chronological order, budget-truncated to 30 KB (oldest first, with a `[earlier handoffs truncated]` marker).
 
