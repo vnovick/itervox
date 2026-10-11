@@ -84,6 +84,9 @@ worker's context. Every `EventWorkerUpdate`/`EventWorkerExited` the worker sends
 and every synthetic exit reconcile or stall detection sends, carries that
 `RunID`. The loop applies an event only to the run it names: an exit or update
 from a superseded run (stopped, then the issue dispatched again) changes nothing.
+`State.LatestRunID` keeps each issue's most recently dispatched run after its
+Running entry is gone, so a late exit is still recognised as superseded once its
+replacement has itself exited (and left a retry behind).
 `RunEntry.Phase` (`dispatched → running → finishing → exited`) is event-loop
 state. The worker reports `finishing` through its run handle (`markFinishing`)
 before it moves the issue to `completion_state` and before it sends its exit;

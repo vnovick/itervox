@@ -37,10 +37,17 @@ type runHandle struct {
 
 type runHandleKey struct{}
 
-// startRun gives a new Running entry its run identity and returns the worker
-// context that carries it. Event loop only.
-func (o *Orchestrator) startRun(ctx context.Context, entry *RunEntry) context.Context {
+// startRun gives a new Running entry its run identity, records it as the
+// issue's latest run, and returns the worker context that carries it. Event
+// loop only.
+func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEntry) context.Context {
 	h := &runHandle{id: generateRunID()}
+	if state != nil {
+		if state.LatestRunID == nil {
+			state.LatestRunID = map[string]string{}
+		}
+		state.LatestRunID[entry.Issue.ID] = h.id
+	}
 	entry.RunID = h.id
 	entry.SessionID = h.id
 	entry.Phase = RunDispatched
@@ -87,18 +94,32 @@ func (e *RunEntry) isStaleFor(runID string) bool {
 	return runID != "" && e.RunID != "" && e.RunID != runID
 }
 
+// supersededRun reports whether exit ev belongs to a run other than the
+// issue's current one, and names that current run. The current run is the
+// live Running entry when there is one, else the issue's latest dispatched
+// run: a replacement that has already exited (and left a retry or a pending
+// review behind) must not be overwritten by the late exit of the run it
+// replaced. Events and entries without a run ID match (tests).
+func supersededRun(state State, live *RunEntry, ev OrchestratorEvent) (string, bool) {
+	if live != nil {
+		return live.RunID, live.isStaleFor(ev.RunID)
+	}
+	latest := state.LatestRunID[ev.IssueID]
+	return latest, ev.RunID != "" && latest != "" && latest != ev.RunID
+}
+
 // handleStaleExit settles the exit of a run that is no longer its issue's
 // current run (#125): reconcile or stall detection stopped it and the issue
 // was dispatched again before its exit arrived. The stopper already released
 // the claim and scheduled any retry, so the exit changes no state; a stall is
 // still recorded in history, which its own exit would otherwise do.
-func (o *Orchestrator) handleStaleExit(ev OrchestratorEvent, current *RunEntry) {
+func (o *Orchestrator) handleStaleExit(ev OrchestratorEvent, currentRunID string) {
 	reason := TerminalReason("")
 	if ev.RunEntry != nil {
 		reason = ev.RunEntry.TerminalReason
 	}
 	slog.Info("orchestrator: ignoring the exit of a superseded run",
-		"issue_id", ev.IssueID, "run_id", ev.RunID, "current_run_id", current.RunID, "reason", reason)
+		"issue_id", ev.IssueID, "run_id", ev.RunID, "current_run_id", currentRunID, "reason", reason)
 	if reason == TerminalStalled {
 		o.recordHistory(ev.RunEntry, ev.RunEntry.Issue, time.Now(), "stalled")
 	}

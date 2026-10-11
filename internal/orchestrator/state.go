@@ -398,8 +398,13 @@ type State struct {
 	// case-folded copies. Empty disables the guard.
 	PauseDispatchWhenAnyInState []string
 	Running                     map[string]*RunEntry
-	Claimed                     map[string]struct{}
-	RetryAttempts               map[string]*RetryEntry
+	// LatestRunID is, per issue ID, the run most recently dispatched for it
+	// (#125). It outlives the Running entry, so the late exit of a run that
+	// was replaced is recognised even after its replacement has exited.
+	// Event-loop state, one entry per issue dispatched this session.
+	LatestRunID   map[string]string
+	Claimed       map[string]struct{}
+	RetryAttempts map[string]*RetryEntry
 	// PausedIdentifiers tracks issues paused by user kill.
 	// Key: identifier (e.g. "TIPRD-25"), Value: issue UUID (empty when loaded
 	// from an old disk snapshot that predates UUID persistence).
@@ -723,6 +728,7 @@ func NewState(cfg *config.Config) State {
 		TerminalStates:              append([]string{}, cfg.Tracker.TerminalStates...),
 		PauseDispatchWhenAnyInState: normalizePauseStates(cfg.Agent.PauseDispatchWhenAnyInState),
 		Running:                     make(map[string]*RunEntry),
+		LatestRunID:                 make(map[string]string),
 		Claimed:                     make(map[string]struct{}),
 		RetryAttempts:               make(map[string]*RetryEntry),
 		PausedIdentifiers:           make(map[string]string),

@@ -1165,7 +1165,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			BranchName:         branchNameValue(resumeIssue.BranchName),
 			StartedAt:          now,
 		}
-		workerCtx = o.startRun(workerCtx, state.Running[entry.IssueID])
+		workerCtx = o.startRun(workerCtx, &state, state.Running[entry.IssueID])
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
@@ -1309,7 +1309,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
-	workerCtx = o.startRun(workerCtx, state.Running[issue.ID])
+	workerCtx = o.startRun(workerCtx, &state, state.Running[issue.ID])
 
 	// Register the cancel func in the concurrent-safe map so CancelIssue (called
 	// from HTTP handler goroutines) can reach it without going through the snapshot,
@@ -1486,7 +1486,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
-	workerCtx = o.startRun(workerCtx, state.Running[issue.ID])
+	workerCtx = o.startRun(workerCtx, state, state.Running[issue.ID])
 
 	o.workerCancelsMu.Lock()
 	o.workerCancels[issue.Identifier] = workerCancel
@@ -1841,11 +1841,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
-		if liveEntry != nil && liveEntry.isStaleFor(ev.RunID) {
+		if current, superseded := supersededRun(state, liveEntry, ev); superseded {
 			// #125: the exit of a run that is no longer the issue's current
 			// one (reconcile or stall detection already stopped it, and the
-			// issue was dispatched again). It must not touch the new run.
-			o.handleStaleExit(ev, liveEntry)
+			// issue was dispatched again). It must not touch the new run,
+			// whether that run is still going or has already exited and left
+			// a retry behind.
+			o.handleStaleExit(ev, current)
 			return state
 		}
 		if liveEntry != nil {
