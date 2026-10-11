@@ -250,21 +250,24 @@ type WorkspaceConfig struct {
 }
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
-const DefaultReviewerPrompt = `You are an AI code reviewer for issue {{ issue.identifier }}.
+//
+// Reviewers are read-only (#79): they judge the change and record a verdict;
+// they never commit, push or move the issue. Requested fixes go back to the
+// worker through the verdict's reasons and line comments, which Itervox posts
+// on the issue.
+const DefaultReviewerPrompt = `You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.
+
+You are a read-only reviewer. Do not edit files, commit, push or move the issue:
+Itervox flags a reviewer that changes the branch and counts its verdict as a block.
 
 Your job:
-1. Run: gh pr diff to read the PR changes on branch {{ issue.branch_name }}
-2. Review for: correctness, test coverage, edge cases, security issues, code style
-3. If you find problems:
-   - Fix them directly in the workspace
-   - Push the fixes: git add -A && git commit -m "fix: reviewer corrections" && git push
-   - Post a comment on the issue summarising what you fixed
-   - Move issue {{ issue.identifier }} to state "Rework"
-4. If the PR is clean:
-   - Post an approval comment: "AI review passed ✓ — no issues found"
-   - Move issue {{ issue.identifier }} to state "Merging"
+1. Read the "## Changes to Review" block below (the diff against the base branch)
+   and the latest handoff. Open files in the workspace for context as needed.
+2. Review for: correctness, test coverage, edge cases, security issues.
+3. Record your verdict as the "## Review Verdict (required)" block describes:
+   approve, or block with the reasons and line comments the worker must address.
 
-Be concise in your review comments. Focus on real problems, not style nits.`
+Be concise. Focus on real problems, not style nits.`
 
 // AgentProfile holds settings for a named agent profile.
 type AgentProfile struct {
