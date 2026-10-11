@@ -110,6 +110,8 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 
 > **Release preflight:** `make release-check` is intentionally stricter than `make verify`. It requires `govulncheck` and GoReleaser to be installed, reruns the release hooks (`go mod tidy` and web build), then fails if tracked files or the index are dirty. Use it after the release-prep diff is committed, not as the everyday edit loop.
 
+> **Release checks:** before tagging, run the checks in [docs/release-checks.md](docs/release-checks.md): a self-hosted issue run and a cloud deploy smoke test (manual `Release acceptance` workflow; they need real accounts), and confirm the upgrade test is green.
+
 > **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 
 > **Manual testing scenarios:** for end-to-end behaviour that automated tests cannot fully cover (real agent CLIs, dashboard UI, hot-reload, daemon-backed actions, full automation chains), follow the [Manual Testing Guide](https://itervox.dev/guides/manual-testing/) (source: `site/src/content/docs/guides/manual-testing.mdx`). Add a scenario there whenever you ship a feature with a non-trivial E2E behaviour or fix a regression that escaped `make verify`.
