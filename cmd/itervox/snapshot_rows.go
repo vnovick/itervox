@@ -596,3 +596,26 @@ func trackerErrorRow(s orchestrator.State) *server.TrackerErrorRow {
 		ConsecutiveFailures: s.ConsecutivePollFailures,
 	}
 }
+
+// reviewRow is the issue's latest review for issue detail (#135), nil when
+// it has none.
+func reviewRow(snap orchestrator.State, identifier string) *server.IssueReviewRow {
+	verdicts := snap.ReviewVerdicts[identifier]
+	outcome, closed := snap.ReviewOutcomes[identifier]
+	_, inProgress := snap.ReviewChainIndex[identifier]
+	if len(verdicts) == 0 && !inProgress {
+		return nil
+	}
+	row := &server.IssueReviewRow{Verdicts: make([]server.ReviewVerdictRow, 0, len(verdicts)), InProgress: inProgress}
+	for _, v := range verdicts {
+		vr := server.ReviewVerdictRow{Profile: v.Profile, Verdict: v.Verdict, Reasons: v.Reasons, RecordedAt: v.RecordedAt}
+		for _, c := range v.Comments {
+			vr.Comments = append(vr.Comments, server.ReviewCommentRow{Path: c.Path, Line: c.Line, Body: c.Body})
+		}
+		row.Verdicts = append(row.Verdicts, vr)
+	}
+	if closed && !inProgress {
+		row.Outcome = &server.ReviewOutcomeRow{Blocked: outcome.Blocked, Approvals: outcome.Approvals, Blocks: outcome.Blocks, Quorum: outcome.Quorum}
+	}
+	return row
+}

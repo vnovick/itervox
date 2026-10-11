@@ -878,6 +878,34 @@ export const IssueStatusChangeSchema = z.object({
   at: z.string(),
 });
 
+// #135 — an issue's latest review: each reviewer's verdict and the quorum.
+export const ReviewCommentSchema = z.object({
+  path: z.string(),
+  line: z.number().optional(),
+  body: z.string(),
+});
+
+export const ReviewVerdictSchema = z.object({
+  profile: z.string(),
+  verdict: z.string(),
+  reasons: z.array(z.string()).optional(),
+  comments: z.array(ReviewCommentSchema).optional(),
+  recordedAt: z.string(),
+});
+
+export const ReviewOutcomeSchema = z.object({
+  blocked: z.boolean(),
+  approvals: z.number(),
+  blocks: z.number(),
+  quorum: z.string().optional(),
+});
+
+export const IssueReviewSchema = z.object({
+  verdicts: z.array(ReviewVerdictSchema),
+  outcome: ReviewOutcomeSchema.optional(),
+  inProgress: z.boolean().optional(),
+});
+
 export const TrackerIssueSchema = z.object({
   identifier: z.string(),
   title: z.string(),
@@ -901,6 +929,7 @@ export const TrackerIssueSchema = z.object({
   blockedByDetails: z.array(BlockerDetailSchema).optional(),
   comments: z.array(CommentRowSchema).optional(),
   statusChanges: z.array(IssueStatusChangeSchema).optional(),
+  review: IssueReviewSchema.optional(),
   ineligibleReason: z.string().optional(),
   agentProfile: z.string().optional(),
   agentBackend: z.string().optional(),
@@ -927,6 +956,8 @@ export type LogEventType = z.infer<typeof LogEventTypeSchema>;
 export type IssueLogEntry = z.infer<typeof IssueLogEntrySchema>;
 export type BlockerDetail = z.infer<typeof BlockerDetailSchema>;
 export type IssueStatusChange = z.infer<typeof IssueStatusChangeSchema>;
+export type IssueReview = z.infer<typeof IssueReviewSchema>;
+export type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;
 export type TrackerIssue = z.infer<typeof TrackerIssueSchema>;
 export type InputRequiredEntry = z.infer<typeof InputRequiredEntrySchema>;
 export type AutomationQueueRow = z.infer<typeof AutomationQueueRowSchema>;

@@ -1820,7 +1820,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Warn("orchestrator: reviewer issue not found", "identifier", ev.Identifier)
 			return state
 		}
-		o.dispatchReviewerForIssue(ctx, &state, *found, ev.ReviewerProfile, time.Now())
+		// #135: a manual review is a fresh review by the configured
+		// reviewers — the whole chain from its first reviewer, judged on its
+		// own verdicts, exactly like an auto-review. Not while a retry (a
+		// reviewer's included) is waiting: that run is still the issue's.
+		if _, retrying := state.RetryAttempts[found.ID]; retrying {
+			slog.Warn("orchestrator: cannot dispatch reviewer — a retry is pending", "identifier", ev.Identifier)
+			return state
+		}
+		o.startReview(ctx, &state, *found, ev.ReviewerProfile, time.Now())
 
 	case EventDispatchAutomation:
 		if ev.Issue == nil || ev.Automation == nil {
@@ -2124,11 +2132,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// advanceReviewChainForIssue knows a chain is in flight. When
 				// the chain has a single entry this is inert bookkeeping and
 				// the reviewer behaves exactly as before.
-				if chain := o.reviewerChainCfg(); len(chain) > 1 {
-					ResetReviewChain(&state, issue.Identifier)
-					reviewerProfile = chain[0]
-				}
-				o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
+				o.startReview(ctx, &state, issue, reviewerProfile, now)
 			}
 
 		case TerminalStalled:

@@ -1113,6 +1113,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			snap := orch.Snapshot()
 			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
+			ti.Review = reviewRow(snap, issue.Identifier) // #135
 			return &ti, nil
 		}
 
