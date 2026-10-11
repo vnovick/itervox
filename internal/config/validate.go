@@ -169,6 +169,10 @@ func ValidateDispatch(cfg *Config) error {
 		return fmt.Errorf("missing tracker.api_key: must be set or resolved from $VAR")
 	}
 
+	if cfg.Tracker.CommentCommands.Enabled && cfg.Tracker.Kind != "github" {
+		return fmt.Errorf("tracker.comment_commands is only supported with tracker.kind: github")
+	}
+
 	// Check 4: tracker.project_slug present (required for GitHub; optional for Linear)
 	if cfg.Tracker.Kind == "github" && cfg.Tracker.ProjectSlug == "" {
 		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo)")
