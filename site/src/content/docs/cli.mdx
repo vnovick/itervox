@@ -55,7 +55,7 @@ itervox -logs-dir /var/log/itervox
 ## `itervox demo` — Try it in 30 seconds
 
 ```bash
-itervox demo [--dir <scratch>] [--no-open]
+itervox demo [--dir <scratch>] [--no-open] [--tracker memory|local]
 ```
 
 Runs a throwaway daemon against ten fake `DEMO-n` issues with a scripted agent, and opens the dashboard. It needs no tracker account, no API keys and no `claude` or `codex` on your `PATH`.
@@ -66,6 +66,7 @@ Within about a minute the board shows issues moving through **In Progress** (wit
 |---|---|---|
 | `--dir` | a new temporary directory | Scratch directory for the demo. A directory that already holds a non-demo `WORKFLOW.md` is refused, so a real project's workflow is never overwritten; a previous demo's directory is reused. |
 | `--no-open` | `false` | Do not open the dashboard in a browser; the URL is in `<dir>/.itervox/dashboard_url`. |
+| `--tracker` | `memory` | `memory` keeps the demo issues in memory (gone on exit). `local` writes them as [issue files](/guides/local-issues/) in `<dir>/.itervox/issues/`: edit one and watch the board, and a second demo in the same `--dir` continues where the first stopped. |
 
 Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `logs/`, `workspaces/` and `.itervox/`. Tools it runs (such as `gh` and `git`) get `XDG_*` and `GH_CONFIG_DIR` pointed at `.xdg/` there, so they write nothing in your home directory and do not use your own `gh` login. The dashboard listens on an OS-assigned port on `127.0.0.1` without a token. `ITERVOX_SERVER_PORT`, `ITERVOX_SERVER_HOST`, `PORT`, `ITERVOX_API_TOKEN` and `ITERVOX_DRY_RUN` are ignored for the demo. Stop it with `q` in the terminal UI, `Ctrl-C`, or `itervox stop -workflow <dir>/WORKFLOW.md`, then delete the directory.
 
@@ -74,12 +75,12 @@ Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `log
 ## `itervox quickstart` — From a repository to a running board
 
 ```bash
-itervox quickstart [--tracker github|linear] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
+itervox quickstart [--tracker github|linear|local] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com. |
+| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com, else `local` ([issue files](/guides/local-issues/), no account needed). |
 | `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
 | `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
 | `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
@@ -91,7 +92,7 @@ Steps, in order:
 
 1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. It also offers the [agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
 2. If a daemon is already running for this workflow, print its dashboard URL and stop. Otherwise remove a `HEARTBEAT.md` and `dashboard_url` left behind by a daemon that died (the next daemon rewrites both).
-3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set.
+3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set. The local tracker needs none.
 4. Run `itervox doctor --fix`: missing GitHub state labels are created after confirmation. Any doctor error stops quickstart with the report.
 5. Start the daemon in its own session (output in `.itervox/logs/quickstart-daemon.log`), wait until it publishes `.itervox/dashboard_url` and `GET /api/v1/ready` returns 200, then print the URL and where the API token is: `<logs-dir>/api-token` for a generated token, or your `ITERVOX_API_TOKEN`.
 
@@ -107,7 +108,7 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--tracker` | string | _(required)_ | Issue tracker: `linear` or `github` |
+| `--tracker` | string | _(required)_ | Issue tracker: `linear`, `github` or `local`. `local` also writes an example issue, `.itervox/issues/ITX-1.md`, in Backlog and skips the initial dependency analysis. |
 | `--runner` | string | `claude` | Agent runner backend: `claude` or `codex` |
 | `--output` | string | `WORKFLOW.md` | Output file path |
 | `--workflow` | string | `WORKFLOW.md` | Workflow path to migrate when `--update` is set |

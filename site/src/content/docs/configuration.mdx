@@ -85,15 +85,15 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | **required** | Tracker backend. `"linear"` or `"github"`. |
+| `kind` | string | **required** | Tracker backend: `"linear"`, `"github"` or `"local"` (issues as Markdown files in `.itervox/issues/`, no account or key; see [Local issues](/guides/local-issues/)). |
 | `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
-| `api_key` | string | **required** | API token. Use `$VAR_NAME` to read from an environment variable (recommended). |
-| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. |
+| `api_key` | string | **required** (Linear, GitHub) | API token; not used by `local`. Use `$VAR_NAME` to read from an environment variable (recommended). |
+| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
-| `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
+| `backlog_states` | string[] | `["Backlog"]` (Linear, local), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 | `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly, and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. Load-time only (no runtime setter). |
 | `comment_commands` | map | off | `/itervox run [profile]`, `/itervox stop` and `/itervox review` in GitHub issue comments, obeyed from users with write access or in `allow`. Keys: `enabled` (default `false`), `allow` (logins), `allow_token_user` (default `false`), `reply_to_unauthorized` (default `false`). GitHub only. See [Comment commands](/guides/github-issues/#comment-commands). |

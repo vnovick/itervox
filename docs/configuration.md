@@ -42,7 +42,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `kind` | string | yes | — | Tracker backend: `linear` or `github` |
+| `kind` | string | yes | — | Tracker backend: `linear`, `github` or `local` (one Markdown file per issue in `.itervox/issues/`; no `api_key`; `project_slug` is the optional identifier prefix, default `ITX`) |
 | `api_key` | string | yes | — | API key. Use `$ENV_VAR` for env var substitution |
 | `project_slug` | string | github: yes | `""` | GitHub: `owner/repo`. Linear: optional project slug filter |
 | `endpoint` | string | no | Linear: `https://api.linear.app/graphql`; GitHub: provider default | Override the API endpoint |
