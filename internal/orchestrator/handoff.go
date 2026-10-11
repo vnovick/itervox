@@ -282,6 +282,15 @@ func markHandoffPartial(workspacePath, handoffRelPath string) error {
 // files are newer than notBefore, or the workspace path is empty.
 // The function is filesystem-driven so it does not require the
 // orchestrator to remember each worker's exact run timestamp.
+// handoffMtimeSlack widens the notBefore gate below. File mtimes come from
+// the kernel's coarse clock, which trails time.Now by up to a few
+// milliseconds (one scheduler tick) on Linux, and some filesystems store
+// coarser times still. Without it, a handoff written in the first moments
+// of a run read as older than the run itself and was never marked partial.
+// The gate only has to exclude a predecessor's handoff of the same profile,
+// written well before this run started.
+const handoffMtimeSlack = time.Second
+
 func markLatestHandoffPartial(workspacePath, profileName string, notBefore time.Time) error {
 	if workspacePath == "" {
 		return nil
@@ -319,7 +328,7 @@ func markLatestHandoffPartial(workspacePath, profileName string, notBefore time.
 		mod := info.ModTime()
 		// Gate: ignore files older than the current worker started. They
 		// belong to predecessor runs whose handoffs should remain intact.
-		if !notBefore.IsZero() && mod.Before(notBefore) {
+		if !notBefore.IsZero() && mod.Before(notBefore.Add(-handoffMtimeSlack)) {
 			continue
 		}
 		if mod.After(latestMod) {

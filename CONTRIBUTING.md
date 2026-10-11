@@ -8,7 +8,7 @@ Thank you for your interest in contributing. This document covers how to get the
 
 ### Prerequisites
 
-- Go 1.25.11 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.11`)
+- Go 1.26.9 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.26.9`)
 - Node.js 20+ and `pnpm` (for the web dashboard)
 - `git`
 - [Lefthook](https://github.com/evilmartians/lefthook) (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`)

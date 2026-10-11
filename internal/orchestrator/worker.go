@@ -1014,6 +1014,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	completionState := o.cfg.Tracker.CompletionState
 	o.cfgMu.RUnlock()
 	if completionState != "" && ctx.Err() == nil && !automationRun {
+		// From here the run only finishes; mark it before the issue turns
+		// terminal in the tracker, so a reconcile tick between this move and
+		// the exit below leaves the run to that exit (see pendingExits).
+		o.exitsSent.Store(issue.ID, time.Now())
 		slog.Info("worker: transitioning to completion state",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "target_state", completionState)
 		if o.logBuf != nil {
@@ -1570,6 +1574,7 @@ func formatResetsAt(limit *agent.LimitSignal) string {
 
 // deliverExit sends a worker exit event to the event loop.
 func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev OrchestratorEvent) {
+	o.exitsSent.Store(issue.ID, time.Now())
 	// If the worker context is already cancelled (e.g. user-triggered pause via
 	// CancelIssue), the exit event must still reach the event loop so that
 	// PausedIdentifiers is set correctly.  Fall back to a background-derived
@@ -1593,12 +1598,21 @@ func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev O
 		return
 	default:
 	}
+	// While the loop runs it reads every event until it closes loopExited,
+	// so wait on that alone. Also giving up on the worker's context lost the
+	// exit when a stop's cancel landed mid-send, and the exit collection then
+	// waited out its whole deadline for it. Before Run there is no loop to
+	// close anything, so the worker's context still bounds the wait.
+	var giveUp <-chan struct{}
+	if orchDone == nil {
+		giveUp = sendCtx.Done()
+	}
 	select {
 	case o.events <- ev:
 	case <-orchDone:
 		slog.Warn("worker: exit event dropped (orchestrator exited)",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
-	case <-sendCtx.Done():
+	case <-giveUp:
 		slog.Warn("worker: exit event not delivered (orchestrator shutting down)",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 	}

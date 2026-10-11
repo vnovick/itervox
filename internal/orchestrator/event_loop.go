@@ -174,7 +174,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// release the workerCancels-map entry even if the EventWorkerExited
 	// send drops under load (T-09).
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
-	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
+	state = reconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.pendingExits, o.logBuf)
 
 	// 4. Fetch candidates and dispatch eligible issues.
 	//
@@ -1829,6 +1829,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.applyClearBackendBreaker(&state, ev.Identifier)
 
 	case EventWorkerExited:
+		o.exitsSent.Delete(ev.IssueID)
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
 		delete(state.Running, ev.IssueID)

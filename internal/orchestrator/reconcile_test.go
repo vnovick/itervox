@@ -121,3 +121,27 @@ func TestReconcileTrackerStatesRefreshFailureKeepsWorkers(t *testing.T) {
 	_, still := state.Running["id1"]
 	assert.True(t, still, "refresh failure must keep workers running")
 }
+
+// TestReconcileLeavesARunWhoseExitIsPending: a worker that moved its issue
+// to a terminal completion_state and has already sent its exit is left to
+// that exit. Stopping it first made its success exit find no Running entry,
+// so no review started. A run without a pending exit is still stopped.
+func TestReconcileLeavesARunWhoseExitIsPending(t *testing.T) {
+	for _, pending := range []bool{true, false} {
+		cfg := cfgWithStall(300000)
+		state := orchestrator.NewState(cfg)
+		now := time.Now()
+		state.Running["id1"] = runningEntry("id1", "In Progress", &now)
+		if pending {
+			state.ExitPending = map[string]bool{"id1": true}
+		}
+		mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", "Done", nil, nil)},
+			cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+		events := make(chan orchestrator.OrchestratorEvent, 10)
+
+		state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
+		_, still := state.Running["id1"]
+		assert.Equal(t, pending, still, "exit pending: %v", pending)
+		assert.Equal(t, pending, len(events) == 0, "no reconcile exit for a run whose own exit is pending")
+	}
+}

@@ -376,8 +376,12 @@ type State struct {
 	// case-folded copies. Empty disables the guard.
 	PauseDispatchWhenAnyInState []string
 	Running                     map[string]*RunEntry
-	Claimed                     map[string]struct{}
-	RetryAttempts               map[string]*RetryEntry
+	// ExitPending holds the IDs of Running entries whose worker has already
+	// sent its exit, which the loop has not handled yet. Rebuilt each tick
+	// before reconciliation, which leaves these runs to their own exit.
+	ExitPending   map[string]bool
+	Claimed       map[string]struct{}
+	RetryAttempts map[string]*RetryEntry
 	// PausedIdentifiers tracks issues paused by user kill.
 	// Key: identifier (e.g. "TIPRD-25"), Value: issue UUID (empty when loaded
 	// from an old disk snapshot that predates UUID persistence).

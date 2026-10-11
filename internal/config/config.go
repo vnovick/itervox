@@ -1472,23 +1472,19 @@ func toFloat(v any) (float64, bool) {
 }
 
 // normalizeReviewerProfiles makes a reviewer_profiles-only configuration
-// usable and predictable while reviewer fan-out is disabled for the v0.2.1
-// release (see orchestrator.ReviewerProfileChain for the three reproduced
-// failures that gate it).
-//
-// Two problems it solves:
+// usable. Every listed reviewer runs (sequentially, see
+// orchestrator.ReviewerProfileChain); this only keeps the singular field in
+// step with the list:
 //
 //   - ValidateReviewerAutoReview checks the SINGULAR reviewer_profile, so
-//     `auto_review: true` with only reviewer_profiles set hard-failed at
-//     startup — the very shape the fan-out feature's own tests use.
+//     `auto_review: true` with only reviewer_profiles set would hard-fail at
+//     startup.
 //   - Several dispatch decisions read cfg.Agent.ReviewerProfile directly, so
-//     even if such a config booted, no review would ever run: the daemon
-//     would silently do nothing rather than review with the listed profile.
+//     without a value there no review would ever start.
 //
-// Promoting the first entry into reviewer_profile collapses both onto the
-// long-standing, working single-reviewer path. The warning is deliberately
-// loud: an operator who listed several reviewers must know only the first
-// one runs, rather than discovering it from a quiet dashboard.
+// Promoting the first entry into reviewer_profile when it is unset satisfies
+// both. It does not change which reviewers run: the chain is built from the
+// full list.
 func normalizeReviewerProfiles(agent *AgentConfig) {
 	trimmed := make([]string, 0, len(agent.ReviewerProfiles))
 	for _, p := range agent.ReviewerProfiles {
@@ -1502,11 +1498,7 @@ func normalizeReviewerProfiles(agent *AgentConfig) {
 	}
 	if agent.ReviewerProfile == "" {
 		agent.ReviewerProfile = trimmed[0]
-		slog.Warn("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry",
-			"reviewer_profile", trimmed[0])
-	}
-	if len(trimmed) > 1 {
-		slog.Warn("config: multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs",
-			"running", agent.ReviewerProfile, "ignored", trimmed[1:])
+		slog.Info("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry as the primary reviewer",
+			"reviewer_profile", trimmed[0], "reviewer_profiles", trimmed)
 	}
 }

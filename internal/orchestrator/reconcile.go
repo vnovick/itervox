@@ -102,13 +102,19 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 	return state
 }
 
-// ReconcileTrackerStates fetches current states for all running issues and
+// reconcileTrackerStates fetches current states for all running issues and
 // reconciles: terminal→cleanup, active→update snapshot, neither→stop no cleanup.
 // If the fetch fails, workers are kept and the error is logged.
 // The optional logBuf receives per-issue explanatory messages when workers are stopped.
 // State.ActiveStates and State.TerminalStates are used for comparison; these are
 // snapshotted from cfg under cfgMu at the start of each tick, so no lock is needed here.
-func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
+//
+// pendingAfterFetch (when non-nil) rebuilds state.ExitPending once the tracker fetch has
+// returned. A worker marks its run before it moves the issue to the
+// completion state, so a fetch that sees the move also sees the mark only
+// if the marks are read after it: read before, a run finishing during the
+// fetch was stopped as if an operator had moved its issue.
+func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, pendingAfterFetch func(State) map[string]bool, logBuf ...*logbuffer.Buffer) State {
 	var buf *logbuffer.Buffer
 	if len(logBuf) > 0 {
 		buf = logBuf[0]
@@ -127,6 +133,9 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 		slog.Warn("reconciliation: tracker refresh failed, keeping workers", "error", err)
 		return state
 	}
+	if pendingAfterFetch != nil {
+		state.ExitPending = pendingAfterFetch(state)
+	}
 
 	byID := make(map[string]string, len(refreshed))
 	for _, issue := range refreshed {
@@ -135,6 +144,14 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 
 	now := time.Now()
 	for id, entry := range state.Running {
+		// The worker already sent its exit; that exit settles the run. A
+		// worker that moved its issue to a terminal completion_state and
+		// finished was otherwise stopped here first, and its own success
+		// exit then found no Running entry, so no review was started and
+		// the workspace was cleared.
+		if state.ExitPending[id] {
+			continue
+		}
 		refreshedState, found := byID[id]
 		if !found {
 			slog.Info("reconciliation: issue not found in tracker, stopping worker",
@@ -221,4 +238,24 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 		}
 	}
 	return state
+}
+
+// pendingExits returns the Running IDs whose worker has sent its exit during
+// the current run (a mark older than the run's start belongs to an earlier
+// run whose exit was dropped, and is ignored).
+func (o *Orchestrator) pendingExits(state State) map[string]bool {
+	var out map[string]bool
+	for id, entry := range state.Running {
+		v, ok := o.exitsSent.Load(id)
+		if !ok {
+			continue
+		}
+		if at, _ := v.(time.Time); !at.Before(entry.StartedAt) {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[id] = true
+		}
+	}
+	return out
 }
