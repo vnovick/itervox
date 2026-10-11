@@ -1,15 +1,16 @@
 package orchestrator
 
-// CORE-157 — reviewerInjectedProfiles (and the reviewer profile it pins in
-// o.issueProfiles) was cleared only when a reviewer SUCCEEDED. After a
-// reviewer run was abandoned — retries exhausted, cancelled with no retry
-// pending, stalled with no retry pending, or hard-terminated by the user —
-// every later run of the issue kept resolving to the reviewer profile.
+// CORE-157 — after a reviewer run was abandoned (retries exhausted, cancelled
+// with no retry pending, stalled with no retry pending, or hard-terminated by
+// the user) every later run of the issue kept resolving to the reviewer
+// profile. Since #127 a reviewer never installs its profile on the issue, so
+// the next dispatch resolves the implementer on its own; abandoning closes the
+// review chain.
 //
-// The marker must still survive (a) a reviewer failure that schedules a
-// retry (the retry IS the reviewer; exitedRunIsReviewer / CORE-031 depend on
-// it), (b) TerminalCanceledByReconciliation (reconcile emits it before a
-// fan-out reviewer's own success exit — #58 defect 1), and (c) the hand-off
+// A reviewer is NOT abandoned by (a) a failure that schedules a retry (the
+// retry is the reviewer: it carries the reviewer's profile, which CORE-031
+// relies on), (b) TerminalCanceledByReconciliation (reconcile emits it before
+// a fan-out reviewer's own success exit — #58 defect 1), or (c) the hand-off
 // between reviewers of a multi-reviewer chain.
 
 import (
@@ -24,13 +25,6 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/tracker"
 )
-
-func reviewerInjected(o *Orchestrator, identifier string) (string, bool) {
-	o.issueProfilesMu.RLock()
-	defer o.issueProfilesMu.RUnlock()
-	_, injected := o.reviewerInjectedProfiles[identifier]
-	return o.issueProfiles[identifier], injected
-}
 
 // End to end on the real dispatch path: reviewer dispatch → failure → retry
 // (still the reviewer) → retries exhausted → the NEXT dispatch of the issue
@@ -56,9 +50,8 @@ func TestReviewerProfileClearedAfterReviewerRetriesExhausted(t *testing.T) {
 	state, ev := nextWorkerExit(t, ctx, o, state)
 	state = o.handleEvent(ctx, state, ev)
 	require.Contains(t, state.RetryAttempts, issue.ID)
-	profile, injected := reviewerInjected(o, issue.Identifier)
-	assert.True(t, injected, "a reviewer failure that schedules a retry keeps the reviewer marker")
-	assert.Equal(t, "reviewer", profile)
+	assert.Equal(t, "reviewer", state.RetryAttempts[issue.ID].ReviewerProfile, "a reviewer failure that schedules a retry retries the reviewer")
+	assert.Empty(t, o.issueProfileForDispatch(state, issue.Identifier), "the reviewer never pinned its profile on the issue")
 	state = o.fireRetries(ctx, state, time.Now().Add(time.Hour))
 	require.NotNil(t, state.Running[issue.ID])
 	assert.Equal(t, "reviewer", state.Running[issue.ID].ProfileName, "the retry re-runs the reviewer")
@@ -68,9 +61,7 @@ func TestReviewerProfileClearedAfterReviewerRetriesExhausted(t *testing.T) {
 	state = o.handleEvent(ctx, state, ev)
 	require.NotContains(t, state.Running, issue.ID)
 
-	profile, injected = reviewerInjected(o, issue.Identifier)
-	assert.False(t, injected, "an abandoned reviewer run must clear reviewerInjectedProfiles")
-	assert.Empty(t, profile, "an abandoned reviewer run must clear its injected profile override")
+	assert.Empty(t, o.issueProfileForDispatch(state, issue.Identifier), "an abandoned reviewer leaves no profile override")
 
 	delete(state.PausedIdentifiers, issue.Identifier) // operator resumes the issue
 	state = o.dispatch(ctx, state, issue, 0)
@@ -83,8 +74,8 @@ func TestReviewerProfileClearedAfterReviewerRetriesExhausted(t *testing.T) {
 }
 
 // Every exit shape, driven through handleEvent with a real State: which ones
-// abandon the reviewer run and which must keep the marker.
-func TestReviewerInjectedProfileExitMatrix(t *testing.T) {
+// abandon the reviewer run and which keep it going.
+func TestReviewerAbandonExitMatrix(t *testing.T) {
 	const ident = "ENG-1"
 	issue := domain.Issue{ID: "id1", Identifier: ident, Title: "T", State: "In Progress"}
 	cases := []struct {
@@ -125,7 +116,7 @@ func TestReviewerInjectedProfileExitMatrix(t *testing.T) {
 		{
 			name: "stalled with a retry pending keeps the reviewer (the retry is the reviewer)",
 			prep: func(_ *Orchestrator, s *State) {
-				s.RetryAttempts[issue.ID] = &RetryEntry{IssueID: issue.ID, Identifier: ident, Attempt: 1, DueAt: time.Now().Add(time.Hour)}
+				s.RetryAttempts[issue.ID] = &RetryEntry{IssueID: issue.ID, Identifier: ident, Attempt: 1, DueAt: time.Now().Add(time.Hour), ReviewerProfile: "reviewer"}
 			},
 			ev: func() OrchestratorEvent {
 				return OrchestratorEvent{Type: EventWorkerExited, IssueID: issue.ID,
@@ -136,7 +127,7 @@ func TestReviewerInjectedProfileExitMatrix(t *testing.T) {
 		{
 			name: "context canceled with a retry pending keeps the reviewer",
 			prep: func(_ *Orchestrator, s *State) {
-				s.RetryAttempts[issue.ID] = &RetryEntry{IssueID: issue.ID, Identifier: ident, Attempt: 1, DueAt: time.Now().Add(time.Hour)}
+				s.RetryAttempts[issue.ID] = &RetryEntry{IssueID: issue.ID, Identifier: ident, Attempt: 1, DueAt: time.Now().Add(time.Hour), ReviewerProfile: "reviewer"}
 			},
 			ev: func() OrchestratorEvent {
 				return OrchestratorEvent{Type: EventWorkerExited, IssueID: issue.ID, Error: context.Canceled,
@@ -164,25 +155,22 @@ func TestReviewerInjectedProfileExitMatrix(t *testing.T) {
 			state.Running[issue.ID] = &RunEntry{Issue: issue, Kind: "reviewer", ProfileName: "reviewer"}
 			state.Claimed[issue.ID] = struct{}{}
 			state.ReviewChainIndex[ident] = 1
-			o.issueProfiles[ident] = "reviewer"
-			o.reviewerInjectedProfiles[ident] = struct{}{}
+			state.LatestRun[issue.ID] = RunRecord{Identifier: ident, Kind: "reviewer", ProfileName: "reviewer"}
 			if tc.prep != nil {
 				tc.prep(o, &state)
 			}
 
 			state = o.handleEvent(context.Background(), state, tc.ev())
 
-			profile, injected := reviewerInjected(o, ident)
 			_, chainOpen := state.ReviewChainIndex[ident]
+			assert.Empty(t, o.issueProfileForDispatch(state, ident), "the issue's profile is never the reviewer's")
 			if tc.wantCleared {
-				assert.False(t, injected, "marker must be cleared")
-				assert.Empty(t, profile, "reviewer profile override must be cleared")
-				assert.Empty(t, o.issueProfileForDispatch(state, ident), "next dispatch resolves the implementer profile")
 				assert.False(t, chainOpen, "an abandoned chain must not stay open")
 			} else {
-				assert.True(t, injected, "marker must be kept")
-				assert.Equal(t, "reviewer", profile)
 				assert.True(t, chainOpen, "a live chain must stay open")
+				if r := state.RetryAttempts[issue.ID]; r != nil {
+					assert.Equal(t, "reviewer", r.ReviewerProfile, "the pending retry is still the reviewer")
+				}
 			}
 		})
 	}

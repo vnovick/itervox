@@ -28,23 +28,22 @@ func TestJanitorPrunesReviewLedgersForUntrackedIssues(t *testing.T) {
 		state.ReviewOutcomes[ident] = ReviewOutcome{Approvals: 1}
 		state.ReviewChainIndex[ident] = 1
 	}
-	// Terminal, idle: prune.
+	// Terminal, idle: prune. Its last reviewer has exited.
 	seed("ENG-DONE")
 	state.PrevIssueStates["ENG-DONE"] = "Done"
+	state.LatestRun["id-done"] = RunRecord{ID: "run-d", Identifier: "ENG-DONE", Kind: "reviewer", ProfileName: "r2", Exited: true}
 	// Terminal but a reviewer is still in flight for it (a fan-out reviewer
 	// whose Running entry reconcile already deleted — #58): keep.
 	seed("ENG-DONE-MIDCHAIN")
 	state.PrevIssueStates["ENG-DONE-MIDCHAIN"] = "Done"
-	o.issueProfiles["ENG-DONE-MIDCHAIN"] = "r2"
-	o.reviewerInjectedProfiles["ENG-DONE-MIDCHAIN"] = struct{}{}
+	state.LatestRun["id-done-mid"] = RunRecord{ID: "run-dm", Identifier: "ENG-DONE-MIDCHAIN", Kind: "reviewer", ProfileName: "r2", Stopped: true}
 	// Absent from the tracker for two consecutive polls, idle: prune.
 	seed("ENG-GONE")
 	state.PrevActiveIdentifiers = map[string]struct{}{"ENG-ACTIVE": {}}
 	// Absent, but the next reviewer of its chain has been dispatched and not
 	// yet exited: keep.
 	seed("ENG-GONE-MIDCHAIN")
-	o.issueProfiles["ENG-GONE-MIDCHAIN"] = "r2"
-	o.reviewerInjectedProfiles["ENG-GONE-MIDCHAIN"] = struct{}{}
+	state.LatestRun["id-gone-mid"] = RunRecord{ID: "run-gm", Identifier: "ENG-GONE-MIDCHAIN", Kind: "reviewer", ProfileName: "r2"}
 	// Still tracked (active): keep.
 	seed("ENG-ACTIVE")
 

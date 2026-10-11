@@ -280,8 +280,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	readOnlyReviewer := isReviewerProfile(o.cfg, profileName)
 	o.cfgMu.RUnlock()
 	// A reviewer rerouted by backend_fallback runs under another profile
-	// name; the reviewer-injected marker still identifies it.
-	readOnlyReviewer = readOnlyReviewer || (profileName != "" && o.isReviewerInjected(issue.Identifier))
+	// name; its run still identifies it as a reviewer (#127).
+	readOnlyReviewer = readOnlyReviewer || runIsReviewer(ctx)
 	reviewVerdictRel := ""
 	if readOnlyReviewer {
 		reviewVerdictRel = reviewVerdictRelPath(issue.Identifier, profileName)
@@ -1473,6 +1473,7 @@ func (o *Orchestrator) queueInputRequiredEntry(
 		Command:     agentCommand,
 		WorkerHost:  workerHost,
 		ProfileName: profileName,
+		Reviewer:    runIsReviewer(ctx),
 		QueuedAt:    time.Now(),
 	})
 }

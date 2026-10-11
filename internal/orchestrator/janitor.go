@@ -472,11 +472,11 @@ func untrackedIdentifierPredicate(terminal, currentActive, prevActive map[string
 
 // reviewMidChainPredicate reports whether a review may still be in flight for
 // an identifier: a run (any kind) is live for it, a retry is pending for it,
-// or a reviewer was dispatched for it and has not yet succeeded or been
-// abandoned (reviewerInjectedProfiles, read once under issueProfilesMu). The
-// last signal matters because ReconcileTrackerStates deletes a fan-out
-// reviewer's Running entry BEFORE the reviewer's own success exit advances
-// the chain (#58 defect 1) — pruning in that window would strand the quorum.
+// or its latest run is a reviewer whose own exit has not been handled yet
+// (its run record, #127). The last signal matters because
+// ReconcileTrackerStates can delete a reviewer's Running entry BEFORE the
+// reviewer's own success exit advances the chain (#58 defect 1) — pruning in
+// that window would strand the quorum.
 func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 	busy := make(map[string]struct{}, len(state.Running)+len(state.RetryAttempts))
 	for _, e := range state.Running {
@@ -489,11 +489,11 @@ func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 			busy[r.Identifier] = struct{}{}
 		}
 	}
-	o.issueProfilesMu.RLock()
-	for ident := range o.reviewerInjectedProfiles {
-		busy[ident] = struct{}{}
+	for _, rec := range state.LatestRun {
+		if rec.IsReviewer() && !rec.Exited && rec.Identifier != "" {
+			busy[rec.Identifier] = struct{}{}
+		}
 	}
-	o.issueProfilesMu.RUnlock()
 	return func(ident string) bool {
 		_, ok := busy[ident]
 		return ok
