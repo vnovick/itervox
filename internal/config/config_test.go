@@ -285,6 +285,20 @@ func TestTrackerOutboxExplicitTrue(t *testing.T) {
 	assert.True(t, cfg.Tracker.Outbox)
 }
 
+// TestTrackerStoreConfig pins tracker.store (#113): off with a 60s sync by
+// default, and both keys round-trip.
+func TestTrackerStoreConfig(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Store.Enabled)
+	assert.Equal(t, 60000, cfg.Tracker.Store.SyncIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Store.Enabled)
+	assert.Equal(t, 120000, cfg.Tracker.Store.SyncIntervalMs)
+}
+
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
 	content := minimal("agent:\n  max_concurrent_agents_by_state:\n    Todo: 3\n    IN PROGRESS: 2\n")
 	path := workflowWithContent(t, content)

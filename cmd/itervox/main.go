@@ -828,6 +828,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
+	tr = withTrackerStore(ctx, cfg, workflowPath, tr)
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -1250,7 +1251,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	startAutomations(ctx, cfg, tr, orch)
-	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, tr, orch) // #84
+	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
