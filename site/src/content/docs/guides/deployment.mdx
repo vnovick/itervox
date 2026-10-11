@@ -267,6 +267,8 @@ Change `--shutdown-grace` and the supervisor timeout together.
 
 ## Upgrades, cleanup and backups
 
+Upgrading from v0.2.0 or earlier? Run `itervox doctor --upgrade --workflow WORKFLOW.md` (as the service user, in the project directory) first: it prints only the v0.2.1 upgrade notes that apply to this workflow, environment and installed systemd unit, each with its fix. See [the CLI reference](/cli/#upgrade-check---upgrade).
+
 On a `bootstrap.sh` install, `sudo itervox-upgrade.sh --version <tag>` downloads the
 release and `checksums.txt`, refuses a checksum mismatch **before** touching the service,
 swaps the binary atomically (keeping `itervox.prev`), restarts through the drain and
