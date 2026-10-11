@@ -96,7 +96,7 @@ TUNNEL_PID=""
 LEFT=()
 teardown() {
   local rc=$?
-  [[ -n "$TUNNEL_PID" ]] && kill "$TUNNEL_PID" 2>/dev/null || true
+  if [[ -n "$TUNNEL_PID" ]]; then kill "$TUNNEL_PID" 2>/dev/null || true; fi
   if $KEEP; then
     echo
     echo "==> --keep: NOT torn down. Delete by hand: instance $NAME and disk $NAME-data ($ZONE)$($had_router || echo ", router itervox-router ($REGION)")$($had_fw || echo ", firewall rule allow-iap-ssh")"
