@@ -226,6 +226,26 @@ func TestMaxRetriesZeroMeansUnlimited(t *testing.T) {
 	assert.Equal(t, 0, cfg.Agent.MaxRetries)
 }
 
+func TestAgentBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want config.BudgetConfig
+	}{
+		{"absent means no limit", "", config.BudgetConfig{}},
+		{"tokens and cost", "agent:\n  budget:\n    tokens: 500000\n    cost_usd: 2.5\n", config.BudgetConfig{Tokens: 500000, CostUSD: 2.5}},
+		{"negative is no limit", "agent:\n  budget:\n    tokens: -1\n    cost_usd: -3\n", config.BudgetConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, minimal(tc.yaml)))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Agent.Budget)
+			assert.Equal(t, tc.want != config.BudgetConfig{}, cfg.Agent.Budget.Enabled())
+		})
+	}
+}
+
 func TestDefaultAutomationQueueLength(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)

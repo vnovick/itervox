@@ -171,6 +171,9 @@ const (
 	// completion-state tracker write failed after its retries. Distinct from
 	// user_cancelled precisely because it is recoverable: the work is done.
 	PauseReasonTransitionFailed = "transition_failed"
+	// PauseReasonBudgetExceeded: the issue reached agent.budget (#136); it
+	// runs again once the budget is raised and it is resumed.
+	PauseReasonBudgetExceeded = "budget_exceeded"
 )
 
 // ResumeContext, when non-nil, configures a worker to continue an existing
@@ -684,6 +687,14 @@ type State struct {
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
+	// Spend is the per-issue spend ledger behind agent.budget and the cost
+	// report (#136), persisted to issue_spend.json.
+	Spend SpendLedger
+	// BudgetStops maps an issue to the run being stopped for reaching the
+	// budget, so that run's exit pauses it with budget_exceeded. Keyed by run
+	// so a mark a lost exit left behind never shields a later run.
+	// Session-only.
+	BudgetStops map[string]string
 
 	// DependencyCycles holds this tick's strongly-connected-component cycle
 	// alerts over the tick graph (sorted by first member). Recomputed every

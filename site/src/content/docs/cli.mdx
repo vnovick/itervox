@@ -243,6 +243,16 @@ itervox config unset KEY [--user] [--workflow WORKFLOW.md]
 
 ---
 
+## `itervox report costs` — Tokens and cost per issue and per day
+
+```bash
+itervox report costs [--workflow WORKFLOW.md] [--logs-dir DIR] [--days N] [--json]
+```
+
+Prints what each issue's agents have used: input and output tokens and estimated cost per issue (most tokens first), per day in UTC (newest first, the last `--days` days with usage, default 14, `0` for all kept), and the total. It reads `issue_spend.json` from the daemon's logs directory (the per-project directory under `~/.itervox/logs`, or `--logs-dir`); the daemon need not be running. Cost is estimated from Claude runs; a row with no Claude run shows `—` (`null` in `--json`). The daemon keeps 90 days of per-day history; per-issue totals are kept for as long as the file exists. The same totals are what [`agent.budget`](/configuration/#per-issue-budgets) is checked against.
+
+---
+
 ## `itervox clear` — Remove workspace directories
 
 Removes git worktree workspace directories that Itervox created under the workspace root configured in `WORKFLOW.md`.
