@@ -657,6 +657,7 @@ func copyRunningMap(m map[string]*RunEntry) map[string]*RunEntry {
 		}
 		e := *v              // copy struct value
 		e.WorkerCancel = nil // not safe to share across goroutines
+		e.run = nil          // the worker's handle stays with the live entry
 		e.Issue = copyDomainIssue(v.Issue)
 		cp[k] = &e
 	}
