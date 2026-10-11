@@ -66,7 +66,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 | Scenario | Risk | Action |
 |---|---|---|
 | Upgrading Itervox from v0.2.0 or earlier | Medium | Run `itervox doctor --upgrade`: it prints only the v0.2.1 upgrade notes that apply to this workflow and environment, each with its fix. |
-| Upgrading Itervox from v0.2.1 | Low | Run `itervox init --update` (a v0.2.1 workflow already uses schema 2; it reports that and warns about a legacy `agent.reviewer_prompt`), then start the daemon. Paused issues, open backend breakers, pending reviews, unanswered questions, run history and the outbox carry over. Pinned by `TestUpgradeFromV021`. |
+| Upgrading Itervox from v0.2.1 | Low | Run `itervox init --update` (a v0.2.1 workflow already uses schema 2; it reports that, warns about a legacy `agent.reviewer_prompt`, adds the `!.itervox/issues/` carve-out to a root `.gitignore` that hides `.itervox/`, and creates `.itervox/.env` if it is missing), then start the daemon. Paused issues, open backend breakers, pending reviews, unanswered questions, run history and the outbox carry over. Pinned by `TestUpgradeFromV021`. |
 | New minor Go release | Low | Update `go.mod`, run `go test ./cmd/... ./internal/...` and `go test -race ./cmd/... ./internal/...`. |
 | New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `itervox --dry-run` and verify dispatch logs show agent starting. |
 | New Codex release | Medium | Same as above. |

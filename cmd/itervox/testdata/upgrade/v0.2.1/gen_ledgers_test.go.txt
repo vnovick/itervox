@@ -9,9 +9,11 @@
 //	cd /tmp/itervox-v021 && FIXTURE_OUT=<abs path of .../v0.2.1/project> \
 //	   go test -run '^TestGenerateUpgradeFixtureLedgers$' ./internal/orchestrator/
 //
-// WORKFLOW.md and .itervox/agents/ come from v0.2.1's
-// `itervox init --tracker github --runner claude` (its .itervox/.env is not
-// kept).
+// WORKFLOW.md, .gitignore and .itervox/agents/ come from v0.2.1's
+// `itervox init --tracker github --runner claude`, run in a git repository
+// whose root .gitignore already held `node_modules/` and `.itervox/` (v0.2.1
+// adds its carve-outs to an existing root .gitignore; it writes none
+// itself). Its .itervox/.env is not kept.
 package orchestrator
 
 import (
@@ -29,8 +31,10 @@ func TestGenerateUpgradeFixtureLedgers(t *testing.T) {
 		t.Skip("FIXTURE_OUT not set")
 	}
 	logs := filepath.Join(out, "logs")
-	if err := os.MkdirAll(logs, 0o755); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{logs, filepath.Join(out, ".itervox")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
