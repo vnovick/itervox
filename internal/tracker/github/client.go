@@ -438,6 +438,11 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraState
 			if !ok {
 				continue
 			}
+			if isPullRequest(raw) {
+				// GitHub's issues endpoint also lists pull requests; they are
+				// never dispatch candidates or terminal issues (#70).
+				continue
+			}
 			derived := deriveState(raw, c.activeStates(), c.terminalStates())
 			if derived == "" {
 				// Fall back to extraStates (e.g. backlog_states) so issues whose
@@ -471,6 +476,14 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraState
 	}
 
 	return all, nil //nolint:nilerr // link-parse errors mean end of pagination, not a real error
+}
+
+// isPullRequest reports whether an item from GitHub's issues list endpoint is
+// a pull request. The endpoint returns both; only pull requests carry a
+// non-null `pull_request` object.
+func isPullRequest(raw map[string]any) bool {
+	v, ok := raw["pull_request"]
+	return ok && v != nil
 }
 
 // UpdateIssueState manages labels to simulate workflow state transitions.

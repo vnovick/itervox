@@ -131,6 +131,8 @@ tracker:
 
 Create these labels in your GitHub repository before running Itervox. Then assign the `todo` label to issues you want agents to pick up.
 
+Only issues are picked up. GitHub's issues API also lists pull requests, and a pull request can carry the same labels, but Itervox skips every pull request: one labelled `todo` is never dispatched, and closed or merged pull requests never appear in the done column.
+
 ### GitHub Projects (v2) are not supported
 
 Itervox works with **GitHub Issues + labels** directly. It does not integrate with GitHub Projects v2 (the board/kanban feature). This means:

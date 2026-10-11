@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/tracker"
 	ghclient "github.com/vnovick/itervox/internal/tracker/github"
 )
@@ -83,6 +84,29 @@ func (s *ghServer) serve() *httptest.Server {
 		}
 		_ = json.NewEncoder(w).Encode(resp.body)
 	}))
+}
+
+// serveWithPageLink is serve with the literal `<PAGE2>` Link placeholder
+// rewritten to an absolute URL on this test server, so a response can point
+// at the next queued response.
+func (s *ghServer) serveWithPageLink() *httptest.Server {
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := s.calls
+		s.calls++
+		if idx >= len(s.responses) {
+			s.t.Errorf("unexpected call %d", idx+1)
+			w.WriteHeader(500)
+			return
+		}
+		resp := s.responses[idx]
+		for k, v := range resp.headers {
+			w.Header().Set(k, strings.ReplaceAll(v, "<PAGE2>", "<"+ts.URL+"/repos/owner/repo/issues?page=2>"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp.body)
+	}))
+	return ts
 }
 
 func defaultConfig(endpoint string) ghclient.ClientConfig {
@@ -982,4 +1006,103 @@ func TestParseLastPage(t *testing.T) {
 			assert.Equal(t, tt.wantOK, ok)
 		})
 	}
+}
+
+// ghPullRequest is an item as GitHub's issues endpoint lists a pull request:
+// the issue shape plus a non-null `pull_request` object.
+func ghPullRequest(number int, title, state string, labels []string) map[string]interface{} {
+	item := ghIssue(number, title, state, labels)
+	item["html_url"] = fmt.Sprintf("https://github.com/owner/repo/pull/%d", number)
+	item["pull_request"] = map[string]interface{}{
+		"url":      fmt.Sprintf("https://api.github.com/repos/owner/repo/pulls/%d", number),
+		"html_url": fmt.Sprintf("https://github.com/owner/repo/pull/%d", number),
+	}
+	return item
+}
+
+func identifiers(issues []domain.Issue) []string {
+	out := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, issue.Identifier)
+	}
+	return out
+}
+
+// TestFetchCandidateIssuesSkipsPullRequests pins #70: an open pull request
+// carrying an active-state label is never a dispatch candidate, on the first
+// page or a later one.
+func TestFetchCandidateIssuesSkipsPullRequests(t *testing.T) {
+	srv := newGHServer(t)
+	// "todo": page 1 mixes an issue and a PR and links to page 2, which mixes them too.
+	srv.addResponse([]interface{}{
+		ghIssue(1, "Real issue", "open", []string{"todo"}),
+		ghPullRequest(2, "PR labelled todo", "open", []string{"todo"}),
+	}, `<PAGE2>; rel="next"`, 0)
+	srv.addResponse([]interface{}{
+		ghPullRequest(3, "Another PR", "open", []string{"todo"}),
+		ghIssue(4, "Second issue", "open", []string{"todo"}),
+	}, "", 0)
+	// "in progress": only a PR.
+	srv.addResponse([]interface{}{
+		ghPullRequest(5, "PR in progress", "open", []string{"in progress"}),
+	}, "", 0)
+	ts := srv.serveWithPageLink()
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	issues, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"#1", "#4"}, identifiers(issues))
+	assert.Equal(t, 3, srv.calls, "pagination still follows the next link past PR items")
+}
+
+// TestFetchIssuesByStatesClosedSkipsPullRequests pins #70 for the `closed`
+// path: closed or merged pull requests never land in terminal-state lists.
+func TestFetchIssuesByStatesClosedSkipsPullRequests(t *testing.T) {
+	srv := newGHServer(t)
+	srv.addResponse([]interface{}{
+		ghPullRequest(20, "Merged PR", "closed", []string{}),
+		ghIssue(21, "Closed issue", "closed", []string{}),
+		ghPullRequest(22, "Closed PR", "closed", []string{"done"}),
+	}, "", 0)
+	ts := srv.serve()
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	result, err := client.FetchIssuesByStates(context.Background(), []string{"closed"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"#21"}, identifiers(result))
+}
+
+// TestFetchIssuesByStatesLabelSkipsPullRequests covers the label-state branch
+// of FetchIssuesByStates (backlog and other open label states).
+func TestFetchIssuesByStatesLabelSkipsPullRequests(t *testing.T) {
+	srv := newGHServer(t)
+	srv.addResponse([]interface{}{
+		ghPullRequest(30, "PR in backlog", "open", []string{"backlog"}),
+		ghIssue(31, "Backlog issue", "open", []string{"backlog"}),
+	}, "", 0)
+	ts := srv.serve()
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	result, err := client.FetchIssuesByStates(context.Background(), []string{"backlog"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"#31"}, identifiers(result))
+}
+
+// TestFetchPaginatedKeepsIssueWithNullPullRequest guards the predicate: an
+// explicit `"pull_request": null` is an issue, not a pull request.
+func TestFetchPaginatedKeepsIssueWithNullPullRequest(t *testing.T) {
+	item := ghIssue(40, "Issue with null pull_request", "closed", []string{})
+	item["pull_request"] = nil
+	srv := newGHServer(t)
+	srv.addResponse([]interface{}{item}, "", 0)
+	ts := srv.serve()
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	result, err := client.FetchIssuesByStates(context.Background(), []string{"closed"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"#40"}, identifiers(result))
 }
