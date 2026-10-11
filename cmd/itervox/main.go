@@ -86,6 +86,8 @@ Commands:
              --output   output file path (default: WORKFLOW.md)
              --dir      directory to scan (default: .)
              --force    overwrite existing output file
+             --issue-template  add the agent-ready issue template
+                        without asking (GitHub; printed for Linear)
              --update   migrate an existing WORKFLOW.md to the latest
                         schema (writes WORKFLOW.md.bak, extracts inline
                         profile prompts to .itervox/agents/<name>/

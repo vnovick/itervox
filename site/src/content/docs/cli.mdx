@@ -83,13 +83,13 @@ itervox quickstart [--tracker github|linear] [--runner claude|codex] [--dir .] [
 | `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
 | `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
 | `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
-| `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels). |
+| `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels, adding the issue template). |
 | `--no-start` | `false` | Stop after the checks; do not start the daemon. |
 | `--ready-timeout` | `90s` | How long to wait for the daemon to report ready. |
 
 Steps, in order:
 
-1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
+1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. It also offers the [agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
 2. If a daemon is already running for this workflow, print its dashboard URL and stop. Otherwise remove a `HEARTBEAT.md` and `dashboard_url` left behind by a daemon that died (the next daemon rewrites both).
 3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set.
 4. Run `itervox doctor --fix`: missing GitHub state labels are created after confirmation. Any doctor error stops quickstart with the report.
@@ -114,6 +114,7 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 | `--dir` | string | `.` | Directory to scan for repo metadata |
 | `--force` | bool | `false` | Overwrite output file if it already exists |
 | `--update` | bool | `false` | Migrate an existing workflow to the latest schema without requiring `--tracker` |
+| `--issue-template` | bool | `false` | Add the agent-ready issue template without asking: `.github/ISSUE_TEMPLATE/agent-task.md` for GitHub (never over an existing file), printed for Linear. Without it, init asks `[y/N]` when run in a terminal and skips the question otherwise (it never waits on a pipe). With a workflow already at `--output` (and no `--force`), `init --issue-template` adds only the template and changes nothing else. See [Agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). |
 
 ### Auto-detection
 

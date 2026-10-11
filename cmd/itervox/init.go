@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -363,6 +364,9 @@ func runInit(args []string) {
 	// the pass when the env file looks populated; skip when it still has the
 	// placeholder hex chars from the scaffold.
 	analyzeMode := fs.String("analyze", "auto", "init-time dependency analysis: auto | always | never")
+	// #83: write the agent-ready GitHub issue template (or print the Linear
+	// one) without asking. Without it, init asks on stdin; EOF means no.
+	issueTemplate := fs.Bool("issue-template", false, "add the agent-ready issue template without asking (GitHub: .github/ISSUE_TEMPLATE/agent-task.md; Linear: print it)")
 	_ = fs.Parse(args)
 	switch *analyzeMode {
 	case "auto", "always", "never":
@@ -437,6 +441,9 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 
+	if issueTemplateOnly(*output, *dir, *trackerKind, *issueTemplate, *force, os.Stdout) {
+		return // #83: only the template, on an existing workflow
+	}
 	switch *runner {
 	case "claude", "codex":
 		// valid
@@ -484,6 +491,12 @@ func runInit(args []string) {
 	if err := finalizeItervoxGitignore(envDir); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
 	}
+
+	// #83 — after every file init needs is written, so an interrupted
+	// prompt never leaves a half-initialised project. Asked only on a
+	// terminal: init used to be non-interactive, and a pipe that never
+	// closes must not hang it.
+	initIssueTemplateStep(*dir, *trackerKind, *issueTemplate, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
 
 	// Phase 1.3 — best-effort one-shot dependency analysis pass. Default
 	// behaviour ("auto") skips when the .env stub still has placeholder hex
