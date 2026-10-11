@@ -110,6 +110,16 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 // State.ActiveStates and State.TerminalStates are used for comparison; these are
 // snapshotted from cfg under cfgMu at the start of each tick, so no lock is needed here.
 func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
+	return reconcileTrackerStates(ctx, state, tr, events, cleanup, nil, logBuf...)
+}
+
+// reconcileTrackerStates is ReconcileTrackerStates with pendingAfterFetch,
+// which (when non-nil) rebuilds state.ExitPending once the tracker fetch has
+// returned. A worker marks its run before it moves the issue to the
+// completion state, so a fetch that sees the move also sees the mark only
+// if the marks are read after it: read before, a run finishing during the
+// fetch was stopped as if an operator had moved its issue.
+func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, pendingAfterFetch func(State) map[string]bool, logBuf ...*logbuffer.Buffer) State {
 	var buf *logbuffer.Buffer
 	if len(logBuf) > 0 {
 		buf = logBuf[0]
@@ -127,6 +137,9 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 	if err != nil {
 		slog.Warn("reconciliation: tracker refresh failed, keeping workers", "error", err)
 		return state
+	}
+	if pendingAfterFetch != nil {
+		state.ExitPending = pendingAfterFetch(state)
 	}
 
 	byID := make(map[string]string, len(refreshed))
