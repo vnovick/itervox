@@ -24,6 +24,18 @@ Each profile card shows:
 
 Below the configured profiles, **starter templates** (Code Reviewer, QA Engineer, Input Responder) let you bootstrap common profiles with one click. Editing a schema `2` profile in the dashboard writes the profile's `SOUL.md` and `INSTRUCTIONS.md` files separately; the old inline `prompt` field is compatibility-only.
 
+### Autocomplete in the prompt editor
+
+The SOUL, INSTRUCTIONS and automation instruction editors suggest what you can reference as you type:
+
+| Type | Suggests | Inserted |
+|---|---|---|
+| `/` or `@` at the start of a word (or after `(`) | Skills and subagents from the [skills inventory](/guides/skills-inventory/): project, user and plugin, each with its description and source | The name, after the `/` or `@` you typed |
+| `{{` | The Liquid variables profile prompts get: `issue.*`, `attempt` and `run.*` (automation instructions also get `trigger.*`) | The variable, and a closing ` }}` when there is none |
+| `\|` inside `{{ … }}` | Common Liquid filters (`default`, `downcase`, `replace`, `join`, …) | The filter name |
+
+Use the arrow keys to move through the list, Enter to insert, and Escape to close it (a second Escape closes the dialog). Tab still moves focus. Moving the caret away closes the list, and Enter then types a newline. The list is announced to screen readers with the number of suggestions. Skills and subagents come from the inventory scan: if the editor opened before the daemon's first scan finished, click **Re-scan** (or **Run first scan**) on the Skills card, or reopen the page, to see them. A plugin skill with the same name as a project or user skill is listed once.
+
 ## How profiles work
 
 When an issue has a profile assigned (via the Agents page or API), Itervox renders that profile's `SOUL.md` and `INSTRUCTIONS.md` through the Liquid template engine and **always appends** them to the rendered `WORKFLOW.md` prompt. No `agent_mode` flag is needed — profile files inject unconditionally.
