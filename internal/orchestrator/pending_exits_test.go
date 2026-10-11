@@ -86,3 +86,43 @@ func TestWorkerMarksRunBeforeMovingToCompletion(t *testing.T) {
 		t.Fatal("the worker never moved the issue to the completion state")
 	}
 }
+
+// completingDuringFetchTracker plays a worker that finishes while
+// reconciliation's tracker fetch is in flight: during the fetch it marks the
+// run finishing and then moves the issue to the completion state, in the
+// worker's order (mark, then move).
+type completingDuringFetchTracker struct {
+	*tracker.MemoryTracker
+	o *Orchestrator
+}
+
+func (c *completingDuringFetchTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]domain.Issue, error) {
+	c.o.exitsSent.Store("id1", time.Now())
+	if err := c.UpdateIssueState(ctx, "id1", "Done"); err != nil {
+		return nil, err
+	}
+	return c.MemoryTracker.FetchIssueStatesByIDs(ctx, ids)
+}
+
+// TestReconcileReadsPendingExitsAfterTheFetch (#89 review): a run that starts
+// finishing while the tick's tracker fetch is in flight is left to its own
+// exit. The pending marks used to be read before the fetch, so a fetch that
+// already saw the completion move stopped the run, and its success exit then
+// found no Running entry.
+func TestReconcileReadsPendingExitsAfterTheFetch(t *testing.T) {
+	cfg := dependencyAuditConfig()
+	cfg.Tracker.TerminalStates = []string{"Done"}
+	mt := tracker.NewMemoryTracker([]domain.Issue{{ID: "id1", Identifier: "ENG-1", Title: "T", State: "In Progress"}},
+		cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	tr := &completingDuringFetchTracker{MemoryTracker: mt}
+	o := New(cfg, tr, nil, nil)
+	tr.o = o
+	state := NewState(cfg)
+	state.TerminalStates = []string{"Done"}
+	state.Running["id1"] = &RunEntry{Issue: domain.Issue{ID: "id1", Identifier: "ENG-1", State: "In Progress"}, StartedAt: time.Now().Add(-time.Minute)}
+	events := make(chan OrchestratorEvent, 4)
+
+	state = reconcileTrackerStates(t.Context(), state, tr, events, nil, o.pendingExits)
+	assert.Contains(t, state.Running, "id1", "the finishing run is left to its own exit")
+	assert.Empty(t, events, "no reconciliation exit")
+}
