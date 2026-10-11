@@ -958,6 +958,18 @@ export const SkillSchema = z.object({
   TriggerPatterns: z.array(z.string()).nullable().optional(),
 });
 
+// Claude Code subagent from .claude/agents (project / user) or a plugin (#86).
+export const SubagentSchema = z.object({
+  Name: z.string(),
+  Description: z.string().optional(),
+  Tools: z.array(z.string()).nullable().optional(),
+  Model: z.string().optional(),
+  Provider: z.string(),
+  Source: z.string(),
+  FilePath: z.string().optional(),
+  ApproxTokens: z.number(),
+});
+
 export const InstructionDocSchema = z.object({
   Name: z.string(),
   Provider: z.string(),
@@ -1036,6 +1048,7 @@ export const InventorySchema = z.object({
   ScanError: z.string().optional(),
   Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
+  Subagents: z.array(SubagentSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
   Hooks: z.array(HookEntrySchema).nullable().optional(),
@@ -1046,6 +1059,7 @@ export const InventorySchema = z.object({
 });
 
 export type Skill = z.infer<typeof SkillSchema>;
+export type Subagent = z.infer<typeof SubagentSchema>;
 export type InstructionDocEntry = z.infer<typeof InstructionDocSchema>;
 export type HookEntry = z.infer<typeof HookEntrySchema>;
 export type MCPServer = z.infer<typeof MCPServerSchema>;

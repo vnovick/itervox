@@ -13,6 +13,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
+	"github.com/vnovick/itervox/internal/skills"
 )
 
 // runDoctor is the entrypoint for `itervox doctor`. It runs a fast preflight
@@ -137,6 +138,9 @@ type DoctorReport struct {
 	// LabelFixError is why `doctor --fix` did not finish repairing the
 	// labels (a failed create or re-check). Non-empty means exit 1.
 	LabelFixError string
+	// ProfileRefIssues are skill / subagent references in profile prompts
+	// that do not resolve (#86). Warnings only: they never fail doctor.
+	ProfileRefIssues []skills.InventoryIssue
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -293,6 +297,11 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		}
 	}
 
+	// Skill and subagent references in profile prompts.
+	if cfg != nil {
+		report.ProfileRefIssues = checkProfileRefs(cfg, workflowPath)
+	}
+
 	// GitHub state labels: one read through the tracker client. An API
 	// failure is reported but never fails doctor.
 	if cfg != nil {
@@ -407,6 +416,7 @@ func renderDoctorReport(r DoctorReport) string {
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}
+	renderProfileRefIssues(&b, r.ProfileRefIssues)
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
