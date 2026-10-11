@@ -62,6 +62,18 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: itervox [command] [flags]
 
 Commands:
+  quickstart  From a repository to a running board in one command:
+          detect the tracker and agent CLI, write (or migrate) WORKFLOW.md,
+          set up the tracker token and GitHub labels (asks first), run
+          doctor, start the daemon in the background and print the URL.
+             --tracker  github|linear  (default: detected)
+             --runner   claude|codex   (default: detected)
+             --dir      repository directory (default: .)
+             --workflow workflow path (default: <dir>/WORKFLOW.md)
+             --yes, -y  answer yes to every confirmation
+             --no-start run the checks only; do not start the daemon
+             --ready-timeout  how long to wait for the daemon (default: 90s)
+
   init    Scan a repository and generate a WORKFLOW.md starter file,
           or migrate an existing one with --update.
              --tracker  linear|github  (required for new workflows)
@@ -367,6 +379,9 @@ func main() {
 			return
 		case "doctor":
 			runDoctor(os.Args[2:])
+			return
+		case "quickstart":
+			runQuickstart(os.Args[2:])
 			return
 		case "models":
 			runModels(os.Args[2:])

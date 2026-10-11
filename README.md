@@ -341,21 +341,14 @@ hooks:
 # 1. Install
 brew tap vnovick/tap && brew install itervox
 
-# 2. Scaffold a WORKFLOW.md from your repo metadata
+# 2. From your repository to a running board
 cd path/to/your/project
-itervox init --tracker linear      # or: --tracker github
-
-# 3. Store credentials (auto-loaded, gitignored)
-mkdir -p .itervox
-cat > .itervox/.env <<'EOF'
-LINEAR_API_KEY=lin_api_...
-# GITHUB_TOKEN=ghp_...
-EOF
-
-# 4. Run it
-itervox
-open http://127.0.0.1:8090
+itervox quickstart
 ```
+
+`itervox quickstart` detects the tracker (Linear when `LINEAR_API_KEY` is set, otherwise GitHub from the `origin` remote) and the agent CLI (`claude`, else `codex`), writes a schema-2 `WORKFLOW.md`, offers your `gh` token and creates missing GitHub state labels (it asks first), runs `itervox doctor`, then starts the daemon in the background and prints the dashboard URL and where the API token is stored. Re-running it is safe. For Linear, put `LINEAR_API_KEY=lin_api_...` in `.itervox/.env` first.
+
+Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the key in `.itervox/.env`, run `itervox`, and read the dashboard URL from `.itervox/dashboard_url` (the scaffold uses an OS-assigned port).
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/cli-init-output.png" width="720" alt="itervox init terminal output" />
@@ -365,6 +358,7 @@ open http://127.0.0.1:8090
 
 | Command | Description |
 |---|---|
+| `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
 | `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
