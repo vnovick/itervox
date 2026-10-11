@@ -719,6 +719,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// #129: the user and project settings files sit under the front matter.
+	layers, err := readSettingsLayers(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(layers) > 0 {
+		wf.Config, _ = mergeLayers(wf.Config, layers)
+	}
 	// Reject removed fields loudly so operators see a clear migration error
 	// instead of silently-changed behavior. (`agent_mode` + `enable_agent_teams`
 	// were removed in favor of always-on profile prompt + subagent roster
@@ -1364,6 +1372,12 @@ func parseAvailableModels(raw map[string]any) map[string][]ModelOption {
 // --- helpers ---
 
 func nestedMap(m map[string]any, key string) map[string]any {
+	child := nestedMapValue(m, key)
+	noteSection(m, key, child)
+	return child
+}
+
+func nestedMapValue(m map[string]any, key string) map[string]any {
 	if m == nil {
 		return map[string]any{}
 	}
@@ -1385,10 +1399,18 @@ func nestedMap(m map[string]any, key string) map[string]any {
 }
 
 func mapField(m map[string]any, key string) map[string]any {
-	return nestedMap(m, key)
+	child := nestedMap(m, key)
+	noteSetting(m, key, child)
+	return child
 }
 
 func stringMapField(m map[string]any, key string, defaultVal map[string]string) map[string]string {
+	v := stringMapFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func stringMapFieldValue(m map[string]any, key string, defaultVal map[string]string) map[string]string {
 	if m == nil {
 		return defaultVal
 	}
@@ -1412,6 +1434,12 @@ func stringMapField(m map[string]any, key string, defaultVal map[string]string) 
 }
 
 func strField(m map[string]any, key, defaultVal string) string {
+	v := strFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func strFieldValue(m map[string]any, key, defaultVal string) string {
 	if m == nil {
 		return defaultVal
 	}
@@ -1427,6 +1455,12 @@ func strField(m map[string]any, key, defaultVal string) string {
 }
 
 func intField(m map[string]any, key string, defaultVal int) int {
+	v := intFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func intFieldValue(m map[string]any, key string, defaultVal int) int {
 	if m == nil {
 		return defaultVal
 	}
@@ -1442,6 +1476,12 @@ func intField(m map[string]any, key string, defaultVal int) int {
 }
 
 func floatField(m map[string]any, key string, defaultVal float64) float64 {
+	v := floatFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func floatFieldValue(m map[string]any, key string, defaultVal float64) float64 {
 	if m == nil {
 		return defaultVal
 	}
@@ -1457,6 +1497,12 @@ func floatField(m map[string]any, key string, defaultVal float64) float64 {
 }
 
 func boolField(m map[string]any, key string, defaultVal bool) bool {
+	v := boolFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func boolFieldValue(m map[string]any, key string, defaultVal bool) bool {
 	if m == nil {
 		return defaultVal
 	}
@@ -1472,7 +1518,13 @@ func boolField(m map[string]any, key string, defaultVal bool) bool {
 }
 
 func positiveIntField(m map[string]any, key string, defaultVal int) int {
-	n := intField(m, key, 0)
+	v := positiveIntFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func positiveIntFieldValue(m map[string]any, key string, defaultVal int) int {
+	n := intFieldValue(m, key, 0)
 	if n <= 0 {
 		return defaultVal
 	}
@@ -1480,6 +1532,12 @@ func positiveIntField(m map[string]any, key string, defaultVal int) int {
 }
 
 func strSliceField(m map[string]any, key string, defaultVal []string) []string {
+	v := strSliceFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func strSliceFieldValue(m map[string]any, key string, defaultVal []string) []string {
 	if m == nil {
 		return defaultVal
 	}

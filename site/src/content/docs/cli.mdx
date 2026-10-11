@@ -231,6 +231,18 @@ itervox secret list [--workflow WORKFLOW.md]
 
 ---
 
+## `itervox config` — Settings and where they come from
+
+```bash
+itervox config show [--workflow WORKFLOW.md] [--json]
+itervox config set KEY VALUE [--user] [--workflow WORKFLOW.md]
+itervox config unset KEY [--user] [--workflow WORKFLOW.md]
+```
+
+`show` prints every setting Itervox reads with its effective value and the layer it came from: `default`, `user` (`~/.itervox/settings.jsonc`), `project` (`.itervox/settings.jsonc`), `workflow` (`WORKFLOW.md`) or `environment` (the server bind variables). Keys a layer sets that Itervox does not read, and wrong-typed values it ignored, carry a note. Secrets are hidden. `set` and `unset` edit the project file, or the user file with `--user`, keeping its comments; a wrong-typed value, or a change the workflow does not load with, is refused and nothing changes. See [Settings files](/configuration/#settings-files-jsonc-layers).
+
+---
+
 ## `itervox clear` — Remove workspace directories
 
 Removes git worktree workspace directories that Itervox created under the workspace root configured in `WORKFLOW.md`.
@@ -303,6 +315,7 @@ itervox -h
 |----------|---------|-------------|
 | `ITERVOX_DRY_RUN` | `""` | Set to `"1"` to enable dry-run mode. The orchestrator logs dispatch decisions but does **not** start agent workers. Useful for verifying configuration and dispatch logic without consuming API tokens. |
 | `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The dashboard URL that carries the token is printed to stderr once, only when stderr is a terminal (see `ITERVOX_PRINT_TOKEN`); an auto-generated token is also written to `<logs-dir>/api-token` (mode 0600, rewritten on every start), which is where a headless run (systemd, containers) finds it. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
+| `ITERVOX_USER_SETTINGS` | `""` | Path of the user [settings file](/configuration/#settings-files-jsonc-layers) instead of `~/.itervox/settings.jsonc`; `off` turns the user layer off. |
 | `ITERVOX_PRINT_TOKEN` | `""` | `1`/`true` prints the tokenised dashboard URL on stderr even when stderr is not a terminal; `0`/`false` suppresses it even on a terminal. Unset: printed only on a terminal. `-no-print-token` always wins. |
 
 ### Auto-loading
