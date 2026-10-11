@@ -1,0 +1,95 @@
+// Generator for the v0.2.1 upgrade fixture's ledgers (#138).
+//
+// The ledgers are written by v0.2.1's own persistence code, not by hand, so
+// the fixture is exactly what a v0.2.1 daemon leaves behind. To regenerate:
+//
+//	git worktree add --detach /tmp/itervox-v021 v0.2.1
+//	cp cmd/itervox/testdata/upgrade/v0.2.1/gen_ledgers_test.go.txt \
+//	   /tmp/itervox-v021/internal/orchestrator/zz_gen_ledgers_test.go
+//	cd /tmp/itervox-v021 && FIXTURE_OUT=<abs path of .../v0.2.1/project> \
+//	   go test -run '^TestGenerateUpgradeFixtureLedgers$' ./internal/orchestrator/
+//
+// WORKFLOW.md and .itervox/agents/ come from v0.2.1's
+// `itervox init --tracker github --runner claude` (its .itervox/.env is not
+// kept).
+package orchestrator
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/vnovick/itervox/internal/outbox"
+)
+
+func TestGenerateUpgradeFixtureLedgers(t *testing.T) {
+	out := os.Getenv("FIXTURE_OUT")
+	if out == "" {
+		t.Skip("FIXTURE_OUT not set")
+	}
+	logs := filepath.Join(out, "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	o := &Orchestrator{}
+	o.SetPausedFile(filepath.Join(logs, "paused.json"))
+	o.SetBackendHealthFile(filepath.Join(logs, "backend_health.json"))
+	o.SetPendingReviewsFile(filepath.Join(logs, "pending_reviews.json"))
+	o.SetInputRequiredFile(filepath.Join(logs, "input_required.json"))
+	o.SetHistoryFile(filepath.Join(logs, "history.json"))
+	o.SetHistoryKey("github:owner/repo")
+
+	o.savePausedToDisk(map[string]string{"#7": "7"})
+	o.savePauseReasonsToDisk(map[string]string{"#7": "retries_exhausted"})
+
+	state := State{
+		BackendHealth: map[string]BackendHealthEntry{
+			BackendHealthKey("claude", ""): {
+				Backend: "claude", Status: BackendStatusLimited, Kind: "quota",
+				LimitType: "five_hour", Source: "rate_limit_event",
+				LimitedUntil: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), ResetKnown: true,
+				Since: at, Hits: 2, LastIssue: "#9",
+			},
+		},
+		PendingReviews: map[string]PendingReview{
+			"#11": {IssueID: "11", Identifier: "#11", Profile: "reviewer", QueuedAt: at, IssueState: "in-review"},
+		},
+	}
+	o.saveBackendHealthToDisk(&state)
+	o.savePendingReviews(&state)
+
+	o.saveInputRequiredToDisk(map[string]*InputRequiredEntry{
+		"#5": {
+			IssueID: "5", Identifier: "#5", SessionID: "sess-5", Context: "Which database should I use?",
+			Backend: "claude", Command: "claude", ProfileName: "implementer", QueuedAt: at,
+		},
+	}, nil)
+
+	o.addCompletedRun(CompletedRun{
+		Identifier: "#3", Title: "Add a health check", StartedAt: at, FinishedAt: at.Add(10 * time.Minute),
+		ElapsedMs: 600000, TurnCount: 12, TotalTokens: 52000, InputTokens: 50000, OutputTokens: 2000,
+		Status: "succeeded", Backend: "claude", ProfileName: "implementer", SessionID: "sess-3",
+		Kind: "worker", ProjectKey: "github:owner/repo",
+	})
+
+	ob, err := outbox.New(filepath.Join(out, ".itervox", "outbox.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindUpdateState, IssueID: "8", Identifier: "#8",
+		TargetState: "in-review", FromState: "in-progress", EnqueuedAt: at, NextAttemptAt: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ob.Enqueue(outbox.Entry{
+		Kind: outbox.KindCreateComment, IssueID: "8", Identifier: "#8",
+		Body: "Opened a pull request.", CommentKey: "4b1d2c3e-5f60-4718-8a9b-0c1d2e3f4a5b",
+		EnqueuedAt: at, NextAttemptAt: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
