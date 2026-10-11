@@ -109,11 +109,11 @@ profiles:
 |---|---|---|
 | `issue.identifier` | string | Issue ID (e.g. `"ENG-42"`, `"#123"`) |
 | `issue.title` | string | Issue title |
-| `issue.description` | string | Issue body (may be empty) |
+| `issue.description` | string | Issue body. Empty prints as nothing; `{% if issue.description %}` skips its block |
 | `issue.url` | string | Full URL to the issue |
 | `issue.branch_name` | string | Suggested git branch name |
 | `issue.labels` | string[] | Labels attached to the issue |
-| `issue.priority` | string | Priority label |
+| `issue.priority` | number | Priority (lower is more urgent). Unset when the issue has none: use `{{ issue.priority \| default: "none" }}` |
 | `issue.comments` | object[] | Comments (`author_name`, `body`) |
 | `issue.state` | string | Current issue state |
 | `issue.blocked_by` | object[] | Blocking issues (`id`, `identifier`, `state`) |

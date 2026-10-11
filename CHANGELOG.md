@@ -32,6 +32,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **An issue with an empty description no longer fails its prompt** (#102). `{{ issue.description }}`, `{{ issue.url }}` and `{{ issue.branch_name }}` print as nothing when empty, instead of failing the dispatch with `undefined variable` under strict variables; `{% if issue.description %}` still skips its block, and a misspelt variable such as `{{ issue.descripton }}` still fails. The Linear guide's example prompt, which printed the description unguarded, now works on issues without one.
+
 - **Itervox runs on its own repository** (#78). The repo's `WORKFLOW.md` is migrated to schema 2 (comments kept). `before_run` only fetches, and fast-forwards `main` when the workspace is still on it, so a resumed or retried run keeps its branch and unpushed work. The prompt checks out an existing issue branch (local or pushed) before creating one, and runs `make verify` instead of `go test ./...`. The `go-toolchain-sync` skill's description is quoted so strict YAML (and the skills inventory) can read it.
 
 - **Reviewer runs are no longer stopped on an in-review issue** (found while doing #79). A reviewer is dispatched on an issue the implementer just moved to `tracker.completion_state`, usually a state that is neither active nor terminal (`in-review`), and reconciliation stopped any run on such an issue, so a review could be cut off before it finished. Reviewer runs now keep running while the issue is in `completion_state`; any other non-active state (an operator moving it to backlog) or a terminal state still stops them.
