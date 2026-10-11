@@ -516,6 +516,10 @@ type AgentConfig struct {
 	// When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
+	// PRFooter appends a one-line "Shipped with Itervox" footer to each pull
+	// request an agent run produces, once per PR (#81). Off by default.
+	// YAML key: agent.pr_footer.
+	PRFooter bool
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -828,6 +832,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Agent.BackendFallback = backendFallback
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
+	cfg.Agent.PRFooter = boolField(agent, "pr_footer", false)
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err

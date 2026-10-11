@@ -158,3 +158,20 @@ func (o *Orchestrator) retargetPRBase(ctx context.Context, identifier, prURL, ba
 		}
 	}
 }
+
+// addPRFooter appends the "Shipped with Itervox" footer to prURL once
+// (agent.pr_footer, #81). Best-effort: a gh failure is logged.
+func (o *Orchestrator) addPRFooter(ctx context.Context, identifier, prURL string) {
+	ensure := o.ensurePRFooter
+	if ensure == nil {
+		ensure = workspace.EnsurePRFooter
+	}
+	added, err := ensure(ctx, prURL)
+	switch {
+	case err != nil:
+		slog.Warn("orchestrator: could not add the pull request footer (non-fatal)",
+			"identifier", identifier, "pr_url", prURL, "error", err)
+	case added:
+		slog.Info("orchestrator: pull request footer added", "identifier", identifier, "pr_url", prURL)
+	}
+}

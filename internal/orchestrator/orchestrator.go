@@ -355,6 +355,9 @@ type Orchestrator struct {
 	// Tests replace them.
 	findOpenPRURL func(ctx context.Context, wsPath string) string
 	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
+	// means workspace.EnsurePRFooter.
+	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)
 
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather

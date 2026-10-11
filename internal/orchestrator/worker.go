@@ -919,6 +919,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		baseCancel()
 	}
 
+	// agent.pr_footer (#81): credit Itervox once on the PR this run produced.
+	// Only a PR found on the worktree's own branch counts (prCtx == nil): a
+	// PR that is merely linked from the issue may be a person's, and its
+	// body is not Itervox's to edit. PRFooter is read-only after startup, so
+	// no lock is taken.
+	if o.cfg.Agent.PRFooter && prCtx == nil && detectedPRURL != "" && !automationRun {
+		footerCtx, footerCancel := context.WithTimeout(context.Background(), postRunTimeout)
+		o.addPRFooter(footerCtx, issue.Identifier, detectedPRURL)
+		footerCancel()
+	}
+
 	// Build session summary once — reused for handoff synthesis, the PR
 	// comment, and the tracker comment. V2-3: sessionCommentForRun returns ""
 	// when the final output begins with [SILENT], suppressing every comment

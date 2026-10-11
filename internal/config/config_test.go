@@ -1669,3 +1669,22 @@ func TestDependenciesAutoAnalyzeIntervalsParsed(t *testing.T) {
 		assert.Equal(t, config.DefaultDependenciesAutoAnalyzeDebounceMinutes, cfg.Dependencies.AutoAnalyzeDebounceMinutes)
 	})
 }
+
+// TestAgentPRFooter (#81): agent.pr_footer parses and defaults to off.
+func TestAgentPRFooter(t *testing.T) {
+	for _, tc := range []struct {
+		name, agentBlock string
+		want             bool
+	}{
+		{"absent", "", false},
+		{"true", "agent:\n  pr_footer: true\n", true},
+		{"false", "agent:\n  pr_footer: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\n" + tc.agentBlock + "---\n\nPrompt.\n"
+			cfg, err := config.Load(workflowWithContent(t, content))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Agent.PRFooter)
+		})
+	}
+}
