@@ -238,6 +238,14 @@ var settingAliases = map[string]string{
 	"server.allow_unauthenticated_lan": "server.allow_unauthenticated",
 }
 
+// SettingAlias returns the other spelling of a layered setting key
+// ("server.allow_unauthenticated" ↔ "server.allow_unauthenticated_lan"), if
+// it has one. A save that moves a key out of WORKFLOW.md moves both spellings.
+func SettingAlias(key string) (string, bool) {
+	alt, ok := settingAliases[key]
+	return alt, ok
+}
+
 func asStringMap(v any) (map[string]any, bool) {
 	switch t := v.(type) {
 	case map[string]any:

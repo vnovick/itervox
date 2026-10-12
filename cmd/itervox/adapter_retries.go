@@ -11,7 +11,7 @@ import (
 // under its size-budget cap. All methods follow the persist-then-mutate
 // convention enforced by adapter_convention_test.go.
 
-// SetMaxRetries persists agent.max_retries to WORKFLOW.md, then applies the
+// SetMaxRetries persists agent.max_retries (persistSettings), then applies the
 // change to the orchestrator. Negative values are clamped to 0 (unlimited).
 func (a *orchestratorAdapter) SetMaxRetries(n int) error {
 	unlock, lockErr := a.beginSettingsSave()
@@ -64,7 +64,7 @@ func (a *orchestratorAdapter) FailedState() string {
 }
 
 // SetMaxSwitchesPerIssuePerWindow persists agent.max_switches_per_issue_per_window
-// to WORKFLOW.md, then applies the change to the orchestrator. Negative values
+// (persistSettings), then applies the change to the orchestrator. Negative values
 // are clamped to 0 (= unlimited). Gap E.
 func (a *orchestratorAdapter) SetMaxSwitchesPerIssuePerWindow(n int) error {
 	unlock, lockErr := a.beginSettingsSave()
@@ -86,7 +86,7 @@ func (a *orchestratorAdapter) MaxSwitchesPerIssuePerWindow() int {
 	return a.orch.MaxSwitchesPerIssuePerWindowCfg()
 }
 
-// SetSwitchWindowHours persists agent.switch_window_hours to WORKFLOW.md, then
+// SetSwitchWindowHours persists agent.switch_window_hours (persistSettings), then
 // applies the change to the orchestrator. Values <= 0 normalise to 6h. Gap E.
 func (a *orchestratorAdapter) SetSwitchWindowHours(h int) error {
 	unlock, lockErr := a.beginSettingsSave()
