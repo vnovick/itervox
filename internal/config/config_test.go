@@ -312,11 +312,13 @@ func TestTrackerStoreConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, cfg.Tracker.Store.Enabled)
 	assert.Equal(t, 60000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 3600000, cfg.Tracker.Store.FullSyncIntervalMs, "#114: a full pull hourly by default")
 
-	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n")))
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n    full_sync_interval_ms: 900000\n")))
 	require.NoError(t, err)
 	assert.True(t, cfg.Tracker.Store.Enabled)
 	assert.Equal(t, 120000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 900000, cfg.Tracker.Store.FullSyncIntervalMs)
 }
 
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {

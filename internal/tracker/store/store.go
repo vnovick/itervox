@@ -18,8 +18,18 @@
 //     applied to the store and saved at once, so the next tick, and a
 //     restart, see it; the next sync is authoritative.
 //
-// A sync is a full pull: FetchCandidateIssues plus FetchIssuesByStates for
-// each view. Incremental pulls are #114. The store is written atomically after
+// A full pull is FetchCandidateIssues plus FetchIssuesByStates for each
+// view. Between full pulls, an adapter that implements
+// tracker.IncrementalFetcher is asked only for the issues updated since the
+// last pull (#114): one paginated request, whose results are placed by state
+// (an issue closed or moved out of the active states leaves the candidate
+// list; one that was trashed, archived or lost its tracked state leaves the
+// store). The cursor is the newest update time the tracker reported, so
+// clocks never need to agree; it is saved with the store, and a failed pull
+// keeps it and retries with backoff. A full pull still runs every
+// Config.FullSyncInterval to catch what an update listing cannot show (an
+// issue moved to another project or repository, a deleted GitHub issue).
+// The store is written atomically after
 // every successful sync and loaded at startup, so a restart serves at once;
 // only a cold start (no file, or one for another tracker scope) pulls before
 // the first read is answered, and it pulls exactly once however many readers
@@ -34,6 +44,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -72,6 +83,10 @@ type Config struct {
 	// SyncInterval is how often Run re-pulls: tracker.store.sync_interval_ms,
 	// or the webhook safety-net interval when webhooks are on (#131).
 	SyncInterval time.Duration
+	// FullSyncInterval is how often a pull is a full one even when the
+	// adapter can pull incrementally (#114): tracker.store.full_sync_interval_ms
+	// (zero: DefaultFullSyncInterval).
+	FullSyncInterval time.Duration
 	// NudgeDelay is how long Run waits after RequestSync before pulling
 	// (zero: DefaultNudgeDelay).
 	NudgeDelay time.Duration
@@ -97,6 +112,10 @@ type storeFile struct {
 	Candidates []string
 	Views      []*view
 	Issues     map[string]domain.Issue
+	// Cursor and FullAt (#114): the newest update time seen and when the
+	// last full pull ran. A file without them makes the next pull full.
+	Cursor time.Time `json:",omitzero"`
+	FullAt time.Time `json:",omitzero"`
 }
 
 // Store is the local tracker store. Build it with Wrap.
@@ -133,7 +152,16 @@ type Store struct {
 	// nudge asks Run for a pull soon (RequestSync, #131); buffered so a
 	// request made while one is pending coalesces with it.
 	nudge chan struct{}
+
+	// cursor is the newest UpdatedAt the tracker reported (#114): the next
+	// incremental pull asks for the issues updated since. Zero means the
+	// next pull is full. fullAt is when the last full pull committed.
+	cursor time.Time
+	fullAt time.Time
 }
+
+// DefaultFullSyncInterval is Config.FullSyncInterval when unset.
+const DefaultFullSyncInterval = time.Hour
 
 // The adapters' optional interfaces the base Store forwards. Wrap refuses an
 // adapter without them, so a type assertion on the store answers exactly as
@@ -221,6 +249,7 @@ func (s *Store) load() {
 		}
 	}
 	s.syncedAt = f.SyncedAt
+	s.cursor, s.fullAt = f.Cursor, f.FullAt
 	s.synced = true
 }
 
@@ -252,6 +281,7 @@ func (s *Store) Run(ctx context.Context) {
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	var lastNudged time.Time
+	failures := 0
 	for {
 		trigger := metrics.StorePullInterval
 		select {
@@ -283,9 +313,14 @@ func (s *Store) Run(ctx context.Context) {
 		// A cold pull may already have been made by a reader that got
 		// there first; it is the one full pull a cold start makes.
 		err := s.sync(ctx, cold, trigger)
-		cold = false
+		next := s.cfg.SyncInterval
 		if err != nil && ctx.Err() == nil {
-			slog.Warn("tracker store: sync failed, serving the last pull", "error", err)
+			failures++
+			next = retryDelay(failures, s.cfg.SyncInterval)
+			slog.Warn("tracker store: sync failed, serving the last pull", "error", err, "retry_in", next)
+		} else {
+			cold = false
+			failures = 0
 		}
 		if !t.Stop() {
 			select {
@@ -293,8 +328,17 @@ func (s *Store) Run(ctx context.Context) {
 			default:
 			}
 		}
-		t.Reset(s.cfg.SyncInterval)
+		t.Reset(next)
 	}
+}
+
+// RetryBase is the wait before the first retry of a failed pull (#114);
+// each further failure doubles it, up to the sync interval. The cursor is
+// kept, so the retry asks for everything since the last good pull.
+var RetryBase = 5 * time.Second
+
+func retryDelay(failures int, interval time.Duration) time.Duration {
+	return min(RetryBase<<min(failures-1, 16), interval)
 }
 
 // MinNudgeGap is the least time between two pulls RequestSync asks for.
@@ -482,6 +526,11 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	}
 	metrics.StorePull(trigger)
 	startGen, startScope := s.gen, s.scope
+	if inc, ok := s.up.(tracker.IncrementalFetcher); ok && s.incrementalDueLocked() {
+		since := s.cursor
+		s.mu.Unlock()
+		return s.pullChanges(ctx, inc, since, startGen, startScope)
+	}
 	ttl := viewTTLSyncs * s.cfg.SyncInterval
 	type pull struct {
 		key    string
@@ -545,6 +594,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	}
 	old := s.issues
 	s.issues, s.candidates = issues, candidates
+	s.cursor, s.fullAt = newestUpdate(issues), s.now()
 	// A local change made after this pull began is newer than what it
 	// read: put it back.
 	for id, g := range s.touched {
@@ -566,6 +616,126 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	return true, nil
 }
 
+// incrementalDueLocked reports whether the next pull may be incremental
+// (#114): the store holds a full pull with a cursor, and the last full pull
+// is less than FullSyncInterval old. Caller holds mu.
+func (s *Store) incrementalDueLocked() bool {
+	full := s.cfg.FullSyncInterval
+	if full <= 0 {
+		full = DefaultFullSyncInterval
+	}
+	return s.synced && !s.cursor.IsZero() && s.now().Sub(s.fullAt) < full
+}
+
+// pullChanges is an incremental pull (#114): the issues updated since the
+// cursor are placed by state, the ones gone from the scope are dropped, and
+// the cursor moves to the newest update seen. A local change made after the
+// pull began is newer than what it read and is kept. Nothing is written when
+// nothing changed. Caller holds syncMu.
+func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher, since time.Time, startGen, startScope int64) (bool, error) {
+	changed, gone, err := inc.FetchIssuesUpdatedSince(ctx, since)
+	if err != nil {
+		s.mu.Lock()
+		s.lastErr = err
+		s.mu.Unlock()
+		return false, err
+	}
+	s.mu.Lock()
+	if s.scope != startScope {
+		s.mu.Unlock()
+		return false, nil
+	}
+	dirty := false
+	cursor := s.cursor
+	for _, iss := range changed {
+		if iss.UpdatedAt != nil && iss.UpdatedAt.After(cursor) {
+			cursor = *iss.UpdatedAt
+		}
+		if s.touched[iss.ID] > startGen {
+			continue
+		}
+		if cur, ok := s.issues[iss.ID]; ok && sameListing(cur, iss) {
+			continue
+		}
+		s.placeLocked(iss)
+		dirty = true
+	}
+	// After every issue is placed, so a blocked issue listed in the same
+	// pull does not overwrite its blocker's newer state.
+	for _, iss := range changed {
+		if s.patchBlockersLocked(iss) {
+			dirty = true
+		}
+	}
+	for _, id := range gone {
+		if s.touched[id] > startGen {
+			continue
+		}
+		if _, ok := s.issues[id]; ok {
+			s.dropLocked(id)
+			dirty = true
+		}
+	}
+	for id, g := range s.touched {
+		if g <= startGen {
+			delete(s.touched, id)
+			delete(s.removed, id)
+		}
+	}
+	moved := !cursor.Equal(s.cursor)
+	s.cursor = cursor
+	s.synced, s.syncedAt, s.lastErr = true, s.now(), nil
+	s.mu.Unlock()
+	if dirty || moved {
+		s.persist()
+	}
+	return true, nil
+}
+
+// sameListing reports whether a listing of an issue matches the stored copy.
+// Comments are left out: a detail read stores them, a listing never has them.
+func sameListing(stored, listed domain.Issue) bool {
+	stored.Comments, listed.Comments = nil, nil
+	return reflect.DeepEqual(stored, listed)
+}
+
+// patchBlockersLocked updates the blocker state other stored issues record
+// for changed: an incremental pull returns the blocker, not the issues it
+// blocks, whose own update time did not move. Reports whether it changed
+// any. Caller holds mu.
+func (s *Store) patchBlockersLocked(changed domain.Issue) (any bool) {
+	for id, other := range s.issues {
+		patched := false
+		for i, b := range other.BlockedBy {
+			if b.ID == nil || *b.ID != changed.ID || (b.State != nil && *b.State == changed.State) {
+				continue
+			}
+			if !patched {
+				other.BlockedBy = slices.Clone(other.BlockedBy)
+				patched = true
+			}
+			st := changed.State
+			other.BlockedBy[i].State = &st
+		}
+		if patched {
+			s.issues[id] = other
+			any = true
+		}
+	}
+	return any
+}
+
+// newestUpdate is the latest UpdatedAt among issues, or zero.
+func newestUpdate(issues map[string]domain.Issue) time.Time {
+	var newest time.Time
+	for _, iss := range issues {
+		if iss.UpdatedAt != nil && iss.UpdatedAt.After(newest) {
+			newest = *iss.UpdatedAt
+		}
+	}
+	return newest
+}
+
 // fileLocked is the persisted form of the current data. Caller holds mu.
 func (s *Store) fileLocked() []byte {
 	f := storeFile{
@@ -574,6 +744,8 @@ func (s *Store) fileLocked() []byte {
 		SyncedAt:   s.syncedAt,
 		Candidates: s.candidates,
 		Issues:     s.issues,
+		Cursor:     s.cursor,
+		FullAt:     s.fullAt,
 	}
 	for _, v := range s.views {
 		f.Views = append(f.Views, v)
@@ -872,6 +1044,7 @@ func (s *Store) invalidate(active []string) {
 	}
 	s.synced = false
 	s.scope++
+	s.cursor = time.Time{} // another scope: the next pull is full
 }
 
 // linearStore is a Store over an adapter that also batches detail reads and
