@@ -260,7 +260,7 @@ Prints what each issue's agents have used: input and output tokens and estimated
 itervox watch [--interval 2s] [--once] [--workflow WORKFLOW.md] [--logs-dir DIR] [--url URL]
 ```
 
-A read-only, plain-text view of the daemon running in this project: the running agents (state, backend, worker host, run time, turns, tokens, last event), retries with their attempt and due time, issues waiting for input with the question, queued automation runs with the reason, and paused issues with the pause reason. On a terminal it redraws every `--interval`; without one (a pipe, a log file, `ssh host itervox watch`) it prints the view again only when it changes, with a time stamp. `--once` prints it once and exits.
+A read-only, plain-text view of the daemon running in this project: how many eligible issues are waiting for a free slot, the running agents (state, backend, worker host, run time, turns, tokens, last event), retries with their attempt and due time, issues waiting for input with the question, queued automation runs with the reason, and paused issues with the pause reason. On a terminal it redraws every `--interval`; without one (a pipe, a log file, `ssh host itervox watch`) it prints the view again, with a time stamp, only when something other than the ticking run times, token counts and retry countdowns changes. `--once` prints it once and exits.
 
 These commands, `itervox logs` and the quick actions below find the daemon from `.itervox/dashboard_url` (or `--url`) and its API token from `ITERVOX_API_TOKEN`, then `ITERVOX_API_TOKEN` in `.itervox/.env`, then `<logs-dir>/api-token`. They exit `1` when the daemon cannot be reached or refuses (its message is printed) and `2` on a usage error.
 
@@ -283,7 +283,7 @@ itervox pause <issue>          # stop the issue's agent and pause the issue
 itervox resume <issue>         # resume a paused issue
 itervox dispatch <issue>       # move the issue to the first active state; it starts when a slot is free
 itervox workers <n>            # set max_concurrent_agents (saved to WORKFLOW.md)
-itervox reply <issue> <text>   # answer an agent's question; the agent resumes with it
+itervox reply <issue> <text>   # answer an agent's question; queued, applied if the issue is waiting for input
 ```
 
 The same actions as the dashboard and the terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).

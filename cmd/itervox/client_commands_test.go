@@ -82,6 +82,7 @@ func TestWatchRendersRunningAndQueuedIssues(t *testing.T) {
 		"automationQueue": []any{map[string]any{"identifier": "ENG-4", "automationId": "nightly-triage", "reason": "no_slots"}},
 		"paused":          []any{"ENG-5"},
 		"pauseReasons":    map[string]any{"ENG-5": "retries_exhausted"},
+		"dispatchPressure": map[string]any{"eligibleWaiting": 2},
 	}
 	d := newFakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/api/v1/state", r.URL.Path)
@@ -90,11 +91,11 @@ func TestWatchRendersRunningAndQueuedIssues(t *testing.T) {
 	code, out, errOut := runClient(t, t.Context(), d, "watch", "--once")
 	require.Equal(t, 0, code, errOut)
 	for _, want := range []string{
-		"1/3 agents · 1 retrying · 1 waiting for input · 1 queued · 1 paused",
+		"1/3 agents · 2 waiting for a slot · 1 retrying · 1 waiting for input · 1 queued automations · 1 paused",
 		"RUNNING", "ENG-1", "In Progress", "claude reviewer", "12m34s", "turn 4", "48.2k tok", "running tests ok",
 		"RETRYING", "ENG-2", "attempt 2", "in 1m",
 		"WAITING FOR INPUT", "ENG-3", "Which database?",
-		"QUEUED", "ENG-4", "nightly-triage", "no slots",
+		"QUEUED AUTOMATIONS", "ENG-4", "nightly-triage", "no slots",
 		"PAUSED", "ENG-5", "retries exhausted",
 	} {
 		assert.Contains(t, out, want)
@@ -105,14 +106,22 @@ func TestWatchRendersRunningAndQueuedIssues(t *testing.T) {
 }
 
 // TestWatchRefreshesUntilStopped: without --once, watch keeps reading the
-// state; without a terminal it prints a view only when it changes.
+// state; without a terminal it prints a view only when it changes, and a
+// running agent's ticking elapsed time and token count are not a change.
 func TestWatchRefreshesUntilStopped(t *testing.T) {
 	var mu sync.Mutex
-	running := []any{}
+	running := false
+	polls := 0
 	d := newFakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		writeJSONBody(w, map[string]any{"maxConcurrentAgents": 2, "running": running})
+		polls++
+		list := []any{}
+		if running {
+			list = append(list, map[string]any{"identifier": "ENG-9", "state": "Todo",
+				"elapsedMs": polls * 1000, "tokens": polls * 100})
+		}
+		writeJSONBody(w, map[string]any{"maxConcurrentAgents": 2, "running": list})
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	var out strings.Builder
@@ -122,10 +131,10 @@ func TestWatchRefreshesUntilStopped(t *testing.T) {
 	}()
 	require.Eventually(t, func() bool { return len(d.recorded()) >= 3 }, 2*time.Second, 5*time.Millisecond)
 	mu.Lock()
-	running = []any{map[string]any{"identifier": "ENG-9", "state": "Todo"}}
+	running = true
 	mu.Unlock()
 	n := len(d.recorded())
-	require.Eventually(t, func() bool { return len(d.recorded()) >= n+2 }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return len(d.recorded()) >= n+4 }, 2*time.Second, 5*time.Millisecond)
 	cancel()
 	require.Equal(t, 0, <-done)
 	got := out.String()
@@ -219,7 +228,7 @@ func TestQuickActionsCallTheirAPI(t *testing.T) {
 		{"workers", []string{"4"}, []apiCall{{method: "POST", path: "/api/v1/settings/workers", body: `{"workers":4}`}}, "Workers: 4.\n"},
 		{"reply", []string{"ENG-1", "use", "postgres"}, []apiCall{
 			{method: "POST", path: "/api/v1/issues/ENG-1/provide-input", body: `{"message":"use postgres"}`},
-		}, "Replied to ENG-1; its agent resumes with your answer.\n"},
+		}, "Reply to ENG-1 queued; its agent resumes with it if the issue is waiting for input (itervox watch shows those).\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,6 +332,8 @@ func TestHeadlessOnATTYDoesNotStartTheTUIOrPrintTheToken(t *testing.T) {
 		got := readTrim(t, ptyOut)
 		assert.NotContains(t, got, token, "the token is not printed")
 		assert.Contains(t, got, "token withheld")
+		assert.Contains(t, got, "--headless or --no-print-token was passed", "the hint names --headless")
+		assert.NotContains(t, got, "***", "the hint survives the log redactor")
 		assert.NotContains(t, got, altScreen, "no terminal UI")
 		assert.Contains(t, got, "orchestrator", "the logs go to stderr")
 	})

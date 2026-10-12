@@ -125,7 +125,9 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 		if err := c.request(rctx, http.MethodPost, issuePath()+"/provide-input", map[string]string{"message": msg}, nil); err != nil {
 			return fail(err)
 		}
-		_, _ = fmt.Fprintf(out, "Replied to %s; its agent resumes with your answer.\n", pos[0])
+		// 202 means queued, not applied (CORE-005): the reply reaches the
+		// agent only if the issue is waiting for input.
+		_, _ = fmt.Fprintf(out, "Reply to %s queued; its agent resumes with it if the issue is waiting for input (itervox watch shows those).\n", pos[0])
 	default:
 		return usage("unknown command")
 	}
@@ -179,15 +181,21 @@ type watchState struct {
 		AutomationID string `json:"automationId"`
 		Reason       string `json:"reason"`
 	} `json:"automationQueue"`
-	Paused       []string          `json:"paused"`
-	PauseReasons map[string]string `json:"pauseReasons"`
+	Paused           []string          `json:"paused"`
+	PauseReasons     map[string]string `json:"pauseReasons"`
+	DispatchPressure struct {
+		EligibleWaiting int `json:"eligibleWaiting"`
+	} `json:"dispatchPressure"`
 }
 
-// renderWatch is the watch view of s at now, in plain text.
-func renderWatch(s watchState, now time.Time) string {
+// renderWatch is the watch view of s at now, in plain text. Without live,
+// the fields that change on every poll (elapsed time, tokens, retry due
+// times) are left out: that view is what a non-terminal watch compares to
+// decide whether to print again.
+func renderWatch(s watchState, now time.Time, live bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "itervox · %d/%d agents · %d retrying · %d waiting for input · %d queued · %d paused\n",
-		len(s.Running), s.MaxConcurrentAgents, len(s.Retrying), len(s.InputRequired), len(s.AutomationQueue), len(s.Paused))
+	fmt.Fprintf(&b, "itervox · %d/%d agents · %d waiting for a slot · %d retrying · %d waiting for input · %d queued automations · %d paused\n",
+		len(s.Running), s.MaxConcurrentAgents, s.DispatchPressure.EligibleWaiting, len(s.Retrying), len(s.InputRequired), len(s.AutomationQueue), len(s.Paused))
 	section := func(title string, n int) bool {
 		if n == 0 {
 			return false
@@ -204,8 +212,12 @@ func renderWatch(s watchState, now time.Time) string {
 			if r.WorkerHost != "" {
 				who += " @" + r.WorkerHost
 			}
+			elapsed, tokens := "", ""
+			if live {
+				elapsed, tokens = shortDuration(time.Duration(r.ElapsedMs)*time.Millisecond), fmtTokens(r.Tokens)
+			}
 			fmt.Fprintf(&b, "  %-10s %-14s %-18s %6s  turn %-3d %7s tok  %s\n", r.Identifier, clip(r.State, 14), clip(who, 18),
-				shortDuration(time.Duration(r.ElapsedMs)*time.Millisecond), r.TurnCount, fmtTokens(r.Tokens), clip(oneLine(r.LastEvent), 60))
+				elapsed, r.TurnCount, tokens, clip(oneLine(r.LastEvent), 60))
 		}
 	}
 	if section("RETRYING", len(s.Retrying)) {
@@ -213,6 +225,9 @@ func renderWatch(s watchState, now time.Time) string {
 			in := "now"
 			if d := r.DueAt.Sub(now); d > 0 {
 				in = "in " + shortDuration(d)
+			}
+			if !live {
+				in = ""
 			}
 			fmt.Fprintf(&b, "  %-10s attempt %-3d %-9s %s\n", r.Identifier, r.Attempt, in, clip(oneLine(r.Error), 70))
 		}
@@ -222,7 +237,7 @@ func renderWatch(s watchState, now time.Time) string {
 			fmt.Fprintf(&b, "  %-10s %s\n", r.Identifier, clip(oneLine(r.Context), 90))
 		}
 	}
-	if section("QUEUED", len(s.AutomationQueue)) {
+	if section("QUEUED AUTOMATIONS", len(s.AutomationQueue)) {
 		for _, q := range s.AutomationQueue {
 			fmt.Fprintf(&b, "  %-10s %-24s %s\n", q.Identifier, clip(q.AutomationID, 24), strings.ReplaceAll(q.Reason, "_", " "))
 		}
@@ -236,14 +251,15 @@ func renderWatch(s watchState, now time.Time) string {
 			}
 		}
 	}
-	if len(s.Running)+len(s.Retrying)+len(s.InputRequired)+len(s.AutomationQueue)+len(s.Paused) == 0 {
+	if len(s.Running)+len(s.Retrying)+len(s.InputRequired)+len(s.AutomationQueue)+len(s.Paused)+s.DispatchPressure.EligibleWaiting == 0 {
 		b.WriteString("\nNothing running or waiting.\n")
 	}
 	return b.String()
 }
 
 // watchDaemon shows renderWatch until ctx ends: redrawn in place on a terminal,
-// otherwise printed again only when it changes, with a time stamp.
+// otherwise printed again, with a time stamp, only when something other than
+// the ticking elapsed times, token counts and retry countdowns changed.
 func watchDaemon(ctx context.Context, c *daemonClient, every time.Duration, once bool, out, errOut io.Writer) int {
 	tty := false
 	if f, ok := out.(*os.File); ok {
@@ -256,15 +272,16 @@ func watchDaemon(ctx context.Context, c *daemonClient, every time.Duration, once
 		err := c.request(rctx, http.MethodGet, "/state", nil, &s)
 		cancel()
 		now := time.Now()
-		view := ""
+		view, key := "", ""
 		if err != nil {
 			if once {
 				_, _ = fmt.Fprintln(errOut, "itervox watch: "+err.Error())
 				return 1
 			}
 			view = "itervox watch: " + err.Error() + " (retrying)\n"
+			key = view
 		} else {
-			view = renderWatch(s, now)
+			view, key = renderWatch(s, now, true), renderWatch(s, now, false)
 		}
 		switch {
 		case once:
@@ -272,10 +289,10 @@ func watchDaemon(ctx context.Context, c *daemonClient, every time.Duration, once
 			return 0
 		case tty:
 			_, _ = io.WriteString(out, "\x1b[H\x1b[2J"+now.Format("15:04:05")+"  (Ctrl-C to quit)\n"+view)
-		case view != last:
+		case key != last:
 			_, _ = fmt.Fprintf(out, "--- %s ---\n%s", now.Format(time.RFC3339), view)
 		}
-		last = view
+		last = key
 		select {
 		case <-ctx.Done():
 			return 0
