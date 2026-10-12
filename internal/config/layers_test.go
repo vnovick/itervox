@@ -149,6 +149,43 @@ func TestSetSettingCreatesTheFile(t *testing.T) {
 	assert.Equal(t, map[string]any{"agent": map[string]any{"max_concurrent_agents": 2}}, data)
 }
 
+// TestSetSettingsWritesSeveralKeysInOneWrite: the dashboard's multi-key
+// saves (reviewer profile + auto_review, SSH hosts + descriptions) land
+// together, keep the file's comments, and a key that is not a settings key
+// fails the whole call before anything is written.
+func TestSetSettingsWritesSeveralKeysInOneWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".itervox", "settings.jsonc")
+	writeSettings(t, path, "// keep me\n{}\n")
+	require.NoError(t, config.SetSettings(path,
+		config.SettingAssignment{Key: "agent.reviewer_profile", Value: "reviewer"},
+		config.SettingAssignment{Key: "agent.auto_review", Value: true},
+		config.SettingAssignment{Key: "agent.ssh_host_descriptions", Value: map[string]string{"a": "b"}},
+	))
+	data, err := config.ReadSettingsFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"agent": map[string]any{
+		"reviewer_profile": "reviewer", "auto_review": true,
+		"ssh_host_descriptions": map[string]any{"a": "b"},
+	}}, data)
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(before), "// keep me")
+
+	err = config.SetSettings(path,
+		config.SettingAssignment{Key: "agent.max_turns", Value: 4},
+		config.SettingAssignment{Key: "tracker.kind", Value: "github"},
+	)
+	require.Error(t, err)
+	after, _ := os.ReadFile(path)
+	assert.Equal(t, string(before), string(after), "a rejected key writes nothing")
+
+	alt, ok := config.SettingAlias("server.allow_unauthenticated")
+	assert.True(t, ok)
+	assert.Equal(t, "server.allow_unauthenticated_lan", alt)
+	_, ok = config.SettingAlias("agent.max_turns")
+	assert.False(t, ok)
+}
+
 func TestExplainNamesTheLayerOfEachValue(t *testing.T) {
 	wf := layeredProject(t, "agent:\n  max_turns: 2\n",
 		`{"agent": {"max_concurrent_agents": 7}, "polling": {"interval_ms": 1000}}`,

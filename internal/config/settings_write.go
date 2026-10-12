@@ -26,17 +26,38 @@ const newSettingsFile = `// Itervox settings (JSONC: comments and trailing comma
 // and the layout of everything else in the file are kept (#129). A nil value
 // removes the key. The result is checked to parse before it replaces the file.
 func SetSetting(path, key string, value any) error {
-	parts := strings.Split(key, ".")
-	if len(parts) < 2 || slices.Contains(parts, "") {
-		return fmt.Errorf("config: %q is not a settings key (use section.name, e.g. agent.max_turns)", key)
-	}
-	if !slices.Contains(LayeredSections, parts[0]) {
-		return fmt.Errorf("config: %q cannot be set in a settings file (sections: %s)", key, strings.Join(LayeredSections, ", "))
+	return SetSettings(path, SettingAssignment{Key: key, Value: value})
+}
+
+// SettingAssignment is one key SetSettings sets (or, for a nil Value,
+// removes).
+type SettingAssignment struct {
+	Key   string
+	Value any
+}
+
+// SetSettings is SetSetting for several keys at once: they are applied in
+// order and the file is written once, so a save of related keys (the reviewer
+// profile and auto_review) never leaves the file holding only some of them.
+// Nothing is written when no key changes the file's contents.
+func SetSettings(path string, settings ...SettingAssignment) error {
+	split := make([][]string, len(settings))
+	anyValue := false
+	for i, s := range settings {
+		parts := strings.Split(s.Key, ".")
+		if len(parts) < 2 || slices.Contains(parts, "") {
+			return fmt.Errorf("config: %q is not a settings key (use section.name, e.g. agent.max_turns)", s.Key)
+		}
+		if !slices.Contains(LayeredSections, parts[0]) {
+			return fmt.Errorf("config: %q cannot be set in a settings file (sections: %s)", s.Key, strings.Join(LayeredSections, ", "))
+		}
+		split[i] = parts
+		anyValue = anyValue || s.Value != nil
 	}
 	raw, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		if value == nil {
+		if !anyValue {
 			return nil
 		}
 		raw = []byte(newSettingsFile)
@@ -47,26 +68,33 @@ func SetSetting(path, key string, value any) error {
 	if err != nil {
 		return fmt.Errorf("config: %s: %w", path, err)
 	}
-	ops, err := settingPatch(&doc, parts, value)
-	if err != nil {
-		return err
+	changed := false
+	for i, s := range settings {
+		ops, err := settingPatch(&doc, split[i], s.Value)
+		if err != nil {
+			return err
+		}
+		if len(ops) == 0 {
+			continue
+		}
+		patch, err := json.Marshal(ops)
+		if err != nil {
+			return fmt.Errorf("config: encode %s: %w", s.Key, err)
+		}
+		if err := doc.Patch(patch); err != nil {
+			return fmt.Errorf("config: set %s in %s: %w", s.Key, path, err)
+		}
+		changed = true
 	}
-	if len(ops) == 0 {
+	if !changed {
 		return nil
-	}
-	patch, err := json.Marshal(ops)
-	if err != nil {
-		return fmt.Errorf("config: encode %s: %w", key, err)
-	}
-	if err := doc.Patch(patch); err != nil {
-		return fmt.Errorf("config: set %s in %s: %w", key, path, err)
 	}
 	// Inserted values arrive on one line; Format lays the file out again,
 	// keeping every comment.
 	doc.Format()
 	out := doc.Pack()
 	if _, err := parseSettings(out); err != nil {
-		return fmt.Errorf("config: %s would not parse after setting %s: %w", path, key, err)
+		return fmt.Errorf("config: %s would not parse after this change: %w", path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("config: %w", err)
