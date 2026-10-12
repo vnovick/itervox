@@ -7,8 +7,13 @@
 It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
 
-Config lives entirely in one `WORKFLOW.md` file per project (YAML front matter +
-Liquid prompt template). The binary is a single static Go executable.
+Config lives in one `WORKFLOW.md` file per project (YAML front matter +
+Liquid prompt template). Since #129 the `agent`, `polling`, `workspace` and
+`server` sections can also come from JSONC settings layers
+(`~/.itervox/settings.jsonc` < `.itervox/settings.jsonc` < `WORKFLOW.md`),
+merged in `config.Load` (`internal/config/layers.go`); `itervox config show`
+explains where each value came from. The binary is a single static Go
+executable.
 
 ---
 
