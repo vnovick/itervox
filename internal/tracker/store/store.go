@@ -355,9 +355,11 @@ func (s *Store) nudgeDelay() time.Duration {
 	return DefaultNudgeDelay
 }
 
-// RequestSync asks Run for a full pull soon (#131): a webhook named an issue
+// RequestSync asks Run for a pull soon (#131): a webhook named an issue
 // the store does not hold, so it cannot tell on its own whether the issue
-// belongs to the tracked project. Requests made before the pull coalesce.
+// belongs to the tracked project. The pull is incremental when one is due
+// (#114), which lists an in-scope issue updated since the cursor, so the new
+// issue is placed either way. Requests made before the pull coalesce.
 func (s *Store) RequestSync() {
 	select {
 	case s.nudge <- struct{}{}:
@@ -527,7 +529,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	metrics.StorePull(trigger)
 	startGen, startScope := s.gen, s.scope
 	if inc, ok := s.up.(tracker.IncrementalFetcher); ok && s.incrementalDueLocked() {
-		since := s.cursor
+		since := s.cursor.Add(-CursorOverlap)
 		s.mu.Unlock()
 		return s.pullChanges(ctx, inc, since, startGen, startScope)
 	}
@@ -567,10 +569,20 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 		return false, nil
 	}
 	issues := make(map[string]domain.Issue, len(cands))
+	var mixed []string // listed twice, in two states
 	ids := func(list []domain.Issue) []string {
 		out := make([]string, 0, len(list))
 		for _, iss := range list {
-			issues[iss.ID] = iss
+			// An issue edited between two of this pull's requests is listed
+			// twice: keep the newer copy, or the cursor would move past an
+			// update the store does not hold.
+			prev, ok := issues[iss.ID]
+			if ok && !strings.EqualFold(prev.State, iss.State) {
+				mixed = append(mixed, iss.ID)
+			}
+			if !ok || newer(iss, prev) {
+				issues[iss.ID] = iss
+			}
 			out = append(out, iss.ID)
 		}
 		return out
@@ -594,6 +606,9 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	}
 	old := s.issues
 	s.issues, s.candidates = issues, candidates
+	for _, id := range mixed {
+		s.memberLocked(issues[id]) // the lists the newer copy's state belongs to
+	}
 	s.cursor, s.fullAt = newestUpdate(issues), s.now()
 	// A local change made after this pull began is newer than what it
 	// read: put it back.
@@ -615,6 +630,12 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	s.persist()
 	return true, nil
 }
+
+// CursorOverlap is how far before the cursor an incremental pull asks from:
+// an update the tracker commits late, or stamps with a time a little before
+// one already seen, is still listed. Issues listed again unchanged cost
+// nothing (sameListing).
+var CursorOverlap = time.Minute
 
 // incrementalDueLocked reports whether the next pull may be incremental
 // (#114): the store holds a full pull with a cursor, and the last full pull
@@ -725,6 +746,12 @@ func (s *Store) patchBlockersLocked(changed domain.Issue) (any bool) {
 	return any
 }
 
+// newer reports whether a was updated after b; an issue without an update
+// time is not newer.
+func newer(a, b domain.Issue) bool {
+	return a.UpdatedAt != nil && (b.UpdatedAt == nil || a.UpdatedAt.After(*b.UpdatedAt))
+}
+
 // newestUpdate is the latest UpdatedAt among issues, or zero.
 func newestUpdate(issues map[string]domain.Issue) time.Time {
 	var newest time.Time
@@ -798,6 +825,12 @@ func (s *Store) placeLocked(iss domain.Issue) {
 	if known && strings.EqualFold(old.State, iss.State) {
 		return
 	}
+	s.memberLocked(iss)
+}
+
+// memberLocked puts iss in the candidate list and the views its state
+// belongs to and out of the others. Caller holds mu.
+func (s *Store) memberLocked(iss domain.Issue) {
 	s.candidates = setMember(s.candidates, iss.ID, containsFold(s.active, iss.State))
 	for _, v := range s.views {
 		v.IDs = setMember(v.IDs, iss.ID, containsFold(v.States, iss.State))

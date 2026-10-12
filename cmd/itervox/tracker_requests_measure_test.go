@@ -29,8 +29,8 @@ import (
 // /api/v1/issues every 5 simulated seconds). Every interval is the default
 // divided by timeScale, and the full-sync interval is set just under the
 // hour so the store's hourly full pull is counted. A person edits one issue
-// and closes another during the run; with the store on, both must reach the
-// board.
+// and closes another during the run; with the store on, the edit must reach
+// the board and the closed issue must leave it.
 
 const timeScale = 30
 
@@ -290,8 +290,8 @@ Work on {{ issue.identifier }}.
 		if board["#5"] != "Edited by a person|backlog" {
 			t.Errorf("%s: the person's edit is not on the board: %q", mode, board["#5"])
 		}
-		if board["#16"] != "Issue 16|done" {
-			t.Errorf("%s: the closed issue is not done on the board: %q", mode, board["#16"])
+		if got, ok := board["#16"]; ok { // "closed" is not a terminal state here
+			t.Errorf("%s: the closed issue is still on the board: %q", mode, got)
 		}
 	}
 	for k, v := range startCounts {
