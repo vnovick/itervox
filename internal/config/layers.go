@@ -217,8 +217,25 @@ func mergeInto(dst, src map[string]any, prefix string, from settingsSource, sour
 				delete(sources, p) // a non-map value replaces a lower layer's map
 			}
 		}
+		// The two spellings of one setting are one setting across layers: a
+		// higher layer's value under either replaces a lower layer's under
+		// the other. Within one layer both stay, and the parser's own rule
+		// (the new spelling wins) decides.
+		if alt, ok := settingAliases[key]; ok {
+			if src, set := sources[alt]; set && src.layer != from.layer {
+				delete(dst, alt[strings.LastIndex(alt, ".")+1:])
+				delete(sources, alt)
+			}
+		}
 		sources[key] = from
 	}
+}
+
+// settingAliases pairs each layered setting with its deprecated spelling,
+// both ways.
+var settingAliases = map[string]string{
+	"server.allow_unauthenticated":     "server.allow_unauthenticated_lan",
+	"server.allow_unauthenticated_lan": "server.allow_unauthenticated",
 }
 
 func asStringMap(v any) (map[string]any, bool) {
