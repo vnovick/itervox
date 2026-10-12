@@ -42,6 +42,11 @@ func (t *Tracker) Watch(ctx context.Context, rescan time.Duration, changed func(
 	}
 	defer func() { _ = w.Close() }()
 	add := func() bool {
+		// Only a directory: a file put at its path can be watched too, but
+		// its events say nothing about the issues.
+		if info, err := os.Stat(t.dir); err != nil || !info.IsDir() {
+			return false
+		}
 		err := w.Add(t.dir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			slog.Warn("local tracker: cannot watch the issues directory; rescanning", "dir", t.dir, "error", err)
@@ -80,7 +85,7 @@ func (t *Tracker) watch(ctx context.Context, events <-chan fsnotify.Event, errs 
 			setWatching(add())
 		}
 		t.mu.Lock()
-		_ = t.refreshLocked()
+		_ = t.refreshLocked() // a failed scan is kept in scanErr: reads rescan and report it
 		n := t.changes
 		t.mu.Unlock()
 		// Compared with the count, not the result of this rescan: a tracker
