@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/logbuffer"
@@ -36,7 +37,10 @@ func argsBool(args []string, name string) bool {
 		if !strings.HasPrefix(a, "-") || n != name {
 			continue
 		}
-		on = !hasVal || val == "true" || val == "1"
+		on = true
+		if hasVal {
+			on, _ = strconv.ParseBool(val) // as flag.Parse reads it
+		}
 	}
 	return on
 }

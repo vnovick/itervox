@@ -382,6 +382,17 @@ func TestTUIFlagStartsTheTUI(t *testing.T) {
 			return countFileOccurrences(filepath.Join(p.LogsDir, "itervox.log"), "the terminal UI is deprecated") >= 1
 		})
 	})
+	t.Run("--headless wins", func(t *testing.T) {
+		p := newDaemonProject(t)
+		ptyOut, _, _ := p.startUnderPTY(t, `stty cols 200 rows 50; exec "$ITERVOX_TEST_EXE" >"$ITERVOX_TEST_OUT"`, []string{"--tui", "--headless"})
+		waitFor(t, 30*time.Second, "the dashboard announcement on the terminal", func() bool {
+			return countFileOccurrences(ptyOut, "dashboard URL (") >= 1
+		})
+		time.Sleep(time.Second) // time for a TUI to have started, if it were going to
+		got := readTrim(t, ptyOut)
+		assert.NotContains(t, got, altScreen, "no terminal UI")
+		assert.Contains(t, got, "token withheld")
+	})
 	t.Run("without a terminal", func(t *testing.T) {
 		p := newDaemonProject(t)
 		_, stderr := p.startHeadless(t, []string{"--tui"})
@@ -390,4 +401,26 @@ func TestTUIFlagStartsTheTUI(t *testing.T) {
 		})
 		assert.Zero(t, countFileOccurrences(stderr, altScreen), "no terminal UI")
 	})
+}
+
+// TestArgsBool: the flags read before flag.Parse (#120, #134) parse as
+// flag.Parse would, so the early logger agrees with the terminal UI.
+func TestArgsBool(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"itervox"}, false},
+		{[]string{"itervox", "--tui"}, true},
+		{[]string{"itervox", "-tui"}, true},
+		{[]string{"itervox", "--tui=T"}, true},
+		{[]string{"itervox", "--tui=true"}, true},
+		{[]string{"itervox", "--tui=0"}, false},
+		{[]string{"itervox", "--tui=false"}, false},
+		{[]string{"itervox", "--tui", "--tui=false"}, false},
+		{[]string{"itervox", "--tuix"}, false},
+		{[]string{"itervox", "--", "--tui"}, false},
+	} {
+		assert.Equal(t, tc.want, argsBool(tc.args, "tui"), "%v", tc.args)
+	}
 }
