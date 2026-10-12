@@ -223,6 +223,8 @@ deploy-test:
 	bash deploy/monitoring/heartbeat-metrics_test.sh
 	bash deploy/monitoring/itervox-watchdog_test.sh
 	bash deploy/monitoring/rules_names_test.sh
+	bash deploy/acceptance/self-hosted-run_test.sh
+	bash deploy/acceptance/gcp-deploy-smoke_test.sh
 
 # Deploy lint (CORE-105). Same targets as .github/workflows/deploy-lint.yml;
 # each tool runs from a pinned image, so only docker is needed.
