@@ -67,6 +67,15 @@ func (c *changesTracker) setState(id, state string) {
 	c.stamps[id] = c.tick()
 }
 
+// setStateAt changes an issue's state with an update time the tracker
+// stamped at: before the store's cursor, for a late-committed update.
+func (c *changesTracker) setStateAt(id, state string, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SetIssueState(id, state)
+	c.stamps[id] = at
+}
+
 func (c *changesTracker) setTitle(id, title string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -400,4 +409,39 @@ func TestFullPullKeepsTheNewestCopyOfAnIssueListedTwice(t *testing.T) {
 		}
 		assert.Equal(t, up.clock, st.CursorForTest())
 	}
+}
+
+// TestIncrementalPullListsALateCommittedUpdate: an update the tracker
+// commits after a pull read past it, stamped a little before the cursor, is
+// still listed by the next pull (store.CursorOverlap).
+func TestIncrementalPullListsALateCommittedUpdate(t *testing.T) {
+	up := newChanges(issue("1", "Todo"), issue("2", "Todo"))
+	st, cands := incrementalStore(t, up, t.TempDir())
+	up.setState("2", "In Progress") // moves the cursor
+	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
+	cursor := st.CursorForTest()
+
+	up.setStateAt("1", "Done", cursor.Add(-30*time.Second))
+	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
+	assert.Equal(t, []string{"ENG-2"}, cands(), "the late update is applied")
+}
+
+// TestRequestSyncMakesTheNextPullFull: a pull a webhook asks for
+// (RequestSync) is a full one even when an incremental pull is due, since a
+// changes listing does not show a deleted or transferred GitHub issue; the
+// pull after it is incremental again.
+func TestRequestSyncMakesTheNextPullFull(t *testing.T) {
+	up := newChanges(issue("1", "Todo"))
+	st, _ := incrementalStore(t, up, t.TempDir())
+	full, inc := up.listCalls(), up.inc.Load()
+
+	st.RequestSync()
+	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
+	assert.Greater(t, up.listCalls(), full, "a full pull")
+	assert.Equal(t, inc, up.inc.Load(), "not an incremental one")
+
+	full = up.listCalls()
+	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
+	assert.Equal(t, full, up.listCalls(), "then incremental again")
+	assert.Equal(t, inc+1, up.inc.Load())
 }
