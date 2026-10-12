@@ -200,8 +200,13 @@ func (o *Orchestrator) resumePendingReviews(ctx context.Context, state *State, n
 		}
 		slog.Info("orchestrator: dispatching review refused by the last drain",
 			"identifier", id, "profile", profile, "queued_at", pr.QueuedAt)
-		o.dispatchReviewerForIssue(ctx, state, *issue, profile, now)
-		if _, started := state.Running[pr.IssueID]; !started && !state.Draining {
+		o.dispatchReviewer(ctx, state, *issue, issue, profile, now) // #116: the read above is the claim check's
+		_, retrying := state.RetryAttempts[pr.IssueID]
+		if retrying {
+			// A reviewer retry owns the review now (a held backend, or a
+			// claim read that failed).
+			o.clearPendingReview(state, id)
+		} else if _, started := state.Running[pr.IssueID]; !started && !state.Draining {
 			// Profile removed, disabled or unresolvable: dispatchReviewerForIssue
 			// logged why. Do not refetch the issue every tick forever.
 			slog.Warn("orchestrator: pending review dropped, reviewer could not start", "identifier", id, "profile", profile)
