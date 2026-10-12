@@ -30,7 +30,8 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
-| `-headless` | bool | `false` | No terminal UI even on a terminal: logs go to stderr (text, or JSON with `--log-format json`) and the tokenised dashboard URL is never printed (an auto-generated token is still in `<logs-dir>/api-token`). Watch and act from another shell with [`itervox watch`](#itervox-watch--a-terminal-view-of-a-running-daemon) and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply). The terminal UI is being retired; this is its replacement |
+| `-tui` | bool | `false` | Start the terminal UI (on a terminal; without one it warns and runs headless). **Deprecated**: the terminal UI will be removed in v0.3. Without `--tui`, Itervox runs headless (since v0.2.4): no terminal UI, logs on stderr (text, or JSON with `--log-format json`), and the dashboard URL printed there, with its token only when stderr is a terminal. Watch and act from another shell with [`itervox watch`](#itervox-watch--a-terminal-view-of-a-running-daemon) and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply) |
+| `-headless` | bool | `false` | Headless even with `--tui`, and the tokenised dashboard URL is never printed, even on a terminal (an auto-generated token is still in `<logs-dir>/api-token`) |
 
 > To try Itervox without a tracker account, API keys or an agent CLI, run
 > [`itervox demo`](#itervox-demo--try-it-in-30-seconds).
@@ -286,7 +287,7 @@ itervox workers <n>            # set max_concurrent_agents (saved to WORKFLOW.md
 itervox reply <issue> <text>   # answer an agent's question; queued, applied if the issue is waiting for input
 ```
 
-The same actions as the dashboard and the terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
+The same actions as the dashboard and the (deprecated) terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
 ---
 
