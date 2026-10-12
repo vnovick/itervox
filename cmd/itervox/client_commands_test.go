@@ -77,11 +77,11 @@ func TestWatchRendersRunningAndQueuedIssues(t *testing.T) {
 			"identifier": "ENG-1", "state": "In Progress", "backend": "claude", "kind": "reviewer",
 			"turnCount": 4, "tokens": 48200, "elapsedMs": 754000, "lastEvent": "running tests\nok",
 		}},
-		"retrying":        []any{map[string]any{"identifier": "ENG-2", "attempt": 2, "dueAt": time.Now().Add(90 * time.Second), "error": "exit 1"}},
-		"inputRequired":   []any{map[string]any{"identifier": "ENG-3", "state": "input_required", "context": "Which database?"}},
-		"automationQueue": []any{map[string]any{"identifier": "ENG-4", "automationId": "nightly-triage", "reason": "no_slots"}},
-		"paused":          []any{"ENG-5"},
-		"pauseReasons":    map[string]any{"ENG-5": "retries_exhausted"},
+		"retrying":         []any{map[string]any{"identifier": "ENG-2", "attempt": 2, "dueAt": time.Now().Add(90 * time.Second), "error": "exit 1"}},
+		"inputRequired":    []any{map[string]any{"identifier": "ENG-3", "state": "input_required", "context": "Which database?"}},
+		"automationQueue":  []any{map[string]any{"identifier": "ENG-4", "automationId": "nightly-triage", "reason": "no_slots"}},
+		"paused":           []any{"ENG-5"},
+		"pauseReasons":     map[string]any{"ENG-5": "retries_exhausted"},
 		"dispatchPressure": map[string]any{"eligibleWaiting": 2},
 	}
 	d := newFakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
