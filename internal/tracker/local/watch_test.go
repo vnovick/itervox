@@ -173,3 +173,45 @@ func TestWatchDoesNotCreateTheDirectory(t *testing.T) {
 	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
 	waitChange(t, changes, 3*time.Second, "the first issue in a new directory")
 }
+
+// TestWatchDirectoryReadErrorIsReportedNotServed (#133 review): the issues
+// directory is renamed aside and a regular file put at its path, which
+// fsnotify could watch too. Reads report the read error and Problems names
+// the directory, as without a watch; the cached issue is not served as
+// current, and the file is not taken for a watched directory. Once the
+// directory is back, the watch serves it again.
+func TestWatchDirectoryReadErrorIsReportedNotServed(t *testing.T) {
+	ctx := t.Context()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
+	startWatch(t, func(ctx context.Context, changed func()) { tr.Watch(ctx, 50*time.Millisecond, changed) })
+	watched := func() bool { tr.mu.Lock(); defer tr.mu.Unlock(); return tr.watched }
+	require.Eventually(t, watched, 2*time.Second, 5*time.Millisecond)
+
+	moved := dir + ".moved"
+	require.NoError(t, os.Rename(dir, moved))
+	writeRaw(t, dir, "not a directory")
+	require.Eventually(t, func() bool {
+		_, err := tr.FetchCandidateIssues(ctx)
+		return err != nil
+	}, 3*time.Second, 5*time.Millisecond, "the read error is reported")
+	time.Sleep(200 * time.Millisecond) // several rescans: the file is never watched as the directory
+	assert.False(t, watched(), "a file at the directory's path is not a healthy watch")
+	_, err := tr.FetchCandidateIssues(ctx)
+	assert.Error(t, err)
+	_, err = tr.FetchIssueStatesByIDs(ctx, []string{"ITX-1"})
+	assert.Error(t, err)
+	_, err = tr.FetchIssueDetail(ctx, "ITX-1")
+	assert.Error(t, err)
+	problems := tr.Problems()
+	require.NotEmpty(t, problems)
+	assert.Equal(t, dir, problems[0].Path)
+
+	require.NoError(t, os.Remove(dir))
+	require.NoError(t, os.Rename(moved, dir))
+	require.Eventually(t, watched, 3*time.Second, 5*time.Millisecond, "the directory is watched again")
+	got, err := tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	assert.Empty(t, tr.Problems())
+}
