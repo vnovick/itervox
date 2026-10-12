@@ -49,3 +49,22 @@ func TestReviewRow(t *testing.T) {
 	assert.True(t, row.InProgress)
 	assert.Empty(t, row.Verdicts)
 }
+
+// TestReviewRowCompletedReviewAfterJanitor (#135 review P2): the shape the
+// janitor leaves for a finished review on a completed issue — verdicts and
+// outcome kept while its status history is retained, the chain index (the
+// in-flight marker) pruned — still yields the latest review, with its
+// blocking reasons and the quorum, and not "in progress", so the panel's
+// re-run control stays enabled.
+func TestReviewRowCompletedReviewAfterJanitor(t *testing.T) {
+	state := orchestrator.NewState(&config.Config{})
+	state.ReviewVerdicts["ENG-DONE"] = []orchestrator.ReviewVerdict{{Profile: "r1", Verdict: "block", Reasons: []string{"no tests"}}}
+	state.ReviewOutcomes["ENG-DONE"] = orchestrator.ReviewOutcome{Blocked: true, Blocks: 1, Quorum: "any_block"}
+
+	row := reviewRow(state, "ENG-DONE")
+	require.NotNil(t, row)
+	assert.False(t, row.InProgress, "re-run is disabled only while a review is in progress")
+	require.Len(t, row.Verdicts, 1)
+	assert.Equal(t, []string{"no tests"}, row.Verdicts[0].Reasons)
+	assert.Equal(t, &server.ReviewOutcomeRow{Blocked: true, Blocks: 1, Quorum: "any_block"}, row.Outcome)
+}
