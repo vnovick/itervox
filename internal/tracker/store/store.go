@@ -714,9 +714,15 @@ func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher,
 		dirty = true
 	}
 	// After every issue is placed, so a blocked issue listed in the same
-	// pull does not overwrite its blocker's newer state.
+	// pull does not overwrite its blocker's newer state. Dependents follow
+	// the blocker as the store now holds it: a blocker changed locally while
+	// the pull ran keeps its newer state, and so do references to it.
 	for _, iss := range changed {
-		if s.patchBlockersLocked(iss) {
+		cur, ok := s.issues[iss.ID]
+		if !ok {
+			continue
+		}
+		if s.patchBlockersLocked(cur) {
 			dirty = true
 		}
 	}
