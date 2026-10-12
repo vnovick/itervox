@@ -397,10 +397,31 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			)
 			continue
 		}
+		// #116 claim check: the list may come from the local store, so read
+		// the issue from the tracker before starting it. The same read
+		// serves the input-required recovery below.
+		detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
+		if errors.Is(err, tracker.ErrNotFound) || (err == nil && detailed == nil) {
+			slog.Info("orchestrator: claim check: the tracker no longer has the issue; not starting it",
+				"identifier", issue.Identifier, "path", admitDispatch)
+			continue
+		}
+		if err != nil {
+			slog.Warn("orchestrator: claim check: tracker read failed, not starting the issue now",
+				"identifier", issue.Identifier, "error", err)
+			continue
+		}
+		claimed, ok := o.claimCheck(ctx, &state, issue, detailed, admitDispatch, func(v domain.Issue) string {
+			return IneligibleReason(v, state, o.cfg)
+		}, now)
+		if !ok {
+			continue
+		}
+		issue = claimed
 		// Guard: if the latest comment is an unresolved Itervox input-required
 		// comment, restore the issue to InputRequiredIssues instead of dispatching
 		// a fresh worker. This recovers from daemon restarts / state loss.
-		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
+		if entry := recoverInputRequired(issue, detailed); entry != nil {
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Recovery path: no live RunEntry — the previous worker is gone
 			// (daemon restart / state loss). B1 self-reentry guard does not
@@ -567,12 +588,20 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			continue
 		}
 
-		if len(refreshed) == 0 || !isActiveState(refreshed[0].State, state) {
+		if len(refreshed) == 0 {
 			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
 			state = CancelRetry(state, issueID)
 			continue
 		}
-		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, refreshed[0], now)
+		// #116: the read above is the claim check's; pending local writes a
+		// person's later change superseded are dropped.
+		issue, admit := o.claimCheck(ctx, &state, refreshed[0], &refreshed[0], admitRetry, claimActive(&state), now)
+		if !admit {
+			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
+			state = CancelRetry(state, issueID)
+			continue
+		}
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issue, now)
 
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("retry: no slots, rescheduling", "issue_id", issueID)
@@ -583,7 +612,7 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		}
 
 		delete(state.RetryAttempts, issueID)
-		state = o.dispatchRun(ctx, state, refreshed[0], entry.Attempt, entry.ReviewerProfile)
+		state = o.dispatchRun(ctx, state, issue, entry.Attempt, entry.ReviewerProfile)
 		// CORE-053: a retry the backend gate held keeps its attempt and its
 		// claim; it is due again when the breaker can admit it.
 		if hold, held := state.BackendLimitedHolds[entry.Identifier]; held {
@@ -877,14 +906,8 @@ func findReplySince(comments []domain.Comment, since time.Time, question domain.
 // preventing a wasteful fresh dispatch. This path is intentionally best-effort:
 // session/backend/host continuity comes from the locally persisted
 // InputRequiredIssues file, not tracker comment metadata.
-func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
-	detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
-	if err != nil {
-		slog.Warn("orchestrator: recoverInputRequired detail fetch failed",
-			"identifier", issue.Identifier, "error", err)
-		return nil
-	}
-	if len(detailed.Comments) == 0 {
+func recoverInputRequired(issue domain.Issue, detailed *domain.Issue) *InputRequiredEntry {
+	if detailed == nil || len(detailed.Comments) == 0 {
 		return nil
 	}
 	// Walk comments in reverse to find the last Itervox question.
@@ -1141,6 +1164,11 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		if detailed == nil {
 			continue
 		}
+		// #116 claim check, on the read above: pending local writes a
+		// person's later change superseded are dropped before the state
+		// checks below decide.
+		claimed := o.claimView(&state, domain.Issue{}, *detailed, admitInputResume, now)
+		detailed = &claimed
 		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, now)
 		if isTerminalState(detailed.State, state) {
 			delete(state.PendingInputResumes, identifier)
@@ -1453,6 +1481,14 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 			"issue_identifier", issue.Identifier, "profile", profileName)
 		return
 	}
+	// #116 claim check: a person may have closed or deleted the issue since
+	// it was last read. A reviewer is admitted anywhere but a terminal state
+	// other than tracker.completion_state.
+	claimed, admit := o.claimCheck(ctx, state, issue, nil, admitReviewer, o.claimNotTerminal(state, true), now)
+	if !admit {
+		return
+	}
+	issue = claimed
 
 	// Same per-issue backend lookup as worker and automation dispatch
 	// (operator pin, else auto-switch) and the same resolver (CORE-115).
@@ -2330,13 +2366,25 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 				// attempt (no retry consumed): the gate reroutes it, or holds
 				// it with backend_limited when every target is limited.
 				delete(state.Claimed, ev.IssueID)
-				state = o.dispatchRun(ctx, state, issue, attempt, reviewerProfileOf(finished))
+				// #116 claim check before the re-dispatch.
+				eligible := claimActive(&state)
+				if reviewerProfileOf(finished) != "" {
+					eligible = o.claimNotTerminal(&state, true)
+				}
+				claimed, admit := o.claimCheck(ctx, &state, issue, nil, admitFallback, eligible, now)
+				if admit {
+					state = o.dispatchRun(ctx, state, claimed, attempt, reviewerProfileOf(finished))
+				}
 				o.recordHistory(liveEntry, issue, now, "failed")
-				if _, running := state.Running[ev.IssueID]; running {
+				_, running := state.Running[ev.IssueID]
+				switch {
+				case !admit:
+					// The claim check logged why; nothing is re-dispatched.
+				case running:
 					o.logger().Warn("orchestrator: vendor limit, backend_fallback rerouted without consuming a retry",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier, "attempt", attempt,
 						"backend", state.Running[ev.IssueID].Backend, "profile", state.Running[ev.IssueID].ProfileName)
-				} else {
+				default:
 					o.logger().Warn("orchestrator: vendor limit, every backend limited; issue held",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 						"hold", describeHold(state.BackendLimitedHolds[issue.Identifier]))

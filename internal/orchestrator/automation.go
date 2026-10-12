@@ -769,6 +769,13 @@ func (o *Orchestrator) startAutomationRunOrHold(
 		slog.Warn("orchestrator: automation profile disabled", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
 		return false, false
 	}
+	// #116 claim check: an automation may run on any state but a terminal
+	// one, so it is refused only when the tracker has closed or lost it.
+	claimed, admit := o.claimCheck(ctx, state, issue, nil, admitAutomation, o.claimNotTerminal(state, false), now)
+	if !admit {
+		return false, false
+	}
+	issue = claimed
 
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
