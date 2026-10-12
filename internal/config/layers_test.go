@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -232,4 +233,81 @@ func TestSettingsSectionMustBeAnObject(t *testing.T) {
 	_, err := config.Load(wf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"agent" must be an object`)
+}
+
+// TestAuthAliasPrecedenceIsPerLayer (#129 review): server.allow_unauthenticated
+// and its deprecated spelling server.allow_unauthenticated_lan are one setting
+// across layers. A higher layer's value under either spelling wins over a
+// lower layer's under the other, so a project that requires authentication
+// cannot be opened by a user file; within one layer the new spelling wins.
+func TestAuthAliasPrecedenceIsPerLayer(t *testing.T) {
+	for _, tc := range []struct {
+		name, workflow, user, project string
+		want                          bool
+	}{
+		{"workflow legacy false over user new true", "server:\n  allow_unauthenticated_lan: false\n",
+			`{"server": {"allow_unauthenticated": true}}`, "", false},
+		{"workflow new false over user legacy true", "server:\n  allow_unauthenticated: false\n",
+			`{"server": {"allow_unauthenticated_lan": true}}`, "", false},
+		{"project legacy false over user new true", "",
+			`{"server": {"allow_unauthenticated": true}}`, `{"server": {"allow_unauthenticated_lan": false}}`, false},
+		{"workflow legacy true over project new false", "server:\n  allow_unauthenticated_lan: true\n",
+			"", `{"server": {"allow_unauthenticated": false}}`, true},
+		{"within one layer the new spelling wins", "",
+			`{"server": {"allow_unauthenticated": false, "allow_unauthenticated_lan": true}}`, "", false},
+		{"a lower layer's value stands when no higher layer sets either", "",
+			`{"server": {"allow_unauthenticated_lan": true}}`, `{"agent": {"max_turns": 3}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := layeredProject(t, tc.workflow, tc.user, tc.project)
+			cfg, err := config.Load(wf)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Server.AllowUnauthenticatedLAN)
+		})
+	}
+}
+
+// TestExplainRedactsNestedSecretsAndNotes (#129 review): a secret is hidden
+// wherever explain shows it: in the note about an ignored value of the
+// wrong type, and under any key of a map read whole or left unread.
+func TestExplainRedactsNestedSecretsAndNotes(t *testing.T) {
+	const secret = "synthetic-secret-0123456789"
+	dir := t.TempDir()
+	soul, instr := filepath.Join(dir, "SOUL.md"), filepath.Join(dir, "INSTRUCTIONS.md")
+	writeSettings(t, soul, "# SOUL")
+	writeSettings(t, instr, "# INSTRUCTIONS")
+	wf := layeredProject(t, "",
+		`{"agent": {"profiles": {"helper": {"command": "claude", "soul_file": "`+soul+`", "instructions_file": "`+instr+`", "api_key": "`+secret+`",
+		  "env": {"TOKEN": "`+secret+`"}}},
+		  "extra": {"nested": {"password": "`+secret+`"}, "urls": ["https://u:`+secret+`@x.example/r"]}}}`, "")
+	// A mistyped secret in WORKFLOW.md: its "ignored" note quotes the value.
+	require.NoError(t, os.WriteFile(wf, []byte("---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: ["+secret+"]\n  project_slug: p\n---\n\nPrompt.\n"), 0o644))
+	settings, err := config.Explain(wf)
+	require.NoError(t, err)
+	for _, s := range settings {
+		assert.NotContains(t, fmt.Sprintf("%v %s", s.Value, s.Note), secret, "%s leaks the secret", s.Key)
+	}
+	byKey := explainByKey(t, wf)
+	require.Contains(t, byKey, "agent.profiles")
+	assert.Contains(t, fmt.Sprint(byKey["agent.profiles"].Value), "(set, hidden)")
+	assert.Contains(t, fmt.Sprint(byKey["agent.extra.urls"].Value), "u:hidden@x.example", "an unread list hides URL passwords")
+	assert.Equal(t, "(set, hidden)", byKey["agent.extra.nested.password"].Value)
+}
+
+// TestExplainShowsTheResolvedWorkspaceRoot (#129 review): workspace.root is
+// listed as the directory the daemon uses, not the raw (or empty) input.
+func TestExplainShowsTheResolvedWorkspaceRoot(t *testing.T) {
+	wf := layeredProject(t, "", "", "")
+	cfg, err := config.Load(wf)
+	require.NoError(t, err)
+	require.NotEmpty(t, cfg.Workspace.Root)
+	byKey := explainByKey(t, wf)
+	assert.Equal(t, cfg.Workspace.Root, byKey["workspace.root"].Value, "the per-project default")
+	assert.Equal(t, config.LayerDefault, byKey["workspace.root"].Layer)
+
+	t.Setenv("ITERVOX_TEST_WS", t.TempDir())
+	wf = layeredProject(t, "", "", `{"workspace": {"root": "$ITERVOX_TEST_WS"}}`)
+	byKey = explainByKey(t, wf)
+	assert.Equal(t, os.Getenv("ITERVOX_TEST_WS"), byKey["workspace.root"].Value, "the variable expanded")
+	assert.Equal(t, config.LayerProject, byKey["workspace.root"].Layer)
 }
