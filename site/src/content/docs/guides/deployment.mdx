@@ -209,9 +209,9 @@ liveness — see [below](#official-container-image).
 
 ## Running under systemd
 
-`itervox` starts a Bubbletea TUI when run interactively. Headless this is fine:
-a TTY-ownership guard detects the absence of a controlling terminal, logs
-`statusui: refusing to start TUI`, and the daemon continues. No flag needed.
+`itervox` runs headless by default (since v0.2.4): it starts the deprecated
+terminal UI only with `--tui`, and even then a TTY-ownership guard refuses to
+start it without a controlling terminal. No flag needed.
 
 A few unit settings are load-bearing and worth understanding before you edit
 them:
@@ -226,8 +226,9 @@ them:
 - **`RequiresMountsFor=/srv/itervox`** — the service account's HOME
   (`/srv/itervox/home`) and the checkout live on the data disk; the unit never
   starts on an unmounted directory.
-- **`StandardInput=null`** — gives the TUI guard the "no terminal" signal it
-  needs to fall back to headless cleanly.
+- **`StandardInput=null`** — the daemon reads nothing from stdin; should
+  `--tui` ever be added to the unit, it gives the TUI guard the "no terminal"
+  signal it needs to stay headless.
 - **Deliberately modest hardening.** Agents run arbitrary project build and test
   commands inside git worktrees, so `ProtectSystem=strict`, `ReadOnlyPaths`, or
   `PrivateDevices` break them in ways that are tedious to diagnose. The unit
@@ -253,8 +254,8 @@ authentication above). The file sink is at:
 
 (or `~/.itervox/logs/workflow/<project>/itervox.log` when no `project_slug` is set)
 
-Tail either one. Interactive runs send logs to the file only, so the TUI is not
-fighting the log stream for the terminal.
+Tail either one. Runs with `--tui` send logs to the file only, so the terminal
+UI is not fighting the log stream for the terminal.
 :::
 
 `deploy/monitoring/` has a `heartbeat-metrics.sh` that parses

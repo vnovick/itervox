@@ -94,7 +94,7 @@ Commands:
 
   --version  Print version information
 
-Run mode (default when no command given):
+Run mode (default when no command given; headless unless --tui):
 `)
 	flag.PrintDefaults()
 }

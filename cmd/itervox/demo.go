@@ -154,7 +154,7 @@ func prepareDemo(args []string, out io.Writer) (runArgs []string, ok bool, err e
 	}
 
 	_, _ = fmt.Fprintf(out, "itervox demo: running with fake issues and a scripted agent — nothing leaves %s\n", scratch)
-	_, _ = fmt.Fprintf(out, "itervox demo: press q (or Ctrl-C) to stop; delete the directory afterwards if you like\n")
+	_, _ = fmt.Fprintf(out, "itervox demo: press Ctrl-C to stop; delete the directory afterwards if you like\n")
 	if !*noOpen {
 		go demoOpenWhenReady(workflowPath, out)
 	}
