@@ -1906,7 +1906,23 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// run's exit closes its record.
 			markRunExited(state, ev.IssueID, ev.RunID)
 		}
-		// #136: a run's spend is final at its exit.
+		// #136: a run's spend is final at its exit. The exit carries the
+		// run's final usage, which settles what the progress updates did not
+		// (a failed turn sends none; a dropped update loses its counts) —
+		// before anything below decides on a retry. accountRunUpdate adds
+		// only what the run has not contributed yet, so usage its updates
+		// already counted is not counted again. Without the live entry
+		// (reconcile or stall detection deleted it) the run's baseline is
+		// gone, and settling could double-count: it is skipped.
+		if liveEntry != nil {
+			settled := state.Totals.accountRunUpdate(liveEntry, ev.RunEntry)
+			state.Spend.record(ev.RunEntry.Issue.Identifier, time.Now(), settled)
+			if ev.RunEntry.TotalTokens > liveEntry.TotalTokens { // the run's record shows them
+				liveEntry.TotalTokens = ev.RunEntry.TotalTokens
+				liveEntry.InputTokens = ev.RunEntry.InputTokens
+				liveEntry.OutputTokens = ev.RunEntry.OutputTokens
+			}
+		}
 		budgetStopped := ev.RunID != "" && state.BudgetStops[ev.RunEntry.Issue.Identifier] == ev.RunID
 		if budgetStopped {
 			delete(state.BudgetStops, ev.RunEntry.Issue.Identifier)
@@ -2299,6 +2315,14 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 		// distinctly from a clean handoff. No-op if the agent never
 		// wrote a handoff this turn.
 		o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
+		// #136: a failed run that has used the issue's budget is not run
+		// again, by a retry or a fallback: the issue is paused with
+		// budget_exceeded. Its spend was settled from the exit above.
+		if o.refuseOverBudget(&state, ev.IssueID, issue.Identifier) {
+			o.abandonReviewerRun(&state, finished, issue.Identifier) // CORE-157: nothing re-runs it
+			o.recordHistory(liveEntry, issue, now, "failed")
+			return state
+		}
 		errMsg := ""
 		if ev.Error != nil {
 			errMsg = ev.Error.Error()
