@@ -21,6 +21,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/metrics"
+	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/store"
 	"github.com/vnovick/itervox/internal/tracker/webhook"
 )
@@ -339,4 +340,143 @@ func TestForgetSurvivesAConcurrentPull(t *testing.T) {
 	require.NoError(t, <-pulled)
 	got, _ = s.FetchCandidateIssues(t.Context())
 	assert.Equal(t, []string{"ENG-2"}, identifiers(got), "the pull that read issue 1 before its removal does not bring it back")
+}
+
+// A removal for an issue the store does not hold yet (the first pull, or a
+// pull that finds a new issue, is still in flight) is remembered: the pull
+// that read the issue before the removal does not add it.
+func TestForgetDuringTheFirstPull(t *testing.T) {
+	g := &gatedTracker{countingTracker: newCounting(issue("1", "Todo"), issue("2", "Todo"))}
+	_, s, err := store.Wrap(g, storeConfig(t, t.TempDir()))
+	require.NoError(t, err)
+	entered, release := g.arm()
+	pulled := make(chan error, 1)
+	go func() { _, err := s.FetchCandidateIssues(t.Context()); pulled <- err }() // the cold pull
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pull never reached the tracker")
+	}
+	s.Forget("1")
+	close(release)
+	require.NoError(t, <-pulled)
+	got, err := s.FetchCandidateIssues(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ENG-2"}, identifiers(got), "the deleted issue is not resurrected by the pull in flight")
+}
+
+// gate holds one call, once armed, after it has read and before it returns.
+type gate struct {
+	mu               sync.Mutex
+	entered, release chan struct{}
+}
+
+func (g *gate) arm() (<-chan struct{}, chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.entered, g.release = make(chan struct{}, 1), make(chan struct{})
+	return g.entered, g.release
+}
+
+func (g *gate) hold() {
+	g.mu.Lock()
+	entered, release := g.entered, g.release
+	g.entered, g.release = nil, nil
+	g.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+		<-release
+	}
+}
+
+// gatedScoped is a scope-aware adapter whose by-ID reads can be held.
+type gatedScoped struct {
+	*scopedTracker
+	gate
+	outOfScope atomic.Bool // every issue reads as out of scope
+}
+
+func (g *gatedScoped) FetchIssuesInScope(ctx context.Context, ids []string) ([]domain.Issue, error) {
+	out, err := g.scopedTracker.FetchIssuesInScope(ctx, ids)
+	if g.outOfScope.Load() {
+		out = nil
+	}
+	g.hold()
+	return out, err
+}
+
+// gatedDetail is an adapter without a scope check whose detail reads can be
+// held (RefreshIssues' fallback path).
+type gatedDetail struct {
+	*countingTracker
+	gate
+}
+
+func (g *gatedDetail) FetchIssueDetail(ctx context.Context, id string) (*domain.Issue, error) {
+	out, err := g.countingTracker.FetchIssueDetail(ctx, id)
+	g.hold()
+	return out, err
+}
+
+// A webhook refresh that read an issue before a local write through the
+// store does not undo that write when its older answer comes back, on both
+// RefreshIssues paths; nor does it re-add an issue removed meanwhile.
+func TestStaleRefreshDoesNotUndoANewerLocalChange(t *testing.T) {
+	refreshDuring := func(t *testing.T, s *store.Store, g *gate, local func()) {
+		t.Helper()
+		entered, release := g.arm()
+		done := make(chan error, 1)
+		go func() { _, err := s.RefreshIssues(t.Context(), []string{"1"}); done <- err }()
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the refresh never reached the tracker")
+		}
+		local()
+		close(release)
+		require.NoError(t, <-done)
+	}
+	state := func(t *testing.T, s *store.Store) map[string]string {
+		t.Helper()
+		got, err := s.FetchIssuesByStates(t.Context(), board)
+		require.NoError(t, err)
+		out := map[string]string{}
+		for _, iss := range got {
+			out[iss.ID] = iss.State
+		}
+		return out
+	}
+	for _, path := range []string{"scoped", "detail"} {
+		t.Run(path, func(t *testing.T) {
+			var up tracker.Tracker
+			var g *gate
+			switch path {
+			case "scoped":
+				gs := &gatedScoped{scopedTracker: &scopedTracker{countingTracker: newCounting(issue("1", "Todo"), issue("2", "Todo"))}}
+				up, g = gs, &gs.gate
+			default:
+				gd := &gatedDetail{countingTracker: newCounting(issue("1", "Todo"), issue("2", "Todo"))}
+				up, g = gd, &gd.gate
+			}
+			_, s, err := store.Wrap(up, storeConfig(t, t.TempDir()))
+			require.NoError(t, err)
+			_, err = s.FetchCandidateIssues(t.Context())
+			require.NoError(t, err)
+
+			refreshDuring(t, s, g, func() { require.NoError(t, s.UpdateIssueState(t.Context(), "1", "Done")) })
+			assert.Equal(t, "Done", state(t, s)["1"], "the newer local write stands")
+
+			if gs, ok := up.(*gatedScoped); ok {
+				// An older read that found the issue out of scope does not
+				// drop a write made after it.
+				gs.outOfScope.Store(true)
+				refreshDuring(t, s, g, func() { require.NoError(t, s.UpdateIssueState(t.Context(), "1", "In Progress")) })
+				gs.outOfScope.Store(false)
+				assert.Equal(t, "In Progress", state(t, s)["1"], "the newer local write stands over the older removal")
+			}
+
+			refreshDuring(t, s, g, func() { s.Forget("1") })
+			assert.NotContains(t, state(t, s), "1", "the removal made meanwhile stands")
+		})
+	}
 }
