@@ -138,8 +138,9 @@ func TestOverBudgetIssueIsNotStartedByAnAutomationOrAResume(t *testing.T) {
 	}
 
 	state := over()
-	started, held := o.startAutomationRunOrHold(ctx, &state, issue, time.Now(), AutomationDispatch{ProfileName: "any"})
-	assert.False(t, started || held, "the automation run is dropped")
+	started, hold := o.startAutomationRunOrHold(ctx, &state, issue, time.Now(), AutomationDispatch{ProfileName: "any"})
+	assert.False(t, started, "the automation run is dropped")
+	assert.Empty(t, hold)
 	assert.NotContains(t, state.Running, issue.ID)
 	assert.Equal(t, PauseReasonBudgetExceeded, state.PauseReasons["ENG-1"])
 

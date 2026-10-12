@@ -127,11 +127,28 @@ func (o *Orchestrator) claimView(state *State, local, fresh domain.Issue, path s
 	return view
 }
 
+// claimVerdict is the outcome of a claim check.
+type claimVerdict int
+
+const (
+	// claimAdmit: the issue may start.
+	claimAdmit claimVerdict = iota
+	// claimRefuse: the tracker says it may not (closed, moved, deleted).
+	claimRefuse
+	// claimUnreachable: the tracker could not be read. The caller defers the
+	// start (the next tick, a retry, the automation queue); it never drops it.
+	claimUnreachable
+)
+
+// claimRetryDelay is how long a reviewer whose claim read failed waits
+// before its retry reads the issue again.
+const claimRetryDelay = 30 * time.Second
+
 // claimCheck reads issue from the tracker (or uses fresh, the caller's own
 // read by ID in this admission) and reports whether it may start: eligible
 // returns "" for an issue that may, or the reason it may not. It returns the
 // issue to start, with the tracker's current state. Event loop.
-func (o *Orchestrator) claimCheck(ctx context.Context, state *State, issue domain.Issue, fresh *domain.Issue, path string, eligible func(domain.Issue) string, now time.Time) (domain.Issue, bool) {
+func (o *Orchestrator) claimCheck(ctx context.Context, state *State, issue domain.Issue, fresh *domain.Issue, path string, eligible func(domain.Issue) string, now time.Time) (domain.Issue, claimVerdict) {
 	var current domain.Issue
 	switch {
 	case fresh != nil:
@@ -142,12 +159,13 @@ func (o *Orchestrator) claimCheck(ctx context.Context, state *State, issue domai
 	default:
 		read, found, ok := o.claimRead(ctx, issue)
 		if !ok {
-			return issue, false
+			return issue, claimUnreachable
 		}
 		if !found {
 			slog.Info("orchestrator: claim check: the tracker no longer has the issue; not starting it",
 				"identifier", issue.Identifier, "path", path)
-			return issue, false
+			o.forgetLocally(issue.ID)
+			return issue, claimRefuse
 		}
 		current = read
 	}
@@ -155,9 +173,18 @@ func (o *Orchestrator) claimCheck(ctx context.Context, state *State, issue domai
 	if reason := eligible(view); reason != "" {
 		slog.Info("orchestrator: claim check: not starting the issue, it is no longer eligible in the tracker",
 			"identifier", view.Identifier, "tracker_state", view.State, "reason", reason, "path", path)
-		return view, false
+		return view, claimRefuse
 	}
-	return view, true
+	return view, claimAdmit
+}
+
+// forgetLocally drops an issue the tracker no longer has from the local
+// tracker store, when the tracker is one, so it stops being listed before
+// the next pull. A store's next pull puts back anything forgotten wrongly.
+func (o *Orchestrator) forgetLocally(id string) {
+	if f, ok := o.tracker.(interface{ Forget(id string) }); ok {
+		f.Forget(id)
+	}
 }
 
 // claimActive admits an issue in an active state: a worker's dispatch, retry

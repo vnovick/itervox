@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -23,9 +24,12 @@ import (
 // tracker does), and reads by ID are counted per issue.
 type humanTracker struct {
 	*tracker.MemoryTracker
-	mu     sync.Mutex
-	edited map[string]time.Time
-	reads  map[string]int
+	mu      sync.Mutex
+	edited  map[string]time.Time
+	reads   map[string]int
+	deleted map[string]bool
+	down    bool // reads by ID fail
+	details map[string]int
 }
 
 func newHumanTracker(issues ...domain.Issue) *humanTracker {
@@ -34,7 +38,30 @@ func newHumanTracker(issues ...domain.Issue) *humanTracker {
 		MemoryTracker: tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates),
 		edited:        map[string]time.Time{},
 		reads:         map[string]int{},
+		deleted:       map[string]bool{},
+		details:       map[string]int{},
 	}
+}
+
+// detailReads counts the detail reads of id (the tick's claim read).
+func (h *humanTracker) detailReads(id string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.details[id]
+}
+
+// Delete is a person deleting the issue in the tracker.
+func (h *humanTracker) Delete(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deleted[id] = true
+}
+
+// SetDown makes reads by ID fail (the tracker is unreachable).
+func (h *humanTracker) SetDown(down bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.down = down
 }
 
 func (h *humanTracker) RateLimitSnapshot() *tracker.RateLimitSnapshot { return nil }
@@ -59,17 +86,34 @@ func (h *humanTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) 
 	for _, id := range ids {
 		h.reads[id]++
 	}
-	for i := range issues {
-		h.stamp(&issues[i])
+	if h.down {
+		return nil, errTrackerDown
 	}
-	return issues, err
+	out := issues[:0]
+	for i := range issues {
+		if h.deleted[issues[i].ID] {
+			continue
+		}
+		h.stamp(&issues[i])
+		out = append(out, issues[i])
+	}
+	return out, err
 }
+
+var errTrackerDown = errors.New("tracker unreachable")
 
 func (h *humanTracker) FetchIssueDetail(ctx context.Context, id string) (*domain.Issue, error) {
 	iss, err := h.MemoryTracker.FetchIssueDetail(ctx, id)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.reads[id]++
+	h.details[id]++
+	if h.down {
+		return nil, errTrackerDown
+	}
+	if h.deleted[id] {
+		return nil, &tracker.NotFoundError{Adapter: "test", Identifier: id}
+	}
 	if iss != nil {
 		h.stamp(iss)
 	}
@@ -191,8 +235,8 @@ func TestPendingWriteWithoutHumanEditSurvivesTheClaimCheck(t *testing.T) {
 		TargetState: "Done", FromState: "In Progress",
 	}))
 	state := NewState(o.cfg)
-	view, ok := o.claimCheck(ctx, &state, issue, nil, admitDispatch, claimActive(&state), time.Now())
-	assert.False(t, ok, "the pending Done write is the issue's state")
+	view, verdict := o.claimCheck(ctx, &state, issue, nil, admitDispatch, claimActive(&state), time.Now())
+	assert.Equal(t, claimRefuse, verdict, "the pending Done write is the issue's state")
 	assert.Equal(t, "Done", view.State)
 	assert.Len(t, ob.PendingFor(issue.ID), 1, "the write is kept")
 }
@@ -274,4 +318,109 @@ func TestClaimCheckAdmitsAReviewerInTheCompletionState(t *testing.T) {
 	o.dispatchReviewerForIssue(ctx, &state, issue, "reviewer", time.Now())
 	assert.Contains(t, state.Running, issue.ID, "the reviewer starts in the completion state")
 	assert.Equal(t, "Done", state.Running[issue.ID].Issue.State, "with the tracker's current state")
+}
+
+// TestClaimReadFailureDefersTheStart: when the claim check cannot read the
+// tracker, nothing is lost: an automation is queued (tracker_unavailable), a
+// reviewer gets a retry that reads the issue again, and the tick's dispatch
+// happens on a later tick once the tracker answers.
+func TestClaimReadFailureDefersTheStart(t *testing.T) {
+	t.Run("automation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		issue := breakerIssue("1")
+		o, h, _ := claimOrchestrator(t, issue)
+		h.SetDown(true)
+		state := NewState(o.cfg)
+		o.dispatchOrQueueAutomation(ctx, &state, issue, AutomationDispatch{AutomationID: "a1", ProfileName: "coder"}, time.Now())
+		assert.NotContains(t, state.Running, issue.ID)
+		require.Len(t, state.AutomationQueue, 1, "queued, not dropped")
+		for _, e := range state.AutomationQueue {
+			assert.Equal(t, AutomationQueueReasonTrackerUnavailable, e.Reason)
+		}
+		h.SetDown(false)
+		o.drainAutomationQueue(ctx, &state, time.Now())
+		assert.Contains(t, state.Running, issue.ID, "the queue starts it once the tracker answers")
+	})
+
+	t.Run("reviewer", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		issue := breakerIssue("1")
+		o, h, _ := claimOrchestrator(t, issue)
+		h.SetDown(true)
+		state := NewState(o.cfg)
+		o.dispatchReviewerForIssue(ctx, &state, issue, "reviewer", time.Now())
+		assert.NotContains(t, state.Running, issue.ID)
+		require.Contains(t, state.RetryAttempts, issue.ID, "a reviewer retry, not a lost review")
+		assert.Equal(t, "reviewer", state.RetryAttempts[issue.ID].ReviewerProfile)
+		h.SetDown(false)
+		state = o.fireRetries(ctx, state, time.Now().Add(time.Minute))
+		require.Contains(t, state.Running, issue.ID, "the retry starts the reviewer")
+		assert.Equal(t, "reviewer", state.Running[issue.ID].Kind)
+	})
+
+	t.Run("dispatch", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		issue := breakerIssue("1")
+		o, h, _ := claimOrchestrator(t, issue)
+		h.SetDown(true)
+		state := o.onTick(ctx, NewState(o.cfg))
+		assert.NotContains(t, state.Running, issue.ID)
+		h.SetDown(false)
+		state = o.onTick(ctx, state)
+		assert.Contains(t, state.Running, issue.ID, "the next tick dispatches it")
+	})
+}
+
+// TestDeletedIssueLeavesTheStoreAtTheClaimCheck: an issue a person deleted
+// after the last pull is not started, and the local store stops listing it
+// at once, so it is not read again on every tick until the next pull.
+func TestDeletedIssueLeavesTheStoreAtTheClaimCheck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	issue := breakerIssue("1")
+	o, h, st := claimOrchestrator(t, issue)
+	h.Delete(issue.ID)
+
+	state := o.onTick(ctx, NewState(o.cfg))
+	assert.NotContains(t, state.Running, issue.ID)
+	cands, err := st.FetchCandidateIssues(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, cands, "the store no longer lists it")
+	// The tick's claim read is a detail read; other subsystems (the
+	// dependency audit) may read states by ID on their own schedule.
+	reads := h.detailReads(issue.ID)
+	require.Positive(t, reads)
+	_ = o.onTick(ctx, state)
+	assert.Equal(t, reads, h.detailReads(issue.ID), "and the next tick does not read it again")
+}
+
+// TestReviewerRetryIsAdmittedInTheCompletionState: a reviewer's retry is
+// admitted wherever a reviewer is, including a non-active completion state;
+// a worker's retry still needs an active state.
+func TestReviewerRetryIsAdmittedInTheCompletionState(t *testing.T) {
+	for _, tc := range []struct {
+		reviewer string
+		starts   bool
+	}{{"reviewer", true}, {"", false}} {
+		t.Run("reviewer="+tc.reviewer, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			issue := breakerIssue("1")
+			o, h, _ := claimOrchestrator(t, issue)
+			o.cfg.Tracker.CompletionState = "In Review"
+			h.Edit(issue.ID, "In Review")
+			state := NewState(o.cfg)
+			state.Claimed[issue.ID] = struct{}{}
+			state.RetryAttempts[issue.ID] = &RetryEntry{
+				IssueID: issue.ID, Identifier: issue.Identifier, Attempt: 1,
+				DueAt: time.Now().Add(-time.Second), ReviewerProfile: tc.reviewer,
+			}
+			state = o.fireRetries(ctx, state, time.Now())
+			_, running := state.Running[issue.ID]
+			assert.Equal(t, tc.starts, running)
+		})
+	}
 }

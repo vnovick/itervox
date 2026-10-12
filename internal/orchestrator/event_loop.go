@@ -404,6 +404,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		if errors.Is(err, tracker.ErrNotFound) || (err == nil && detailed == nil) {
 			slog.Info("orchestrator: claim check: the tracker no longer has the issue; not starting it",
 				"identifier", issue.Identifier, "path", admitDispatch)
+			o.forgetLocally(issue.ID)
 			continue
 		}
 		if err != nil {
@@ -411,10 +412,10 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 				"identifier", issue.Identifier, "error", err)
 			continue
 		}
-		claimed, ok := o.claimCheck(ctx, &state, issue, detailed, admitDispatch, func(v domain.Issue) string {
+		claimed, verdict := o.claimCheck(ctx, &state, issue, detailed, admitDispatch, func(v domain.Issue) string {
 			return IneligibleReason(v, state, o.cfg)
 		}, now)
-		if !ok {
+		if verdict != claimAdmit {
 			continue
 		}
 		issue = claimed
@@ -595,8 +596,14 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		}
 		// #116: the read above is the claim check's; pending local writes a
 		// person's later change superseded are dropped.
-		issue, admit := o.claimCheck(ctx, &state, refreshed[0], &refreshed[0], admitRetry, claimActive(&state), now)
-		if !admit {
+		// A reviewer's retry is admitted where a reviewer is (#116): its
+		// issue may wait in a non-active completion state.
+		eligible := claimActive(&state)
+		if entry.ReviewerProfile != "" {
+			eligible = o.claimNotTerminal(&state, true)
+		}
+		issue, verdict := o.claimCheck(ctx, &state, refreshed[0], &refreshed[0], admitRetry, eligible, now)
+		if verdict != claimAdmit {
 			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
 			state = CancelRetry(state, issueID)
 			continue
@@ -1449,6 +1456,13 @@ func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) s
 // using the specified profile. The reviewer enters the regular worker queue with
 // Kind="reviewer" and gets full retry/pause/resume support.
 func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *State, issue domain.Issue, profileName string, now time.Time) {
+	o.dispatchReviewer(ctx, state, issue, nil, profileName, now)
+}
+
+// dispatchReviewer is dispatchReviewerForIssue with fresh, the caller's own
+// read of the issue by ID in this admission, for the claim check (nil: it
+// reads one).
+func (o *Orchestrator) dispatchReviewer(ctx context.Context, state *State, issue domain.Issue, fresh *domain.Issue, profileName string, now time.Time) {
 	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136
 		return
 	}
@@ -1484,8 +1498,15 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	// #116 claim check: a person may have closed or deleted the issue since
 	// it was last read. A reviewer is admitted anywhere but a terminal state
 	// other than tracker.completion_state.
-	claimed, admit := o.claimCheck(ctx, state, issue, nil, admitReviewer, o.claimNotTerminal(state, true), now)
-	if !admit {
+	claimed, verdict := o.claimCheck(ctx, state, issue, fresh, admitReviewer, o.claimNotTerminal(state, true), now)
+	switch verdict {
+	case claimUnreachable:
+		// Deferred, never dropped: a reviewer retry reads the issue again.
+		*state = ScheduleRetry(*state, issue.ID, 0, issue.Identifier,
+			"claim check: the tracker could not be read", now, int(claimRetryDelay.Milliseconds()))
+		retryAs(*state, issue.ID, profileName) // #127: the retry is this reviewer
+		return
+	case claimRefuse:
 		return
 	}
 	issue = claimed
@@ -2371,9 +2392,16 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 				if reviewerProfileOf(finished) != "" {
 					eligible = o.claimNotTerminal(&state, true)
 				}
-				claimed, admit := o.claimCheck(ctx, &state, issue, nil, admitFallback, eligible, now)
+				claimed, verdict := o.claimCheck(ctx, &state, issue, nil, admitFallback, eligible, now)
+				admit := verdict == claimAdmit
 				if admit {
 					state = o.dispatchRun(ctx, state, claimed, attempt, reviewerProfileOf(finished))
+				} else if verdict == claimUnreachable && reviewerProfileOf(finished) != "" {
+					// A worker is dispatched again by the next tick; a reviewer
+					// is not, so it is deferred to a retry.
+					state = ScheduleRetry(state, issue.ID, attempt, issue.Identifier,
+						"claim check: the tracker could not be read", now, int(claimRetryDelay.Milliseconds()))
+					retryAs(state, issue.ID, reviewerProfileOf(finished))
 				}
 				o.recordHistory(liveEntry, issue, now, "failed")
 				_, running := state.Running[ev.IssueID]
