@@ -668,6 +668,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
 			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
+		// #136: the turn's usage counts whatever its outcome; every exit
+		// below carries it (deliverExit) so the event loop settles it.
+		recordRunUsage(ctx, cumulativeInput+result.InputTokens, cumulativeCached+result.CachedInputTokens,
+			cumulativeOutput+result.OutputTokens, result.CostUSD, result.SessionID)
 
 		if result.SessionID != "" {
 			s := result.SessionID
@@ -1754,6 +1758,7 @@ func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev O
 	// exit is queued must leave the run to it (#125).
 	markFinishing(ctx)
 	ev.RunID = runIDFrom(ctx)
+	settleRunUsage(ctx, ev.RunEntry) // #136: the run's final usage
 	// If the worker context is already cancelled (e.g. user-triggered pause via
 	// CancelIssue), the exit event must still reach the event loop so that
 	// PausedIdentifiers is set correctly.  Fall back to a background-derived

@@ -45,9 +45,14 @@ to exist, not to pass.
    `acceptance` environment.
 3. The job builds Itervox from that ref and runs
    `deploy/acceptance/self-hosted-run.sh`, which:
-   - labels only that issue `smoke:todo`. The run's workflow uses its own state
-     labels (`smoke:todo` → `smoke:in-progress` → `smoke:done`), so no other
-     issue is eligible;
+   - labels only that issue `smoke-<issue>-<run>:todo`. The run's workflow
+     uses active state labels unique to that issue and run
+     (`smoke-<issue>-<run>:todo` → `smoke-<issue>-<run>:in-progress` →
+     `smoke:done`), so no other issue is eligible, not even one an earlier
+     failed or timed-out run left in an active smoke state. `<run>` is
+     `ITERVOX_SMOKE_RUN_ID` (letters and digits) or the UTC start time. The
+     run deletes its two active labels when it ends, pass or fail; the
+     terminal `smoke:done` stays on the issue as the record;
    - starts the daemon with a real Claude agent (one at a time, one retry);
    - passes when the issue reaches `smoke:done` **and** a pull request whose
      body names the issue exists. It fails when the daemon exits, the issue
@@ -69,6 +74,9 @@ GH_TOKEN=$(gh auth token) deploy/acceptance/self-hosted-run.sh --issue <number> 
 ```
 
 `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` must be set in the environment.
+The script runs on Linux and macOS: it puts the daemon in its own process group
+with `setsid` where that exists and with shell job control where it does not
+(stock macOS has no `setsid`).
 
 ## 2. Cloud deploy smoke
 
@@ -91,10 +99,16 @@ archive: run it on the new tag right after the release workflow publishes it
       `active`, and `GET /api/v1/state` with the bearer token must answer 200
       (checked on the VM, so the token never leaves it);
    6. the dashboard page and `/api/v1/ready` must load through the IAP tunnel.
-3. Teardown always runs, pass or fail: the instance, its data disk, and the
-   Cloud Router/NAT and IAP firewall rule **if this run created them** (a
-   project that already had them keeps them). Exit 3 means the check passed but
-   something could not be deleted; the log names what to delete by hand.
+3. Before creating anything, the check refuses (exit 2) when an instance
+   named `--name` or a disk named `<name>-data` already exists in the zone,
+   so a name collision never deletes someone else's VM or disk. Teardown then
+   always runs, pass or fail, and deletes only what this run created: the
+   instance and data disk if provisioning got as far as creating them (a
+   failure part-way deletes only what exists), and the Cloud Router/NAT and
+   IAP firewall rule **if this run created them** (a project that already had
+   them keeps them). The summary names what it removed. Exit 3 means the check
+   passed but something could not be deleted; the log names what to delete by
+   hand.
 
 Locally, with `gcloud` logged in to the check's project:
 
