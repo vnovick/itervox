@@ -58,7 +58,7 @@ func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
 // write is NOT registered as a self-write, so the watcher reloads after it
 // exactly as it would for an operator edit.
 func WriteAndReload(path string, mutators ...Mutator) error {
-	return applyAndWrite(path, false, mutators)
+	return applyAndWrite(path, false, false, mutators)
 }
 
 // PatchTrackerStates atomically rewrites tracker.active_states,
