@@ -137,7 +137,9 @@ type Store struct {
 	active     []string
 	issues     map[string]domain.Issue
 	candidates []string
-	views      map[string]*view
+	// fullNext makes the next pull a full one (RequestSync).
+	fullNext bool
+	views    map[string]*view
 	// gen counts local changes; touched records the gen of each issue's last
 	// local change, so a pull that started before it does not undo it.
 	gen     int64
@@ -355,12 +357,17 @@ func (s *Store) nudgeDelay() time.Duration {
 	return DefaultNudgeDelay
 }
 
-// RequestSync asks Run for a pull soon (#131): a webhook named an issue
-// the store does not hold, so it cannot tell on its own whether the issue
-// belongs to the tracked project. The pull is incremental when one is due
-// (#114), which lists an in-scope issue updated since the cursor, so the new
-// issue is placed either way. Requests made before the pull coalesce.
+// RequestSync asks Run for a full pull soon (#131): a webhook named an
+// issue the store does not hold, so it cannot tell on its own whether the
+// issue belongs to the tracked project, or the webhook queue overflowed and
+// its removals were dropped. The pull is a full one even when an
+// incremental pull is due (#114): a changes listing does not show a
+// deleted or transferred GitHub issue. Requests made before the pull
+// coalesce.
 func (s *Store) RequestSync() {
+	s.mu.Lock()
+	s.fullNext = true
+	s.mu.Unlock()
 	select {
 	case s.nudge <- struct{}{}:
 	default:
@@ -533,6 +540,8 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 		s.mu.Unlock()
 		return s.pullChanges(ctx, inc, since, startGen, startScope)
 	}
+	forced := s.fullNext
+	s.fullNext = false // a request made while this pull runs asks for another
 	ttl := viewTTLSyncs * s.cfg.SyncInterval
 	type pull struct {
 		key    string
@@ -559,6 +568,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	if err != nil {
 		s.mu.Lock()
 		s.lastErr = err
+		s.fullNext = s.fullNext || forced
 		s.mu.Unlock()
 		return false, err
 	}
@@ -645,7 +655,7 @@ func (s *Store) incrementalDueLocked() bool {
 	if full <= 0 {
 		full = DefaultFullSyncInterval
 	}
-	return s.synced && !s.cursor.IsZero() && s.now().Sub(s.fullAt) < full
+	return s.synced && !s.fullNext && !s.cursor.IsZero() && s.now().Sub(s.fullAt) < full
 }
 
 // pullChanges is an incremental pull (#114): the issues updated since the
