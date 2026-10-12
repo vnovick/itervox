@@ -445,3 +445,25 @@ func TestRequestSyncMakesTheNextPullFull(t *testing.T) {
 	assert.Equal(t, full, up.listCalls(), "then incremental again")
 	assert.Equal(t, inc+1, up.inc.Load())
 }
+
+// TestLocalWriteDuringIncrementalPullKeepsBlockerReferences: a blocker moved
+// to Done through the store while an incremental pull that listed it as Todo
+// was in flight stays Done, and the issues it blocks record it as Done too,
+// not as the stale listing's Todo.
+func TestLocalWriteDuringIncrementalPullKeepsBlockerReferences(t *testing.T) {
+	blockerID, blockerIdent, todo := "5", "ENG-5", "Todo"
+	blocked := issue("6", "Todo")
+	blocked.BlockedBy = []domain.BlockerRef{{ID: &blockerID, Identifier: &blockerIdent, State: &todo}}
+	up := newChanges(issue("5", "Todo"), blocked)
+	st, _ := incrementalStore(t, up, t.TempDir())
+	up.setTitle("5", "Renamed") // listed by the next pull, still Todo
+	up.afterInc = func() {
+		require.NoError(t, st.UpdateIssueState(context.Background(), "5", "Done"))
+	}
+	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
+	board, err := storeIssues(t, st)
+	require.NoError(t, err)
+	assert.Equal(t, "Done", board["5"].State, "the local write stands")
+	require.Len(t, board["6"].BlockedBy, 1)
+	assert.Equal(t, "Done", *board["6"].BlockedBy[0].State, "the dependent's reference follows the stored blocker, not the stale listing")
+}
