@@ -214,6 +214,7 @@ dev:
 # PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
 .PHONY: deploy-test
 deploy-test:
+	bash scripts/chaos_test.sh
 	bash deploy/lib/fetch-secrets_test.sh
 	bash deploy/bootstrap_test.sh
 	bash deploy/aws/provision_test.sh
