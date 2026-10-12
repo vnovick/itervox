@@ -472,11 +472,15 @@ func untrackedIdentifierPredicate(terminal, currentActive, prevActive map[string
 
 // reviewMidChainPredicate reports whether a review may still be in flight for
 // an identifier: a run (any kind) is live for it, a retry is pending for it,
-// or a reviewer was dispatched for it and has not yet succeeded or been
-// abandoned (reviewerInjectedProfiles, read once under issueProfilesMu). The
-// last signal matters because ReconcileTrackerStates deletes a fan-out
-// reviewer's Running entry BEFORE the reviewer's own success exit advances
-// the chain (#58 defect 1) — pruning in that window would strand the quorum.
+// its latest run is a reviewer whose own exit has not been handled yet
+// (its run record, #127), or a reviewer is suspended and will continue: it
+// waits for input, has a reply queued, is paused, or is pending while the
+// daemon drains. A suspended reviewer's run record is already Exited, so
+// without these its chain would be pruned while the issue sits outside the
+// active states, and the resumed reviewer would find no chain to advance. The last signal matters because
+// ReconcileTrackerStates can delete a reviewer's Running entry BEFORE the
+// reviewer's own success exit advances the chain (#58 defect 1) — pruning in
+// that window would strand the quorum.
 func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 	busy := make(map[string]struct{}, len(state.Running)+len(state.RetryAttempts))
 	for _, e := range state.Running {
@@ -489,11 +493,29 @@ func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 			busy[r.Identifier] = struct{}{}
 		}
 	}
-	o.issueProfilesMu.RLock()
-	for ident := range o.reviewerInjectedProfiles {
+	for _, rec := range state.LatestRun {
+		if rec.IsReviewer() && !rec.Exited && rec.Identifier != "" {
+			busy[rec.Identifier] = struct{}{}
+		}
+	}
+	for _, e := range state.InputRequiredIssues {
+		if e != nil && e.Reviewer {
+			busy[e.Identifier] = struct{}{}
+		}
+	}
+	for _, e := range state.PendingInputResumes {
+		if e != nil && e.Reviewer {
+			busy[e.Identifier] = struct{}{}
+		}
+	}
+	for ident, p := range state.PausedSessions {
+		if p != nil && p.Reviewer {
+			busy[ident] = struct{}{}
+		}
+	}
+	for ident := range state.PendingReviews {
 		busy[ident] = struct{}{}
 	}
-	o.issueProfilesMu.RUnlock()
 	return func(ident string) bool {
 		_, ok := busy[ident]
 		return ok

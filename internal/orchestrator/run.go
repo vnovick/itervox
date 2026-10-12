@@ -32,21 +32,45 @@ const (
 // an event could still be queued behind that tick.
 type runHandle struct {
 	id        string
+	kind      string
 	finishing atomic.Bool
 }
 
 type runHandleKey struct{}
 
+// RunRecord is what the event loop keeps about an issue's latest run (#127).
+// It outlives the run's Running entry, which reconcile and stall detection
+// delete before the run's own exit arrives, so the exit handler can still
+// tell which run finished and what it was: its kind, its profile (a
+// reviewer's chain step), and whether it was stopped. Event-loop state.
+type RunRecord struct {
+	ID          string
+	Identifier  string
+	Kind        string
+	ProfileName string
+	// Stopped is set when reconcile or stall detection stopped the run: its
+	// work was cut short, so a success exit that follows does not start a
+	// review.
+	Stopped bool
+	// Exited is set once the run's own exit has been handled.
+	Exited bool
+}
+
+// IsReviewer reports whether the recorded run was a reviewer.
+func (r RunRecord) IsReviewer() bool { return r.Kind == "reviewer" }
+
 // startRun gives a new Running entry its run identity, records it as the
 // issue's latest run, and returns the worker context that carries it. Event
 // loop only.
 func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEntry) context.Context {
-	h := &runHandle{id: generateRunID()}
+	h := &runHandle{id: generateRunID(), kind: entry.Kind}
 	if state != nil {
-		if state.LatestRunID == nil {
-			state.LatestRunID = map[string]string{}
+		if state.LatestRun == nil {
+			state.LatestRun = map[string]RunRecord{}
 		}
-		state.LatestRunID[entry.Issue.ID] = h.id
+		state.LatestRun[entry.Issue.ID] = RunRecord{
+			ID: h.id, Identifier: entry.Issue.Identifier, Kind: entry.Kind, ProfileName: entry.ProfileName,
+		}
 	}
 	entry.RunID = h.id
 	entry.SessionID = h.id
@@ -68,6 +92,37 @@ func runIDFrom(ctx context.Context) string {
 		return h.id
 	}
 	return ""
+}
+
+// runIsReviewer reports whether a worker context belongs to a reviewer run.
+func runIsReviewer(ctx context.Context) bool {
+	h := runFrom(ctx)
+	return h != nil && h.kind == "reviewer"
+}
+
+// reviewerKind is the RunEntry.Kind of a run that is, or is not, a reviewer.
+func reviewerKind(reviewer bool) string {
+	if reviewer {
+		return "reviewer"
+	}
+	return ""
+}
+
+// reviewerProfileOf is the profile a run continuing rec runs as a reviewer,
+// "" when rec was not a reviewer (#127).
+func reviewerProfileOf(rec RunRecord) string {
+	if rec.IsReviewer() {
+		return rec.ProfileName
+	}
+	return ""
+}
+
+// retryAs makes the issue's pending retry re-run a reviewer under
+// reviewerProfile (#127). No-op for "" or when no retry is pending.
+func retryAs(state State, issueID, reviewerProfile string) {
+	if r := state.RetryAttempts[issueID]; r != nil && reviewerProfile != "" {
+		r.ReviewerProfile = reviewerProfile
+	}
 }
 
 // markFinishing reports that the worker's run has started to finish. Safe to
@@ -104,8 +159,43 @@ func supersededRun(state State, live *RunEntry, ev OrchestratorEvent) (string, b
 	if live != nil {
 		return live.RunID, live.isStaleFor(ev.RunID)
 	}
-	latest := state.LatestRunID[ev.IssueID]
+	latest := state.LatestRun[ev.IssueID].ID
 	return latest, ev.RunID != "" && latest != "" && latest != ev.RunID
+}
+
+// finishedRun identifies the run exit ev belongs to (#127): the live Running
+// entry when there is one, else the issue's run record. supersededRun has
+// already settled that the record, when it carries an ID, is this run. ok is
+// false when neither is known (an exit built by hand in a test).
+func finishedRun(state State, live *RunEntry, ev OrchestratorEvent) (RunRecord, bool) {
+	rec, recorded := state.LatestRun[ev.IssueID]
+	if recorded && ev.RunID != "" && rec.ID != "" && rec.ID != ev.RunID {
+		recorded = false
+	}
+	if live != nil {
+		return RunRecord{
+			ID: live.RunID, Identifier: live.Issue.Identifier, Kind: live.Kind, ProfileName: live.ProfileName,
+			Stopped: recorded && rec.Stopped, Exited: recorded && rec.Exited,
+		}, true
+	}
+	return rec, recorded
+}
+
+// markRunStopped records that reconcile or stall detection stopped the
+// issue's current run, whose Running entry it is about to delete.
+func markRunStopped(state State, issueID, runID string) {
+	if rec, ok := state.LatestRun[issueID]; ok && (runID == "" || rec.ID == runID) {
+		rec.Stopped = true
+		state.LatestRun[issueID] = rec
+	}
+}
+
+// markRunExited records that the run's own exit has been handled.
+func markRunExited(state State, issueID, runID string) {
+	if rec, ok := state.LatestRun[issueID]; ok && (runID == "" || rec.ID == runID) {
+		rec.Exited = true
+		state.LatestRun[issueID] = rec
+	}
 }
 
 // handleStaleExit settles the exit of a run that is no longer its issue's

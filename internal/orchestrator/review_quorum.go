@@ -152,12 +152,12 @@ func ReviewerProfileChain(cfg *config.Config) []string {
 	//     tracker.completion_state set, the worker moves the issue terminal,
 	//     so ReconcileTrackerStates deleted the run from state.Running before
 	//     the reviewer's own exit event arrived — liveEntry was nil, the guard
-	//     never fired, and the quorum never closed. The handler now recovers
-	//     the reviewer identity from reviewerInjectedProfiles, which
-	//     reconciliation does not touch.
+	//     never fired, and the quorum never closed. The handler now reads
+	//     the finishing run's own record (State.LatestRun, #127), which
+	//     reconciliation does not delete.
 	//
 	//  2. The workspace was auto-cleared while a reviewer was still live. The
-	//     clear decision keyed off runEligibleForAutoReview, which answers
+	//     clear decision keyed off runStartsAReview, which answers
 	//     "would a FRESH review start?" and is false for a reviewer's own exit
 	//     by design. The decision now also consults reviewChainInFlight, so
 	//     the worktree survives until the quorum actually closes.
