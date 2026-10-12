@@ -69,6 +69,10 @@ type Tracker struct {
 	// reads are then served from the entries the watch keeps current, and
 	// only writes rescan first (#133).
 	watched bool
+	// scanErr is the last directory scan's error, nil after a good scan. A
+	// watch serves reads from the entries only while it is nil: a directory
+	// that cannot be read is reported, never served as current.
+	scanErr error
 }
 
 type entry struct {
@@ -151,11 +155,14 @@ func (t *Tracker) refreshLocked() error {
 				t.changes++ // the directory, and every issue in it, is gone
 			}
 			t.entries = map[string]*entry{}
+			t.scanErr = nil
 			return nil
 		}
 		slog.Warn("local tracker: cannot read the issues directory", "dir", t.dir, "error", err)
-		return fmt.Errorf("local tracker: read %s: %w", t.dir, err)
+		t.scanErr = fmt.Errorf("local tracker: read %s: %w", t.dir, err)
+		return t.scanErr
 	}
+	t.scanErr = nil
 	seen := map[string]bool{}
 	changed := false
 	for _, de := range dirEntries {
@@ -200,9 +207,11 @@ func (t *Tracker) refreshLocked() error {
 }
 
 // syncLocked brings the entries up to date before a read: a rescan, unless
-// a healthy watch keeps them current. Caller holds mu.
+// a healthy watch keeps them current. A watch is healthy only while the last
+// scan succeeded; otherwise the read rescans and returns the error. Caller
+// holds mu.
 func (t *Tracker) syncLocked() error {
-	if t.watched {
+	if t.watched && t.scanErr == nil {
 		return nil
 	}
 	return t.refreshLocked()

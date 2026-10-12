@@ -481,3 +481,43 @@ func TestLocalTrackerDirectoryReadErrorIsNotDeletion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 1, "the issue is still there once the directory is readable")
 }
+
+// TestWatchedTrackerReportsAFailedScan (#133 review): while a watch holds,
+// reads are served from the entries only after a good scan; once a scan
+// fails, a read rescans and returns the error, and Problems names the
+// directory.
+func TestWatchedTrackerReportsAFailedScan(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
+	tr.mu.Lock()
+	require.NoError(t, tr.refreshLocked())
+	tr.watched = true
+	tr.mu.Unlock()
+
+	moved := dir + ".moved"
+	require.NoError(t, os.Rename(dir, moved))
+	writeRaw(t, dir, "not a directory")
+	got, err := tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err, "a healthy watch serves the entries without a scan")
+	require.Len(t, got, 1)
+
+	tr.mu.Lock()
+	require.Error(t, tr.refreshLocked(), "the watch's rescan fails")
+	tr.mu.Unlock()
+	_, err = tr.FetchCandidateIssues(ctx)
+	assert.Error(t, err, "after a failed scan the cache is not served as current")
+	_, err = tr.FetchIssueDetail(ctx, "ITX-1")
+	assert.Error(t, err)
+	require.NotEmpty(t, tr.Problems())
+
+	require.NoError(t, os.Remove(dir))
+	require.NoError(t, os.Rename(moved, dir))
+	got, err = tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err, "a good scan makes the watch healthy again")
+	assert.Len(t, got, 1)
+	require.NoError(t, os.Remove(filepath.Join(dir, "ITX-1.md")))
+	got, err = tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 1, "healthy again: served from the watch, no rescan")
+}
