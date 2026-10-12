@@ -271,6 +271,9 @@ func watchDaemon(ctx context.Context, c *daemonClient, every time.Duration, once
 		var s watchState
 		err := c.request(rctx, http.MethodGet, "/state", nil, &s)
 		cancel()
+		if ctx.Err() != nil {
+			return 0 // stopped (Ctrl-C) while a request was in flight: not a failure
+		}
 		now := time.Now()
 		view, key := "", ""
 		if err != nil {
@@ -280,6 +283,7 @@ func watchDaemon(ctx context.Context, c *daemonClient, every time.Duration, once
 			}
 			view = "itervox watch: " + err.Error() + " (retrying)\n"
 			key = view
+			c.rediscover() // a restarted daemon may listen on a new port
 		} else {
 			view, key = renderWatch(s, now, true), renderWatch(s, now, false)
 		}
@@ -335,16 +339,25 @@ func printLogs(ctx context.Context, c *daemonClient, identifier string, follow b
 		return nil
 	}
 	lastID := ""
+	refused := 0
 	for ctx.Err() == nil {
 		err := streamLogs(ctx, c, path+"/log-stream", &lastID, out)
 		var ae *apiError
 		if errors.As(err, &ae) {
-			return err // refused: a retry would be refused too
+			// Refused: a retry would be refused too, except right after a
+			// restart, when the new token file may not have been read yet.
+			if ae.status != http.StatusUnauthorized || c.discover == nil || refused >= 5 {
+				return err
+			}
+			refused++
+		} else {
+			refused = 0
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Second): // the daemon restarted or the connection dropped
 		}
+		c.rediscover() // a restarted daemon may listen on a new port, with a new token
 	}
 	return nil
 }

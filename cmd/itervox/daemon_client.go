@@ -22,6 +22,23 @@ type daemonClient struct {
 	base  string // e.g. http://127.0.0.1:8090 (no trailing slash)
 	token string
 	http  *http.Client
+	// discover finds the daemon again; nil with --url. A daemon restarted
+	// with server.port: 0 listens on a new port and rewrites
+	// .itervox/dashboard_url (and may have a new token), so a client that
+	// reconnects calls rediscover first.
+	discover func() (*daemonClient, error)
+}
+
+// rediscover re-reads the daemon's address and token, when they were
+// discovered rather than given with --url. On failure the last known ones
+// stay.
+func (c *daemonClient) rediscover() {
+	if c.discover == nil {
+		return
+	}
+	if fresh, err := c.discover(); err == nil {
+		c.base, c.token = fresh.base, fresh.token
+	}
 }
 
 // daemonFlags registers the flags every client command takes.
@@ -70,7 +87,12 @@ func (f *daemonFlags) client() (*daemonClient, error) {
 			token = strings.TrimSpace(string(raw))
 		}
 	}
-	return &daemonClient{base: base, token: token, http: &http.Client{}}, nil
+	c := &daemonClient{base: base, token: token, http: &http.Client{}}
+	if f.url == "" {
+		again := *f
+		c.discover = again.client
+	}
+	return c, nil
 }
 
 // apiError is a non-2xx answer; message is the API's error message.

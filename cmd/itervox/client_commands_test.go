@@ -345,3 +345,95 @@ func TestHeadlessOnATTYDoesNotStartTheTUIOrPrintTheToken(t *testing.T) {
 		})
 	})
 }
+
+// syncBuffer is a strings.Builder safe to read while a command writes it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// TestLogsFollowFollowsADaemonRestartedOnANewPort: with server.port: 0 a
+// restarted daemon listens on a new port and has a new token; logs -f, which
+// found the daemon through .itervox/dashboard_url and <logs-dir>/api-token,
+// finds it again and keeps streaming.
+func TestLogsFollowFollowsADaemonRestartedOnANewPort(t *testing.T) {
+	dir := t.TempDir()
+	wf := filepath.Join(dir, "WORKFLOW.md")
+	logs := filepath.Join(dir, "logs")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox"), 0o755))
+	require.NoError(t, os.MkdirAll(logs, 0o755))
+	t.Setenv("ITERVOX_API_TOKEN", "")
+	serve := func(token, msg string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintf(w, "id: 1\nevent: log\ndata: {\"level\":\"info\",\"message\":%q,\"time\":\"10:00:00\"}\n\n", msg)
+		}))
+	}
+	discoverable := func(srv *httptest.Server, token string) {
+		require.NoError(t, os.WriteFile(dashboardURLFilePath(wf), []byte(srv.URL+"/?token="+token+"\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(logs, apiTokenFileName), []byte(token+"\n"), 0o600))
+	}
+	a := serve("token-a", "before restart")
+	discoverable(a, "token-a")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	out := &syncBuffer{}
+	done := make(chan int)
+	go func() {
+		done <- clientCommand(ctx, "logs", []string{"--workflow", wf, "--logs-dir", logs, "-f", "ENG-1"}, out, io.Discard)
+	}()
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "before restart") }, 5*time.Second, 10*time.Millisecond)
+
+	a.Close() // the daemon stops; it comes back on another port with another token
+	b := serve("token-b", "after restart")
+	defer b.Close()
+	discoverable(b, "token-b")
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "after restart") }, 10*time.Second, 10*time.Millisecond,
+		"logs -f finds the restarted daemon:\n%s", out.String())
+	cancel()
+	assert.Equal(t, 0, <-done)
+}
+
+// TestWatchStopsQuietlyWhenCancelledMidRequest: Ctrl-C while a state
+// request is in flight ends watch with exit 0 and no "not answering"
+// message; an unreachable daemon is still reported.
+func TestWatchStopsQuietlyWhenCancelledMidRequest(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	t.Setenv("ITERVOX_API_TOKEN", "x")
+	ctx, cancel := context.WithCancel(t.Context())
+	out, errOut := &syncBuffer{}, &syncBuffer{}
+	done := make(chan int)
+	go func() { done <- clientCommand(ctx, "watch", []string{"--url", srv.URL}, out, errOut) }()
+	<-entered
+	cancel()
+	assert.Equal(t, 0, <-done)
+	assert.NotContains(t, out.String()+errOut.String(), "not answering", "a stop is not a failure")
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	url := dead.URL
+	dead.Close()
+	errOut = &syncBuffer{}
+	assert.Equal(t, 1, clientCommand(t.Context(), "watch", []string{"--url", url, "--once"}, io.Discard, errOut))
+	assert.Contains(t, errOut.String(), "not answering", "an unreachable daemon is reported")
+}
