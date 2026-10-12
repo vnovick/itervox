@@ -17,7 +17,14 @@
 #     firewall rule only when this run created them;
 #   - a failing doctor --deploy exits 1, never starts the service, and still
 #     tears everything down;
-#   - --keep leaves the resources and lists them.
+#   - --keep leaves the resources and lists them;
+#   - a name collision (an instance or data disk with the run's names already
+#     exists) exits 2 before anything is created or deleted: the existing
+#     resources survive, and so does everything shared;
+#   - a provisioning failure part-way (the instance created, the disk create
+#     failing) deletes only what the run created: the instance, never a disk
+#     delete, and pre-existing shared resources stay;
+#   - when the existence check itself fails, the run exits 2 creating nothing.
 
 # Stub bodies are single-quoted on purpose: they expand in the child process.
 # `cond && pass || fail` is safe: pass only prints, so it never fails.
@@ -42,13 +49,18 @@ cat > "$BIN/gcloud" <<'EOF'
 R="$STUB_DIR/res"; mkdir -p "$R"
 printf 'gcloud %s\n' "$*" >> "$STUB_DIR/gcloud.log"
 has() { [[ -e "$R/$1" ]]; }
+# STUB_FAIL="<group> <verb>" makes that call fail; STUB_LIST_FAIL fails every
+# list. A create fails, as gcloud's does, when the resource already exists.
+[[ -n "${STUB_FAIL:-}" && "$2 $3" == "$STUB_FAIL" ]] && exit 1
 case "$2 $3" in
-  "instances create") touch "$R/instance" ;;
+  "instances create") has instance && exit 1; touch "$R/instance" ;;
   "instances delete") rm -f "$R/instance" ;;
   "instances describe") has instance ;;
-  "disks create") touch "$R/disk" ;;
+  "instances list") [[ -z "${STUB_LIST_FAIL:-}" ]] || exit 1; has instance && echo itervox-smoke-t ;;
+  "disks create") has disk && exit 1; touch "$R/disk" ;;
   "disks delete") rm -f "$R/disk" ;;
   "disks describe") has disk ;;
+  "disks list") [[ -z "${STUB_LIST_FAIL:-}" ]] || exit 1; has disk && echo itervox-smoke-t-data ;;
   "instances attach-disk") ;;
   "routers describe") has router ;;
   "routers create") touch "$R/router" ;;
@@ -141,8 +153,41 @@ left=$(ls "$STUB/res"); [[ -z "$left" ]] && pass "teardown still ran after the f
 # ── --keep ──────────────────────────────────────────────────────────────────
 PRE=""
 run keep -- --version v0.2.4 --keep
-[[ $rc -eq 0 && -e "$STUB/res/instance" && -e "$STUB/res/disk" ]] && grep -q "NOT torn down. Delete by hand: instance itervox-smoke-t and disk itervox-smoke-t-data" "$STUB/run.out" \
+[[ $rc -eq 0 && -e "$STUB/res/instance" && -e "$STUB/res/disk" ]] && grep -q "NOT torn down. Delete by hand: instance itervox-smoke-t (us-central1-a) disk itervox-smoke-t-data (us-central1-a)" "$STUB/run.out" \
   && pass "--keep leaves the resources and names them" || fail "--keep: exit $rc; $(tail -2 "$STUB/run.out")"
+
+# ── a name collision: the existing instance and disk are not ours ───────────
+PRE="instance disk router nat fw"
+run collide -- --version v0.2.4
+left=""; for f in "$STUB"/res/*; do [[ -e "$f" ]] && left+="${f##*/} "; done
+[[ $rc -eq 2 ]] && grep -q "instances itervox-smoke-t already exists" "$STUB/run.out" \
+  && pass "instance name collision: exit 2, refused" || fail "collision: exit $rc; $(tail -2 "$STUB/run.out")"
+[[ "$left" == "disk fw instance nat router " ]] && pass "collision: the pre-existing instance, disk and shared resources survive" || fail "collision left: $left"
+if grep -Eq " (create|delete) " "$LOG"; then fail "collision: created or deleted something: $(grep -E ' (create|delete) ' "$LOG")"; else pass "collision: nothing created or deleted"; fi
+grep -q "removed everything" "$STUB/run.out" && fail "collision: claims a teardown" || pass "collision: no teardown claim"
+
+PRE="disk"
+run collidedisk -- --version v0.2.4
+left=""; for f in "$STUB"/res/*; do [[ -e "$f" ]] && left+="${f##*/} "; done
+[[ $rc -eq 2 && "$left" == "disk " ]] && grep -q "disks itervox-smoke-t-data already exists" "$STUB/run.out" \
+  && ! grep -Eq " (create|delete) " "$LOG" \
+  && pass "data disk name collision: exit 2, the disk survives, nothing created" || fail "disk collision: exit $rc, left: $left"
+
+PRE=""
+run listfail STUB_LIST_FAIL=1 -- --version v0.2.4
+[[ $rc -eq 2 ]] && grep -q "cannot list instances" "$STUB/run.out" && ! grep -Eq " (create|delete) " "$LOG" \
+  && pass "existence check fails: exit 2, nothing created or deleted" || fail "list failure: exit $rc"
+
+# ── provisioning fails part-way: only what this run created is deleted ─────
+PRE="router nat fw"
+run partial STUB_FAIL="disks create" -- --version v0.2.4
+left=""; for f in "$STUB"/res/*; do [[ -e "$f" ]] && left+="${f##*/} "; done
+[[ $rc -ne 0 && $rc -ne 3 ]] && pass "disk create fails: non-zero exit ($rc)" || fail "partial: exit $rc"
+[[ "$left" == "fw nat router " ]] && pass "partial: the instance it created is deleted, shared resources kept" || fail "partial left: $left"
+grep -q "instances delete" "$LOG" && ! grep -q "disks delete" "$LOG" \
+  && pass "partial: deletes the instance, never a disk it did not create" || fail "partial deletes: $(grep delete "$LOG")"
+grep -q "removed everything this run created: instance itervox-smoke-t$" "$STUB/run.out" \
+  && pass "partial: the summary names only the instance" || fail "partial summary: $(grep removed "$STUB/run.out")"
 
 if [[ $fails -gt 0 ]]; then
   echo "gcp-deploy-smoke_test: $fails failure(s)"

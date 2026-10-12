@@ -24,8 +24,10 @@
 # then delete the resources by hand: the summary lists them).
 #
 # Exit: 0 every step passed and everything was torn down; 1 a step failed
-# (teardown still ran); 2 usage error; 3 the check passed but the teardown did
-# not finish (delete what the summary lists by hand).
+# (teardown still ran); 2 usage error, or an instance or disk named --name /
+# <name>-data already exists (nothing is created or deleted); 3 the check
+# passed but the teardown did not finish (delete what the summary lists by
+# hand).
 set -euo pipefail
 
 VERSION=""
@@ -85,8 +87,26 @@ step() { echo; echo "==> $*"; }
 vm() { gcloud compute ssh "$NAME" --tunnel-through-iap --zone="$ZONE" --quiet --command "$1"; }
 
 # ── teardown ────────────────────────────────────────────────────────────────
-# The shared router/NAT and firewall rule are removed only when this run
-# created them: another deployment in the project may use them.
+# Teardown deletes only what this run created. The instance and data disk are
+# per-run names: refuse to start if either already exists, so a name collision
+# can never delete someone else's VM or disk (provision.sh's create would fail,
+# and an unconditional delete would then remove the existing one). After that
+# check, an instance or disk with these names that exists at teardown was
+# created by this run. The shared router/NAT and firewall rule are removed only
+# when they did not exist before: another deployment in the project may use
+# them.
+exists() { # exists <instances|disks> <name>: exit 0 yes, 1 no, 2 cannot tell
+  local out
+  out=$(gcloud compute "$1" list --zones="$ZONE" --filter="name=$2" --format='value(name)' 2>/dev/null) || return 2
+  grep -qxF -- "$2" <<<"$out"
+}
+for res in "instances:$NAME" "disks:$NAME-data"; do
+  st=0; exists "${res%%:*}" "${res#*:}" || st=$?
+  case $st in
+    0) die "${res%%:*} ${res#*:} already exists in $ZONE; pick another --name (nothing was created or deleted)" ;;
+    2) die "cannot list ${res%%:*} in $ZONE to check that ${res#*:} is free (gcloud auth/project?)" ;;
+  esac
+done
 had_router=false; had_nat=false; had_fw=false
 gcloud compute routers describe itervox-router --region="$REGION" --format='value(name)' >/dev/null 2>&1 && had_router=true
 gcloud compute routers nats describe itervox-nat --router=itervox-router --region="$REGION" --format='value(name)' >/dev/null 2>&1 && had_nat=true
@@ -94,19 +114,36 @@ gcloud compute firewall-rules describe allow-iap-ssh --format='value(name)' >/de
 
 TUNNEL_PID=""
 LEFT=()
+REMOVED=()
+# reap <instances|disks> <name> <what>: delete it if it exists. It was absent
+# before provisioning (checked above), so if it exists, this run created it.
+reap() {
+  local o=0
+  exists "$1" "$2" || o=$?
+  [[ $o -eq 1 ]] && return 0 # never created
+  if gcloud compute "$1" delete "$2" --zone="$ZONE" --quiet >/dev/null 2>&1; then
+    REMOVED+=("$3 $2")
+    return 0
+  fi
+  o=0; exists "$1" "$2" || o=$?
+  [[ $o -eq 1 ]] || LEFT+=("$3 $2 ($ZONE)")
+}
 teardown() {
   local rc=$?
   if [[ -n "$TUNNEL_PID" ]]; then kill "$TUNNEL_PID" 2>/dev/null || true; fi
   if $KEEP; then
+    local mine=()
+    exists instances "$NAME" && mine+=("instance $NAME ($ZONE)")
+    exists disks "$NAME-data" && mine+=("disk $NAME-data ($ZONE)")
+    $had_router || mine+=("router itervox-router ($REGION)")
+    $had_fw || mine+=("firewall rule allow-iap-ssh")
     echo
-    echo "==> --keep: NOT torn down. Delete by hand: instance $NAME and disk $NAME-data ($ZONE)$($had_router || echo ", router itervox-router ($REGION)")$($had_fw || echo ", firewall rule allow-iap-ssh")"
+    echo "==> --keep: NOT torn down. Delete by hand: ${mine[*]:-nothing was created}"
     exit "$rc"
   fi
   step "teardown"
-  gcloud compute instances delete "$NAME" --zone="$ZONE" --quiet >/dev/null 2>&1 \
-    || { gcloud compute instances describe "$NAME" --zone="$ZONE" >/dev/null 2>&1 && LEFT+=("instance $NAME ($ZONE)"); }
-  gcloud compute disks delete "$NAME-data" --zone="$ZONE" --quiet >/dev/null 2>&1 \
-    || { gcloud compute disks describe "$NAME-data" --zone="$ZONE" >/dev/null 2>&1 && LEFT+=("disk $NAME-data ($ZONE)"); }
+  reap instances "$NAME" instance
+  reap disks "$NAME-data" disk
   if ! $had_nat && ! $had_router; then
     gcloud compute routers delete itervox-router --region="$REGION" --quiet >/dev/null 2>&1 \
       || { gcloud compute routers describe itervox-router --region="$REGION" >/dev/null 2>&1 && LEFT+=("router itervox-router ($REGION)"); }
@@ -122,7 +159,7 @@ teardown() {
     echo "TEARDOWN INCOMPLETE — delete by hand: ${LEFT[*]}" >&2
     [[ $rc -eq 0 ]] && rc=3
   else
-    echo "    removed everything this run created"
+    echo "    removed everything this run created${REMOVED[*]:+: ${REMOVED[*]}}"
   fi
   exit "$rc"
 }
