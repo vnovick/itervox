@@ -7,9 +7,14 @@
 # the issue to reach the completion state with a pull request, and keeps the
 # daemon's log and the agent sessions as the record.
 #
-# Only the test issue is touched: the workflow this script writes uses its own
-# state labels (smoke:todo → smoke:in-progress → smoke:done), so no other
-# issue of the repository is ever eligible.
+# Only the test issue is touched: the workflow this script writes uses active
+# state labels unique to this issue and run (smoke-<issue>-<run>:todo →
+# smoke-<issue>-<run>:in-progress → smoke:done), so no other issue of the
+# repository is ever eligible, including one a failed or timed-out earlier run
+# left in an active smoke state. The run deletes its two active labels when it
+# ends (which also strips them from the issue); smoke:done is terminal and
+# stays as the record. <run> is ITERVOX_SMOKE_RUN_ID (letters and digits) or
+# the UTC start time.
 #
 # Usage:
 #   deploy/acceptance/self-hosted-run.sh --issue <number> [--repo owner/repo]
@@ -29,6 +34,10 @@
 #
 # Leaves behind, for review and cleanup by hand: the pull request and its
 # branch, and the issue (labelled smoke:done).
+#
+# The daemon runs in its own process group (setsid where it exists, job
+# control otherwise, e.g. on macOS), so a Ctrl-C in the terminal reaches only
+# this script, whose exit trap stops the daemon with SIGTERM.
 set -euo pipefail
 
 REPO="${GITHUB_REPOSITORY:-vnovick/itervox}"
@@ -38,6 +47,7 @@ OUT="./acceptance-self-hosted"
 TIMEOUT_MIN=60
 DRY_RUN=false
 POLL_SECONDS="${ITERVOX_SMOKE_POLL_SECONDS:-30}"
+RUN_ID="${ITERVOX_SMOKE_RUN_ID:-$(date -u +%Y%m%d%H%M%S)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +66,7 @@ die() { echo "self-hosted-run: $*" >&2; exit 2; }
 [[ "$ISSUE" =~ ^[0-9]+$ ]] || die "--issue <number> is required"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "--repo must be owner/repo"
 [[ "$TIMEOUT_MIN" =~ ^[0-9]+$ ]] || die "--timeout-min must be a number"
+[[ "$RUN_ID" =~ ^[A-Za-z0-9]{1,20}$ ]] || die "ITERVOX_SMOKE_RUN_ID must be 1-20 letters or digits"
 [[ -x "$ITERVOX" ]] || die "$ITERVOX is not an executable itervox binary"
 if ! $DRY_RUN; then
   for tool in gh git jq claude; do
@@ -72,8 +83,9 @@ PROJECT="$OUT/project"
 LOGS="$OUT/logs"
 mkdir -p "$PROJECT" "$LOGS"
 
-TODO="smoke:todo"
-WORKING="smoke:in-progress"
+# Per issue and run: a leftover smoke issue from another run never matches.
+TODO="smoke-$ISSUE-$RUN_ID:todo"
+WORKING="smoke-$ISSUE-$RUN_ID:in-progress"
 DONE="smoke:done"
 
 echo "==> itervox under test: $("$ITERVOX" --version)"
@@ -135,18 +147,8 @@ fi
 # ── the test issue ──────────────────────────────────────────────────────────
 state=$(gh issue view "$ISSUE" --repo "$REPO" --json state -q .state) || die "cannot read issue #$ISSUE of $REPO"
 [[ "$state" == "OPEN" ]] || die "issue #$ISSUE is $state; use an open test issue"
-gh label create "$TODO" --repo "$REPO" --color 0075ca --force >/dev/null
-gh label create "$WORKING" --repo "$REPO" --color e4e669 --force >/dev/null
-gh label create "$DONE" --repo "$REPO" --color 0e8a16 --force >/dev/null
-gh issue edit "$ISSUE" --repo "$REPO" --remove-label "$WORKING" --remove-label "$DONE" >/dev/null 2>&1 || true
-gh issue edit "$ISSUE" --repo "$REPO" --add-label "$TODO" >/dev/null
-echo "==> https://github.com/$REPO/issues/$ISSUE labelled $TODO"
-
-# git over HTTPS authenticates with GH_TOKEN through gh's credential helper,
-# so neither the hook nor the agent ever sees the token on a command line.
-gh auth setup-git >/dev/null
-
-# ── run ─────────────────────────────────────────────────────────────────────
+# The run's active labels go when it ends, pass or fail: cleanup() is the
+# EXIT trap from before they are created.
 DAEMON_PID=""
 stop_daemon() {
   if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
@@ -159,12 +161,31 @@ stop_daemon() {
     kill -KILL "$DAEMON_PID" 2>/dev/null || true
   fi
 }
-trap stop_daemon EXIT
+cleanup() {
+  stop_daemon
+  gh label delete "$TODO" --repo "$REPO" --yes >/dev/null 2>&1 || true
+  gh label delete "$WORKING" --repo "$REPO" --yes >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+gh label create "$TODO" --repo "$REPO" --color 0075ca --force >/dev/null
+gh label create "$WORKING" --repo "$REPO" --color e4e669 --force >/dev/null
+gh label create "$DONE" --repo "$REPO" --color 0e8a16 --force >/dev/null
+gh issue edit "$ISSUE" --repo "$REPO" --remove-label "$DONE" >/dev/null 2>&1 || true
+gh issue edit "$ISSUE" --repo "$REPO" --add-label "$TODO" >/dev/null
+echo "==> https://github.com/$REPO/issues/$ISSUE labelled $TODO"
 
+# git over HTTPS authenticates with GH_TOKEN through gh's credential helper,
+# so neither the hook nor the agent ever sees the token on a command line.
+gh auth setup-git >/dev/null
+
+# ── run ─────────────────────────────────────────────────────────────────────
 echo "==> starting the daemon (log: $LOGS/itervox.log)"
-(cd "$PROJECT" && exec setsid "$ITERVOX" --workflow WORKFLOW.md --logs-dir "$LOGS" --no-print-token \
+own_group=()
+if command -v setsid >/dev/null 2>&1; then own_group=(setsid); else set -m; fi
+(cd "$PROJECT" && exec ${own_group[@]+"${own_group[@]}"} "$ITERVOX" --workflow WORKFLOW.md --logs-dir "$LOGS" --no-print-token \
   </dev/null >"$OUT/daemon.stdout" 2>"$OUT/daemon.stderr") &
 DAEMON_PID=$!
+set +m
 
 started=$(date +%s)
 deadline=$((started + TIMEOUT_MIN * 60))
@@ -189,7 +210,7 @@ while (( $(date +%s) < deadline )); do
     break
   fi
 done
-stop_daemon
+cleanup
 trap - EXIT
 
 elapsed=$(( ($(date +%s) - started) / 60 ))

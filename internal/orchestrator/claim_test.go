@@ -384,15 +384,19 @@ func TestDeletedIssueLeavesTheStoreAtTheClaimCheck(t *testing.T) {
 	o, h, st := claimOrchestrator(t, issue)
 	h.Delete(issue.ID)
 
-	state := o.onTick(ctx, NewState(o.cfg))
+	// The dependency audit confirms a vanished issue with a read by ID of
+	// its own, on its own schedule and in the background; this test pins
+	// the tick's claim reads, so no audit refresh is started here (one is
+	// marked in flight).
+	state := NewState(o.cfg)
+	state.DepsRefreshInFlight, state.DepsRefreshStartedAt = true, time.Now()
+	state = o.onTick(ctx, state)
 	assert.NotContains(t, state.Running, issue.ID)
 	cands, err := st.FetchCandidateIssues(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, cands, "the store no longer lists it")
-	// The tick's claim read is a detail read; other subsystems (the
-	// dependency audit) may read states by ID on their own schedule.
 	reads := h.detailReads(issue.ID)
-	require.Positive(t, reads)
+	require.Equal(t, 1, reads, "the claim check read it once")
 	_ = o.onTick(ctx, state)
 	assert.Equal(t, reads, h.detailReads(issue.ID), "and the next tick does not read it again")
 }

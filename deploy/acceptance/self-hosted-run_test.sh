@@ -6,10 +6,16 @@
 #
 # Proves:
 #   - usage: no --issue, a missing GH_TOKEN or agent credential exit 2;
-#   - the run labels only the test issue smoke:todo, starts the daemon on a
-#     workflow whose states are the smoke labels, and exits 0 with the pull
-#     request in result.md once the issue is smoke:done and a PR closes it;
-#   - the daemon is stopped (SIGTERM) when the run ends;
+#   - the run labels only the test issue smoke-<issue>-<run>:todo, starts the
+#     daemon on a workflow whose active states are that run's own labels, and
+#     exits 0 with the pull request in result.md once the issue is smoke:done
+#     and a PR closes it;
+#   - a leftover smoke issue (static smoke:todo / smoke:in-progress from an
+#     earlier run, or another run's per-run labels) cannot be admitted: none
+#     of its labels is an active state of the generated workflow, and two runs
+#     never share an active state; the run deletes its active labels at exit;
+#   - the daemon runs in its own process group and is stopped (SIGTERM) when
+#     the run ends, with setsid on PATH and without it (macOS has none);
 #   - smoke:done without a pull request, and a daemon that exits, are failures
 #     (exit 1) with the reason in result.md;
 #   - GH_TOKEN never appears in the output or the files the run leaves.
@@ -46,7 +52,8 @@ case "$1 $2" in
   *) exit 0 ;;
 esac
 EOF
-printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/claude"
+# claude, git and jq are only checked for on PATH (jq is not on stock macOS).
+for tool in claude git jq; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$tool"; done
 # itervox: --version, config show, or the daemon (sleeps until TERM unless
 # STUB_DAEMON_EXIT is set).
 cat > "$BIN/itervox" <<'EOF'
@@ -56,6 +63,7 @@ case "$1" in
   config) exit 0 ;;
 esac
 echo "$*" > "$STUB_DIR/daemon.args"
+echo "$$ $(ps -o pgid= -p $$ | tr -d ' ')" > "$STUB_DIR/daemon.pgid"
 cp WORKFLOW.md "$STUB_DIR/daemon.workflow"
 if [[ -n "${STUB_DAEMON_EXIT:-}" ]]; then exit 3; fi
 trap 'echo term > "$STUB_DIR/daemon.term"; exit 0' TERM
@@ -72,8 +80,8 @@ run() {
   printf '%s\n' "${LABELS[@]}" > "$dir/stub/labels.txt"
   printf '%s' "$PR" > "$dir/stub/pr.txt"
   set +e
-  STUB_DIR="$dir/stub" PATH="$BIN:$PATH" GH_TOKEN="$SECRET" ANTHROPIC_API_KEY=k \
-    ITERVOX_SMOKE_POLL_SECONDS=0.2 "$@" bash "$RUN" --repo acme/widgets --issue 42 \
+  STUB_DIR="$dir/stub" PATH="$BIN:${SYS_PATH:-$PATH}" GH_TOKEN="$SECRET" ANTHROPIC_API_KEY=k \
+    ITERVOX_SMOKE_POLL_SECONDS=0.2 ITERVOX_SMOKE_RUN_ID="${RUN_ID:-t1}" "$@" bash "$RUN" --repo acme/widgets --issue 42 \
     --itervox "$BIN/itervox" --out "$dir/out" --timeout-min 1 > "$dir/run.out" 2>&1
   rc=$?
   set -e
@@ -95,15 +103,16 @@ set -e
 [[ $rc -eq 2 && "$msg" == *"ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"* ]] && pass "no agent credential: exit 2" || fail "no agent credential: exit $rc, want 2"
 
 # ── success ─────────────────────────────────────────────────────────────────
-LABELS=("smoke:todo" "smoke:in-progress" "smoke:done")
+LABELS=("smoke-42-t1:todo" "smoke-42-t1:in-progress" "smoke:done")
 PR="https://github.com/acme/widgets/pull/7"
 run ok env
 [[ $rc -eq 0 ]] && pass "done with a PR: exit 0" || { fail "done with a PR: exit $rc, want 0"; cat "$LOG"; }
 grep -q "pull request: $PR" "$OUT/result.md" && pass "result.md names the PR" || fail "result.md lacks the PR"
-grep -q "issue edit 42 --repo acme/widgets --add-label smoke:todo" "$STUB/gh.log" \
-  && pass "only issue 42 is labelled smoke:todo" || fail "issue 42 was not labelled smoke:todo"
+grep -q "issue edit 42 --repo acme/widgets --add-label smoke-42-t1:todo" "$STUB/gh.log" \
+  && pass "only issue 42 is labelled smoke-42-t1:todo" || fail "issue 42 was not labelled smoke-42-t1:todo"
 if grep "issue edit" "$STUB/gh.log" | grep -qv "issue edit 42 "; then fail "another issue was edited"; else pass "no other issue edited"; fi
-grep -q 'active_states: \["smoke:todo", "smoke:in-progress"\]' "$STUB/daemon.workflow" \
+grep -q 'active_states: \["smoke-42-t1:todo", "smoke-42-t1:in-progress"\]' "$STUB/daemon.workflow" \
+  && grep -q 'working_state: "smoke-42-t1:in-progress"' "$STUB/daemon.workflow" \
   && grep -q 'completion_state: "smoke:done"' "$STUB/daemon.workflow" \
   && grep -q 'project_slug: acme/widgets' "$STUB/daemon.workflow" \
   && pass "the daemon runs on the smoke-label workflow" || fail "daemon workflow is not the smoke workflow"
@@ -111,14 +120,53 @@ grep -q -- "--logs-dir $OUT/logs" "$STUB/daemon.args" && pass "the daemon logs i
 [[ -f "$STUB/daemon.term" ]] && pass "the daemon is stopped with SIGTERM" || fail "the daemon was not sent SIGTERM"
 if grep -rq "$SECRET" "$LOG" "$OUT" "$STUB/daemon.args"; then fail "GH_TOKEN leaked"; else pass "GH_TOKEN appears nowhere"; fi
 
+grep -q "label delete smoke-42-t1:todo --repo acme/widgets --yes" "$STUB/gh.log" \
+  && grep -q "label delete smoke-42-t1:in-progress --repo acme/widgets --yes" "$STUB/gh.log" \
+  && ! grep -q "label delete smoke:done" "$STUB/gh.log" \
+  && pass "the run's active labels are deleted at exit, smoke:done kept" || fail "label cleanup: $(grep 'label delete' "$STUB/gh.log")"
+dpid=""; dpgid=""; { read -r dpid dpgid < "$STUB/daemon.pgid"; } 2>/dev/null || true
+[[ -n "$dpid" && "$dpid" == "$dpgid" ]] && pass "the daemon leads its own process group" || fail "daemon pid/pgid: $dpid/$dpgid"
+
+# ── a leftover active smoke issue cannot be admitted ────────────────────────
+# FetchCandidateIssues asks GitHub for open issues carrying each active state
+# label, and deriveState matches labels case-insensitively: an issue is
+# admitted only if one of its labels equals an active state.
+active=$(sed -n 's/^  active_states: \[\(.*\)\]$/\1/p' "$STUB/daemon.workflow" | tr -d '"' | tr ',' '\n' | sed 's/^ *//')
+[[ $(wc -l <<<"$active") -eq 2 ]] || fail "could not read active_states: $active"
+admitted=""
+for leftover in "smoke:todo" "smoke:in-progress" "smoke-41-20261011090000:todo" "smoke-41-20261011090000:in-progress" "smoke-42-t0:in-progress" "SMOKE:TODO"; do
+  grep -qixF -- "$leftover" <<<"$active" && admitted+="$leftover "
+done
+[[ -z "$admitted" ]] && pass "a leftover smoke issue's labels are not active states" || fail "leftover labels admitted: $admitted"
+RUN_ID=t2 run second env
+active2=$(sed -n 's/^  active_states: \[\(.*\)\]$/\1/p' "$STUB/daemon.workflow" | tr -d '"' | tr ',' '\n' | sed 's/^ *//')
+shared=$(grep -ixF -f <(printf '%s\n' "$active") <<<"$active2" || true)
+[[ -n "$active2" && -z "$shared" ]] && pass "two runs share no active state" || fail "runs share active states: $shared"
+RUN_ID="bad-id" run badid env
+[[ $rc -eq 2 ]] && grep -q "ITERVOX_SMOKE_RUN_ID must be" "$LOG" && pass "an unsafe run id is refused" || fail "bad run id: exit $rc"
+
+# ── no setsid on PATH (macOS) ───────────────────────────────────────────────
+# A PATH of only the tools the script and the stubs use, without setsid.
+NOSETSID="$WORK/nosetsid"
+mkdir -p "$NOSETSID"
+for tool in bash env cat head tail mv cp mkdir date sleep dirname basename seq rm ps tr; do
+  ln -s "$(command -v "$tool")" "$NOSETSID/$tool"
+done
+if PATH="$BIN:$NOSETSID" command -v setsid >/dev/null 2>&1; then fail "setsid still on the restricted PATH"; fi
+SYS_PATH="$NOSETSID" run nosid env
+[[ $rc -eq 0 ]] && pass "without setsid: exit 0" || { fail "without setsid: exit $rc"; cat "$LOG"; }
+[[ -f "$STUB/daemon.term" ]] && pass "without setsid: the daemon is stopped with SIGTERM" || fail "without setsid: no SIGTERM"
+dpid=""; dpgid=""; { read -r dpid dpgid < "$STUB/daemon.pgid"; } 2>/dev/null || true
+[[ -n "$dpid" && "$dpid" == "$dpgid" ]] && pass "without setsid: the daemon leads its own process group" || fail "without setsid: pid/pgid $dpid/$dpgid"
+
 # ── failures ────────────────────────────────────────────────────────────────
-LABELS=("smoke:todo" "smoke:done")
+LABELS=("smoke-42-t1:todo" "smoke:done")
 PR=""
 run nopr env
 [[ $rc -eq 1 ]] && grep -q "without a pull request" "$OUT/result.md" \
   && pass "done without a PR: exit 1, reason recorded" || fail "done without a PR: exit $rc; $(cat "$OUT/result.md" 2>/dev/null)"
 
-LABELS=("smoke:todo")
+LABELS=("smoke-42-t1:todo")
 PR=""
 run died env STUB_DAEMON_EXIT=1
 [[ $rc -eq 1 ]] && grep -q "the daemon exited" "$OUT/result.md" \
