@@ -1724,7 +1724,13 @@ Prompt.
 
 	updated, readErr := os.ReadFile(workflowPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(updated), `reviewer_profile: "review-bot"`)
+	// #129: the reviewer keys follow SetReviewerConfig to the project
+	// settings file; the profiles stay in WORKFLOW.md.
+	assert.NotContains(t, string(updated), "reviewer_profile:")
+	settingsFile, settingsErr := os.ReadFile(config.ProjectSettingsPath(workflowPath))
+	require.NoError(t, settingsErr)
+	assert.Contains(t, string(settingsFile), `"reviewer_profile": "review-bot"`)
+	assert.Contains(t, string(settingsFile), `"auto_review": true`)
 	assert.Contains(t, string(updated), "profile: review-bot")
 	assert.Contains(t, string(updated), "soul_file: .itervox/agents/review-bot/SOUL.md")
 	assert.Contains(t, string(updated), "instructions_file: .itervox/agents/review-bot/INSTRUCTIONS.md")
@@ -1918,10 +1924,19 @@ Prompt.
 	err = adapter.SetReviewerConfig("reviewer", true)
 
 	require.NoError(t, err)
+	// #129: a layered key is saved to .itervox/settings.jsonc, and WORKFLOW.md
+	// (which did not set it) is left alone.
 	updated, readErr := os.ReadFile(workflowPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(updated), `reviewer_profile: "reviewer"`)
-	assert.Contains(t, string(updated), "auto_review: true")
+	assert.Equal(t, content, string(updated))
+	settingsFile, settingsErr := os.ReadFile(config.ProjectSettingsPath(workflowPath))
+	require.NoError(t, settingsErr)
+	assert.Contains(t, string(settingsFile), `"reviewer_profile": "reviewer"`)
+	assert.Contains(t, string(settingsFile), `"auto_review": true`)
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, "reviewer", reloaded.Agent.ReviewerProfile)
+	assert.True(t, reloaded.Agent.AutoReview)
 }
 
 func TestReloadPlanForRunExit(t *testing.T) {

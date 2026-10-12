@@ -508,8 +508,16 @@ Notes:
 
 ## Runtime settings
 
-All settings endpoints persist back to `WORKFLOW.md` and apply the value in
-memory. None of them reloads `WORKFLOW.md`, so saving a setting never touches
+All settings endpoints persist the value and apply it in memory. A setting in
+the `agent`, `polling`, `server` or `workspace` section (workers, inline
+input, workspace auto-clear, max retries, the switch budget, SSH hosts,
+dispatch strategy, the reviewer) is written to the project settings file
+`.itervox/settings.jsonc`, keeping its comments, and removed from
+`WORKFLOW.md` if `WORKFLOW.md` set it (see
+[Settings files](/configuration/#settings-files-jsonc-layers)). The rest
+(tracker states, failed state, dependencies, automations, profiles, the
+project filter, available models) is written to `WORKFLOW.md`. None of them
+reloads `WORKFLOW.md`, so saving a setting never touches
 an in-flight agent turn — this now includes `/settings/tracker/states`, the
 Linear project filter (`PUT /projects/filter`) and
 `POST /settings/models/refresh`, which used to reload (CORE-160).
