@@ -1333,8 +1333,8 @@ func buildTUIConfig(
 		}
 		defer unlock()
 		next := max(1, min(orch.MaxWorkers()+delta, 50))
-		if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", next); err != nil {
-			slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md; worker count unchanged", "error", err)
+		if err := persistMaxWorkers(workflowPath, next); err != nil {
+			slog.Warn("failed to persist agent.max_concurrent_agents; worker count unchanged", "error", err)
 			return
 		}
 		orch.SetMaxWorkers(next)

@@ -150,10 +150,7 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 			automationconfig.DefinitionsFromConfigs(automations),
 		))
 	}
-	if reviewerChanged {
-		mutators = append(mutators, workflow.MutateReviewerConfig(reviewerProfile, autoReview))
-	}
-	if err := workflow.ApplyAndWriteFrontMatter(a.workflowPath, mutators...); err != nil {
+	if err := persistProfileSave(a.workflowPath, mutators, reviewerChanged, reviewerProfile, autoReview); err != nil {
 		return err
 	}
 	a.orch.SetProfilesCfg(finalProfiles)
@@ -264,10 +261,7 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 			automationconfig.DefinitionsFromConfigs(automations),
 		))
 	}
-	if reviewerChanged {
-		mutators = append(mutators, workflow.MutateReviewerConfig(reviewerProfile, autoReview))
-	}
-	if err := workflow.ApplyAndWriteFrontMatter(a.workflowPath, mutators...); err != nil {
+	if err := persistProfileSave(a.workflowPath, mutators, reviewerChanged, reviewerProfile, autoReview); err != nil {
 		return err
 	}
 	a.orch.SetProfilesCfg(profiles)
@@ -284,4 +278,19 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	}
 	a.notify()
 	return nil
+}
+
+// persistProfileSave writes a profile save's single WORKFLOW.md rewrite
+// (profiles block, automations). Profiles stay in WORKFLOW.md; when the save
+// also clears or renames the reviewer, the reviewer keys follow
+// SetReviewerConfig to .itervox/settings.jsonc and the profiles rewrite rides
+// in persistSettings' one WORKFLOW.md write. Writing the reviewer into
+// WORKFLOW.md instead (MutateReviewerConfig removes the keys to clear them)
+// would let a reviewer the dashboard saved to the settings file show through
+// again at the next load, naming a profile that no longer exists.
+func persistProfileSave(path string, mutators []workflow.Mutator, reviewerChanged bool, reviewerProfile string, autoReview bool) error {
+	if reviewerChanged {
+		return persistReviewerConfig(path, reviewerProfile, autoReview, mutators...)
+	}
+	return workflow.ApplyAndWriteFrontMatter(path, mutators...)
 }
