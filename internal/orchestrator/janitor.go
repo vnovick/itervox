@@ -440,14 +440,29 @@ func automationQueueIdentifiers(state *State) map[string]struct{} {
 // ReviewChainIndex forever and verdicts/outcomes were only reset when the same
 // issue was reviewed again. Returns the number of entries removed.
 //
+// A finished review (its verdicts and outcome) is the issue's latest review in
+// issue detail (#135), so those two maps share IssueStatusHistory's retention:
+// they are also kept while the issue still has a status-history entry, which
+// pruneIssueStatusHistory (run earlier on the same tick) bounds to
+// issueStatusHistoryRetention after the issue leaves the candidate set. The
+// chain index is the in-flight marker only, so an abandoned chain's index is
+// still dropped as soon as the issue is untracked and idle.
+//
 // INVARIANT: must only be called from the single event-loop goroutine.
 func pruneReviewLedgers(state *State, untracked, midChain func(ident string) bool) int {
 	if len(state.ReviewVerdicts)+len(state.ReviewOutcomes)+len(state.ReviewChainIndex) == 0 {
 		return 0
 	}
 	keep := func(ident string) bool { return !untracked(ident) || midChain(ident) }
-	removed := pruneMap(state.ReviewVerdicts, identOfKey, keep)
-	removed += pruneMap(state.ReviewOutcomes, identOfKey, keep)
+	keepRecord := func(ident string) bool {
+		if keep(ident) {
+			return true
+		}
+		_, retained := state.IssueStatusHistory[ident]
+		return retained
+	}
+	removed := pruneMap(state.ReviewVerdicts, identOfKey, keepRecord)
+	removed += pruneMap(state.ReviewOutcomes, identOfKey, keepRecord)
 	removed += pruneMap(state.ReviewChainIndex, identOfKey, keep)
 	return removed
 }
