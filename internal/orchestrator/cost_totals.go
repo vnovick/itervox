@@ -65,10 +65,14 @@ func (t RunTotals) snapshot() TotalsSnapshot {
 // accountRunUpdate folds one EventWorkerUpdate into the totals. entry is the
 // live RunEntry BEFORE the update's token counts are applied to it; update
 // is the event's RunEntry. Event loop only.
-func (t *RunTotals) accountRunUpdate(entry, update *RunEntry) {
+//
+// It returns what the update added, for the per-issue spend ledger (#136).
+func (t *RunTotals) accountRunUpdate(entry, update *RunEntry) (added Spend) {
 	if update.TotalTokens > 0 {
-		t.InputTokens += max(0, update.InputTokens-entry.totalsInput)
-		t.OutputTokens += max(0, update.OutputTokens-entry.totalsOutput)
+		added.InputTokens = max(0, update.InputTokens-entry.totalsInput)
+		added.OutputTokens = max(0, update.OutputTokens-entry.totalsOutput)
+		t.InputTokens += added.InputTokens
+		t.OutputTokens += added.OutputTokens
 		entry.totalsInput = max(entry.totalsInput, update.InputTokens)
 		entry.totalsOutput = max(entry.totalsOutput, update.OutputTokens)
 		if !entry.totalsCounted {
@@ -82,7 +86,7 @@ func (t *RunTotals) accountRunUpdate(entry, update *RunEntry) {
 		}
 	}
 	if update.CostUSD == nil {
-		return
+		return added
 	}
 	session := update.AgentSessionID
 	if session == "" {
@@ -97,12 +101,15 @@ func (t *RunTotals) accountRunUpdate(entry, update *RunEntry) {
 	}
 	last := t.SessionCost[session] // 0 for an unseen session
 	if cost >= last {
-		t.CostUSD += cost - last // the same counter went up
+		added.CostUSD = cost - last // the same counter went up
 	} else {
-		t.CostUSD += cost // a new process's counter: all of it is new spend
+		added.CostUSD = cost // a new process's counter: all of it is new spend
 	}
+	t.CostUSD += added.CostUSD
 	t.SessionCost[session] = cost
 	t.CostKnown = true
+	added.CostKnown = true
+	return added
 }
 
 // pruneSessionCost drops the cost baseline of every agent session that
