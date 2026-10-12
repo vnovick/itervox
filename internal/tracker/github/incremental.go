@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,17 +14,21 @@ import (
 )
 
 // FetchIssuesUpdatedSince implements tracker.IncrementalFetcher (#114): one
-// paginated `issues?state=all&since=` listing of the repository, oldest
-// update first. An issue whose labels no longer name a tracked state (active,
-// terminal, backlog or the completion state) is reported gone; a closed issue
-// is returned with its terminal state. Pull requests are skipped. A deleted
-// or transferred issue does not appear: the store's full pull catches those.
+// paginated `issues?state=all&since=` listing of the repository, newest
+// update first: an issue edited while the pages are read moves to the front,
+// so it is listed twice or (when the first page was already read) on the
+// next pull, never skipped. An issue whose labels no longer name a tracked
+// state (active, terminal, backlog or the completion state) is reported
+// gone, and so is a closed issue unless "closed" is a terminal state: the
+// full pull lists only open issues by label, so placing a closed one would
+// show it until the next full pull. Pull requests are skipped. A deleted or
+// transferred issue does not appear: the store's full pull catches those.
 func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) ([]domain.Issue, []string, error) {
 	q := url.Values{}
 	q.Set("state", "all")
 	q.Set("since", since.UTC().Format(time.RFC3339))
 	q.Set("sort", "updated")
-	q.Set("direction", "asc")
+	q.Set("direction", "desc")
 	q.Set("per_page", strconv.Itoa(pageSize))
 	nextURL := fmt.Sprintf("%s/repos/%s/%s/issues?%s", c.cfg.Endpoint, c.owner, c.repo, q.Encode())
 
@@ -31,6 +36,9 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 	if cs := strings.TrimSpace(c.cfg.CompletionState); cs != "" {
 		extra = append(extra, cs)
 	}
+	tracksClosed := slices.ContainsFunc(c.terminalStates(), func(st string) bool {
+		return strings.EqualFold(st, "closed")
+	})
 	var changed []domain.Issue
 	var gone []string
 	for nextURL != "" {
@@ -47,9 +55,13 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 			if !ok || isPullRequest(raw) {
 				continue
 			}
-			derived := deriveState(raw, c.activeStates(), c.terminalStates())
-			if derived == "" {
-				derived = firstLabelIn(extractLabels(raw), extra)
+			ghState, _ := raw["state"].(string)
+			derived := ""
+			if tracksClosed || !strings.EqualFold(ghState, "closed") {
+				derived = deriveState(raw, c.activeStates(), c.terminalStates())
+				if derived == "" {
+					derived = firstLabelIn(extractLabels(raw), extra)
+				}
 			}
 			if derived == "" {
 				if n, ok := tracker.ToIntVal(raw["number"]); ok {

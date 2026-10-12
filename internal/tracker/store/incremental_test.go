@@ -33,6 +33,11 @@ type changesTracker struct {
 	clock   time.Time
 	since   []time.Time
 	inc     atomic.Int64
+	// afterList and afterInc, when set, run after a FetchIssuesByStates or
+	// FetchIssuesUpdatedSince listing is read and before it is returned: an
+	// edit made while a pull is in flight.
+	afterList func()
+	afterInc  func()
 }
 
 func newChanges(issues ...domain.Issue) *changesTracker {
@@ -103,8 +108,14 @@ func (c *changesTracker) FetchCandidateIssues(ctx context.Context) ([]domain.Iss
 func (c *changesTracker) FetchIssuesByStates(ctx context.Context, states []string) ([]domain.Issue, error) {
 	list, err := c.countingTracker.FetchIssuesByStates(ctx, states)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.view(list), err
+	list = c.view(list)
+	after := c.afterList
+	c.afterList = nil
+	c.mu.Unlock()
+	if after != nil {
+		after()
+	}
+	return list, err
 }
 
 func (c *changesTracker) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) ([]domain.Issue, []string, error) {
@@ -117,7 +128,14 @@ func (c *changesTracker) FetchIssuesUpdatedSince(ctx context.Context, since time
 		return nil, nil, err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer func() {
+		after := c.afterInc
+		c.afterInc = nil
+		c.mu.Unlock()
+		if after != nil {
+			after()
+		}
+	}()
 	c.since = append(c.since, since)
 	var changed []domain.Issue
 	for _, iss := range c.view(list) {
@@ -245,7 +263,7 @@ func TestIncrementalCursorIsTheTrackersNewestUpdate(t *testing.T) {
 	up.setState("1", "In Progress")
 	edited := up.clock
 	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
-	assert.Equal(t, first, up.lastSince(), "the pull asked from the previous cursor")
+	assert.Equal(t, first.Add(-store.CursorOverlap), up.lastSince(), "the pull asked from the previous cursor, less the overlap")
 	assert.Equal(t, edited, st.CursorForTest(), "and moved it to the edit")
 
 	// A restarted daemon's first pull is incremental from the saved cursor.
@@ -256,7 +274,7 @@ func TestIncrementalCursorIsTheTrackersNewestUpdate(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st2.RequestSyncNowForTest(t.Context()))
 	assert.Equal(t, int64(0), up2.listCalls(), "no full pull after the restart")
-	assert.Equal(t, edited, up2.lastSince(), "the saved cursor is used")
+	assert.Equal(t, edited.Add(-store.CursorOverlap), up2.lastSince(), "the saved cursor is used")
 }
 
 // TestFailedIncrementalPullKeepsTheCursor: a pull that fails changes nothing
@@ -276,7 +294,7 @@ func TestFailedIncrementalPullKeepsTheCursor(t *testing.T) {
 
 	up.fail.Store(false)
 	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
-	assert.Equal(t, cursor, up.lastSince(), "the retry asks from the last good cursor")
+	assert.Equal(t, cursor.Add(-store.CursorOverlap), up.lastSince(), "the retry asks from the last good cursor")
 	assert.Empty(t, cands(), "and applies the change it missed")
 
 	assert.Equal(t, store.RetryBase, store.RetryDelayForTest(1, time.Hour))
@@ -339,4 +357,47 @@ func TestRunRetriesAFailedPullWithBackoff(t *testing.T) {
 	up.fail.Store(false)
 	require.Eventually(t, func() bool { _, err := st.Status(); return err == nil && st.CursorForTest() != (time.Time{}) },
 		2*time.Second, 5*time.Millisecond, "and the retry succeeds once the tracker answers")
+}
+
+// TestLocalWriteDuringIncrementalPullIsKept: a state the daemon wrote while
+// an incremental pull was in flight is newer than the listing that pull
+// read, and is not overwritten by it.
+func TestLocalWriteDuringIncrementalPullIsKept(t *testing.T) {
+	up := newChanges(issue("1", "Todo"))
+	st, cands := incrementalStore(t, up, t.TempDir())
+	up.setTitle("1", "Renamed") // listed by the next pull, still in Todo
+	up.afterInc = func() {
+		require.NoError(t, st.UpdateIssueState(context.Background(), "1", "Done"))
+	}
+	require.NoError(t, st.RequestSyncNowForTest(t.Context()))
+	assert.Empty(t, cands(), "the local move to Done stands")
+	board, err := storeIssues(t, st)
+	require.NoError(t, err)
+	assert.Equal(t, "Done", board["1"].State)
+}
+
+// TestFullPullKeepsTheNewestCopyOfAnIssueListedTwice: an issue edited
+// between two of a full pull's requests is listed in both states; the store
+// keeps the newer copy, in the lists that copy's state belongs to, so the
+// cursor (the newest update read) never moves past an update it does not
+// hold. The two views are applied in map order, so this runs several times.
+func TestFullPullKeepsTheNewestCopyOfAnIssueListedTwice(t *testing.T) {
+	for range 64 {
+		up := newChanges(issue("1", "Todo"))
+		cfg := storeConfig(t, t.TempDir())
+		cfg.Views = [][]string{board, {"Todo", "Done"}}
+		up.afterList = func() { up.setState("1", "Done") } // after the first view is read
+		tr, st, err := store.Wrap(up, cfg)
+		require.NoError(t, err)
+		cands, err := tr.FetchCandidateIssues(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, identifiers(cands), "Done is not a candidate state")
+		for _, states := range cfg.Views {
+			list, err := st.FetchIssuesByStates(t.Context(), states)
+			require.NoError(t, err)
+			require.Len(t, list, 1)
+			assert.Equal(t, "Done", list[0].State, "the newer copy")
+		}
+		assert.Equal(t, up.clock, st.CursorForTest())
+	}
 }

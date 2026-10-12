@@ -76,8 +76,13 @@ func TestLinearFetchIssuesUpdatedSince(t *testing.T) {
 	// bucket included.
 	reqs = nil
 	client.SetProjectFilter([]string{"theirs", "__no_project__"})
-	_, _, err = client.FetchIssuesUpdatedSince(t.Context(), since)
+	changed, _, err = client.FetchIssuesUpdatedSince(t.Context(), since)
 	require.NoError(t, err)
+	got = nil
+	for _, iss := range changed {
+		got = append(got, iss.Identifier)
+	}
+	assert.Equal(t, []string{"ENG-1", "ENG-2"}, got, "an issue listed by two queries is returned once")
 	var scopes []string
 	for _, r := range reqs {
 		switch {
@@ -88,4 +93,15 @@ func TestLinearFetchIssuesUpdatedSince(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"theirs", "theirs", "none", "none"}, scopes)
+
+	// An empty filter means every project: one query with no project clause.
+	reqs = nil
+	client.SetProjectFilter([]string{})
+	changed, _, err = client.FetchIssuesUpdatedSince(t.Context(), since)
+	require.NoError(t, err)
+	require.Len(t, reqs, 2, "one query, two pages")
+	assert.Contains(t, reqs[0].Query, "ItervoxLinearChangesAll")
+	assert.NotContains(t, reqs[0].Query, "project:")
+	assert.NotContains(t, reqs[0].Variables, "projectSlug")
+	assert.Len(t, changed, 2)
 }

@@ -37,7 +37,7 @@ func TestGHFetchIssuesUpdatedSince(t *testing.T) {
 			assert.Equal(t, "all", q.Get("state"))
 			assert.Equal(t, "2026-10-01T09:30:00Z", q.Get("since"))
 			assert.Equal(t, "updated", q.Get("sort"))
-			assert.Equal(t, "asc", q.Get("direction"))
+			assert.Equal(t, "desc", q.Get("direction"))
 			w.Header().Set("Link", `<`+srv.URL+`/repos/owner/repo/issues?page=2>; rel="next"`)
 		}
 		require.NoError(t, json.NewEncoder(w).Encode(pages[n-1]))
@@ -57,4 +57,26 @@ func TestGHFetchIssuesUpdatedSince(t *testing.T) {
 	}
 	assert.Equal(t, map[string]string{"#1": "todo", "#2": "closed", "#3": "backlog", "#5": "in review"}, states)
 	assert.Equal(t, []string{"4"}, gone, "an open issue without a tracked label left the scope")
+}
+
+// TestGHIncrementalClosedIssueIsGoneUnlessClosedIsTracked: the full pull
+// lists closed issues only when "closed" is a terminal state; otherwise it
+// lists open issues by label. The incremental pull must agree, or a closed
+// issue would show on the board until the next full pull.
+func TestGHIncrementalClosedIssueIsGoneUnlessClosedIsTracked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode([]any{
+			ghIssue(1, "Done, still open", "open", []string{"done"}),
+			ghIssue(2, "Closed as done", "closed", []string{"done"}),
+		}))
+	}))
+	defer srv.Close()
+	cfg := defaultConfig(srv.URL)
+	cfg.TerminalStates = []string{"done", "cancelled"}
+	changed, gone, err := ghclient.NewClient(cfg).FetchIssuesUpdatedSince(t.Context(), time.Now())
+	require.NoError(t, err)
+	require.Len(t, changed, 1)
+	assert.Equal(t, "#1", changed[0].Identifier)
+	assert.Equal(t, "done", changed[0].State)
+	assert.Equal(t, []string{"2"}, gone)
 }
