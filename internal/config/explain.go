@@ -153,7 +153,7 @@ func Explain(workflowPath string) ([]Setting, error) {
 			case ValueKind(raw) != ValueKind(v):
 				// The parser fell back to the default: the layer's value
 				// is not in effect.
-				s.Note = fmt.Sprintf("%s value %s ignored: not a %s", s.Layer, formatJSON(raw), ValueKind(v))
+				s.Note = fmt.Sprintf("%s value %s ignored: not a %s", s.Layer, formatJSON(redactSetting(key, raw)), ValueKind(v))
 				s.Layer, s.Path = LayerDefault, ""
 			}
 		}
@@ -174,7 +174,10 @@ const LayerEnvironment = "environment"
 // effectiveValues are read straight from the loaded config: the parser reads
 // these keys by hand, or corrects the value after reading it.
 var effectiveValues = map[string]func(*Config) any{
-	"server.host": func(c *Config) any { return c.Server.Host },
+	// The directory the daemon uses: the per-project default when unset,
+	// with ~ and environment variables expanded.
+	"workspace.root": func(c *Config) any { return c.Workspace.Root },
+	"server.host":    func(c *Config) any { return c.Server.Host },
 	"server.port": func(c *Config) any {
 		if c.Server.Port == nil {
 			return nil
@@ -317,7 +320,9 @@ func formatJSON(v any) string {
 	return string(b)
 }
 
-// redactSetting hides a secret key's value and the password in a URL value.
+// redactSetting hides a secret key's value and the password in a URL value,
+// through nested maps and lists too: a map read whole (agent.profiles) or an
+// unread key may carry a secret under any of its keys.
 func redactSetting(key string, v any) any {
 	if secretKey.MatchString(key) {
 		if isZero(v) {
@@ -325,15 +330,56 @@ func redactSetting(key string, v any) any {
 		}
 		return redactedValue
 	}
-	if s, ok := v.(string); ok && strings.Contains(s, "://") {
-		if u, err := url.Parse(s); err == nil && u.User != nil {
-			if _, hasPassword := u.User.Password(); hasPassword {
-				u.User = url.UserPassword(u.User.Username(), "hidden")
-				return u.String()
-			}
+	switch t := v.(type) {
+	case string:
+		return redactURL(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = redactSetting(key+"."+k, e)
 		}
+		return out
+	case map[any]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			ks := fmt.Sprint(k)
+			out[ks] = redactSetting(key+"."+ks, e)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(t))
+		for k, e := range t {
+			out[k] = fmt.Sprint(redactSetting(key+"."+k, e))
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redactSetting(key, e)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, e := range t {
+			out[i] = redactURL(e)
+		}
+		return out
 	}
 	return v
+}
+
+// redactURL hides the password in a URL.
+func redactURL(s string) string {
+	if !strings.Contains(s, "://") {
+		return s
+	}
+	if u, err := url.Parse(s); err == nil && u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "hidden")
+			return u.String()
+		}
+	}
+	return s
 }
 
 func isZero(v any) bool {
