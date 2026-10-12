@@ -229,9 +229,10 @@ type TrackerConfig struct {
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
-	// Enabled turns the store on. Default false: until the claim check
-	// (#116) lands, an issue a person moves out of an active state can be
-	// dispatched once more within one sync interval.
+	// Enabled turns the store on (Linear and GitHub only). Default true
+	// (#132): the claim check (#116) re-reads each issue by ID before an
+	// agent starts, so a change a person made since the last sync is seen.
+	// `enabled: false` restores direct polling.
 	Enabled bool
 	// SyncIntervalMs is how often the store re-pulls from the tracker
 	// (default 60000). Reads between syncs cost no tracker requests. On
@@ -835,7 +836,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
 	store := nestedMap(tracker, "store")
 	cfg.Tracker.Store = TrackerStoreConfig{
-		Enabled:            boolField(store, "enabled", false),
+		Enabled:            boolField(store, "enabled", true), // #132: on by default
 		SyncIntervalMs:     positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
 		FullSyncIntervalMs: positiveIntField(store, "full_sync_interval_ms", DefaultTrackerStoreFullSyncIntervalMs),
 	}
