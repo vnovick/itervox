@@ -329,20 +329,32 @@ func (s *Store) RequestSync() {
 // out of scope costs nothing more. Otherwise held issues are re-read one by
 // one and the others are returned as unknown, for a full pull to place. A
 // failed read is returned after everything else is applied.
+//
+// A read is older than any local change made while it was in flight (a
+// state write through the store, a Forget): such an issue is left as the
+// local change made it, and a read made under a scope since replaced is
+// discarded.
 func (s *Store) RefreshIssues(ctx context.Context, ids []string) (unknown []string, err error) {
 	if sf, ok := s.up.(tracker.ScopedFetcher); ok {
+		startGen, startScope := s.generation()
 		got, ferr := sf.FetchIssuesInScope(ctx, ids)
 		if ferr != nil {
 			return nil, ferr
 		}
 		inScope := make(map[string]bool, len(got))
 		s.mu.Lock()
+		if s.scope != startScope {
+			s.mu.Unlock()
+			return nil, nil
+		}
 		for _, iss := range got {
 			inScope[iss.ID] = true
-			s.upsertLocked(iss)
+			if s.touched[iss.ID] <= startGen {
+				s.upsertLocked(iss)
+			}
 		}
 		for _, id := range ids {
-			if !inScope[id] {
+			if !inScope[id] && s.touched[id] <= startGen {
 				s.removeLocked(id)
 			}
 		}
@@ -362,6 +374,7 @@ func (s *Store) RefreshIssues(ctx context.Context, ids []string) (unknown []stri
 	s.mu.Unlock()
 	changed := false
 	for _, id := range known {
+		startGen, startScope := s.generation()
 		iss, ferr := s.up.FetchIssueDetail(ctx, id)
 		if ferr != nil {
 			err = errors.Join(err, ferr)
@@ -371,14 +384,24 @@ func (s *Store) RefreshIssues(ctx context.Context, ids []string) (unknown []stri
 			continue
 		}
 		s.mu.Lock()
-		s.upsertLocked(*iss)
+		if s.scope == startScope && s.touched[id] <= startGen {
+			s.upsertLocked(*iss)
+			changed = true
+		}
 		s.mu.Unlock()
-		changed = true
 	}
 	if changed {
 		s.persist()
 	}
 	return unknown, err
+}
+
+// generation is the local-change generation and the scope now: a read that
+// started at them is older than any local change with a higher generation.
+func (s *Store) generation() (gen, scope int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gen, s.scope
 }
 
 // upsertLocked records iss as a local change: a pull that started before it
@@ -391,12 +414,11 @@ func (s *Store) upsertLocked(iss domain.Issue) {
 }
 
 // removeLocked drops the issue with id as a local change, remembered so a
-// pull that read it before the removal does not bring it back. Caller holds
-// mu.
+// pull that read it before the removal does not bring it back. The removal
+// is remembered even when the store does not hold the issue yet: a pull in
+// flight (the first one, or one that finds a new issue) may be about to add
+// it. Caller holds mu.
 func (s *Store) removeLocked(id string) {
-	if _, ok := s.issues[id]; !ok {
-		return
-	}
 	s.gen++
 	s.touched[id] = s.gen
 	s.removed[id] = struct{}{}
