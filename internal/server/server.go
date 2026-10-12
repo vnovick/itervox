@@ -1258,6 +1258,11 @@ type Config struct {
 	// was full (the handler answers 503). Nil: reports are logged and counted
 	// only.
 	ReportClientError func(ClientErrorReport) bool
+	// Webhooks, when non-nil, serves POST /api/v1/webhooks/<tracker> for the
+	// tracker it names (#131). The route is outside the bearer-token group
+	// and the Host guard: GitHub and Linear cannot send the token, and every
+	// delivery must carry the webhook secret's HMAC signature instead.
+	Webhooks WebhookHandler
 	// ClientErrorLimiter rate-limits POST /api/v1/client-errors. Nil uses
 	// the process-wide default, which survives the Server rebuild every
 	// WORKFLOW.md reload performs.
@@ -1301,6 +1306,7 @@ type Server struct {
 	// the route's rate limiter (CORE-048): Config.ClientErrorLimiter or the
 	// process-wide DefaultClientErrorLimiter.
 	reportClientError func(ClientErrorReport) bool
+	webhooks          WebhookHandler
 	clientErrors      *ClientErrorLimiter
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
@@ -1339,6 +1345,7 @@ func New(cfg Config) *Server {
 		readiness:           cfg.Readiness,
 		metrics:             cfg.Metrics,
 		reportClientError:   cfg.ReportClientError,
+		webhooks:            cfg.Webhooks,
 		clientErrors:        cfg.ClientErrorLimiter,
 	}
 	if s.clientErrors == nil {
@@ -1424,6 +1431,9 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
+		// Tracker webhooks (#131): signed by the webhook secret, not the
+		// bearer token.
+		r.Post("/webhooks/{tracker}", s.handleWebhook)
 
 		// If an API token is configured, all remaining routes require it.
 		// Use r.Group to create a sub-router so middleware is applied only to

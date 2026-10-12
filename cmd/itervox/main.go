@@ -803,7 +803,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
-	tr = withTrackerStore(ctx, cfg, workflowPath, tr)
+	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -1198,6 +1198,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// CORE-048 — web client error reports feed the RecentFailures
 			// ring through the non-blocking RecordFailure (CORE-046).
 			ReportClientError: clientErrorReporter(orch),
+			Webhooks:          webhooks, // #131: signed tracker deliveries
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

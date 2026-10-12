@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/store"
+	"github.com/vnovick/itervox/internal/tracker/webhook"
 )
 
 // trackerStorePath is the local tracker store file (#113), gitignored by the
@@ -33,14 +36,17 @@ func trackerStoreScope(cfg *config.Config) string {
 
 // withTrackerStore puts the local tracker store (#113) in front of tr when
 // tracker.store.enabled is set and tr is a Linear or GitHub adapter, and
-// keeps it synced until ctx ends. Otherwise tr is returned unchanged.
-func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath string, tr tracker.Tracker) tracker.Tracker {
+// keeps it synced until ctx ends. Otherwise tr is returned unchanged. With
+// tracker.webhooks on (#131) it also returns the webhook receiver for the
+// server, applying deliveries until ctx ends, and the store's periodic pull
+// becomes the safety net.
+func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath string, tr tracker.Tracker) (tracker.Tracker, server.WebhookHandler) {
 	if !cfg.Tracker.Store.Enabled {
-		return tr
+		return tr, nil
 	}
 	if cfg.Tracker.Kind != "linear" && cfg.Tracker.Kind != "github" {
 		slog.Info("tracker store: not used for this tracker kind", "kind", cfg.Tracker.Kind)
-		return tr
+		return tr, nil
 	}
 	t := cfg.Tracker
 	views := [][]string{
@@ -54,18 +60,41 @@ func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath stri
 		Scope:        trackerStoreScope(cfg),
 		ActiveStates: t.ActiveStates,
 		Views:        views,
-		SyncInterval: time.Duration(t.Store.SyncIntervalMs) * time.Millisecond,
+		SyncInterval: time.Duration(storeSyncIntervalMs(t)) * time.Millisecond,
 	})
 	if err != nil {
 		slog.Warn("tracker store: not used", "error", err)
-		return tr
+		return tr, nil
 	}
 	go func() {
 		defer failFastOnPanic("tracker-store-sync")
 		s.Run(ctx)
 	}()
-	slog.Info("tracker store: enabled", "path", trackerStorePath(workflowPath), "sync_interval_ms", t.Store.SyncIntervalMs)
-	return wrapped
+	slog.Info("tracker store: enabled", "path", trackerStorePath(workflowPath), "sync_interval_ms", storeSyncIntervalMs(t))
+	if !t.Webhooks.Enabled {
+		return wrapped, nil
+	}
+	logging.RegisterSecret(t.Webhooks.Secret)
+	h, err := webhook.New(webhook.Config{Tracker: t.Kind, Secret: t.Webhooks.Secret, Repo: t.ProjectSlug, Store: s})
+	if err != nil {
+		slog.Warn("tracker webhooks: not used", "error", err)
+		return wrapped, nil
+	}
+	go func() {
+		defer failFastOnPanic("tracker-webhooks")
+		h.Run(ctx)
+	}()
+	slog.Info("tracker webhooks: receiving", "path", "/api/v1/webhooks/"+t.Kind)
+	return wrapped, h
+}
+
+// storeSyncIntervalMs is the store's periodic pull: the safety net when
+// webhooks deliver the changes (#131), else tracker.store.sync_interval_ms.
+func storeSyncIntervalMs(t config.TrackerConfig) int {
+	if t.Webhooks.Enabled {
+		return t.Webhooks.SafetyNetIntervalMs
+	}
+	return t.Store.SyncIntervalMs
 }
 
 // repoCommentReader is the GitHub-only part of commentCommandTracker, which

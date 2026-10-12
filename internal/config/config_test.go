@@ -1770,3 +1770,26 @@ func TestCommentCommandsConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tracker.comment_commands is only supported with tracker.kind: github")
 }
+
+// TestTrackerWebhooksConfig (#131): off by default; on, it needs the store
+// and a secret, which resolves from the environment.
+func TestTrackerWebhooksConfig(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, 600000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	t.Setenv("ITERVOX_TEST_WEBHOOK_SECRET", "s3cret-0123456789abcdef")
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n    safety_net_interval_ms: 900000\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, "s3cret-0123456789abcdef", cfg.Tracker.Webhooks.Secret)
+	assert.Equal(t, 900000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	_, err = config.Load(workflowWithContent(t, minimal("  webhooks:\n    enabled: true\n    secret: x\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks needs tracker.store.enabled")
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_UNSET_SECRET\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks.secret is empty")
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: short\n")))
+	assert.ErrorContains(t, err, "shorter than 16 characters")
+}

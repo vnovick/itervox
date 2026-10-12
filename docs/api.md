@@ -171,6 +171,8 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" http://localhost:8090/metrics
 | `itervox_goroutine_panics_total` | counter | | Panics recovered on daemon goroutines (the site is in the log line). |
 | `itervox_events_dropped_total` | counter | | Orchestrator events that could not be delivered (full channel or send timeout). |
 | `itervox_client_errors_total` | counter | `kind`, `outcome` | Dashboard error reports on `POST /api/v1/client-errors`; `kind` is `render`, `error`, `unhandledrejection`, `schema` or `other`, `outcome` is `accepted`, `rate_limited` or `dropped`. |
+| `itervox_tracker_webhooks_total` | counter | `tracker`, `result` | Tracker webhook deliveries (`tracker.webhooks`); `result` is `accepted`, `ignored` (another repository, a pull request, a comment), `bad_signature`, `stale` (a Linear delivery outside the one-minute replay window) or `malformed`. |
+| `itervox_tracker_store_pulls_total` | counter | `trigger` | List pulls of the tracker store: `cold` (first pull), `interval` (the periodic pull; with webhooks on, the safety net), `webhook` (a delivery whose by-ID read failed) or `view` (a state set read for the first time). |
 | `itervox_persist_write_errors_total` | counter | | Failed runtime-ledger writes. Resets on a `WORKFLOW.md` reload. |
 | `itervox_transport_failures_total` | counter | | Retry-exhausted runs classified as transport failures. Resets on reload. |
 | `itervox_dispatch_ticks_total` | counter | `bound` | Poll ticks observed (`any`), and those that were slot-bound (`slot`) or dependency-bound (`dependency`). Resets on reload. |
@@ -327,6 +329,12 @@ Vendor request ids (`req_…`, `msg_…`), SRI hashes, git SHAs, UUIDs and
 ordinary paths stay readable.
 
 ---
+
+## Tracker webhooks
+
+### `POST /api/v1/webhooks/{tracker}`
+
+Receives Linear (`linear`) or GitHub (`github`) issue webhooks when `tracker.webhooks.enabled` is set; otherwise, and for the other tracker, `404`. No bearer token (the tracker cannot send one) and exempt from the unauthenticated-mode Host guard: instead every delivery must be signed with `tracker.webhooks.secret` (`Linear-Signature`, or GitHub's `X-Hub-Signature-256`), and a Linear delivery must be less than a minute old (`webhookTimestamp`). Answers `202` for an accepted or ignored delivery, `401` for a bad signature or a stale delivery, `400` for an unreadable payload, `413` over 1 MiB. A delivery only names issues: the tracker store re-reads them by ID and keeps the ones in scope. See [Tracker webhooks](/guides/tracker-webhooks/).
 
 ## Client error reports
 
