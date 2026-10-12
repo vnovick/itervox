@@ -2441,3 +2441,18 @@ func assertFileContent(t *testing.T, path, want string) {
 	require.NoError(t, err)
 	assert.Equal(t, want, string(got))
 }
+
+// #129: dashboard saves move a setting from WORKFLOW.md into
+// .itervox/settings.jsonc, so that file must be committable like WORKFLOW.md:
+// with a root .gitignore that hides .itervox/, init's carve-outs and its
+// .itervox/.gitignore leave it tracked, while runtime JSON stays ignored.
+func TestProjectSettingsFileIsNotGitignored(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".itervox/\n"), 0o644))
+	require.NoError(t, finalizeItervoxGitignore(filepath.Join(dir, ".itervox")))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "settings.jsonc"), []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "tracker_store.json"), []byte("{}\n"), 0o644))
+	assert.False(t, gitPathIgnored(t, dir, ".itervox/settings.jsonc"), "the project settings file is committable")
+	assert.True(t, gitPathIgnored(t, dir, ".itervox/tracker_store.json"), "runtime state stays ignored")
+}
