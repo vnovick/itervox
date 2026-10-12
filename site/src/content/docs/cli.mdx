@@ -30,6 +30,7 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
+| `-headless` | bool | `false` | No terminal UI even on a terminal: logs go to stderr (text, or JSON with `--log-format json`) and the tokenised dashboard URL is never printed (an auto-generated token is still in `<logs-dir>/api-token`). Watch and act from another shell with [`itervox watch`](#itervox-watch--a-terminal-view-of-a-running-daemon) and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply). The terminal UI is being retired; this is its replacement |
 
 > To try Itervox without a tracker account, API keys or an agent CLI, run
 > [`itervox demo`](#itervox-demo--try-it-in-30-seconds).
@@ -250,6 +251,42 @@ itervox report costs [--workflow WORKFLOW.md] [--logs-dir DIR] [--days N] [--jso
 ```
 
 Prints what each issue's agents have used: input and output tokens and estimated cost per issue (most tokens first), per day in UTC (newest first, the last `--days` days with usage, default 14, `0` for all kept), and the total. It reads `issue_spend.json` from the daemon's logs directory (the per-project directory under `~/.itervox/logs`, or `--logs-dir`); the daemon need not be running. Cost is estimated from Claude runs; a row with no Claude run shows `—` (`null` in `--json`). The daemon keeps 90 days of per-day history; per-issue totals are kept for as long as the file exists. The same totals are what [`agent.budget`](/configuration/#per-issue-budgets) is checked against.
+
+---
+
+## `itervox watch` — A terminal view of a running daemon
+
+```bash
+itervox watch [--interval 2s] [--once] [--workflow WORKFLOW.md] [--logs-dir DIR] [--url URL]
+```
+
+A read-only, plain-text view of the daemon running in this project: how many eligible issues are waiting for a free slot, the running agents (state, backend, worker host, run time, turns, tokens, last event), retries with their attempt and due time, issues waiting for input with the question, queued automation runs with the reason, and paused issues with the pause reason. On a terminal it redraws every `--interval`; without one (a pipe, a log file, `ssh host itervox watch`) it prints the view again, with a time stamp, only when something other than the ticking run times, token counts and retry countdowns changes. `--once` prints it once and exits.
+
+These commands, `itervox logs` and the quick actions below find the daemon from `.itervox/dashboard_url` (or `--url`) and its API token from `ITERVOX_API_TOKEN`, then `ITERVOX_API_TOKEN` in `.itervox/.env`, then `<logs-dir>/api-token`. They exit `1` when the daemon cannot be reached or refuses (its message is printed) and `2` on a usage error.
+
+---
+
+## `itervox logs` — An issue's run log
+
+```bash
+itervox logs [-f] <issue>
+```
+
+Prints the issue's run log, one line per event (`time LEVEL [tool] message`). With `-f` it keeps following new lines until Ctrl-C, resuming where it left off if the connection drops or the daemon restarts.
+
+---
+
+## Quick actions: pause, resume, dispatch, workers, reply
+
+```bash
+itervox pause <issue>          # stop the issue's agent and pause the issue
+itervox resume <issue>         # resume a paused issue
+itervox dispatch <issue>       # move the issue to the first active state; it starts when a slot is free
+itervox workers <n>            # set max_concurrent_agents (saved to WORKFLOW.md)
+itervox reply <issue> <text>   # answer an agent's question; queued, applied if the issue is waiting for input
+```
+
+The same actions as the dashboard and the terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
 ---
 
