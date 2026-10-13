@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **GCP provisioning stopped before Cloud NAT existed** (#154). `deploy/gcp/provision.sh` (without `--public`) passed `--auto-allocate-nat-external-ip`, which `gcloud compute routers nats create` rejects as an unrecognized argument (the flag is plural, `--auto-allocate-nat-external-ips`). The VM, its data disk, the IAP firewall rule and the router were created, but no NAT, so the VM had no egress and `bootstrap.sh` could not download anything. The flag is fixed, and `deploy/gcp/provision_test.sh` (run by `make deploy-test`) drives the script against a `gcloud` stub that refuses any flag the real command does not accept.
+
 ## [0.2.1] — 2026-09-28
 
 Dependency autonomy, a write-ahead outbox for tracker writes, and the security and ops fixes that accumulated alongside them. Itervox now only picks up issues that are not blocked, orders work by what unblocks the most downstream effort, detects dependency cycles, keeps its dependency analysis fresh on its own, and captures far more real dependencies from both trackers — while making roughly 10x fewer tracker requests on the hot paths.

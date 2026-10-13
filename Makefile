@@ -209,6 +209,7 @@ deploy-test:
 	bash deploy/lib/fetch-secrets_test.sh
 	bash deploy/bootstrap_test.sh
 	bash deploy/aws/provision_test.sh
+	bash deploy/gcp/provision_test.sh
 	bash deploy/docker/healthcheck_test.sh
 	bash deploy/upgrade_test.sh
 	bash deploy/cleanup_test.sh
