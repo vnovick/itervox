@@ -325,6 +325,27 @@ func TestTrackerStoreConfig(t *testing.T) {
 	assert.False(t, cfg.Tracker.Store.Enabled, "the opt-out")
 }
 
+// TestAutomationPollIntervalConfigRoundTrip pins polling.automation_interval_ms
+// (#155): 15s when absent, the configured value when set, and the default
+// again for zero or a negative value (positiveIntField).
+func TestAutomationPollIntervalConfigRoundTrip(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, 15000, cfg.Polling.AutomationIntervalMs)
+	assert.Equal(t, config.DefaultAutomationPollIntervalMs, cfg.Polling.AutomationIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("polling:\n  interval_ms: 30000\n  automation_interval_ms: 120000\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 120000, cfg.Polling.AutomationIntervalMs)
+	assert.Equal(t, 30000, cfg.Polling.IntervalMs, "the candidate poll keeps its own interval")
+
+	for _, v := range []string{"0", "-5"} {
+		cfg, err = config.Load(workflowWithContent(t, minimal("polling:\n  automation_interval_ms: "+v+"\n")))
+		require.NoError(t, err)
+		assert.Equal(t, 15000, cfg.Polling.AutomationIntervalMs, "non-positive %s falls back to the default", v)
+	}
+}
+
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
 	content := minimal("agent:\n  max_concurrent_agents_by_state:\n    Todo: 3\n    IN PROGRESS: 2\n")
 	path := workflowWithContent(t, content)

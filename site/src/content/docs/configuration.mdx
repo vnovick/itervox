@@ -159,12 +159,16 @@ Controls how frequently Itervox checks the tracker for new or updated issues.
 |---|---|---|---|
 | `interval_ms` | int | `30000` | Polling interval in milliseconds. |
 | `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. Set `0` to disable. |
+| `automation_interval_ms` | int | `15000` | How often the automation event poll (`tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`) lists issues. While the tracker reports less than 20% of its request budget left, the interval doubles after each poll, up to 8× this value, and returns to it once the budget recovers. Zero or a negative value means the default. Read at load time. See [Automation event poll](#automation-event-poll). |
 
 ```yaml
 polling:
   interval_ms: 60000  # check every minute
   rate_limit_reserve_percent: 10
+  automation_interval_ms: 60000  # automation event poll once a minute
 ```
+
+The automation key lives under `polling:` because `automations:` is a list of rules and has no place for a setting.
 
 ### Write priority under rate limits
 
@@ -632,10 +636,48 @@ Supported triggers:
 - `rate_limited` — fires when a worker run hits a vendor usage limit. A structured limit reported by the agent (Claude's `rate_limit_event` with status `rejected`, or a result with API status 429/402; a Codex "You've hit your usage limit" error) fires it on the **first** failure without consuming a retry, also with `max_retries: 0`. Otherwise it fires when the run exhausts its retries and the failure text is classified as rate-limit-driven. The switch cap limits automated switching; it is not the trigger condition. With no eligible fallback, the issue is retried after the vendor's reset time (at most 6 hours).
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
-Tracker event triggers are poll-derived, not webhook-derived. The automation
-loop runs every 15 seconds. `tracker_comment_added` compares only the latest
+Tracker event triggers are poll-derived, not webhook-derived. The event poll
+runs every `polling.automation_interval_ms` (default 15 seconds; cron rules are
+checked every 15 seconds regardless). `tracker_comment_added` compares only the latest
 observed comment, so multiple comments between polls collapse to the latest
 comment for trigger purposes.
+
+### Automation event poll
+
+The event poll lists only the states its rules can fire on (#155):
+
+| Rule | States the poll fetches |
+|---|---|
+| any event-polled rule | its `filter.states` (a named state is fetched, terminal or not) |
+| `issue_entered_state` | `trigger.state`, plus `tracker.active_states` |
+| `issue_moved_to_backlog` | `tracker.backlog_states`, plus `tracker.active_states` |
+| `tracker_comment_added` | `tracker.active_states`; with `filter.states` set and `match_mode: all`, only those states |
+
+`tracker.terminal_states`, `tracker.completion_state` and `tracker.backlog_states`
+are never fetched unless a rule names them (or, for backlog, an
+`issue_moved_to_backlog` rule exists). With no `tracker_comment_added`,
+`issue_entered_state` or `issue_moved_to_backlog` rule, the poll makes no
+request at all. `cron` rules fetch their own states when they fire;
+`blockers_resolved` is fired by the dependency audit; the other triggers come
+from the daemon's own events.
+
+A move into a polled state from a state the poll does not fetch (for example
+Backlog → Todo for an `issue_entered_state: Todo` rule, or Done → Backlog for
+`issue_moved_to_backlog`) still fires: an issue that was not listed by the
+previous poll, now sits in a state that poll fetched, and was created more than
+a minute before it, has moved. Its `{{ trigger.previous_state }}` is then
+empty, since the poll never saw it. A move from an active state reports its
+previous state as before. An issue created in the trigger state does not fire.
+
+`tracker_comment_added` watches comments only on the issues the poll lists, so
+a rule without `filter.states` no longer watches comments on backlog or
+terminal issues; name those states in `filter.states` to watch them. (Terminal
+issues were never dispatched by any automation.)
+
+With the tracker store on (the default for Linear and GitHub), the poll's state
+set becomes a store view after one fetch, and every later poll is answered from
+the store, which the store's incremental "updated since" pull keeps current, so
+the poll itself costs no list requests.
 
 When a trigger cannot start immediately for a retryable runtime reason such as
 `no_slots`, `per_state_limit`, `already_running`, `input_required`,
