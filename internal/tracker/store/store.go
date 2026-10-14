@@ -17,6 +17,9 @@
 //   - Writes go to the tracker. A successful state, branch or create write is
 //     applied to the store and saved at once, so the next tick, and a
 //     restart, see it; the next sync is authoritative.
+//   - A state move queued in the write-ahead outbox and not pushed yet
+//     (#115) is laid over every list read (SetPendingStates, pending.go), so
+//     the board sees it at once; the store's own copy stays the tracker's.
 //
 // A full pull is FetchCandidateIssues plus FetchIssuesByStates for each
 // view. Between full pulls, an adapter that implements
@@ -160,6 +163,10 @@ type Store struct {
 	// next pull is full. fullAt is when the last full pull committed.
 	cursor time.Time
 	fullAt time.Time
+
+	// pending returns the state moves queued for push and not yet sent
+	// (#115), by issue ID; nil when nothing queues writes. See pending.go.
+	pending func() map[string]string
 }
 
 // DefaultFullSyncInterval is Config.FullSyncInterval when unset.
@@ -915,9 +922,10 @@ func (s *Store) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error
 	if err := s.ensureSynced(ctx); err != nil {
 		return nil, err
 	}
+	pend := s.pendingStates()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.listLocked(s.candidates), nil
+	return s.overlayLocked(s.candidates, pend, s.active), nil
 }
 
 // FetchIssuesByStates implements tracker.Tracker from the store; a state set
@@ -930,10 +938,11 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 		return nil, err
 	}
 	key := viewKey(stateNames)
+	pend := s.pendingStates()
 	s.mu.Lock()
 	if v, ok := s.views[key]; ok {
 		v.LastRead = s.now()
-		out := s.listLocked(v.IDs)
+		out := s.overlayLocked(v.IDs, pend, v.States)
 		s.mu.Unlock()
 		return out, nil
 	}
@@ -979,7 +988,7 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 		}
 	}
 	s.views[key] = v
-	return s.listLocked(v.IDs), nil
+	return s.overlayLocked(v.IDs, pend, v.States), nil
 }
 
 // FetchIssueStatesByIDs implements tracker.Tracker from the tracker (see
