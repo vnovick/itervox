@@ -22,6 +22,9 @@ type Readiness struct {
 	PollInterval time.Duration
 	// LastPollOK is whether the most recent candidate poll succeeded.
 	LastPollOK bool
+	// LastPollOKAt is when a candidate poll last succeeded; zero before the
+	// first success (#117).
+	LastPollOKAt time.Time
 	// PollRateLimited is whether the most recent poll failed with a
 	// *tracker.RateLimitedError.
 	PollRateLimited bool
@@ -57,6 +60,9 @@ func (o *Orchestrator) Readiness() Readiness {
 	if n := o.tickStartedNano.Load(); n != 0 {
 		r.TickStarted = time.Unix(0, n)
 	}
+	if n := o.lastPollOKNano.Load(); n != 0 {
+		r.LastPollOKAt = time.Unix(0, n)
+	}
 	return r
 }
 
@@ -77,6 +83,9 @@ func (o *Orchestrator) markLoopIdle() {
 func (o *Orchestrator) publishPollStatus(state State, ok, rateLimited bool) {
 	o.pollShedding.Store(false)
 	o.lastPollOK.Store(ok)
+	if ok {
+		o.lastPollOKNano.Store(time.Now().UnixNano())
+	}
 	o.pollRateLimited.Store(rateLimited)
 	o.pollFailuresCount.Store(int32(min(state.ConsecutivePollFailures, 1<<30)))
 }

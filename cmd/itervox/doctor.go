@@ -171,6 +171,12 @@ type DoctorReport struct {
 	// LocalIssueProblems are local tracker issue files that do not parse
 	// (#85). Warnings only: the daemon serves their last good version.
 	LocalIssueProblems []string
+	// Sync is the running daemon's tracker sync status (#117), read from a
+	// live HEARTBEAT.md; nil when no live daemon wrote one. SyncLagWarning
+	// is set when the lag is past the daemon's threshold. A warning only:
+	// a lagging sync is an outage to look at, not a broken configuration.
+	Sync           *doctorSync
+	SyncLagWarning string
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -297,6 +303,8 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 				report.HeartbeatStaleWarning = fmt.Sprintf(
 					"%s exists but no live daemon owns it (pid in daemon.pid = %d, alive = %v) — delete the stale file or `itervox` to start fresh",
 					hbPath, pid, pidErr == nil && processAlive(pid))
+			} else {
+				report.Sync, report.SyncLagWarning = collectDoctorSync(hbPath, time.Now())
 			}
 		}
 	}
@@ -449,6 +457,7 @@ func renderDoctorReport(r DoctorReport) string {
 			fmt.Fprintf(&b, "dashboard URL: %s (NOT reachable — daemon may have died after writing this file)\n", r.DashboardURL)
 		}
 	}
+	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
 	renderLabelCheck(&b, r.Labels)
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
