@@ -36,6 +36,11 @@ interface UIState {
   rulesView: RulesEditorView;
   rulesPreviewProfile: string;
   rulesPreviewIssue: string;
+
+  // #158 — schema-driven Settings section: which settings layer a save
+  // writes, and the form or JSON view.
+  settingsLayer: RulesLayerTab;
+  settingsView: RulesEditorView;
 }
 
 interface UIActions {
@@ -53,6 +58,8 @@ interface UIActions {
   setRulesView: (view: RulesEditorView) => void;
   setRulesPreviewProfile: (profile: string) => void;
   setRulesPreviewIssue: (issue: string) => void;
+  setSettingsLayer: (layer: RulesLayerTab) => void;
+  setSettingsView: (view: RulesEditorView) => void;
 }
 
 export const useUIStore = create<UIState & UIActions>((set) => ({
@@ -70,6 +77,8 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   rulesView: 'form',
   rulesPreviewProfile: '',
   rulesPreviewIssue: '',
+  settingsLayer: 'project',
+  settingsView: 'form',
 
   setDashboardViewMode: (dashboardViewMode) => {
     set({ dashboardViewMode });
@@ -112,5 +121,11 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setRulesPreviewIssue: (rulesPreviewIssue) => {
     set({ rulesPreviewIssue });
+  },
+  setSettingsLayer: (settingsLayer) => {
+    set({ settingsLayer });
+  },
+  setSettingsView: (settingsView) => {
+    set({ settingsView });
   },
 }));

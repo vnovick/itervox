@@ -105,8 +105,9 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	// orphan process-group ledger, run/agent-pgids.json (agentPGIDLedgerRel).
 	// #157: rules.json is the committed project rules layer, carved out of
 	// the runtime /*.json ignore (the negation must follow it);
-	// rules.local.json is the operator's private layer and stays ignored.
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "/rules.local.json", "bin/", "*.db"}
+	// rules.local.json is the operator's private layer and stays ignored, as
+	// does the project-local settings layer (#158).
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)

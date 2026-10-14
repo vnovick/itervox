@@ -115,3 +115,37 @@ func TestConfigUsage(t *testing.T) {
 	assert.Equal(t, 2, configCmd([]string{"set", "agent.max_turns"}, &out, &errOut))
 	assert.Contains(t, errOut.String(), "usage: itervox config show")
 }
+
+// TestConfigSetLocalLayerWinsOverProject (#158): --local writes the
+// gitignored .itervox/settings.local.jsonc, which wins over the project file.
+func TestConfigSetLocalLayerWinsOverProject(t *testing.T) {
+	wf, _ := configProject(t, "", "")
+	var out, errOut bytes.Buffer
+	require.Equal(t, 0, configCmd([]string{"set", "agent.max_turns", "4", "--workflow", wf}, &out, &errOut), errOut.String())
+	require.Equal(t, 0, configCmd([]string{"set", "--local", "agent.max_turns", "6", "--workflow", wf}, &out, &errOut), errOut.String())
+	data, err := config.ReadSettingsFile(config.LocalSettingsPath(wf))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"agent": map[string]any{"max_turns": 6}}, data)
+	cfg, err := config.Load(wf)
+	require.NoError(t, err)
+	assert.Equal(t, 6, cfg.Agent.MaxTurns, "the local layer wins over the project layer")
+	ignore, err := os.ReadFile(filepath.Join(filepath.Dir(wf), ".itervox", ".gitignore"))
+	require.NoError(t, err)
+	assert.Contains(t, string(ignore), "/settings.local.jsonc")
+
+	errOut.Reset()
+	require.Equal(t, 0, configCmd([]string{"set", "agent.max_turns", "8", "--workflow", wf}, &out, &errOut))
+	assert.Contains(t, errOut.String(), "the local layer also sets agent.max_turns (6), and it wins")
+	assert.Equal(t, 2, configCmd([]string{"set", "--local", "--user", "agent.max_turns", "1", "--workflow", wf}, &out, &errOut))
+}
+
+// TestConfigSchemaPrintsPublishedSchema (#158): `itervox config schema`
+// prints the generated settings schema, the bytes `make settings-schema`
+// publishes.
+func TestConfigSchemaPrintsPublishedSchema(t *testing.T) {
+	var out, errOut bytes.Buffer
+	require.Equal(t, 0, configCmd([]string{"schema"}, &out, &errOut), errOut.String())
+	published, err := os.ReadFile(filepath.Join("..", "..", "site", "public", "schema", "settings.schema.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(published), out.String())
+}

@@ -31,12 +31,13 @@ func TestRulesFilesGitignorePolicy(t *testing.T) {
 			initGitRepo(t, dir)
 			require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(root), 0o644))
 			require.NoError(t, finalizeItervoxGitignore(filepath.Join(dir, ".itervox")))
-			for _, f := range []string{"rules.json", "rules.local.json", "settings.jsonc", "tracker_store.json"} {
+			for _, f := range []string{"rules.json", "rules.local.json", "settings.jsonc", "settings.local.jsonc", "tracker_store.json"} {
 				require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", f), []byte("{}\n"), 0o644))
 			}
 			assert.False(t, gitPathIgnored(t, dir, ".itervox/rules.json"), "the project rules layer is committable")
 			assert.True(t, gitPathIgnored(t, dir, ".itervox/rules.local.json"), "the project-local rules layer is ignored")
 			assert.False(t, gitPathIgnored(t, dir, ".itervox/settings.jsonc"))
+			assert.True(t, gitPathIgnored(t, dir, ".itervox/settings.local.jsonc"), "the project-local settings layer is ignored (#158)")
 			assert.True(t, gitPathIgnored(t, dir, ".itervox/tracker_store.json"), "runtime JSON stays ignored")
 		})
 	}
@@ -50,8 +51,10 @@ func TestRulesFilesGitignorePolicy(t *testing.T) {
 		body, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
 		require.NoError(t, err)
 		assert.Equal(t, 1, strings.Count(string(body), rulesLocalGitignoreEntry))
+		assert.Equal(t, 1, strings.Count(string(body), settingsLocalGitignoreEntry))
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox"), 0o755))
 		assert.True(t, gitPathIgnored(t, dir, ".itervox/rules.local.json"))
+		assert.True(t, gitPathIgnored(t, dir, ".itervox/settings.local.jsonc"))
 		assert.False(t, gitPathIgnored(t, dir, ".itervox/rules.json"))
 	})
 }

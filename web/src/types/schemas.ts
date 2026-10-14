@@ -1247,3 +1247,107 @@ export type RulesLayer = z.infer<typeof RulesLayerSchema>;
 export type RulesView = z.infer<typeof RulesViewSchema>;
 export type RulesPreview = z.infer<typeof RulesPreviewSchema>;
 export type RulesLayerName = (typeof RULES_LAYER_NAMES)[number];
+
+// ─── Settings layers and schema (#158) ───────────────────────────────────────
+// Mirrors internal/server/settings_layers.go and the JSON Schema published at
+// site/public/schema/settings.schema.json (generated from the Go config
+// registry). The Settings page renders its fields from that schema.
+
+export const SETTINGS_LAYER_NAMES = ['user', 'project', 'local'] as const;
+export type SettingsLayerName = (typeof SETTINGS_LAYER_NAMES)[number];
+
+const stringList = z
+  .array(z.string())
+  .nullable()
+  .transform((v) => v ?? []);
+
+export const SettingsLayerSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  writable: z.boolean(),
+  exists: z.boolean(),
+  raw: z.string(),
+  version: z.string(),
+  values: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .transform((v) => v ?? {}),
+  unknown: stringList,
+  error: z.string().optional(),
+});
+
+export const SettingsEffectiveSchema = z.object({
+  key: z.string(),
+  value: z.unknown(),
+  layer: z.string(),
+  path: z.string().optional(),
+});
+
+export const SettingsLayersViewSchema = z.object({
+  schemaUrl: z.string(),
+  layers: z.array(SettingsLayerSchema),
+  effective: z
+    .array(SettingsEffectiveSchema)
+    .nullable()
+    .transform((v) => v ?? []),
+});
+
+export const SettingsSaveResultSchema = SettingsLayersViewSchema.extend({
+  layer: z.string(),
+  applied: stringList,
+  restartRequired: stringList,
+  shadowed: z
+    .record(z.string(), z.string())
+    .nullable()
+    .transform((v) => v ?? {}),
+});
+
+/** One node of the settings JSON Schema: a section, a nested object or a field. */
+export interface SettingsSchemaNode {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: string[];
+  minimum?: number;
+  items?: { type?: string };
+  additionalProperties?: boolean | { type?: string };
+  properties?: Record<string, SettingsSchemaNode>;
+  deprecated?: boolean;
+  'x-itervox-group'?: string;
+  'x-itervox-live'?: boolean;
+  'x-itervox-editor'?: string;
+  'x-itervox-replaced-by'?: string;
+}
+
+export const SettingsSchemaNodeSchema: z.ZodType<SettingsSchemaNode> = z.lazy(() =>
+  z.object({
+    type: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    default: z.unknown().optional(),
+    enum: z.array(z.string()).optional(),
+    minimum: z.number().optional(),
+    items: z.object({ type: z.string().optional() }).optional(),
+    additionalProperties: z
+      .union([z.boolean(), z.object({ type: z.string().optional() })])
+      .optional(),
+    properties: z.record(z.string(), SettingsSchemaNodeSchema).optional(),
+    deprecated: z.boolean().optional(),
+    'x-itervox-group': z.string().optional(),
+    'x-itervox-live': z.boolean().optional(),
+    'x-itervox-editor': z.string().optional(),
+    'x-itervox-replaced-by': z.string().optional(),
+  }),
+);
+
+export const SettingsSchemaDocSchema = z.object({
+  $id: z.string(),
+  properties: z.record(z.string(), SettingsSchemaNodeSchema),
+});
+
+export type SettingsLayer = z.infer<typeof SettingsLayerSchema>;
+export type SettingsEffective = z.infer<typeof SettingsEffectiveSchema>;
+export type SettingsLayersView = z.infer<typeof SettingsLayersViewSchema>;
+export type SettingsSaveResult = z.infer<typeof SettingsSaveResultSchema>;
+export type SettingsSchemaDoc = z.infer<typeof SettingsSchemaDocSchema>;
