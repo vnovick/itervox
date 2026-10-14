@@ -19,6 +19,8 @@ loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
 one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
+- If `ITERVOX_SUPERVISOR_TOKEN` is set, that value is required instead,
+  even with `server.allow_unauthenticated: true` (see below).
 - If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
   `false` (the default), Itervox auto-generates an ephemeral token at
   startup and prints the tokened dashboard URL to stderr once — only when
@@ -52,6 +54,32 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
   http://localhost:8090/api/v1/state
 ```
 
+### Supervisor token (`ITERVOX_SUPERVISOR_TOKEN`)
+
+A supervisor that starts the daemon — the macOS menu-bar app, a process
+manager — passes its own token in `ITERVOX_SUPERVISOR_TOKEN`. The daemon
+requires it as the bearer token exactly as it would a pinned
+`ITERVOX_API_TOKEN`, with these differences:
+
+- It wins over `ITERVOX_API_TOKEN` from the environment or `.itervox/.env`
+  (a warning names the replacement, never a value), and over
+  `server.allow_unauthenticated: true`: auth stays on.
+- It is never printed: no tokenised dashboard URL on stderr, even on a
+  terminal or with `ITERVOX_PRINT_TOKEN=1`; the terminal UI's dashboard URL
+  carries no token; nothing is written to `<logs-dir>/api-token` (a stale
+  file from an earlier generated-token start is removed). The value is also
+  registered for exact-match log redaction, and it never reaches
+  `HEARTBEAT.md`, `dashboard_url` or the daemon registry. The startup log
+  line reads `dashboard URL (token withheld from logs)` with
+  `token_source=ITERVOX_SUPERVISOR_TOKEN`.
+- The daemon moves it into `ITERVOX_API_TOKEN` (which hooks and agents'
+  `itervox action` calls inherit) and removes `ITERVOX_SUPERVISOR_TOKEN`
+  from its environment.
+- It must be 16–512 printable ASCII characters without spaces (surrounding
+  whitespace is trimmed); anything else stops the process with exit code 2
+  and an error that does not quote the value. `openssl rand -hex 32` is a
+  good source.
+
 ### Agent-action bearer auth
 
 The daemon-backed agent-action routes use a **separate** bearer token model.
@@ -67,6 +95,61 @@ API token. These routes are:
 
 Profiles opt into these capabilities with `allowed_actions` and
 `create_issue_state` in `WORKFLOW.md`.
+
+## Supervisor contract
+
+What a supervisor (the macOS menu-bar app, #128) relies on to find, start and
+talk to daemons. Stable within `schema_version` 1: fields may be added, but a
+rename, removal or change of meaning bumps the version.
+
+**Start.** Run the `itervox` binary with `--workflow <path>` and
+`ITERVOX_SUPERVISOR_TOKEN=<token>` in its environment (see above). From
+Finder or launchd the inherited PATH is minimal; the daemon resolves PATH
+from the user's login shell itself (see
+[Login-shell PATH](https://itervox.dev/cli/#login-shell-path)), so the
+supervisor does not need to.
+
+**Discover.** `itervox status --all --json` prints a JSON array (`[]` when
+none) with one object per running daemon on the host, sorted by `workflow`,
+then `pid`; `itervox status --json [--workflow PATH]` only the daemons of
+that project. Exit code 0 unless the output cannot be written. Every object
+has every key:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `schema_version` | int | `1` |
+| `pid` | int | Daemon process id |
+| `workflow` | string | Absolute path of its `WORKFLOW.md` |
+| `project_dir` | string | Directory holding `WORKFLOW.md` (and `.itervox/`) |
+| `url` | string | Dashboard/API base URL, e.g. `http://127.0.0.1:8090/` (same as `.itervox/dashboard_url`) |
+| `host`, `port` | string, int | The bound address split out of `url` |
+| `version`, `commit` | string | Build of the daemon binary (`dev` / `none` for a local build) |
+| `started_at` | string | RFC 3339 UTC process start time |
+| `token_required` | bool | Whether `/api/v1/*` needs `Authorization: Bearer` |
+| `token_source` | string | `supervisor` (`ITERVOX_SUPERVISOR_TOKEN`), `env` (`ITERVOX_API_TOKEN`), `generated` (read it from `token_file`), `none` (`server.allow_unauthenticated: true`), `unknown` |
+| `token_file` | string | `<logs-dir>/api-token` for a `generated` token, else `""` |
+| `logs_dir` | string | The daemon's logs directory |
+| `heartbeat` | string | Path of its `.itervox/HEARTBEAT.md` |
+| `executable` | string | Path of the daemon binary |
+| `path_source` | string | `login_shell` or `inherited` (see Login-shell PATH) |
+| `source` | string | `registry`, or `process_scan` for a daemon started by a binary older than the registry |
+
+A token is never part of the output. Unknown values are `""` (or `0`).
+
+**Registry.** Each daemon writes `~/.itervox/daemons/<pid>.json` (directory
+`0700`, file `0600`, the same object without `source`) once its socket is
+bound, rewrites it on every `WORKFLOW.md` reload, and removes it on shutdown
+together with `daemon.pid`, `dashboard_url` and `HEARTBEAT.md`.
+`status --json` lists a record only while its pid is alive and the project's
+`.itervox/daemon.pid` still names it, and deletes records that fail the check
+(a daemon killed with `SIGKILL` cannot remove its own). `itervox demo` writes
+no record. Daemons started by an older binary are found by process scan:
+an `itervox` process whose working directory holds a `.itervox/daemon.pid`
+naming it; for those `version`, `commit` and `started_at` are `""`,
+`token_source` is `unknown` and `token_required` is `true`.
+
+**Talk.** `GET {url}api/v1/health` needs no token; everything else under
+`{url}api/v1/` takes `Authorization: Bearer <token>`.
 
 ## Error format
 
