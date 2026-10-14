@@ -1,7 +1,9 @@
 package outbox
 
 import (
+	"encoding/json"
 	"log/slog"
+	"maps"
 	"time"
 )
 
@@ -83,6 +85,9 @@ func (o *Outbox) batchLocked(e *Entry, now time.Time) {
 	if e.Kind == KindUpdateState {
 		o.replaceWaitingStateMovesLocked(e, now)
 	}
+	if e.Kind == KindUpdateFields {
+		o.mergeWaitingFieldEditsLocked(e, now)
+	}
 
 	if e.Urgent {
 		// Everything ahead of an urgent write in its issue's queue goes now.
@@ -119,6 +124,45 @@ func (o *Outbox) replaceWaitingStateMovesLocked(e *Entry, now time.Time) {
 	if replaced == 0 {
 		return
 	}
+	e.Coalesced = replaced
+	o.entries = kept
+}
+
+// mergeWaitingFieldEditsLocked folds the issue's waiting update_fields
+// entries into e (#118): their payloads are JSON objects with one key per
+// field, merged in order so e's own values win. The issue then gets one
+// field edit per batch, in e's place (the end of its queue), which keeps
+// every edit after any earlier write for the issue. Caller holds o.mu.
+func (o *Outbox) mergeWaitingFieldEditsLocked(e *Entry, now time.Time) {
+	merged := map[string]json.RawMessage{}
+	kept := o.entries[:0:0]
+	replaced := 0
+	for _, x := range o.entries {
+		if x.IssueID != e.IssueID || x.Kind != KindUpdateFields || !waiting(x, now) {
+			kept = append(kept, x)
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal([]byte(x.Payload), &fields) != nil {
+			kept = append(kept, x) // not an object: leave it alone
+			continue
+		}
+		maps.Copy(merged, fields)
+		replaced += 1 + x.Coalesced
+	}
+	if replaced == 0 {
+		return
+	}
+	var own map[string]json.RawMessage
+	if json.Unmarshal([]byte(e.Payload), &own) != nil {
+		return // e is not an object: nothing merged, nothing removed
+	}
+	maps.Copy(merged, own)
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return
+	}
+	e.Payload = string(out)
 	e.Coalesced = replaced
 	o.entries = kept
 }

@@ -44,6 +44,7 @@ type storeSyncStatus interface {
 // syncStatusSource assembles server.SyncStatusRow from the live producers.
 type syncStatusSource struct {
 	store        storeSyncStatus // nil without a tracker store
+	localSync    localSyncStatus // nil without tracker.sync (#118)
 	outbox       *outbox.Outbox  // nil-safe
 	pollOKAt     func() time.Time
 	pollInterval time.Duration
@@ -57,6 +58,9 @@ func newSyncStatusSource(cfg *config.Config, tr tracker.Tracker, ob *outbox.Outb
 	}
 	if st, ok := tr.(storeSyncStatus); ok {
 		src.store = st
+	}
+	if ls, ok := tr.(localSyncStatus); ok {
+		src.localSync = ls
 	}
 	if orch != nil {
 		src.pollOKAt = func() time.Time { return orch.Readiness().LastPollOKAt }
@@ -74,7 +78,21 @@ func (s *syncStatusSource) row(now time.Time) *server.SyncStatusRow {
 		lastPull time.Time
 		interval = s.pollInterval
 	)
-	if s.store != nil {
+	var syncOutbox *outbox.Outbox
+	if s.localSync != nil {
+		// #118: the local files synced with Linear or GitHub. The pull
+		// side is the sync's last good cycle; the push side adds the
+		// sync's queued remote writes to the orchestrator's.
+		st, ob := s.localSync.LocalSyncStatus()
+		row.Mode = server.SyncModeLocalSync
+		lastPull, interval, syncOutbox = st.SyncedAt, st.Interval, ob
+		row.CursorAt = nilIfZero(st.Cursor)
+		row.ConsecutiveFailures = st.Failures
+		if st.LastErr != nil {
+			class := tracker.ClassifyError(st.LastErr)
+			row.LastError = &server.SyncErrorRow{At: st.LastErrAt, Kind: class.Kind, Message: logging.RedactString(class.Summary)}
+		}
+	} else if s.store != nil {
 		st := s.store.SyncStatus()
 		row.Mode = server.SyncModeStore
 		lastPull, interval = st.SyncedAt, st.Interval
@@ -100,13 +118,38 @@ func (s *syncStatusSource) row(now time.Time) *server.SyncStatusRow {
 	}
 
 	row.PushIntervalMs = s.pushInterval.Milliseconds()
-	if s.outbox != nil {
-		st := s.outbox.Stats(now)
+	if s.outbox != nil || syncOutbox != nil {
+		st := addOutboxStats(outboxStats(s.outbox, now), outboxStats(syncOutbox, now))
 		row.PendingWrites, row.PendingUrgent, row.PendingBatched = st.Pending, st.Urgent, st.Batched
 		row.PendingRetrying, row.PendingDegraded, row.PendingRateLimited = st.Retrying, st.Degraded, st.RateLimited
 		row.OldestPendingAt, row.NextPushAt = nilIfZero(st.OldestEnqueuedAt), nilIfZero(st.NextPushAt)
 	}
 	return row
+}
+
+// outboxStats is ob's queue summary; nil reads as empty.
+func outboxStats(ob *outbox.Outbox, now time.Time) outbox.Stats {
+	if ob == nil {
+		return outbox.Stats{}
+	}
+	return ob.Stats(now)
+}
+
+// addOutboxStats sums two queue summaries: the counts add up, the oldest
+// write and the next push are the earlier of the two.
+func addOutboxStats(a, b outbox.Stats) outbox.Stats {
+	earlier := func(x, y time.Time) time.Time {
+		if x.IsZero() || (!y.IsZero() && y.Before(x)) {
+			return y
+		}
+		return x
+	}
+	return outbox.Stats{
+		Pending: a.Pending + b.Pending, Urgent: a.Urgent + b.Urgent, Batched: a.Batched + b.Batched,
+		Retrying: a.Retrying + b.Retrying, Degraded: a.Degraded + b.Degraded, RateLimited: a.RateLimited + b.RateLimited,
+		OldestEnqueuedAt: earlier(a.OldestEnqueuedAt, b.OldestEnqueuedAt),
+		NextPushAt:       earlier(a.NextPushAt, b.NextPushAt),
+	}
 }
 
 // fingerprint changes whenever the HEARTBEAT's sync section would say

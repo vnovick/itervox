@@ -810,6 +810,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		runner = demoSession.runner
 	}
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
+	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -1240,6 +1241,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
 	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
+	// #118: the local issue files' sync with Linear or GitHub (tracker.sync).
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1283,6 +1286,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
 	<-commentCommandsDone
+	<-localSyncDone
 	final := orch.Snapshot()
 	failureCarry.store(final.RecentFailures, final.FailureAcks)
 	return runErr

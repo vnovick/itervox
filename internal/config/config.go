@@ -234,6 +234,10 @@ type TrackerConfig struct {
 	// refresh the store by issue, and the store's periodic pull slows to the
 	// safety-net interval.
 	Webhooks TrackerWebhooksConfig
+	// Sync is tracker.sync (#118): two-way sync of the local issue files
+	// with a Linear project or GitHub repository. kind: local only. Read
+	// once at startup.
+	Sync TrackerSyncConfig
 }
 
 // DefaultTrackerPushIntervalMs is tracker.push_interval_ms when unset (#115):
@@ -836,26 +840,20 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Tracker
 	tracker := nestedMap(raw, "tracker")
-	cfg.Tracker.Kind = strField(tracker, "kind", "")
-	// Apply the Linear default endpoint only when tracker.kind is "linear" so
-	// that GitHub users who omit endpoint: get an empty string, triggering the
-	// GitHub client's own default (https://api.github.com).
-	defaultEndpoint := ""
-	if cfg.Tracker.Kind == "linear" {
-		defaultEndpoint = "https://api.linear.app/graphql"
-	}
-	cfg.Tracker.Endpoint = strField(tracker, "endpoint", defaultEndpoint)
-	cfg.Tracker.APIKey = resolveSecret(strField(tracker, "api_key", ""))
-	cfg.Tracker.ProjectSlug = strField(tracker, "project_slug", "")
-	cfg.Tracker.ActiveStates = strSliceField(tracker, "active_states", []string{"Todo", "In Progress"})
-	cfg.Tracker.TerminalStates = strSliceField(tracker, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
+	// The connection keys (kind, endpoint, api_key, project_slug and the
+	// state lists) are parsed by the helper tracker.sync shares (#118). The
+	// Linear default endpoint applies only to kind linear, so GitHub users
+	// who omit endpoint: get the GitHub client's own default.
+	conn := parseTrackerConnection(tracker)
+	cfg.Tracker.Kind = conn.Kind
+	cfg.Tracker.Endpoint = conn.Endpoint
+	cfg.Tracker.APIKey = conn.APIKey
+	cfg.Tracker.ProjectSlug = conn.ProjectSlug
+	cfg.Tracker.ActiveStates = conn.ActiveStates
+	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
-	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
-	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" || cfg.Tracker.Kind == "local" {
-		defaultBacklog = []string{"Backlog"}
-	}
-	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
+	cfg.Tracker.CompletionState = conn.CompletionState
+	cfg.Tracker.BacklogStates = conn.BacklogStates
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
 	// #115: intField, not positiveIntField — an explicit 0 (no batching) is
@@ -877,6 +875,10 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		SafetyNetIntervalMs: positiveIntField(wh, "safety_net_interval_ms", DefaultTrackerWebhookSafetyNetMs),
 	}
 	if err := validateTrackerWebhooks(cfg.Tracker); err != nil {
+		return nil, err
+	}
+	cfg.Tracker.Sync = parseTrackerSync(tracker) // #118
+	if err := validateTrackerSync(cfg.Tracker); err != nil {
 		return nil, err
 	}
 	cc := nestedMap(tracker, "comment_commands")
