@@ -1524,6 +1524,9 @@ func (s *Server) routes() {
 			r.Post("/skills/fix", s.handleSkillsFix)
 			r.Get("/skills/analytics", s.handleSkillsAnalytics)
 			r.Get("/skills/analytics/recommendations", s.handleSkillsAnalyticsRecommendations)
+			// Backend-aware references (#123): editor check + profile backends.
+			r.Post("/skills/check-refs", s.handleSkillsCheckRefs)
+			r.Get("/skills/profile-backends", s.handleSkillsProfileBackends)
 
 			r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
