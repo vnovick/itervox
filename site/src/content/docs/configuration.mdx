@@ -1123,6 +1123,32 @@ Linear workflows skip the check.
 including no input at all, creates nothing. Pass `--yes` (or `-y`) to skip the
 prompt in CI. The token needs write access to the repository.
 
+### Tracker sync status in `itervox doctor`
+
+When a live daemon owns this project's `.itervox/HEARTBEAT.md`, `itervox
+doctor` prints its tracker sync status (#117) from the heartbeat's `## Sync`
+section — no API token needed:
+
+```text
+sync: store · last pull 2026-10-14T10:00:00Z (42s ago) · warns after 5m0s · pending writes 3 (urgent 1, batched 2, retrying 0, degraded 0, rate limited 0) · next push 2026-10-14T10:00:08Z
+```
+
+The lag is computed at doctor's own clock. Past the threshold it prints
+`WARNING: tracker sync lag 12m0s is past 5m0s — the board and dispatch are
+working from tracker data that old; last sync error: network at …: tracker
+unreachable (network error)`. It warns, too, when the daemon has never pulled
+and its pulls are failing. The threshold is three pull intervals and at least
+five minutes: 5 minutes at the default `tracker.store.sync_interval_ms`
+(60 s), 30 minutes with `tracker.webhooks` (10-minute safety net), and
+`polling.interval_ms` × 3 (at least 5 minutes) without the tracker store. It
+is not configurable. A lagging sync is a warning only: it does not change the
+exit code. The error is classified (`rate_limited`, `auth`, `not_found`,
+`api_status`, `graphql`, `timeout`, `network`, `canceled`, `unknown`) with a
+fixed summary, never the tracker's response. The heartbeat is rewritten when
+the sync status changes (a pull, a queued or delivered write), so its last
+pull time is at most one heartbeat interval (15 s) behind. The same status is
+on the dashboard's LiveOps strip and in `GET /api/v1/state` as `syncStatus`.
+
 ### Deployment preflight: `itervox doctor --deploy`
 
 `itervox doctor --deploy [--workflow PATH]` runs the normal doctor checks
@@ -1212,7 +1238,7 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 
 `itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter profile files. Commit `.itervox/agents/**`: those files are project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
 
-On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
+On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next push, last sync error), capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
 
 ---
 

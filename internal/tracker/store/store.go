@@ -134,9 +134,13 @@ type Store struct {
 	fileMu sync.Mutex
 	mu     sync.Mutex
 
-	synced     bool
-	syncedAt   time.Time
-	lastErr    error
+	synced   bool
+	syncedAt time.Time
+	lastErr  error
+	// lastErrAt and failures describe the run of failed pulls since the last
+	// good one (#117): when the newest failed and how many failed in a row.
+	lastErrAt  time.Time
+	failures   int
 	active     []string
 	issues     map[string]domain.Issue
 	candidates []string
@@ -520,6 +524,47 @@ func (s *Store) Status() (syncedAt time.Time, lastErr error) {
 	return s.syncedAt, s.lastErr
 }
 
+// SyncStatus is the store's sync state (#117), read by the snapshot, the
+// HEARTBEAT and through them `itervox doctor`.
+type SyncStatus struct {
+	// SyncedAt is when the store last pulled successfully (loaded from the
+	// store file after a restart); zero when it never has.
+	SyncedAt time.Time
+	// Cursor is the newest update time the tracker reported (#114); zero
+	// before the first full pull.
+	Cursor time.Time
+	// LastErr is the error of the newest failed pull, nil when the last pull
+	// succeeded. It is the tracker adapter's error: callers must classify it
+	// (tracker.ClassifyError) before showing it, never print it raw.
+	LastErr error
+	// LastErrAt is when LastErr happened; Failures counts the failed pulls
+	// since the last good one.
+	LastErrAt time.Time
+	Failures  int
+	// Interval is the periodic pull interval (Config.SyncInterval).
+	Interval time.Duration
+}
+
+// SyncStatus reports the store's sync state. Safe from any goroutine.
+func (s *Store) SyncStatus() SyncStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SyncStatus{
+		SyncedAt:  s.syncedAt,
+		Cursor:    s.cursor,
+		LastErr:   s.lastErr,
+		LastErrAt: s.lastErrAt,
+		Failures:  s.failures,
+		Interval:  s.cfg.SyncInterval,
+	}
+}
+
+// failLocked records a failed pull. Caller holds mu.
+func (s *Store) failLocked(err error) {
+	s.lastErr, s.lastErrAt = err, s.now()
+	s.failures++
+}
+
 // ensureSynced pulls once if the store has no data yet.
 func (s *Store) ensureSynced(ctx context.Context) error {
 	s.mu.Lock()
@@ -596,7 +641,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	}
 	if err != nil {
 		s.mu.Lock()
-		s.lastErr = err
+		s.failLocked(err)
 		s.fullNext = s.fullNext || forced
 		s.mu.Unlock()
 		return false, err
@@ -663,7 +708,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 			s.placeLocked(iss)
 		}
 	}
-	s.synced, s.syncedAt, s.lastErr = true, s.now(), nil
+	s.synced, s.syncedAt, s.lastErr, s.failures = true, s.now(), nil, 0
 	s.mu.Unlock()
 
 	s.persist()
@@ -696,7 +741,7 @@ func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher,
 	changed, gone, err := inc.FetchIssuesUpdatedSince(ctx, since)
 	if err != nil {
 		s.mu.Lock()
-		s.lastErr = err
+		s.failLocked(err)
 		s.mu.Unlock()
 		return false, err
 	}
@@ -750,7 +795,7 @@ func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher,
 	}
 	moved := !cursor.Equal(s.cursor)
 	s.cursor = cursor
-	s.synced, s.syncedAt, s.lastErr = true, s.now(), nil
+	s.synced, s.syncedAt, s.lastErr, s.failures = true, s.now(), nil, 0
 	s.mu.Unlock()
 	if dirty || moved {
 		s.persist()

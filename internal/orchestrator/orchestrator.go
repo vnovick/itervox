@@ -188,6 +188,9 @@ type Orchestrator struct {
 	loopIdleNano    atomic.Int64
 	tickStartedNano atomic.Int64
 	lastPollOK      atomic.Bool
+	// lastPollOKNano is when a candidate poll last succeeded (#117): the
+	// sync status's last pull when no tracker store is in front.
+	lastPollOKNano  atomic.Int64
 	pollRateLimited atomic.Bool
 	pollShedding    atomic.Bool
 	// draining mirrors State.Draining for off-loop readers (CORE-057).
