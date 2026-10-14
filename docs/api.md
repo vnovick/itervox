@@ -140,12 +140,16 @@ A token is never part of the output. Unknown values are `""` (or `0`).
 `0700`, file `0600`, the same object without `source`) once its socket is
 bound, rewrites it on every `WORKFLOW.md` reload, and removes it on shutdown
 together with `daemon.pid`, `dashboard_url` and `HEARTBEAT.md`.
-`status --json` lists a record only while its pid is alive and the project's
-`.itervox/daemon.pid` still names it, and deletes records that fail the check
-(a daemon killed with `SIGKILL` cannot remove its own). `itervox demo` writes
+`status --json` lists a record only while its pid is alive, the project's
+`.itervox/daemon.pid` still names it and — for a pid file written with the
+pid lock (every daemon since v0.2.1) — that lock is held, so a pid recycled
+by an unrelated process after a `SIGKILL` is not mistaken for the daemon.
+Records that fail the check are deleted (a daemon killed with `SIGKILL`
+cannot remove its own). All path fields are absolute; a relative
+`--logs-dir` is resolved against the daemon's working directory. `itervox demo` writes
 no record. Daemons started by an older binary are found by process scan:
 an `itervox` process whose working directory holds a `.itervox/daemon.pid`
-naming it; for those `version`, `commit` and `started_at` are `""`,
+naming it (and, for a lock-marked pid file, whose lock is held); for those `version`, `commit` and `started_at` are `""`,
 `token_source` is `unknown` and `token_required` is `true`.
 
 **Talk.** `GET {url}api/v1/health` needs no token; everything else under
