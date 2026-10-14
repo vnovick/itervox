@@ -39,8 +39,12 @@ describe('uiStore', () => {
       'rulesPreviewIssue',
       'rulesPreviewProfile',
       'rulesView',
+      'settingsLayer',
+      'settingsView',
       'timelineAutomationOnly',
     ]);
+    expect(state.settingsLayer).toBe('project');
+    expect(state.settingsView).toBe('form');
     expect(state.expandedRunningId).toBeNull();
     expect(state.expandedPausedId).toBeNull();
     expect(state.logsIssueSearch).toBe('');
