@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Menu-bar app: no Dock icon until a dashboard window is open. -->
+  <key>LSUIElement</key>
+  <true/>
+  <!-- Dashboards are served over plain HTTP by daemons on this Mac (or the
+       local network); allow that, and nothing else, past App Transport
+       Security. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>

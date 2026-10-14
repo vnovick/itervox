@@ -1,0 +1,100 @@
+---
+title: Mac app (menu bar)
+description: The Itervox menu-bar app for macOS — list every project's daemon, start, stop and restart them, get notified when an agent needs input or a run fails, and open each dashboard without a terminal.
+sidebar:
+  order: 3
+---
+
+The Itervox Mac app lives in the menu bar. It lists every project with a running daemon on your Mac, starts, stops and restarts daemons, raises a notification when an agent needs your input or a run fails, and opens a project's dashboard in a window. It needs no terminal: the daemon ships inside the app.
+
+It is a thin [Tauri](https://tauri.app/) shell: the app bundle contains the same `itervox` binary you run from a terminal, and each dashboard window shows the dashboard that project's daemon serves. Nothing about a project's configuration lives in the app.
+
+:::note
+This first version is built from source and unsigned. Signed, notarized downloads come later (#130).
+:::
+
+## Build it
+
+You need, once:
+
+- Xcode Command Line Tools: `xcode-select --install`
+- Rust: [rustup](https://rustup.rs/)
+- Go (the version in `go.mod`) and Node.js 20 with pnpm 10 — the same tools as for [building the daemon](/getting-started/)
+
+Then, in a checkout of the repository:
+
+```bash
+make desktop
+open desktop/src-tauri/target/release/bundle/macos/Itervox.app
+```
+
+`make desktop` builds the dashboard, the daemon for both Mac architectures (placed as the app's sidecar), installs the Tauri CLI on first use, and bundles `Itervox.app` and a `.dmg` for your Mac's architecture under `desktop/src-tauri/target/release/bundle/`. Copy the app to `/Applications` if you like.
+
+The app has no Dock icon: look for the **I//** mark in the menu bar.
+
+## Projects
+
+The menu lists, sorted by name:
+
+- every daemon `itervox status --all --json` reports — started by the app, from a terminal, or by launchd;
+- every project you added with **Add Project…** (choose its `WORKFLOW.md`), also while its daemon is stopped.
+
+Each project shows its state and running agents, for example `running · 2 agents · 1 needs input`. The list refreshes every 3 seconds. The number next to the menu-bar icon counts the issues waiting for your input across projects.
+
+For a daemon the app started, the app reads the state with that daemon's token. For a daemon started from a terminal, it uses the auto-generated token in the daemon's `token_file` when there is one (same user, mode `0600`). A daemon with a pinned `ITERVOX_API_TOKEN` shows **token required**: the app cannot read its state, and its dashboard asks for the token.
+
+## Start, stop, restart
+
+Each project's submenu has **Start**, **Stop** and **Restart**; the menu shows *starting…* or *stopping…* until the next refresh confirms the change.
+
+- **Start** runs the bundled daemon with `--workflow <path>` in the project directory, headless, with a freshly generated supervisor token (`ITERVOX_SUPERVISOR_TOKEN`, see [Running under a supervisor](/cli/#running-under-a-supervisor)). The token is stored in your login Keychain (service `dev.itervox.desktop.supervisor-token`, account = the `WORKFLOW.md` path) and never put on a command line or in a file. If the daemon exits during startup — an invalid `WORKFLOW.md`, a port in use — the project shows the last line it printed; **Show Daemon Output** opens the full output.
+- **Stop** sends `SIGTERM` to the daemon's registered pid. The daemon drains in-flight agent turns for up to `--shutdown-grace` (30 s by default) before it exits. If it is still draining after 45 s the project says so; choose **Stop** again to stop at once.
+- **Restart** is Stop, then Start.
+
+Daemons started by the app are detached: they keep running when you quit the app (**Quit Itervox** never stops an agent), and the app finds them again, and still holds their tokens, when it starts. A project you start or stop from the app stays in the list while stopped.
+
+Two projects whose `WORKFLOW.md` names the same `server.port` cannot run at once; leave `server.port` unset (`0`) to let each daemon pick a free port.
+
+## Notifications
+
+The app raises a notification when, in a project whose state it can read:
+
+- an issue starts **waiting for input** (an agent asked a question), or
+- an agent **run fails** (or stalls).
+
+Clicking the notification opens that issue in the project's dashboard (`<dashboard>/?issue=<identifier>`). The last few events are also listed under **Recent** in the menu. Only events that happen after the app started notify, each once, so relaunching the app or restarting a daemon does not replay old questions.
+
+The first notification may ask for permission; you can change it later in **System Settings → Notifications → Itervox**.
+
+## Dashboard windows
+
+**Open Dashboard** opens the project's dashboard in its own window (the Dock icon shows while a window is open). The app hands the window the daemon's token through a script that runs before the dashboard loads and only on the daemon's own address, which writes it where the dashboard keeps its token for the session. The token is never part of a URL, so it does not appear in the window's history, the daemon's request log, or a link you copy. The dashboard's `?token=` link form still works in a browser; the app does not need it.
+
+## No terminal needed
+
+A Mac app started from Finder or at login gets launchd's minimal `PATH`, which does not include `claude` or `codex` installed through Homebrew, nvm, asdf or volta. The daemon resolves `PATH` from your login shell when it was not started from a terminal ([Login-shell PATH](/cli/#login-shell-path)); `itervox status --json` reports `"path_source": "login_shell"` for such a daemon. The app itself does not use `PATH`: it runs the daemon bundled next to its own executable (`Itervox.app/Contents/MacOS/itervox`).
+
+## Files
+
+| Path | What |
+|---|---|
+| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added |
+| `~/Library/Logs/dev.itervox.desktop/daemons/` | Output of daemons the app started (the daemons' own logs stay under `~/.itervox/logs/`) |
+| Login Keychain, `dev.itervox.desktop.supervisor-token` | One supervisor token per project |
+
+## Troubleshooting
+
+- **See what the app sees.** Quit it and run `ITERVOX_DESKTOP_DEBUG=1 /Applications/Itervox.app/Contents/MacOS/itervox-desktop` in a terminal: every refresh prints each project's state and every notification.
+- **Keychain prompt after a rebuild.** An unsigned app gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**.
+- **"Itervox" cannot be opened** (a build copied from another Mac or downloaded from CI): the app is unsigned. Right-click it and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Itervox.app`.
+- **A project says token required.** Its daemon was started outside the app with a pinned `ITERVOX_API_TOKEN`. Stop it and start it from the app.
+
+## Development
+
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on Linux too; `app.rs` is the Tauri glue.
+
+```bash
+make desktop-test   # fmt, clippy -D warnings, unit tests, and end-to-end tests against a real daemon
+```
+
+The end-to-end tests start a real daemon the way the app does, list it, read its state with the supervisor token, restart and stop it, make a stand-in agent ask a question and check the notification link, and start a daemon with launchd's environment to check the login-shell `PATH`. To run the app against a daemon binary of your choice, set `ITERVOX_DESKTOP_DAEMON` to its absolute path.
