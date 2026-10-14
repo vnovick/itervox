@@ -892,6 +892,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	if cfg.Tracker.Outbox {
 		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
 		orch.SetOutbox(ob)
+		wireCoalescedPush(cfg, ob, tr) // #115
 	}
 
 	var agentSessionsDir string

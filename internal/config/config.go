@@ -212,6 +212,15 @@ type TrackerConfig struct {
 	// the orchestrator's completion/failed-state paths. Default true; set
 	// false as a kill switch to restore the old synchronous behavior.
 	Outbox bool
+	// PushIntervalMs is tracker.push_interval_ms (#115): how long a
+	// non-urgent outbox write waits for its issue's batch before it is
+	// pushed. Inside one batch only an issue's last state move is sent;
+	// comments keep their order. Urgent writes (input-required questions and
+	// replies, failure notices, operator comments) skip it. 0 pushes every
+	// write as soon as the flusher sees it; a negative value falls back to
+	// the default. Only used with Outbox on. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	PushIntervalMs int
 	// CommentCommands (#84) lets repository maintainers drive Itervox from
 	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
 	// GitHub only. Read once at startup.
@@ -226,6 +235,11 @@ type TrackerConfig struct {
 	// safety-net interval.
 	Webhooks TrackerWebhooksConfig
 }
+
+// DefaultTrackerPushIntervalMs is tracker.push_interval_ms when unset (#115):
+// long enough to fold a run's closing moves (completion state, review state)
+// into one write, short enough that the tracker trails the board by seconds.
+const DefaultTrackerPushIntervalMs = 10000
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
@@ -844,6 +858,12 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	// #115: intField, not positiveIntField — an explicit 0 (no batching) is
+	// meaningful; only a negative value falls back to the default.
+	cfg.Tracker.PushIntervalMs = intField(tracker, "push_interval_ms", DefaultTrackerPushIntervalMs)
+	if cfg.Tracker.PushIntervalMs < 0 {
+		cfg.Tracker.PushIntervalMs = DefaultTrackerPushIntervalMs
+	}
 	store := nestedMap(tracker, "store")
 	cfg.Tracker.Store = TrackerStoreConfig{
 		Enabled:            boolField(store, "enabled", true), // #132: on by default
