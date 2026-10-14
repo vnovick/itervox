@@ -27,6 +27,7 @@ libc = "0.2"
 # macOS Keychain on macOS; the crate also builds (unused) elsewhere, where the
 # app falls back to an in-memory token store.
 keyring = "4"
+tauri-plugin-updater = "2"
 
 [dev-dependencies]
 tempfile = "3"
