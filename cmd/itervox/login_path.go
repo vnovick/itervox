@@ -215,8 +215,7 @@ func userLoginShell(getenv func(string) string) string {
 func loginShellPATH(shell string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	script := "echo " + loginShellPATHMarker + "; printenv PATH; echo " + loginShellPATHMarker
-	cmd := exec.CommandContext(ctx, shell, "-l", "-i", "-c", script)
+	cmd := exec.CommandContext(ctx, shell, loginShellArgs(shell)...)
 	procgroup.Configure(cmd, time.Second)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // also a new group: Configure's Cancel still reaches it
 	out := &cappedBuffer{max: maxLoginShellOutput}
@@ -235,25 +234,69 @@ func loginShellPATH(shell string, timeout time.Duration) (string, error) {
 	return path, nil
 }
 
-// pathBetweenMarkers extracts the line between the first two marker lines.
-func pathBetweenMarkers(out []byte) (string, bool) {
-	var lines []string
-	inside := false
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == loginShellPATHMarker {
-			if inside {
-				path := strings.TrimSpace(strings.Join(lines, ""))
-				return path, path != ""
-			}
-			inside = true
-			continue
-		}
-		if inside {
-			lines = append(lines, line)
-		}
+// loginShellArgs is the argv (after the shell itself) that makes the user's
+// login shell print its PATH between two marker lines.
+//
+//   - sh-family shells (sh, bash, zsh, ksh, dash) and fish: `-l -i -c`.
+//     Login so ~/.profile, ~/.bash_profile, ~/.zprofile (and macOS's
+//     /etc/profile path_helper) run; interactive so ~/.zshrc / ~/.bashrc,
+//     where nvm and most version managers initialise, run too.
+//   - csh and tcsh: `-c` only. tcsh (which is what macOS ships as both
+//     /bin/csh and /bin/tcsh) accepts -l only as its sole argument, so
+//     `-l -i -c` is refused outright. A `-c` shell still reads
+//     /etc/csh.cshrc and ~/.tcshrc or ~/.cshrc; the login files a login shell
+//     would add — /etc/csh.login (macOS's path_helper) and ~/.login — are
+//     sourced explicitly before PATH is printed.
+func loginShellArgs(shell string) []string {
+	const printPATH = "echo " + loginShellPATHMarker + "; printenv PATH; echo " + loginShellPATHMarker
+	switch strings.TrimPrefix(filepath.Base(shell), "-") {
+	case "csh", "tcsh":
+		return []string{"-c", "if ( -r /etc/csh.login ) source /etc/csh.login\n" +
+			"if ( -r \"$HOME/.login\" ) source \"$HOME/.login\"\n" + printPATH}
+	default:
+		return []string{"-l", "-i", "-c", printPATH}
 	}
-	return "", false
+}
+
+// pathBetweenMarkers returns the bytes between the first two marker lines,
+// exactly as printed: only the newline that ends each protocol line is
+// removed. A PATH is never trimmed or re-joined, so a directory whose name
+// starts or ends with a space, or contains a newline, survives.
+func pathBetweenMarkers(out []byte) (string, bool) {
+	s := string(out)
+	begin := markerLineEnd(s, 0)
+	if begin < 0 {
+		return "", false
+	}
+	for from := begin; ; {
+		i := strings.Index(s[from:], "\n"+loginShellPATHMarker)
+		if i < 0 {
+			return "", false
+		}
+		end := from + i // the newline printenv wrote after PATH
+		rest := s[end+1+len(loginShellPATHMarker):]
+		if rest == "" || rest[0] == '\n' || strings.HasPrefix(rest, "\r\n") {
+			path := s[begin:end]
+			return path, path != ""
+		}
+		from = end + 1
+	}
+}
+
+// markerLineEnd returns the index just after the first line that is exactly
+// the marker (a trailing \r tolerated), searching from from; -1 if none.
+func markerLineEnd(s string, from int) int {
+	for from <= len(s) {
+		nl := strings.IndexByte(s[from:], '\n')
+		if nl < 0 {
+			return -1
+		}
+		if strings.TrimSuffix(s[from:from+nl], "\r") == loginShellPATHMarker {
+			return from + nl + 1
+		}
+		from += nl + 1
+	}
+	return -1
 }
 
 // mergePATH joins two PATH values, first's directories first, dropping

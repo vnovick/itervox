@@ -94,7 +94,10 @@ func TestLoginShellPATHIsBoundedInTime(t *testing.T) {
 // TestPathBetweenMarkersIgnoresRCNoise pins the parse of an interactive
 // shell's output: banners before, between-marker PATH, prompts after.
 func TestPathBetweenMarkersIgnoresRCNoise(t *testing.T) {
-	out := "Welcome!\n" + loginShellPATHMarker + "\r\n/opt/homebrew/bin:/usr/bin\r\n" + loginShellPATHMarker + "\n$ "
+	// The shell has no terminal, so lines end in \n; a \r after a marker
+	// is tolerated, but the PATH line is taken byte for byte (see
+	// TestPathBetweenMarkersPreservesPATHBytes).
+	out := "Welcome!\n" + loginShellPATHMarker + "\r\n/opt/homebrew/bin:/usr/bin\n" + loginShellPATHMarker + "\n$ "
 	if got, ok := pathBetweenMarkers([]byte(out)); !ok || got != "/opt/homebrew/bin:/usr/bin" {
 		t.Fatalf("pathBetweenMarkers = %q, %v", got, ok)
 	}

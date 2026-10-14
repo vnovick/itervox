@@ -112,6 +112,12 @@ func newDaemonRecord(workflowPath, addr, logsDir, token string, generated, super
 	host, portStr, _ := net.SplitHostPort(addr)
 	port, _ := strconv.Atoi(portStr)
 	exe, _ := os.Executable()
+	// Published paths are absolute, resolved against this process's working
+	// directory (where a relative --logs-dir lives), so a supervisor running
+	// elsewhere can use them.
+	if abs, err := filepath.Abs(logsDir); err == nil {
+		logsDir = abs
+	}
 	rec := daemonRecord{
 		SchemaVersion: daemonRecordSchemaVersion,
 		PID:           os.Getpid(),
@@ -172,15 +178,55 @@ func removeDaemonRegistryEntry() {
 	}
 }
 
-// registryRecordLive reports whether rec still describes a running daemon:
-// the pid is alive and the workflow's daemon.pid still names it. The second
-// check rejects a record left by a killed daemon whose pid was recycled.
-func registryRecordLive(rec daemonRecord) bool {
-	if rec.PID <= 0 || rec.Workflow == "" || !processAlive(rec.PID) {
-		return false
+// pidOwnership is what registryRecordLive learned about a record's pid.
+type pidOwnership int
+
+const (
+	pidOwned   pidOwnership = iota // the daemon is running
+	pidStale                       // the daemon is gone; the record may be pruned
+	pidUnknown                     // the pid lock could not be probed; skip, keep
+)
+
+// daemonPIDOwnership decides whether pid is still the daemon of workflow:
+// the pid is alive, the workflow's daemon.pid names it, and — for a pid file
+// carrying the flock marker (CORE-039) — the pid lock is held. The lock is
+// the only proof against a recycled pid: after a SIGKILL both files remain,
+// and an unrelated process that receives the pid passes the first two
+// checks. A pre-lock (unmarked) pid file keeps the pid-probe rule, as in
+// `itervox stop`. Probing a free lock holds it for an instant, exactly as
+// `itervox stop` does; a held lock is never touched.
+func daemonPIDOwnership(pid int, workflow string) pidOwnership {
+	if pid <= 0 || workflow == "" || !processAlive(pid) {
+		return pidStale
 	}
-	pid, _, _, err := readPIDFile(rec.Workflow)
-	return err == nil && pid == rec.PID
+	pidPath, err := pidFilePath(workflow)
+	if err != nil {
+		return pidStale
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return pidStale
+	}
+	rec, err := parsePIDRecord(data)
+	if err != nil || rec.pid != pid {
+		return pidStale
+	}
+	if !rec.locked {
+		return pidOwned
+	}
+	state, release, _ := probePIDLock(pidPath)
+	release()
+	switch state {
+	case lockHeldByOther:
+		return pidOwned
+	case lockFree:
+		return pidStale
+	default:
+		if !pidLockSupported {
+			return pidOwned // no flock here: the pid probe is all there is
+		}
+		return pidUnknown
+	}
 }
 
 // readDaemonRegistry returns the live records in dir and removes the stale
@@ -201,8 +247,15 @@ func readDaemonRegistry(dir string) []daemonRecord {
 			continue
 		}
 		var rec daemonRecord
-		if json.Unmarshal(data, &rec) != nil || !registryRecordLive(rec) {
+		if json.Unmarshal(data, &rec) != nil {
 			_ = os.Remove(path)
+			continue
+		}
+		switch daemonPIDOwnership(rec.PID, rec.Workflow) {
+		case pidStale:
+			_ = os.Remove(path)
+			continue
+		case pidUnknown:
 			continue
 		}
 		rec.Source = "registry"
@@ -223,7 +276,7 @@ func scannedDaemonRecord(pid int, cwd func(int) string) (daemonRecord, bool) {
 		return daemonRecord{}, false
 	}
 	recPID, recorded, _, err := readPIDFile(filepath.Join(dir, "WORKFLOW.md"))
-	if err != nil || recPID != pid {
+	if err != nil || recPID != pid || daemonPIDOwnership(pid, filepath.Join(dir, "WORKFLOW.md")) != pidOwned {
 		return daemonRecord{}, false
 	}
 	wf := recorded
