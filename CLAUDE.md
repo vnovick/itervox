@@ -290,8 +290,11 @@ domain ─────┬── tracker (interface + adapters: linear, github, l
             │            tracker/store is the local store, tracker/webhook the
             │            signed Linear/GitHub webhook receiver that refreshes
             │            it by issue — imports metrics, not store; #131)
-            │     └── tracker/store (local tracker store, #113: wraps a Linear
-            │         or GitHub adapter; imports tracker, domain, atomicfs)
+            │     ├── tracker/store (local tracker store, #113: wraps a Linear
+            │     │   or GitHub adapter; imports tracker, domain, atomicfs)
+            │     └── tracker/localsync (#118: two-way sync of kind: local
+            │         files with Linear or GitHub, off the event loop;
+            │         imports tracker, tracker/local, outbox, atomicfs)
             ├── prompt (Liquid template rendering)
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
