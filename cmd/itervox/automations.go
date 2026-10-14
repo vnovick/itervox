@@ -43,6 +43,11 @@ type automationPollState struct {
 	// fetch (see enteredFromUnpolledState). Zero polledAt: no poll yet.
 	states   []string
 	polledAt time.Time
+	// scope is the tracker's project filter during that poll
+	// (automationPollScope). An issue the previous poll did not list may
+	// only have been outside the filter then, so a scope change disables
+	// enteredFromUnpolledState for the next poll.
+	scope string
 }
 
 type compiledAutomationSet struct {
@@ -545,12 +550,21 @@ func pollAutomationEvents(
 	slices.SortFunc(issues, func(a, b domain.Issue) int {
 		return cmp.Compare(a.Identifier, b.Identifier)
 	})
+	// A project-filter change (dashboard or TUI, applied without a reload)
+	// makes issues visible that never moved: rebaseline instead of reading
+	// their first sighting as a move from an unpolled state. The scope is
+	// read after the fetch, so a change during it also rebaselines.
+	scope := automationPollScope(tr)
+	if scope != prev.scope {
+		prev.polledAt = time.Time{}
+	}
 
 	next := automationPollState{
 		issues:          make(map[string]observedAutomationIssue, len(issues)),
 		trackerComments: make(map[string]map[string]observedAutomationComment, len(prev.trackerComments)),
 		states:          states,
 		polledAt:        now,
+		scope:           scope,
 	}
 
 	detailCache := make(map[string]*domain.Issue)
@@ -796,6 +810,23 @@ func automationPollStates(cfg *config.Config, entries []compiledAutomation, acti
 		out = append(out, state)
 	}
 	return out
+}
+
+// automationPollScope identifies the tracker's runtime project filter, the
+// other input besides the state set that decides which issues the poll can
+// see. Trackers without one have a single, fixed scope.
+func automationPollScope(tr tracker.Tracker) string {
+	pm, ok := tr.(tracker.ProjectManager)
+	if !ok {
+		return ""
+	}
+	filter := pm.GetProjectFilter()
+	if filter == nil {
+		return "default"
+	}
+	sorted := slices.Clone(filter)
+	slices.Sort(sorted)
+	return "filter:" + strings.Join(sorted, "\x00")
 }
 
 // automationCreationMargin is how long before the previous poll an issue
