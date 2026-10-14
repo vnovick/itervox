@@ -611,8 +611,10 @@ Supported trigger types:
 - `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours` cap automated switching; reaching the cap suppresses switching rather than causing the trigger.
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
-Tracker event triggers are poll-derived, not webhook-derived. The automation
-loop runs every 15 seconds. `tracker_comment_added` compares only the latest
+Tracker event triggers are poll-derived, not webhook-derived. The event poll
+runs every `polling.automation_interval_ms` (default 15 seconds) and fetches only
+the states its rules need (see `polling.automation_interval_ms` in
+[configuration.md](configuration.md)). `tracker_comment_added` compares only the latest
 observed comment, so multiple comments between polls collapse to the latest
 comment for trigger purposes.
 

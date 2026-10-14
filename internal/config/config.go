@@ -289,7 +289,17 @@ type PollingConfig struct {
 	// An explicit 0 disables shedding entirely. Values >= 100 would shed
 	// permanently and are clamped to the default.
 	RateLimitReservePercent int
+	// AutomationIntervalMs is how often the automation event poll
+	// (tracker_comment_added, issue_entered_state, issue_moved_to_backlog)
+	// lists issues from the tracker (#155). The poll stretches it while the
+	// tracker's remaining request budget is low. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	AutomationIntervalMs int
 }
+
+// DefaultAutomationPollIntervalMs is polling.automation_interval_ms when
+// unset: the automation event poll's historical fixed 15s cadence.
+const DefaultAutomationPollIntervalMs = 15000
 
 // WorkspaceConfig holds workspace settings.
 type WorkspaceConfig struct {
@@ -863,6 +873,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	// intField, not positiveIntField: an explicit 0 is meaningful here (shed
 	// nothing) and must survive, exactly like escalate_blocked_after_hours.
 	cfg.Polling.RateLimitReservePercent = intField(polling, "rate_limit_reserve_percent", DefaultRateLimitReservePercent)
+	// #155: the automation event poll's cadence. Not under automations:,
+	// which is a list; a zero or negative value falls back to the default.
+	cfg.Polling.AutomationIntervalMs = positiveIntField(polling, "automation_interval_ms", DefaultAutomationPollIntervalMs)
 
 	// Workspace
 	ws := nestedMap(raw, "workspace")
