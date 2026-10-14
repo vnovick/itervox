@@ -592,3 +592,72 @@ func syncStore(t *testing.T, s *store.Store, clock *storeClock) {
 	cancel()
 	<-done
 }
+
+// scopedPollFake adds a runtime project filter to pollFake: issues outside
+// the filter are invisible to list reads, as with Linear's project filter.
+type scopedPollFake struct {
+	*pollFake
+	fmu     sync.Mutex
+	filter  []string
+	project map[string]string // issue ID → project slug
+}
+
+func (f *scopedPollFake) FetchIssuesByStates(ctx context.Context, states []string) ([]domain.Issue, error) {
+	issues, err := f.pollFake.FetchIssuesByStates(ctx, states)
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	if len(f.filter) == 0 {
+		return issues, err
+	}
+	var out []domain.Issue
+	for _, iss := range issues {
+		if slices.Contains(f.filter, f.project[iss.ID]) {
+			out = append(out, iss)
+		}
+	}
+	return out, err
+}
+
+func (f *scopedPollFake) FetchProjects(context.Context) ([]domain.Project, error) { return nil, nil }
+
+func (f *scopedPollFake) GetProjectFilter() []string {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	return slices.Clone(f.filter)
+}
+
+func (f *scopedPollFake) SetProjectFilter(slugs []string) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	f.filter = slices.Clone(slugs)
+}
+
+// TestAutomationPollProjectFilterChangeDoesNotFire: widening the runtime
+// project filter makes an issue visible that has sat in the trigger state all
+// along. That is not a move, so it does not fire; a real move on the next
+// poll still does.
+func TestAutomationPollProjectFilterChangeDoesNotFire(t *testing.T) {
+	cfg := pollTestConfig(enteredRule("qa-ready", "Ready for QA"))
+	base := newPollFake(cfg, pollIssue("1", "In Progress"), pollIssue("2", "Ready for QA"), pollIssue("3", "Todo"))
+	tr := &scopedPollFake{pollFake: base, filter: []string{"a"},
+		project: map[string]string{"id-1": "a", "id-2": "b", "id-3": "b"}}
+	orch, runner, ctx := runPollOrchestrator(t, cfg, tr)
+
+	entries := compileAutomations(cfg).polledEvents
+	start := time.Now()
+	state := pollAutomationEvents(ctx, cfg, tr, orch, entries, automationPollState{issues: map[string]observedAutomationIssue{}}, cfg.Tracker.ActiveStates, start)
+	tr.SetProjectFilter([]string{"a", "b"}) // ENG-2 and ENG-3 become visible
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, start.Add(15*time.Second))
+	time.Sleep(150 * time.Millisecond)
+	assert.Empty(t, runner.fired(), "ENG-2 only became visible; it did not move")
+
+	base.move("id-1", "Ready for QA")
+	base.move("id-3", "Ready for QA")
+	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, start.Add(30*time.Second))
+	require.Eventually(t, func() bool { return len(runner.fired()) == 2 }, 5*time.Second, 25*time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, []string{
+		"fired:ENG-1 prev=In Progress now=Ready for QA",
+		"fired:ENG-3 prev=Todo now=Ready for QA",
+	}, runner.fired())
+}
