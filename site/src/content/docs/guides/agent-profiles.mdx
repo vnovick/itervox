@@ -24,6 +24,10 @@ Each profile card shows:
 
 Below the configured profiles, **starter templates** (Code Reviewer, QA Engineer, Input Responder) let you bootstrap common profiles with one click. Editing a schema `2` profile in the dashboard writes the profile's `SOUL.md` and `INSTRUCTIONS.md` files separately; the old inline `prompt` field is compatibility-only.
 
+### The prompt editor
+
+The SOUL, INSTRUCTIONS and automation instruction fields are a code editor (CodeMirror 6). It highlights Markdown (headings, inline code and fenced blocks, emphasis, links, quotes, list markers) and Liquid: `{{ … }}` objects and `{% … %}` tags are tinted so a template reads apart from the prose around it. Long lines wrap. Undo and redo (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z) keep the editor's own history, and Ctrl/Cmd+F opens search and replace inside the editor. Colours follow the dashboard's light or dark theme. **Write** and **Preview** work as before, and saving writes exactly the text in the editor. The editor loads the first time a prompt field opens, so the rest of the dashboard does not pay for it; the text shows read-only for that moment.
+
 ### Autocomplete in the prompt editor
 
 The SOUL, INSTRUCTIONS and automation instruction editors suggest what you can reference as you type:
@@ -34,7 +38,7 @@ The SOUL, INSTRUCTIONS and automation instruction editors suggest what you can r
 | `{{` | The Liquid variables profile prompts get: `issue.*`, `attempt` and `run.*` (automation instructions also get `trigger.*`) | The variable, and a closing ` }}` when there is none |
 | `\|` inside `{{ … }}` | Common Liquid filters (`default`, `downcase`, `replace`, `join`, …) | The filter name |
 
-Use the arrow keys to move through the list, Enter to insert, and Escape to close it (a second Escape closes the dialog). Tab still moves focus. Moving the caret away closes the list, and Enter then types a newline. The list is announced to screen readers with the number of suggestions. Skills and subagents come from the inventory scan: if the editor opened before the daemon's first scan finished, click **Re-scan** (or **Run first scan**) on the Skills card, or reopen the page, to see them. A plugin skill with the same name as a project or user skill is listed once.
+Use the arrow keys to move through the list, Enter (or a click) to insert, and Escape to close it (a second Escape closes the dialog). Ctrl+Space opens the list where you are. Tab still moves focus. A suggestion's description shows beside the list. Moving the caret away closes the list, and Enter then types a newline. The list is announced to screen readers with the number of suggestions. Skills and subagents come from the inventory scan: if the editor opened before the daemon's first scan finished, click **Re-scan** (or **Run first scan**) on the Skills card, or reopen the page, to see them. A plugin skill with the same name as a project or user skill is listed once.
 
 ## How profiles work
 

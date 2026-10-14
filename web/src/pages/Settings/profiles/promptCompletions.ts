@@ -1,6 +1,7 @@
 // Suggestion logic for the prompt editor's autocomplete (#87): which
 // completion context the caret is in, what to suggest, and how a choice is
-// inserted. Pure functions; the component only wires them to a textarea.
+// inserted. Pure functions; the CodeMirror editor (#122) only wires them to
+// @codemirror/autocomplete (see promptEditor/promptAutocomplete.ts).
 
 import type { SkillsInventory } from '../../../types/schemas';
 
@@ -199,14 +200,25 @@ const WORD_AFTER: Record<CompletionContext['kind'], RegExp> = {
   filter: /^\w*/,
 };
 
-/** Inserts item for ctx, returning the new text and caret. */
-export function applyCompletion(
+/** One edit: replace [from, to) with insert, then put the caret at caret. */
+export interface CompletionEdit {
+  from: number;
+  to: number;
+  insert: string;
+  caret: number;
+}
+
+/**
+ * The edit that inserts item for ctx: what replaces which range, and where
+ * the caret lands. The editor applies it as one transaction.
+ */
+export function completionEdit(
   text: string,
   caret: number,
   ctx: CompletionContext,
   item: Completion,
   selectionEnd = caret,
-): { text: string; caret: number } {
+): CompletionEdit {
   let insert = item.label;
   // Replace the selection and the rest of the word the caret is in, so a
   // caret inside `/td|d` or `{{ |issue.ti` never leaves the old text behind.
@@ -222,6 +234,20 @@ export function applyCompletion(
   } else if (!/^\s/.test(after)) {
     insert += ' ';
   }
-  const next = text.slice(0, ctx.start) + insert + after;
-  return { text: next, caret: ctx.start + insert.length };
+  return { from: ctx.start, to: end + word.length, insert, caret: ctx.start + insert.length };
+}
+
+/** Inserts item for ctx, returning the new text and caret. */
+export function applyCompletion(
+  text: string,
+  caret: number,
+  ctx: CompletionContext,
+  item: Completion,
+  selectionEnd = caret,
+): { text: string; caret: number } {
+  const edit = completionEdit(text, caret, ctx, item, selectionEnd);
+  return {
+    text: text.slice(0, edit.from) + edit.insert + text.slice(edit.to),
+    caret: edit.caret,
+  };
 }

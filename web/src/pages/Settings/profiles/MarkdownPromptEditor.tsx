@@ -1,10 +1,13 @@
-import { useDeferredValue, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useDeferredValue, useMemo, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { proseClass } from '../../../utils/format';
 import { fieldLabelCls, helperTextCls, textareaCls } from '../formStyles';
-import { PromptAutocompleteTextarea } from './PromptAutocompleteTextarea';
 import { PROFILE_VARIABLES, type Completion } from './promptCompletions';
+
+// CodeMirror lives in its own chunk, fetched the first time a prompt editor
+// opens (#122), so it stays out of the main bundle.
+const PromptCodeEditor = lazy(() => import('./promptEditor/PromptCodeEditor'));
 
 interface MarkdownPromptEditorProps {
   value: string;
@@ -54,14 +57,26 @@ export function MarkdownPromptEditor({
       </div>
 
       {tab === 'write' ? (
-        <PromptAutocompleteTextarea
-          value={value}
-          onChange={onChange}
-          label={label}
-          variables={variables}
-          placeholder={placeholder}
-          className={`${textareaCls} min-h-[420px] text-[13px] leading-6`}
-        />
+        <Suspense
+          fallback={
+            // Shows the text read-only while the editor chunk loads.
+            <textarea
+              readOnly
+              aria-busy="true"
+              aria-label={`${label} (loading editor)`}
+              value={value}
+              className={`${textareaCls} min-h-[420px] text-[13px] leading-6`}
+            />
+          }
+        >
+          <PromptCodeEditor
+            value={value}
+            onChange={onChange}
+            label={label}
+            variables={variables}
+            placeholder={placeholder}
+          />
+        </Suspense>
       ) : (
         <div className="border-theme-line bg-theme-panel min-h-[420px] rounded-[var(--radius-sm)] border p-4">
           {preview ? (
