@@ -73,6 +73,12 @@ export const promptTheme = EditorView.theme({
   '.cm-completionDetail': { color: 'var(--muted)', fontStyle: 'normal', marginLeft: '0.75em' },
   '.cm-completionInfo': { fontFamily: 'var(--font-sans)', fontSize: '12px', maxWidth: '20rem' },
 
+  // Reference check (#123): hover message and lint panel
+  '.cm-tooltip-lint': { maxWidth: '28rem' },
+  '.cm-diagnostic': { fontFamily: 'var(--font-sans)', fontSize: '12px', padding: '6px 10px' },
+  '.cm-diagnostic-warning': { borderLeftColor: 'var(--warning-text)' },
+  '.cm-diagnostic-info': { borderLeftColor: 'var(--muted)' },
+
   // Search panel
   '.cm-panels': { backgroundColor: 'var(--panel)', color: 'var(--text)' },
   '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--line)' },

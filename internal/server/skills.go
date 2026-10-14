@@ -32,6 +32,15 @@ type SkillsClient interface {
 	// AnalyticsRecommendations returns the recommend-analytics output
 	// (T-101) keyed off the same blend.
 	AnalyticsRecommendations() []skills.Recommendation
+	// CheckPromptRefs runs the #86 reference validator over one draft prompt
+	// for a profile with the given command/backend (#123). It returns the
+	// backend the profile resolves to and every reference occurrence. ok is
+	// false before the first inventory scan.
+	CheckPromptRefs(req PromptRefCheckRequest) (result PromptRefCheck, ok bool)
+	// ProfileBackends maps every configured profile to the backend it runs on
+	// ("claude" | "codex"), resolved the way the runner resolves it, plus the
+	// workflow default under the "" key (#123).
+	ProfileBackends() map[string]string
 }
 
 // noopSkillsClient is the fallback when the orchestrator hasn't wired a
@@ -44,6 +53,10 @@ func (noopSkillsClient) Issues() []skills.InventoryIssue                    { re
 func (noopSkillsClient) ApplyFix(context.Context, string, skills.Fix) error { return errNotConfigured }
 func (noopSkillsClient) Analytics() *skills.AnalyticsSnapshot               { return nil }
 func (noopSkillsClient) AnalyticsRecommendations() []skills.Recommendation  { return nil }
+func (noopSkillsClient) CheckPromptRefs(PromptRefCheckRequest) (PromptRefCheck, bool) {
+	return PromptRefCheck{}, false
+}
+func (noopSkillsClient) ProfileBackends() map[string]string { return nil }
 
 // handleSkillsInventory returns the cached inventory as JSON. 503 when no
 // scan has completed yet.

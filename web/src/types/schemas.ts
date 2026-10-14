@@ -1003,6 +1003,16 @@ export const SubagentSchema = z.object({
   ApproxTokens: z.number(),
 });
 
+// Codex custom prompt from ~/.codex/prompts/*.md, run as /prompts:<name> (#123).
+export const PromptSchema = z.object({
+  Name: z.string(),
+  Description: z.string().optional(),
+  Provider: z.string(),
+  Source: z.string(),
+  FilePath: z.string().optional(),
+  ApproxTokens: z.number(),
+});
+
 export const InstructionDocSchema = z.object({
   Name: z.string(),
   Provider: z.string(),
@@ -1082,6 +1092,7 @@ export const InventorySchema = z.object({
   Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
   Subagents: z.array(SubagentSchema).nullable().optional(),
+  Prompts: z.array(PromptSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
   Hooks: z.array(HookEntrySchema).nullable().optional(),
@@ -1091,6 +1102,36 @@ export const InventorySchema = z.object({
   // Phase-2/Phase-3 features land in the frontend.
 });
 
+// POST /api/v1/skills/check-refs (#123): the #86 reference validator run
+// over one draft prompt. Mirrors internal/server/skills_refs.go
+// promptRefCheckResponse / promptRefRow. from/to are UTF-16 offsets.
+export const PromptRefRowSchema = z.object({
+  kind: z.string(),
+  name: z.string(),
+  from: z.number(),
+  to: z.number(),
+  status: z.string(), // "ok" | "missing" | "outside_repo"; unknown values are treated as ok
+  severity: z.string().optional(),
+  issueId: z.string().optional(),
+  message: z.string().optional(),
+});
+
+export const PromptRefCheckSchema = z.object({
+  backend: z.string(),
+  sshHosts: z.array(z.string()).nullable().optional(),
+  refs: z.array(PromptRefRowSchema).nullable().optional(),
+});
+
+// GET /api/v1/skills/profile-backends (#123).
+export const ProfileBackendsSchema = z.object({
+  default: z.string(),
+  profiles: z.record(z.string(), z.string()),
+});
+
+export type PromptRefRow = z.infer<typeof PromptRefRowSchema>;
+export type PromptRefCheck = z.infer<typeof PromptRefCheckSchema>;
+export type ProfileBackends = z.infer<typeof ProfileBackendsSchema>;
+export type CodexPrompt = z.infer<typeof PromptSchema>;
 export type Skill = z.infer<typeof SkillSchema>;
 export type Subagent = z.infer<typeof SubagentSchema>;
 export type InstructionDocEntry = z.infer<typeof InstructionDocSchema>;
