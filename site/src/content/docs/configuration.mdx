@@ -668,6 +668,9 @@ previous poll, now sits in a state that poll fetched, and was created more than
 a minute before it, has moved. Its `{{ trigger.previous_state }}` is then
 empty, since the poll never saw it. A move from an active state reports its
 previous state as before. An issue created in the trigger state does not fire.
+Neither does an issue that only became visible because the runtime project
+filter (dashboard or TUI) changed: the first poll after a filter change takes a
+fresh baseline instead of inferring moves.
 
 `tracker_comment_added` watches comments only on the issues the poll lists, so
 a rule without `filter.states` no longer watches comments on backlog or
