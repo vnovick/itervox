@@ -14,11 +14,13 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuil
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::app_remote::RemoteShared;
 use crate::client;
 use crate::dashboard::{origin_of, token_init_script, window_label};
 use crate::menu::{build_menu, MenuAction, MenuEntry, MenuSpec};
 use crate::model::{token_for, Core, NotificationTargets, PendingOp, REFRESH_INTERVAL};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
+use crate::remote::is_remote_key;
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
 
@@ -33,13 +35,18 @@ struct Shared {
     output_dir: PathBuf,
     menu_actions: Mutex<HashMap<String, MenuAction>>,
     targets: Mutex<NotificationTargets>,
-    /// Per project: the label of its dashboard window and the token that
-    /// window was created with.
-    windows: Mutex<HashMap<String, (String, Option<String>)>>,
+    /// Per project: the label of its dashboard window and the token and
+    /// origin that window was created with.
+    windows: Mutex<HashMap<String, WindowEntry>>,
     window_generation: std::sync::atomic::AtomicU32,
     status_error: Mutex<Option<String>>,
     wake: Mutex<Sender<()>>,
+    /// Remote connections and their tunnels (#156).
+    remote: Arc<RemoteShared>,
 }
+
+/// A dashboard window: label, token, origin.
+type WindowEntry = (String, Option<String>, Option<String>);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -78,7 +85,7 @@ pub fn run() {
             ..
         } => {
             if let Some(shared) = app.try_state::<Arc<Shared>>() {
-                lock(&shared.windows).retain(|_, (l, _)| *l != label);
+                lock(&shared.windows).retain(|_, (l, _, _)| *l != label);
             }
             #[cfg(target_os = "macos")]
             if app.webview_windows().is_empty() {
@@ -116,8 +123,16 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         std::env::var_os(supervisor::DAEMON_OVERRIDE_ENV),
     ));
     let (wake_tx, wake_rx) = mpsc::channel();
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (remote, tunnel_rx, remote_err) = RemoteShared::load(&config_dir, since);
+    if let Some(e) = remote_err {
+        error_dialog(app, &e);
+    }
     let shared = Arc::new(Shared {
-        core: Mutex::new(Core::new(saved)),
+        core: Mutex::new(Core::with_since(saved, since)),
         tokens: platform_store(),
         sidecar,
         projects_file,
@@ -128,8 +143,16 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         window_generation: std::sync::atomic::AtomicU32::new(0),
         status_error: Mutex::new(None),
         wake: Mutex::new(wake_tx),
+        remote,
     });
     app.manage(Arc::clone(&shared));
+    // A tunnel that comes up or goes down is shown, and read, at once.
+    let tunnel_shared = Arc::clone(&shared);
+    shared
+        .remote
+        .spawn_tunnel_thread(log_dir.join("tunnels"), tunnel_rx, move || {
+            wake(&tunnel_shared)
+        })?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     let tray_shared = Arc::clone(&shared);
@@ -218,7 +241,9 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
             .collect();
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
-    let outcome = lock(&shared.core).apply(records, states, Instant::now());
+    let mut outcome = lock(&shared.core).apply(records, states, Instant::now());
+    let (remote_alerts, remote_changed) = shared.remote.refresh();
+    outcome.alerts.extend(remote_alerts);
     let status_changed = {
         let mut cur = lock(&shared.status_error);
         let changed = *cur != outcome.status_error;
@@ -242,7 +267,7 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
             eprintln!("itervox desktop: alert {} -> {}", a.title(), a.url);
         }
     }
-    if !outcome.diff.is_empty() || !outcome.alerts.is_empty() || status_changed {
+    if !outcome.diff.is_empty() || !outcome.alerts.is_empty() || status_changed || remote_changed {
         update_menu(app, shared);
     }
     for alert in &outcome.alerts {
@@ -262,7 +287,13 @@ fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
     let spec = {
         let core = lock(&shared.core);
         let status_error = lock(&shared.status_error).clone();
-        build_menu(core.views(), core.recent_alerts(), status_error.as_deref())
+        let remotes = shared.remote.views();
+        build_menu(
+            core.views(),
+            &remotes,
+            core.recent_alerts(),
+            status_error.as_deref(),
+        )
     };
     let app2 = app.clone();
     let shared2 = Arc::clone(shared);
@@ -371,9 +402,56 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
             open_path(&log);
         }
         MenuAction::AddProject => add_project(app, shared),
+        MenuAction::AddRemote => remote_op(app, shared, |r| r.add_flow()),
+        MenuAction::RemoteToken(key) => {
+            remote_op(app, shared, move |r| r.token_flow(&key).map(|()| None))
+        }
+        MenuAction::Rediscover(id) => {
+            remote_op(app, shared, move |r| r.rediscover_flow(&id).map(|()| None))
+        }
+        MenuAction::Reconnect(id) => shared.remote.reconnect(&id),
+        MenuAction::RemoveRemote(id) => {
+            if let Err(e) = shared.remote.remove(&id) {
+                error_dialog(app, &format!("Could not save the remote list: {e}"));
+            }
+            wake(shared);
+        }
         MenuAction::RefreshNow => wake(shared),
-        MenuAction::Quit => app.exit(0),
+        MenuAction::Quit => {
+            // Tunnels belong to the app (unlike the daemons): stop them.
+            shared.remote.shutdown();
+            app.exit(0)
+        }
     }
+}
+
+/// Runs a remote flow (prompts, ssh/gcloud) off the main thread; an error
+/// shows in a dialog, a message in a notification.
+fn remote_op(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    op: impl FnOnce(&RemoteShared) -> Result<Option<String>, String> + Send + 'static,
+) {
+    let app2 = app.clone();
+    let shared2 = Arc::clone(shared);
+    let _ = std::thread::Builder::new()
+        .name("itervox-remote".into())
+        .spawn(move || {
+            match op(&shared2.remote) {
+                Ok(Some(msg)) => {
+                    let _ = app2
+                        .notification()
+                        .builder()
+                        .title("Itervox")
+                        .body(msg)
+                        .show();
+                }
+                Ok(None) => {}
+                Err(e) => error_dialog(&app2, &e),
+            }
+            update_menu(&app2, &shared2);
+            wake(&shared2);
+        });
 }
 
 fn open_path(path: &Path) {
@@ -526,6 +604,19 @@ fn stop_daemon(shared: &Shared, key: &str) -> Result<(), String> {
 
 /// Opens (or focuses and navigates) the dashboard window of a project.
 fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<String>) {
+    if is_remote_key(key) {
+        // Through the daemon's tunnel, with the same token handoff.
+        match shared.remote.dashboard(key, url.as_deref()) {
+            Ok((t, title)) => {
+                if let Ok(parsed) = tauri::Url::parse(&t.url) {
+                    let origin = Some(t.origin);
+                    open_window(app, shared, key, parsed, origin, t.token, title);
+                }
+            }
+            Err(e) => error_dialog(app, &e),
+        }
+        return;
+    }
     let rec = lock(&shared.core)
         .last_records()
         .iter()
@@ -545,21 +636,36 @@ fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<
         .view(key)
         .map(|v| format!("{} — Itervox", v.name))
         .unwrap_or_else(|| "Itervox".into());
+    open_window(app, shared, key, parsed, origin_of(&base), token, title);
+}
+
+/// Shows a dashboard window for `key` at `url`, handing it `token` on
+/// `origin` through the initialization script.
+fn open_window(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    key: &str,
+    parsed: tauri::Url,
+    origin: Option<String>,
+    token: Option<String>,
+    title: String,
+) {
     let app2 = app.clone();
     let shared2 = Arc::clone(shared);
     let key = key.to_string();
     let _ = app.run_on_main_thread(move || {
         let mut windows = lock(&shared2.windows);
-        if let Some((label, held)) = windows.get(&key) {
+        if let Some((label, held, held_origin)) = windows.get(&key) {
             if let Some(w) = app2.get_webview_window(label) {
-                if *held == token {
+                if *held == token && *held_origin == origin {
                     let _ = w.navigate(parsed);
                     let _ = w.show();
                     let _ = w.set_focus();
                     return;
                 }
-                // The daemon restarted with a new token: the window's
-                // initialization script is stale, so replace the window.
+                // The daemon restarted with a new token, or its tunnel
+                // moved to another port: the window's initialization script
+                // is stale, so replace the window.
                 let _ = w.destroy();
             }
         }
@@ -573,12 +679,12 @@ fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<
             .title(&title)
             .inner_size(1280.0, 860.0)
             .min_inner_size(720.0, 480.0);
-        if let (Some(t), Some(origin)) = (&token, origin_of(&base)) {
-            b = b.initialization_script(token_init_script(&origin, t));
+        if let (Some(t), Some(origin)) = (&token, origin.as_deref()) {
+            b = b.initialization_script(token_init_script(origin, t));
         }
         match b.build() {
             Ok(w) => {
-                windows.insert(key, (label, token));
+                windows.insert(key, (label, token, origin));
                 let _ = w.set_focus();
             }
             Err(e) => eprintln!("itervox desktop: could not open the dashboard: {e}"),
