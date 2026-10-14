@@ -1210,6 +1210,77 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 
 ---
 
+## Rules (layered JSONC)
+
+Rules are short instructions every agent run follows: "always use pnpm", "keep pull requests small". Write one once and it reaches every worker, reviewer and dependency-analyzer run, on every project and daemon that reads the file. They come from three JSONC files (comments and trailing commas are fine):
+
+| Layer | File | Committed |
+|-------|------|-----------|
+| `user` | `~/.itervox/rules.json` (or the path in `ITERVOX_USER_RULES`; `off` disables it) | never |
+| `project` | `.itervox/rules.json` next to `WORKFLOW.md` | yes |
+| `local` (project local) | `.itervox/rules.local.json` next to `WORKFLOW.md` | no (gitignored) |
+
+```jsonc
+// .itervox/rules.json
+{
+  "$schema": "https://itervox.dev/schema/rules.schema.json",
+  "rules": [
+    {"id": "pnpm", "severity": "must", "text": "Use pnpm, never npm or yarn."},
+    {
+      "id": "small-prs",
+      "severity": "should",
+      "text": "Keep each pull request under about 400 changed lines.",
+      "description": "Reviews of large PRs stall.", // shown in the editor, not sent to the agent
+      "scope": {"profiles": ["implementer"], "backends": ["claude", "codex"]},
+    },
+  ],
+}
+```
+
+Each rule has:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `id` | yes | Letters, digits, `.`, `_`, `-` (64 at most), unique within the file (case-insensitive). A later layer's rule with the same id replaces this one. |
+| `severity` | yes | `must` (a requirement) or `should` (a strong default the agent may depart from with a stated reason). |
+| `text` | yes | The instruction the agent is given. |
+| `description` | no | Why the rule exists. Shown in the editor; not sent to the agent. |
+| `scope.projects` | no | The project: the name of the directory holding `WORKFLOW.md`, or a `tracker.project_slug` entry. |
+| `scope.profiles` | no | Agent profile names. A run without a named profile is `default`. |
+| `scope.backends` | no | Agent backends (`claude`, `codex`). |
+
+A missing or empty scope list matches every run; entries match case-insensitively and may use `*` and `?` (`"projects": ["web-*"]`). A rule applies when all its lists match. The JSON Schema is published at [`https://itervox.dev/schema/rules.schema.json`](https://itervox.dev/schema/rules.schema.json) (`site/public/schema/rules.schema.json`); point `$schema` at it for completion and checks in your editor.
+
+**Merging.** At every dispatch the daemon reads the three files again, so an edit applies to the next run with no restart. Layers merge in the order user < project < local: a rule replaces a lower layer's rule with the same id, in place. A **user `must` rule** is the exception: no later layer can override it. A project or local rule with its id is ignored, and the conflict is reported in the run's log (`rules: the project rule "pnpm" was ignored: …`), in the daemon log, and in the editor's preview. A file that does not parse, or breaks a rule above, is skipped with the same reports, and the other layers still apply.
+
+**Injection.** The rules in scope for the run's project, profile and backend are rendered as one block, must rules first:
+
+```markdown
+## Rules
+
+The operator set these rules for every run. A must rule is a requirement. A should rule is a strong default: depart from it only with a reason you state in your handoff.
+
+### Must
+
+- Use pnpm, never npm or yarn. (pnpm)
+
+### Should
+
+- Keep each pull request under about 400 changed lines. (small-prs)
+```
+
+It goes ahead of the profile's SOUL.md and INSTRUCTIONS.md, for workers, reviewers and automation runs, and at the top of the dependency analyzer's prompt. With no rule in scope, nothing is added.
+
+**Placing the rules yourself.** A template can print the rules where it wants them: `{{ rules }}` prints the whole block, `{{ rules.must }}` and `{{ rules.should }}` print just that severity's list, and `rules.ids` and `rules.hash` describe the set. When the workflow prompt (or the reviewer prompt), the profile's SOUL.md or INSTRUCTIONS.md, or an automation's instructions print `rules` or one of its fields, the run gets no automatic block, so the rules never appear twice. (The dependency analyzer's files are not rendered as Liquid; it always gets the block.)
+
+**Per-run record.** Each run records the rule set it used: `rulesHash` (a hash of the rules' ids, severities and texts, in prompt order) and `ruleIds` on its running row and in run history (`/api/v1/state`), empty when no rule applied. Two runs with the same hash were given the same rules.
+
+**Rules editor.** The dashboard's **Rules** page has a tab per layer. The form view edits rules field by field; its save rewrites only the rules and fields that changed, through the same comment-preserving JSONC writer as the settings files, so comments elsewhere in the file stay. The JSON view edits the file as text, checks it against the schema as you type, and saves it exactly as written. A missing file is created on the first save. A save made after the file changed on disk (another tab, an editor) is refused and the page reloads the file. The preview panel shows the effective rules for a profile and an issue (the issue's profile and backend overrides apply), with conflicts and broken layers.
+
+**Git.** `itervox init` and `itervox init --update` keep `.itervox/rules.json` committable (a `!/rules.json` carve-out in `.itervox/.gitignore`, and `!.itervox/rules.json` in a root `.gitignore` that hides `.itervox/`) and add `.itervox/rules.local.json` to the root `.gitignore`.
+
+---
+
 ## `.itervox` project files
 
 `itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter profile files. Commit `.itervox/agents/**`: those files are project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
@@ -1240,6 +1311,7 @@ The body of `WORKFLOW.md` (everything after the closing `---`) is a [Liquid](htt
 | `created_at` | string | Issue creation timestamp (ISO 8601). |
 | `updated_at` | string | Issue last update timestamp (ISO 8601). |
 | `attempt` | int\|null | Current retry attempt number. `null` on the first attempt. |
+| `rules` | object | The run's [rules](#rules-layered-jsonc). `{{ rules }}` prints the `## Rules` block; `rules.must` and `rules.should` print one severity's list; `rules.ids` and `rules.hash` describe the set. Printing it turns off the automatic block. Also available in SOUL.md, INSTRUCTIONS.md and automation instructions. |
 
 ### Example template
 

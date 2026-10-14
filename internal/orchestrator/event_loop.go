@@ -2822,6 +2822,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.SessionID = liveEntry.SessionID
 		run.AutomationID = liveEntry.AutomationID
 		run.TriggerType = liveEntry.TriggerType
+		run.RulesHash = liveEntry.RulesHash
+		run.RuleIDs = liveEntry.RuleIDs
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the
