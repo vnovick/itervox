@@ -107,11 +107,6 @@ impl Fixture {
         let proj = tmp.path().join("proj");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&proj).unwrap();
-        run(Command::new(&bin)
-            .args(["init", "--tracker", "local"])
-            .current_dir(&proj)
-            .env("HOME", &home));
-        let workflow = proj.join("WORKFLOW.md");
         let fake = tmp.path().join("fake").join("claude");
         std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
         std::fs::write(&fake, FAKE_CLAUDE).unwrap();
@@ -119,6 +114,22 @@ impl Fixture {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // `itervox init` checks that the claude CLI runs; CI runners have
+        // none, so the fake answers its `--version` from the front of PATH.
+        let init_path = std::env::join_paths(
+            std::iter::once(fake.parent().unwrap().to_path_buf()).chain(
+                std::env::var_os("PATH")
+                    .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            ),
+        )
+        .unwrap();
+        run(Command::new(&bin)
+            .args(["init", "--tracker", "local"])
+            .current_dir(&proj)
+            .env("HOME", &home)
+            .env("PATH", &init_path));
+        let workflow = proj.join("WORKFLOW.md");
         let wf = std::fs::read_to_string(&workflow).unwrap();
         let wf = wf
             .replace(
