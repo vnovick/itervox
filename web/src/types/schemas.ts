@@ -134,6 +134,9 @@ export const RunningRowSchema = z.object({
   triggerType: z.string().optional(),
   // Reviewer/comment-count surface (T-6). Absent when zero.
   commentCount: z.number().optional(),
+  // #157 — the rule set the run was given; absent when no rule applied.
+  rulesHash: z.string().optional(),
+  ruleIds: z.array(z.string()).optional(),
 });
 
 export const HistoryRowSchema = z.object({
@@ -161,6 +164,9 @@ export const HistoryRowSchema = z.object({
   automationId: z.string().optional(),
   triggerType: z.string().optional(),
   commentCount: z.number().optional(),
+  // #157 — the rule set the run used; absent when no rule applied.
+  rulesHash: z.string().optional(),
+  ruleIds: z.array(z.string()).optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -1145,3 +1151,99 @@ export type CapabilityStat = z.infer<typeof CapabilityStatSchema>;
 export type ProfileCost = z.infer<typeof ProfileCostSchema>;
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 export type AnalyticsSnapshotData = z.infer<typeof AnalyticsSnapshotSchema>;
+
+// ─── Rules (#157) ────────────────────────────────────────────────────────────
+// Mirrors internal/rules (Go) and the published JSON Schema
+// site/public/schema/rules.schema.json; a test keeps the three in step.
+
+export const RULE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const nonBlank = z.string().regex(/\S/, 'must not be empty');
+
+export const RuleScopeSchema = z
+  .object({
+    projects: z.array(nonBlank).optional(),
+    profiles: z.array(nonBlank).optional(),
+    backends: z.array(nonBlank).optional(),
+  })
+  .strict();
+
+export const RuleSchema = z
+  .object({
+    id: z.string().regex(RULE_ID_PATTERN, 'letters, digits, ".", "_" and "-" (64 at most)'),
+    severity: z.enum(['must', 'should']),
+    text: nonBlank,
+    description: z.string().optional(),
+    scope: RuleScopeSchema.optional(),
+  })
+  .strict();
+
+/** A whole rules file, as the JSON view validates it before saving. */
+export const RulesFileSchema = z
+  .object({
+    $schema: z.string().optional(),
+    rules: z.array(RuleSchema).optional(),
+  })
+  .strict()
+  .superRefine((file, ctx) => {
+    const seen = new Map<string, number>();
+    (file.rules ?? []).forEach((rule, i) => {
+      const key = rule.id.toLowerCase();
+      const prev = seen.get(key);
+      if (prev !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules', i, 'id'],
+          message: `"${rule.id}" is already used by rules[${String(prev)}]`,
+        });
+      }
+      seen.set(key, i);
+    });
+  });
+
+export const RULES_LAYER_NAMES = ['user', 'project', 'local'] as const;
+
+export const RulesLayerSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  writable: z.boolean(),
+  exists: z.boolean(),
+  raw: z.string(),
+  version: z.string(),
+  rules: z
+    .array(RuleSchema)
+    .nullable()
+    .transform((v) => v ?? []),
+  error: z.string().optional(),
+});
+
+export const RulesViewSchema = z.object({
+  schemaUrl: z.string(),
+  layers: z.array(RulesLayerSchema),
+});
+
+export const EffectiveRuleSchema = RuleSchema.extend({
+  layer: z.string(),
+  overrides: z.string().optional(),
+});
+
+export const RulesPreviewSchema = z.object({
+  profile: z.string(),
+  backend: z.string(),
+  identifier: z.string().optional(),
+  projects: z.array(z.string()),
+  rules: z.array(EffectiveRuleSchema),
+  conflicts: z.array(
+    z.object({ id: z.string(), layer: z.string(), keptLayer: z.string(), message: z.string() }),
+  ),
+  errors: z.array(z.object({ layer: z.string(), path: z.string(), message: z.string() })),
+  block: z.string(),
+  hash: z.string(),
+  ids: z.array(z.string()).nullable(),
+  templatePlacesRules: z.boolean(),
+});
+
+export type Rule = z.infer<typeof RuleSchema>;
+export type RulesLayer = z.infer<typeof RulesLayerSchema>;
+export type RulesView = z.infer<typeof RulesViewSchema>;
+export type RulesPreview = z.infer<typeof RulesPreviewSchema>;
+export type RulesLayerName = (typeof RULES_LAYER_NAMES)[number];

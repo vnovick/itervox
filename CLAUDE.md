@@ -245,6 +245,18 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   per-issue Liquid prompt template. Concatenated and passed to the agent
   subprocess via stdin/argv depending on backend. SOUL is the compact identity
   ("who you are"); INSTRUCTIONS is the operational/behavioural rules.
+- **Rules (#157)** go in a `## Rules` block immediately ahead of the profile's
+  SOUL.md/INSTRUCTIONS.md blocks (workers, reviewers, automation runs; the
+  dependency analyzer gets it at the top of its prompt). `internal/rules` reads
+  `~/.itervox/rules.json` < `.itervox/rules.json` < `.itervox/rules.local.json`
+  from disk on every dispatch (`startRun` → `runHandle.rules`; NOT a cfg field,
+  so nothing joins the cfgMu list), merges by id (a user `must` rule is
+  locked), filters by project/profile/backend scope, and records hash + ids on
+  `RunEntry`/`RunRecord`/`CompletedRun`. A template that prints `{{ rules }}`
+  (or a field of it) suppresses the automatic block. JSONC goes through
+  `config.ParseJSONC` / `config.PatchJSONC` / `config.WriteJSONCFile`, the same
+  reader/writer as the settings layers. `.itervox/rules.json` is committable;
+  `.itervox/rules.local.json` is gitignored by `itervox init` / `init --update`.
 - **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
   root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
   Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and
@@ -312,17 +324,20 @@ gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
 
 workflow ──── config ──── workspace (hooks — also imports procgroup)
 
+rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
+       server and cmd/itervox)
+
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, logbuffer, logging,
-              metrics, outbox, prdetector, procgroup, prompt, tracker,
+              metrics, outbox, prdetector, procgroup, prompt, rules, tracker,
               workspace)
 
 app (EnrichIssue business logic — imports domain, tracker)
 
-server (HTTP API — imports domain, config)
+server (HTTP API — imports domain, config, rules)
 
 statusui (Bubbletea TUI — imports domain)
 
@@ -363,6 +378,7 @@ cmd/itervox (wires everything)
 | `web/src/pages/Dashboard/components/DepsGraph.tsx` | Read-only React Flow dependency graph over blocker -> blocked issue rows |
 | `web/src/components/itervox/IssueStatusChanges.tsx` | Per-issue status-change timeline rendered inside issue detail |
 | `web/src/components/itervox/QueueSearchInput.tsx` | Shared local search input for queue-like dashboard panels |
+| `web/src/pages/Rules/index.tsx` | Rules editor (#157): a tab per rules layer, form and JSON views, effective-rules preview; queries in `web/src/queries/rules.ts` |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |
 | `web/src/auth/authedFetch.ts` | `fetch()` wrapper — injects `Authorization: Bearer`, throws `UnauthorizedError` on 401 |
 | `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |

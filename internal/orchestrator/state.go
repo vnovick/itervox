@@ -321,6 +321,12 @@ type RunEntry struct {
 	// CostUSD is the latest session-cumulative estimated cost reported by the
 	// run's result events (Claude total_cost_usd, CORE-091); nil when unknown.
 	CostUSD *float64
+	// RulesHash and RuleIDs name the rule set this run was given (#157):
+	// the hash of the rules' content and their ids in prompt order. Set
+	// once at dispatch (startRun) and never mutated; empty when no rule
+	// applied. RuleIDs is shared with snapshot copies: it is immutable.
+	RulesHash string
+	RuleIDs   []string
 	// totalsInput/totalsOutput/totalsCounted record what this run has
 	// already contributed to State.Totals (CORE-091). Unexported: event-loop
 	// bookkeeping, not part of the snapshot.
@@ -359,6 +365,10 @@ type CompletedRun struct {
 	TriggerType  string `json:"triggerType,omitempty"`
 	// CommentCount captures how many comment actions the run posted.
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run used (#157); empty when
+	// no rule applied.
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIDs,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.

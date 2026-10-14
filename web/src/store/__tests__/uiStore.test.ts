@@ -35,6 +35,10 @@ describe('uiStore', () => {
       'expandedRunningId',
       'logsAutomationOnly',
       'logsIssueSearch',
+      'rulesLayer',
+      'rulesPreviewIssue',
+      'rulesPreviewProfile',
+      'rulesView',
       'timelineAutomationOnly',
     ]);
     expect(state.expandedRunningId).toBeNull();

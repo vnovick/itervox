@@ -80,6 +80,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:     r.StartedAt,
 				SubagentCount: subCount,
+				RulesHash:     r.RulesHash,
+				RuleIDs:       r.RuleIDs,
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -153,6 +155,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				AutomationID: r.AutomationID,
 				TriggerType:  r.TriggerType,
 				CommentCount: r.CommentCount,
+				RulesHash:    r.RulesHash,
+				RuleIDs:      r.RuleIDs,
 			})
 		}
 

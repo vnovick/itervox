@@ -551,6 +551,24 @@ Linear project filter (`PUT /projects/filter`) and
 
 ---
 
+## Rules
+
+The Rules editor's endpoints (#157). Rules are files the daemon reads again
+for every run (see [Rules](/configuration/#rules-layered-jsonc)), so a save
+applies to the next run and reloads nothing.
+
+| Method | Path | Request body | Success response | Errors |
+|---|---|---|---|---|
+| `GET` | `/rules` | — | `{"schemaUrl":"…","layers":[{"name":"user"\|"project"\|"local","path","writable","exists","raw","version","rules":[Rule],"error"?}]}` | — |
+| `PUT` | `/rules/{layer}` | `{"baseVersion":"<version from GET>","rules":[Rule]}` (form: only changed rules and fields are rewritten, comments kept) or `{"baseVersion":"…","raw":"<JSONC text>"}` (written as is) | the saved layer | `400 rules_invalid` (not a valid rules file; nothing written), `404 unknown_layer`, `409 rules_stale` (the file changed since `baseVersion`; `""` means it did not exist) |
+| `GET` | `/rules/preview?profile=&issue=` | — | `{"profile","backend","projects","rules":[Rule + "layer","overrides"?],"conflicts":[{"id","layer","keptLayer","message"}],"errors":[{"layer","path","message"}],"block","hash","ids","templatePlacesRules"}` | — |
+
+A `Rule` is `{"id","severity":"must"|"should","text","description"?,"scope"?:{"projects"?,"profiles"?,"backends"?}}`. Running rows and
+history rows in `/state` carry the run's `rulesHash` and `ruleIds` (omitted
+when no rule applied).
+
+---
+
 ## Skills Inventory
 
 The skills endpoints expose the Settings -> Skills inventory and recommendation

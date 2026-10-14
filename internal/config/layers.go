@@ -121,15 +121,8 @@ func parseSettings(raw []byte) (map[string]any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return map[string]any{}, nil
 	}
-	// Standardize rewrites its argument in place (comments become spaces).
-	std, err := hujson.Standardize(bytes.Clone(raw))
+	v, err := ParseJSONC(raw)
 	if err != nil {
-		return nil, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(std))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
 	top, ok := v.(map[string]any)
@@ -145,7 +138,27 @@ func parseSettings(raw []byte) (map[string]any, error) {
 			return nil, fmt.Errorf("%q must be an object of settings", k)
 		}
 	}
-	return normalizeJSON(top).(map[string]any), nil
+	return top, nil
+}
+
+// ParseJSONC decodes one JSONC value (comments and trailing commas allowed)
+// into the shapes the YAML front matter produces: objects as map[string]any,
+// arrays as []any, whole numbers as int, other numbers as float64. It is the
+// one JSONC reader for every Itervox JSONC file: the settings layers (#129)
+// and the rules layers (#157).
+func ParseJSONC(raw []byte) (any, error) {
+	// Standardize rewrites its argument in place (comments become spaces).
+	std, err := hujson.Standardize(bytes.Clone(raw))
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(std))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return normalizeJSON(v), nil
 }
 
 func normalizeJSON(v any) any {
