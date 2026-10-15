@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use crate::events::{Alert, AlertKind};
 use crate::model::ProjectView;
+use crate::remote_model::ConnectionView;
 
 /// What a menu item does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,16 @@ pub enum MenuAction {
     Remove(String),
     RevealLog(String),
     AddProject,
+    /// Remote connections (#156). Opening a remote dashboard is
+    /// `OpenDashboard` with the remote daemon's key.
+    AddRemote,
+    /// Read the daemon's token file again, or type the token.
+    RemoteToken(String),
+    /// Restart the tunnels of a connection now.
+    Reconnect(String),
+    /// List the host's daemons again.
+    Rediscover(String),
+    RemoveRemote(String),
     RefreshNow,
     Quit,
 }
@@ -81,6 +92,7 @@ impl Builder {
 /// Builds the menu for the current projects and recent alerts.
 pub fn build_menu<'a>(
     views: &[ProjectView],
+    remotes: &[ConnectionView],
     recent: impl Iterator<Item = &'a Alert>,
     status_error: Option<&str>,
 ) -> MenuSpec {
@@ -91,7 +103,12 @@ pub fn build_menu<'a>(
     let mut entries = Vec::new();
 
     let running = views.iter().filter(|v| v.running()).count();
-    let waiting: usize = views.iter().map(ProjectView::needs_input).sum();
+    let waiting: usize = views.iter().map(ProjectView::needs_input).sum::<usize>()
+        + remotes
+            .iter()
+            .flat_map(|c| c.daemons.iter())
+            .map(|d| d.needs_input())
+            .sum::<usize>();
     entries.push(b.label(match views.len() {
         0 => "No projects".to_string(),
         n => format!(
@@ -154,6 +171,14 @@ pub fn build_menu<'a>(
         });
     }
 
+    if !remotes.is_empty() {
+        entries.push(MenuEntry::Separator);
+        entries.push(b.label("Remotes"));
+        for c in remotes {
+            entries.push(remote_submenu(&mut b, c));
+        }
+    }
+
     let recent: Vec<&Alert> = recent.collect();
     if !recent.is_empty() {
         entries.push(MenuEntry::Separator);
@@ -178,6 +203,7 @@ pub fn build_menu<'a>(
 
     entries.push(MenuEntry::Separator);
     entries.push(b.item("Add Project…", true, MenuAction::AddProject));
+    entries.push(b.item("Add Remote…", true, MenuAction::AddRemote));
     entries.push(b.item("Refresh Now", true, MenuAction::RefreshNow));
     entries.push(MenuEntry::Separator);
     entries.push(b.item(
@@ -199,6 +225,67 @@ pub fn build_menu<'a>(
         } else {
             format!("Itervox — {running} running")
         },
+    }
+}
+
+fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
+    let mut items = vec![b.label(c.transport.clone())];
+    if let Some(e) = &c.error {
+        items.push(b.label(format!("⚠ {e}")));
+    }
+    items.push(MenuEntry::Separator);
+    for d in &c.daemons {
+        let up = d.url().is_some();
+        let marker = if d.needs_input() > 0 {
+            "● "
+        } else if up {
+            "▶ "
+        } else {
+            "○ "
+        };
+        let token_label = if d.has_token {
+            "Update Token…"
+        } else {
+            "Enter Token…"
+        };
+        let sub = vec![
+            b.label(d.status_line()),
+            MenuEntry::Separator,
+            b.item(
+                "Open Dashboard",
+                up,
+                MenuAction::OpenDashboard(d.key.clone()),
+            ),
+            b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
+            b.label(d.workflow.clone()),
+        ];
+        items.push(MenuEntry::Submenu {
+            label: format!("{marker}{} — {}", d.name, d.status_line()),
+            items: sub,
+        });
+    }
+    items.push(MenuEntry::Separator);
+    items.push(b.item("Reconnect", true, MenuAction::Reconnect(c.id.clone())));
+    items.push(b.item(
+        "Refresh Daemon List",
+        true,
+        MenuAction::Rediscover(c.id.clone()),
+    ));
+    items.push(b.item(
+        "Remove Remote",
+        true,
+        MenuAction::RemoveRemote(c.id.clone()),
+    ));
+    let marker = if c.daemons.iter().any(|d| d.needs_input() > 0) {
+        "● "
+    } else if !c.daemons.is_empty() && c.daemons.iter().all(|d| d.url().is_some()) {
+        "▶ "
+    } else {
+        "○ "
+    };
+    MenuEntry::Submenu {
+        label: format!("{marker}{} — {}", c.name, c.status_line()),
+        items,
     }
 }
 
@@ -248,7 +335,12 @@ mod tests {
 
     #[test]
     fn start_stop_restart_enablement_follows_the_daemon() {
-        let spec = build_menu(&[view("/up", true), view("/down", false)], [].iter(), None);
+        let spec = build_menu(
+            &[view("/up", true), view("/down", false)],
+            &[],
+            [].iter(),
+            None,
+        );
         assert!(!find(&spec, "Start", "up").unwrap().1);
         assert!(find(&spec, "Stop", "up").unwrap().1);
         assert!(find(&spec, "Restart", "up").unwrap().1);
@@ -263,7 +355,7 @@ mod tests {
     fn a_pending_operation_disables_the_controls() {
         let mut v = view("/up", true);
         v.pending = Some(PendingOp::Stopping);
-        let spec = build_menu(&[v], [].iter(), None);
+        let spec = build_menu(&[v], &[], [].iter(), None);
         for l in ["Start", "Stop", "Restart", "Open Dashboard"] {
             assert!(!find(&spec, l, "up").unwrap().1, "{l}");
         }
@@ -290,7 +382,7 @@ mod tests {
             url: "http://127.0.0.1:8090/?issue=ENG-1".into(),
         };
         let alerts = [alert];
-        let spec = build_menu(&[v], alerts.iter(), None);
+        let spec = build_menu(&[v], &[], alerts.iter(), None);
         assert_eq!(spec.title, "1");
         let open = spec
             .actions
@@ -308,13 +400,88 @@ mod tests {
 
     #[test]
     fn empty_menu_still_offers_add_and_quit() {
-        let spec = build_menu(&[], [].iter(), Some("itervox status failed"));
+        let spec = build_menu(&[], &[], [].iter(), Some("itervox status failed"));
         let acts: Vec<_> = spec.actions.values().cloned().collect();
         assert!(acts.contains(&MenuAction::AddProject));
+        assert!(acts.contains(&MenuAction::AddRemote));
         assert!(acts.contains(&MenuAction::Quit));
         assert_eq!(spec.title, "");
         assert!(
             matches!(&spec.entries[1], MenuEntry::Item { label, .. } if label.contains("status failed"))
         );
+    }
+
+    #[test]
+    fn remotes_section_shows_each_connection_with_its_daemons() {
+        use crate::remote_model::RemoteDaemonView;
+        use crate::tunnel::{TunnelPhase, TunnelStatus};
+        let daemon = |key: &str, phase: TunnelPhase| RemoteDaemonView {
+            key: key.into(),
+            workflow: "/srv/app/WORKFLOW.md".into(),
+            name: "app".into(),
+            tunnel: Some(TunnelStatus {
+                id: key.into(),
+                local_port: 50001,
+                phase,
+                pid: Some(9),
+                starts: 1,
+                last_error: None,
+            }),
+            health: Health::Ok(StateSummary::default()),
+            has_token: true,
+        };
+        let conns = vec![
+            ConnectionView {
+                id: "prod".into(),
+                name: "Prod".into(),
+                transport: "ssh me@box".into(),
+                daemons: vec![daemon("remote/prod//srv/app/WORKFLOW.md", TunnelPhase::Up)],
+                error: None,
+            },
+            ConnectionView {
+                id: "eu".into(),
+                name: "EU".into(),
+                transport: "IAP vm".into(),
+                daemons: vec![daemon(
+                    "remote/eu//srv/app/WORKFLOW.md",
+                    TunnelPhase::Connecting,
+                )],
+                error: None,
+            },
+        ];
+        let spec = build_menu(&[], &conns, [].iter(), None);
+        assert!(spec
+            .entries
+            .iter()
+            .any(|e| matches!(e, MenuEntry::Item { label, .. } if label == "Remotes")));
+        let labels: Vec<&str> = spec
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Submenu { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "▶ Prod — 1/1 connected",
+                "○ EU — connecting… (0/1 connected)"
+            ]
+        );
+        let open: Vec<_> = spec
+            .actions
+            .values()
+            .filter(|a| matches!(a, MenuAction::OpenDashboard(_)))
+            .collect();
+        assert_eq!(open.len(), 2);
+        assert!(spec
+            .actions
+            .values()
+            .any(|a| *a == MenuAction::Reconnect("eu".into())));
+        assert!(spec
+            .actions
+            .values()
+            .any(|a| *a == MenuAction::RemoveRemote("prod".into())));
     }
 }
