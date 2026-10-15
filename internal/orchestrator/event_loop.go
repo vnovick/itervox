@@ -1910,6 +1910,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		o.dispatchOrQueueAutomation(ctx, &state, *ev.Issue, *ev.Automation, time.Now())
 
+	case EventDispatchCronBatch:
+		if ev.CronBatch != nil {
+			o.dispatchCronAutomationBatch(ctx, &state, *ev.CronBatch, time.Now())
+		}
+
 	case EventIssueStatusChanged:
 		if ev.StatusChange != nil {
 			appendIssueStatusChange(&state, *ev.StatusChange)
