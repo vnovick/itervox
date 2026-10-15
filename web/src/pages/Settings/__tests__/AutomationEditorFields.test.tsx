@@ -34,6 +34,11 @@ describe('AutomationEditorFields', () => {
           switchToBackend: '',
           cooldownMinutes: '',
           moveToState: '',
+          checkNames: [],
+          conclusions: [],
+          reviewStates: [],
+          reviewAuthors: [],
+          mergeableStates: [],
         }}
         availableProfiles={['input-responder']}
         availableStates={['Backlog', 'Todo', 'Ready for QA']}
@@ -104,6 +109,11 @@ describe('AutomationEditorFields', () => {
           switchToBackend: '',
           cooldownMinutes: '',
           moveToState: '',
+          checkNames: [],
+          conclusions: [],
+          reviewStates: [],
+          reviewAuthors: [],
+          mergeableStates: [],
         }}
         availableProfiles={['qa']}
         availableStates={['Backlog', 'Ready for QA']}
@@ -158,6 +168,11 @@ describe('AutomationEditorFields', () => {
           switchToBackend: '',
           cooldownMinutes: '',
           moveToState: 'Todo',
+          checkNames: [],
+          conclusions: [],
+          reviewStates: [],
+          reviewAuthors: [],
+          mergeableStates: [],
         }}
         availableProfiles={['pm']}
         availableStates={['Backlog', 'Todo', 'Ready for QA']}

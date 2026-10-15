@@ -61,6 +61,7 @@ const (
 	ledgerBackendHealth
 	ledgerPendingReviews
 	ledgerSpend
+	ledgerPREvents
 	numLedgers
 )
 
@@ -75,6 +76,7 @@ var ledgerNames = [numLedgers]string{
 	ledgerBackendHealth:   "backend_health",
 	ledgerPendingReviews:  "pending_reviews",
 	ledgerSpend:           "issue_spend",
+	ledgerPREvents:        "pr_events",
 }
 
 // ledgerOp is one full version of a ledger: write data to path, or remove it.
