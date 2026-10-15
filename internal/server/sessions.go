@@ -13,7 +13,10 @@ import (
 // the CLI's own session ID. Steps 1–2 list the sessions of this daemon's own
 // runs (owner "itervox") and accept operator messages for running ones; a
 // session waiting for input takes a reply through
-// POST /api/v1/issues/{identifier}/provide-input instead.
+// POST /api/v1/issues/{identifier}/provide-input instead. Step 3
+// (sessions_external.go) adds sessions started by hand on the daemon's host
+// (owner "external", read-only), their transcripts, and "Continue in
+// itervox".
 
 // Session owners. Itervox writes only to sessions it owns.
 const (
@@ -41,7 +44,8 @@ type SessionRow struct {
 	// first seconds of a run), when RunID addresses the session instead.
 	ID    string `json:"id"`
 	RunID string `json:"runId,omitempty"`
-	// Owner is "itervox" for this daemon's runs.
+	// Owner is "itervox" for this daemon's runs and the sessions continued
+	// under it, "external" for sessions started by hand (read-only).
 	Owner      string `json:"owner"`
 	Identifier string `json:"identifier"`
 	Title      string `json:"title,omitempty"`
@@ -49,7 +53,9 @@ type SessionRow struct {
 	Backend    string `json:"backend,omitempty"`
 	WorkerHost string `json:"workerHost,omitempty"`
 	Kind       string `json:"kind,omitempty"`
-	// Status is "running", "input_required" or "pending_input_resume".
+	// Status is "running", "input_required" or "pending_input_resume";
+	// "idle" for a continued session between turns and "exited" for a
+	// hand-started session whose CLI is no longer running.
 	Status    string     `json:"status"`
 	StartedAt *time.Time `json:"startedAt,omitempty"`
 	QueuedAt  *time.Time `json:"queuedAt,omitempty"`
@@ -61,6 +67,16 @@ type SessionRow struct {
 	// "resume"; empty when the session takes no message.
 	Steering string              `json:"steering,omitempty"`
 	Messages []SessionMessageRow `json:"messages,omitempty"`
+	// Cwd is the directory of a session started by hand or continued
+	// under itervox (#178 step 3); such sessions have no identifier.
+	Cwd string `json:"cwd,omitempty"`
+	// UpdatedAt is a hand-started session's last transcript write.
+	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+	// InUseReason says why a hand-started session counts as still running
+	// (status "running", owner "external"): it cannot be continued yet.
+	InUseReason string `json:"inUseReason,omitempty"`
+	// LastError is the last failure of a continued session's turn.
+	LastError string `json:"lastError,omitempty"`
 }
 
 // SessionsResponse is the GET /api/v1/sessions body.
@@ -80,6 +96,15 @@ type SessionsClient interface {
 	// ErrSessionInputRequired, ErrSessionNotOwned, ErrInvalidSessionMessage,
 	// ErrBusy.
 	SendSessionMessage(id, text string) (SessionMessageRow, error)
+	// SessionTranscript returns a page of the transcript of a hand-started
+	// or continued session, ending before byte offset before (< 0: the
+	// end). Errors: ErrSessionNotFound.
+	SessionTranscript(id string, before int64, limit int) (TranscriptResponse, error)
+	// ContinueSession takes over a hand-started session whose CLI has
+	// exited and resumes it under itervox. Errors: ErrSessionNotFound,
+	// *SessionInUseError, ErrSessionAlreadyOwned, ErrUnknownProfile,
+	// ErrTooManySessions, ErrDraining, ErrInvalidSessionMessage, ErrBusy.
+	ContinueSession(id, message, profile string) (SessionRow, error)
 }
 
 // Errors a SessionsClient returns.

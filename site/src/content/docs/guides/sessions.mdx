@@ -1,6 +1,6 @@
 ---
 title: Sessions panel
-description: One tab per running Claude Code or Codex session of a daemon — waiting-for-input sessions first — with the live transcript, a reply box for questions, and a composer to message a running agent.
+description: One tab per Claude Code or Codex session of a daemon — waiting-for-input sessions first, sessions started by hand last — with the transcript, a reply box for questions, a composer to message a running agent, and "Continue in itervox" for sessions you started yourself.
 sidebar:
   order: 3
 ---
@@ -11,13 +11,13 @@ A **session** is an agent CLI session, identified by the CLI's own session ID (C
 
 ## Tabs
 
-Each running itervox agent run has a tab: the issue, its profile, backend and SSH host. Sessions **waiting for input** are badged **needs input** and listed first, then sessions whose reply was received and are resuming, then running sessions, oldest first. The sidebar's Sessions icon shows how many are waiting.
+Each running itervox agent run has a tab: the issue, its profile, backend and SSH host. Sessions **waiting for input** are badged **needs input** and listed first, then sessions whose reply was received and are resuming, then running sessions, oldest first, then sessions you [continued in itervox](#sessions-started-by-hand). [Sessions started by hand](#sessions-started-by-hand) come last, greyed and labelled **started outside itervox**, most recent first. The sidebar's Sessions icon shows how many are waiting.
 
 Move between tabs with the arrow keys, **Home** and **End**. The selected tab is in the address (`/sessions?id=<session>`), so a link opens that session directly.
 
 ## Transcript
 
-The tab shows the issue's live log — the same stream as the Logs page — following the bottom as the agent works.
+For an itervox run, the tab shows the issue's live log — the same stream as the Logs page — following the bottom as the agent works. For a session started by hand (or continued in itervox), it shows the CLI's own transcript: user and agent messages, tool calls by name and abbreviated tool results, newest at the bottom, re-read every few seconds. **Load earlier messages** pages further back. The daemon reads the transcript file itself and passes every text through the same secret redaction as its logs; thinking blocks, sub-agent sidechains and the CLI's own context messages are left out.
 
 ## Replying and messaging
 
@@ -43,13 +43,43 @@ agent:
 
 It changes how every local Claude turn is started: the prompt goes to the CLI as the first stream-json message on its stdin, and stdin is closed when the turn's result arrives, so the CLI finishes and exits as before. If `agent.command` (or a profile's command) is a wrapper script that reads its stdin to the end before it starts Claude, keep live steering off: in streaming mode stdin stays open until the turn ends.
 
+## Sessions started by hand
+
+Claude Code and Codex sessions you start yourself in a terminal on the daemon's host are listed too, read-only. The daemon finds them in the CLIs' own transcript directories:
+
+- Claude Code: `~/.claude/projects/<encoded directory>/<session id>.jsonl` (under `$CLAUDE_CONFIG_DIR/projects` when that is set);
+- Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<session id>.jsonl` (under `$CODEX_HOME/sessions` when set), both the current layout with a `session_meta` header and the earlier one.
+
+These are the CLIs' private file formats, not APIs. The daemon reads them tolerantly — it skips records it does not know — and if a future CLI release changes the layout, sessions simply stop appearing rather than showing garbage.
+
+**What is listed (privacy).** Only sessions written to within the last 24 hours, and — by default — only sessions whose working directory is inside the project: the directory of `WORKFLOW.md`, plus any `sessions.external_roots`. Sessions from unrelated directories are never read or shown unless you set `sessions.external_scope: all`. Itervox's own sessions are never listed as hand-started: not its running or waiting runs, not sessions continued in itervox, and nothing under its workspace root. A remote daemon lists the sessions on its own host. Turn discovery off with `sessions.external: false` (see [Configuration → sessions](/configuration/#sessions)). Transcripts are served only to clients holding the daemon's API token, like logs.
+
+**Still running?** A hand-started session is read-only while the CLI that started it may still be running, and its tab says why. The daemon decides this without touching the process — it only inspects: on Linux it reads `/proc` (each `claude` or `codex` process's working directory and open files); on macOS it runs `ps` and `lsof` on your own processes, which needs no privacy permission. A session counts as **in use** when:
+
+- a `claude` / `codex` process has its transcript open, or was started with its session ID (for example `claude --resume <id>`);
+- a `claude` / `codex` process is running in the session's directory — Claude Code does not keep its transcript open, so itervox cannot tell which of several sessions in that directory the process belongs to and assumes it might be this one;
+- the process list could not be read; or
+- the transcript was written to within the last two minutes.
+
+When in doubt, it is treated as running. Quit the CLI (or wait for it to finish) and the tab becomes **exited** within a few seconds.
+
+### Continue in itervox
+
+On an exited session started by hand, **Continue in itervox** resumes it under itervox: optionally type what the agent should do next (otherwise it is told to continue where it left off). The daemon checks again, at that moment, that the original process is gone, and refuses (`409 session_in_use`, with the reason) if it may still be running.
+
+A continued session is a **manual run**: it has no issue and runs in the session's own directory — your checkout, not an itervox worktree. Each turn resumes the CLI's session (`claude --resume <id> -p`, `codex exec resume <id> -`) with `agent.command` for that backend and the confining permission mode (`--permission-mode acceptEdits` for Claude, `--sandbox workspace-write` for Codex), because it works in your own files; name a profile in the API call to use that profile's command and `permission_mode` instead. It counts toward neither `max_concurrent_agents` nor tracker state; at most 8 sessions can be continued at once, none while the daemon drains, and a drain (shutdown or `WORKFLOW.md` reload) waits for a turn in flight like a worker.
+
+From then on the session is itervox's: its tab says **continued in itervox**, its transcript keeps following the same file, and the composer works — each message resumes the session for one turn, and messages sent while a turn runs are delivered together as the next turn's prompt. Ownership lasts for the daemon's lifetime; after a restart the session is listed as started by hand again.
+
 ## Only sessions itervox started
 
-Itervox writes only to sessions it owns: the stdin of the agent process this daemon started for the run, or the prompt of that run's next resumed turn. It never types into a terminal, never injects keystrokes, and never uses macOS Accessibility or AppleScript automation to drive another app; a static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears. Every session in the panel today is owned by itervox; a session itervox did not start would be shown read-only.
+Itervox writes only to sessions it owns: the stdin of the agent process this daemon started for the run, or the prompt of that run's next resumed turn. It never types into a terminal, never injects keystrokes, and never uses macOS Accessibility or AppleScript automation to drive another app; a static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears. A session started by hand is only read — its transcript file and the process list — and another static test (`TestExternalSessionInspectionIsReadOnly`) keeps that code free of writes, signals and any command but `ps` and `lsof`. Continuing it does not attach to anything: it starts a new CLI process of itervox's own once the original one has exited.
 
 ## API
 
-- `GET /api/v1/sessions` — the sessions, in panel order.
-- `POST /api/v1/sessions/{id}/message` — message a running session.
+- `GET /api/v1/sessions` — the sessions, in panel order (`owner: "external"` for sessions started by hand).
+- `POST /api/v1/sessions/{id}/message` — message a running session, or a continued one.
+- `GET /api/v1/sessions/{id}/transcript` — a page of a hand-started or continued session's transcript.
+- `POST /api/v1/sessions/{id}/continue` — continue a hand-started session in itervox.
 
 See [API reference → Sessions](/api-reference/#sessions).

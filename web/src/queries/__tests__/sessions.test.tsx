@@ -2,7 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
-import { sessionKey, useSendSessionMessage, useSessions } from '../sessions';
+import {
+  sessionKey,
+  sessionLabel,
+  useContinueSession,
+  useSendSessionMessage,
+  useSessionTranscript,
+  useSessions,
+} from '../sessions';
 
 vi.mock('../../auth/authedFetch', () => ({
   authedFetch: vi.fn(),
@@ -88,5 +95,113 @@ describe('sessionKey', () => {
     expect(sessionKey({ id: 'sess-1', runId: 'run-1' })).toBe('sess-1');
     expect(sessionKey({ id: '', runId: 'run-1' })).toBe('run-1');
     expect(sessionKey({ id: '' })).toBe('');
+  });
+});
+
+describe('useSessionTranscript (#178 step 3)', () => {
+  it('reads the newest page, then older pages by cursor, oldest entries first', async () => {
+    mockAuthedFetch.mockImplementation((url: string) => {
+      const older = url.includes('before=4096');
+      return Promise.resolve(
+        new Response(
+          JSON.stringify(
+            older
+              ? {
+                  id: 'h',
+                  entries: [{ role: 'user', kind: 'text', text: 'first' }],
+                  hasMore: false,
+                  size: 9000,
+                }
+              : {
+                  id: 'h',
+                  entries: [{ role: 'assistant', kind: 'text', text: 'latest' }],
+                  before: 4096,
+                  hasMore: true,
+                  size: 9000,
+                },
+          ),
+          { status: 200 },
+        ),
+      );
+    });
+    const { result } = renderHook(() => useSessionTranscript('hand/1'), { wrapper });
+    await waitFor(() => {
+      expect(result.current.entries).toHaveLength(1);
+    });
+    expect(mockAuthedFetch).toHaveBeenCalledWith(
+      '/api/v1/sessions/hand%2F1/transcript?limit=100',
+      expect.anything(),
+    );
+    expect(result.current.hasNextPage).toBe(true);
+    await act(async () => {
+      await result.current.fetchNextPage();
+    });
+    await waitFor(() => {
+      expect(result.current.entries.map((e) => e.text)).toEqual(['first', 'latest']);
+    });
+    expect(mockAuthedFetch).toHaveBeenCalledWith(
+      '/api/v1/sessions/hand%2F1/transcript?limit=100&before=4096',
+      expect.anything(),
+    );
+    expect(result.current.hasNextPage).toBe(false);
+  });
+});
+
+describe('useContinueSession (#178 step 3)', () => {
+  it('POSTs to /continue with the optional first message', async () => {
+    mockAuthedFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ session: { id: 'h', owner: 'itervox' } }), { status: 202 }),
+    );
+    const { result } = renderHook(() => useContinueSession(), { wrapper });
+    act(() => {
+      result.current.mutate({ id: 'h', message: 'go on' });
+    });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    expect(mockAuthedFetch).toHaveBeenCalledWith(
+      '/api/v1/sessions/h/continue',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ message: 'go on' }) }),
+    );
+  });
+
+  it('toasts the reason when the session is still running elsewhere', async () => {
+    mockAuthedFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'session_in_use',
+            message:
+              'the session may still be running outside itervox: claude process 7 has the transcript open',
+          },
+        }),
+        { status: 409 },
+      ),
+    );
+    const { result } = renderHook(() => useContinueSession(), { wrapper });
+    act(() => {
+      result.current.mutate({ id: 'h', message: '' });
+    });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(mockAuthedFetch).toHaveBeenCalledWith(
+      '/api/v1/sessions/h/continue',
+      expect.objectContaining({ body: JSON.stringify({}) }),
+    );
+    const toast = useToastStore.getState().toasts[0]?.message ?? '';
+    expect(toast).toContain('Not continued');
+    expect(toast).toContain('claude process 7 has the transcript open');
+  });
+});
+
+describe('sessionLabel', () => {
+  it('names a session by its issue, title, directory or id', () => {
+    expect(sessionLabel({ id: 'x', identifier: 'ENG-1', title: 't' })).toBe('ENG-1');
+    expect(sessionLabel({ id: 'x', identifier: '', title: 'Add health check' })).toBe(
+      'Add health check',
+    );
+    expect(sessionLabel({ id: 'x', identifier: '', cwd: '/work/app/' })).toBe('app');
+    expect(sessionLabel({ id: '1234567890', identifier: '' })).toBe('12345678');
   });
 });

@@ -1,6 +1,6 @@
 import { useRef, type KeyboardEvent } from 'react';
 import { cn } from '../../components/ui/cn';
-import { sessionKey } from '../../queries/sessions';
+import { sessionKey, sessionLabel } from '../../queries/sessions';
 import type { SessionRow } from '../../types/schemas';
 
 export interface SessionTabsProps {
@@ -13,7 +13,16 @@ const STATUS_LABEL: Record<string, string> = {
   input_required: 'needs input',
   pending_input_resume: 'resuming',
   running: 'running',
+  idle: 'idle',
+  exited: 'exited',
 };
+
+/** The second line of a tab: who owns it and how it runs. */
+function tabDetail(s: SessionRow): string {
+  if (s.owner === 'external') return 'started outside itervox';
+  if (s.kind === 'manual') return ['continued in itervox', s.backend].filter(Boolean).join(' · ');
+  return [s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ') || 'default';
+}
 
 /** One tab per session, in the daemon's order (waiting for input first). */
 export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProps) {
@@ -50,9 +59,10 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
         const key = sessionKey(s);
         const selected = key === selectedKey;
         const waiting = s.status === 'input_required';
+        const external = s.owner === 'external';
         return (
           <button
-            key={`${s.identifier}-${key}`}
+            key={`${s.owner}-${s.identifier}-${key}`}
             ref={(el) => {
               if (el) refs.current.set(key, el);
               else refs.current.delete(key);
@@ -64,6 +74,7 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
             aria-controls="session-panel"
             tabIndex={selected ? 0 : -1}
             data-testid="session-tab"
+            data-owner={s.owner}
             onKeyDown={onKeyDown}
             onClick={() => {
               onSelect(key);
@@ -73,10 +84,19 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
               selected
                 ? 'border-theme-accent bg-theme-bg-elevated'
                 : 'border-theme-line hover:bg-theme-bg-soft',
+              external && !selected && 'border-dashed opacity-70',
             )}
           >
             <span className="flex w-full items-center justify-between gap-2">
-              <span className="text-theme-text font-mono font-semibold">{s.identifier}</span>
+              <span
+                className={cn(
+                  'truncate font-semibold',
+                  s.identifier ? 'font-mono' : '',
+                  external ? 'text-theme-text-secondary' : 'text-theme-text',
+                )}
+              >
+                {sessionLabel(s)}
+              </span>
               {waiting ? (
                 <span
                   data-testid="session-badge-input"
@@ -85,11 +105,21 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
                   needs input
                 </span>
               ) : (
-                <span className="text-theme-muted">{STATUS_LABEL[s.status] ?? s.status}</span>
+                <span className="text-theme-muted shrink-0">
+                  {external && s.status === 'running'
+                    ? 'in use'
+                    : (STATUS_LABEL[s.status] ?? s.status)}
+                </span>
               )}
             </span>
-            <span className="text-theme-text-secondary truncate">
-              {[s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ') || 'default'}
+            <span
+              data-testid="session-tab-detail"
+              className={cn(
+                'truncate',
+                external ? 'text-theme-muted italic' : 'text-theme-text-secondary',
+              )}
+            >
+              {tabDetail(s)}
             </span>
           </button>
         );

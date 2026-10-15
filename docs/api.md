@@ -546,13 +546,18 @@ oversize body returns `400 bad_request` with `field: "body"`.
 
 The Sessions panel (#178) — the dashboard's `/sessions` page and the Mac app's
 Sessions window. A session is an agent CLI session, identified by the CLI's
-own session ID; itervox writes only to sessions it started.
+own session ID; itervox writes only to sessions it started (or that an
+operator continued in itervox). Sessions started by hand on the daemon's host
+are listed read-only with `owner: "external"`.
 
 ### `GET /api/v1/sessions`
 
-The daemon's agent sessions: every running itervox run, and every session
-waiting for (or resuming from) a human reply. Sessions waiting for input come
-first, then resuming ones, then running ones, oldest first within each.
+The daemon's agent sessions: every running itervox run, every session
+waiting for (or resuming from) a human reply, every session continued in
+itervox, and the recent sessions started by hand on the daemon's host.
+Sessions waiting for input come first, then resuming ones, then running ones,
+then continued ones between turns, oldest first within each; sessions started
+by hand come last, most recently written first.
 
 ```json
 {
@@ -585,6 +590,18 @@ first, then resuming ones, then running ones, oldest first within each.
         {"id": "msg-…", "text": "Also update the docs.", "status": "delivered",
          "delivery": "resume", "queuedAt": "…", "deliveredAt": "…"}
       ]
+    },
+    {
+      "id": "c41d…",
+      "owner": "external",
+      "identifier": "",
+      "title": "Add a health check",
+      "backend": "claude",
+      "status": "running",
+      "cwd": "/work/app",
+      "startedAt": "2026-10-15T07:10:00Z",
+      "updatedAt": "2026-10-15T08:58:00Z",
+      "inUseReason": "a claude process (4242) is running in the session's directory; it may be this session"
     }
   ]
 }
@@ -594,15 +611,23 @@ first, then resuming ones, then running ones, oldest first within each.
 |---|---|
 | `id` | The agent CLI's session ID (Claude Code session, Codex thread). Empty in the first seconds of a run, until the CLI reports it; `runId` addresses the session meanwhile. |
 | `runId` | Itervox's run ID (running sessions only). |
-| `owner` | `itervox` for this daemon's runs. Only those take replies and messages. |
-| `status` | `running`, `input_required` or `pending_input_resume`. |
+| `owner` | `itervox` for this daemon's runs and the sessions continued in itervox — only those take replies and messages; `external` for a session started by hand (read-only, no `identifier`). |
+| `kind` | `manual` for a session continued in itervox (no issue). |
+| `status` | `running`, `input_required` or `pending_input_resume`; `idle` for a continued session between turns; for a session started by hand, `running` while its CLI may still be running and `exited` once it can be continued. |
+| `cwd` | The directory of a session started by hand or continued. |
+| `updatedAt` | A session started by hand: its transcript's last write. |
+| `inUseReason` | A session started by hand with `status: "running"`: why it counts as still running. |
+| `lastError` | A continued session: why its last turn failed. |
 | `startedAt` / `queuedAt` | When the run started / when it started waiting for input. |
 | `inputContext` | The agent's question while it waits. |
 | `steering` | Running sessions: `live` (a message is written into the running turn — local Claude with `agent.live_steering`) or `resume` (delivered as the prompt of the next turn, which resumes the session). |
 | `messages` | Operator messages sent to the issue's sessions, newest last (at most 20): `status` `queued`, `delivered` (with `delivery` `live` or `resume`) or `dropped` (with `reason`). |
 
 `503 not_configured` when the daemon was built without the sessions client.
-Messages are runtime state: they do not survive a daemon restart.
+Messages and continued sessions are runtime state: they do not survive a
+daemon restart. Which sessions started by hand are listed is set by
+[`sessions:`](configuration.md#sessions) (default: the last 24 hours, inside
+the project directory only).
 
 ### `POST /api/v1/sessions/{id}/message`
 
@@ -624,6 +649,70 @@ the message is queued; its `status` in `GET /api/v1/sessions` moves to
 | `403` | `not_owned` | Itervox did not start that session |
 | `404` | `not_found` | No running session with that ID |
 | `409` | `input_required` | The session is waiting for input: use `provide-input` |
+| `503` | `orchestrator_busy` | Event queue full (`Retry-After: 1`) |
+
+For a session continued in itervox, a message sent between turns resumes it
+for one turn at once; one sent during a turn is queued and delivered (with any
+others) as the next turn's prompt.
+
+### `GET /api/v1/sessions/{id}/transcript`
+
+A page of the transcript of a session started by hand, or continued in
+itervox, read from the CLI's own transcript file. Query: `limit` (1–500,
+default 100 entries) and `before` (the cursor from the previous page; omitted
+= the newest entries). Entries are oldest first; each text is redacted with
+the daemon's log redaction and abbreviated (`truncated: true`). Tool calls
+appear by name (`kind: "tool"`), tool results abbreviated
+(`kind: "tool_result"`); thinking, sub-agent sidechains and the CLI's own
+context messages are left out.
+
+```json
+{
+  "id": "c41d…",
+  "backend": "claude",
+  "entries": [
+    {"role": "user", "kind": "text", "text": "Add a health check", "at": "2026-10-15T07:10:02Z"},
+    {"role": "assistant", "kind": "tool", "text": "Edit", "at": "…"},
+    {"role": "assistant", "kind": "text", "text": "Done: GET /healthz returns 200.", "at": "…"}
+  ],
+  "before": 73400320,
+  "hasMore": true,
+  "size": 74066206
+}
+```
+
+`before` is present only when `hasMore`. `404 not_found` for a session that is
+not listed (only a listed session's transcript can be read — the path never
+comes from the client); `400 bad_request` for a bad `before` or `limit`.
+
+### `POST /api/v1/sessions/{id}/continue`
+
+Continues a session started by hand in itervox, once the CLI that started it
+has exited. The daemon re-checks that at the moment of the request (read-only:
+`/proc` on Linux, `ps` and `lsof` on macOS) and the event loop decides. The
+session then runs as a manual run — no issue, in the session's own directory —
+resuming the CLI's session (`claude --resume <id> -p`, `codex exec resume <id> -`)
+with `agent.command` for that backend and the confining permission mode, and is
+owned by itervox from then on (until the daemon restarts).
+
+```json
+{"message": "Finish the migration and run the tests.", "profile": "coder"}
+```
+
+Both fields are optional: without `message` the agent is told to continue
+where it left off; `profile` uses that profile's command and `permission_mode`.
+
+`202 {"session":{…,"owner":"itervox","kind":"manual","status":"running"}}` —
+the first resumed turn has started.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Over-10 KiB `message` (`field: "message"`), or an unknown `profile` (`field: "profile"`) |
+| `404` | `not_found` | No session started by hand with that ID is listed |
+| `409` | `session_in_use` | Its CLI may still be running; `message` says why (e.g. `claude process 4242 has the transcript open`) |
+| `409` | `already_owned` | Itervox already owns it: message it instead |
+| `409` | `draining` | The daemon is draining for shutdown or reload |
+| `429` | `too_many_sessions` | 8 sessions are already continued in itervox |
 | `503` | `orchestrator_busy` | Event queue full (`Retry-After: 1`) |
 
 ## Logs

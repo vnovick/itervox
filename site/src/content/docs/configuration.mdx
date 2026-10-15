@@ -972,6 +972,28 @@ hooks:
 
 ---
 
+## sessions
+
+Which Claude Code and Codex sessions **started by hand** on the daemon's host the [Sessions panel](/guides/sessions/#sessions-started-by-hand) lists — read-only, with their transcript, and **Continue in itervox** once the original process has exited. Read at startup.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `external` | bool | `true` | Discover hand-started sessions from `~/.claude/projects/**/<id>.jsonl` and `~/.codex/sessions/**/rollout-*.jsonl` (`$CLAUDE_CONFIG_DIR` / `$CODEX_HOME` respected). `false` lists only itervox's own sessions. |
+| `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
+| `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
+| `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+
+```yaml
+sessions:
+  external_window_hours: 12
+  external_roots:
+    - ~/src/app-docs
+```
+
+A remote daemon lists the sessions on its own host. Transcripts are served only with the daemon's API token, like logs.
+
+---
+
 ## server
 
 Controls the built-in HTTP server that serves the web dashboard and REST API.

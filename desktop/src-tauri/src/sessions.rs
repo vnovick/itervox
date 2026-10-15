@@ -15,6 +15,11 @@
 //!
 //! Nothing here writes to an agent: replies and messages go through the
 //! dashboard, which talks only to sessions its daemon started.
+//!
+//! Sessions started by hand on a daemon's host (#178 step 3) are listed
+//! too, after the daemon's own, marked "started outside itervox": they are
+//! read-only, and "Continue in itervox" is offered in the dashboard once the
+//! process that started them has exited.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +27,8 @@ use crate::client::FetchError;
 
 /// `status` of a session waiting for a human answer.
 pub const STATUS_INPUT_REQUIRED: &str = "input_required";
+/// `owner` of a session started by hand, outside itervox.
+pub const OWNER_EXTERNAL: &str = "external";
 
 /// One agent session as the window shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,9 +39,20 @@ pub struct Session {
     pub run_id: String,
     /// What the dashboard's `/sessions?id=` takes: `id`, else `run_id`.
     pub key: String,
-    /// `itervox` for a daemon's own runs.
+    /// `itervox` for a daemon's own runs (and sessions continued under it),
+    /// `external` for sessions started by hand (read-only).
     pub owner: String,
+    /// The issue; empty for a session started by hand or continued.
     pub identifier: String,
+    /// How the window names the session: the issue, else the CLI's title,
+    /// else its directory's name, else the start of its id.
+    pub label: String,
+    /// `manual` for a session continued under itervox.
+    pub kind: String,
+    /// The directory of a session started by hand or continued.
+    pub cwd: String,
+    /// Why a session started by hand counts as still running.
+    pub in_use_reason: String,
     pub title: String,
     pub profile: String,
     pub backend: String,
@@ -50,6 +68,25 @@ impl Session {
     pub fn waiting(&self) -> bool {
         self.status == STATUS_INPUT_REQUIRED
     }
+
+    /// Started by hand, outside itervox: read-only.
+    pub fn external(&self) -> bool {
+        self.owner == OWNER_EXTERNAL
+    }
+}
+
+/// The window's name for a session (see [`Session::label`]).
+fn label_of(identifier: &str, title: &str, cwd: &str, id: &str) -> String {
+    if !identifier.is_empty() {
+        return identifier.to_string();
+    }
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    if let Some(dir) = cwd.split('/').rfind(|p| !p.is_empty()) {
+        return dir.to_string();
+    }
+    id.chars().take(8).collect()
 }
 
 #[derive(Deserialize, Default)]
@@ -67,6 +104,9 @@ struct RawSession {
     input_context: String,
     started_at: String,
     queued_at: String,
+    kind: String,
+    cwd: String,
+    in_use_reason: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -75,8 +115,9 @@ struct RawSessions {
     sessions: Option<Vec<RawSession>>,
 }
 
-/// Parses a `/api/v1/sessions` body; rows without a key or an issue are
-/// skipped.
+/// Parses a `/api/v1/sessions` body; rows without a key are skipped, and so
+/// are rows with no issue unless they are sessions started by hand or
+/// continued under itervox (which have a directory instead).
 pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
     let raw: RawSessions = serde_json::from_slice(body).map_err(|e| e.to_string())?;
     Ok(raw
@@ -89,12 +130,17 @@ pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
             } else {
                 r.id.clone()
             };
-            (!key.is_empty() && !r.identifier.is_empty()).then_some(Session {
+            let named = !r.identifier.is_empty() || r.owner == OWNER_EXTERNAL || !r.cwd.is_empty();
+            (!key.is_empty() && named).then_some(Session {
+                label: label_of(&r.identifier, &r.title, &r.cwd, &key),
                 id: r.id,
                 run_id: r.run_id,
                 key,
                 owner: r.owner,
                 identifier: r.identifier,
+                kind: r.kind,
+                cwd: r.cwd,
+                in_use_reason: r.in_use_reason,
                 title: r.title,
                 profile: r.profile,
                 backend: r.backend,
@@ -128,6 +174,8 @@ pub struct SessionGroup {
     /// "local", or "remote · <connection>".
     pub location: String,
     pub waiting: usize,
+    /// Sessions started by hand on the daemon's host.
+    pub external: usize,
     pub error: Option<String>,
     pub sessions: Vec<Session>,
 }
@@ -138,13 +186,15 @@ pub struct SessionGroup {
 pub struct SessionsView {
     pub waiting: usize,
     pub total: usize,
+    /// Sessions started by hand, across daemons (included in `total`).
+    pub external: usize,
     pub groups: Vec<SessionGroup>,
 }
 
 /// Groups the reads by daemon. Within a group, sessions waiting for input
-/// come first (each daemon already lists them so; this keeps it true for
-/// any daemon). Groups with a waiting session come first, then local
-/// daemons, then by name.
+/// come first and sessions started by hand last (each daemon already lists
+/// them so; this keeps it true for any daemon). Groups with a waiting
+/// session come first, then local daemons, then by name.
 pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
     let mut groups: Vec<SessionGroup> = daemons
         .into_iter()
@@ -153,9 +203,10 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
                 Ok(s) => (s, None),
                 Err(e) => (Vec::new(), Some(e)),
             };
-            sessions.sort_by_key(|s| !s.waiting());
+            sessions.sort_by_key(|s| (!s.waiting(), s.external()));
             SessionGroup {
                 waiting: sessions.iter().filter(|s| s.waiting()).count(),
+                external: sessions.iter().filter(|s| s.external()).count(),
                 location: match &d.remote {
                     Some(c) => format!("remote · {c}"),
                     None => "local".into(),
@@ -178,6 +229,7 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
     SessionsView {
         waiting: groups.iter().map(|g| g.waiting).sum(),
         total: groups.iter().map(|g| g.sessions.len()).sum(),
+        external: groups.iter().map(|g| g.external).sum(),
         groups,
     }
 }
@@ -228,7 +280,7 @@ where
 /// JSON is valid JavaScript; U+2028/U+2029 are escaped for older engines.
 pub fn push_script(view: &SessionsView) -> String {
     let json = serde_json::to_string(view)
-        .unwrap_or_else(|_| "{\"waiting\":0,\"total\":0,\"groups\":[]}".into())
+        .unwrap_or_else(|_| "{\"waiting\":0,\"total\":0,\"external\":0,\"groups\":[]}".into())
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     format!("window.__itervoxSessions&&window.__itervoxSessions({json});")
@@ -339,6 +391,10 @@ mod tests {
             key: format!("sess-{identifier}"),
             owner: "itervox".into(),
             identifier: identifier.into(),
+            label: identifier.into(),
+            kind: String::new(),
+            cwd: String::new(),
+            in_use_reason: String::new(),
             title: String::new(),
             profile: String::new(),
             backend: "claude".into(),
@@ -573,6 +629,54 @@ mod tests {
         assert_eq!(view.groups[0].error.as_deref(), Some("token required"));
     }
 
+    /// #178 step 3: sessions started by hand on a daemon's host are listed
+    /// read-only after the daemon's own, named by title or directory, with
+    /// why one still counts as running; a session continued under itervox
+    /// (no issue, a directory) is kept as the daemon's own.
+    #[test]
+    fn sessions_window_lists_hand_started_sessions_after_own() {
+        let body = br#"{"generatedAt":"x","sessions":[
+          {"id":"hand-1","owner":"external","identifier":"","title":"Add health check","status":"exited","cwd":"/work/app","backend":"claude"},
+          {"id":"hand-2","owner":"external","identifier":"","status":"running","cwd":"/work/app/svc","inUseReason":"codex process 42 has the transcript open"},
+          {"id":"hand-3","owner":"itervox","kind":"manual","identifier":"","status":"idle","cwd":"/work/app"},
+          {"id":"sess-w","owner":"itervox","identifier":"ENG-2","status":"input_required"},
+          {"id":"","owner":"external","identifier":"","status":"exited","cwd":"/x"}
+        ]}"#;
+        let parsed = parse_sessions(body).unwrap();
+        assert_eq!(parsed.len(), 4, "a row with no key is still skipped");
+        let view = aggregate(vec![DaemonSessions {
+            key: "/work/app/WORKFLOW.md".into(),
+            name: "app".into(),
+            remote: None,
+            result: Ok(parsed),
+        }]);
+        assert_eq!((view.total, view.waiting, view.external), (4, 1, 2));
+        let g = &view.groups[0];
+        assert_eq!(g.external, 2);
+        let order: Vec<_> = g
+            .sessions
+            .iter()
+            .map(|s| (s.label.as_str(), s.external()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("ENG-2", false),
+                ("app", false),
+                ("Add health check", true),
+                ("svc", true)
+            ]
+        );
+        assert_eq!(g.sessions[1].kind, "manual");
+        assert_eq!(
+            g.sessions[3].in_use_reason,
+            "codex process 42 has the transcript open"
+        );
+        let js = push_script(&view);
+        assert!(js.contains(r#""external":2"#));
+        assert!(js.contains(r#""inUseReason":"codex process 42 has the transcript open""#));
+    }
+
     /// Drift guard: the route and query parameter the links use are the
     /// ones the dashboard serves.
     #[test]
@@ -603,5 +707,10 @@ mod tests {
         assert!(html.contains(OPEN_PATH));
         assert!(html.contains(READY_PATH));
         assert!(html.contains("window.__itervoxSessions ="));
+        assert!(
+            html.contains("'origin', 'started outside itervox'"),
+            "hand-started sessions are labelled in the list"
+        );
+        assert!(html.contains("s.label"));
     }
 }
