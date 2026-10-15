@@ -24,6 +24,8 @@ func TestRemoteHeadSHA(t *testing.T) {
 	gitIn(t, root, "init", "--bare", "-q", remote)
 	gitIn(t, ws, "init", "-q", "-b", "feat")
 	gitIn(t, ws, "remote", "add", "origin", remote)
+	gitIn(t, ws, "config", "user.email", "test@test.com")
+	gitIn(t, ws, "config", "user.name", "test")
 	gitIn(t, ws, "commit", "-q", "--allow-empty", "-m", "one")
 	gitIn(t, ws, "push", "-q", "origin", "feat")
 	pushed := headOf(t, ws)
