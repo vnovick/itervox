@@ -503,8 +503,8 @@ In addition to the DCO sign-off, external contributors sign the
 [Itervox Individual Contributor License Agreement](CLA.md) once.
 
 - **What it is.** A license, not a transfer: you keep the copyright in your
-  work and grant the project owner a broad, perpetual copyright and patent
-  license to use it, including the right to sublicense it and to distribute it
+  work and grant the project owner, Novick Labs LTD, a broad, perpetual
+  copyright and patent license to use it, including the right to sublicense it and to distribute it
   under licenses other than Apache-2.0.
 - **Why.** Itervox is Apache-2.0 today. The project may adopt an open-core
   model in which some future parts are released under a different license
@@ -523,8 +523,9 @@ In addition to the DCO sign-off, external contributors sign the
   `cla-signatures` branch) and covers all your future contributions. Comment
   `recheck` to re-run the check.
 - **Contributing for your employer?** If your employer may own what you write,
-  ask them to sign the [Corporate CLA](CLA-CORPORATE.md) (a signed PDF sent by
-  email; the steps are in the document) and list you on its Schedule A.
+  ask them to sign the [Corporate CLA](CLA-CORPORATE.md) (a signed PDF emailed
+  to vlad@novicklabs.com; the steps are in the document) and list you on its
+  Schedule A.
 
 **Who is checked.** Both the DCO and the CLA checks run only on pull requests
 opened from a fork. They are skipped for branches pushed to `vnovick/itervox`

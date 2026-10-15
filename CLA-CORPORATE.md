@@ -4,8 +4,7 @@ This text is a plain-English adaptation of the structure of the Apache Software
 Foundation Software Grant and Corporate Contributor License Agreement (CCLA),
 extended with an explicit relicensing clause for an open-core model. It is NOT legal
 advice and has not been reviewed by a lawyer. Review it with counsel before relying on
-it, fill in the legal entity marked below, and replace <CLA-CONTACT-EMAIL> with a
-monitored address before announcing the corporate signing path. When a signed copy
+it. When a signed copy
 arrives: file it privately (never commit it to the repository), reply to acknowledge,
 and add the Schedule A GitHub usernames to the `allowlist` in .github/workflows/cla.yml
 (or ask each listed employee to post the sign comment on their first pull request).
@@ -32,7 +31,7 @@ Each individual who contributes should still sign off every commit under the
    The person signing must be authorized to bind the Corporation.
 2. Sign it (a handwritten signature on a scanned copy, or an
    electronic signature, are both fine) and save it as a PDF.
-3. Email the PDF to **`<CLA-CONTACT-EMAIL>`** with the subject
+3. Email the PDF to **vlad@novicklabs.com** with the subject
    "Itervox Corporate CLA — [Corporation name]".
 4. We will acknowledge receipt and record the GitHub accounts listed in
    Schedule A so the CLA check on their pull requests passes. Until that is
@@ -45,10 +44,9 @@ again.
 
 ## 1. Definitions
 
-- **"We", "Us" or "Project Owner"** means the Itervox project owner (GitHub:
-  @vnovick) <!-- LEGAL ENTITY: confirm before launch --> and any successor or
-  assignee of the Project, including any company the Project Owner forms or
-  transfers the Project to.
+- **"We", "Us" or "Project Owner"** means Novick Labs LTD, the owner of the
+  Itervox project (GitHub: @vnovick), and any successor or assignee of the
+  Project, including any company the Project is transferred to.
 - **"Corporation"** or **"You"** means the legal entity named in the signature
   block, together with every entity that controls it, is controlled by it, or
   is under common control with it. "Control" means owning 50% or more of the

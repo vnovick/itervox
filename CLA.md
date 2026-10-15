@@ -3,8 +3,7 @@ MAINTAINER NOTE (not part of the agreement; contributors can ignore this comment
 This text is a plain-English adaptation of the structure of the Apache Software
 Foundation Individual Contributor License Agreement (ICLA), extended with an
 explicit relicensing clause for an open-core model. It is NOT legal advice and has
-not been reviewed by a lawyer. Review it with counsel before relying on it, and fill
-in the legal entity marked below. If the text changes materially, bump the version,
+not been reviewed by a lawyer. Review it with counsel before relying on it. If the text changes materially, bump the version,
 publish it at a new path or tag, and point `path-to-document` in
 .github/workflows/cla.yml at it so new signatures reference the new version.
 -->
@@ -33,10 +32,9 @@ write, also read the [Corporate CLA](CLA-CORPORATE.md) and see section 4 below.
 
 ## 1. Definitions
 
-- **"We", "Us" or "Project Owner"** means the Itervox project owner (GitHub:
-  @vnovick) <!-- LEGAL ENTITY: confirm before launch --> and any successor or
-  assignee of the Project, including any company the Project Owner forms or
-  transfers the Project to.
+- **"We", "Us" or "Project Owner"** means Novick Labs LTD, the owner of the
+  Itervox project (GitHub: @vnovick), and any successor or assignee of the
+  Project, including any company the Project is transferred to.
 - **"You"** means the individual who signs this agreement. "Your" has the
   matching meaning.
 - **"Contribution"** means any original work of authorship, including any
