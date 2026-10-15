@@ -52,6 +52,13 @@ pub struct Session {
     pub cwd: String,
     /// Why a session started by hand counts as still running.
     pub in_use_reason: String,
+    /// Runs in a tmux pane (a hand-started session matched to one, or a
+    /// session itervox started in tmux).
+    pub tmux: bool,
+    /// The pane, "session:window.pane"; empty when unknown.
+    pub tmux_label: String,
+    /// The dashboard can show its screen and type into it.
+    pub controllable: bool,
     pub title: String,
     pub profile: String,
     pub backend: String,
@@ -106,21 +113,68 @@ struct RawSession {
     kind: String,
     cwd: String,
     in_use_reason: String,
+    tmux_pane: Option<RawPane>,
+    controllable: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawPane {
+    label: String,
+}
+
+/// The daemon's tmux status (`GET /api/v1/sessions` top-level `tmux`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TmuxInfo {
+    pub available: bool,
+    pub install_hint: String,
+}
+
+/// One daemon's `GET /api/v1/sessions`: its sessions and, from a daemon
+/// with tmux control, its tmux status.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionsRead {
+    pub sessions: Vec<Session>,
+    pub tmux: Option<TmuxInfo>,
+}
+
+/// The warning a group shows while its daemon has no tmux.
+pub fn tmux_warning(t: &TmuxInfo) -> String {
+    format!(
+        "tmux not found — install it to control sessions from here: {}",
+        t.install_hint
+    )
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct RawSessions {
     sessions: Option<Vec<RawSession>>,
+    tmux: Option<TmuxInfo>,
+}
+
+/// Parses a `/api/v1/sessions` body into the sessions (see
+/// [`parse_sessions`]) and the tmux status.
+pub fn parse_read(body: &[u8]) -> Result<SessionsRead, String> {
+    let raw: RawSessions = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    Ok(SessionsRead {
+        tmux: raw.tmux.clone(),
+        sessions: sessions_of(raw),
+    })
 }
 
 /// Parses a `/api/v1/sessions` body; rows without a key are skipped, and so
 /// are rows with no issue unless they are sessions started by hand or have
 /// a directory instead.
+#[cfg(test)]
 pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
     let raw: RawSessions = serde_json::from_slice(body).map_err(|e| e.to_string())?;
-    Ok(raw
-        .sessions
+    Ok(sessions_of(raw))
+}
+
+fn sessions_of(raw: RawSessions) -> Vec<Session> {
+    raw.sessions
         .unwrap_or_default()
         .into_iter()
         .filter_map(|r| {
@@ -130,6 +184,7 @@ pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
                 r.id.clone()
             };
             let named = !r.identifier.is_empty() || r.owner == OWNER_EXTERNAL || !r.cwd.is_empty();
+            let tmux = r.tmux_pane.is_some() || r.kind == "tmux";
             (!key.is_empty() && named).then_some(Session {
                 label: label_of(&r.identifier, &r.title, &r.cwd, &key),
                 id: r.id,
@@ -140,6 +195,9 @@ pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
                 kind: r.kind,
                 cwd: r.cwd,
                 in_use_reason: r.in_use_reason,
+                tmux,
+                tmux_label: r.tmux_pane.map(|p| p.label).unwrap_or_default(),
+                controllable: r.controllable,
                 title: r.title,
                 profile: r.profile,
                 backend: r.backend,
@@ -150,7 +208,7 @@ pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
                 queued_at: r.queued_at,
             })
         })
-        .collect())
+        .collect()
 }
 
 /// One daemon's read for this refresh.
@@ -162,6 +220,8 @@ pub struct DaemonSessions {
     /// The remote connection's name; `None` for a local daemon.
     pub remote: Option<String>,
     pub result: Result<Vec<Session>, String>,
+    /// The daemon's tmux status; `None` from a daemon without tmux control.
+    pub tmux: Option<TmuxInfo>,
 }
 
 /// One daemon's group in the window.
@@ -176,6 +236,10 @@ pub struct SessionGroup {
     /// Sessions started by hand on the daemon's host.
     pub external: usize,
     pub error: Option<String>,
+    /// Set while the daemon reports tmux missing (see [`tmux_warning`]).
+    pub tmux_warning: Option<String>,
+    /// The daemon can start a session in tmux ("New session…").
+    pub new_session: bool,
     pub sessions: Vec<Session>,
 }
 
@@ -210,6 +274,8 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
                     Some(c) => format!("remote · {c}"),
                     None => "local".into(),
                 },
+                tmux_warning: d.tmux.as_ref().filter(|t| !t.available).map(tmux_warning),
+                new_session: d.tmux.as_ref().is_some_and(|t| t.available),
                 daemon: d.key,
                 name: d.name,
                 error,
@@ -249,24 +315,32 @@ pub struct SessionsJob {
 /// client's timeout) and aggregates the answers.
 pub fn read_all<F>(jobs: &[SessionsJob], fetch: F) -> SessionsView
 where
-    F: Fn(&str, Option<&str>) -> Result<Vec<Session>, FetchError> + Sync,
+    F: Fn(&str, Option<&str>) -> Result<SessionsRead, FetchError> + Sync,
 {
     let fetch = &fetch;
     let reads: Vec<DaemonSessions> = std::thread::scope(|s| {
         let handles: Vec<_> = jobs
             .iter()
             .map(|j| {
-                s.spawn(move || DaemonSessions {
-                    key: j.key.clone(),
-                    name: j.name.clone(),
-                    remote: j.remote.clone(),
-                    result: fetch(&j.url, j.token.as_deref()).map_err(|e| match e {
+                s.spawn(move || {
+                    let read = fetch(&j.url, j.token.as_deref()).map_err(|e| match e {
                         // An older daemon has no sessions endpoint.
                         FetchError::Status(404) => {
-                            "this daemon has no Sessions API (update it)".into()
+                            "this daemon has no Sessions API (update it)".to_string()
                         }
                         e => e.to_string(),
-                    }),
+                    });
+                    let (result, tmux) = match read {
+                        Ok(r) => (Ok(r.sessions), r.tmux),
+                        Err(e) => (Err(e), None),
+                    };
+                    DaemonSessions {
+                        key: j.key.clone(),
+                        name: j.name.clone(),
+                        remote: j.remote.clone(),
+                        result,
+                        tmux,
+                    }
                 })
             })
             .collect();
@@ -289,6 +363,8 @@ pub fn push_script(view: &SessionsView) -> String {
 pub const OPEN_PATH: &str = "/__itervox/open-session";
 /// The path the page navigates to once loaded, asking for data.
 pub const READY_PATH: &str = "/__itervox/ready";
+/// The path the page navigates to for "New session…" (#178 tmux).
+pub const NEW_SESSION_PATH: &str = "/__itervox/new-session";
 
 /// What a navigation of the Sessions page asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,6 +373,8 @@ pub enum PageAction {
     Ready,
     /// Open `session` (its key) in the dashboard of `daemon`.
     Open { daemon: String, session: String },
+    /// Open the dashboard of `daemon` at the New session form.
+    NewSession { daemon: String },
 }
 
 /// The action behind a navigation of the Sessions page, or `None` for an
@@ -309,6 +387,12 @@ pub fn page_action(url: &str) -> Option<PageAction> {
         .unwrap_or((path_and_query, ""));
     match path {
         READY_PATH => Some(PageAction::Ready),
+        NEW_SESSION_PATH => query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("daemon="))
+            .and_then(percent_decode)
+            .filter(|d| !d.is_empty())
+            .map(|daemon| PageAction::NewSession { daemon }),
         OPEN_PATH => {
             let mut daemon = None;
             let mut session = None;
@@ -339,6 +423,15 @@ pub fn session_link(base_url: &str, key: &str) -> String {
         b.push('/');
     }
     format!("{b}sessions?id={}", percent_encode(key))
+}
+
+/// The dashboard route of the New session form: `{base}sessions?new=1`.
+pub fn new_session_link(base_url: &str) -> String {
+    let mut b = base_url.to_string();
+    if !b.ends_with('/') {
+        b.push('/');
+    }
+    format!("{b}sessions?new=1")
 }
 
 /// Percent-encodes everything but RFC 3986 unreserved characters.
@@ -394,6 +487,9 @@ mod tests {
             kind: String::new(),
             cwd: String::new(),
             in_use_reason: String::new(),
+            tmux: false,
+            tmux_label: String::new(),
+            controllable: false,
             title: String::new(),
             profile: String::new(),
             backend: "claude".into(),
@@ -430,12 +526,14 @@ mod tests {
     fn groups_by_daemon_with_waiting_sessions_first() {
         let view = aggregate(vec![
             DaemonSessions {
+                tmux: None,
                 key: "/a/WORKFLOW.md".into(),
                 name: "alpha".into(),
                 remote: None,
                 result: Ok(vec![session("A-1", "running")]),
             },
             DaemonSessions {
+                tmux: None,
                 key: "remote:vm:/srv/WORKFLOW.md".into(),
                 name: "server".into(),
                 remote: Some("vm".into()),
@@ -445,6 +543,7 @@ mod tests {
                 ]),
             },
             DaemonSessions {
+                tmux: None,
                 key: "/b/WORKFLOW.md".into(),
                 name: "beta".into(),
                 remote: None,
@@ -471,6 +570,7 @@ mod tests {
         let mut s = session("ENG-1", "running");
         s.title = "a\u{2028}b</script>".into();
         let view = aggregate(vec![DaemonSessions {
+            tmux: None,
             key: "k".into(),
             name: "n".into(),
             remote: None,
@@ -642,6 +742,7 @@ mod tests {
         let parsed = parse_sessions(body).unwrap();
         assert_eq!(parsed.len(), 3, "a row with no key is still skipped");
         let view = aggregate(vec![DaemonSessions {
+            tmux: None,
             key: "/work/app/WORKFLOW.md".into(),
             name: "app".into(),
             remote: None,
@@ -684,6 +785,88 @@ mod tests {
         ))
         .expect("web/src/pages/Sessions/index.tsx");
         assert!(page.contains("params.get('id')"));
+        assert!(
+            page.contains("params.get('new') === '1'"),
+            "the dashboard opens the New session form on ?new=1"
+        );
+    }
+
+    /// #178 tmux: a session in a tmux pane carries the window's "tmux" badge
+    /// (and whether the dashboard can control it), a daemon without tmux
+    /// shows the install warning instead of "New session…", and a daemon
+    /// with tmux offers "New session…", which opens /sessions?new=1.
+    #[test]
+    fn sessions_window_shows_tmux_badge() {
+        let with_tmux = br#"{"generatedAt":"x","tmux":{"available":true,"version":"tmux 3.4","installHint":"brew install tmux","control":true},"sessions":[
+          {"id":"hand-1","owner":"external","identifier":"","status":"running","cwd":"/work/app","tmuxPane":{"id":"%3","label":"work:0.0"},"controllable":true},
+          {"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","status":"running","cwd":"/work/app","tmuxPane":null,"controllable":true},
+          {"id":"hand-2","owner":"external","identifier":"","status":"exited","cwd":"/work/app","tmuxPane":null,"controllable":false}
+        ]}"#;
+        let read = parse_read(with_tmux).unwrap();
+        assert_eq!(read.tmux.as_ref().map(|t| t.available), Some(true));
+        let s = &read.sessions;
+        assert!(s[0].tmux && s[0].controllable);
+        assert_eq!(s[0].tmux_label, "work:0.0");
+        assert!(s[1].tmux, "a session itervox started in tmux is badged too");
+        assert!(!s[2].tmux && !s[2].controllable);
+
+        let without = br#"{"generatedAt":"x","tmux":{"available":false,"installHint":"brew install tmux","control":false},"sessions":[]}"#;
+        let missing = parse_read(without).unwrap();
+        let old = parse_read(br#"{"generatedAt":"x","sessions":[]}"#).unwrap();
+        assert_eq!(old.tmux, None, "a daemon without tmux control");
+        let daemon = |key: &str, read: SessionsRead| DaemonSessions {
+            key: key.into(),
+            name: key.into(),
+            remote: None,
+            result: Ok(read.sessions),
+            tmux: read.tmux,
+        };
+        let view = aggregate(vec![
+            daemon("a", read),
+            daemon("b", missing),
+            daemon("c", old),
+        ]);
+        let by = |k: &str| view.groups.iter().find(|g| g.daemon == k).unwrap();
+        assert!(by("a").new_session && by("a").tmux_warning.is_none());
+        assert!(!by("b").new_session);
+        assert_eq!(
+            by("b").tmux_warning.as_deref(),
+            Some("tmux not found — install it to control sessions from here: brew install tmux")
+        );
+        assert!(!by("c").new_session && by("c").tmux_warning.is_none());
+        let js = push_script(&view);
+        assert!(js.contains(r#""tmux":true"#));
+        assert!(js.contains(r#""tmuxLabel":"work:0.0""#));
+        assert!(js.contains(r#""controllable":true"#));
+        assert!(js.contains(r#""tmuxWarning":"tmux not found"#));
+        assert!(js.contains(r#""newSession":true"#));
+
+        let html = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../dist/sessions.html"
+        ))
+        .expect("desktop/dist/sessions.html");
+        assert!(html.contains("el('span', s.controllable ? 'tmux controllable' : 'tmux', 'tmux')"));
+        assert!(html.contains("el('p', 'tmux-warning', g.tmuxWarning)"));
+        assert!(html.contains(NEW_SESSION_PATH));
+        assert!(html.contains("'New session…'"));
+
+        assert_eq!(
+            page_action(
+                "tauri://localhost/__itervox/new-session?daemon=%2Fwork%2Fapp%2FWORKFLOW.md"
+            ),
+            Some(PageAction::NewSession {
+                daemon: "/work/app/WORKFLOW.md".into()
+            })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/new-session?daemon="),
+            None
+        );
+        assert_eq!(
+            new_session_link("http://127.0.0.1:8090"),
+            "http://127.0.0.1:8090/sessions?new=1"
+        );
     }
 
     /// Drift guard: the page navigates to the paths the window intercepts

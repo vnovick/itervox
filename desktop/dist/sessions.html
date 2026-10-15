@@ -4,7 +4,10 @@
      (outside itervox, read-only) last. The app pushes the data
      (src-tauri/src/sessions.rs push_script); choosing a session navigates to
      /__itervox/open-session, which the window intercepts and opens in that
-     daemon's dashboard at /sessions?id=… . No network access of its own. -->
+     daemon's dashboard at /sessions?id=… ; "New session…" navigates to
+     /__itervox/new-session and opens /sessions?new=1. Sessions in tmux carry
+     a "tmux" badge; a daemon without tmux shows the install warning. No
+     network access of its own. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -40,6 +43,13 @@
   button.session.external { border-style:dashed; opacity:.75; }
   button.session.external .id { font-weight:500; color:var(--muted); }
   .origin { color:var(--muted); font-size:11px; font-style:italic; white-space:nowrap; }
+  .tmux { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:10px;
+    font-family:ui-monospace, Menlo, monospace; color:var(--muted); white-space:nowrap; }
+  .tmux.controllable { border-color:var(--accent); color:var(--accent); }
+  .tmux-warning { background:var(--warn-bg); color:var(--warn); border-radius:6px; padding:6px 8px; margin:4px 0; }
+  .tmux-warning code { font-family:ui-monospace, Menlo, monospace; }
+  button.new-session { font:inherit; font-size:12px; cursor:pointer; background:none; color:var(--accent);
+    border:1px solid var(--line); border-radius:6px; padding:3px 8px; margin:2px 0 4px; }
 </style>
 </head>
 <body>
@@ -52,6 +62,7 @@
 (function () {
   var OPEN_PATH = '/__itervox/open-session';
   var READY_PATH = '/__itervox/ready';
+  var NEW_SESSION_PATH = '/__itervox/new-session';
   var groupsEl = document.getElementById('groups');
   var summaryEl = document.getElementById('summary');
 
@@ -71,6 +82,10 @@
       '&id=' + encodeURIComponent(key);
   }
 
+  function newSession(daemon) {
+    window.location.href = NEW_SESSION_PATH + '?daemon=' + encodeURIComponent(daemon);
+  }
+
   function render(view) {
     var focused = document.activeElement && document.activeElement.dataset
       ? document.activeElement.dataset.ref : null;
@@ -85,6 +100,14 @@
       var h = el('h2', null, g.name + ' ');
       h.appendChild(el('span', 'where', '— ' + g.location));
       sec.appendChild(h);
+      if (g.tmuxWarning) sec.appendChild(el('p', 'tmux-warning', g.tmuxWarning));
+      if (g.newSession) {
+        var ns = el('button', 'new-session', 'New session…');
+        ns.type = 'button';
+        ns.title = 'Start an agent in a new tmux session on this daemon';
+        ns.addEventListener('click', function () { newSession(g.daemon); });
+        sec.appendChild(ns);
+      }
       if (g.error) sec.appendChild(el('p', 'error', g.error));
       else if (g.sessions.length === 0) sec.appendChild(el('p', 'empty', 'No sessions.'));
       g.sessions.forEach(function (s) {
@@ -93,11 +116,17 @@
         b.type = 'button';
         b.dataset.ref = g.daemon + '\n' + s.key;
         b.appendChild(el('span', 'id', s.label));
-        var meta = external
+        var meta = external || s.kind === 'tmux'
           ? [s.cwd, s.backend].filter(Boolean).join(' · ')
           : [s.title, s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ');
         b.appendChild(el('span', 'meta', meta || s.key));
         if (external) b.appendChild(el('span', 'origin', 'started outside itervox'));
+        if (s.tmux) {
+          var t = el('span', s.controllable ? 'tmux controllable' : 'tmux', 'tmux');
+          t.title = (s.tmuxLabel ? 'tmux pane ' + s.tmuxLabel : 'tmux') +
+            (s.controllable ? ' · controllable from the dashboard' : ' · read-only');
+          b.appendChild(t);
+        }
         if (s.status === 'input_required') b.appendChild(el('span', 'badge', 'needs input'));
         else b.appendChild(el('span', 'status', s.status.replace(/_/g, ' ')));
         b.title = s.status === 'input_required' && s.inputContext ? s.inputContext

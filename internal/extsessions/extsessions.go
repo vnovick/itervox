@@ -79,6 +79,19 @@ type Session struct {
 	// running (see Liveness); RunningReason says why.
 	Running       bool
 	RunningReason string
+	// PID is the claude/codex process liveness tied to the session (0:
+	// none). Used to find the tmux pane the session runs in.
+	PID int
+	// TmuxPane is the tmux pane hosting PID, when one was matched (#178
+	// tmux control); zero otherwise. Filled outside this package.
+	TmuxPane TmuxPane
+}
+
+// TmuxPane names the tmux pane a session runs in.
+type TmuxPane struct {
+	ID      string // "%12"
+	Label   string // "session:window.pane"
+	Session string // the tmux session name
 }
 
 // Options configure Discover.

@@ -15,6 +15,7 @@ import (
 	"github.com/vnovick/itervox/internal/extsessions"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/tmuxctl"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -38,9 +39,9 @@ func TestSessionsClientMapsRowsAndErrors(t *testing.T) {
 
 	cfg := &config.Config{}
 	c := sessionsClient{orch: orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), nil, nil)}
-	_, err := c.SendSessionMessage("nope", "hi")
+	_, err := c.SendSessionMessage("nope", "hi", true)
 	assert.ErrorIs(t, err, server.ErrSessionNotFound)
-	_, err = c.SendSessionMessage("nope", "")
+	_, err = c.SendSessionMessage("nope", "", true)
 	assert.ErrorIs(t, err, server.ErrInvalidSessionMessage)
 	for in, want := range map[error]error{
 		orchestrator.ErrSessionInputRequired: server.ErrSessionInputRequired,
@@ -99,9 +100,12 @@ func TestSessionsClientServesHandStartedSessions(t *testing.T) {
 	cfg.Agent.Command = "claude"
 	cfg.Polling.IntervalMs = 50
 	o := orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
-	o.SetExternalSessionSource(extsessions.Scanner{
-		Options:   extsessions.Options{ClaudeProjectsDir: filepath.Join(home, "projects"), Window: 24 * time.Hour, Roots: []string{project}},
-		Processes: func() ([]extsessions.Process, error) { return nil, nil },
+	o.SetExternalSessionSource(sessionSource{
+		scanner: &extsessions.Scanner{
+			Options:   extsessions.Options{ClaudeProjectsDir: filepath.Join(home, "projects"), Window: 24 * time.Hour, Roots: []string{project}},
+			Processes: func() ([]extsessions.Process, error) { return nil, nil },
+		},
+		detect: &tmuxDetector{client: tmuxctl.Client{Socket: filepath.Join(t.TempDir(), "tmux.sock")}},
 	}, 20*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -119,6 +123,6 @@ func TestSessionsClientServesHandStartedSessions(t *testing.T) {
 	assert.Equal(t, "set DB_PASSWORD=***", page.Entries[0].Text)
 	assert.Equal(t, "done", page.Entries[1].Text)
 
-	_, err = c.SendSessionMessage(id, "next step")
+	_, err = c.SendSessionMessage(id, "next step", true)
 	assert.ErrorIs(t, err, server.ErrSessionNotOwned, "a session started by hand is read-only")
 }

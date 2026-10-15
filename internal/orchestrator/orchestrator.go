@@ -182,6 +182,7 @@ type Orchestrator struct {
 	failureEventsDropped atomic.Int64
 	seedFailures         []FailureRecord
 	seedFailureAcks      map[string]time.Time // M6-close V3 (CORE-175 acks across reload)
+	seedTmux             []TmuxSession        // #178: SeedTmuxSessions, applied at the top of Run
 
 	// CORE-043: readiness signals, written only by the event loop and read
 	// lock-free by the /ready probe (see readiness.go).

@@ -75,6 +75,7 @@ func (s State) Clone() State {
 	c.FailureAcks = maps.Clone(s.FailureAcks)
 	c.SessionMessages = copySessionMessages(s.SessionMessages)
 	c.ExternalSessions = cloneSlice(s.ExternalSessions)
+	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
 	return c
 }
 

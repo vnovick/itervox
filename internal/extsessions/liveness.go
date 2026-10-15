@@ -18,6 +18,7 @@ const RecentWriteWindow = 2 * time.Minute
 // process and nothing is attached to it.
 type Process struct {
 	PID  int
+	PPID int    // the parent's PID; 0 when unknown
 	Name string // the executable's base name
 	Args []string
 	// Cwd is the process's working directory; "" when it could not be read.
@@ -35,6 +36,8 @@ type Liveness struct {
 	// session is in use, but nothing rules it out).
 	Certain bool
 	Reason  string
+	// PID is the process the decision rests on (0: none).
+	PID int
 }
 
 // ProcessBackend is "claude" or "codex" when p runs that CLI — its
@@ -82,11 +85,11 @@ func CheckLiveness(s Session, procs []Process, listErr error, now time.Time) Liv
 			continue
 		}
 		if slices.ContainsFunc(p.Files, func(f string) bool { return canonical(f) == path }) {
-			return Liveness{Running: true, Certain: true, Reason: fmt.Sprintf(
+			return Liveness{Running: true, Certain: true, PID: p.PID, Reason: fmt.Sprintf(
 				"%s process %d has the transcript open", s.Backend, p.PID)}
 		}
 		if slices.ContainsFunc(p.Args, func(a string) bool { return strings.Contains(a, s.ID) }) {
-			return Liveness{Running: true, Certain: true, Reason: fmt.Sprintf(
+			return Liveness{Running: true, Certain: true, PID: p.PID, Reason: fmt.Sprintf(
 				"%s process %d was started for this session", s.Backend, p.PID)}
 		}
 		if maybe != nil {
@@ -97,7 +100,7 @@ func CheckLiveness(s Session, procs []Process, listErr error, now time.Time) Liv
 			maybe = &Liveness{Running: true, Reason: fmt.Sprintf(
 				"a %s process (%d) is running whose directory could not be read; it may be this session", s.Backend, p.PID)}
 		case cwd != "" && canonical(p.Cwd) == cwd:
-			maybe = &Liveness{Running: true, Reason: fmt.Sprintf(
+			maybe = &Liveness{Running: true, PID: p.PID, Reason: fmt.Sprintf(
 				"a %s process (%d) is running in the session's directory; it may be this session", s.Backend, p.PID)}
 		}
 	}
@@ -138,18 +141,50 @@ func (sc Scanner) processes() ([]Process, error) {
 	return SystemProcesses()
 }
 
-// Discover lists the sessions in scope with their liveness.
-func (sc Scanner) Discover(now time.Time) ([]Session, error) {
+// Scan lists the sessions in scope with their liveness, plus the process
+// list liveness was decided from (nil when there were no sessions or it
+// could not be read), for callers that match sessions to tmux panes by
+// process ancestry.
+func (sc Scanner) Scan(now time.Time) ([]Session, []Process, error) {
 	sessions, err := Discover(sc.Options, now)
 	if len(sessions) == 0 {
-		return sessions, err
+		return sessions, nil, err
 	}
 	procs, listErr := sc.processes()
 	for i := range sessions {
 		l := CheckLiveness(sessions[i], procs, listErr, now)
-		sessions[i].Running, sessions[i].RunningReason = l.Running, l.Reason
+		sessions[i].Running, sessions[i].RunningReason, sessions[i].PID = l.Running, l.Reason, l.PID
 	}
-	return sessions, err
+	if listErr != nil {
+		procs = nil
+	}
+	return sessions, procs, err
+}
+
+// Ancestors returns pid's parent chain in procs, nearest first, stopping at
+// an unknown parent, PID 1 or a loop.
+func Ancestors(procs []Process, pid int) []int {
+	parent := make(map[int]int, len(procs))
+	for _, p := range procs {
+		parent[p.PID] = p.PPID
+	}
+	var chain []int
+	seen := map[int]bool{pid: true}
+	for cur := parent[pid]; cur > 1 && !seen[cur]; cur = parent[cur] {
+		seen[cur] = true
+		chain = append(chain, cur)
+	}
+	return chain
+}
+
+// FindProcess returns the process pid from procs.
+func FindProcess(procs []Process, pid int) (Process, bool) {
+	for _, p := range procs {
+		if p.PID == pid {
+			return p, true
+		}
+	}
+	return Process{}, false
 }
 
 func atoiOK(s string) (int, bool) {

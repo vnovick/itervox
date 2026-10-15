@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
@@ -16,17 +17,32 @@ import (
 // sessionsClient backs the Sessions panel API (#178) over the orchestrator:
 // rows come from Snapshot(), messages go through SendSessionMessage (an
 // event to the loop). liveSteering is agent.live_steering, read-only after
-// startup.
+// startup. tmux backs control of sessions in tmux panes and "New session"
+// (sessions_tmux.go).
 type sessionsClient struct {
 	orch         *orchestrator.Orchestrator
 	liveSteering bool
+	tmux         *tmuxSessions
 }
 
 func (c sessionsClient) ListSessions() []server.SessionRow {
-	return sessionRows(orchestrator.Sessions(c.orch.Snapshot(), c.liveSteering))
+	sessions := orchestrator.Sessions(c.orch.Snapshot(), c.liveSteering)
+	rows := sessionRows(sessions)
+	if c.tmux != nil {
+		c.tmux.decorate(rows, sessions)
+	}
+	return rows
 }
 
-func (c sessionsClient) SendSessionMessage(id, text string) (server.SessionMessageRow, error) {
+// SendSessionMessage pastes into a controllable tmux session's pane, or
+// hands the message to the orchestrator (itervox's issue runs; a
+// hand-started session it refuses as not owned).
+func (c sessionsClient) SendSessionMessage(id, text string, submit bool) (server.SessionMessageRow, error) {
+	if c.tmux != nil {
+		if row, handled, err := c.tmux.sendText(id, text, submit); handled {
+			return row, err
+		}
+	}
 	msg, err := c.orch.SendSessionMessage(id, text)
 	if err != nil {
 		return server.SessionMessageRow{}, sessionError(err)
@@ -113,13 +129,76 @@ func (c sessionsClient) SessionTranscript(id string, before int64, limit int) (s
 	return resp, nil
 }
 
-// wireExternalSessions enables discovery of sessions started by hand on
-// this host (sessions.external). Off in demo mode.
-func wireExternalSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowPath string, demo bool) {
-	if demo || !cfg.Sessions.External {
-		return
+// TmuxStatus reports whether tmux is installed and tmux_control is on.
+func (c sessionsClient) TmuxStatus() server.TmuxStatusRow { return c.tmux.status() }
+
+// NewSessionOptions lists what "New session" offers.
+func (c sessionsClient) NewSessionOptions() server.NewSessionOptions { return c.tmux.options() }
+
+// SessionScreen captures a controllable session's pane.
+func (c sessionsClient) SessionScreen(id string, lines int) (server.ScreenResponse, error) {
+	return c.tmux.screen(id, lines)
+}
+
+// SendSessionKey presses an allowlisted key in a controllable session.
+func (c sessionsClient) SendSessionKey(id, key string) error { return c.tmux.sendKey(id, key) }
+
+// StartSession starts an interactive agent CLI in a new tmux session.
+func (c sessionsClient) StartSession(req server.NewSessionRequest) (server.SessionRow, error) {
+	s, err := c.tmux.start(req)
+	if err != nil {
+		return server.SessionRow{}, err
 	}
-	orch.SetExternalSessionSource(extsessions.Scanner{Options: externalSessionOptions(cfg, workflowPath)}, 0)
+	sessions := []orchestrator.AgentSession{s}
+	rows := sessionRows(sessions)
+	c.tmux.decorate(rows, sessions)
+	return rows[0], nil
+}
+
+// KillSession kills a tmux session itervox started.
+func (c sessionsClient) KillSession(id string) error { return c.tmux.kill(id) }
+
+// tmuxCarry holds itervox's tmux sessions across a WORKFLOW.md reload.
+var tmuxCarry struct {
+	mu   sync.Mutex
+	list []orchestrator.TmuxSession
+}
+
+// carryRunState hands a finished generation's carried state to the next:
+// the RecentFailures ring and its acks (CORE-046), and itervox's tmux
+// sessions (#178).
+func carryRunState(final orchestrator.State) {
+	failureCarry.store(final.RecentFailures, final.FailureAcks)
+	tmuxCarry.mu.Lock()
+	tmuxCarry.list = orchestrator.TmuxSessionList(final)
+	tmuxCarry.mu.Unlock()
+}
+
+// wireSessions sets up the Sessions panel's discovery and tmux control for
+// one run generation: discovery of sessions started by hand on this host
+// (sessions.external) and of tmux panes runs off the event loop, and the
+// tmux sessions the previous generation owned are carried over. Demo mode
+// discovers nothing.
+func wireSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowPath string, demo bool) *tmuxSessions {
+	tmuxCarry.mu.Lock()
+	orch.SeedTmuxSessions(tmuxCarry.list)
+	tmuxCarry.list = nil
+	tmuxCarry.mu.Unlock()
+	project := filepath.Dir(workflowPath)
+	if abs, err := filepath.Abs(project); err == nil {
+		project = abs
+	}
+	t := &tmuxSessions{orch: orch, detect: &tmuxDetector{}, control: cfg.Sessions.TmuxControl,
+		projectRoot: project, workspaceRoot: cfg.Workspace.Root, agentCommand: cfg.Agent.Command}
+	if demo {
+		return t
+	}
+	src := sessionSource{detect: t.detect}
+	if cfg.Sessions.External {
+		src.scanner = &extsessions.Scanner{Options: externalSessionOptions(cfg, workflowPath)}
+	}
+	orch.SetExternalSessionSource(src, 0)
+	return t
 }
 
 // externalSessionOptions scopes discovery: by default to the WORKFLOW.md

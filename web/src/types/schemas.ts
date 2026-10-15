@@ -1155,7 +1155,8 @@ export const SessionMessageRowSchema = z.object({
   id: z.string(),
   text: z.string(),
   status: z.enum(['queued', 'delivered', 'dropped']),
-  delivery: z.enum(['live', 'resume']).optional(),
+  // "tmux": pasted into the session's tmux pane (#178 tmux control).
+  delivery: z.enum(['live', 'resume', 'tmux']).optional(),
   reason: z.string().optional(),
   queuedAt: z.string(),
   deliveredAt: z.string().optional(),
@@ -1188,11 +1189,47 @@ export const SessionRowSchema = z.object({
   updatedAt: z.string().optional(),
   // Why a hand-started session counts as still running.
   inUseReason: z.string().optional(),
+  // #178 tmux — the pane the session runs in (null: none); whether the
+  // panel may show its screen and type into it; for a session itervox
+  // started in tmux ("New session", kind "tmux"), how to attach to it.
+  tmuxPane: z.object({ id: z.string(), label: z.string() }).nullable().optional(),
+  controllable: z.boolean().optional(),
+  attachCommand: z.string().optional(),
+});
+
+// Top-level "tmux" of GET /api/v1/sessions: re-detected every discovery
+// pass, so installing tmux lifts the warning without a restart.
+export const TmuxStatusSchema = z.object({
+  available: z.boolean(),
+  version: z.string().optional(),
+  installHint: z.string(),
+  // sessions.tmux_control: hand-started sessions in tmux may be controlled.
+  control: z.boolean(),
+});
+
+export const NewSessionOptionsSchema = z.object({
+  projectRoot: z.string(),
+  folders: z.array(z.string()),
+  profiles: z.array(z.string()),
+  max: z.number(),
 });
 
 export const SessionsResponseSchema = z.object({
   generatedAt: z.string(),
   sessions: z.array(SessionRowSchema),
+  // Absent from daemons before tmux control.
+  tmux: TmuxStatusSchema.optional(),
+  newSession: NewSessionOptionsSchema.optional(),
+});
+
+// GET /api/v1/sessions/{id}/screen — internal/server/sessions_tmux.go.
+export const SessionScreenSchema = z.object({
+  id: z.string(),
+  pane: z.string(),
+  label: z.string(),
+  text: z.string(),
+  lines: z.number(),
+  capturedAt: z.string(),
 });
 
 // GET /api/v1/sessions/{id}/transcript — internal/server/sessions_external.go.
@@ -1217,4 +1254,8 @@ export const SessionTranscriptSchema = z.object({
 export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
 export type SessionTranscript = z.infer<typeof SessionTranscriptSchema>;
 export type SessionMessageRow = z.infer<typeof SessionMessageRowSchema>;
+export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
+export type NewSessionOptions = z.infer<typeof NewSessionOptionsSchema>;
+export type SessionScreen = z.infer<typeof SessionScreenSchema>;
+export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
 export type SessionRow = z.infer<typeof SessionRowSchema>;
