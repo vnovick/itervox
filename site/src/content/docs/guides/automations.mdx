@@ -190,7 +190,7 @@ Use this for:
 
 ### `pr_opened`
 
-Fires when Itervox detects a pull request URL on a running or completed issue.
+Fires when a worker run that opened a pull request completes successfully: the worker detects the PR, posts its PR link on the issue, writes its handoff, applies `completion_state`, and the rule is dispatched after the run's exit. A `move_state` the agent makes during that run (for example straight after `gh pr create`) does not cut the run short — see [Moving the issue while its worker is still running](#moving-the-issue-while-its-worker-is-still-running).
 
 Use this for:
 
@@ -560,6 +560,20 @@ That keeps the security model simple:
 
 - the automation decides **when** to run
 - the profile decides **what the agent is allowed to do**
+
+### Moving the issue while its worker is still running
+
+A `move_state` call never stops the run it comes from. The usual case: the agent opens its pull request and moves its issue to `tracker.completion_state` (or any state outside `tracker.active_states`) before its turn ends. If the move landed in the tracker at once, the next reconciliation tick would see the issue terminal and stop the worker as if a person had closed it, and the worker would lose its post-PR tracker comment, its handoff file and the `pr_opened` dispatch.
+
+So a `move_state` on an issue whose worker is still running, to a state that would stop that worker, is **deferred until the worker exits**:
+
+- the worker ends its turn loop as it would after a landed move, then finishes normally: PR comment, handoff, session comment, its own `completion_state` move, and the `pr_opened` dispatch after its exit;
+- the deferred move is applied right after the run's exit, through the same write path as Itervox's other tracker writes, and only while the tracker still shows the state the agent moved the issue from (a move by anyone else in the meantime wins);
+- when the worker applied `tracker.completion_state` itself on a successful run, that move is the last word and the deferred one is dropped, exactly as when the agent's move had landed first;
+- until the move is applied, the issue is not dispatched or retried again (`state_move_pending`);
+- the move is persisted to `deferred_state_moves.json` in the daemon log directory, so a restart while the worker is running does not lose it: the next daemon applies it on its first tick.
+
+A person moving the issue — on the dashboard or in Linear/GitHub — is never deferred. Moving a running issue to a terminal state still stops its worker, and a move the agent had deferred is then dropped. Moves to another active state are never deferred (they do not stop the worker), and neither are moves made by automation or reviewer runs that reconciliation would not stop anyway.
 
 Under the hood, those permissions map to short-lived daemon-action bearer
 grants for `/api/v1/agent-actions/*` routes. The main dashboard/API token is
