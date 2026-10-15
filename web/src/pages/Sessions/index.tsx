@@ -14,11 +14,11 @@ import { SessionTranscriptView } from './SessionTranscript';
 
 // Sessions panel (#178): one tab per agent session of this daemon, sessions
 // waiting for input first, sessions started outside itervox last (greyed,
-// read-only until continued). `?id=` selects a tab (the Mac app's Sessions
+// read-only). `?id=` selects a tab (the Mac app's Sessions
 // window opens this route with it).
 
-// Issue runs show the issue's live log; sessions started by hand (and those
-// continued under itervox) show the CLI's own transcript instead.
+// Issue runs show the issue's live log; sessions started by hand show the
+// CLI's own transcript instead.
 function IssueLogTranscript({ session }: { session: SessionRow }) {
   const { data: entries } = useIssueLogs(session.identifier, session.status === 'running');
   const lines = useMemo(() => entries.map(issueLogToTerminal), [entries]);
@@ -28,7 +28,7 @@ function IssueLogTranscript({ session }: { session: SessionRow }) {
 
 function SessionView({ session }: { session: SessionRow }) {
   const inlineInput = useItervoxStore((s) => s.snapshot?.inlineInput ?? false);
-  const fromTranscript = session.owner === 'external' || session.kind === 'manual';
+  const fromTranscript = session.owner === 'external';
   return (
     <section
       id="session-panel"

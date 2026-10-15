@@ -15,8 +15,6 @@ const mocks = vi.hoisted(() => ({
   sendMutate: vi.fn(),
   provideMutate: vi.fn(),
   dismissMutate: vi.fn(),
-  continueMutate: vi.fn(),
-  continuePending: false,
   fetchNextPage: vi.fn(),
   transcript: [] as TranscriptEntry[],
   hasNextPage: false,
@@ -27,7 +25,6 @@ vi.mock('../../../queries/sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof SessionsQueries>()),
   useSessions: () => ({ sessions: mocks.sessions, isLoading: false }),
   useSendSessionMessage: () => ({ mutate: mocks.sendMutate, isPending: false }),
-  useContinueSession: () => ({ mutate: mocks.continueMutate, isPending: mocks.continuePending }),
   useSessionTranscript: (id: string) => ({
     entries: mocks.transcript.map((e) => ({ ...e, text: `${e.text} (${id})` })),
     isLoading: false,
@@ -145,23 +142,9 @@ const HAND_BUSY: SessionRow = {
   cwd: '/work/app/svc',
   inUseReason: 'codex process 42 has the transcript open',
 };
-const CONTINUED: SessionRow = {
-  id: 'hand-cont',
-  owner: 'itervox',
-  kind: 'manual',
-  identifier: '',
-  backend: 'claude',
-  status: 'idle',
-  cwd: '/work/app',
-  steering: 'resume',
-  lastError: 'rate limited',
-};
-
 beforeEach(() => {
   mocks.sessions = [WAITING, RUNNING, STARTING];
   mocks.inlineInput = false;
-  mocks.continueMutate.mockReset();
-  mocks.continuePending = false;
   mocks.fetchNextPage.mockReset();
   mocks.transcript = [
     { role: 'user', kind: 'text', text: 'Add a health check' },
@@ -292,7 +275,11 @@ describe('Sessions page', () => {
       );
       expect(tabs[2].className).toContain('opacity-70');
       expect(tabs[1].className).not.toContain('opacity-70');
-      expect(within(tabs[3]).getByText('in use')).toBeInTheDocument();
+      expect(within(tabs[3]).getByTestId('session-tab-status')).toHaveTextContent('running');
+      expect(within(tabs[3]).getByTestId('session-tab-status')).toHaveAttribute(
+        'title',
+        'codex process 42 has the transcript open',
+      );
       expect(within(tabs[2]).getByText('exited')).toBeInTheDocument();
     });
 
@@ -313,49 +300,15 @@ describe('Sessions page', () => {
       expect(mocks.fetchNextPage).toHaveBeenCalled();
     });
 
-    it('continues an exited session in itervox with an optional first message', async () => {
-      const user = userEvent.setup();
-      mocks.sessions = [HAND_EXITED];
-      renderAt();
-      await user.type(screen.getByRole('textbox', { name: /first message/i }), 'Finish it');
-      await user.click(screen.getByRole('button', { name: 'Continue in itervox' }));
-      expect(mocks.continueMutate).toHaveBeenCalledWith(
-        { id: 'hand-exited', message: 'Finish it' },
-        expect.anything(),
-      );
-      expect(mocks.sendMutate).not.toHaveBeenCalled();
-    });
-
-    it('refuses Continue while the original process is still running, and says why', async () => {
-      const user = userEvent.setup();
+    it('shows a running hand-started session read-only, with why it counts as running', () => {
       mocks.sessions = [HAND_BUSY];
       renderAt();
-      const button = screen.getByRole('button', { name: 'Continue in itervox' });
-      expect(button).toBeDisabled();
-      expect(screen.getByTestId('session-in-use')).toHaveTextContent(
+      expect(screen.getByTestId('session-readonly')).toHaveTextContent('still running');
+      expect(screen.getByTestId('session-running-reason')).toHaveTextContent(
         'codex process 42 has the transcript open',
       );
       expect(screen.queryByRole('textbox')).toBeNull();
-      await user.click(button);
-      expect(mocks.continueMutate).not.toHaveBeenCalled();
-    });
-
-    it('lets an operator message a session continued under itervox', async () => {
-      const user = userEvent.setup();
-      mocks.sessions = [CONTINUED];
-      renderAt();
-      expect(screen.getAllByTestId('session-tab-detail')[0]).toHaveTextContent(
-        'continued in itervox',
-      );
-      expect(screen.getByTestId('transcript')).toBeInTheDocument();
-      expect(screen.getByTestId('session-last-error')).toHaveTextContent('rate limited');
-      expect(screen.getByTestId('session-steering')).toHaveTextContent('one turn');
-      await user.type(screen.getByRole('textbox', { name: /message to the agent/i }), 'Next');
-      await user.click(screen.getByRole('button', { name: 'Send' }));
-      expect(mocks.sendMutate).toHaveBeenCalledWith(
-        { id: 'hand-cont', message: 'Next' },
-        expect.anything(),
-      );
+      expect(screen.queryByRole('button', { name: /continue/i })).toBeNull();
     });
   });
 });

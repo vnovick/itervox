@@ -2,11 +2,8 @@
 //
 // GET  /api/v1/sessions                 — sessions, waiting-for-input first
 // POST /api/v1/sessions/{id}/message    — queue a message for a running session
-// GET  /api/v1/sessions/{id}/transcript — a hand-started or continued session's
+// GET  /api/v1/sessions/{id}/transcript — a hand-started session's
 //                                         transcript, paged backwards
-// POST /api/v1/sessions/{id}/continue   — resume a hand-started session under
-//                                         itervox (409 session_in_use while its
-//                                         CLI may still be running)
 //
 // A session waiting for input takes a reply through the existing
 // provide-input path (useProvideInput in queries/issues.ts), not here.
@@ -90,7 +87,7 @@ export const TRANSCRIPT_PAGE_SIZE = 100;
 const EMPTY_ENTRIES: TranscriptEntry[] = [];
 
 /**
- * The transcript of a session started by hand (or continued under itervox),
+ * The transcript of a session started by hand,
  * newest page first in the cache; `entries` is oldest first. `fetchNextPage`
  * loads the next older page.
  */
@@ -118,26 +115,4 @@ export function useSessionTranscript(id: string) {
     [pages],
   );
   return { ...q, entries };
-}
-
-/** Takes over a session started by hand once its CLI has exited. */
-export function useContinueSession() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, message }: { id: string; message: string }) => {
-      await apiRequest(`/api/v1/sessions/${encodeURIComponent(id)}/continue`, {
-        op: 'continueSession',
-        method: 'POST',
-        json: message ? { message } : {},
-      });
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
-    },
-    onError: (err: unknown) => {
-      if (err instanceof UnauthorizedError) return; // AuthGate handles the UI
-      const message = err instanceof Error ? err.message : 'unknown error';
-      useToastStore.getState().addToast(`Not continued: ${message}`, 'error');
-    },
-  });
 }

@@ -29,8 +29,7 @@ type Process struct {
 // Liveness says whether the CLI that wrote a session may still be running.
 type Liveness struct {
 	// Running is true when the session may still be in use: a process is
-	// tied to it, or the check could not rule one out. Continuing it under
-	// itervox is refused while Running.
+	// tied to it, or the check could not rule one out.
 	Running bool
 	// Certain is false when Running is a precaution (nothing proves the
 	// session is in use, but nothing rules it out).
@@ -151,12 +150,6 @@ func (sc Scanner) Discover(now time.Time) ([]Session, error) {
 		sessions[i].Running, sessions[i].RunningReason = l.Running, l.Reason
 	}
 	return sessions, err
-}
-
-// Liveness checks one session now.
-func (sc Scanner) Liveness(s Session, now time.Time) Liveness {
-	procs, err := sc.processes()
-	return CheckLiveness(s, procs, err, now)
 }
 
 func atoiOK(s string) (int, bool) {

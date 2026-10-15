@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// #178 step 3: "Continue in itervox" is refused while the original process
-// may still be running. A process tied to the transcript (open file, its
+// #178 step 3: a hand-started session is shown as running while the
+// original process may still be running. A process tied to the transcript (open file, its
 // session ID in the arguments) is certain; one in the session's directory,
 // one whose directory is unreadable, an unreadable process list and a
 // recent write are precautions; only with none of them is the session
@@ -138,8 +138,5 @@ func TestScannerAttachesLiveness(t *testing.T) {
 	}
 	if app := find(t, got, idClaudeApp); app.Running {
 		t.Fatalf("app session = %+v", app)
-	}
-	if l := sc.Liveness(find(t, got, idClaudeWeb), now); !l.Running {
-		t.Fatalf("Liveness = %+v", l)
 	}
 }

@@ -2,10 +2,8 @@ package server
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,8 +11,7 @@ import (
 
 // Sessions panel step 3 (#178): sessions started by hand. They are listed
 // by GET /api/v1/sessions with owner "external" and are read-only: their
-// transcript is served here, and POST .../continue resumes one under
-// itervox once the CLI that wrote it has exited.
+// transcript is served here.
 
 // TranscriptEntryRow is one transcript item. Text is redacted and
 // abbreviated by the daemon.
@@ -42,26 +39,11 @@ type TranscriptResponse struct {
 	Size int64 `json:"size"`
 }
 
-// Errors of ContinueSession.
-var (
-	ErrSessionAlreadyOwned = errors.New("server: itervox already owns the session")
-	ErrTooManySessions     = errors.New("server: too many sessions are continued under itervox")
-	ErrUnknownProfile      = errors.New("server: no such profile")
-)
-
-// SessionInUseError refuses to continue a session whose CLI may still be
-// running; Reason says what the daemon found.
-type SessionInUseError struct{ Reason string }
-
-func (e *SessionInUseError) Error() string {
-	return "the session may still be running outside itervox: " + e.Reason
-}
-
 // maxTranscriptPage mirrors extsessions.MaxPageEntries.
 const maxTranscriptPage = 500
 
-// handleSessionTranscript serves a page of a hand-started (or continued)
-// session's transcript.
+// handleSessionTranscript serves a page of a hand-started session's
+// transcript.
 // GET /api/v1/sessions/{id}/transcript?before=<cursor>&limit=<n>
 func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request) {
 	if s.sessions == nil {
@@ -98,48 +80,5 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "not_found", "no transcript for session "+id)
 	default:
 		writeError(w, http.StatusInternalServerError, "transcript_unreadable", "the transcript could not be read")
-	}
-}
-
-// handleContinueSession takes over a hand-started session.
-// POST /api/v1/sessions/{id}/continue {"message":"...","profile":"..."}
-// 202 {"session":{...}} — the resumed turn has started.
-func (s *Server) handleContinueSession(w http.ResponseWriter, r *http.Request) {
-	if s.sessions == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "sessions are not available")
-		return
-	}
-	id := chi.URLParam(r, "id")
-	var body struct {
-		Message string `json:"message"`
-		Profile string `json:"profile"`
-	}
-	if err := decodeJSONBody(w, r, &body); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid body") // an empty body is fine
-		return
-	}
-	if len(strings.TrimSpace(body.Message)) > maxSessionMessageBytes {
-		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "message exceeds 10 KiB", "message")
-		return
-	}
-	row, err := s.sessions.ContinueSession(id, body.Message, strings.TrimSpace(body.Profile))
-	var inUse *SessionInUseError
-	switch {
-	case err == nil:
-		writeJSON(w, http.StatusAccepted, map[string]any{"session": row})
-	case errors.As(err, &inUse):
-		writeError(w, http.StatusConflict, "session_in_use", inUse.Error())
-	case errors.Is(err, ErrSessionAlreadyOwned):
-		writeError(w, http.StatusConflict, "already_owned", "itervox already owns this session; message it instead")
-	case errors.Is(err, ErrUnknownProfile):
-		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "unknown profile", "profile")
-	case errors.Is(err, ErrInvalidSessionMessage):
-		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "message must be at most 10 KiB", "message")
-	case errors.Is(err, ErrTooManySessions):
-		writeError(w, http.StatusTooManyRequests, "too_many_sessions", "too many sessions are continued under itervox")
-	case errors.Is(err, ErrSessionNotFound):
-		writeError(w, http.StatusNotFound, "not_found", "no session started outside itervox with id "+id)
-	default:
-		writeBusyOr404(w, err, "not_found", "no session started outside itervox with id "+id)
 	}
 }

@@ -1935,16 +1935,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.applyClearBackendBreaker(&state, ev.Identifier)
 
 	case EventSessionMessage: // #178
-		o.applySessionMessage(ctx, &state, ev)
+		o.applySessionMessage(&state, ev)
 
 	case EventExternalSessionsDiscovered: // #178 step 3
 		applyExternalSessions(&state, ev.ExternalSessions)
-
-	case EventContinueSession: // #178 step 3
-		o.applyContinueSession(ctx, &state, ev.Continue)
-
-	case EventManualTurnExited: // #178 step 3
-		o.applyManualTurnExited(ctx, &state, ev.ManualTurn)
 
 	case EventSessionMessageDelivered: // #178
 		applySessionDelivery(&state, ev.SessionDelivery, time.Now())

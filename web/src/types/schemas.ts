@@ -1164,8 +1164,8 @@ export const SessionMessageRowSchema = z.object({
 export const SessionRowSchema = z.object({
   id: z.string(),
   runId: z.string().optional(),
-  // "itervox": this daemon started it (or an operator continued it under
-  // itervox) and may write to it. "external": started by hand, read-only.
+  // "itervox": this daemon started it and may write to it. "external":
+  // started by hand, read-only.
   owner: z.string(),
   identifier: z.string(),
   title: z.string().optional(),
@@ -1173,9 +1173,8 @@ export const SessionRowSchema = z.object({
   backend: z.string().optional(),
   workerHost: z.string().optional(),
   kind: z.string().optional(),
-  // "running" | "input_required" | "pending_input_resume"; "idle" for a
-  // continued session between turns, "exited" for a hand-started session
-  // whose CLI has exited (it can be continued in itervox).
+  // "running" | "input_required" | "pending_input_resume"; "exited" for a
+  // hand-started session whose CLI has exited.
   status: z.string(),
   startedAt: z.string().optional(),
   queuedAt: z.string().optional(),
@@ -1184,12 +1183,11 @@ export const SessionRowSchema = z.object({
   inputContext: z.string().optional(),
   steering: z.enum(['live', 'resume']).optional(),
   messages: z.array(SessionMessageRowSchema).optional(),
-  // #178 step 3 — hand-started and continued sessions (no identifier).
+  // #178 step 3 — hand-started sessions (no identifier).
   cwd: z.string().optional(),
   updatedAt: z.string().optional(),
-  // Why a hand-started session counts as still running (cannot continue).
+  // Why a hand-started session counts as still running.
   inUseReason: z.string().optional(),
-  lastError: z.string().optional(),
 });
 
 export const SessionsResponseSchema = z.object({

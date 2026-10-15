@@ -556,8 +556,8 @@ hooks:
 
 Which Claude Code and Codex sessions **started by hand** on the daemon's host
 the [Sessions panel](https://itervox.dev/guides/sessions/#sessions-started-by-hand)
-lists (read-only, with their transcript and **Continue in itervox**). Read at
-startup.
+lists (read-only, with their transcript and whether their CLI is still
+running). Read at startup.
 
 | Field | Type | Default | Description |
 |---|---|---|---|

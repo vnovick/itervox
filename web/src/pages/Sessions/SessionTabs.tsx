@@ -13,14 +13,12 @@ const STATUS_LABEL: Record<string, string> = {
   input_required: 'needs input',
   pending_input_resume: 'resuming',
   running: 'running',
-  idle: 'idle',
   exited: 'exited',
 };
 
 /** The second line of a tab: who owns it and how it runs. */
 function tabDetail(s: SessionRow): string {
   if (s.owner === 'external') return 'started outside itervox';
-  if (s.kind === 'manual') return ['continued in itervox', s.backend].filter(Boolean).join(' · ');
   return [s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ') || 'default';
 }
 
@@ -105,10 +103,12 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
                   needs input
                 </span>
               ) : (
-                <span className="text-theme-muted shrink-0">
-                  {external && s.status === 'running'
-                    ? 'in use'
-                    : (STATUS_LABEL[s.status] ?? s.status)}
+                <span
+                  data-testid="session-tab-status"
+                  className="text-theme-muted shrink-0"
+                  title={external && s.status === 'running' ? s.inUseReason : undefined}
+                >
+                  {STATUS_LABEL[s.status] ?? s.status}
                 </span>
               )}
             </span>

@@ -5,7 +5,6 @@ import React from 'react';
 import {
   sessionKey,
   sessionLabel,
-  useContinueSession,
   useSendSessionMessage,
   useSessionTranscript,
   useSessions,
@@ -144,54 +143,6 @@ describe('useSessionTranscript (#178 step 3)', () => {
       expect.anything(),
     );
     expect(result.current.hasNextPage).toBe(false);
-  });
-});
-
-describe('useContinueSession (#178 step 3)', () => {
-  it('POSTs to /continue with the optional first message', async () => {
-    mockAuthedFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ session: { id: 'h', owner: 'itervox' } }), { status: 202 }),
-    );
-    const { result } = renderHook(() => useContinueSession(), { wrapper });
-    act(() => {
-      result.current.mutate({ id: 'h', message: 'go on' });
-    });
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBe(true);
-    });
-    expect(mockAuthedFetch).toHaveBeenCalledWith(
-      '/api/v1/sessions/h/continue',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ message: 'go on' }) }),
-    );
-  });
-
-  it('toasts the reason when the session is still running elsewhere', async () => {
-    mockAuthedFetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          error: {
-            code: 'session_in_use',
-            message:
-              'the session may still be running outside itervox: claude process 7 has the transcript open',
-          },
-        }),
-        { status: 409 },
-      ),
-    );
-    const { result } = renderHook(() => useContinueSession(), { wrapper });
-    act(() => {
-      result.current.mutate({ id: 'h', message: '' });
-    });
-    await waitFor(() => {
-      expect(result.current.isError).toBe(true);
-    });
-    expect(mockAuthedFetch).toHaveBeenCalledWith(
-      '/api/v1/sessions/h/continue',
-      expect.objectContaining({ body: JSON.stringify({}) }),
-    );
-    const toast = useToastStore.getState().toasts[0]?.message ?? '';
-    expect(toast).toContain('Not continued');
-    expect(toast).toContain('claude process 7 has the transcript open');
   });
 });
 

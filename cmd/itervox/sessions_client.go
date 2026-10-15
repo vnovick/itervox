@@ -48,20 +48,6 @@ func sessionError(err error) error {
 		return server.ErrInvalidSessionMessage
 	case errors.Is(err, orchestrator.ErrBusy):
 		return server.ErrBusy
-	case errors.Is(err, orchestrator.ErrSessionInUse):
-		var inUse *orchestrator.SessionInUseError
-		if errors.As(err, &inUse) {
-			return &server.SessionInUseError{Reason: inUse.Reason}
-		}
-		return &server.SessionInUseError{Reason: "it may still be running"}
-	case errors.Is(err, orchestrator.ErrSessionAlreadyOwned):
-		return server.ErrSessionAlreadyOwned
-	case errors.Is(err, orchestrator.ErrSessionsDraining):
-		return server.ErrDraining
-	case errors.Is(err, orchestrator.ErrTooManyManual):
-		return server.ErrTooManySessions
-	case errors.Is(err, orchestrator.ErrUnknownProfile):
-		return server.ErrUnknownProfile
 	default:
 		return err
 	}
@@ -76,7 +62,7 @@ func sessionRows(sessions []orchestrator.AgentSession) []server.SessionRow {
 			Status: s.Status, StartedAt: timePtr(s.StartedAt), QueuedAt: timePtr(s.QueuedAt),
 			TurnCount: s.TurnCount, LastEvent: s.LastEvent, InputContext: s.InputContext,
 			Steering: s.Steering, Cwd: s.Cwd, UpdatedAt: timePtr(s.UpdatedAt),
-			InUseReason: s.InUseReason, LastError: s.LastError,
+			InUseReason: s.InUseReason,
 		}
 		for _, m := range s.Messages {
 			row.Messages = append(row.Messages, sessionMessageRow(m))
@@ -102,8 +88,7 @@ func timePtr(t time.Time) *time.Time {
 	return &u
 }
 
-// SessionTranscript reads a page of a hand-started or continued session's
-// transcript (#178 step 3). Only a session the orchestrator lists can be
+// SessionTranscript reads a page of a hand-started session's transcript (#178 step 3). Only a session the orchestrator lists can be
 // read: the path comes from discovery, never from the client.
 func (c sessionsClient) SessionTranscript(id string, before int64, limit int) (server.TranscriptResponse, error) {
 	s, ok := c.orch.TranscriptSession(id)
@@ -126,15 +111,6 @@ func (c sessionsClient) SessionTranscript(id string, before int64, limit int) (s
 		})
 	}
 	return resp, nil
-}
-
-// ContinueSession resumes a hand-started session under itervox.
-func (c sessionsClient) ContinueSession(id, message, profile string) (server.SessionRow, error) {
-	s, err := c.orch.ContinueExternalSession(id, message, profile)
-	if err != nil {
-		return server.SessionRow{}, sessionError(err)
-	}
-	return sessionRows([]orchestrator.AgentSession{s})[0], nil
 }
 
 // wireExternalSessions enables discovery of sessions started by hand on

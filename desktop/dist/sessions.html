@@ -93,14 +93,13 @@
         b.type = 'button';
         b.dataset.ref = g.daemon + '\n' + s.key;
         b.appendChild(el('span', 'id', s.label));
-        var meta = external || s.kind === 'manual'
+        var meta = external
           ? [s.cwd, s.backend].filter(Boolean).join(' · ')
           : [s.title, s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ');
         b.appendChild(el('span', 'meta', meta || s.key));
         if (external) b.appendChild(el('span', 'origin', 'started outside itervox'));
-        else if (s.kind === 'manual') b.appendChild(el('span', 'origin', 'continued in itervox'));
         if (s.status === 'input_required') b.appendChild(el('span', 'badge', 'needs input'));
-        else b.appendChild(el('span', 'status', external && s.status === 'running' ? 'in use' : s.status.replace(/_/g, ' ')));
+        else b.appendChild(el('span', 'status', s.status.replace(/_/g, ' ')));
         b.title = s.status === 'input_required' && s.inputContext ? s.inputContext
           : external && s.inUseReason ? 'Still running outside itervox: ' + s.inUseReason
           : 'Open ' + s.label;

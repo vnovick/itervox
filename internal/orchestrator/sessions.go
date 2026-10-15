@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,8 +21,7 @@ import (
 // stdin of the CLI process this daemon started for the run, or into the
 // prompt of the run's next resumed turn — never to a terminal or another
 // process. Step 3 (sessions_external.go) lists sessions started by hand as
-// read-only SessionOwnerExternal sessions, which SendSessionMessage refuses
-// until an operator continues one under itervox.
+// read-only SessionOwnerExternal sessions, which SendSessionMessage refuses.
 //
 // SessionMessages is event-loop state: SendSessionMessage only sends
 // EventSessionMessage, and the worker reports deliveries with
@@ -135,17 +133,14 @@ type AgentSession struct {
 	// session takes no message (it is waiting for input: reply instead).
 	Steering string
 	Messages []SessionMessage
-	// Cwd is the directory of a hand-started or continued session (#178
-	// step 3); "" for an issue run.
+	// Cwd is the directory of a hand-started session (#178 step 3); "" for
+	// an issue run.
 	Cwd string
 	// UpdatedAt is a hand-started session's last transcript write.
 	UpdatedAt time.Time
 	// InUseReason says why a hand-started session counts as still running
-	// (Status SessionStatusRunning, Owner external): it cannot be continued
-	// yet.
+	// (Status SessionStatusRunning, Owner external).
 	InUseReason string
-	// LastError is the last failure of a continued session's turn.
-	LastError string
 }
 
 // Key is the id clients address the session by: the CLI session ID, or the
@@ -208,21 +203,10 @@ func Sessions(snap State, liveSteering bool) []AgentSession {
 			Messages: cloneSlice(snap.SessionMessages[e.Identifier]),
 		})
 	}
-	for _, m := range snap.ManualSessions {
-		if m == nil {
-			continue
-		}
-		out = append(out, AgentSession{
-			ID: m.ID, Owner: SessionOwnerItervox, Kind: SessionKindManual, Title: m.Title,
-			Profile: m.Profile, Backend: m.Backend, Cwd: m.Cwd, Status: m.Status,
-			StartedAt: m.StartedAt, TurnCount: m.TurnCount, LastEvent: m.LastEvent, LastError: m.LastError,
-			Steering: SteeringResume, Messages: cloneSlice(snap.SessionMessages[manualKey(m.ID)]),
-		})
-	}
 	owned := ownedSessionIDs(snap)
 	for _, e := range snap.ExternalSessions {
 		if owned[e.ID] {
-			continue // continued since the last discovery pass
+			continue // owned since the last discovery pass
 		}
 		row := AgentSession{
 			ID: e.ID, Owner: SessionOwnerExternal, Title: e.Title, Backend: e.Backend, Cwd: e.Cwd,
@@ -238,7 +222,7 @@ func Sessions(snap State, liveSteering bool) []AgentSession {
 }
 
 // sessionRank orders the panel: waiting for input first, then itervox's
-// running and idle sessions, then sessions started outside itervox.
+// running sessions, then sessions started outside itervox.
 func sessionRank(s AgentSession) int {
 	switch {
 	case s.Owner == SessionOwnerExternal:
@@ -247,8 +231,6 @@ func sessionRank(s AgentSession) int {
 		return 0
 	case s.Status == SessionStatusPendingInputResume:
 		return 1
-	case s.Status == SessionStatusIdle:
-		return 3
 	default:
 		return 2
 	}
@@ -326,8 +308,6 @@ func (o *Orchestrator) SendSessionMessage(key, text string) (SessionMessage, err
 	}
 	if entry := findRunningSession(snap, key); entry != nil {
 		msg.Identifier, msg.RunID, msg.SessionID = entry.Issue.Identifier, entry.RunID, entry.AgentSessionID
-	} else if m := findManualSession(snap, key); m != nil {
-		msg.Identifier, msg.SessionID = manualKey(m.ID), m.ID
 	} else {
 		if sessionWaitingForInput(snap, key) {
 			return SessionMessage{}, ErrSessionInputRequired
@@ -362,14 +342,11 @@ func appendSessionMessage(state *State, msg SessionMessage) {
 
 // applySessionMessage records an operator message and hands it to the run.
 // Event loop only.
-func (o *Orchestrator) applySessionMessage(ctx context.Context, state *State, ev OrchestratorEvent) {
+func (o *Orchestrator) applySessionMessage(state *State, ev OrchestratorEvent) {
 	if ev.SessionMessage == nil {
 		return
 	}
 	msg := *ev.SessionMessage
-	if msg.RunID == "" && o.applyManualSessionMessage(ctx, state, ev.Identifier, msg) {
-		return // a session continued under itervox (#178 step 3)
-	}
 	entry := findRunningSession(*state, ev.Identifier)
 	if entry == nil || (msg.RunID != "" && entry.RunID != msg.RunID) {
 		slog.Warn("orchestrator: session message for a session that is no longer running",

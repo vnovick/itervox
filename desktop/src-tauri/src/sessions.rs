@@ -18,8 +18,7 @@
 //!
 //! Sessions started by hand on a daemon's host (#178 step 3) are listed
 //! too, after the daemon's own, marked "started outside itervox": they are
-//! read-only, and "Continue in itervox" is offered in the dashboard once the
-//! process that started them has exited.
+//! read-only, shown as running (with why) or exited.
 
 use serde::{Deserialize, Serialize};
 
@@ -39,17 +38,17 @@ pub struct Session {
     pub run_id: String,
     /// What the dashboard's `/sessions?id=` takes: `id`, else `run_id`.
     pub key: String,
-    /// `itervox` for a daemon's own runs (and sessions continued under it),
-    /// `external` for sessions started by hand (read-only).
+    /// `itervox` for a daemon's own runs, `external` for sessions started
+    /// by hand (read-only).
     pub owner: String,
-    /// The issue; empty for a session started by hand or continued.
+    /// The issue; empty for a session started by hand.
     pub identifier: String,
     /// How the window names the session: the issue, else the CLI's title,
     /// else its directory's name, else the start of its id.
     pub label: String,
-    /// `manual` for a session continued under itervox.
+    /// The kind of run (e.g. `reviewer`); empty for an ordinary run.
     pub kind: String,
-    /// The directory of a session started by hand or continued.
+    /// The directory of a session started by hand.
     pub cwd: String,
     /// Why a session started by hand counts as still running.
     pub in_use_reason: String,
@@ -116,8 +115,8 @@ struct RawSessions {
 }
 
 /// Parses a `/api/v1/sessions` body; rows without a key are skipped, and so
-/// are rows with no issue unless they are sessions started by hand or
-/// continued under itervox (which have a directory instead).
+/// are rows with no issue unless they are sessions started by hand or have
+/// a directory instead.
 pub fn parse_sessions(body: &[u8]) -> Result<Vec<Session>, String> {
     let raw: RawSessions = serde_json::from_slice(body).map_err(|e| e.to_string())?;
     Ok(raw
@@ -631,26 +630,24 @@ mod tests {
 
     /// #178 step 3: sessions started by hand on a daemon's host are listed
     /// read-only after the daemon's own, named by title or directory, with
-    /// why one still counts as running; a session continued under itervox
-    /// (no issue, a directory) is kept as the daemon's own.
+    /// why one still counts as running.
     #[test]
     fn sessions_window_lists_hand_started_sessions_after_own() {
         let body = br#"{"generatedAt":"x","sessions":[
           {"id":"hand-1","owner":"external","identifier":"","title":"Add health check","status":"exited","cwd":"/work/app","backend":"claude"},
           {"id":"hand-2","owner":"external","identifier":"","status":"running","cwd":"/work/app/svc","inUseReason":"codex process 42 has the transcript open"},
-          {"id":"hand-3","owner":"itervox","kind":"manual","identifier":"","status":"idle","cwd":"/work/app"},
           {"id":"sess-w","owner":"itervox","identifier":"ENG-2","status":"input_required"},
           {"id":"","owner":"external","identifier":"","status":"exited","cwd":"/x"}
         ]}"#;
         let parsed = parse_sessions(body).unwrap();
-        assert_eq!(parsed.len(), 4, "a row with no key is still skipped");
+        assert_eq!(parsed.len(), 3, "a row with no key is still skipped");
         let view = aggregate(vec![DaemonSessions {
             key: "/work/app/WORKFLOW.md".into(),
             name: "app".into(),
             remote: None,
             result: Ok(parsed),
         }]);
-        assert_eq!((view.total, view.waiting, view.external), (4, 1, 2));
+        assert_eq!((view.total, view.waiting, view.external), (3, 1, 2));
         let g = &view.groups[0];
         assert_eq!(g.external, 2);
         let order: Vec<_> = g
@@ -660,16 +657,10 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec![
-                ("ENG-2", false),
-                ("app", false),
-                ("Add health check", true),
-                ("svc", true)
-            ]
+            vec![("ENG-2", false), ("Add health check", true), ("svc", true)]
         );
-        assert_eq!(g.sessions[1].kind, "manual");
         assert_eq!(
-            g.sessions[3].in_use_reason,
+            g.sessions[2].in_use_reason,
             "codex process 42 has the transcript open"
         );
         let js = push_script(&view);

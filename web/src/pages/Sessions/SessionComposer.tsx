@@ -4,7 +4,6 @@ import { Button } from '../../components/ui/button';
 import { useDismissInput, useProvideInput } from '../../queries/issues';
 import { sessionKey, useSendSessionMessage } from '../../queries/sessions';
 import type { SessionRow } from '../../types/schemas';
-import { ContinueSessionPanel } from './ContinueSessionPanel';
 import { SessionMessages } from './SessionMessages';
 
 export interface SessionComposerProps {
@@ -25,7 +24,21 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
   const send = useSendSessionMessage();
 
   if (session.owner !== 'itervox') {
-    return <ContinueSessionPanel session={session} />;
+    return (
+      <div className="space-y-1" data-testid="session-readonly">
+        <p className="text-theme-text-secondary text-sm">
+          Started outside itervox — read-only.{' '}
+          {session.status === 'running'
+            ? 'Its CLI is still running.'
+            : 'Its CLI is no longer running.'}
+        </p>
+        {session.status === 'running' && session.inUseReason && (
+          <p data-testid="session-running-reason" className="text-theme-muted text-xs">
+            {session.inUseReason}
+          </p>
+        )}
+      </div>
+    );
   }
 
   if (session.status === 'input_required') {
@@ -51,8 +64,7 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
     );
   }
 
-  const manual = session.kind === 'manual';
-  if (session.status !== 'running' && !(manual && session.status === 'idle')) {
+  if (session.status !== 'running') {
     return (
       <p className="text-theme-text-secondary text-sm">Reply received — the agent is resuming.</p>
     );
@@ -62,11 +74,6 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
   const label = session.identifier || 'this session';
   return (
     <div className="space-y-2" data-testid="session-composer">
-      {manual && session.lastError && (
-        <p data-testid="session-last-error" className="text-theme-danger-text text-xs">
-          Last turn failed: {session.lastError}
-        </p>
-      )}
       <SessionMessages messages={session.messages} />
       <textarea
         value={draft}
@@ -99,13 +106,9 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
           {send.isPending ? 'Sending…' : 'Send'}
         </Button>
         <span data-testid="session-steering" className="text-theme-muted text-xs">
-          {manual
-            ? session.status === 'idle'
-              ? 'Resumes the session for one turn.'
-              : 'Delivered when the current turn ends, by resuming the session.'
-            : live
-              ? 'Delivered into the running turn.'
-              : 'Delivered when the current turn ends, by resuming the session.'}
+          {live
+            ? 'Delivered into the running turn.'
+            : 'Delivered when the current turn ends, by resuming the session.'}
         </span>
       </div>
     </div>

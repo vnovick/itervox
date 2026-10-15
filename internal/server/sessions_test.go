@@ -21,24 +21,14 @@ type fakeSessions struct {
 	sentID  string
 	sentMsg string
 	// #178 step 3
-	page         server.TranscriptResponse
-	pageErr      error
-	pageArgs     []any
-	continueErr  error
-	continueArgs []string
+	page     server.TranscriptResponse
+	pageErr  error
+	pageArgs []any
 }
 
 func (f *fakeSessions) SessionTranscript(id string, before int64, limit int) (server.TranscriptResponse, error) {
 	f.pageArgs = []any{id, before, limit}
 	return f.page, f.pageErr
-}
-
-func (f *fakeSessions) ContinueSession(id, message, profile string) (server.SessionRow, error) {
-	f.continueArgs = []string{id, message, profile}
-	if f.continueErr != nil {
-		return server.SessionRow{}, f.continueErr
-	}
-	return server.SessionRow{ID: id, Owner: server.SessionOwnerItervox, Kind: "manual", Status: "running", Cwd: "/work/app"}, nil
 }
 
 func (f *fakeSessions) ListSessions() []server.SessionRow { return f.rows }

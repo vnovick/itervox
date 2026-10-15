@@ -4,9 +4,9 @@ import { Button } from '../../components/ui/button';
 import { useSessionTranscript } from '../../queries/sessions';
 import type { TranscriptEntry } from '../../types/schemas';
 
-// The transcript of a session started by hand, or continued under itervox
-// (#178 step 3): read from the CLI's own transcript file by the daemon,
-// redacted and abbreviated there, newest last. Older pages load on demand.
+// The transcript of a session started by hand (#178 step 3): read from the
+// CLI's own transcript file by the daemon, redacted and abbreviated there,
+// newest last. Older pages load on demand.
 
 function entryLabel(e: TranscriptEntry): string {
   if (e.kind === 'tool') return 'tool';

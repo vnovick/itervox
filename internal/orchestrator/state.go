@@ -117,10 +117,6 @@ type OrchestratorEvent struct { //nolint:revive
 	SessionDelivery *SessionDelivery
 	// ExternalSessions is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalSessions []extsessions.Session
-	// Continue is an EventContinueSession request.
-	Continue *ContinueRequest
-	// ManualTurn is an EventManualTurnExited result.
-	ManualTurn *ManualTurnResult
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -765,13 +761,6 @@ type State struct {
 	// EventExternalSessionsDiscovered (discovery runs off the loop).
 	// Session-scoped, not persisted.
 	ExternalSessions []extsessions.Session
-	// ManualSessions are hand-started sessions an operator continued under
-	// itervox ("Continue in itervox"), keyed by the CLI session ID they were
-	// discovered with. Itervox owns them from then on: each operator
-	// message runs one resumed turn in the session's own directory.
-	// Event-loop state; session-scoped, not persisted (after a restart the
-	// session is listed as started outside itervox again).
-	ManualSessions map[string]*ManualSession
 }
 
 // NewState initialises a State from a config snapshot.
@@ -824,6 +813,5 @@ func NewState(cfg *config.Config) State {
 		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
 		SessionMessages:    make(map[string][]SessionMessage),
-		ManualSessions:     make(map[string]*ManualSession),
 	}
 }

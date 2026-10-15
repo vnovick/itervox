@@ -122,18 +122,7 @@ func (o *Orchestrator) syncDrainRequest(state *State) {
 // observeDrained closes Drained() once a drain has no running worker left.
 // Event loop only; called after every loop iteration.
 func (o *Orchestrator) observeDrained(state State) {
-	if state.Draining && len(state.Running) == 0 && !manualTurnRunning(state) {
+	if state.Draining && len(state.Running) == 0 {
 		o.drained.fire()
 	}
-}
-
-// manualTurnRunning reports whether a session continued under itervox
-// (#178 step 3) has a turn in flight: a drain waits for it like a worker.
-func manualTurnRunning(state State) bool {
-	for _, m := range state.ManualSessions {
-		if m != nil && m.Status == SessionStatusRunning {
-			return true
-		}
-	}
-	return false
 }

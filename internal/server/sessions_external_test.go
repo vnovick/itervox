@@ -2,10 +2,8 @@ package server_test
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -78,57 +76,10 @@ func TestSessionTranscriptEndpoint(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-func postContinue(t *testing.T, f server.SessionsClient, id, body string) *httptest.ResponseRecorder {
-	t.Helper()
+// "Continue in itervox" was dropped (#178): there is no route that takes
+// over a session started by hand.
+func TestNoContinueRouteForHandStartedSessions(t *testing.T) {
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+id+"/continue", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	sessionsServer(f).ServeHTTP(w, req)
-	return w
-}
-
-// POST /continue answers 202 with the now-owned session, 409
-// session_in_use (with the reason) while the original process may still
-// run, and maps the other refusals.
-func TestContinueSessionEndpoint(t *testing.T) {
-	f := &fakeSessions{}
-	w := postContinue(t, f, "hand-1", `{"message":"go on","profile":"coder"}`)
-	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
-	assert.Equal(t, []string{"hand-1", "go on", "coder"}, f.continueArgs)
-	var body struct {
-		Session map[string]any `json:"session"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Equal(t, "itervox", body.Session["owner"])
-	assert.Equal(t, "manual", body.Session["kind"])
-
-	w = postContinue(t, f, "hand-1", "")
-	assert.Equal(t, http.StatusAccepted, w.Code, "an empty body continues with the default prompt")
-
-	for _, c := range []struct {
-		err  error
-		code int
-		body string
-	}{
-		{&server.SessionInUseError{Reason: "claude process 7 has the transcript open"}, http.StatusConflict, `"session_in_use"`},
-		{server.ErrSessionAlreadyOwned, http.StatusConflict, `"already_owned"`},
-		{server.ErrUnknownProfile, http.StatusBadRequest, `"profile"`},
-		{server.ErrTooManySessions, http.StatusTooManyRequests, `"too_many_sessions"`},
-		{server.ErrSessionNotFound, http.StatusNotFound, `"not_found"`},
-		{server.ErrDraining, http.StatusConflict, `"draining"`},
-		{server.ErrBusy, http.StatusServiceUnavailable, `"orchestrator_busy"`},
-	} {
-		f.continueErr = c.err
-		w = postContinue(t, f, "hand-1", `{}`)
-		assert.Equal(t, c.code, w.Code, c.err.Error())
-		assert.Contains(t, w.Body.String(), c.body, c.err.Error())
-	}
-	f.continueErr = &server.SessionInUseError{Reason: "claude process 7 has the transcript open"}
-	w = postContinue(t, f, "hand-1", `{}`)
-	assert.Contains(t, w.Body.String(), "claude process 7 has the transcript open")
-	var inUse *server.SessionInUseError
-	assert.True(t, errors.As(f.continueErr, &inUse))
-
-	w = postContinue(t, &fakeSessions{}, "hand-1", `{"message":"`+strings.Repeat("x", 10*1024+1)+`"}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	sessionsServer(&fakeSessions{}).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/hand-1/continue", nil))
+	assert.Contains(t, []int{http.StatusNotFound, http.StatusMethodNotAllowed}, w.Code, w.Body.String())
 }
