@@ -2,6 +2,7 @@ import {
   Bot,
   LayoutDashboard,
   Logs,
+  MessagesSquare,
   type LucideProps,
   Settings,
   TimerReset,
@@ -37,4 +38,8 @@ export function AutomationsIcon({ className }: { className?: string }) {
 
 export function SettingsIcon({ className }: { className?: string }) {
   return <Settings {...iconProps(className)} />;
+}
+
+export function SessionsIcon({ className }: { className?: string }) {
+  return <MessagesSquare {...iconProps(className)} />;
 }

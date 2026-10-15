@@ -15,6 +15,7 @@ import {
   AutomationsIcon,
   DashboardIcon,
   LogsIcon,
+  SessionsIcon,
   SettingsIcon,
   TimelineIcon,
 } from './components/layout/NavIcons';
@@ -24,12 +25,14 @@ import { useDialogLayer } from './components/ui/dialog/useDialogLayer';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
 import { useAttentionCount } from './hooks/useOperatorQueue';
 import { useIssueUrlSync } from './hooks/useUrlState';
+import { inputRequiredRowState } from './utils/inputRequired';
 
 import { PageLoader } from './components/common/PageLoader';
 import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
 import { AttentionNotifier } from './components/itervox/AttentionNotifier';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
+const Sessions = lazy(() => import('./pages/Sessions'));
 const Timeline = lazy(() => import('./pages/Timeline'));
 const Agents = lazy(() => import('./pages/Agents'));
 const Automations = lazy(() => import('./pages/Automations'));
@@ -42,6 +45,7 @@ const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
 const NAV_ITEMS = [
   { to: '/', icon: <DashboardIcon />, label: 'Dashboard' },
   { to: '/timeline', icon: <TimelineIcon />, label: 'Timeline' },
+  { to: '/sessions', icon: <SessionsIcon />, label: 'Sessions' },
   { to: '/logs', icon: <LogsIcon />, label: 'Logs' },
   { to: '/agents', icon: <AgentsIcon />, label: 'Agents' },
   { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
@@ -51,6 +55,12 @@ const NAV_ITEMS = [
 function SidebarContent() {
   // CORE-078 — same count as the attention inbox and the page title.
   const attention = useAttentionCount();
+  // #178 — sessions waiting for input badge the Sessions tab.
+  const waitingSessions = useItervoxStore(
+    (s) =>
+      s.snapshot?.inputRequired?.filter((r) => inputRequiredRowState(r) === 'input_required')
+        .length ?? 0,
+  );
   return (
     <>
       {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
@@ -62,7 +72,7 @@ function SidebarContent() {
             to={item.to}
             icon={item.icon}
             label={item.label}
-            badge={item.to === '/' ? attention : 0}
+            badge={item.to === '/' ? attention : item.to === '/sessions' ? waitingSessions : 0}
           />
         ))}
       </nav>
@@ -203,6 +213,16 @@ export function AppRouteTable() {
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
                 <Logs />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/sessions"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Sessions />
               </PageErrorBoundary>
             </Suspense>
           }

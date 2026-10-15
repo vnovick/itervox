@@ -444,7 +444,27 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
 	// self-assessment alone).
 	var lastAfterRunErr error
+	// #178: operator messages from the Sessions panel. A live turn takes
+	// them itself (steerCtx); the rest wait for the next resumed turn.
+	steer := o.runSteering(ctx, issue.Identifier, backend, workerHost)
+	steerCtx := agent.WithSteering(ctx, steer)
+	var steerQueue []agent.SteerMessage
+	steerTurns := 0
 	turn := 1
+	// steerMore reports whether queued operator messages keep the run going
+	// for one more turn that resumes the session with them as its prompt.
+	steerMore := func() bool {
+		if steer == nil || claudeSessionID == nil || *claudeSessionID == "" || steerTurns >= maxSteeringTurns {
+			return false
+		}
+		steerQueue = append(steerQueue, steer.Drain()...)
+		if len(steerQueue) == 0 {
+			return false
+		}
+		steerTurns++
+		effectiveMaxTurns = max(effectiveMaxTurns, turn+1)
+		return true
+	}
 	for ; turn <= effectiveMaxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
 		if turn == 1 {
@@ -602,6 +622,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 
+		// #178: queued operator messages are this turn's prompt; the turn
+		// resumes the session, so the agent reads them in context.
+		if turn > 1 && steer != nil {
+			steerQueue = append(steerQueue, steer.Drain()...)
+		}
+		if len(steerQueue) > 0 && claudeSessionID != nil && *claudeSessionID != "" {
+			renderedPrompt = steeringPrompt(steerQueue)
+			o.reportSessionDelivery(ctx, issue.Identifier, steerQueue, SteeringResume)
+			steerQueue = nil
+		}
+
 		// Run agent turn — pass a logger pre-seeded with the issue identifier so
 		// Claude's live output appears in the log stream and can be filtered by identifier.
 		// onProgress sends a live EventWorkerUpdate each time Claude produces output so
@@ -637,6 +668,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					OutputTokens: cumulativeOutput + partial.OutputTokens,
 					SessionID:    runLogID,
 					LastMessage:  partial.LastText,
+					// #178: the CLI's session ID as soon as it reports one,
+					// so the Sessions panel can address a first turn.
+					AgentSessionID: partial.SessionID,
 				},
 				Limit: limit,
 			}:
@@ -666,7 +700,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if o.agentLogDir != "" {
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
-		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
+		result, runErr := o.runner.RunTurn(steerCtx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
 			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.
@@ -793,6 +827,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if runErr == nil && result.FailureText == "" && result.InputTokens == 0 && result.OutputTokens == 0 {
 				slog.Info("worker: empty result error on 0-token turn — treating as clean session end",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+				if steerMore() {
+					continue
+				}
 				break
 			}
 			// CORE-167: FailureText embeds agent stderr, which can carry
@@ -832,6 +869,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if result.InputTokens == 0 && result.OutputTokens == 0 {
 			slog.Info("worker: 0-token turn — session concluded, exiting loop",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			if steerMore() {
+				continue
+			}
 			break
 		}
 
@@ -865,6 +905,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// something must enter the input_required state instead of being
 		// treated as an ordinary successful single-turn completion.
 		if backend == "codex" && !result.Failed {
+			// #178: Codex `exec` takes no input mid-run; a message queued
+			// during the turn is delivered by resuming the session now.
+			if steerMore() {
+				continue
+			}
 			slog.Info("worker: codex turn completed — exiting loop (single-turn backend)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
 			break
@@ -877,6 +922,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if result.ResultText != "" && result.ResultText == prevResultText {
 			slog.Info("worker: duplicate result text detected — session concluded, exiting loop",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			if steerMore() {
+				continue
+			}
 			break
 		}
 		prevResultText = result.ResultText
@@ -942,6 +990,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		o.cfgMu.RUnlock()
 		if !isActiveState(issue.State, State{ActiveStates: activeStates}) {
 			break // issue left active states — clean exit
+		}
+		if turn == effectiveMaxTurns {
+			steerMore() // #178: the last turn; messages that came in extend the run
 		}
 	}
 

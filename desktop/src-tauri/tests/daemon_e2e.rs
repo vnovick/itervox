@@ -22,10 +22,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use itervox_desktop::client::{fetch_state, FetchError};
+use itervox_desktop::client::{fetch_sessions, fetch_state, FetchError};
 use itervox_desktop::events::AlertKind;
 use itervox_desktop::model::{Core, Health, PendingOp, RefreshOutcome};
 use itervox_desktop::projects::SavedProjects;
+use itervox_desktop::sessions::{read_all, session_link};
 use itervox_desktop::status::{parse_status, DaemonRecord};
 use itervox_desktop::supervisor::{
     process_alive, record_for, send_sigterm, start_spec, status_command, wait_for_exit,
@@ -407,6 +408,40 @@ fn input_required_run_raises_an_alert_that_opens_the_issue() {
     let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
     let page = agent
         .get(&alert.url)
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_to_string()
+        .unwrap();
+    assert!(page.contains("id=\"root\""), "{page}");
+
+    // #178: the Sessions window lists the waiting session from the real
+    // daemon's /api/v1/sessions (read with the supervisor token), badged
+    // as waiting, and its dashboard route is served.
+    let records = f.status();
+    let jobs = f
+        .core
+        .session_jobs(&records, &f.tokens, &|p| std::fs::read_to_string(p).ok());
+    let view = read_all(&jobs, fetch_sessions);
+    let group = view
+        .groups
+        .iter()
+        .find(|g| g.daemon == f.key)
+        .expect("the daemon's group");
+    assert_eq!(group.location, "local");
+    let waiting = group
+        .sessions
+        .iter()
+        .find(|s| s.identifier == "ITX-7")
+        .unwrap_or_else(|| panic!("ITX-7 listed: {group:?}"));
+    assert!(waiting.waiting(), "{waiting:?}");
+    assert_eq!(waiting.key, "sess-e2e", "keyed by the CLI's session id");
+    assert_eq!(waiting.owner, "itervox");
+    assert!(view.waiting >= 1);
+    let link = session_link(&base, &waiting.key);
+    assert_eq!(link, format!("{base}sessions?id=sess-e2e"));
+    let page = agent
+        .get(&link)
         .call()
         .unwrap()
         .body_mut()

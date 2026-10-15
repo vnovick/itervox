@@ -1213,6 +1213,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// ring through the non-blocking RecordFailure (CORE-046).
 			ReportClientError: clientErrorReporter(orch),
 			Webhooks:          webhooks, // #131: signed tracker deliveries
+			// #178: the Sessions panel API.
+			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering},
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

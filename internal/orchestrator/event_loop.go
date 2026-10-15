@@ -1932,9 +1932,17 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventClearBackendBreaker:
 		o.applyClearBackendBreaker(&state, ev.Identifier)
 
+	case EventSessionMessage: // #178
+		o.applySessionMessage(&state, ev)
+
+	case EventSessionMessageDelivered: // #178
+		applySessionDelivery(&state, ev.SessionDelivery, time.Now())
+
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
+		// #178: whatever this run did not deliver, nothing will.
+		settleSessionMessagesOnExit(&state, exitIdentifier(liveEntry, ev), ev.RunID)
 		if current, superseded := supersededRun(state, liveEntry, ev); superseded {
 			// #125: the exit of a run that is no longer the issue's current
 			// one (reconcile or stall detection already stopped it, and the

@@ -17,6 +17,7 @@ use crate::remote_model::{ConnectionView, DashboardTarget, RemoteCore};
 use crate::remote_ops::{
     add_connection, forget_tokens, obtain_token, rediscover, tunnel_specs, AddRequest,
 };
+use crate::sessions::SessionsJob;
 use crate::shellpath::{resolve_tools_for_app, Tools};
 use crate::sysevents::{PollingSystemEvents, SystemEventSource};
 use crate::token::{CachedTokenStore, KeyringTokenStore, MemoryTokenStore, TokenStore};
@@ -217,6 +218,13 @@ impl RemoteShared {
         let alerts = core.apply(&remotes, &tunnels, self.tokens.as_ref(), &states);
         let changed = before != core.views();
         (alerts, changed)
+    }
+
+    /// The Sessions window's reads of the remote daemons (#178).
+    pub fn session_jobs(&self) -> Vec<SessionsJob> {
+        let remotes = lock(&self.remotes).clone();
+        let tunnels = lock(&self.statuses).clone();
+        lock(&self.core).session_jobs(&remotes, &tunnels, self.tokens.as_ref())
     }
 
     pub fn views(&self) -> Vec<ConnectionView> {
