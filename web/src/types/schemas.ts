@@ -1164,8 +1164,8 @@ export const SessionMessageRowSchema = z.object({
 export const SessionRowSchema = z.object({
   id: z.string(),
   runId: z.string().optional(),
-  // "itervox": this daemon started it and may write to it. Anything else is
-  // read-only (sessions started by hand, a later step).
+  // "itervox": this daemon started it and may write to it. "external":
+  // started by hand, read-only.
   owner: z.string(),
   identifier: z.string(),
   title: z.string().optional(),
@@ -1173,7 +1173,9 @@ export const SessionRowSchema = z.object({
   backend: z.string().optional(),
   workerHost: z.string().optional(),
   kind: z.string().optional(),
-  status: z.string(), // "running" | "input_required" | "pending_input_resume"
+  // "running" | "input_required" | "pending_input_resume"; "exited" for a
+  // hand-started session whose CLI has exited.
+  status: z.string(),
   startedAt: z.string().optional(),
   queuedAt: z.string().optional(),
   turnCount: z.number().optional(),
@@ -1181,6 +1183,11 @@ export const SessionRowSchema = z.object({
   inputContext: z.string().optional(),
   steering: z.enum(['live', 'resume']).optional(),
   messages: z.array(SessionMessageRowSchema).optional(),
+  // #178 step 3 — hand-started sessions (no identifier).
+  cwd: z.string().optional(),
+  updatedAt: z.string().optional(),
+  // Why a hand-started session counts as still running.
+  inUseReason: z.string().optional(),
 });
 
 export const SessionsResponseSchema = z.object({
@@ -1188,5 +1195,26 @@ export const SessionsResponseSchema = z.object({
   sessions: z.array(SessionRowSchema),
 });
 
+// GET /api/v1/sessions/{id}/transcript — internal/server/sessions_external.go.
+export const TranscriptEntrySchema = z.object({
+  role: z.string(), // "user" | "assistant"
+  kind: z.string(), // "text" | "tool" | "tool_result"
+  text: z.string(),
+  at: z.string().optional(),
+  truncated: z.boolean().optional(),
+});
+
+export const SessionTranscriptSchema = z.object({
+  id: z.string(),
+  backend: z.string().optional(),
+  entries: z.array(TranscriptEntrySchema),
+  // Cursor of the next older page; present only when hasMore.
+  before: z.number().optional(),
+  hasMore: z.boolean(),
+  size: z.number(),
+});
+
+export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
+export type SessionTranscript = z.infer<typeof SessionTranscriptSchema>;
 export type SessionMessageRow = z.infer<typeof SessionMessageRowSchema>;
 export type SessionRow = z.infer<typeof SessionRowSchema>;

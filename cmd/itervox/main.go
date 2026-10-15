@@ -870,6 +870,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	wireExternalSessions(orch, cfg, workflowPath, demoSession != nil) // #178 step 3
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	// unified-dependency-graph Task 6 — operator deps-override dismissals live
 	// under the project's .itervox/ dir (not logDir) so they persist alongside

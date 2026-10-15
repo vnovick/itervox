@@ -49,6 +49,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
 	o.startPersistence()
+	o.startExternalSessionDiscovery(ctx) // #178 step 3
 	tick := time.NewTimer(0)
 	defer tick.Stop()
 
@@ -133,6 +134,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
+	o.extSessionsWg.Wait()
 	return loopErr
 }
 
@@ -1934,6 +1936,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 	case EventSessionMessage: // #178
 		o.applySessionMessage(&state, ev)
+
+	case EventExternalSessionsDiscovered: // #178 step 3
+		applyExternalSessions(&state, ev.ExternalSessions)
 
 	case EventSessionMessageDelivered: // #178
 		applySessionDelivery(&state, ev.SessionDelivery, time.Now())

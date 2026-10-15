@@ -1270,8 +1270,8 @@ type Config struct {
 	// the process-wide default, which survives the Server rebuild every
 	// WORKFLOW.md reload performs.
 	ClientErrorLimiter *ClientErrorLimiter
-	// Sessions backs GET /api/v1/sessions and
-	// POST /api/v1/sessions/{id}/message (#178). Nil answers 503.
+	// Sessions backs GET /api/v1/sessions, POST /api/v1/sessions/{id}/message
+	// and GET /api/v1/sessions/{id}/transcript (#178). Nil answers 503.
 	Sessions SessionsClient
 }
 
@@ -1459,6 +1459,7 @@ func (s *Server) routes() {
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)
+			r.Get("/sessions/{id}/transcript", s.handleSessionTranscript)
 			r.Get("/issues", s.handleIssues)
 			r.Get("/issues/{identifier}", s.handleIssueDetail)
 			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)

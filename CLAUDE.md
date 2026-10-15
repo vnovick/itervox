@@ -188,6 +188,16 @@ only the event loop mutates them.
   itervox writes only to agent processes it started (no TTY injection, no
   Accessibility/AppleScript automation), enforced by
   `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`.
+- `ExternalSessions` (#178 step 3) is event-loop state.
+  Discovery of sessions started by hand (`internal/extsessions`, read-only:
+  transcript files, `/proc` or `ps`/`lsof`) runs on its own goroutine
+  (`startExternalSessionDiscovery`, joined via `extSessionsWg`) and only sends
+  `EventExternalSessionsDiscovered`; the loop drops every session itervox
+  owns. These sessions are read-only: status `running` (with the liveness
+  reason) or `exited`, transcript served, messages refused (`not_owned`).
+  Session-scoped, not persisted. `TestExternalSessionInspectionIsReadOnly`
+  keeps `internal/extsessions` free of writes, signals and commands other
+  than `ps`/`lsof`.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -308,6 +318,10 @@ domain ─────┬── tracker (interface + adapters: linear, github, l
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
 
+extsessions (stdlib + logging — discovery, transcripts and read-only
+            liveness of agent sessions started by hand, #178; imported by
+            orchestrator and cmd/itervox)
+
 procgroup (stdlib only — own process group + group SIGKILL re-sent until
            ESRCH; the one shared kill path for agent runners and hooks)
 
@@ -328,7 +342,7 @@ agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, logbuffer, logging,
+              atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
               metrics, outbox, prdetector, procgroup, prompt, tracker,
               workspace)
 
@@ -373,7 +387,7 @@ cmd/itervox (wires everything)
 | `web/src/pages/Dashboard/components/AutomationQueueList.tsx` | Durable automation queue list and local search surface |
 | `web/src/pages/Dashboard/components/AutomationQueueDetailPanel.tsx` | Queue entry detail panel for trigger/profile/permission/dependency context |
 | `web/src/pages/Dashboard/components/DepsGraph.tsx` | Read-only React Flow dependency graph over blocker -> blocked issue rows |
-| `web/src/pages/Sessions/index.tsx` | Sessions panel (#178): one tab per agent session (input-required first), transcript from the issue log stream, composer (provide-input reply or `POST /api/v1/sessions/{id}/message`) |
+| `web/src/pages/Sessions/index.tsx` | Sessions panel (#178): one tab per agent session (input-required first, sessions started by hand last and read-only), transcript from the issue log stream or the CLI transcript (`SessionTranscript.tsx`), composer (provide-input reply or `POST /api/v1/sessions/{id}/message`) |
 | `web/src/components/itervox/IssueStatusChanges.tsx` | Per-issue status-change timeline rendered inside issue detail |
 | `web/src/components/itervox/QueueSearchInput.tsx` | Shared local search input for queue-like dashboard panels |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |

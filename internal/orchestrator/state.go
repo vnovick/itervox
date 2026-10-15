@@ -7,6 +7,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/extsessions"
 )
 
 // EventType identifies the kind of OrchestratorEvent.
@@ -114,6 +115,8 @@ type OrchestratorEvent struct { //nolint:revive
 	SessionMessage *SessionMessage
 	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
 	SessionDelivery *SessionDelivery
+	// ExternalSessions is a discovery pass (EventExternalSessionsDiscovered).
+	ExternalSessions []extsessions.Session
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -751,6 +754,13 @@ type State struct {
 	// and dropped when the run exits without delivering them. Session-scoped,
 	// not persisted.
 	SessionMessages map[string][]SessionMessage
+
+	// ExternalSessions are the sessions started by hand that the latest
+	// discovery pass found (#178 step 3), newest first, minus every session
+	// itervox owns. Event-loop state: replaced by
+	// EventExternalSessionsDiscovered (discovery runs off the loop).
+	// Session-scoped, not persisted.
+	ExternalSessions []extsessions.Session
 }
 
 // NewState initialises a State from a config snapshot.

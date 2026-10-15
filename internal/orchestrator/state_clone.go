@@ -74,6 +74,7 @@ func (s State) Clone() State {
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)
 	c.FailureAcks = maps.Clone(s.FailureAcks)
 	c.SessionMessages = copySessionMessages(s.SessionMessages)
+	c.ExternalSessions = cloneSlice(s.ExternalSessions)
 	return c
 }
 
