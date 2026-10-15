@@ -79,6 +79,30 @@ type AutomationTriggerContext struct {
 	// MergedAt is set on pr_merged only. Zero value means "not a merge event".
 	MergedAt time.Time
 
+	// ─── PR-event trigger fields (#173) ───────────────────────────────
+	// pr_check_completed / pr_synchronized / pr_review_submitted /
+	// pr_mergeable_changed also set PRURL, PRNumber and PRBranch.
+	// HeadSHA is the PR head commit the event is about.
+	HeadSHA string
+	// CheckName / CheckConclusion / CheckCompletedAt: pr_check_completed.
+	// CheckName is the check run name or the commit status context.
+	CheckName        string
+	CheckConclusion  string
+	CheckCompletedAt time.Time
+	// MergeableState is GitHub's mergeable_state when known (every PR-event
+	// trigger); PreviousMergeableState is set on pr_mergeable_changed.
+	MergeableState         string
+	PreviousMergeableState string
+	// ReviewID / ReviewAuthor / ReviewState / ReviewSubmittedAt:
+	// pr_review_submitted. ReviewState is lower case (approved,
+	// changes_requested, commented, dismissed).
+	ReviewID          string
+	ReviewAuthor      string
+	ReviewState       string
+	ReviewSubmittedAt time.Time
+	// EventSource is "webhook" or "poll".
+	EventSource string
+
 	// ─── rate_limited trigger fields (gap E) ──────────────────────────
 	FailedProfile         string
 	FailedBackend         string

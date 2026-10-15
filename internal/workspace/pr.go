@@ -50,6 +50,21 @@ func CheckoutBranch(ctx context.Context, wsPath, branch string) error {
 	return nil
 }
 
+// RemoteHeadSHA returns the commit the remote-tracking ref of branch in
+// wsPath points at (refs/remotes/origin/<branch>) — what the last push left
+// on the remote, not unpushed local commits — or "" when it cannot be read.
+// #173 records it as a managed PR's head.
+func RemoteHeadSHA(ctx context.Context, wsPath, branch string) string {
+	if wsPath == "" || branch == "" {
+		return ""
+	}
+	out, err := gitexec.Command(ctx, wsPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch+"^{commit}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // FindOpenPRURL returns the URL of the open pull request for the current git
 // branch in wsPath, or "" if no open PR is found (or on any error, including
 // gh not installed or not a git repository).

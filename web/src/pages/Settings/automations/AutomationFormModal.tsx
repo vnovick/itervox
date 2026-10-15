@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Modal, ModalFooter } from '../../../components/ui/modal';
 import { inputCls } from '../formStyles';
 import { AutomationEditorFields } from './AutomationEditorFields';
+import { PR_EVENT_FILTER_FIELDS, PR_EVENT_FILTER_TRIGGER } from './prEventFilters';
 import { UnknownValueNotice } from '../../../components/itervox/UnknownValueNotice';
 import { unknownAutomationItems } from '../../../types/configRoundTrip';
 import { automationFormSchema, type AutomationFormValues } from './automationForm';
@@ -174,6 +175,10 @@ export function AutomationFormModal({
               if (value !== 'blockers_resolved') {
                 setValue('moveToState', '');
               }
+              // #173 — each PR-event filter belongs to one trigger.
+              for (const field of PR_EVENT_FILTER_FIELDS) {
+                if (PR_EVENT_FILTER_TRIGGER[field] !== value) setValue(field, []);
+              }
             }}
             onTriggerStateChange={(value) => {
               setValue('triggerState', value, { shouldValidate: true });
@@ -219,6 +224,9 @@ export function AutomationFormModal({
             }}
             onMoveToStateChange={(value) => {
               setValue('moveToState', value, { shouldValidate: true });
+            }}
+            onPREventFilterChange={(field, value) => {
+              setValue(field, value, { shouldValidate: true });
             }}
           />
 

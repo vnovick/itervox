@@ -176,6 +176,14 @@ only the event loop mutates them.
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
   again). Event-loop state, session-scoped, not persisted.
+- `ManagedPRs`, `PREventDispatched` and `PREventBaselines` (#173) back the
+  PR-event triggers (`pr_check_completed`, `pr_synchronized`,
+  `pr_review_submitted`, `pr_mergeable_changed`). A PR is *managed* only once
+  an itervox run's exit recorded its URL for that issue; `internal/prwatch`
+  (webhook handler and poller, off the loop) only sends
+  `EventDispatchAutomation`, and `claimPREventDedup` in the event loop decides
+  managed-ness, staleness and the once-per-event dedup. Persisted to
+  `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -319,6 +327,9 @@ orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, logbuffer, logging,
               metrics, outbox, prdetector, procgroup, prompt, tracker,
               workspace)
+
+prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
+         request poller — imports metrics, tracker; used by cmd/itervox)
 
 app (EnrichIssue business logic — imports domain, tracker)
 

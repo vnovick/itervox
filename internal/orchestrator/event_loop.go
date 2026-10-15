@@ -45,6 +45,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
+	state = o.loadPREventsFromDisk(state) // #173
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -1997,6 +1998,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.cancelAndCleanupWorker(ev.RunEntry.Issue.Identifier)
 
 		now := time.Now()
+		// #173: the PR this run created or continued is managed from now on.
+		recordManagedPR(&state, liveEntry, ev.RunEntry, now)
 		issue := ev.RunEntry.Issue
 		attempt := 0
 		if ev.RunEntry.RetryAttempt != nil {

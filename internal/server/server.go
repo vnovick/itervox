@@ -1266,6 +1266,11 @@ type Config struct {
 	// and the Host guard: GitHub and Linear cannot send the token, and every
 	// delivery must carry the webhook secret's HMAC signature instead.
 	Webhooks WebhookHandler
+	// PREventWebhooks, when non-nil, serves POST /api/v1/webhooks/pr-events
+	// (#173): signed GitHub check_run, status, pull_request and
+	// pull_request_review deliveries for the PR-event automation triggers.
+	// Same exemptions and signature rule as Webhooks.
+	PREventWebhooks WebhookHandler
 	// ClientErrorLimiter rate-limits POST /api/v1/client-errors. Nil uses
 	// the process-wide default, which survives the Server rebuild every
 	// WORKFLOW.md reload performs.
@@ -1310,6 +1315,7 @@ type Server struct {
 	// process-wide DefaultClientErrorLimiter.
 	reportClientError func(ClientErrorReport) bool
 	webhooks          WebhookHandler
+	prEventWebhooks   WebhookHandler
 	clientErrors      *ClientErrorLimiter
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
@@ -1349,6 +1355,7 @@ func New(cfg Config) *Server {
 		metrics:             cfg.Metrics,
 		reportClientError:   cfg.ReportClientError,
 		webhooks:            cfg.Webhooks,
+		prEventWebhooks:     cfg.PREventWebhooks,
 		clientErrors:        cfg.ClientErrorLimiter,
 	}
 	if s.clientErrors == nil {

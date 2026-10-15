@@ -633,6 +633,8 @@ Supported triggers:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected
+- `pr_merged` — fires when an itervox-managed PR is merged by the daemon-side `merge_pr` action
+- `pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed` — fire on GitHub activity on a PR an Itervox run recorded (a completed check or status, a new push, a submitted review, a merge conflict appearing or clearing). Sourced from GitHub webhooks (`pr_events.webhook_secret`) or a poll of the open managed PRs; see [PR events](/guides/automations/#pr-events-on-managed-pull-requests).
 - `rate_limited` — fires when a worker run hits a vendor usage limit. A structured limit reported by the agent (Claude's `rate_limit_event` with status `rejected`, or a result with API status 429/402; a Codex "You've hit your usage limit" error) fires it on the **first** failure without consuming a retry, also with `max_retries: 0`. Otherwise it fires when the run exhausts its retries and the failure text is classified as rate-limit-driven. The switch cap limits automated switching; it is not the trigger condition. With no eligible fallback, the issue is retried after the vendor's reset time (at most 6 hours).
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
@@ -709,6 +711,11 @@ until the queue falls below the low-water mark.
 | `filter.limit` | int | Maximum number of issues to queue from one cron tick or event poll batch. |
 | `filter.input_context_regex` | string | Only meaningful for `input_required`; matched against the blocked-agent question text. |
 | `filter.max_age_minutes` | int | Only meaningful for `input_required`; skips blocked entries older than this many minutes. |
+| `filter.check_names` | string[] | Only for `pr_check_completed`: check run names or commit status contexts (case-insensitive). Empty = every check. |
+| `filter.conclusions` | string[] | Only for `pr_check_completed`: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale`, `error`. Empty = every conclusion. |
+| `filter.review_authors` | string[] | Only for `pr_review_submitted`: GitHub logins (case-insensitive), e.g. `greptile-apps[bot]`. |
+| `filter.review_states` | string[] | Only for `pr_review_submitted`: `approved`, `changes_requested`, `commented`, `dismissed`. |
+| `filter.mergeable_states` | string[] | Only for `pr_mergeable_changed`: fire on a move into these states. Empty = into or out of `dirty` (a conflict). |
 | `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted but prefer `policy.auto_switch`. |
 | `policy.auto_switch` | bool | Alias for `policy.auto_resume` on `rate_limited`; allows immediate profile/backend switching without a human approval step. |
 | `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. |
@@ -717,6 +724,22 @@ until the queue falls below the low-water mark.
 | `policy.move_to_state` | string | Optional for `blockers_resolved`; allows the helper profile to move matching unblocked issues to this state when the profile includes `move_state`. |
 
 When `switch_to_backend` is set, the target profile command must be compatible with that backend. Prefer a dedicated Codex profile such as `command: codex` / `backend: codex`, or a backend-aware wrapper command.
+
+
+### `pr_events`
+
+How the PR-event triggers (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`) learn about GitHub activity on managed PRs. Read at load time.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `pr_events.webhook_secret` | string | empty | When set (`$VAR` resolves from the environment; at least 16 characters), serves `POST /api/v1/webhooks/pr-events` for signed GitHub `check_run`, `status`, `pull_request` and `pull_request_review` deliveries. The poll then only reads each managed PR (head SHA and `mergeable_state`). Empty: the poll on `polling.automation_interval_ms` also reads check runs, statuses and reviews. |
+
+```yaml
+pr_events:
+  webhook_secret: $ITERVOX_PR_WEBHOOK_SECRET
+```
+
+The poll needs a GitHub token that can read the PR's repository: `tracker.api_key` when the tracker is GitHub, else `GH_TOKEN` / `GITHUB_TOKEN` (`GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN` for an Enterprise host), else the `gh` CLI login. A Linear-tracked project with PRs on GitHub works after `gh auth login`, or with `GITHUB_TOKEN` in `.itervox/.env`. Managed PRs and the PR-event dedup ledger persist in `pr_events.json` in the daemon log directory, next to `automation_queue.json`.
 
 ### Dependency readiness and blockers
 

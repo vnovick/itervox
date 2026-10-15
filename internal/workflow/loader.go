@@ -574,6 +574,21 @@ func buildAutomationFilterLines(filter AutomationFilterEntry) []string {
 	if filter.MaxAgeMinutes > 0 {
 		lines = append(lines, "      max_age_minutes: "+strconv.Itoa(filter.MaxAgeMinutes))
 	}
+	// #173 PR-event filters.
+	for _, f := range []struct {
+		key    string
+		values []string
+	}{
+		{"check_names", filter.CheckNames},
+		{"conclusions", filter.Conclusions},
+		{"review_states", filter.ReviewStates},
+		{"review_authors", filter.ReviewAuthors},
+		{"mergeable_states", filter.MergeableStates},
+	} {
+		if len(f.values) > 0 {
+			lines = append(lines, "      "+f.key+": "+marshalStringSliceInline(f.values))
+		}
+	}
 	return lines
 }
 

@@ -1279,7 +1279,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	// Pass branchName so the auto-clear handler uses the actual worktree branch
 	// (which may be prCtx.Branch on a PR-continuation run, not issue.BranchName).
-	o.sendExitWithBranchThenPROpenedAutomations(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL, openedPRURL, openedPRBranch)
+	// #173: the head this run left on the remote is the managed PR's
+	// pr_synchronized baseline (and, for a run a pr_synchronized rule
+	// dispatched, that rule's own push).
+	headSHA := ""
+	if detectedPRURL != "" && wsPath != "" {
+		headSHA = workspace.RemoteHeadSHA(ctx, wsPath, activeBranchName)
+	}
+	o.sendExitWithBranchThenPROpenedAutomations(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL, openedPRURL, openedPRBranch, headSHA)
 }
 
 // hookLogFn returns a function suitable for workspace.RunHook's logFn parameter.
@@ -1714,10 +1721,10 @@ func (e *turnFailure) Error() string { return e.msg }
 func (e *turnFailure) Unwrap() error { return e.err }
 
 func (o *Orchestrator) sendExit(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error) {
-	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "", "")
+	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "", "", "")
 }
 
-func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string) {
+func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName, prURL, headSHA string) {
 	o.deliverExit(ctx, issue, OrchestratorEvent{
 		Type:    EventWorkerExited,
 		IssueID: issue.ID,
@@ -1725,6 +1732,7 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 			Issue:          issue,
 			BranchName:     branchName,
 			PRURL:          prURL,
+			HeadSHA:        headSHA,
 			TerminalReason: reason,
 			RetryAttempt:   &attempt,
 		},
@@ -1802,8 +1810,8 @@ func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev O
 	}
 }
 
-func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string) {
-	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL)
+func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string, headSHA string) {
+	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL, headSHA)
 	// Dispatch when this completed run has a PR (any
 	// detected URL counts), not only when the tracker-comment write succeeded:
 	// `resolvedURL` below falls back to the detected prURL when openedPRURL is
