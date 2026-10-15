@@ -293,3 +293,41 @@ qa-daemon: e2e
 .PHONY: qa-current
 qa-current: verify qa-current-ui qa-daemon
 	@echo "qa-current: full existing-functionality baseline passed"
+
+# ── Mac app (#128) ───────────────────────────────────────────────────────
+# A Tauri v2 menu-bar shell in desktop/ that bundles the daemon as a sidecar
+# (see site/src/content/docs/mac-app.mdx). Needs a Rust toolchain; `make
+# desktop` additionally needs macOS (Xcode Command Line Tools) and the Tauri
+# CLI, installed on first use at TAURI_CLI_VERSION. Not part of `make verify`,
+# which stays Rust-free; CI runs `desktop-test` and the unsigned bundle on a
+# macOS runner (.github/workflows/desktop.yml).
+DESKTOP_DIR := desktop/src-tauri
+TAURI_CLI_VERSION := 2.12.2
+HOST_TRIPLE = $(shell rustc -vV | sed -n 's/^host: //p')
+
+.PHONY: desktop desktop-sidecar desktop-sidecar-host desktop-test desktop-tauri-cli
+
+# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one on a Mac).
+desktop-sidecar: web-deps web-build
+	bash desktop/scripts/build-sidecar.sh
+
+# The sidecar for this machine only (tests, Linux development).
+desktop-sidecar-host: web-deps web-build
+	bash desktop/scripts/build-sidecar.sh --host
+
+# Rust gates plus the end-to-end tests against the real daemon.
+desktop-test: desktop-sidecar-host
+	cd $(DESKTOP_DIR) && cargo fmt --check
+	cd $(DESKTOP_DIR) && cargo clippy --all-targets -- -D warnings
+	cd $(DESKTOP_DIR) && ITERVOX_E2E_REQUIRE=1 \
+	  ITERVOX_E2E_DAEMON=$(CURDIR)/$(DESKTOP_DIR)/binaries/itervox-$(HOST_TRIPLE) cargo test
+
+desktop-tauri-cli:
+	@cargo tauri --version 2>/dev/null | grep -qx 'tauri-cli $(TAURI_CLI_VERSION)' \
+	  || cargo install tauri-cli --version $(TAURI_CLI_VERSION) --locked
+
+# The unsigned app bundle for this Mac's architecture:
+# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg).
+# Signing and notarization are #130.
+desktop: desktop-sidecar desktop-tauri-cli
+	cd $(DESKTOP_DIR) && cargo tauri build
