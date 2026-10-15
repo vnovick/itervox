@@ -28,10 +28,11 @@ const SessionStatusExited = "exited"
 // DefaultExternalSessionsInterval is how often discovery runs.
 const DefaultExternalSessionsInterval = 15 * time.Second
 
-// ExternalSessionSource discovers hand-started sessions. extsessions.Scanner
-// implements it; it only reads.
+// ExternalSessionSource discovers hand-started sessions and lists tmux
+// panes. cmd/itervox implements it over extsessions.Scanner and
+// internal/tmuxctl; it only reads.
 type ExternalSessionSource interface {
-	Discover(now time.Time) ([]extsessions.Session, error)
+	Discover(now time.Time) (ExternalScan, error)
 }
 
 // SetExternalSessionSource enables discovery of hand-started sessions every
@@ -61,12 +62,12 @@ func (o *Orchestrator) startExternalSessionDiscovery(ctx context.Context) {
 				return
 			case <-timer.C:
 			}
-			sessions, err := src.Discover(time.Now())
+			scan, err := src.Discover(time.Now())
 			if err != nil {
 				slog.Debug("orchestrator: session discovery incomplete", "error", err)
 			}
 			select {
-			case o.events <- OrchestratorEvent{Type: EventExternalSessionsDiscovered, ExternalSessions: sessions}:
+			case o.events <- OrchestratorEvent{Type: EventExternalSessionsDiscovered, ExternalScan: &scan}:
 			case <-ctx.Done():
 				return
 			}
@@ -96,12 +97,16 @@ func ownedSessionIDs(state State) map[string]bool {
 	return owned
 }
 
-// applyExternalSessions stores a discovery pass, minus owned sessions.
-// Event loop only.
+// applyExternalSessions stores a discovery pass, minus owned sessions: the
+// CLI sessions of itervox's runs, and any session running inside a tmux
+// session itervox started. Event loop only.
 func applyExternalSessions(state *State, found []extsessions.Session) {
 	owned := ownedSessionIDs(*state)
 	list := make([]extsessions.Session, 0, len(found))
 	for _, s := range found {
+		if s.TmuxPane.Session != "" && state.TmuxSessions[s.TmuxPane.Session] != nil {
+			continue
+		}
 		if !owned[s.ID] {
 			list = append(list, s)
 		}

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,14 +16,22 @@ import (
 
 // TestNoWritesToProcessesItervoxDidNotStart is the structural guard of the
 // Sessions panel invariant (#178): itervox writes input only to sessions it
-// owns — the stdin of a process it started itself. It never injects into a
-// terminal (TIOCSTI, /dev/pts, tmux send-keys), never drives another app
-// through UI automation (AppleScript System Events keystrokes, the
-// Accessibility API, CGEvent, xdotool) and never opens another process's
-// stdin through /proc. Checked over every non-test Go file under cmd/ and
+// owns — the stdin of a process it started itself — with ONE narrow
+// exception: internal/tmuxctl, which types into an agent CLI running in a
+// tmux pane through tmux's own paste buffer and key events, opt-in
+// (sessions.tmux_control) or for tmux sessions itervox started. Nothing
+// ever injects into a terminal device (TIOCSTI, /dev/pts), drives another
+// app through UI automation (AppleScript System Events keystrokes, the
+// Accessibility API, CGEvent, xdotool) or opens another process's stdin
+// through /proc. Checked over every non-test Go file under cmd/ and
 // internal/ and every Rust file of the Mac app:
 //
 //   - no forbidden token in a string literal, identifier or Rust source;
+//     the tmux write commands (send-keys, paste-buffer, load-buffer) only in
+//     internal/tmuxctl;
+//   - `tmux` is executed only by internal/tmuxctl, and internal/tmuxctl
+//     executes nothing but `tmux` (a literal program name, explicit
+//     arguments);
 //   - every stdin wiring (x.Stdin = …, x.ExtraFiles = …, x.StdinPipe())
 //     is on an *exec.Cmd the same function created with exec.Command or
 //     exec.CommandContext, or inside an allowlisted helper that is handed
@@ -53,11 +62,24 @@ func TestNoWritesToProcessesItervoxDidNotStart(t *testing.T) {
 		}
 	}
 	violations = append(violations, rustForeignWriteViolations(t, "../../desktop/src-tauri/src")...)
+	if tmuxExecs == 0 {
+		violations = append(violations, "internal/tmuxctl: expected its exec of tmux to be found")
+	}
 	if len(violations) > 0 {
 		sort.Strings(violations)
 		t.Fatalf("itervox may write only to processes it started (#178); found:\n  %s", strings.Join(violations, "\n  "))
 	}
 }
+
+// tmuxctlDir is the one package allowed to write into a tmux pane.
+const tmuxctlDir = "internal/tmuxctl/"
+
+// tmuxWriteTokens are tmux's write commands: allowed in tmuxctlDir only.
+var tmuxWriteTokens = []string{"send-keys", "paste-buffer", "load-buffer"}
+
+// tmuxExecs counts tmuxctl's exec sites of tmux (at least one must exist,
+// so the check cannot pass by not finding the package).
+var tmuxExecs int
 
 // forbiddenWriteTokens name the mechanisms that write into a process
 // itervox did not start. Matched case-insensitively in Go string literals
@@ -65,7 +87,9 @@ func TestNoWritesToProcessesItervoxDidNotStart(t *testing.T) {
 var forbiddenWriteTokens = []string{
 	"tiocsti",       // push bytes into another terminal's input queue
 	"/dev/pts",      // another terminal
-	"send-keys",     // tmux / screen keystroke injection
+	"send-keys",     // tmux / screen keystroke injection (tmuxctl only)
+	"paste-buffer",  // tmux paste (tmuxctl only)
+	"load-buffer",   // tmux paste buffer (tmuxctl only)
 	"xdotool",       // X11 keystroke injection
 	"system events", // AppleScript UI scripting (keystroke, key code)
 	"keystroke",
@@ -148,6 +172,9 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 		}
 		lower := strings.ToLower(text)
 		for _, tok := range forbiddenWriteTokens {
+			if strings.HasPrefix(rel, tmuxctlDir) && slices.Contains(tmuxWriteTokens, tok) {
+				continue // the one permitted writer
+			}
 			if strings.Contains(lower, tok) {
 				out = append(out, pos(n)+": forbidden "+strconv.Quote(tok))
 			}
@@ -173,6 +200,29 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 		pkg, ok := sel.X.(*ast.Ident)
 		return ok && pkg.Name == execName && (sel.Sel.Name == "Command" || sel.Sel.Name == "CommandContext")
 	}
+	// Who runs tmux: tmuxctl only, and tmuxctl nothing else.
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isExecCall(call) {
+			return true
+		}
+		prog := call.Args[0]
+		if sel := call.Fun.(*ast.SelectorExpr); sel.Sel.Name == "CommandContext" {
+			prog = call.Args[1]
+		}
+		lit, isLit := prog.(*ast.BasicLit)
+		isTmux := isLit && lit.Value == `"tmux"`
+		switch {
+		case strings.HasPrefix(rel, tmuxctlDir) && !isTmux:
+			out = append(out, pos(call)+": internal/tmuxctl executes something other than a literal \"tmux\"")
+		case strings.HasPrefix(rel, tmuxctlDir):
+			tmuxExecs++
+		case isTmux:
+			out = append(out, pos(call)+": tmux executed outside internal/tmuxctl")
+		}
+		return true
+	})
+
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {

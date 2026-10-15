@@ -4,6 +4,7 @@
 // POST /api/v1/sessions/{id}/message    — queue a message for a running session
 // GET  /api/v1/sessions/{id}/transcript — a hand-started session's
 //                                         transcript, paged backwards
+// tmux control and "New session" live in queries/sessionsTmux.ts.
 //
 // A session waiting for input takes a reply through the existing
 // provide-input path (useProvideInput in queries/issues.ts), not here.
@@ -17,6 +18,7 @@ import {
   SessionTranscriptSchema,
   SessionsResponseSchema,
   type SessionRow,
+  type SessionsResponse,
   type SessionTranscript,
   type TranscriptEntry,
 } from '../types/schemas';
@@ -31,14 +33,21 @@ const EMPTY_SESSIONS: SessionRow[] = [];
 export function useSessions() {
   const q = useQuery({
     queryKey: SESSIONS_KEY,
-    queryFn: async (): Promise<SessionRow[]> => {
+    queryFn: async (): Promise<SessionsResponse> => {
       const { data } = await apiRequest('/api/v1/sessions', { op: 'sessions' });
-      return SessionsResponseSchema.parse(data).sessions;
+      return SessionsResponseSchema.parse(data);
     },
     refetchInterval: SESSIONS_REFETCH_MS,
     retry: (failureCount, err) => !(err instanceof UnauthorizedError) && failureCount < 2,
   });
-  return { ...q, sessions: q.data ?? EMPTY_SESSIONS };
+  return {
+    ...q,
+    sessions: q.data?.sessions ?? EMPTY_SESSIONS,
+    // undefined until the daemon answered, or from a daemon without tmux
+    // control: the panel then neither warns nor offers New session.
+    tmux: q.data?.tmux,
+    newSession: q.data?.newSession,
+  };
 }
 
 /** The key a session is addressed by: its CLI session id, else its run id. */
@@ -60,11 +69,19 @@ export function sessionLabel(s: Pick<SessionRow, 'identifier' | 'title' | 'cwd' 
 export function useSendSessionMessage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, message }: { id: string; message: string }) => {
+    mutationFn: async ({
+      id,
+      message,
+      submit,
+    }: {
+      id: string;
+      message: string;
+      submit?: boolean;
+    }) => {
       await apiRequest(`/api/v1/sessions/${encodeURIComponent(id)}/message`, {
         op: 'sessionMessage',
         method: 'POST',
-        json: { message },
+        json: submit === undefined ? { message } : { message, submit },
       });
     },
     onSuccess: () => {

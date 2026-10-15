@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<string, string> = {
 /** The second line of a tab: who owns it and how it runs. */
 function tabDetail(s: SessionRow): string {
   if (s.owner === 'external') return 'started outside itervox';
+  if (s.kind === 'tmux') return ['started in tmux', s.backend].filter(Boolean).join(' · ');
   return [s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ') || 'default';
 }
 
@@ -121,6 +122,25 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
             >
               {tabDetail(s)}
             </span>
+            {(s.tmuxPane || s.kind === 'tmux') && (
+              <span className="flex items-center gap-1">
+                <span
+                  data-testid="session-badge-tmux"
+                  title={s.tmuxPane ? `tmux pane ${s.tmuxPane.label}` : 'tmux'}
+                  className="bg-theme-bg-soft text-theme-text-secondary rounded px-1.5 py-0.5 font-mono text-[10px]"
+                >
+                  tmux
+                </span>
+                {s.controllable && (
+                  <span
+                    data-testid="session-badge-controllable"
+                    className="text-theme-muted text-[10px]"
+                  >
+                    controllable
+                  </span>
+                )}
+              </span>
+            )}
           </button>
         );
       })}
