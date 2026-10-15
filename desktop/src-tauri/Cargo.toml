@@ -2,7 +2,7 @@
 name = "itervox-desktop"
 version = "0.2.5"
 description = "Itervox menu-bar app: a thin Tauri shell over the itervox daemons"
-license = "MIT"
+license = "Apache-2.0"
 edition = "2021"
 publish = false
 
