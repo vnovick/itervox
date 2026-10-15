@@ -62,21 +62,23 @@ const (
 	ledgerPendingReviews
 	ledgerSpend
 	ledgerPREvents
+	ledgerDeferredStateMoves
 	numLedgers
 )
 
 var ledgerNames = [numLedgers]string{
-	ledgerHistory:         "history",
-	ledgerPaused:          "paused",
-	ledgerPauseReasons:    "pause_reasons",
-	ledgerInputRequired:   "input_required",
-	ledgerAutomationQueue: "automation_queue",
-	ledgerAutoSwitched:    "auto_switched",
-	ledgerDepsOverrides:   "deps_overrides",
-	ledgerBackendHealth:   "backend_health",
-	ledgerPendingReviews:  "pending_reviews",
-	ledgerSpend:           "issue_spend",
-	ledgerPREvents:        "pr_events",
+	ledgerHistory:            "history",
+	ledgerPaused:             "paused",
+	ledgerPauseReasons:       "pause_reasons",
+	ledgerInputRequired:      "input_required",
+	ledgerAutomationQueue:    "automation_queue",
+	ledgerAutoSwitched:       "auto_switched",
+	ledgerDepsOverrides:      "deps_overrides",
+	ledgerBackendHealth:      "backend_health",
+	ledgerPendingReviews:     "pending_reviews",
+	ledgerSpend:              "issue_spend",
+	ledgerPREvents:           "pr_events",
+	ledgerDeferredStateMoves: "deferred_state_moves",
 }
 
 // ledgerOp is one full version of a ledger: write data to path, or remove it.

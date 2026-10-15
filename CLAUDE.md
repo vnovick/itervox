@@ -172,6 +172,15 @@ only the event loop mutates them.
   runs, and the event loop records the blocker so the issue waits for it.
   `pruneStackUnavailable` drops a record each tick once it no longer
   matches the candidate's blocker. Session-scoped, not persisted.
+- `DeferredStateMoves` (#177) holds itervox-originated state moves (an
+  agent's `move_state`, offered via `DeferAgentStateMove` from the adapter)
+  that would make reconciliation stop the issue's running worker. They are
+  deferred until that run's exit, then applied off-loop through the write
+  sink only while the tracker still shows the move's `FromState`. Event-loop
+  state persisted to `deferred_state_moves.json` (ledger writer); while one is
+  pending, dispatch and retries hold the issue (`state_move_pending`). A
+  person's move (dashboard/tracker) is never deferred and still stops the
+  worker.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
