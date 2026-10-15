@@ -77,6 +77,11 @@ const (
 	// EventAckFailures records an operator acknowledgement of an issue's
 	// worker failures up to a time (CORE-175).
 	EventAckFailures EventType = "AckFailures"
+	// EventDispatchCronBatch carries one tick of a cron automation whose
+	// filter.limit is set (#176). The loop picks the next `limit` issues
+	// from the rule's rotation cursor and dispatches them, so the selection
+	// and the cursor advance happen together in the event loop.
+	EventDispatchCronBatch EventType = "DispatchCronBatch"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -96,6 +101,7 @@ type OrchestratorEvent struct { //nolint:revive
 	InputRequiredEntry *InputRequiredEntry      // used by TerminalInputRequired
 	Issue              *domain.Issue            // used by EventDispatchAutomation
 	Automation         *AutomationDispatch      // used by EventDispatchAutomation
+	CronBatch          *CronAutomationBatch     // used by EventDispatchCronBatch
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
 	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
 	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
@@ -655,6 +661,14 @@ type State struct {
 	AutomationDroppedPREventDedupTotal     uint64
 	AutomationDroppedPREventUnmanagedTotal uint64
 
+	// CronCursors (#176) is the filter.limit rotation cursor of each cron
+	// automation: automation ID -> identifier of the last issue that rule's
+	// rotation served. The next tick starts after it (wrapping), so a rule
+	// with more matches than its limit reaches every issue instead of the
+	// first N every time. Event-loop state, persisted with the automation
+	// queue (automation_queue.json) so a restart resumes the rotation.
+	CronCursors map[string]string
+
 	// AutomationDropsSelfReentryTotal is a monotonic counter incremented every
 	// time an `input_required` automation dispatch is suppressed because the
 	// previous worker on this issue was itself an automation-driven run
@@ -811,6 +825,7 @@ func NewState(cfg *config.Config) State {
 		ManagedPRs:         make(map[string]ManagedPR),
 		PREventDispatched:  make(map[string]time.Time),
 		PREventBaselines:   make(map[string]string),
+		CronCursors:        make(map[string]string),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
 		StackOnReviewState: stackOnReviewState(cfg),
