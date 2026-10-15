@@ -1,4 +1,4 @@
-.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode dco-test e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.25.13, even on machines where /usr/local/go is an older version.
@@ -32,7 +32,7 @@ build: web-deps web-build
 # internal/server/web/dist (gitignored), so on a fresh checkout every Go
 # compile step fails with "pattern web/dist: no matching files found" until
 # the frontend is built. Order is load-bearing — verify runs serially.
-verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test
+verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test dco-test
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
@@ -60,6 +60,11 @@ release-hooks-clean:
 # Guard against new os.Exit() outside cmd/itervox/exit.go — see CLAUDE.md.
 no-os-exit:
 	@bash scripts/check-no-os-exit.sh
+
+# dco-test exercises scripts/check-dco.sh (the DCO sign-off check run by
+# .github/workflows/dco.yml) against throwaway git repos. Needs bash + git.
+dco-test:
+	@bash scripts/check-dco_test.sh
 
 # no-bare-go (CORE-008) fails on any production `go` statement that neither
 # defers orchestrator.RecoverGoroutine / failFastOnPanic nor appears on the

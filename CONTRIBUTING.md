@@ -81,7 +81,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` + `deploy-test` + `dco-test` — mirrors CI |
 | `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
 | `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
@@ -91,6 +91,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
 | `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
 | `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
+| `make dco-test` | Shell test for `scripts/check-dco.sh`, the DCO sign-off check run on fork pull requests |
 | `make fmt` | `gofmt -l -w cmd internal` |
 | `make vet` | `go vet ./cmd/... ./internal/...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
@@ -467,6 +468,70 @@ test(workspace): cover symlink escape rejection
 chore: rename binary to itervox
 ```
 
+### Developer Certificate of Origin (DCO)
+
+Every commit in a pull request must be signed off under the
+[Developer Certificate of Origin 1.1](DCO). The sign-off is your statement that
+you wrote the change, or otherwise have the right to submit it under the
+project's license. Add it with `-s`:
+
+```bash
+git commit -s -m "fix(orchestrator): cap backoff at max_retry_backoff_ms"
+```
+
+which appends a trailer using your `git config user.name` and `user.email`:
+
+```
+Signed-off-by: Ada Contributor <ada@example.com>
+```
+
+The email in the sign-off must match the commit's author email. To sign off
+commits already on your branch (for example after the DCO check failed):
+
+```bash
+git rebase --signoff origin/main     # adds the trailer to every commit since main
+git push --force-with-lease
+```
+
+For only the last commit, `git commit --amend --no-edit -s` works too. Merge
+commits are not checked. Run the same check locally with
+`bash scripts/check-dco.sh origin/main HEAD`.
+
+### Contributor License Agreement (CLA)
+
+In addition to the DCO sign-off, external contributors sign the
+[Itervox Individual Contributor License Agreement](CLA.md) once.
+
+- **What it is.** A license, not a transfer: you keep the copyright in your
+  work and grant the project owner a broad, perpetual copyright and patent
+  license to use it, including the right to sublicense it and to distribute it
+  under licenses other than Apache-2.0.
+- **Why.** Itervox is Apache-2.0 today. The project may adopt an open-core
+  model in which some future parts are released under a different license
+  (for example a source-available license such as FSL-1.1-ALv2, or a
+  commercial one). The CLA makes sure contributed code can be used in all
+  editions without tracking down every contributor later. The DCO alone does
+  not grant that.
+- **How to sign.** On your first pull request, a bot comments with a link to
+  the CLA. Read it, then post this comment on the pull request, exactly:
+
+  ```
+  I have read the CLA Document and I hereby sign the CLA
+  ```
+
+  Your signature is recorded once (in `signatures/cla.json` on the
+  `cla-signatures` branch) and covers all your future contributions. Comment
+  `recheck` to re-run the check.
+- **Contributing for your employer?** If your employer may own what you write,
+  ask them to sign the [Corporate CLA](CLA-CORPORATE.md) (a signed PDF sent by
+  email; the steps are in the document) and list you on its Schedule A.
+
+**Who is checked.** Both the DCO and the CLA checks run only on pull requests
+opened from a fork. They are skipped for branches pushed to `vnovick/itervox`
+itself (maintainer and release branches) and for the allowlisted accounts
+`vnovick`, `claude` and any `*[bot]` account (Dependabot, GitHub Actions).
+The workflows are `.github/workflows/dco.yml` and `.github/workflows/cla.yml`.
+
 ### Pull request checklist
 
 - [ ] `make verify` passes locally
@@ -474,6 +539,7 @@ chore: rename binary to itervox
 - [ ] No API tokens or secrets in the diff
 - [ ] Exported symbols have doc comments
 - [ ] PR description explains the **why**, not just the **what**
+- [ ] Every commit is signed off (`git commit -s`) and, for external contributors, the CLA is signed
 
 ---
 

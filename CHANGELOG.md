@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **DCO sign-off and Contributor License Agreement for external contributions**: every commit in a pull request from a fork must carry a `Signed-off-by:` matching its author email ([Developer Certificate of Origin 1.1](DCO), checked by the repo's own `scripts/check-dco.sh` in `.github/workflows/dco.yml`, tested by `make dco-test`), and first-time external contributors sign the [Individual CLA](CLA.md) by commenting on their pull request (`.github/workflows/cla.yml`, signatures kept on the `cla-signatures` branch); companies use the [Corporate CLA](CLA-CORPORATE.md). The CLA is a license grant, not an assignment: contributors keep their copyright and the project owner may also distribute contributions under other licenses, including proprietary ones. Both checks skip branches pushed to this repository and allowlisted maintainer and bot accounts. See CONTRIBUTING.md.
+
 ## [0.2.1] — 2026-09-28
 
 Dependency autonomy, a write-ahead outbox for tracker writes, and the security and ops fixes that accumulated alongside them. Itervox now only picks up issues that are not blocked, orders work by what unblocks the most downstream effort, detects dependency cycles, keeps its dependency analysis fresh on its own, and captures far more real dependencies from both trackers — while making roughly 10x fewer tracker requests on the hot paths.
