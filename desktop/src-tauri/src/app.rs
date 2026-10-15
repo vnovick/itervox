@@ -21,10 +21,13 @@ use crate::menu::{build_menu, MenuAction, MenuEntry, MenuSpec};
 use crate::model::{token_for, Core, NotificationTargets, PendingOp, REFRESH_INTERVAL};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
 use crate::remote::is_remote_key;
+use crate::sessions::{page_action, push_script, read_all, session_link, PageAction};
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
 
 const TRAY_ID: &str = "itervox-tray";
+/// The Sessions window (#178).
+const SESSIONS_LABEL: &str = "sessions";
 
 /// State shared by the tray, the refresh thread and the action threads.
 struct Shared {
@@ -270,6 +273,7 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
     if !outcome.diff.is_empty() || !outcome.alerts.is_empty() || status_changed || remote_changed {
         update_menu(app, shared);
     }
+    push_sessions(app, shared);
     for alert in &outcome.alerts {
         let id = lock(&shared.targets).register(&alert.project, &alert.url);
         let _ = app
@@ -416,6 +420,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
             }
             wake(shared);
         }
+        MenuAction::OpenSessions => open_sessions(app, shared),
         MenuAction::RefreshNow => wake(shared),
         MenuAction::Quit => {
             // Tunnels belong to the app (unlike the daemons): stop them.
@@ -690,4 +695,91 @@ fn open_window(
             Err(e) => eprintln!("itervox desktop: could not open the dashboard: {e}"),
         }
     });
+}
+
+/// Reads every daemon's sessions and hands them to the Sessions window,
+/// while it is open (#178). Runs on the refresh thread.
+fn push_sessions(app: &AppHandle, shared: &Arc<Shared>) {
+    let Some(window) = app.get_webview_window(SESSIONS_LABEL) else {
+        return;
+    };
+    let mut jobs = {
+        let core = lock(&shared.core);
+        core.session_jobs(
+            core.last_records(),
+            shared.tokens.as_ref(),
+            &read_token_file,
+        )
+    };
+    jobs.extend(shared.remote.session_jobs());
+    let view = read_all(&jobs, client::fetch_sessions);
+    let _ = window.eval(push_script(&view));
+}
+
+/// Shows the Sessions window, creating it on first use. Its page asks for
+/// data and opens sessions by navigating to app-internal paths, which the
+/// navigation handler intercepts (sessions.rs `page_action`).
+fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
+    let app2 = app.clone();
+    let shared2 = Arc::clone(shared);
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = app2.get_webview_window(SESSIONS_LABEL) {
+            let _ = w.show();
+            let _ = w.set_focus();
+            wake(&shared2);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let nav_app = app2.clone();
+        let nav_shared = Arc::clone(&shared2);
+        let built = WebviewWindowBuilder::new(
+            &app2,
+            SESSIONS_LABEL,
+            WebviewUrl::App("sessions.html".into()),
+        )
+        .title("Sessions — Itervox")
+        .inner_size(560.0, 680.0)
+        .min_inner_size(360.0, 320.0)
+        .on_navigation(move |url| match page_action(url.as_str()) {
+            Some(action) => {
+                handle_page_action(&nav_app, &nav_shared, action);
+                false
+            }
+            None => true,
+        })
+        .build();
+        match built {
+            Ok(w) => {
+                let _ = w.set_focus();
+                wake(&shared2);
+            }
+            Err(e) => eprintln!("itervox desktop: could not open the Sessions window: {e}"),
+        }
+    });
+}
+
+fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction) {
+    match action {
+        PageAction::Ready => wake(shared),
+        PageAction::Open { daemon, session } => {
+            if is_remote_key(&daemon) {
+                // Rebased onto the daemon's tunnel by RemoteShared::dashboard.
+                let link = session_link("http://127.0.0.1/", &session);
+                open_dashboard(app, shared, &daemon, Some(link));
+                return;
+            }
+            let base = lock(&shared.core)
+                .last_records()
+                .iter()
+                .find(|r| r.workflow == daemon)
+                .map(|r| r.base_url());
+            match base {
+                Some(base) => {
+                    open_dashboard(app, shared, &daemon, Some(session_link(&base, &session)))
+                }
+                None => error_dialog(app, "That project's daemon is not running."),
+            }
+        }
+    }
 }

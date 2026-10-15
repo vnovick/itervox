@@ -10,6 +10,7 @@ use crate::dashboard::origin_of;
 use crate::events::{Alert, EventDetector};
 use crate::model::{FetchJob, Health};
 use crate::remote::{token_key, Remotes};
+use crate::sessions::SessionsJob;
 use crate::token::TokenStore;
 use crate::tunnel::{TunnelPhase, TunnelStatus};
 
@@ -203,6 +204,36 @@ impl RemoteCore {
         jobs
     }
 
+    /// The Sessions window's reads (#178): every daemon `fetch_jobs` reads,
+    /// named as the menu names it, with its connection's name.
+    pub fn session_jobs(
+        &self,
+        remotes: &Remotes,
+        tunnels: &[TunnelStatus],
+        tokens: &dyn TokenStore,
+    ) -> Vec<SessionsJob> {
+        Self::fetch_jobs(remotes, tunnels, tokens)
+            .into_iter()
+            .map(|j| {
+                let conn = remotes
+                    .daemon(&j.key)
+                    .map(|(c, d)| (c.name.clone(), d.name()));
+                let name = self
+                    .daemon(&j.key)
+                    .map(|d| d.name.clone())
+                    .or_else(|| conn.as_ref().map(|(_, n)| n.clone()))
+                    .unwrap_or_else(|| j.key.clone());
+                SessionsJob {
+                    name,
+                    remote: Some(conn.map(|(c, _)| c).unwrap_or_default()),
+                    key: j.key,
+                    url: j.url,
+                    token: j.token,
+                }
+            })
+            .collect()
+    }
+
     /// The dashboard target for a remote daemon, while its tunnel is up.
     pub fn dashboard_target(
         &self,
@@ -358,6 +389,38 @@ mod tests {
             .dashboard_target(&kp, &tokens, Some("http://127.0.0.1:49999/?issue=ENG-1"))
             .unwrap();
         assert_eq!(t.url, "http://127.0.0.1:50001/?issue=ENG-1");
+    }
+
+    /// #178: the Sessions window reads a remote daemon through its tunnel
+    /// with that daemon's token, named after its project and connection.
+    #[test]
+    fn session_jobs_read_remote_daemons_through_their_tunnels() {
+        let r = remotes();
+        let kp = token_key("prod", "/srv/app/WORKFLOW.md");
+        let tokens = MemoryTokenStore::default();
+        tokens.set(&kp, "prod-token").unwrap();
+        let tunnels = vec![up(&kp, 50001)];
+        let mut core = RemoteCore::new(0);
+        let mut states = HashMap::new();
+        states.insert(
+            kp.clone(),
+            Ok(StateSummary {
+                project_name: "app".into(),
+                ..Default::default()
+            }),
+        );
+        core.apply(&r, &tunnels, &tokens, &states);
+        let jobs = core.session_jobs(&r, &tunnels, &tokens);
+        assert_eq!(
+            jobs,
+            vec![SessionsJob {
+                key: kp,
+                url: "http://127.0.0.1:50001/".into(),
+                token: Some("prod-token".into()),
+                name: "app".into(),
+                remote: Some("PROD".into()),
+            }]
+        );
     }
 
     #[test]
