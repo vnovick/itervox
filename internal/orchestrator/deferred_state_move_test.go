@@ -102,6 +102,22 @@ func handoffFiles(t *testing.T, wsDir string) []string {
 	return out
 }
 
+// runUntilCancelled runs orch until ctx is cancelled and makes the test wait
+// for Run to return: Run's shutdown flush writes the ledgers, and a write
+// landing during t.TempDir's cleanup would fail the test.
+func runUntilCancelled(t *testing.T, orch *orchestrator.Orchestrator, ctx context.Context) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { _ = orch.Run(ctx); close(done) }() // test driver
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			t.Error("orchestrator Run did not return after cancel")
+		}
+	})
+}
+
 // agentMove is what the move_state agent action does (cmd/itervox's adapter):
 // offer the move to the orchestrator first, and write it to the tracker
 // directly only when the orchestrator did not defer it.
@@ -140,7 +156,7 @@ func TestPROpenedCompletionStateMoveLetsWorkerFinish(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+	runUntilCancelled(t, orch, ctx)
 
 	firstRun := func() (orchestrator.CompletedRun, bool) {
 		for _, h := range orch.RunHistory() {
@@ -211,7 +227,7 @@ func TestHumanTerminalMoveStillStopsRunningWorker(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+	runUntilCancelled(t, orch, ctx)
 
 	select {
 	case d := <-deferred:
@@ -257,7 +273,7 @@ func TestDeferredStateMoveAppliedAfterWorkerExits(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+	runUntilCancelled(t, orch, ctx)
 
 	require.Eventually(t, func() bool { return dsmState(t, mt, "id1") == "Done" },
 		7*time.Second, 20*time.Millisecond, "the deferred move lands after the run")
@@ -307,7 +323,7 @@ func TestDeferredStateMoveSurvivesRestart(t *testing.T) {
 	runner1.move = agentMove(orch1, mt1, issue, "Done")
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel1()
-	go orch1.Run(ctx1) //nolint:errcheck
+	runUntilCancelled(t, orch1, ctx1)
 	var onDisk []byte
 	require.Eventually(t, func() bool {
 		b, err := os.ReadFile(movesFile)
@@ -329,7 +345,7 @@ func TestDeferredStateMoveSurvivesRestart(t *testing.T) {
 	orch2.SetDeferredStateMovesFile(restartFile)
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel2()
-	go orch2.Run(ctx2) //nolint:errcheck
+	runUntilCancelled(t, orch2, ctx2)
 
 	require.Eventually(t, func() bool { return dsmState(t, mt2, "id1") == "Done" },
 		5*time.Second, 20*time.Millisecond, "the restarted daemon applies the deferred move")
@@ -357,7 +373,7 @@ func TestDeferredStateMoveDroppedWhenIssueMovedMeanwhile(t *testing.T) {
 	orch.SetDeferredStateMovesFile(movesFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+	runUntilCancelled(t, orch, ctx)
 
 	require.Eventually(t, func() bool {
 		b, err := os.ReadFile(movesFile)

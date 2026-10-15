@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/metrics"
 )
 
 // #177 — an itervox-originated state move never stops the worker it concerns.
@@ -286,11 +288,27 @@ func (o *Orchestrator) applyDeferredStateMove(state *State, identifier string, n
 	goSafe(&o.discardWg, "deferred-state-move", identifier, func() {
 		outcome, current, err := o.writeDeferredStateMove(move)
 		settled := move
-		o.sendEventBounded(OrchestratorEvent{
+		o.sendDeferredMoveSettled(OrchestratorEvent{
 			Type: EventDeferredStateMoveSettled, IssueID: move.IssueID, Identifier: identifier,
 			DeferredMove: &settled, Message: outcome, Error: err, deferFromState: current,
-		}, identifier)
+		})
 	}, o.withPanicFailure("deferred-state-move", identifier, nil))
+}
+
+// sendDeferredMoveSettled delivers an apply's outcome to the loop, bounded:
+// a lost event leaves the move in place, and a later tick applies it again
+// (deferredMoveApplyStale). Off-loop.
+func (o *Orchestrator) sendDeferredMoveSettled(ev OrchestratorEvent) {
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case o.events <- ev:
+	case <-o.loopExitedCh(): // nil before Run: never ready
+	case <-timer.C:
+		metrics.EventDropped() // CORE-045
+		slog.Warn("orchestrator: deferred state move outcome not delivered; a later tick retries it",
+			"identifier", ev.Identifier, "outcome", ev.Message)
+	}
 }
 
 // writeDeferredStateMove reads the issue's current state and writes the move
