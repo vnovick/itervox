@@ -49,6 +49,9 @@ jobs:
       - name: Deploy script tests (fetch-secrets quoting, bootstrap dry-run)
         run: make deploy-test
 
+      - name: DCO check script tests (scripts/check-dco.sh)
+        run: make dco-test
+
       - name: Show coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
