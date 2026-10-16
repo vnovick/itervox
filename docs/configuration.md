@@ -44,7 +44,9 @@ fields are also mutable via the dashboard Settings page and persist back to
 |---|---|---|---|---|
 | `kind` | string | yes | — | Tracker backend: `linear`, `github` or `local` (one Markdown file per issue in `.itervox/issues/`; no `api_key`; `project_slug` is the optional identifier prefix, default `ITX`) |
 | `api_key` | string | yes | — | API key. Use `$ENV_VAR` for env var substitution |
-| `project_slug` | string | github: yes | `""` | GitHub: `owner/repo`. Linear: optional project slug filter |
+| `project_slug` | string | github: yes; linear: unless `assignee` | `""` | GitHub: `owner/repo`. Linear: the project slug, or `"*"` for every project the key can read. Linear needs exactly one of `project_slug` and `assignee` (#182) |
+| `assignee` | string | no | `""` | Linear only (#182): the issues assigned to one user instead of a project — `me` (the API key's user), a user id or an email — from any team and project the key can read. Resolved once per load (off the event loop) and cached. An issue reassigned away mid-run finishes its run, gets no new one and shows "out of scope"; Itervox's writes never set an assignee. Switchable at runtime from the project picker ("Assigned to …"). `itervox doctor` checks the user resolves and its issues are readable. Not supported in `sync` |
+| `team` | string | no | `""` | Linear only, with `assignee` (#182): only this team's issues, by key or id |
 | `endpoint` | string | no | Linear: `https://api.linear.app/graphql`; GitHub: provider default | Override the API endpoint |
 | `active_states` | []string | no | `["Todo","In Progress"]` | Issue states considered ready to work |
 | `terminal_states` | []string | no | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | States treated as permanently done |

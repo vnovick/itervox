@@ -241,6 +241,9 @@ type Model struct {
 	pickerProjects []ProjectItem
 	pickerCursor   int
 	pickerSel      map[string]bool // slug → selected
+	// pickerAssignee labels the picker's "Assigned to …" row (#182), taken
+	// from the snapshot when the picker opens; empty hides the row.
+	pickerAssignee string
 
 	// backlog panel state
 	backlogOpen    bool
@@ -343,6 +346,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pickerErr = ""
 		// Initialise selection from current snapshot filter.
 		snap := m.snap()
+		m.pickerAssignee = snap.AssigneeScopeLabel
 		m.pickerSel = make(map[string]bool)
 		for _, slug := range snap.ActiveProjectFilter {
 			m.pickerSel[slug] = true
@@ -560,17 +564,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pickerCursor--
 				}
 			case key.Matches(msg, m.keys.ListDown):
-				total := len(m.pickerProjects) + 2 // +2: "All" + "No project"
+				total := len(m.pickerRows())
 				if m.pickerCursor < total-1 {
 					m.pickerCursor++
 				}
 			case key.Matches(msg, m.keys.PickerSel):
-				slug := m.pickerSlugAt(m.pickerCursor)
-				if m.pickerSel[slug] {
-					delete(m.pickerSel, slug)
-				} else {
-					m.pickerSel[slug] = true
-				}
+				m.togglePickerRow(m.pickerSlugAt(m.pickerCursor))
 			case key.Matches(msg, m.keys.PickerApply):
 				m.applyPickerFilter()
 				m.pickerOpen = false
@@ -1255,6 +1254,8 @@ func (m *Model) renderLeft() string {
 	filterHint := ""
 	if snap.TrackerKind == "linear" {
 		switch {
+		case len(snap.ActiveProjectFilter) == 1 && snap.ActiveProjectFilter[0] == assigneeScopeSlug:
+			filterHint = styleCyan.Render(" (assigned)") // #182; the SCOPE header line names whom
 		case snap.ActiveProjectFilter == nil:
 			filterHint = styleGray.Render(" (default project)")
 		case len(snap.ActiveProjectFilter) == 0:
@@ -1794,21 +1795,54 @@ func findNavItem(navItems []leftItem, sessions []server.RunningRow, id string, s
 	return 0
 }
 
+// pickerRow is one row of the project picker.
+type pickerRow struct {
+	slug  string
+	label string
+}
+
+// assigneeScopeSlug is the picker entry for the assignee scope (#182); it
+// matches tracker.AssigneeScopeFilter, which the TUI does not import.
+const assigneeScopeSlug = "__assignee__"
+
+// pickerRows lists the picker's rows: "All issues" (""), "Assigned to …"
+// (the assignee scope, #182, when the tracker has one), "No project"
+// ("__no_project__"), then the projects.
+func (m *Model) pickerRows() []pickerRow {
+	rows := []pickerRow{{slug: "", label: "All issues"}}
+	if who := m.pickerAssignee; who != "" {
+		rows = append(rows, pickerRow{slug: assigneeScopeSlug, label: "Assigned to " + who})
+	}
+	rows = append(rows, pickerRow{slug: "__no_project__", label: "No project"})
+	for _, p := range m.pickerProjects {
+		rows = append(rows, pickerRow{slug: p.Slug, label: p.Name})
+	}
+	return rows
+}
+
 // pickerSlugAt returns the slug for row i in the picker list.
-// Row 0 = "All issues" (""), row 1 = "No project" ("__no_project__"), row 2+ = project slugs.
 func (m *Model) pickerSlugAt(i int) string {
-	switch i {
-	case 0:
-		return "" // "All issues"
-	case 1:
-		return "__no_project__"
-	default:
-		idx := i - 2
-		if idx < len(m.pickerProjects) {
-			return m.pickerProjects[idx].Slug
-		}
+	rows := m.pickerRows()
+	if i < 0 || i >= len(rows) {
 		return ""
 	}
+	return rows[i].slug
+}
+
+// togglePickerRow toggles a picker row. The assignee scope (#182) is never
+// combined with projects: selecting it clears every project, and selecting
+// a project clears it.
+func (m *Model) togglePickerRow(slug string) {
+	if m.pickerSel[slug] {
+		delete(m.pickerSel, slug)
+		return
+	}
+	if slug == assigneeScopeSlug {
+		clear(m.pickerSel)
+	} else {
+		delete(m.pickerSel, assigneeScopeSlug)
+	}
+	m.pickerSel[slug] = true
 }
 
 // renderSplitDivider renders the vertical divider between logs and details panes.
@@ -1880,6 +1914,9 @@ func (m *Model) renderSplitDetails() string {
 			addContent(styleMuted.Render("Backend: ") + r.Backend)
 			if r.WorkerHost != "" {
 				addContent(styleMuted.Render("Worker: ") + styleCyan.Render(r.WorkerHost))
+			}
+			if r.OutOfScope { // #182
+				addContent(styleYellow.Render("Out of scope: ") + styleMuted.Render("left the tracker scope — this run finishes, no new run"))
 			}
 			elapsed := time.Duration(r.ElapsedMs) * time.Millisecond
 			addContent(styleMuted.Render("Elapsed: ") + fmtDuration(elapsed))
@@ -1996,6 +2033,11 @@ func (m *Model) applyPickerFilter() {
 		m.cfg.SetProjectFilter([]string{})
 		return
 	}
+	if m.pickerSel[assigneeScopeSlug] {
+		// #182: the assignee scope stands alone.
+		m.cfg.SetProjectFilter([]string{assigneeScopeSlug})
+		return
+	}
 	var slugs []string
 	for slug, on := range m.pickerSel {
 		if on && slug != "" {
@@ -2022,19 +2064,7 @@ func (m *Model) renderProjectPicker() string {
 	if m.pickerLoading {
 		add(styleGray.Render("  Loading projects..."))
 	} else {
-		type pickerRow struct {
-			slug  string
-			label string
-		}
-		rows := []pickerRow{
-			{slug: "", label: "All issues"},
-			{slug: "__no_project__", label: "No project"},
-		}
-		for _, p := range m.pickerProjects {
-			rows = append(rows, pickerRow{slug: p.Slug, label: p.Name})
-		}
-
-		for i, row := range rows {
+		for i, row := range m.pickerRows() {
 			checked := "[ ]"
 			if m.pickerSel[row.slug] {
 				checked = "[✓]"

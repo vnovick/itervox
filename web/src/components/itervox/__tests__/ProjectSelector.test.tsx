@@ -74,3 +74,22 @@ describe('ProjectSelector', () => {
     expect(screen.getByText('Project B')).toBeInTheDocument();
   });
 });
+
+describe('ProjectSelector — tracker scope (#182)', () => {
+  it('shows the active scope the tracker reports instead of filter chips', () => {
+    mockStore.mockImplementation((selector: (s: unknown) => unknown) =>
+      selector({
+        snapshot: {
+          trackerKind: 'linear',
+          activeProjectFilter: ['__assignee__'],
+          trackerScope: 'assigned to Itervox Bot · team ENG',
+        },
+      }),
+    );
+    render(<ProjectSelector />);
+    expect(screen.getByTestId('tracker-scope')).toHaveTextContent(
+      'assigned to Itervox Bot · team ENG',
+    );
+    expect(screen.queryByText('__assignee__')).toBeNull();
+  });
+});

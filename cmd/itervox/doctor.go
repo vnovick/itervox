@@ -162,6 +162,9 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
+	// Assignee is the Linear assignee-scope check (#182). Zero value when
+	// the tracker has no assignee scope.
+	Assignee AssigneeCheck
 	// LabelFixError is why `doctor --fix` did not finish repairing the
 	// labels (a failed create or re-check). Non-empty means exit 1.
 	LabelFixError string
@@ -355,6 +358,14 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Linear assignee scope (#182): the user resolves, and its issues are
+	// readable. An unresolvable user or unknown team fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), assigneeCheckTimeout)
+		report.Assignee = checkLinearAssignee(ctx, cfg)
+		cancel()
+	}
+
 	return report, cfg
 }
 
@@ -387,6 +398,9 @@ func doctorExitCode(report DoctorReport) int {
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
 	case report.LabelFixError != "":
+		exitCode = 1
+	case assigneeCheckFailed(report.Assignee):
+		// #182: the daemon's polls fail until the assignee resolves.
 		exitCode = 1
 	}
 	return exitCode
@@ -459,6 +473,7 @@ func renderDoctorReport(r DoctorReport) string {
 	}
 	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
 	renderLabelCheck(&b, r.Labels)
+	renderAssigneeCheck(&b, r.Assignee)
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}

@@ -721,8 +721,16 @@ Notes:
   front matter with no `tracker:` block is refused (M4-close D4).
 
 - Empty array means “all issues”.
-- Omitting `slugs` also serves all issues: like an empty array it comments
-  `project_slug` out in `WORKFLOW.md`, and the live filter matches the file.
+- Omitting `slugs` also serves all issues: like an empty array it writes
+  `project_slug: "*"` in `WORKFLOW.md` (#182: a Linear scope is always
+  named), and the live filter matches the file.
+- `["__assignee__"]` selects the assignee scope (#182): the issues assigned to
+  `tracker.assignee` (or the API key's user when the workflow was configured
+  with a project). The user is resolved first; one that does not resolve is
+  refused and nothing changes. The save writes `assignee:` and comments
+  `project_slug` out; a project save comments `assignee` out. The entry is
+  never combined with project slugs. The snapshot's `trackerScope` names the
+  active scope and `assigneeScopeLabel` the option's user.
 - A save applies to the tracker immediately and never reloads `WORKFLOW.md`
   (CORE-160). A save that raced a reload is not written (the next
   generation keeps the file's value); re-send it.

@@ -90,7 +90,9 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `kind` | string | **required** | Tracker backend: `"linear"`, `"github"` or `"local"` (issues as Markdown files in `.itervox/issues/`, no account or key; see [Local issues](/guides/local-issues/)). |
 | `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
 | `api_key` | string | **required** (Linear, GitHub) | API token; not used by `local`. Use `$VAR_NAME` to read from an environment variable (recommended). |
-| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
+| `project_slug` | string | **required** (GitHub; Linear unless `assignee` is set) | For Linear: the project slug from your Linear URL (e.g. `"ENG"`), or `"*"` (quoted) for every project the key can read. Exactly one of `project_slug` and `assignee` is set for Linear; both or neither is a validation error. For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
+| `assignee` | string | `""` | Linear only (#182): scope the tracker to the issues assigned to one user instead of a project — `me` (the API key's own user, Linear's `viewer`), a user id, or an email. Issues come from any project of any team the key can read. Resolved once at startup and on each `WORKFLOW.md` reload; a user nobody can see fails every poll (never widens) and `itervox doctor` exits 1. An issue reassigned away mid-run finishes its run but gets no new one, and shows as "out of scope". Itervox's own writes never set an assignee. The dashboard and TUI project picker switch between it and projects at runtime. Not supported in `tracker.sync`. See [Linear setup → Scope by assignee](/guides/linear-setup/#scope-by-assignee). |
+| `team` | string | `""` | Linear only, with `assignee` (#182): only the issues of this team, by key (`ENG`) or id. Ignored under a project scope. |
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
@@ -140,7 +142,9 @@ writes that are genuinely failing.
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slug: ENG
+  project_slug: ENG                 # or "*" for every project
+  # assignee: me                    # or, instead of project_slug: the issues assigned to a user
+  # team: ENG                       # optional with assignee
   active_states: ["Todo", "In Progress"]
   terminal_states: ["Done", "Cancelled", "Duplicate"]
   completion_state: "In Review"

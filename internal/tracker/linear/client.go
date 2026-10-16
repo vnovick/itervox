@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,12 @@ type ClientConfig struct {
 	ActiveStates   []string
 	TerminalStates []string
 	Endpoint       string
+	// Assignee is the assignee scope (#182): "me", a user id or an email.
+	// When set (and no runtime filter overrides it) the client reads the
+	// issues assigned to that user instead of ProjectSlug's.
+	Assignee string
+	// Team narrows the assignee scope to one team, by key or id.
+	Team string
 }
 
 // linearProject is the internal representation of a Linear project.
@@ -64,6 +71,11 @@ type Client struct {
 	// non-nil with slugs = filter to those projects.
 	projectFilterMu sync.RWMutex
 	projectFilter   *[]string
+
+	// assigneeMu guards assignee, the user the assignee scope resolved to
+	// (#182); nil until ResolveAssignee succeeds.
+	assigneeMu sync.Mutex
+	assignee   *tracker.AssigneeUser
 
 	// stateCacheMu guards teamOfIssue and statesOfTeam, the workflow-state
 	// resolution cache used by UpdateIssueState.
@@ -151,6 +163,10 @@ func (c *Client) SetProjectFilter(slugs []string) {
 		return
 	}
 	copy := append([]string{}, slugs...)
+	// #182: the assignee scope is never combined with project slugs.
+	if slices.Contains(copy, tracker.AssigneeScopeFilter) {
+		copy = []string{tracker.AssigneeScopeFilter}
+	}
 	c.projectFilter = &copy
 }
 
@@ -291,38 +307,32 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 // the merge semantics live in exactly one place instead of two near-identical
 // copies that could silently drift apart.
 func (c *Client) fetchWithProjectFilter(ctx context.Context, states []string) ([]domain.Issue, error) {
-	filter := c.GetProjectFilter()
-
-	// nil = runtime filter not set; fall back to WORKFLOW.md project_slug.
-	if filter == nil {
-		if c.cfg.ProjectSlug != "" {
-			return c.fetchByProjectSlug(ctx, states, c.cfg.ProjectSlug, nil, nil)
-		}
-		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    states,
-			"relationFirst": pageSize,
-		}, nil, nil)
+	sc := c.currentScope()
+	base := map[string]any{
+		"stateNames":    states,
+		"relationFirst": pageSize,
 	}
-
-	// Empty filter = all issues regardless of project.
-	if len(filter) == 0 {
-		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    states,
-			"relationFirst": pageSize,
-		}, nil, nil)
+	switch {
+	case sc.assignee:
+		// #182: the issues assigned to the scope's user, in any project.
+		params, filter, vars, err := c.assigneeFilter(ctx)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(vars, base)
+		return c.fetchByStatesPage(ctx, candidateIssuesQuery("ItervoxLinearPollAssignee", params, filter), vars, nil, nil)
+	case sc.all:
+		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, base, nil, nil)
 	}
 
 	// Specific project/no-project filter: fetch each and merge.
 	seen := make(map[string]struct{})
 	var all []domain.Issue
-	for _, slug := range filter {
+	for _, slug := range sc.slugs {
 		var issues []domain.Issue
 		var err error
 		if slug == noProjectSentinel {
-			issues, err = c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, map[string]any{
-				"stateNames":    states,
-				"relationFirst": pageSize,
-			}, nil, nil)
+			issues, err = c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, base, nil, nil)
 		} else {
 			issues, err = c.fetchByProjectSlug(ctx, states, slug, nil, nil)
 		}
@@ -1360,13 +1370,17 @@ var _ tracker.IdempotentCommenter = (*Client)(nil)
 
 // FetchIssuesInScope implements tracker.ScopedFetcher (#131): it reads the
 // issues by ID in batches (no list request) and keeps the ones the current
-// project filter covers, with the same rules as FetchCandidateIssues: no
-// runtime filter means project_slug (or every project when that is empty),
-// an empty filter means every project, and the no-project sentinel covers
-// issues without one.
+// scope covers, with the same rules as FetchCandidateIssues: no runtime
+// filter means the assignee or project_slug (or every project when neither
+// is set), an empty filter means every project, the no-project sentinel
+// covers issues without one, and the assignee scope (#182) covers the
+// issues assigned to its user (in its team, when narrowed).
 func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	valid, _ := partitionValidIssueRefs(issueIDs)
-	inScope := c.projectScope()
+	inScope, err := c.scopeCheck(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("linear_fetch_in_scope: %w", err)
+	}
 	var out []domain.Issue
 	for len(valid) > 0 {
 		batch := valid[:min(len(valid), pageSize)]
@@ -1393,11 +1407,7 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 			if !ok {
 				continue
 			}
-			slug := ""
-			if p, ok := node["project"].(map[string]any); ok {
-				slug, _ = p["slugId"].(string)
-			}
-			if !inScope(slug) {
+			if !inScope(node) {
 				continue
 			}
 			if iss := normalizeIssue(node); iss != nil {
@@ -1410,26 +1420,30 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 
 var _ tracker.ScopedFetcher = (*Client)(nil)
 
-// projectScope reports whether an issue in the project with slug ("" for
-// none) is covered by the current project filter.
-func (c *Client) projectScope() func(slug string) bool {
-	filter := c.GetProjectFilter()
-	if filter == nil {
-		if c.cfg.ProjectSlug == "" {
-			return func(string) bool { return true }
+// scopeCheck reports whether a raw issue node (read with its project,
+// assignee and team) is covered by the current scope.
+func (c *Client) scopeCheck(ctx context.Context) (func(node map[string]any) bool, error) {
+	sc := c.currentScope()
+	switch {
+	case sc.assignee:
+		u, err := c.ResolveAssignee(ctx)
+		if err != nil {
+			return nil, err
 		}
-		want := c.cfg.ProjectSlug
-		return func(slug string) bool { return slug == want }
+		return func(node map[string]any) bool { return c.assigneeCovers(u, node) }, nil
+	case sc.all:
+		return func(map[string]any) bool { return true }, nil
 	}
-	if len(filter) == 0 {
-		return func(string) bool { return true }
-	}
-	return func(slug string) bool {
-		for _, f := range filter {
+	return func(node map[string]any) bool {
+		slug := ""
+		if p, ok := node["project"].(map[string]any); ok {
+			slug, _ = p["slugId"].(string)
+		}
+		for _, f := range sc.slugs {
 			if f == slug || (f == noProjectSentinel && slug == "") {
 				return true
 			}
 		}
 		return false
-	}
+	}, nil
 }

@@ -43,8 +43,8 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	case "local":
 		writeLocalTrackerBlock(&b)
 	case "linear":
-		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
-		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
+		b.WriteString("  project_slug: \"*\"     # Every project, or one project's slug (or pick via TUI p / dashboard).\n")
+		b.WriteString("  # assignee: me          # Or instead (#182, exactly one): me, a user id or an email; team: narrows.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
 		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\", \"Duplicate\"]\n")
 		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")

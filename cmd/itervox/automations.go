@@ -812,10 +812,16 @@ func automationPollStates(cfg *config.Config, entries []compiledAutomation, acti
 	return out
 }
 
-// automationPollScope identifies the tracker's runtime project filter, the
-// other input besides the state set that decides which issues the poll can
-// see. Trackers without one have a single, fixed scope.
+// automationPollScope identifies the tracker's read scope (the runtime
+// project filter, or the assignee scope, #182), the other input besides the
+// state set that decides which issues the poll can see. Trackers without one have a single, fixed scope.
 func automationPollScope(tr tracker.Tracker) string {
+	// #182: an adapter that can scope by assignee describes its whole scope
+	// (project filter, assignee, team), so switching between a project and
+	// an assignee, or to another assignee, rebaselines too.
+	if as, ok := tr.(tracker.AssigneeScoper); ok {
+		return "scope:" + as.ScopeKey()
+	}
 	pm, ok := tr.(tracker.ProjectManager)
 	if !ok {
 		return ""

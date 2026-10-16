@@ -266,8 +266,9 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
   }
 }`
 
-// QueryIssuesInScopeByIDs reads issues by ID with their project, so a
-// webhook-named issue can be checked against the project filter (#131).
+// QueryIssuesInScopeByIDs reads issues by ID with their project, assignee
+// and team, so a webhook-named issue can be checked against the project
+// filter (#131) or the assignee scope (#182).
 const QueryIssuesInScopeByIDs = `
 query ItervoxLinearIssuesInScope($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
   issues(filter: {id: {in: $ids}}, first: $first) {
@@ -282,6 +283,8 @@ query ItervoxLinearIssuesInScope($ids: [ID!]!, $first: Int!, $relationFirst: Int
       url
       trashed
       project { slugId }
+      assignee { id }
+      team { id key }
       labels { nodes { name } }
       inverseRelations(first: $relationFirst) {
         nodes {
@@ -309,3 +312,40 @@ mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
     success
   }
 }`
+
+// candidateNodeFields is the issue selection every candidate poll reads.
+const candidateNodeFields = `
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      trashed
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier url branchName state { name } }
+        }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url branchName state { name } }
+      }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }`
+
+// candidateIssuesQuery builds a paginated candidate poll by state, with
+// extra parameter declarations and an extra filter fragment (ending in
+// ", "). Used for the assignee scope (#182), whose filter depends on whether
+// a team narrows it.
+func candidateIssuesQuery(name, params, filter string) string {
+	return "query " + name + "($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String" + params + ") {\n" +
+		"  issues(filter: {" + filter + "state: {name: {in: $stateNames}}}, first: $first, after: $after) {" +
+		candidateNodeFields + "\n  }\n}"
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/automationconfig"
@@ -81,6 +82,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:     r.StartedAt,
 				SubagentCount: subCount,
+				OutOfScope:    isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -108,9 +110,18 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		}
 		// When no runtime filter is set but WORKFLOW.md has project_slug,
 		// surface it so the TUI picker shows it as checked.
-		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
-			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
+		// #182: an assignee scope shows as the picker's "assigned to"
+		// entry, every project ("*") as the empty "all issues" filter.
+		switch slug := cfg.Tracker.LinearProjectSlug(); {
+		case activeProjectFilter != nil:
+		case strings.TrimSpace(cfg.Tracker.Assignee) != "":
+			activeProjectFilter = []string{tracker.AssigneeScopeFilter}
+		case slug != "":
+			activeProjectFilter = []string{slug}
+		case strings.TrimSpace(cfg.Tracker.ProjectSlug) == config.LinearAllProjects:
+			activeProjectFilter = []string{}
 		}
+		trackerScope, assigneeScopeLabel := trackerScopeView(tr)
 		profiles := orch.ProfilesCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
 		depsAnalysisMode := orch.DepsAnalysisModeCfg()
@@ -205,6 +216,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DemoMode:                     demoSession != nil,
 			ProjectName:                  projectName,
 			ActiveProjectFilter:          activeProjectFilter,
+			TrackerScope:                 trackerScope,
+			AssigneeScopeLabel:           assigneeScopeLabel,
 			AvailableProfiles:            availableProfiles,
 			ProfileDefs:                  profileDefs,
 			ActiveStates:                 activeStates,
@@ -283,4 +296,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		snap.ConfigInvalid = loadConfigInvalid()
 		return snap
 	}
+}
+
+// isOutOfScope reports whether identifier is in the orchestrator's
+// out-of-scope set (#182).
+func isOutOfScope(set map[string]struct{}, identifier string) bool {
+	_, ok := set[identifier]
+	return ok
 }

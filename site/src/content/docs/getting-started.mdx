@@ -86,6 +86,22 @@ GITHUB_TOKEN=ghp_xxxxx
 
 Reference them in WORKFLOW.md as `$LINEAR_API_KEY` or `$GITHUB_TOKEN`.
 
+#### Linear: choose the scope
+
+A Linear tracker reads **either one project or one assignee**: set exactly one of `project_slug` and `assignee` (setting both, or neither, is a configuration error).
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  # one of:
+  project_slug: my-project     # the issues of one project ("*" for every project the key can read)
+  # assignee: me               # the issues assigned to the API key's user, in any project
+  # team: ENG                  # optional with assignee: only this team (key or id)
+```
+
+`assignee` takes `me` (the API key's own user), a user id or an email. With `assignee: me`, a dedicated "Itervox" Linear user can own the agent lane: assign a ticket to it to hand it to the agents, reassign it to take it back. Itervox never changes an issue's assignee itself, so a run never moves its own issue out of scope. `itervox doctor` checks that the assignee resolves and that its issues are readable. See [Linear setup → Scope by assignee](/guides/linear-setup/#scope-by-assignee).
+
 Commit `.itervox/agents/**`; those files define your project agent profiles. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, or runtime queue files.
 
 ### 3. Run

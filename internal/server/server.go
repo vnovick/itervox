@@ -71,6 +71,10 @@ type RunningRow struct {
 	// CommentCount counts review/comment actions taken during this run
 	// (T-6 surface). Zero for runs that have not commented.
 	CommentCount int `json:"commentCount,omitempty"`
+	// OutOfScope is set when the issue left the tracker's scope mid-run
+	// (#182: reassigned away, moved out of the project): the run finishes,
+	// but no new run is dispatched for it.
+	OutOfScope bool `json:"outOfScope,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -583,6 +587,13 @@ type StateSnapshot struct {
 	// ActiveProjectFilter is the current runtime project filter slugs.
 	// nil/absent means "using WORKFLOW.md default"; empty array means "all issues".
 	ActiveProjectFilter []string `json:"activeProjectFilter,omitempty"`
+	// TrackerScope describes the tracker's active read scope for the
+	// header (#182): "assigned to Ada Lovelace · team ENG", "project
+	// my-proj", "all projects". Empty for trackers without one.
+	TrackerScope string `json:"trackerScope,omitempty"`
+	// AssigneeScopeLabel names who the project picker's "assigned to"
+	// option means (#182); empty when the tracker cannot scope by assignee.
+	AssigneeScopeLabel string `json:"assigneeScopeLabel,omitempty"`
 	// AvailableProfiles is the list of named agent profile names defined in WORKFLOW.md.
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`

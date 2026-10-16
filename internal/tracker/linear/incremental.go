@@ -57,7 +57,7 @@ var (
 
 // FetchIssuesUpdatedSince implements tracker.IncrementalFetcher (#114) over
 // the same scope as FetchCandidateIssues (the runtime project filter, else
-// project_slug, else every issue): one paginated request per project in the
+// the assignee or project_slug, else every issue): one paginated request per project in the
 // filter. A trashed or archived issue is reported gone. An issue moved to a
 // project outside the scope does not appear: the store's full pull catches
 // it.
@@ -68,20 +68,25 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 		m[k] = v
 		return m
 	}
-	filter := c.GetProjectFilter()
-	if filter == nil {
-		if c.cfg.ProjectSlug != "" {
-			return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSince, with("projectSlug", c.cfg.ProjectSlug))
+	sc := c.currentScope()
+	switch {
+	case sc.assignee:
+		// #182: the issues assigned to the scope's user. One reassigned
+		// away does not appear (it is no longer assigned); the store's full
+		// pull catches it, as it catches a move to another project.
+		params, filter, vars, err := c.assigneeFilter(ctx)
+		if err != nil {
+			return nil, nil, err
 		}
-		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSinceAll, base)
-	}
-	if len(filter) == 0 {
+		maps.Copy(vars, base)
+		return c.fetchUpdatedPages(ctx, updatedSinceQuery("ItervoxLinearChangesAssignee", params, filter), vars)
+	case sc.all:
 		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSinceAll, base)
 	}
 	var changed []domain.Issue
 	var gone []string
 	seen := map[string]struct{}{}
-	for _, slug := range filter {
+	for _, slug := range sc.slugs {
 		query, vars := QueryIssuesUpdatedSince, with("projectSlug", slug)
 		if slug == noProjectSentinel {
 			query, vars = QueryIssuesUpdatedSinceNoProject, base

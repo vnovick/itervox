@@ -809,6 +809,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
+	// #182: resolve an assignee scope's user once per generation, off the
+	// event loop, before the store and the orchestrator read through it.
+	resolveTrackerAssignee(ctx, cfg, tr)
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
@@ -914,8 +917,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
-	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
-		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
+	if name := cfg.Tracker.ScopeName(); cfg.Tracker.Kind != "" && name != "" {
+		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + name)
 	}
 
 	appSessionID := newAppSessionID()
@@ -1709,8 +1712,12 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 	switch cfg.Tracker.Kind {
 	case "linear":
 		return linear.NewClient(linear.ClientConfig{
-			APIKey:         cfg.Tracker.APIKey,
-			ProjectSlug:    cfg.Tracker.ProjectSlug,
+			APIKey: cfg.Tracker.APIKey,
+			// "*" (every project) and an assignee scope filter by no
+			// project (#182).
+			ProjectSlug:    cfg.Tracker.LinearProjectSlug(),
+			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee),
+			Team:           strings.TrimSpace(cfg.Tracker.Team),
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			Endpoint:       cfg.Tracker.Endpoint,

@@ -172,6 +172,15 @@ only the event loop mutates them.
   runs, and the event loop records the blocker so the issue waits for it.
   `pruneStackUnavailable` drops a record each tick once it no longer
   matches the candidate's blocker. Session-scoped, not persisted.
+- `OutOfScope` (#182) marks running issues the scoped candidate poll no
+  longer offers while they are still active (reassigned away from an
+  assignee scope, moved out of the project). Derived by `observeOutOfScope`
+  on each successful poll; the run finishes (never cancelled), and
+  `fireRetries` releases a retry for a marked issue because its by-ID read is
+  unscoped. Event-loop state, session-scoped, not persisted. The tracker
+  scope itself (project filter or assignee) lives in the Linear client, not
+  `cfg`: `tracker.assignee`/`tracker.team` are load-time fields, and the
+  picker switches scope through `SetProjectFilter` (no `cfgMu` field).
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked

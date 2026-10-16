@@ -188,7 +188,8 @@ type baseUpstream interface {
 
 // Wrap returns a store over up, loading cfg.Path when it holds this scope.
 // The result also implements tracker.DetailBatcher and
-// tracker.ProjectManager exactly when up does (Linear does, GitHub does not).
+// tracker.ProjectManager exactly when up does (Linear does, GitHub does not),
+// and tracker.AssigneeScoper when up also does (#182).
 // It fails for an adapter without the base optional interfaces (the local
 // and memory trackers, which need no store).
 func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
@@ -231,6 +232,9 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 	_, batches := up.(tracker.DetailBatcher)
 	_, projects := up.(tracker.ProjectManager)
 	if batches && projects {
+		if _, scoped := up.(tracker.AssigneeScoper); scoped {
+			return &assigneeStore{&linearStore{s}}, s, nil
+		}
 		return &linearStore{s}, s, nil
 	}
 	return s, s, nil
@@ -1203,3 +1207,29 @@ func (l *linearStore) SetProjectFilter(slugs []string) {
 	l.up.(tracker.ProjectManager).SetProjectFilter(slugs)
 	l.invalidate(nil)
 }
+
+// assigneeStore is a linearStore over an adapter whose scope can be an
+// assignee (#182). The scope itself lives in the adapter; switching it goes
+// through SetProjectFilter, which already makes the store pull again.
+type assigneeStore struct{ *linearStore }
+
+var _ tracker.AssigneeScoper = (*assigneeStore)(nil)
+
+// ResolveAssignee implements tracker.AssigneeScoper.
+func (a *assigneeStore) ResolveAssignee(ctx context.Context) (tracker.AssigneeUser, error) {
+	return a.up.(tracker.AssigneeScoper).ResolveAssignee(ctx)
+}
+
+// AssigneeSpec implements tracker.AssigneeScoper.
+func (a *assigneeStore) AssigneeSpec() string { return a.up.(tracker.AssigneeScoper).AssigneeSpec() }
+
+// ResolvedAssignee implements tracker.AssigneeScoper.
+func (a *assigneeStore) ResolvedAssignee() (tracker.AssigneeUser, bool) {
+	return a.up.(tracker.AssigneeScoper).ResolvedAssignee()
+}
+
+// ScopeKey implements tracker.AssigneeScoper.
+func (a *assigneeStore) ScopeKey() string { return a.up.(tracker.AssigneeScoper).ScopeKey() }
+
+// ScopeLabel implements tracker.AssigneeScoper.
+func (a *assigneeStore) ScopeLabel() string { return a.up.(tracker.AssigneeScoper).ScopeLabel() }

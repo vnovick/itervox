@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useProjects } from '../../queries/projects';
+import { useItervoxStore } from '../../store/itervoxStore';
+
+/** #182 — the filter entry for the assignee scope; never combined with projects. */
+export const ASSIGNEE_SCOPE_FILTER = '__assignee__';
 
 interface Props {
   activeFilter: string[] | undefined;
@@ -8,6 +12,7 @@ interface Props {
 
 export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const { data: projects = [], isLoading, isError } = useProjects();
+  const assigneeLabel = useItervoxStore((s) => s.snapshot?.assigneeScopeLabel);
   const isDefaultMode = activeFilter === undefined;
 
   // Derive the server-side set for comparison without triggering effects.
@@ -35,9 +40,16 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
       const next = new Set(prev);
       if (next.has(slug)) next.delete(slug);
       else next.add(slug);
+      // The assignee scope is never combined with projects.
+      if (next.has(slug)) next.delete(ASSIGNEE_SCOPE_FILTER);
       return next;
     });
   };
+
+  const selectAssignee = () => {
+    setSelected(new Set([ASSIGNEE_SCOPE_FILTER]));
+  };
+  const assigneeSelected = selected.has(ASSIGNEE_SCOPE_FILTER);
 
   const handleSave = async () => {
     setSaving(true);
@@ -61,7 +73,8 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
       <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
         <h2 className="text-theme-text text-sm font-semibold">Project Filter</h2>
         <p className="text-theme-text-secondary mt-0.5 text-xs">
-          Limit Itervox to specific Linear projects. Leave all unchecked to include every project.
+          Limit Itervox to specific Linear projects, or to the issues assigned to one user. Leave
+          all unchecked to include every project.
         </p>
       </div>
 
@@ -87,6 +100,24 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                 />
                 <span className="text-theme-text text-sm font-medium">All projects</span>
               </label>
+              {assigneeLabel && (
+                <label className="flex cursor-pointer items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={assigneeSelected}
+                    onChange={() => {
+                      if (assigneeSelected) setSelected(new Set());
+                      else selectAssignee();
+                    }}
+                    className="h-4 w-4 rounded"
+                    style={{ accentColor: 'var(--accent)' }}
+                  />
+                  <span className="text-theme-text text-sm font-medium">
+                    Assigned to {assigneeLabel}
+                  </span>
+                  <span className="text-theme-muted text-xs">any project</span>
+                </label>
+              )}
               {projects.map((p) => (
                 <label key={p.slug} className="flex cursor-pointer items-center gap-2.5 pl-1">
                   <input
@@ -106,7 +137,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
 
             {isDefaultMode && (
               <p className="text-theme-muted text-xs">
-                Currently using the WORKFLOW.md default project slug.
+                Currently using the WORKFLOW.md default scope.
               </p>
             )}
 

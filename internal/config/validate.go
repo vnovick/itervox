@@ -200,6 +200,11 @@ func ValidateDispatch(cfg *Config) error {
 	if cfg.Tracker.Kind == "github" && cfg.Tracker.ProjectSlug == "" {
 		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo)")
 	}
+	// Check 4b (#182): a Linear scope is exactly one of project_slug and
+	// assignee; assignee and team are Linear-only.
+	if err := validateTrackerScope(cfg.Tracker); err != nil {
+		return err
+	}
 
 	// Check 5: agent.command present and non-empty
 	if cfg.Agent.Command == "" {

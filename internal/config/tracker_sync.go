@@ -16,10 +16,15 @@ const (
 // keys tracker: and tracker.sync: share, parsed by parseTrackerConnection
 // with the same defaults in both places.
 type TrackerConnection struct {
-	Kind            string
-	Endpoint        string
-	APIKey          string
-	ProjectSlug     string
+	Kind        string
+	Endpoint    string
+	APIKey      string
+	ProjectSlug string
+	// Assignee and Team are the Linear assignee scope (#182): see
+	// TrackerConfig.Assignee. Parsed for tracker.sync too so it can be
+	// refused there with a clear message.
+	Assignee        string
+	Team            string
 	ActiveStates    []string
 	TerminalStates  []string
 	BacklogStates   []string
@@ -39,6 +44,8 @@ func parseTrackerConnection(m map[string]any) TrackerConnection {
 	c.Endpoint = strField(m, "endpoint", defaultEndpoint)
 	c.APIKey = resolveSecret(strField(m, "api_key", ""))
 	c.ProjectSlug = strField(m, "project_slug", "")
+	c.Assignee = strings.TrimSpace(strField(m, "assignee", ""))
+	c.Team = strings.TrimSpace(strField(m, "team", ""))
 	c.ActiveStates = strSliceField(m, "active_states", []string{"Todo", "In Progress"})
 	c.TerminalStates = strSliceField(m, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
 	defaultBacklog := []string{}
@@ -109,6 +116,11 @@ func validateTrackerSync(t TrackerConfig) error {
 		return fmt.Errorf("config: tracker.sync.kind must be linear or github, got %q", s.Kind)
 	case s.APIKey == "":
 		return errors.New("config: tracker.sync.api_key is empty (set it, e.g. api_key: $LINEAR_API_KEY, and put the value in .itervox/.env)")
+	case s.Assignee != "" || s.Team != "":
+		// #182: the sync creates new issues in project_slug's project, so
+		// its scope stays a project; an assignee scope would drop every
+		// issue it creates from its own next pull.
+		return errors.New("config: tracker.sync.assignee and tracker.sync.team are not supported (the local sync reads and creates issues in tracker.sync.project_slug's project)")
 	case strings.TrimSpace(s.ProjectSlug) == "" && s.Kind == "github":
 		return errors.New("config: tracker.sync.project_slug is required for github (owner/repo)")
 	case strings.TrimSpace(s.ProjectSlug) == "":

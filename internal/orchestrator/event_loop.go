@@ -226,6 +226,9 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// case this returns an empty set and mutates nothing.
 	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
 	pruneStackUnavailable(&state, issues)
+	// #182: running issues the scoped poll no longer offers (reassigned
+	// away, moved out of the project) finish, but start nothing new.
+	o.observeOutOfScope(&state, issues)
 
 	// unified-dependency-graph Task 4 — recompute the inferred-dependency
 	// gating layer against this tick's candidate set before the audit/dispatch
@@ -576,6 +579,16 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			continue
 		}
 		if now.Before(entry.DueAt) {
+			continue
+		}
+		// #182: the issue left the tracker's scope while its run was going
+		// (reassigned away, moved out of the project). The by-ID read below
+		// is unscoped and would admit it, so release the claim here.
+		if _, out := state.OutOfScope[entry.Identifier]; out {
+			slog.Info("retry: issue left the tracker scope, releasing claim",
+				"issue_id", issueID, "identifier", entry.Identifier)
+			state = CancelRetry(state, issueID)
+			delete(state.OutOfScope, entry.Identifier)
 			continue
 		}
 

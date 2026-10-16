@@ -24,14 +24,22 @@ func trackerStorePath(workflowPath string) string {
 }
 
 // trackerStoreScope identifies what a store file was pulled from: a file
-// from another tracker, endpoint, project or active-state list is not used.
+// from another tracker, endpoint, project, assignee or active-state list is
+// not used.
 func trackerStoreScope(cfg *config.Config) string {
 	active := make([]string, 0, len(cfg.Tracker.ActiveStates))
 	for _, s := range cfg.Tracker.ActiveStates {
 		active = append(active, strings.ToLower(s))
 	}
 	slices.Sort(active)
-	return strings.Join([]string{cfg.Tracker.Kind, cfg.Tracker.Endpoint, cfg.Tracker.ProjectSlug, strings.Join(active, ",")}, "|")
+	parts := []string{cfg.Tracker.Kind, cfg.Tracker.Endpoint, cfg.Tracker.ProjectSlug, strings.Join(active, ",")}
+	if a := strings.TrimSpace(cfg.Tracker.Assignee); a != "" {
+		// #182: another assignee or team is another set of issues. Only
+		// appended for an assignee scope, so a project scope's key (and the
+		// store file it names) is unchanged.
+		parts = append(parts, "assignee="+a, "team="+strings.TrimSpace(cfg.Tracker.Team))
+	}
+	return strings.Join(parts, "|")
 }
 
 // withTrackerStore puts the local tracker store (#113) in front of tr when
