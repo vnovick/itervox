@@ -34,10 +34,18 @@ func trackerStoreScope(cfg *config.Config) string {
 	slices.Sort(active)
 	parts := []string{cfg.Tracker.Kind, cfg.Tracker.Endpoint, cfg.Tracker.ProjectSlug, strings.Join(active, ",")}
 	if a := strings.TrimSpace(cfg.Tracker.Assignee); a != "" {
-		// #182: another assignee or team is another set of issues. Only
-		// appended for an assignee scope, so a project scope's key (and the
-		// store file it names) is unchanged.
+		// #182: another assignee, team or label filter is another set of
+		// issues. Only appended when set, so a project-only scope's key
+		// (and the store file it names) is unchanged.
 		parts = append(parts, "assignee="+a, "team="+strings.TrimSpace(cfg.Tracker.Team))
+	}
+	if len(cfg.Tracker.Labels) > 0 {
+		labels := make([]string, 0, len(cfg.Tracker.Labels))
+		for _, l := range cfg.Tracker.Labels {
+			labels = append(labels, strings.ToLower(l))
+		}
+		slices.Sort(labels)
+		parts = append(parts, "labels="+strings.Join(labels, ","))
 	}
 	return strings.Join(parts, "|")
 }

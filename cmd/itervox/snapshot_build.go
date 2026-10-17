@@ -3,7 +3,6 @@ package main
 import (
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/automationconfig"
@@ -110,18 +109,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		}
 		// When no runtime filter is set but WORKFLOW.md has project_slug,
 		// surface it so the TUI picker shows it as checked.
-		// #182: an assignee scope shows as the picker's "assigned to"
-		// entry, every project ("*") as the empty "all issues" filter.
-		switch slug := cfg.Tracker.LinearProjectSlug(); {
-		case activeProjectFilter != nil:
-		case strings.TrimSpace(cfg.Tracker.Assignee) != "":
-			activeProjectFilter = []string{tracker.AssigneeScopeFilter}
-		case slug != "":
-			activeProjectFilter = []string{slug}
-		case strings.TrimSpace(cfg.Tracker.ProjectSlug) == config.LinearAllProjects:
-			activeProjectFilter = []string{}
+		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
+			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
 		}
-		trackerScope, assigneeScopeLabel := trackerScopeView(tr)
+		scopeView := trackerScopeView(tr) // #182
 		profiles := orch.ProfilesCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
 		depsAnalysisMode := orch.DepsAnalysisModeCfg()
@@ -216,8 +207,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DemoMode:                     demoSession != nil,
 			ProjectName:                  projectName,
 			ActiveProjectFilter:          activeProjectFilter,
-			TrackerScope:                 trackerScope,
-			AssigneeScopeLabel:           assigneeScopeLabel,
+			TrackerScope:                 scopeView.label,
+			ScopeAssignee:                scopeView.assignee,
+			ScopeAssigneeName:            scopeView.assigneeName,
+			ScopeLabels:                  scopeView.labels,
 			AvailableProfiles:            availableProfiles,
 			ProfileDefs:                  profileDefs,
 			ActiveStates:                 activeStates,

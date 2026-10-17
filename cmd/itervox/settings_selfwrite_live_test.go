@@ -109,7 +109,7 @@ func (f *fakeProjectManager) GetProjectFilter() []string {
 
 // TestProjectFilterSaveIsLiveWithoutReload: the Linear project filter save is
 // applied to the tracker client in memory and does not reload. A reset
-// (nil) writes project_slug: "*" (every project, #182), so memory is set to the explicit
+// (nil) comments project_slug out on disk, so memory is set to the explicit
 // "all issues" filter the file now describes, not to the stale load-time
 // slug.
 func TestProjectFilterSaveIsLiveWithoutReload(t *testing.T) {
@@ -128,10 +128,10 @@ func TestProjectFilterSaveIsLiveWithoutReload(t *testing.T) {
 	assert.Contains(t, string(data), "project_slug: alpha, beta")
 
 	require.NoError(t, m.SetProjectFilter(nil))
-	assert.Equal(t, []string{}, fpm.GetProjectFilter(), `reset = all issues, matching project_slug: "*"`)
+	assert.Equal(t, []string{}, fpm.GetProjectFilter(), "reset = all issues, matching the commented-out project_slug")
 	data, err = os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), `project_slug: "*"`, "#182: every project is named, not left unset")
+	assert.Contains(t, string(data), "# project_slug:")
 
 	assert.Zero(t, reloads(), "a project-filter save must not reload WORKFLOW.md")
 }

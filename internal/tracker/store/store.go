@@ -189,7 +189,7 @@ type baseUpstream interface {
 // Wrap returns a store over up, loading cfg.Path when it holds this scope.
 // The result also implements tracker.DetailBatcher and
 // tracker.ProjectManager exactly when up does (Linear does, GitHub does not),
-// and tracker.AssigneeScoper when up also does (#182).
+// and tracker.ScopeManager when up also does (#182).
 // It fails for an adapter without the base optional interfaces (the local
 // and memory trackers, which need no store).
 func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
@@ -232,8 +232,8 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 	_, batches := up.(tracker.DetailBatcher)
 	_, projects := up.(tracker.ProjectManager)
 	if batches && projects {
-		if _, scoped := up.(tracker.AssigneeScoper); scoped {
-			return &assigneeStore{&linearStore{s}}, s, nil
+		if _, scoped := up.(tracker.ScopeManager); scoped {
+			return &scopedStore{&linearStore{s}}, s, nil
 		}
 		return &linearStore{s}, s, nil
 	}
@@ -1208,28 +1208,52 @@ func (l *linearStore) SetProjectFilter(slugs []string) {
 	l.invalidate(nil)
 }
 
-// assigneeStore is a linearStore over an adapter whose scope can be an
-// assignee (#182). The scope itself lives in the adapter; switching it goes
-// through SetProjectFilter, which already makes the store pull again.
-type assigneeStore struct{ *linearStore }
+// scopedStore is a linearStore over an adapter whose scope combines a
+// project, an assignee and labels (#182). The scope itself lives in the
+// adapter; another scope means other issues, so SetScope makes the store
+// pull again, like SetProjectFilter.
+type scopedStore struct{ *linearStore }
 
-var _ tracker.AssigneeScoper = (*assigneeStore)(nil)
+var _ tracker.ScopeManager = (*scopedStore)(nil)
 
-// ResolveAssignee implements tracker.AssigneeScoper.
-func (a *assigneeStore) ResolveAssignee(ctx context.Context) (tracker.AssigneeUser, error) {
-	return a.up.(tracker.AssigneeScoper).ResolveAssignee(ctx)
+func (a *scopedStore) sm() tracker.ScopeManager { return a.up.(tracker.ScopeManager) }
+
+// Scope implements tracker.ScopeManager.
+func (a *scopedStore) Scope() tracker.Scope { return a.sm().Scope() }
+
+// SetScope implements tracker.ScopeManager.
+func (a *scopedStore) SetScope(sc tracker.Scope) {
+	a.sm().SetScope(sc)
+	a.invalidate(nil)
 }
 
-// AssigneeSpec implements tracker.AssigneeScoper.
-func (a *assigneeStore) AssigneeSpec() string { return a.up.(tracker.AssigneeScoper).AssigneeSpec() }
-
-// ResolvedAssignee implements tracker.AssigneeScoper.
-func (a *assigneeStore) ResolvedAssignee() (tracker.AssigneeUser, bool) {
-	return a.up.(tracker.AssigneeScoper).ResolvedAssignee()
+// ResolveUser implements tracker.ScopeManager.
+func (a *scopedStore) ResolveUser(ctx context.Context, spec string) (tracker.AssigneeUser, error) {
+	return a.sm().ResolveUser(ctx, spec)
 }
 
-// ScopeKey implements tracker.AssigneeScoper.
-func (a *assigneeStore) ScopeKey() string { return a.up.(tracker.AssigneeScoper).ScopeKey() }
+// ResolveAssignee implements tracker.ScopeManager.
+func (a *scopedStore) ResolveAssignee(ctx context.Context) (tracker.AssigneeUser, error) {
+	return a.sm().ResolveAssignee(ctx)
+}
 
-// ScopeLabel implements tracker.AssigneeScoper.
-func (a *assigneeStore) ScopeLabel() string { return a.up.(tracker.AssigneeScoper).ScopeLabel() }
+// ResolvedAssignee implements tracker.ScopeManager.
+func (a *scopedStore) ResolvedAssignee() (tracker.AssigneeUser, bool) {
+	return a.sm().ResolvedAssignee()
+}
+
+// FetchLabels implements tracker.ScopeManager.
+func (a *scopedStore) FetchLabels(ctx context.Context) ([]string, error) {
+	return a.sm().FetchLabels(ctx)
+}
+
+// FetchUsers implements tracker.ScopeManager.
+func (a *scopedStore) FetchUsers(ctx context.Context) ([]tracker.AssigneeUser, error) {
+	return a.sm().FetchUsers(ctx)
+}
+
+// ScopeKey implements tracker.ScopeManager.
+func (a *scopedStore) ScopeKey() string { return a.sm().ScopeKey() }
+
+// ScopeLabel implements tracker.ScopeManager.
+func (a *scopedStore) ScopeLabel() string { return a.sm().ScopeLabel() }

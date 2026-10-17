@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,11 +30,13 @@ type ClientConfig struct {
 	TerminalStates []string
 	Endpoint       string
 	// Assignee is the assignee scope (#182): "me", a user id or an email.
-	// When set (and no runtime filter overrides it) the client reads the
-	// issues assigned to that user instead of ProjectSlug's.
+	// ANDed with the project filter and Labels: the client reads the
+	// issues assigned to that user (in ProjectSlug's project when set).
 	Assignee string
 	// Team narrows the assignee scope to one team, by key or id.
 	Team string
+	// Labels narrows the scope to issues carrying any of them (#182).
+	Labels []string
 }
 
 // linearProject is the internal representation of a Linear project.
@@ -72,10 +73,15 @@ type Client struct {
 	projectFilterMu sync.RWMutex
 	projectFilter   *[]string
 
-	// assigneeMu guards assignee, the user the assignee scope resolved to
-	// (#182); nil until ResolveAssignee succeeds.
+	// assigneeOverride and labelsOverride are the runtime assignee and
+	// label filters (#182), guarded by projectFilterMu like projectFilter;
+	// nil means WORKFLOW.md's.
+	assigneeOverride *string
+	labelsOverride   *[]string
+
+	// assigneeMu guards users, the assignee specs resolved so far (#182).
 	assigneeMu sync.Mutex
-	assignee   *tracker.AssigneeUser
+	users      map[string]tracker.AssigneeUser
 
 	// stateCacheMu guards teamOfIssue and statesOfTeam, the workflow-state
 	// resolution cache used by UpdateIssueState.
@@ -147,6 +153,7 @@ func NewClient(cfg ClientConfig) *Client {
 		httpClient:   &http.Client{Timeout: httpTimeout},
 		teamOfIssue:  make(map[string]string),
 		statesOfTeam: make(map[string]map[string]string),
+		users:        make(map[string]tracker.AssigneeUser),
 	}
 }
 
@@ -163,10 +170,6 @@ func (c *Client) SetProjectFilter(slugs []string) {
 		return
 	}
 	copy := append([]string{}, slugs...)
-	// #182: the assignee scope is never combined with project slugs.
-	if slices.Contains(copy, tracker.AssigneeScopeFilter) {
-		copy = []string{tracker.AssigneeScopeFilter}
-	}
 	c.projectFilter = &copy
 }
 
@@ -307,35 +310,44 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 // the merge semantics live in exactly one place instead of two near-identical
 // copies that could silently drift apart.
 func (c *Client) fetchWithProjectFilter(ctx context.Context, states []string) ([]domain.Issue, error) {
-	sc := c.currentScope()
+	sc := c.Scope()
 	base := map[string]any{
 		"stateNames":    states,
 		"relationFirst": pageSize,
 	}
+	var buckets []func() ([]domain.Issue, error)
 	switch {
-	case sc.assignee:
-		// #182: the issues assigned to the scope's user, in any project.
-		params, filter, vars, err := c.assigneeFilter(ctx)
+	case narrowed(sc):
+		// #182: the project filter ANDed with the assignee and labels.
+		bs, err := c.scopeBuckets(ctx, sc)
 		if err != nil {
 			return nil, err
 		}
-		maps.Copy(vars, base)
-		return c.fetchByStatesPage(ctx, candidateIssuesQuery("ItervoxLinearPollAssignee", params, filter), vars, nil, nil)
-	case sc.all:
+		for _, b := range bs {
+			vars := maps.Clone(b.vars)
+			maps.Copy(vars, base)
+			query := candidateIssuesQuery("ItervoxLinearPollScoped", b.params, b.filter)
+			buckets = append(buckets, func() ([]domain.Issue, error) { return c.fetchByStatesPage(ctx, query, vars, nil, nil) })
+		}
+	case len(sc.Projects) == 0:
 		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, base, nil, nil)
+	default:
+		for _, slug := range sc.Projects {
+			if slug == noProjectSentinel {
+				buckets = append(buckets, func() ([]domain.Issue, error) {
+					return c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, base, nil, nil)
+				})
+				continue
+			}
+			buckets = append(buckets, func() ([]domain.Issue, error) { return c.fetchByProjectSlug(ctx, states, slug, nil, nil) })
+		}
 	}
 
-	// Specific project/no-project filter: fetch each and merge.
+	// Fetch each bucket and merge, deduplicating by issue ID.
 	seen := make(map[string]struct{})
 	var all []domain.Issue
-	for _, slug := range sc.slugs {
-		var issues []domain.Issue
-		var err error
-		if slug == noProjectSentinel {
-			issues, err = c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, base, nil, nil)
-		} else {
-			issues, err = c.fetchByProjectSlug(ctx, states, slug, nil, nil)
-		}
+	for _, fetch := range buckets {
+		issues, err := fetch()
 		if err != nil {
 			return nil, err
 		}
@@ -1371,10 +1383,8 @@ var _ tracker.IdempotentCommenter = (*Client)(nil)
 // FetchIssuesInScope implements tracker.ScopedFetcher (#131): it reads the
 // issues by ID in batches (no list request) and keeps the ones the current
 // scope covers, with the same rules as FetchCandidateIssues: no runtime
-// filter means the assignee or project_slug (or every project when neither
-// is set), an empty filter means every project, the no-project sentinel
-// covers issues without one, and the assignee scope (#182) covers the
-// issues assigned to its user (in its team, when narrowed).
+// filter means project_slug (or every project when it is empty), an empty filter means every project, the no-project sentinel
+// covers issues without one, and the assignee and labels (#182) narrow it.
 func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	valid, _ := partitionValidIssueRefs(issueIDs)
 	inScope, err := c.scopeCheck(ctx)
@@ -1419,31 +1429,3 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 }
 
 var _ tracker.ScopedFetcher = (*Client)(nil)
-
-// scopeCheck reports whether a raw issue node (read with its project,
-// assignee and team) is covered by the current scope.
-func (c *Client) scopeCheck(ctx context.Context) (func(node map[string]any) bool, error) {
-	sc := c.currentScope()
-	switch {
-	case sc.assignee:
-		u, err := c.ResolveAssignee(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return func(node map[string]any) bool { return c.assigneeCovers(u, node) }, nil
-	case sc.all:
-		return func(map[string]any) bool { return true }, nil
-	}
-	return func(node map[string]any) bool {
-		slug := ""
-		if p, ok := node["project"].(map[string]any); ok {
-			slug, _ = p["slugId"].(string)
-		}
-		for _, f := range sc.slugs {
-			if f == slug || (f == noProjectSentinel && slug == "") {
-				return true
-			}
-		}
-		return false
-	}, nil
-}

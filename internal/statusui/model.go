@@ -17,6 +17,7 @@
 package statusui
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,8 @@ type Config struct {
 	FetchProjects func() ([]ProjectItem, error)
 	// SetProjectFilter applies the selected project slugs.
 	// An empty slice means "all issues"; nil resets to WORKFLOW.md default.
+	// "__assignee__" among them (#182) means "and assigned to" the
+	// picker's user, ANDed with the projects.
 	SetProjectFilter func(slugs []string)
 	// AdjustWorkers sends a delta (+1 or -1) to POST /api/v1/settings/workers.
 	// If nil, the + / - keys are disabled.
@@ -242,7 +245,8 @@ type Model struct {
 	pickerCursor   int
 	pickerSel      map[string]bool // slug → selected
 	// pickerAssignee labels the picker's "Assigned to …" row (#182), taken
-	// from the snapshot when the picker opens; empty hides the row.
+	// from the snapshot when the picker opens; empty hides the row (a
+	// tracker without a combinable scope).
 	pickerAssignee string
 
 	// backlog panel state
@@ -346,10 +350,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pickerErr = ""
 		// Initialise selection from current snapshot filter.
 		snap := m.snap()
-		m.pickerAssignee = snap.AssigneeScopeLabel
+		m.pickerAssignee = ""
+		if snap.TrackerScope != "" {
+			m.pickerAssignee = cmp.Or(snap.ScopeAssigneeName, snap.ScopeAssignee, "me")
+		}
 		m.pickerSel = make(map[string]bool)
 		for _, slug := range snap.ActiveProjectFilter {
 			m.pickerSel[slug] = true
+		}
+		if snap.ScopeAssignee != "" {
+			m.pickerSel[assigneeScopeSlug] = true
 		}
 
 	case tea.WindowSizeMsg:
@@ -1254,8 +1264,6 @@ func (m *Model) renderLeft() string {
 	filterHint := ""
 	if snap.TrackerKind == "linear" {
 		switch {
-		case len(snap.ActiveProjectFilter) == 1 && snap.ActiveProjectFilter[0] == assigneeScopeSlug:
-			filterHint = styleCyan.Render(" (assigned)") // #182; the SCOPE header line names whom
 		case snap.ActiveProjectFilter == nil:
 			filterHint = styleGray.Render(" (default project)")
 		case len(snap.ActiveProjectFilter) == 0:
@@ -1801,8 +1809,9 @@ type pickerRow struct {
 	label string
 }
 
-// assigneeScopeSlug is the picker entry for the assignee scope (#182); it
-// matches tracker.AssigneeScopeFilter, which the TUI does not import.
+// assigneeScopeSlug is the picker entry for "assigned to" (#182). It is
+// sent with the selected project slugs and combines with them (AND); the
+// caller turns it into the scope's assignee.
 const assigneeScopeSlug = "__assignee__"
 
 // pickerRows lists the picker's rows: "All issues" (""), "Assigned to …"
@@ -1829,18 +1838,12 @@ func (m *Model) pickerSlugAt(i int) string {
 	return rows[i].slug
 }
 
-// togglePickerRow toggles a picker row. The assignee scope (#182) is never
-// combined with projects: selecting it clears every project, and selecting
-// a project clears it.
+// togglePickerRow toggles a picker row. "Assigned to" (#182) combines with
+// the projects: it toggles on its own.
 func (m *Model) togglePickerRow(slug string) {
 	if m.pickerSel[slug] {
 		delete(m.pickerSel, slug)
 		return
-	}
-	if slug == assigneeScopeSlug {
-		clear(m.pickerSel)
-	} else {
-		delete(m.pickerSel, assigneeScopeSlug)
 	}
 	m.pickerSel[slug] = true
 }
@@ -2028,21 +2031,24 @@ func (m *Model) applyPickerFilter() {
 	if m.cfg.SetProjectFilter == nil {
 		return
 	}
+	assigned := m.pickerSel[assigneeScopeSlug] // #182: ANDs with the projects
 	if m.pickerSel[""] {
 		// "All issues" selected → clear filter.
-		m.cfg.SetProjectFilter([]string{})
-		return
-	}
-	if m.pickerSel[assigneeScopeSlug] {
-		// #182: the assignee scope stands alone.
-		m.cfg.SetProjectFilter([]string{assigneeScopeSlug})
+		slugs := []string{}
+		if assigned {
+			slugs = append(slugs, assigneeScopeSlug)
+		}
+		m.cfg.SetProjectFilter(slugs)
 		return
 	}
 	var slugs []string
 	for slug, on := range m.pickerSel {
-		if on && slug != "" {
+		if on && slug != "" && slug != assigneeScopeSlug {
 			slugs = append(slugs, slug)
 		}
+	}
+	if assigned {
+		slugs = append(slugs, assigneeScopeSlug)
 	}
 	m.cfg.SetProjectFilter(slugs)
 }

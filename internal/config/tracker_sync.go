@@ -20,11 +20,12 @@ type TrackerConnection struct {
 	Endpoint    string
 	APIKey      string
 	ProjectSlug string
-	// Assignee and Team are the Linear assignee scope (#182): see
-	// TrackerConfig.Assignee. Parsed for tracker.sync too so it can be
-	// refused there with a clear message.
+	// Assignee, Team and Labels narrow a Linear scope (#182): see
+	// TrackerConfig.Assignee. tracker.sync accepts them with its required
+	// project_slug (the intersection).
 	Assignee        string
 	Team            string
+	Labels          []string
 	ActiveStates    []string
 	TerminalStates  []string
 	BacklogStates   []string
@@ -46,6 +47,7 @@ func parseTrackerConnection(m map[string]any) TrackerConnection {
 	c.ProjectSlug = strField(m, "project_slug", "")
 	c.Assignee = strings.TrimSpace(strField(m, "assignee", ""))
 	c.Team = strings.TrimSpace(strField(m, "team", ""))
+	c.Labels = trimmedNonEmpty(strSliceField(m, "labels", nil))
 	c.ActiveStates = strSliceField(m, "active_states", []string{"Todo", "In Progress"})
 	c.TerminalStates = strSliceField(m, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
 	defaultBacklog := []string{}
@@ -116,15 +118,28 @@ func validateTrackerSync(t TrackerConfig) error {
 		return fmt.Errorf("config: tracker.sync.kind must be linear or github, got %q", s.Kind)
 	case s.APIKey == "":
 		return errors.New("config: tracker.sync.api_key is empty (set it, e.g. api_key: $LINEAR_API_KEY, and put the value in .itervox/.env)")
-	case s.Assignee != "" || s.Team != "":
-		// #182: the sync creates new issues in project_slug's project, so
-		// its scope stays a project; an assignee scope would drop every
-		// issue it creates from its own next pull.
-		return errors.New("config: tracker.sync.assignee and tracker.sync.team are not supported (the local sync reads and creates issues in tracker.sync.project_slug's project)")
+	case (s.Assignee != "" || len(s.Labels) > 0) && s.Kind != "linear":
+		return errors.New("config: tracker.sync.assignee and tracker.sync.labels are only supported with tracker.sync.kind: linear")
+	case s.Assignee != "" && strings.TrimSpace(s.ProjectSlug) == "":
+		// #182: the sync creates new issues in project_slug's project, so an
+		// assignee narrows that project (the intersection); it never
+		// replaces it.
+		return errors.New("config: tracker.sync.assignee needs tracker.sync.project_slug (the sync creates issues in that project; the assignee narrows it)")
 	case strings.TrimSpace(s.ProjectSlug) == "" && s.Kind == "github":
 		return errors.New("config: tracker.sync.project_slug is required for github (owner/repo)")
 	case strings.TrimSpace(s.ProjectSlug) == "":
 		return errors.New("config: tracker.sync.project_slug is required for linear (the project new issues are created in)")
 	}
 	return nil
+}
+
+// trimmedNonEmpty trims each entry and drops the empty ones.
+func trimmedNonEmpty(in []string) []string {
+	var out []string
+	for _, v := range in {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

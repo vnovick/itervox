@@ -567,9 +567,7 @@ func sortedPausedIdentifiers(paused map[string]string) []string {
 //     → "acme"), which works for unslugged local scaffolds.
 //  3. "itervox" as a last-resort fallback so the header never renders empty.
 func resolveProjectName(cfg *config.Config, workflowPath string) string {
-	// #182: "*" (every project) and an assignee scope name no project; the
-	// header shows the scope itself (trackerScope).
-	if cfg != nil && strings.TrimSpace(cfg.Tracker.Assignee) == "" && cfg.Tracker.ScopeName() != "" {
+	if cfg != nil && strings.TrimSpace(cfg.Tracker.ProjectSlug) != "" {
 		return cfg.Tracker.ProjectSlug
 	}
 	if abs, err := filepath.Abs(workflowPath); err == nil {

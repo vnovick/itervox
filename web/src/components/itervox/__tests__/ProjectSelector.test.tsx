@@ -76,20 +76,19 @@ describe('ProjectSelector', () => {
 });
 
 describe('ProjectSelector — tracker scope (#182)', () => {
-  it('shows the active scope the tracker reports instead of filter chips', () => {
+  it('shows the combined scope (projects, assignee, labels) instead of filter chips', () => {
     mockStore.mockImplementation((selector: (s: unknown) => unknown) =>
       selector({
         snapshot: {
           trackerKind: 'linear',
-          activeProjectFilter: ['__assignee__'],
-          trackerScope: 'assigned to Itervox Bot · team ENG',
+          activeProjectFilter: ['ENG'],
+          trackerScope: 'ENG · assigned to me · label: agent',
         },
       }),
     );
     render(<ProjectSelector />);
     expect(screen.getByTestId('tracker-scope')).toHaveTextContent(
-      'assigned to Itervox Bot · team ENG',
+      'ENG · assigned to me · label: agent',
     );
-    expect(screen.queryByText('__assignee__')).toBeNull();
   });
 });

@@ -57,7 +57,7 @@ var (
 
 // FetchIssuesUpdatedSince implements tracker.IncrementalFetcher (#114) over
 // the same scope as FetchCandidateIssues (the runtime project filter, else
-// the assignee or project_slug, else every issue): one paginated request per project in the
+// project_slug, else every issue; ANDed with the assignee and labels): one paginated request per project in the
 // filter. A trashed or archived issue is reported gone. An issue moved to a
 // project outside the scope does not appear: the store's full pull catches
 // it.
@@ -68,30 +68,45 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 		m[k] = v
 		return m
 	}
-	sc := c.currentScope()
+	sc := c.Scope()
+	type request struct {
+		query string
+		vars  map[string]any
+	}
+	var reqs []request
 	switch {
-	case sc.assignee:
-		// #182: the issues assigned to the scope's user. One reassigned
-		// away does not appear (it is no longer assigned); the store's full
-		// pull catches it, as it catches a move to another project.
-		params, filter, vars, err := c.assigneeFilter(ctx)
+	case narrowed(sc):
+		// #182: the project filter ANDed with the assignee and labels. An
+		// issue that left the scope (reassigned, label removed) does not
+		// appear; the store's full pull catches it, as it catches a move to
+		// another project.
+		bs, err := c.scopeBuckets(ctx, sc)
 		if err != nil {
 			return nil, nil, err
 		}
-		maps.Copy(vars, base)
-		return c.fetchUpdatedPages(ctx, updatedSinceQuery("ItervoxLinearChangesAssignee", params, filter), vars)
-	case sc.all:
+		for _, b := range bs {
+			vars := maps.Clone(b.vars)
+			maps.Copy(vars, base)
+			reqs = append(reqs, request{updatedSinceQuery("ItervoxLinearChangesScoped", b.params, b.filter), vars})
+		}
+	case len(sc.Projects) == 0:
 		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSinceAll, base)
+	case len(sc.Projects) == 1 && sc.Projects[0] != noProjectSentinel:
+		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSince, with("projectSlug", sc.Projects[0]))
+	default:
+		for _, slug := range sc.Projects {
+			if slug == noProjectSentinel {
+				reqs = append(reqs, request{QueryIssuesUpdatedSinceNoProject, base})
+				continue
+			}
+			reqs = append(reqs, request{QueryIssuesUpdatedSince, with("projectSlug", slug)})
+		}
 	}
 	var changed []domain.Issue
 	var gone []string
 	seen := map[string]struct{}{}
-	for _, slug := range sc.slugs {
-		query, vars := QueryIssuesUpdatedSince, with("projectSlug", slug)
-		if slug == noProjectSentinel {
-			query, vars = QueryIssuesUpdatedSinceNoProject, base
-		}
-		ch, g, err := c.fetchUpdatedPages(ctx, query, vars)
+	for _, r := range reqs {
+		ch, g, err := c.fetchUpdatedPages(ctx, r.query, r.vars)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -61,6 +61,16 @@ func TestValidateDispatchFailsMissingAPIKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "tracker.api_key")
 }
 
+func TestValidateDispatchLinearOKWithoutProjectSlug(t *testing.T) {
+	// Linear project_slug is optional — project is selected via TUI/dashboard.
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: mykey\n---\n\nPrompt.\n"
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	assert.NoError(t, err)
+}
+
 func TestValidateDispatchGitHubFailsMissingProjectSlug(t *testing.T) {
 	// GitHub project_slug (owner/repo) is required — it identifies the target repo.
 	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: github\n  api_key: ghtoken\n---\n\nPrompt.\n"

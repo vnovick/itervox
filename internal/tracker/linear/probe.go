@@ -2,9 +2,12 @@ package linear
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // ProbeViewer is a read-only credential check (CORE-063, `itervox doctor
@@ -48,14 +51,21 @@ type AssigneeProbe struct {
 // filter, when set), so a key that resolves the user but cannot read their
 // issues is reported. It resolves the assignee first (cached).
 func (c *Client) ProbeAssigneeScope(ctx context.Context) (AssigneeProbe, error) {
-	params, filter, vars, err := c.assigneeFilter(ctx)
+	spec := c.Scope().Assignee
+	if spec == "" {
+		return AssigneeProbe{}, errors.New("linear_probe: the scope has no assignee")
+	}
+	// The assignee (and team) alone: the check is whether the key can read
+	// the user's issues across its teams, whatever the project and labels.
+	bs, err := c.scopeBuckets(ctx, tracker.Scope{Assignee: spec})
 	if err != nil {
 		return AssigneeProbe{}, err
 	}
-	query := "query ItervoxDoctorAssigneeReads(" + strings.TrimPrefix(params, ", ") + ") {\n" +
+	b := bs[0]
+	query := "query ItervoxDoctorAssigneeReads(" + strings.TrimPrefix(b.params, ", ") + ") {\n" +
 		"  teams(first: 100) { nodes { id key } }\n" +
-		"  issues(filter: {" + strings.TrimSuffix(filter, ", ") + "}, first: 50) { nodes { team { key } } }\n}"
-	body, err := c.graphql(ctx, query, vars)
+		"  issues(filter: {" + strings.TrimSuffix(b.filter, ", ") + "}, first: 50) { nodes { team { key } } }\n}"
+	body, err := c.graphql(ctx, query, b.vars)
 	if err != nil {
 		return AssigneeProbe{}, err
 	}

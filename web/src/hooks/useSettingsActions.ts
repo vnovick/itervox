@@ -7,6 +7,13 @@ import { SettingsError } from '../auth/SettingsError';
 import type { AutomationDef } from '../types/schemas';
 import { automationDefToWire, withUnknownAllowedActions } from '../types/configRoundTrip';
 
+/** #182 — PUT /api/v1/tracker/scope body; empty projects = every project, '' assignee = anyone. */
+export interface TrackerScopeInput {
+  projects: string[];
+  assignee: string;
+  labels: string[];
+}
+
 // Read refreshSnapshot from the store directly (not via selector) so
 // the returned action functions have stable references across renders.
 function getRefreshSnapshot() {
@@ -231,6 +238,10 @@ const actions = {
 
   setProjectFilter: async (slugs: string[] | null): Promise<boolean> =>
     settingsFetch('/api/v1/projects/filter', 'PUT', { slugs }, 'Failed to update project filter.'),
+
+  // #182 — the combined scope: projects AND assignee AND any-of labels.
+  setTrackerScope: async (scope: TrackerScopeInput): Promise<boolean> =>
+    settingsFetch('/api/v1/tracker/scope', 'PUT', scope, 'Failed to update the tracker scope.'),
 
   addSSHHost: async (host: string, description: string): Promise<boolean> =>
     settingsFetch(

@@ -757,11 +757,14 @@ export const StateSnapshotSchema = z.object({
   trackerKind: z.string().optional(),
   demoMode: z.boolean().optional(),
   activeProjectFilter: z.array(z.string()).optional(),
-  // #182 — the tracker's active read scope ("assigned to Ada · team ENG",
-  // "project my-proj", "all projects") and who the picker's "assigned to"
-  // option means. Absent for trackers without a scope.
+  // #182 — the tracker's combined read scope (projects AND assignee AND
+  // any-of labels): its header label ("ENG · assigned to me · label:
+  // agent"), the assignee spec and who it resolved to, and the labels.
+  // Absent for trackers without a combinable scope.
   trackerScope: z.string().optional(),
-  assigneeScopeLabel: z.string().optional(),
+  scopeAssignee: z.string().optional(),
+  scopeAssigneeName: z.string().optional(),
+  scopeLabels: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),

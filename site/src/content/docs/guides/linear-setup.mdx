@@ -32,31 +32,33 @@ export LINEAR_API_KEY="lin_api_xxxxxxxxxxxxxxxxxxxx"
 The project slug identifies which Linear project Itervox should poll. You can find it in two ways:
 
 1. **From Linear URLs** — it is the short identifier shown in issue prefixes (e.g. issues prefixed `ENG-` belong to the `ENG` project slug)
-2. **From the dashboard** — start the daemon with `project_slug: "*"` (every project) and use the TUI project selector (press `p`) or the dashboard's Settings → Project Filter to browse available projects interactively
+2. **From the dashboard** — start the daemon without a `project_slug` and use the TUI project selector (press `p`) or the web dashboard's project dropdown to browse available projects interactively
 
-A Linear tracker needs exactly one scope: `project_slug` (a slug, or `"*"` for every project the key can read) or `assignee` (below). Before v0.2.6 an absent `project_slug` meant every project; that now fails validation with a message telling you to write `project_slug: "*"`.
+## Scope: project, assignee, labels
 
-## Scope by assignee
-
-Teams that plan across several projects and route work by assignee can point Itervox at "everything assigned to this user" instead of a project:
+What Itervox reads is the **AND** of three optional filters in the `tracker` block:
 
 ```yaml
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  assignee: me          # me (the API key's user), a user id, or an email
-  # team: ENG           # optional: only issues of this team (key or id)
+  project_slug: my-project   # optional: one project (omit for every project)
+  assignee: me               # optional: me (the API key's user), a user id, or an email
+  team: ENG                  # optional, with assignee: only this team (key or id)
+  labels: ["agent", "bot"]   # optional: issues carrying ANY of these labels
 ```
 
-- `assignee: me` resolves to the API key's own user (Linear's `viewer`). Create a dedicated "Itervox" Linear user, generate the API key as that user, and assign tickets to it to hand them to the agents; reassign a ticket to take it back. An email resolves through Linear's user list; anything else is taken as a user id. The user is resolved once at startup and on every `WORKFLOW.md` reload, and cached.
-- Issues come from **any team and project** the key can read; `team` narrows the scope to one team.
+- **Only `project_slug`** — that project's issues, exactly as before. **Nothing set** — every project, as before.
+- **Only `assignee`** — the issues assigned to that user in any project of any team the key can read; `team` narrows it to one team. `me` resolves to the API key's own user (Linear's `viewer`): create a dedicated "Itervox" Linear user, generate the key as that user, and assign tickets to it to hand them to the agents; reassign a ticket to take it back. An email resolves through Linear's user list; anything else is a user id. The user is resolved once at startup and on every `WORKFLOW.md` reload, and cached; a user that does not resolve fails the polls (it never widens to every issue).
+- **`project_slug` + `assignee`** — the intersection: that user's issues inside the project (or projects).
+- **`labels`** — ANDed with the above: an issue must carry at least one of the listed labels.
 - `active_states`, `terminal_states`, `working_state`, `completion_state` and `backlog_states` keep their meaning.
 - Every read uses the same scope: the poll, the tracker store's full and incremental pulls, webhook refreshes, the dependency analyzer's issue set and automation polls.
-- **Reassigning mid-run:** an issue reassigned to someone else while an agent works on it is treated like an issue moved out of the project: the running worker finishes, no new run (or retry) is dispatched, and the dashboard and TUI mark the run "out of scope". Assign it back and it is picked up again.
+- **Leaving the scope mid-run** — an issue reassigned to someone else, whose matching label is removed, or that is moved to another project while an agent works on it: the running worker finishes, no new run (or retry) is dispatched, and the dashboard and TUI mark the run "out of scope". Bring it back into scope and it is picked up again.
 - **The agent's own writes** — state moves, comments, the branch name, follow-up issues — never set an assignee, so a run cannot push its own issue out of scope. Follow-up issues an agent creates are unassigned until a person routes them.
-- The dashboard's Settings → Project Filter and the TUI picker (`p`) offer **Assigned to …** next to the projects; choosing it writes `assignee:` to `WORKFLOW.md` and comments `project_slug` out (choosing a project does the reverse). The header shows the active scope.
-- `itervox doctor` checks that the assignee resolves to a user the key can see (exit 1 if not, or if `team` names no team the key can read) and that the key can read the issues assigned to that user across the teams it covers.
-- `tracker.sync` (the local issue sync) keeps a project scope: it creates issues in its project, so it does not accept `assignee`.
+- **At runtime** the dashboard's **Settings → Tracker Scope** card has three independent controls — projects (or all), assignee (anyone, me, or a user from your workspace; resolved before saving) and labels — and saving writes `project_slug`, `assignee` and `labels` to `WORKFLOW.md` (a cleared key is commented out) without a reload. The TUI picker (`p`) toggles **Assigned to …** next to the projects. The dashboard header and the TUI show the active scope, e.g. `ENG · assigned to me · label: agent`.
+- `itervox doctor` checks that the assignee resolves to a user the key can see (exit 1 if not, or if `team` names no team the key can read) and that the key can read the issues assigned to that user across its teams.
+- `tracker.sync` (the local issue sync) accepts `assignee` and `labels` with its required `project_slug`: they narrow the project it pulls from.
 
 ## Initialize WORKFLOW.md
 
@@ -82,7 +84,8 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY        # resolved from env at runtime
   project_slug: my-project        # the slug from the previous step
-  # assignee: me                  # or scope by assignee instead (exactly one of the two)
+  # assignee: me                  # optional: also only issues assigned to this user
+  # labels: ["agent"]             # optional: also only issues with any of these labels
 
   # States that trigger agent dispatch (issues in these states get picked up)
   active_states:
