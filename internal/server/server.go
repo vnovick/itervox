@@ -71,6 +71,10 @@ type RunningRow struct {
 	// CommentCount counts review/comment actions taken during this run
 	// (T-6 surface). Zero for runs that have not commented.
 	CommentCount int `json:"commentCount,omitempty"`
+	// OutOfScope is set when the issue left the tracker's scope mid-run
+	// (#182: reassigned away, moved out of the project): the run finishes,
+	// but no new run is dispatched for it.
+	OutOfScope bool `json:"outOfScope,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -310,6 +314,41 @@ type ProjectManager interface {
 	// reload fence (503), anything else a failed persist.
 	SetProjectFilter(slugs []string) error
 	GetProjectFilter() []string
+}
+
+// TrackerScope is the combined tracker scope (#182): issues in any of
+// Projects (empty: every project) AND assigned to Assignee ("": anyone;
+// "me", a user id or an email) AND carrying any of Labels (empty: no label
+// filter).
+type TrackerScope struct {
+	Projects []string `json:"projects"`
+	Assignee string   `json:"assignee"`
+	Labels   []string `json:"labels"`
+}
+
+// TrackerUser is one assignee choice.
+type TrackerUser struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email,omitempty"`
+}
+
+// ErrScopeAssigneeNotFound is returned (wrapped) by ScopeManager.SetScope
+// when the assignee matches no user the tracker key can see: a 422.
+var ErrScopeAssigneeNotFound = errors.New("assignee not found")
+
+// ScopeManager is implemented by trackers whose read scope combines
+// projects, an assignee and labels (#182, Linear).
+type ScopeManager interface {
+	GetScope() TrackerScope
+	// SetScope resolves the assignee, persists the scope to WORKFLOW.md and
+	// applies it. An error means nothing changed: a wrapped
+	// ErrSettingsReloading is the reload fence (503), a wrapped
+	// ErrScopeAssigneeNotFound an unknown user (422), anything else a
+	// failed resolve or persist (500).
+	SetScope(ctx context.Context, scope TrackerScope) error
+	FetchLabels(ctx context.Context) ([]string, error)
+	FetchUsers(ctx context.Context) ([]TrackerUser, error)
 }
 
 // OrchestratorClient abstracts the orchestrator and workflow operations called
@@ -583,6 +622,16 @@ type StateSnapshot struct {
 	// ActiveProjectFilter is the current runtime project filter slugs.
 	// nil/absent means "using WORKFLOW.md default"; empty array means "all issues".
 	ActiveProjectFilter []string `json:"activeProjectFilter,omitempty"`
+	// TrackerScope describes the tracker's read scope for the header
+	// (#182), e.g. "ENG · assigned to me · label: agent". Empty for
+	// trackers without a combinable scope.
+	TrackerScope string `json:"trackerScope,omitempty"`
+	// ScopeAssignee is the scope's assignee spec ("me", an id or an email;
+	// "" for anyone) and ScopeAssigneeName who it resolved to (#182).
+	ScopeAssignee     string `json:"scopeAssignee,omitempty"`
+	ScopeAssigneeName string `json:"scopeAssigneeName,omitempty"`
+	// ScopeLabels is the scope's label filter (any of them; #182).
+	ScopeLabels []string `json:"scopeLabels,omitempty"`
 	// AvailableProfiles is the list of named agent profile names defined in WORKFLOW.md.
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`
@@ -1280,6 +1329,9 @@ type Config struct {
 	FetchIssue func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	// ProjectManager supports project filtering (Linear only). Nil = no project API.
 	ProjectManager ProjectManager
+	// ScopeManager supports the combined tracker scope (#182: projects AND
+	// assignee AND labels; Linear only). Nil = no /tracker/* scope API.
+	ScopeManager ScopeManager
 	// APIToken, when non-empty, enables bearer-token authentication on all
 	// /api/ routes except /api/v1/health. Requests must include the header
 	// "Authorization: Bearer <token>".
@@ -1347,6 +1399,7 @@ type Server struct {
 	client         OrchestratorClient
 	fetchIssue     func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	projectManager ProjectManager
+	scopeManager   ScopeManager
 	bc             *broadcaster
 	// streamsDone is closed by Shutdown; every streaming handler returns
 	// when it closes (CORE-025). A Server built without New has a nil
@@ -1401,6 +1454,7 @@ func New(cfg Config) *Server {
 		client:         client,
 		fetchIssue:     cfg.FetchIssue,
 		projectManager: cfg.ProjectManager,
+		scopeManager:   cfg.ScopeManager,
 		bc:             newBroadcaster(),
 		streamsDone:    make(chan struct{}),
 		apiToken:       cfg.APIToken,
@@ -1556,6 +1610,10 @@ func (s *Server) routes() {
 			r.Get("/projects", s.handleListProjects)
 			r.Get("/projects/filter", s.handleGetProjectFilter)
 			r.Put("/projects/filter", s.handleSetProjectFilter)
+			r.Get("/tracker/scope", s.handleGetTrackerScope) // #182
+			r.Put("/tracker/scope", s.handleSetTrackerScope) // #182
+			r.Get("/tracker/labels", s.handleTrackerLabels)  // #182
+			r.Get("/tracker/users", s.handleTrackerUsers)    // #182
 			r.Post("/settings/workers", s.handleSetWorkers)
 			r.Delete("/workspaces", s.handleClearAllWorkspaces)
 			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)

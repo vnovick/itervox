@@ -726,6 +726,36 @@ Notes:
 - A save applies to the tracker immediately and never reloads `WORKFLOW.md`
   (CORE-160). A save that raced a reload is not written (the next
   generation keeps the file's value); re-send it.
+- A project filter save changes only the project part of the combined
+  scope below; the assignee and labels stay.
+
+### Combined tracker scope (#182, Linear only)
+
+The scope is the AND of the projects, an assignee and a label filter (any
+of the labels). `501 not_supported` for trackers without it.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/tracker/scope` | — | `{"scope":{"projects":["ENG"],"assignee":"me","labels":["agent"]}}` |
+| `PUT` | `/tracker/scope` | `{"projects":[...],"assignee":"me","labels":[...]}` | `{"scope":{...},"ok":true}` |
+| `GET` | `/tracker/labels` | — | `{"labels":["agent","bug"]}` |
+| `GET` | `/tracker/users` | — | `{"users":[{"id":"…","name":"Ada","email":"ada@example.com"}]}` |
+
+- Empty `projects` is every project, `""` `assignee` anyone (`me`, a user id
+  or an email otherwise), empty `labels` no label filter. Any combination is
+  allowed.
+- The assignee is resolved before anything is written: one that matches no
+  user the key can see answers `422 assignee_not_found` and nothing changes.
+  The reload fence answers `503 settings_reloading`, a failed resolve or
+  write `500 tracker_scope_not_saved`.
+- The save writes `project_slug` (commented out for every project),
+  `assignee` and `labels` in `WORKFLOW.md` (a cleared key is commented out),
+  applies the scope in memory without a reload, and makes the tracker store
+  pull again.
+- The snapshot carries `trackerScope` (the header label, e.g.
+  `ENG · assigned to me · label: agent`), `scopeAssignee`,
+  `scopeAssigneeName` and `scopeLabels`; a running row whose issue left the
+  scope mid-run has `outOfScope: true`.
 
 ---
 

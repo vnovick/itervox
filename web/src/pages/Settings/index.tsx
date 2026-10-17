@@ -34,6 +34,7 @@ export default function Settings() {
     setAutoClearWorkspace,
     setDepsAnalysisMode,
     setProjectFilter,
+    setTrackerScope,
     setInlineInput,
     setMaxRetries,
     setFailedState,
@@ -95,6 +96,7 @@ export default function Settings() {
               <ProjectFilterCard
                 activeFilter={activeProjectFilter}
                 onSetFilter={setProjectFilter}
+                onSetScope={setTrackerScope}
               />
             )}
           </div>

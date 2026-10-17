@@ -43,10 +43,11 @@ function TrackerIcon({ kind }: { kind: string }) {
 }
 
 export function ProjectSelector() {
-  const { trackerKind, activeProjectFilter } = useItervoxStore(
+  const { trackerKind, activeProjectFilter, trackerScope } = useItervoxStore(
     useShallow((s) => ({
       trackerKind: s.snapshot?.trackerKind,
       activeProjectFilter: s.snapshot?.activeProjectFilter ?? EMPTY_PROJECT_FILTER,
+      trackerScope: s.snapshot?.trackerScope,
     })),
   );
 
@@ -79,8 +80,18 @@ export function ProjectSelector() {
           {TRACKER_LABEL[trackerKind] ?? trackerKind}
         </span>
 
+        {/* #182 — the adapter names its scope (assigned to …, project …). */}
+        {trackerScope && (
+          <span
+            data-testid="tracker-scope"
+            className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2.5 py-0.5 text-xs font-medium"
+          >
+            {trackerScope}
+          </span>
+        )}
+
         {/* Active project filter chips — only shown when a filter is configured */}
-        {activeProjectFilter.length > 0 && (
+        {!trackerScope && activeProjectFilter.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {activeProjectFilter.map((project) => (
               <span

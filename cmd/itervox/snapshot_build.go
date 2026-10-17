@@ -81,6 +81,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:     r.StartedAt,
 				SubagentCount: subCount,
+				OutOfScope:    isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -111,6 +112,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
 			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
 		}
+		scopeView := trackerScopeView(tr) // #182
 		profiles := orch.ProfilesCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
 		depsAnalysisMode := orch.DepsAnalysisModeCfg()
@@ -205,6 +207,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DemoMode:                     demoSession != nil,
 			ProjectName:                  projectName,
 			ActiveProjectFilter:          activeProjectFilter,
+			TrackerScope:                 scopeView.label,
+			ScopeAssignee:                scopeView.assignee,
+			ScopeAssigneeName:            scopeView.assigneeName,
+			ScopeLabels:                  scopeView.labels,
 			AvailableProfiles:            availableProfiles,
 			ProfileDefs:                  profileDefs,
 			ActiveStates:                 activeStates,
@@ -283,4 +289,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		snap.ConfigInvalid = loadConfigInvalid()
 		return snap
 	}
+}
+
+// isOutOfScope reports whether identifier is in the orchestrator's
+// out-of-scope set (#182).
+func isOutOfScope(set map[string]struct{}, identifier string) bool {
+	_, ok := set[identifier]
+	return ok
 }

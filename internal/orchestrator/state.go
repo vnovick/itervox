@@ -501,6 +501,12 @@ type State struct {
 	// run by the first dependency audit that finds the issue idle. Session
 	// state, not persisted.
 	PendingRestacks map[string]struct{}
+	// OutOfScope holds the identifiers of running issues that left the
+	// tracker's scope (#182): still active, but absent from the scoped
+	// candidate poll (reassigned away, moved to another project). The run
+	// finishes; no new run starts (observeOutOfScope, fireRetries). Derived
+	// each successful poll, event-loop owned, session-scoped, not persisted.
+	OutOfScope map[string]struct{}
 	// PrevActiveIdentifiers is the set of issue identifiers that were fetched
 	// as active on the previous tick. Used by the auto-resume guard to
 	// distinguish "issue came back to active after being absent" (safe to

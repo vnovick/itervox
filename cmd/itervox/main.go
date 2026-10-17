@@ -809,6 +809,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
+	// #182: resolve an assignee scope's user once per generation, off the
+	// event loop, before the store and the orchestrator read through it.
+	resolveTrackerAssignee(ctx, cfg, tr)
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
@@ -914,8 +917,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
-	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
-		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
+	if name := cfg.Tracker.ScopeName(); cfg.Tracker.Kind != "" && name != "" {
+		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + name)
 	}
 
 	appSessionID := newAppSessionID()
@@ -1186,6 +1189,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Client:           adapter,
 			FetchIssue:       fetchIssue,
 			ProjectManager:   pm,
+			ScopeManager:     newScopeManager(tr, workflowPath, settingsGen), // #182
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
@@ -1334,9 +1338,7 @@ func buildTUIConfig(
 			}
 			return items, nil
 		}
-		tuiCfg.SetProjectFilter = func(slugs []string) {
-			_ = saveProjectFilter(tpm, workflowPath, settingsGen, slugs, "tui") // logged inside
-		}
+		tuiCfg.SetProjectFilter = tuiProjectFilterSaver(tpm, cfg, workflowPath, settingsGen) // #182
 	}
 	tuiCfg.AdjustWorkers = func(delta int) {
 		// V4: same serialized write-then-apply as the dashboard's
@@ -1709,8 +1711,12 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 	switch cfg.Tracker.Kind {
 	case "linear":
 		return linear.NewClient(linear.ClientConfig{
-			APIKey:         cfg.Tracker.APIKey,
+			APIKey: cfg.Tracker.APIKey,
+			// #182: project, assignee and labels AND.
 			ProjectSlug:    cfg.Tracker.ProjectSlug,
+			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee),
+			Team:           strings.TrimSpace(cfg.Tracker.Team),
+			Labels:         cfg.Tracker.Labels,
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			Endpoint:       cfg.Tracker.Endpoint,

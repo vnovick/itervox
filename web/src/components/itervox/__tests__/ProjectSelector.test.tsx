@@ -74,3 +74,21 @@ describe('ProjectSelector', () => {
     expect(screen.getByText('Project B')).toBeInTheDocument();
   });
 });
+
+describe('ProjectSelector — tracker scope (#182)', () => {
+  it('shows the combined scope (projects, assignee, labels) instead of filter chips', () => {
+    mockStore.mockImplementation((selector: (s: unknown) => unknown) =>
+      selector({
+        snapshot: {
+          trackerKind: 'linear',
+          activeProjectFilter: ['ENG'],
+          trackerScope: 'ENG · assigned to me · label: agent',
+        },
+      }),
+    );
+    render(<ProjectSelector />);
+    expect(screen.getByTestId('tracker-scope')).toHaveTextContent(
+      'ENG · assigned to me · label: agent',
+    );
+  });
+});

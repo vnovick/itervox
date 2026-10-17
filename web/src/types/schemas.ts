@@ -134,6 +134,9 @@ export const RunningRowSchema = z.object({
   triggerType: z.string().optional(),
   // Reviewer/comment-count surface (T-6). Absent when zero.
   commentCount: z.number().optional(),
+  // #182 — the issue left the tracker scope mid-run (reassigned away, moved
+  // out of the project): the run finishes, no new run is dispatched.
+  outOfScope: z.boolean().optional(),
 });
 
 export const HistoryRowSchema = z.object({
@@ -754,6 +757,14 @@ export const StateSnapshotSchema = z.object({
   trackerKind: z.string().optional(),
   demoMode: z.boolean().optional(),
   activeProjectFilter: z.array(z.string()).optional(),
+  // #182 — the tracker's combined read scope (projects AND assignee AND
+  // any-of labels): its header label ("ENG · assigned to me · label:
+  // agent"), the assignee spec and who it resolved to, and the labels.
+  // Absent for trackers without a combinable scope.
+  trackerScope: z.string().optional(),
+  scopeAssignee: z.string().optional(),
+  scopeAssigneeName: z.string().optional(),
+  scopeLabels: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),

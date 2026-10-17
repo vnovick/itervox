@@ -90,7 +90,10 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `kind` | string | **required** | Tracker backend: `"linear"`, `"github"` or `"local"` (issues as Markdown files in `.itervox/issues/`, no account or key; see [Local issues](/guides/local-issues/)). |
 | `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
 | `api_key` | string | **required** (Linear, GitHub) | API token; not used by `local`. Use `$VAR_NAME` to read from an environment variable (recommended). |
-| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
+| `project_slug` | string | **required** (GitHub) | For Linear (optional): the project slug from your Linear URL (e.g. `"ENG"`); omit to read every project. ANDed with `assignee` and `labels`. For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
+| `assignee` | string | `""` | Linear only (#182): only the issues assigned to this user — `me` (the API key's own user, Linear's `viewer`), a user id, or an email. Alone: that user's issues in every project of every team the key can read; with `project_slug`: the intersection. Resolved once at startup and on each `WORKFLOW.md` reload; a user nobody can see fails every poll (never widens) and `itervox doctor` exits 1. An issue reassigned away mid-run finishes its run but gets no new one, and shows as "out of scope". Itervox's own writes never set an assignee. See [Linear setup → Scope](/guides/linear-setup/#scope-project-assignee-labels). |
+| `team` | string | `""` | Linear only, with `assignee` (#182): only the issues of this team, by key (`ENG`) or id. Ignored without `assignee`. |
+| `labels` | string[] | `[]` | Linear only (#182): only the issues carrying **any** of these labels, ANDed with the project and assignee. An issue whose matching label is removed mid-run is out of scope like a reassigned one. |
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
@@ -140,7 +143,9 @@ writes that are genuinely failing.
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slug: ENG
+  project_slug: ENG                 # optional; omit for every project
+  # assignee: me                    # optional: AND assigned to this user
+  # labels: ["agent"]               # optional: AND carrying any of these labels
   active_states: ["Todo", "In Progress"]
   terminal_states: ["Done", "Cancelled", "Duplicate"]
   completion_state: "In Review"

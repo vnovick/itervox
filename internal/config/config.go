@@ -187,10 +187,28 @@ const (
 
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
-	Kind           string
-	Endpoint       string
-	APIKey         string
-	ProjectSlug    string
+	Kind     string
+	Endpoint string
+	APIKey   string
+	// ProjectSlug is the project scope: a Linear project slug (optional;
+	// empty reads every project), a GitHub owner/repo, or the local
+	// tracker's identifier prefix.
+	ProjectSlug string
+	// Assignee narrows a Linear tracker to the issues assigned to one user
+	// (#182): "me" (the API key's own user), a user id, or an email. ANDed
+	// with ProjectSlug and Labels; alone it reads that user's issues in
+	// every project of every team the key can read. Resolved to a user id
+	// once per load, off the event loop. Load-time only: the dashboard's
+	// scope filter changes the tracker client's runtime scope, not this
+	// field.
+	Assignee string
+	// Team narrows an assignee scope to one Linear team, by key (ENG) or id
+	// (#182). Ignored without Assignee.
+	Team string
+	// Labels narrows a Linear tracker to the issues carrying ANY of these
+	// labels (#182), ANDed with the project and assignee. Empty: no label
+	// filter. Load-time only, like Assignee.
+	Labels         []string
 	ActiveStates   []string
 	TerminalStates []string
 	// WorkingState is the state name to transition an issue to when it is
@@ -849,6 +867,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Endpoint = conn.Endpoint
 	cfg.Tracker.APIKey = conn.APIKey
 	cfg.Tracker.ProjectSlug = conn.ProjectSlug
+	cfg.Tracker.Assignee = conn.Assignee // #182
+	cfg.Tracker.Team = conn.Team
+	cfg.Tracker.Labels = conn.Labels
 	cfg.Tracker.ActiveStates = conn.ActiveStates
 	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
