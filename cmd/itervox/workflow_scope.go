@@ -57,13 +57,6 @@ func (m *linearScopeManager) FetchUsers(ctx context.Context) ([]server.TrackerUs
 	return out, nil
 }
 
-func nonNil(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}
-
 // normalizeScope trims the scope and drops empty and duplicate entries.
 func normalizeScope(sc tracker.Scope) tracker.Scope {
 	clean := func(in []string, fold bool) []string {

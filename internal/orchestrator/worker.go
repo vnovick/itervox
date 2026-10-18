@@ -439,6 +439,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		evidenceBlock = buildEvidenceBlock(required, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
+	// #157: the rule set this run was dispatched with. `{{ rules }}` places
+	// it in any template; otherwise a `## Rules` block goes ahead of the
+	// profile's SOUL.md and INSTRUCTIONS.md.
+	ruleSet := o.runRules(ctx, profileName, backend)
+	runVars["rules"] = ruleSet.Binding()
+	o.reportRuleProblems(ruleSet, issue.Identifier, runLogID)
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -553,6 +559,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// Empty (and therefore a no-op) for normal workers.
 		if verdictPath := reviewVerdictRel; verdictPath != "" {
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
+		}
+
+		// #157: the rules block, ahead of SOUL.md and INSTRUCTIONS.md, unless
+		// one of the run's templates places the rules itself.
+		ruleTemplates := []string{promptTemplate}
+		if p, ok := profilesSnap[profileName]; ok && profileName != "" {
+			ruleTemplates = append(ruleTemplates, p.Soul, p.Instructions, p.Prompt)
+		}
+		if automation != nil {
+			ruleTemplates = append(ruleTemplates, automation.Instructions)
+		}
+		if block := rulesPromptBlock(ruleSet, ruleTemplates...); block != "" {
+			renderedPrompt += "\n\n" + block
 		}
 
 		// Append the active profile's prompt (role context) whenever a named

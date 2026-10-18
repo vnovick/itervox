@@ -236,11 +236,18 @@ Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
    order, budget-truncated. See **Agent handoff** below.
 3. **`## Run Context`** block — `run.timestamp` and `run.handoff_path` for
    this dispatch. The agent uses these to write its own deliverable.
-4. **SOUL.md** — compact identity ("who you are"), appended via
+4. **`## Rules`** block (#157) — the layered rules in scope for the run's
+   project, profile and backend, must rules first. `internal/rules` reads
+   `~/.itervox/rules.json`, `.itervox/rules.json` and
+   `.itervox/rules.local.json` again at every dispatch (`startRun`), so an
+   edit applies to the next run; the run records the set's hash and ids.
+   Omitted when a template prints `{{ rules }}` (or a field of it) itself.
+   The dependency analyzer gets the same block at the top of its prompt.
+5. **SOUL.md** — compact identity ("who you are"), appended via
    `renderProfilePromptBlocks`.
-5. **INSTRUCTIONS.md** — operational rules, checklists, including the
+6. **INSTRUCTIONS.md** — operational rules, checklists, including the
    "Handoff Protocol" section that points at `run.handoff_path`.
-6. Optional appends: automation instructions, action context, sub-agent
+7. Optional appends: automation instructions, action context, sub-agent
    roster, first-turn PR context.
 
 The concatenated result is passed to the agent subprocess. Inline `prompt:`
@@ -428,6 +435,7 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/workflow` | WORKFLOW.md loader and content-hash file watcher |
 | `internal/workspace` | Workspace provisioning, path safety, git worktree / bare-clone helpers, PR branches, lifecycle hooks |
 | `internal/prompt` | Liquid template rendering for agent prompts |
+| `internal/rules` | Layered JSONC rules (#157): read, merge (user `must` rules locked), scope filter, `## Rules` block and `{{ rules }}` binding, comment-preserving saves for the Rules editor |
 | `internal/logbuffer` | Per-issue ring buffer for live log streaming |
 | `internal/prdetector` | Detects PR URLs in agent output |
 | `internal/app` | Cross-cutting business logic (e.g. `EnrichIssue`) |

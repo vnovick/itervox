@@ -805,6 +805,40 @@ Linear project filter (`PUT /projects/filter`) and
 
 ---
 
+## Settings layers
+
+The schema-driven Settings section's endpoints (#158). See
+[Settings files](/configuration/#settings-files-jsonc-layers).
+
+| Method | Path | Request body | Success response | Errors |
+|---|---|---|---|---|
+| `GET` | `/settings/schema` | — | the settings JSON Schema (the published `settings.schema.json`) | — |
+| `GET` | `/settings/layers` | — | `{"schemaUrl":"…","layers":[{"name":"user"\|"project"\|"local","path","writable","exists","raw","version","values":{"agent.max_turns":4,…},"unknown":["…"],"error"?}],"effective":[{"key","value","layer","path"?}]}` | — |
+| `PUT` | `/settings/layers/{layer}` | `{"baseVersion":"<version from GET>","values":{"agent.max_turns":4,"agent.ssh_hosts":null}}` (form: each key set, `null` removes it; comments kept) or `{"baseVersion":"…","raw":"<JSONC text>"}` (written as typed) | the layers as above plus `"layer"`, `"applied"` (changed settings applied to the running daemon), `"restartRequired"` (changed settings that apply at the next restart or reload) and `"shadowed"` (key → the higher layer that still wins) | `400 settings_invalid` (a key Itervox does not read, a wrong type or enum, a key edited on another page, or a config that does not load; nothing written), `404 unknown_layer`, `409 settings_stale` (the file changed since `baseVersion`; `""` means it did not exist), `503 settings_reloading` |
+
+A project or local save also removes the keys it sets from `WORKFLOW.md`; a
+user save never edits the project.
+
+---
+
+## Rules
+
+The Rules editor's endpoints (#157). Rules are files the daemon reads again
+for every run (see [Rules](/configuration/#rules-layered-jsonc)), so a save
+applies to the next run and reloads nothing.
+
+| Method | Path | Request body | Success response | Errors |
+|---|---|---|---|---|
+| `GET` | `/rules` | — | `{"schemaUrl":"…","layers":[{"name":"user"\|"project"\|"local","path","writable","exists","raw","version","rules":[Rule],"error"?}]}` | — |
+| `PUT` | `/rules/{layer}` | `{"baseVersion":"<version from GET>","rules":[Rule]}` (form: only changed rules and fields are rewritten, comments kept) or `{"baseVersion":"…","raw":"<JSONC text>"}` (written as is) | the saved layer | `400 rules_invalid` (not a valid rules file; nothing written), `404 unknown_layer`, `409 rules_stale` (the file changed since `baseVersion`; `""` means it did not exist) |
+| `GET` | `/rules/preview?profile=&issue=` | — | `{"profile","backend","projects","rules":[Rule + "layer","overrides"?],"conflicts":[{"id","layer","keptLayer","message"}],"errors":[{"layer","path","message"}],"block","hash","ids","templatePlacesRules"}` | — |
+
+A `Rule` is `{"id","severity":"must"|"should","text","description"?,"scope"?:{"projects"?,"profiles"?,"backends"?}}`. Running rows and
+history rows in `/state` carry the run's `rulesHash` and `ruleIds` (omitted
+when no rule applied).
+
+---
+
 ## Skills Inventory
 
 The skills endpoints expose the Settings -> Skills inventory and recommendation

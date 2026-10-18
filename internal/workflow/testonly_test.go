@@ -61,15 +61,41 @@ func WriteAndReload(path string, mutators ...Mutator) error {
 	return applyAndWrite(path, false, false, mutators)
 }
 
-// PatchTrackerStates atomically rewrites tracker.active_states,
-// tracker.terminal_states, and tracker.completion_state inside the YAML front
-// matter. Missing keys are inserted inside the tracker block.
-//
-// Routed through ApplyAndWriteFrontMatter (CORE-006) so it is serialized by
-// editMu with every other WORKFLOW.md writer instead of racing them with a
-// bare read-modify-write.
+// The per-field patchers below were production code until #158 replaced them
+// with the generic SetFrontMatterKeys / MutateSetKey. Their tests are kept
+// (concurrency, lock, CORE-125 and indentation coverage) and now exercise the
+// generic writer through these thin test-only wrappers.
+
+// PatchTrackerStates sets tracker.active_states, tracker.terminal_states and
+// tracker.completion_state in one write.
 func PatchTrackerStates(path string, active, terminal []string, completion string) error {
 	return ApplyAndWriteFrontMatter(path, MutateTrackerStates(active, terminal, completion))
+}
+
+// MutateTrackerStates is the Mutator form of PatchTrackerStates.
+func MutateTrackerStates(active, terminal []string, completion string) Mutator {
+	return MutateSetKeys(
+		KeyValue{Key: "tracker.active_states", Value: active},
+		KeyValue{Key: "tracker.terminal_states", Value: terminal},
+		KeyValue{Key: "tracker.completion_state", Value: completion},
+	)
+}
+
+// PatchTrackerFailedState sets tracker.failed_state; "" removes it.
+func PatchTrackerFailedState(path, state string) error {
+	return SetFrontMatterKeys(path, KeyValue{Key: "tracker.failed_state", Value: emptyAsNil(state)})
+}
+
+// PatchDependenciesStringField sets dependencies.<key>; "" removes it.
+func PatchDependenciesStringField(path, key, value string) error {
+	return ApplyAndWriteFrontMatter(path, MutateSetKey("dependencies."+key, emptyAsNil(value)))
+}
+
+func emptyAsNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // Watch monitors path for changes by polling every second with a stamp of

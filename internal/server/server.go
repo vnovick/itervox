@@ -75,6 +75,9 @@ type RunningRow struct {
 	// (#182: reassigned away, moved out of the project): the run finishes,
 	// but no new run is dispatched for it.
 	OutOfScope bool `json:"outOfScope,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run was given (#157).
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIds,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -101,6 +104,9 @@ type HistoryRow struct {
 	TriggerType  string `json:"triggerType,omitempty"`
 	// CommentCount: comments posted during this run (T-6 surface).
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run used (#157).
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIds,omitempty"`
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -1340,6 +1346,11 @@ type Config struct {
 	ActionTokenStore *agentactions.Store
 	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
 	SkillsClient SkillsClient
+	// Rules backs the Rules editor endpoints (#157). Nil → 503.
+	Rules RulesClient
+	// SettingsLayers backs the schema-driven Settings page's layer
+	// endpoints (#158). Nil → 503 (the schema endpoint always answers).
+	SettingsLayers SettingsLayersClient
 	// DepsAnalyzer backs the /api/v1/deps/analyze endpoints (Phase 2.3 of
 	// v0.2.0 todolist6). Nil makes the endpoints return 503.
 	DepsAnalyzer DepsAnalyzer
@@ -1413,7 +1424,10 @@ type Server struct {
 	apiToken     string
 	actionTokens *agentactions.Store
 	skills       SkillsClient
-	depsAnalyzer DepsAnalyzer
+	rules        RulesClient
+	// settingsLayers mirrors Config.SettingsLayers (#158).
+	settingsLayers SettingsLayersClient
+	depsAnalyzer   DepsAnalyzer
 	// mergeStrategy / mergeBlockLabels mirror Config.MergeStrategy /
 	// Config.MergeBlockLabels — startup-fixed merge_pr policy. gaps_11 G-3.
 	mergeStrategy    string
@@ -1465,6 +1479,8 @@ func New(cfg Config) *Server {
 		apiToken:       cfg.APIToken,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
+		rules:          cfg.Rules,
+		settingsLayers: cfg.SettingsLayers,
 		depsAnalyzer:   cfg.DepsAnalyzer,
 
 		mergeStrategy:       cfg.MergeStrategy,
@@ -1648,6 +1664,10 @@ func (s *Server) routes() {
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
 			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+			// Schema-driven Settings page (#158).
+			r.Get("/settings/schema", s.handleSettingsSchema)
+			r.Get("/settings/layers", s.handleGetSettingsLayers)
+			r.Put("/settings/layers/{layer}", s.handleSaveSettingsLayer)
 
 			// Dependency analysis (Phase 2.3 of v0.2.0 todolist6).
 			r.Post("/deps/analyze", s.handleDepsAnalyzeEnqueue)
@@ -1655,6 +1675,10 @@ func (s *Server) routes() {
 			r.Delete("/deps/analyze/{jobId}", s.handleDepsAnalyzeCancel)
 
 			// Skills inventory + analytics (T-87, T-95/T-96, T-102).
+			// Rules editor (#157).
+			r.Get("/rules", s.handleGetRules)
+			r.Get("/rules/preview", s.handlePreviewRules)
+			r.Put("/rules/{layer}", s.handleSaveRules)
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)
