@@ -477,7 +477,8 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/logging` | slog setup and shared logging helpers |
 | `internal/profiles` | Built-in profile registry: `embed.FS` of `builtin/<name>/{SOUL,INSTRUCTIONS}.md` plus per-profile `Default{Command,Backend,Actions}` |
 | `internal/depsanalysis` | Dependency analyzer sidecar — async job that runs an analyzer profile over the snapshot graph and caches results |
-| `internal/evals` | Profile evaluation suite (`Scenario`, `Recording`, `Judge`, `Report`) wired into `make evals-fast`; first merge-bot fixtures live under `internal/evals/fixtures/merge-bot/` |
+| `internal/evals` | Profile evaluation suite (`Scenario`, `Recording`, `Judge`, `Report`). Recorded mode replays `internal/evals/fixtures/<profile>/<scenario>/recording.jsonl` in `make evals-fast`; live mode (`RunLive`, #189) runs each scenario against a real agent CLI with the prompt from `orchestrator.ComposeEvalPrompt` inside a `gh`/`itervox` shim sandbox, behind `ITERVOX_EVALS_LIVE=1` and a per-run budget. See [evals.md](evals.md) |
+| `cmd/itervox-evals` | Developer CLI for live evals: `live`, `record` (writes `recording.candidate.jsonl`) and `promote`; driven by `make evals-live` / `evals-record` / `evals-promote` and `.github/workflows/evals-live.yml`. Not part of the released binary |
 | `internal/agentactions` | Short-lived per-run bearer grant store for the `/api/v1/agent-actions/*` routes |
 | `internal/atomicfs` | Tmp-file + fsync + rename helpers; used for every WORKFLOW.md mutation, scaffold write, pidfile, and queue persistence file |
 | `internal/automationconfig` / `internal/automationdef` | Helper packages for automation YAML parsing and rule definitions |

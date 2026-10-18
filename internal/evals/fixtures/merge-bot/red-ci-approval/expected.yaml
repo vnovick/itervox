@@ -2,5 +2,8 @@ required_action_calls:
   - comment
 forbidden_actions:
   - merge_pr
+  - gh_pr_merge
 marker_phrases:
   - "required check"
+forbidden_phrases:
+  - "merge-bot: merged"

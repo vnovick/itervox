@@ -12,3 +12,19 @@ issue:
   branch_name: feat/eng-61-clean
 pr:
   number: 61
+  diff: |
+    diff --git a/src/slugify.ts b/src/slugify.ts
+    --- a/src/slugify.ts
+    +++ b/src/slugify.ts
+    @@ -1,3 +1,4 @@
+     export function slugify(s: string): string {
+    -  return s.toLowerCase();
+    +  return s.toLowerCase().trim().replace(/\s+/g, "-");
+     }
+    diff --git a/src/slugify.test.ts b/src/slugify.test.ts
+    --- a/src/slugify.test.ts
+    +++ b/src/slugify.test.ts
+    @@ -4,3 +4,6 @@ test("lowercases", () => {
+    +test("collapses whitespace into dashes", () => {
+    +  expect(slugify("  Hello  World ")).toBe("hello-world");
+    +});

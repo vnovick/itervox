@@ -1,0 +1,125 @@
+name: Evals (live)
+
+# #189: run the merge-bot / reviewer evals against a REAL agent CLI with the
+# profiles' current SOUL.md / INSTRUCTIONS.md and resolved rules, then judge
+# the transcripts with the recorded-mode judges. It spends tokens, so it never
+# runs on push or pull_request — only on demand (and nightly if the schedule
+# below is uncommented). Recorded mode (`make evals-fast`) stays the per-PR
+# gate inside `make verify`.
+#
+# Secrets: ANTHROPIC_API_KEY (backend claude) or OPENAI_API_KEY (backend codex).
+# mode=record uploads recording.candidate.jsonl files as an artifact for a
+# human to review and promote locally (`make evals-promote`); the job never
+# commits.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "live (judge only) or record (also produce candidates)"
+        type: choice
+        options: [live, record]
+        default: live
+      backend:
+        description: "Agent backend"
+        type: choice
+        options: [claude, codex]
+        default: claude
+      profile:
+        description: "Only this profile's scenarios (empty = all)"
+        default: ""
+      scenario:
+        description: "Only the scenario with this name (empty = all)"
+        default: ""
+      max_cost_usd:
+        description: "Suite cost cap in USD"
+        default: "3"
+      max_tokens:
+        description: "Per-scenario token cap"
+        default: "400000"
+      timeout:
+        description: "Per-scenario wall-clock limit"
+        default: "5m"
+      cli_version:
+        description: "npm version of the backend CLI to install"
+        default: "latest"
+  # Nightly is off by default: it spends tokens every night. Uncomment to
+  # enable once the suite is stable and the budget is agreed.
+  # schedule:
+  #   - cron: "41 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-live
+  cancel-in-progress: false
+
+jobs:
+  evals-live:
+    name: Live evals (${{ inputs.backend || 'claude' }}, ${{ inputs.mode || 'live' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ITERVOX_EVALS_LIVE: "1"
+      EVALS_BACKEND: ${{ inputs.backend || 'claude' }}
+      EVALS_PROFILE: ${{ inputs.profile }}
+      EVALS_SCENARIO: ${{ inputs.scenario }}
+      EVALS_MAX_COST_USD: ${{ inputs.max_cost_usd || '3' }}
+      EVALS_MAX_TOKENS: ${{ inputs.max_tokens || '400000' }}
+      EVALS_TIMEOUT: ${{ inputs.timeout || '5m' }}
+      EVALS_MODE: ${{ inputs.mode || 'live' }}
+      CLI_VERSION: ${{ inputs.cli_version || 'latest' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install the backend CLI
+        run: |
+          if [ "$EVALS_BACKEND" = codex ]; then
+            npm install -g "@openai/codex@${CLI_VERSION}"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLI_VERSION}"
+          fi
+
+      - name: Run the live suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ "$EVALS_MODE" = record ]; then
+            make evals-record
+          else
+            make evals-live EVALS_OUT="$RUNNER_TEMP/evals-out"
+          fi
+
+      - name: Collect transcripts
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/evals-artifact"
+          if [ -d "$RUNNER_TEMP/evals-out" ]; then cp -R "$RUNNER_TEMP/evals-out/." "$RUNNER_TEMP/evals-artifact/"; fi
+          find internal/evals/fixtures -name recording.candidate.jsonl | while read -r f; do
+            dest="$RUNNER_TEMP/evals-artifact/candidates/${f#internal/evals/fixtures/}"
+            mkdir -p "$(dirname "$dest")"
+            cp "$f" "$dest"
+          done
+
+      - name: Upload transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-live-${{ github.run_id }}
+          path: ${{ runner.temp }}/evals-artifact
+          if-no-files-found: ignore
+          retention-days: 14

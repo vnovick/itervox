@@ -39,7 +39,7 @@ func TestMergeBotEvalsRecordedMode_AllScenariosPass(t *testing.T) {
 // "/ai-approved" marker (plus the human-readable approval comment) on the
 // approve path, and to comment-numbered-failures + move_state on the reject
 // path — never merging in either. Recordings are hand-authored contracts
-// pending live-recording mode; see fixtures/README.md.
+// until re-recorded with live mode (make evals-record); see fixtures/README.md.
 func TestReviewerEvalsRecordedMode_AllScenariosPass(t *testing.T) {
 	scenarios, err := LoadScenarios("fixtures", "reviewer")
 	if err != nil {
