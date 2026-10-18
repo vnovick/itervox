@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/vnovick/itervox/internal/agent"
 )
 
 // RunPhase is where a run is in its lifecycle (#125):
@@ -39,6 +41,10 @@ type runHandle struct {
 	// carries it, so the event loop settles a run's final usage even when
 	// the turn failed or its last progress update was dropped.
 	usage atomic.Pointer[runUsage]
+	// steer carries operator messages from the event loop to the worker
+	// (#178). The loop only sends (non-blocking); the worker, or its runner
+	// during a live turn, receives.
+	steer chan agent.SteerMessage
 }
 
 // runUsage is a run's cumulative usage at the end of its latest turn (#136).
@@ -112,7 +118,7 @@ func (r RunRecord) IsReviewer() bool { return r.Kind == "reviewer" }
 // issue's latest run, and returns the worker context that carries it. Event
 // loop only.
 func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEntry) context.Context {
-	h := &runHandle{id: generateRunID(), kind: entry.Kind}
+	h := &runHandle{id: generateRunID(), kind: entry.Kind, steer: make(chan agent.SteerMessage, steerInboxSize)}
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}

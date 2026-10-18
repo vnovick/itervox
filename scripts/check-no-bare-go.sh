@@ -35,6 +35,7 @@ internal/orchestrator/dependency_refresh.go|go o.runDependencyRefresh(|1|runDepe
 internal/depsanalysis/job.go|go m.execute(|1|execute recovers the analyzer run and records the job's terminal state
 internal/logbuffer/diskwriter.go|go b.runWriter()|1|per-Buffer disk writer (M0-close fix-F): runWriter defers recoverWriter, which logs the panic with its stack, closes the writer and fails every queued/in-flight op so no caller waits forever; logbuffer must not import orchestrator
 internal/agent/claude.go|go func() {|1|readLines stdout scanner: stdlib-only reads, no callbacks; file holds staged CORE-001 work
+internal/agent/steer.go|go func() {|1|live-steering stdin writer (#178): writes stream-json lines into the pipe of the claude turn RunTurn started; recovers its own panic (logged, stdin closed) and is joined by RunTurn after cmd.Wait, which closes the write end and so unblocks it
 internal/agent/ssh.go|go func() {|1|remoteStdin payload writer (CORE-155): one io.WriteString into the ssh stdin pipe, no callbacks; joined by the caller after cmd.Wait, which closes that pipe and so unblocks it
 internal/agent/testdata/fakesshd/main.go|go func() {|2|test-only fake sshd (built by internal/agent TestMain, never linked into itervox): the stdin relay and the stdout/stderr relays, each one io.Copy between pipes; the process exits when the remote command is done
 internal/statusui/statusui.go|go func() {|2|bubbletea Program.Run catches panics and restores the terminal; the ctx->Quit forwarder has no failure mode; statusui must not import orchestrator

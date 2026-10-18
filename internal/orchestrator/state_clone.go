@@ -74,6 +74,9 @@ func (s State) Clone() State {
 	c.RecentFailures = cloneSlice(s.RecentFailures)
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)
 	c.FailureAcks = maps.Clone(s.FailureAcks)
+	c.SessionMessages = copySessionMessages(s.SessionMessages)
+	c.ExternalSessions = cloneSlice(s.ExternalSessions)
+	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
 	return c
 }
 
@@ -131,6 +134,19 @@ func copySwitchHistory(m map[string][]time.Time) map[string][]time.Time {
 		return nil
 	}
 	cp := make(map[string][]time.Time, len(m))
+	for k, v := range m {
+		cp[k] = cloneSlice(v)
+	}
+	return cp
+}
+
+// copySessionMessages deep-copies the per-issue operator messages (#178):
+// the slices are updated in place by applySessionDelivery.
+func copySessionMessages(m map[string][]SessionMessage) map[string][]SessionMessage {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string][]SessionMessage, len(m))
 	for k, v := range m {
 		cp[k] = cloneSlice(v)
 	}

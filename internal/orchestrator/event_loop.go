@@ -36,6 +36,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state.FailureAcks = o.seedFailureAcks
 	o.seedFailureAcks = nil
 	pruneFailureAcks(&state)
+	// #178: itervox's tmux sessions survive a WORKFLOW.md reload too.
+	seedTmuxState(&state, o.seedTmux)
+	o.seedTmux = nil
 	state = o.loadPausedFromDisk(state)
 	state = o.loadPauseReasonsFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
@@ -49,6 +52,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
 	o.startPersistence()
+	o.startExternalSessionDiscovery(ctx) // #178 step 3
 	tick := time.NewTimer(0)
 	defer tick.Stop()
 
@@ -133,6 +137,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
+	o.extSessionsWg.Wait()
 	return loopErr
 }
 
@@ -1947,9 +1952,26 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventClearBackendBreaker:
 		o.applyClearBackendBreaker(&state, ev.Identifier)
 
+	case EventSessionMessage: // #178
+		o.applySessionMessage(&state, ev)
+
+	case EventExternalSessionsDiscovered: // #178 step 3
+		if ev.ExternalScan != nil {
+			applyTmuxPanes(&state, *ev.ExternalScan)
+			applyExternalSessions(&state, ev.ExternalScan.Sessions)
+		}
+
+	case EventTmuxSessionReserve, EventTmuxSessionStarted, EventTmuxSessionEnded: // #178 tmux
+		applyTmuxSessionEvent(&state, ev.Type, ev.Tmux, time.Now())
+
+	case EventSessionMessageDelivered: // #178
+		applySessionDelivery(&state, ev.SessionDelivery, time.Now())
+
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
+		// #178: whatever this run did not deliver, nothing will.
+		settleSessionMessagesOnExit(&state, exitIdentifier(liveEntry, ev), ev.RunID)
 		if current, superseded := supersededRun(state, liveEntry, ev); superseded {
 			// #125: the exit of a run that is no longer the issue's current
 			// one (reconcile or stall detection already stopped it, and the

@@ -599,6 +599,15 @@ type AgentConfig struct {
 	// operators answer in Linear/GitHub. Automation replies (agent-actions
 	// provide-input) are unaffected. Default: false.
 	InlineInput bool
+	// LiveSteering (#178) lets an operator message from the Sessions panel
+	// reach a running local Claude turn mid-turn: the turn runs with
+	// `--input-format stream-json` and the message is written into its
+	// stdin. Off (default), and always for Codex and SSH workers, a message
+	// waits for the current turn to end and is delivered as the prompt of
+	// the next turn, which resumes the same session. Opt-in because a
+	// wrapper script that reads its stdin to EOF before starting never sees
+	// EOF in streaming mode. Read-only after startup.
+	LiveSteering bool
 	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
 	// automation can swap an issue to a different profile / backend within
 	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
@@ -793,14 +802,17 @@ type Config struct {
 	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	Dependencies DependenciesConfig
+	// Sessions configures the Sessions panel's discovery of agent sessions
+	// started by hand (#178). Read-only after startup.
+	Sessions       SessionsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
 }
@@ -981,6 +993,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.DepsAnalyzerChunkSize = positiveIntField(agent, "deps_analyzer_chunk_size", DefaultDepsAnalyzerChunkSize)
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
+	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")
 	cfg.Agent.Budget = BudgetConfig{
@@ -1078,6 +1091,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
 	}
+
+	// Sessions (#178)
+	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

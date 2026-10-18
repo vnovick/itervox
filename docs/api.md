@@ -19,6 +19,8 @@ loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
 one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
+- If `ITERVOX_SUPERVISOR_TOKEN` is set, that value is required instead,
+  even with `server.allow_unauthenticated: true` (see below).
 - If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
   `false` (the default), Itervox auto-generates an ephemeral token at
   startup and prints the tokened dashboard URL to stderr once — only when
@@ -52,6 +54,32 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
   http://localhost:8090/api/v1/state
 ```
 
+### Supervisor token (`ITERVOX_SUPERVISOR_TOKEN`)
+
+A supervisor that starts the daemon — the macOS menu-bar app, a process
+manager — passes its own token in `ITERVOX_SUPERVISOR_TOKEN`. The daemon
+requires it as the bearer token exactly as it would a pinned
+`ITERVOX_API_TOKEN`, with these differences:
+
+- It wins over `ITERVOX_API_TOKEN` from the environment or `.itervox/.env`
+  (a warning names the replacement, never a value), and over
+  `server.allow_unauthenticated: true`: auth stays on.
+- It is never printed: no tokenised dashboard URL on stderr, even on a
+  terminal or with `ITERVOX_PRINT_TOKEN=1`; the terminal UI's dashboard URL
+  carries no token; nothing is written to `<logs-dir>/api-token` (a stale
+  file from an earlier generated-token start is removed). The value is also
+  registered for exact-match log redaction, and it never reaches
+  `HEARTBEAT.md`, `dashboard_url` or the daemon registry. The startup log
+  line reads `dashboard URL (token withheld from logs)` with
+  `token_source=ITERVOX_SUPERVISOR_TOKEN`.
+- The daemon moves it into `ITERVOX_API_TOKEN` (which hooks and agents'
+  `itervox action` calls inherit) and removes `ITERVOX_SUPERVISOR_TOKEN`
+  from its environment.
+- It must be 16–512 printable ASCII characters without spaces (surrounding
+  whitespace is trimmed); anything else stops the process with exit code 2
+  and an error that does not quote the value. `openssl rand -hex 32` is a
+  good source.
+
 ### Agent-action bearer auth
 
 The daemon-backed agent-action routes use a **separate** bearer token model.
@@ -67,6 +95,65 @@ API token. These routes are:
 
 Profiles opt into these capabilities with `allowed_actions` and
 `create_issue_state` in `WORKFLOW.md`.
+
+## Supervisor contract
+
+What a supervisor (the macOS menu-bar app in `desktop/`, #128) relies on to
+find, start and talk to daemons. Stable within `schema_version` 1: fields may be added, but a
+rename, removal or change of meaning bumps the version.
+
+**Start.** Run the `itervox` binary with `--workflow <path>` and
+`ITERVOX_SUPERVISOR_TOKEN=<token>` in its environment (see above). From
+Finder or launchd the inherited PATH is minimal; the daemon resolves PATH
+from the user's login shell itself (see
+[Login-shell PATH](https://itervox.dev/cli/#login-shell-path)), so the
+supervisor does not need to.
+
+**Discover.** `itervox status --all --json` prints a JSON array (`[]` when
+none) with one object per running daemon on the host, sorted by `workflow`,
+then `pid`; `itervox status --json [--workflow PATH]` only the daemons of
+that project. Exit code 0 unless the output cannot be written. Every object
+has every key:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `schema_version` | int | `1` |
+| `pid` | int | Daemon process id |
+| `workflow` | string | Absolute path of its `WORKFLOW.md` |
+| `project_dir` | string | Directory holding `WORKFLOW.md` (and `.itervox/`) |
+| `url` | string | Dashboard/API base URL, e.g. `http://127.0.0.1:8090/` (same as `.itervox/dashboard_url`) |
+| `host`, `port` | string, int | The bound address split out of `url` |
+| `version`, `commit` | string | Build of the daemon binary (`dev` / `none` for a local build) |
+| `started_at` | string | RFC 3339 UTC process start time |
+| `token_required` | bool | Whether `/api/v1/*` needs `Authorization: Bearer` |
+| `token_source` | string | `supervisor` (`ITERVOX_SUPERVISOR_TOKEN`), `env` (`ITERVOX_API_TOKEN`), `generated` (read it from `token_file`), `none` (`server.allow_unauthenticated: true`), `unknown` |
+| `token_file` | string | `<logs-dir>/api-token` for a `generated` token, else `""` |
+| `logs_dir` | string | The daemon's logs directory |
+| `heartbeat` | string | Path of its `.itervox/HEARTBEAT.md` |
+| `executable` | string | Path of the daemon binary |
+| `path_source` | string | `login_shell` or `inherited` (see Login-shell PATH) |
+| `source` | string | `registry`, or `process_scan` for a daemon started by a binary older than the registry |
+
+A token is never part of the output. Unknown values are `""` (or `0`).
+
+**Registry.** Each daemon writes `~/.itervox/daemons/<pid>.json` (directory
+`0700`, file `0600`, the same object without `source`) once its socket is
+bound, rewrites it on every `WORKFLOW.md` reload, and removes it on shutdown
+together with `daemon.pid`, `dashboard_url` and `HEARTBEAT.md`.
+`status --json` lists a record only while its pid is alive, the project's
+`.itervox/daemon.pid` still names it and — for a pid file written with the
+pid lock (every daemon since v0.2.1) — that lock is held, so a pid recycled
+by an unrelated process after a `SIGKILL` is not mistaken for the daemon.
+Records that fail the check are deleted (a daemon killed with `SIGKILL`
+cannot remove its own). All path fields are absolute; a relative
+`--logs-dir` is resolved against the daemon's working directory. `itervox demo` writes
+no record. Daemons started by an older binary are found by process scan:
+an `itervox` process whose working directory holds a `.itervox/daemon.pid`
+naming it (and, for a lock-marked pid file, whose lock is held); for those `version`, `commit` and `started_at` are `""`,
+`token_source` is `unknown` and `token_required` is `true`.
+
+**Talk.** `GET {url}api/v1/health` needs no token; everything else under
+`{url}api/v1/` takes `Authorization: Bearer <token>`.
 
 ## Error format
 
@@ -485,6 +572,228 @@ outbox when it is enabled. To answer an input-required agent, use
 oversize body returns `400 bad_request` with `field: "body"`.
 
 ---
+
+## Sessions
+
+The Sessions panel (#178) — the dashboard's `/sessions` page and the Mac app's
+Sessions window. A session is an agent CLI session, identified by the CLI's
+own session ID; itervox writes only to sessions it started. Sessions started
+by hand on the daemon's host are listed read-only with `owner: "external"`.
+
+### `GET /api/v1/sessions`
+
+The daemon's agent sessions: every running itervox run, every session
+waiting for (or resuming from) a human reply, and the recent sessions started
+by hand on the daemon's host. Sessions waiting for input come first, then
+resuming ones, then running ones, oldest first within each; sessions started
+by hand come last, most recently written first.
+
+```json
+{
+  "generatedAt": "2026-10-15T09:00:00Z",
+  "sessions": [
+    {
+      "id": "6f1c…",
+      "owner": "itervox",
+      "identifier": "ENG-2",
+      "backend": "claude",
+      "status": "input_required",
+      "queuedAt": "2026-10-15T08:59:00Z",
+      "inputContext": "Which database should I use?"
+    },
+    {
+      "id": "0b9e…",
+      "runId": "run-2a78…",
+      "owner": "itervox",
+      "identifier": "ENG-1",
+      "title": "Fix the login redirect",
+      "profile": "coder",
+      "backend": "claude",
+      "workerHost": "gpu-1",
+      "status": "running",
+      "startedAt": "2026-10-15T08:40:00Z",
+      "turnCount": 2,
+      "lastEvent": "Running the test suite",
+      "steering": "resume",
+      "messages": [
+        {"id": "msg-…", "text": "Also update the docs.", "status": "delivered",
+         "delivery": "resume", "queuedAt": "…", "deliveredAt": "…"}
+      ]
+    },
+    {
+      "id": "c41d…",
+      "owner": "external",
+      "identifier": "",
+      "title": "Add a health check",
+      "backend": "claude",
+      "status": "running",
+      "cwd": "/work/app",
+      "startedAt": "2026-10-15T07:10:00Z",
+      "updatedAt": "2026-10-15T08:58:00Z",
+      "inUseReason": "a claude process (4242) is running in the session's directory; it may be this session"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | The agent CLI's session ID (Claude Code session, Codex thread). Empty in the first seconds of a run, until the CLI reports it; `runId` addresses the session meanwhile. |
+| `runId` | Itervox's run ID (running sessions only). |
+| `owner` | `itervox` for this daemon's runs — only those take replies and messages; `external` for a session started by hand (read-only, no `identifier`). |
+| `status` | `running`, `input_required` or `pending_input_resume`; for a session started by hand, `running` while its CLI may still be running (with `inUseReason`) and `exited` once it is not. |
+| `cwd` | The directory of a session started by hand. |
+| `updatedAt` | A session started by hand: its transcript's last write. |
+| `inUseReason` | A session started by hand with `status: "running"`: why it counts as still running. |
+| `kind` | `tmux` for a session itervox started in tmux (New session); `reviewer` for a reviewer run. |
+| `tmuxPane` | The tmux pane the session runs in, `{"id": "%3", "label": "work:0.0"}`; `null` when none. |
+| `controllable` | The panel may show its screen and type into it ([Sessions in tmux](#sessions-in-tmux)): a session itervox started in tmux, or a hand-started one in a matched pane with `sessions.tmux_control`, while tmux is installed. |
+| `attachCommand` | A session itervox started in tmux: the command that attaches a terminal to it. |
+| `startedAt` / `queuedAt` | When the run started / when it started waiting for input. |
+| `inputContext` | The agent's question while it waits. |
+| `steering` | Running sessions: `live` (a message is written into the running turn — local Claude with `agent.live_steering`) or `resume` (delivered as the prompt of the next turn, which resumes the session). |
+| `messages` | Operator messages sent to the issue's sessions, newest last (at most 20): `status` `queued`, `delivered` (with `delivery` `live` or `resume`) or `dropped` (with `reason`). |
+
+The response also carries `tmux` — `{"available": true, "version": "tmux 3.4",
+"installHint": "brew install tmux", "control": false}`, re-detected every
+discovery pass (`control` is `sessions.tmux_control`) — and `newSession` —
+`{"projectRoot": "…", "folders": ["…"], "profiles": ["…"], "max": 8}`, what
+New session offers (the project directory, then itervox's workspaces).
+
+`503 not_configured` when the daemon was built without the sessions client.
+Messages are runtime state: they do not survive a daemon restart. Which sessions started by hand are listed is set by
+[`sessions:`](configuration.md#sessions) (default: the last 24 hours, inside
+the project directory only).
+
+### `POST /api/v1/sessions/{id}/message`
+
+Queues an operator message for a running session. `{id}` is the session's
+`id`, or its `runId` before the CLI reported an ID. For a controllable
+session in tmux the text is pasted into its pane instead, then Enter is
+pressed unless `submit` is `false` (`{"text": "…", "submit": false}`;
+`message` and `text` are interchangeable), and the answer is `202` with
+`"status": "delivered", "delivery": "tmux"`.
+
+```json
+{"message": "Also update the docs."}
+```
+
+`202 {"message":{"id":"msg-…","text":"…","status":"queued","queuedAt":"…"}}` —
+the message is queued; its `status` in `GET /api/v1/sessions` moves to
+`delivered` or `dropped`. A session waiting for input takes a reply through
+`POST /issues/{identifier}/provide-input` instead.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Missing, empty or over-10 KiB `message` (`field: "message"`) |
+| `403` | `not_owned` | Itervox did not start that session and it is not controllable through tmux |
+| `404` | `not_found` | No running session with that ID |
+| `409` | `input_required` | The session is waiting for input: use `provide-input` |
+| `409` | `tmux_unavailable` / `pane_gone` | A tmux session: see [Sessions in tmux](#sessions-in-tmux) |
+| `503` | `orchestrator_busy` | Event queue full (`Retry-After: 1`) |
+
+### `GET /api/v1/sessions/{id}/transcript`
+
+A page of the transcript of a session started by hand, read from the CLI's
+own transcript file. Query: `limit` (1–500,
+default 100 entries) and `before` (the cursor from the previous page; omitted
+= the newest entries). Entries are oldest first; each text is redacted with
+the daemon's log redaction and abbreviated (`truncated: true`). Tool calls
+appear by name (`kind: "tool"`), tool results abbreviated
+(`kind: "tool_result"`); thinking, sub-agent sidechains and the CLI's own
+context messages are left out.
+
+```json
+{
+  "id": "c41d…",
+  "backend": "claude",
+  "entries": [
+    {"role": "user", "kind": "text", "text": "Add a health check", "at": "2026-10-15T07:10:02Z"},
+    {"role": "assistant", "kind": "tool", "text": "Edit", "at": "…"},
+    {"role": "assistant", "kind": "text", "text": "Done: GET /healthz returns 200.", "at": "…"}
+  ],
+  "before": 73400320,
+  "hasMore": true,
+  "size": 74066206
+}
+```
+
+`before` is present only when `hasMore`. `404 not_found` for a session that is
+not listed (only a listed session's transcript can be read — the path never
+comes from the client); `400 bad_request` for a bad `before` or `limit`.
+
+### Sessions in tmux
+
+Sessions running in a tmux pane (#178) — hand-started ones the daemon matched
+to a pane, and the ones it started with `POST /api/v1/sessions` — can be read
+and typed into through tmux. A hand-started session is controllable only with
+[`sessions.tmux_control: true`](configuration.md#sessions); every write needs `tmux` on the
+daemon's `PATH` and re-checks, at that moment, that the pane still exists and
+still runs the session's process. Writes are audited (`sessions: tmux send`
+with session, pane, kind and size — never the text) and counted in
+`itervox_tmux_sends_total{kind}`.
+
+Errors common to the tmux endpoints:
+
+| Status | Code | When |
+|---|---|---|
+| `403` | `not_controllable` | Not running in a pane itervox may control (keys, screen) |
+| `409` | `tmux_unavailable` | `tmux` is not installed on the daemon's host; `message` carries the install command |
+| `409` | `pane_gone` | The pane is gone, or no longer runs this session |
+
+#### `GET /api/v1/sessions/{id}/screen`
+
+The pane's text: `capture-pane` of the last `lines` (1–2000, default 200)
+lines of screen and scrollback, plain text without escape sequences.
+
+```json
+{"id": "itervox-3f9a1c", "pane": "%7", "label": "itervox-3f9a1c:0.0", "text": "╭─ Claude Code …", "lines": 200, "capturedAt": "2026-10-15T09:00:01Z"}
+```
+
+`404 not_found` for an unknown session; `400 bad_request` for a bad `lines`.
+
+#### `POST /api/v1/sessions/{id}/keys`
+
+Presses one key: `{"key": "Enter"}`. Only `Enter`, `Escape`, `Up`, `Down`,
+`Left`, `Right`, `Tab`, `C-c` and the digits `1`–`9` are accepted
+(`400 key_not_allowed` otherwise). `202 {"ok": true, "key": "Enter"}`.
+
+#### `POST /api/v1/sessions`
+
+Starts an interactive agent CLI in a new tmux session `itervox-<id>` (New
+session):
+
+```json
+{"backend": "claude", "cwd": "/work/app", "profile": "coder", "prompt": "Fix the flaky login test."}
+```
+
+`backend` is `claude` or `codex`. `cwd` (default: the `WORKFLOW.md`
+directory) must be the project directory, a directory inside it, or one of
+itervox's workspaces. The CLI is the profile's command (else `agent.command`)
+when its binary is that backend, else the backend's binary, run interactively
+(no `-p`) with the profile's `permission_mode` — by default the confining one:
+`--permission-mode acceptEdits` (Claude), `--sandbox workspace-write` (Codex) —
+and `prompt` as its first prompt. The session is owned by itervox (`owner:
+"itervox"`, `kind: "tmux"`), controllable whatever `sessions.tmux_control`
+says, and does not count toward `max_concurrent_agents`.
+
+`201 {"session":{…,"kind":"tmux","controllable":true,"attachCommand":"tmux attach -t itervox-3f9a1c"}}`.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Bad `backend`, a `cwd` outside the project and workspaces (`field: "cwd"`), an unknown `profile`, the CLI not on the daemon's `PATH` (`field: "backend"`), an over-10 KiB `prompt` |
+| `409` | `tmux_unavailable` | `tmux` is not installed |
+| `429` | `too_many_sessions` | 8 tmux sessions itervox started are running |
+
+These sessions are runtime state carried across `WORKFLOW.md` reloads; after
+a daemon restart they keep running in tmux but are listed as sessions started
+by hand.
+
+#### `DELETE /api/v1/sessions/{id}`
+
+Kills a tmux session itervox started (`tmux kill-session`). `200 {"ok": true}`;
+`403 not_owned` for any other session; `404 not_found` for an unknown id;
+`409 tmux_unavailable` without tmux.
 
 ## Logs
 

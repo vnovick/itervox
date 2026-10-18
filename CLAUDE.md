@@ -187,6 +187,43 @@ only the event loop mutates them.
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
   again). Event-loop state, session-scoped, not persisted.
+- `SessionMessages` (#178) holds the operator messages sent from the Sessions
+  panel, per issue identifier (bounded, 20). `SendSessionMessage` (HTTP
+  goroutine) only classifies the target against `Snapshot()` and sends
+  `EventSessionMessage`; the loop records the message and hands it to the run
+  through `runHandle.steer` (non-blocking). The worker reports deliveries with
+  `EventSessionMessageDelivered` — live (written into a local Claude turn's
+  stream-json stdin, `agent.live_steering`) or on resume (the next turn's
+  prompt, `--resume` / `exec resume`) — and the run's exit marks whatever it
+  did not deliver `dropped`. Session-scoped, not persisted. Invariant:
+  itervox writes only to agent processes it started (no TTY injection, no
+  Accessibility/AppleScript automation) — with ONE narrow exception,
+  `internal/tmuxctl`, which types into a CLI in a tmux pane through tmux's
+  paste buffer and key events (hand-started sessions only with
+  `sessions.tmux_control`, plus the tmux sessions itervox started). Enforced
+  by `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`:
+  no other package may run `tmux` or name its write commands, and tmuxctl
+  runs nothing but a literal `tmux`.
+- `ExternalSessions` (#178 step 3) is event-loop state.
+  Discovery of sessions started by hand (`internal/extsessions`, read-only:
+  transcript files, `/proc` or `ps`/`lsof`) runs on its own goroutine
+  (`startExternalSessionDiscovery`, joined via `extSessionsWg`) and only sends
+  `EventExternalSessionsDiscovered`; the loop drops every session itervox
+  owns. These sessions are read-only: status `running` (with the liveness
+  reason) or `exited`, transcript served, messages refused (`not_owned`) —
+  unless matched to a tmux pane (by process ancestry + cwd, in the discovery
+  pass, off the loop) with `sessions.tmux_control` on. Session-scoped, not
+  persisted.
+- `TmuxSessions` (#178 New session) are the tmux sessions itervox started,
+  event-loop state: HTTP goroutines run tmux (cmd/itervox/sessions_tmux.go)
+  and only send `EventTmuxSessionReserve` (cap 8, reply channel),
+  `EventTmuxSessionStarted` and `EventTmuxSessionEnded`; each discovery pass
+  (`EventExternalSessionsDiscovered`, carrying `ExternalScan` with the pane
+  list) attaches panes and drops sessions whose tmux session is gone. Not
+  counted toward `max_concurrent_agents`. Carried across `WORKFLOW.md`
+  reloads by cmd/itervox (`SeedTmuxSessions`), not persisted. `TestExternalSessionInspectionIsReadOnly`
+  keeps `internal/extsessions` free of writes, signals and commands other
+  than `ps`/`lsof`.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -310,6 +347,14 @@ domain ─────┬── tracker (interface + adapters: linear, github, l
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
 
+extsessions (stdlib + logging — discovery, transcripts and read-only
+            liveness of agent sessions started by hand, #178; imported by
+            orchestrator and cmd/itervox)
+
+tmuxctl (stdlib only — the tmux CLI: list/capture panes, paste text, an
+         allowlist of keys, new/kill session; the ONLY package that writes to
+         processes itervox did not start; imported by cmd/itervox)
+
 procgroup (stdlib only — own process group + group SIGKILL re-sent until
            ESRCH; the one shared kill path for agent runners and hooks)
 
@@ -330,7 +375,7 @@ agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, logbuffer, logging,
+              atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
               metrics, outbox, prdetector, procgroup, prompt, tracker,
               workspace)
 
@@ -375,6 +420,7 @@ cmd/itervox (wires everything)
 | `web/src/pages/Dashboard/components/AutomationQueueList.tsx` | Durable automation queue list and local search surface |
 | `web/src/pages/Dashboard/components/AutomationQueueDetailPanel.tsx` | Queue entry detail panel for trigger/profile/permission/dependency context |
 | `web/src/pages/Dashboard/components/DepsGraph.tsx` | Read-only React Flow dependency graph over blocker -> blocked issue rows |
+| `web/src/pages/Sessions/index.tsx` | Sessions panel (#178): one tab per agent session (input-required first, sessions started by hand last and read-only), transcript from the issue log stream or the CLI transcript (`SessionTranscript.tsx`), composer (provide-input reply or `POST /api/v1/sessions/{id}/message`); tmux: live screen + keys (`TmuxSessionView.tsx`), New session (`NewSessionForm.tsx`), tmux-missing banner/composer warning (`TmuxNotice.tsx`) |
 | `web/src/components/itervox/IssueStatusChanges.tsx` | Per-issue status-change timeline rendered inside issue detail |
 | `web/src/components/itervox/QueueSearchInput.tsx` | Shared local search input for queue-like dashboard panels |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |

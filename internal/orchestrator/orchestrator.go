@@ -182,6 +182,7 @@ type Orchestrator struct {
 	failureEventsDropped atomic.Int64
 	seedFailures         []FailureRecord
 	seedFailureAcks      map[string]time.Time // M6-close V3 (CORE-175 acks across reload)
+	seedTmux             []TmuxSession        // #178: SeedTmuxSessions, applied at the top of Run
 
 	// CORE-043: readiness signals, written only by the event loop and read
 	// lock-free by the /ready probe (see readiness.go).
@@ -371,6 +372,13 @@ type Orchestrator struct {
 	// depsRefreshWg tracks the in-flight dependency-refresh goroutine so Run
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup
+
+	// #178 step 3: discovery of sessions started by hand
+	// (sessions_external.go). Set before Run; the discovery goroutine is
+	// joined through extSessionsWg.
+	extSessions         ExternalSessionSource
+	extSessionsInterval time.Duration
+	extSessionsWg       sync.WaitGroup
 
 	// workersWg joins every runWorker goroutine before Run returns, bounded
 	// by workerJoinGrace (CORE-026, worker_join.go). Added on the event loop

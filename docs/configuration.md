@@ -90,6 +90,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |
 | `pr_footer` | bool | `false` | Append a one-line "Shipped with Itervox" footer to each PR an agent run opens on its own branch (not PRs merely linked from the issue), once per PR (hidden `<!-- itervox:shipped -->` marker; added with `gh pr edit` after a successful worker run). README badge: `[![Shipped with Itervox](https://img.shields.io/badge/shipped%20with-Itervox-6f42c1)](https://github.com/vnovick/itervox)` |
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
+| `live_steering` | bool | `false` | Lets a message typed in the [Sessions panel](https://itervox.dev/guides/sessions/) reach a running local Claude Code turn mid-turn: the turn runs with `--input-format stream-json`, the prompt is the first message on its stdin and an operator message is written as a further user message; stdin closes when the turn's result arrives. Off — and always for Codex and SSH workers — a message waits for the current turn to end and is delivered as the prompt of the next turn, which resumes the same session. Keep it off when `command` is a wrapper script that reads its stdin to the end before starting Claude. Read at startup. |
 | `rate_limit_error_patterns` | []string | `[]` | Custom case-insensitive substrings for detecting rate-limit errors, matched verbatim against the whole failure text (agent-reported failure and CLI stderr). How they combine with the built-in defaults is set by `rate_limit_error_patterns_mode`. Empty falls back to the built-in defaults: `rate_limit_exceeded`, `rate limit`, `http 429`, `status: 429`, `(429)`, `429 too many requests`, `insufficient_quota`, `quota exceeded for`, `usage quota`, `exceeded your current quota`, `too many requests`, `out of extra usage`, `reached the limit for your current claude`, `out of credits`, `resets at`, `you hit your spend cap`, `usage limit`, `session limit`, `weekly limit`, `spend limit`, `spend cap`, `credit balance is too low`, `credits required`, `temporarily limiting requests`, plus the clause rule "`you've hit your` followed by limit wording in the same clause" and a standalone `429` token. The standalone `429` counts only in the agent-reported failure, never in CLI stderr; a bare `quota` never counts. WORKFLOW.md only |
 | `rate_limit_error_patterns_mode` | string | `"replace"` | How a non-empty `rate_limit_error_patterns` combines with the built-in defaults: `replace` (default, the earlier behaviour) uses only your list, so a custom list silently turns every default off; `extend` checks your list **and** the defaults. An empty list means the defaults in either mode. Any other value fails config load. WORKFLOW.md only (CORE-100) |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue's profile/backend within `switch_window_hours`. `0` for unlimited. Also counts `backend_fallback` switches of implementer runs. Runtime-editable. The switch history, cooldowns and cap-comment dedupe survive a daemon restart (stored with the auto-switch overrides in the daemon's `auto_switched.json`) |
@@ -552,6 +553,31 @@ hooks:
     git clone git@github.com:org/repo.git .
   before_run: |
     git fetch origin && git reset --hard origin/main
+```
+
+---
+
+## `sessions`
+
+Which Claude Code and Codex sessions **started by hand** on the daemon's host
+the [Sessions panel](https://itervox.dev/guides/sessions/#sessions-started-by-hand)
+lists (read-only, with their transcript and whether their CLI is still
+running), and whether the panel may control sessions running in tmux. Read at
+startup.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `external` | bool | `true` | Discover hand-started sessions from `~/.claude/projects/**/<id>.jsonl` and `~/.codex/sessions/**/rollout-*.jsonl` (`$CLAUDE_CONFIG_DIR` / `$CODEX_HOME` respected). `false` lists only itervox's own sessions. |
+| `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
+| `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
+| `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
+
+```yaml
+sessions:
+  external_window_hours: 12
+  external_roots:
+    - ~/src/app-docs
 ```
 
 ---

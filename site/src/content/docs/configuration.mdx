@@ -365,6 +365,7 @@ Both are optional and off unless you add them.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
+| `live_steering` | bool | `false` | Lets a message typed in the [Sessions panel](/guides/sessions/) reach a running local Claude Code turn mid-turn: the turn runs with `--input-format stream-json`, the prompt is the first message on its stdin and an operator message is written as a further user message; stdin closes when the turn's result arrives. Off — and always for Codex and SSH workers — a message waits for the current turn to end and is delivered as the prompt of the next turn, which resumes the same session. Keep it off when `command` is a wrapper script that reads its stdin to the end before starting Claude. Read at startup. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run opens on its own branch (after a successful worker run, not automation runs; PRs merely linked from the issue are left alone), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for reviewer runs. Prefer `reviewer_profile`. The built-in default is read-only: it asks for a verdict, never a commit or push. |
@@ -981,6 +982,29 @@ hooks:
     tar -czf ../workspace-backup.tgz .
   timeout_ms: 120000
 ```
+
+---
+
+## sessions
+
+Which Claude Code and Codex sessions **started by hand** on the daemon's host the [Sessions panel](/guides/sessions/#sessions-started-by-hand) lists — read-only, with their transcript and whether their CLI is still running — and whether the panel may control sessions running in tmux. Read at startup.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `external` | bool | `true` | Discover hand-started sessions from `~/.claude/projects/**/<id>.jsonl` and `~/.codex/sessions/**/rollout-*.jsonl` (`$CLAUDE_CONFIG_DIR` / `$CODEX_HOME` respected). `false` lists only itervox's own sessions. |
+| `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
+| `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
+| `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
+
+```yaml
+sessions:
+  external_window_hours: 12
+  external_roots:
+    - ~/src/app-docs
+```
+
+A remote daemon lists the sessions on its own host. Transcripts are served only with the daemon's API token, like logs.
 
 ---
 

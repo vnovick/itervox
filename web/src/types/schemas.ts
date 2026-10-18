@@ -1198,3 +1198,117 @@ export type CapabilityStat = z.infer<typeof CapabilityStatSchema>;
 export type ProfileCost = z.infer<typeof ProfileCostSchema>;
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 export type AnalyticsSnapshotData = z.infer<typeof AnalyticsSnapshotSchema>;
+
+// ─── Sessions panel (#178) ────────────────────────────────────────────────────
+// GET /api/v1/sessions — internal/server/sessions.go SessionRow. A session
+// is an agent CLI session keyed by the CLI's own session id (`id`); until
+// the CLI reports one, `runId` addresses it.
+
+export const SessionMessageRowSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  status: z.enum(['queued', 'delivered', 'dropped']),
+  // "tmux": pasted into the session's tmux pane (#178 tmux control).
+  delivery: z.enum(['live', 'resume', 'tmux']).optional(),
+  reason: z.string().optional(),
+  queuedAt: z.string(),
+  deliveredAt: z.string().optional(),
+});
+
+export const SessionRowSchema = z.object({
+  id: z.string(),
+  runId: z.string().optional(),
+  // "itervox": this daemon started it and may write to it. "external":
+  // started by hand, read-only.
+  owner: z.string(),
+  identifier: z.string(),
+  title: z.string().optional(),
+  profile: z.string().optional(),
+  backend: z.string().optional(),
+  workerHost: z.string().optional(),
+  kind: z.string().optional(),
+  // "running" | "input_required" | "pending_input_resume"; "exited" for a
+  // hand-started session whose CLI has exited.
+  status: z.string(),
+  startedAt: z.string().optional(),
+  queuedAt: z.string().optional(),
+  turnCount: z.number().optional(),
+  lastEvent: z.string().optional(),
+  inputContext: z.string().optional(),
+  steering: z.enum(['live', 'resume']).optional(),
+  messages: z.array(SessionMessageRowSchema).optional(),
+  // #178 step 3 — hand-started sessions (no identifier).
+  cwd: z.string().optional(),
+  updatedAt: z.string().optional(),
+  // Why a hand-started session counts as still running.
+  inUseReason: z.string().optional(),
+  // #178 tmux — the pane the session runs in (null: none); whether the
+  // panel may show its screen and type into it; for a session itervox
+  // started in tmux ("New session", kind "tmux"), how to attach to it.
+  tmuxPane: z.object({ id: z.string(), label: z.string() }).nullable().optional(),
+  controllable: z.boolean().optional(),
+  attachCommand: z.string().optional(),
+});
+
+// Top-level "tmux" of GET /api/v1/sessions: re-detected every discovery
+// pass, so installing tmux lifts the warning without a restart.
+export const TmuxStatusSchema = z.object({
+  available: z.boolean(),
+  version: z.string().optional(),
+  installHint: z.string(),
+  // sessions.tmux_control: hand-started sessions in tmux may be controlled.
+  control: z.boolean(),
+});
+
+export const NewSessionOptionsSchema = z.object({
+  projectRoot: z.string(),
+  folders: z.array(z.string()),
+  profiles: z.array(z.string()),
+  max: z.number(),
+});
+
+export const SessionsResponseSchema = z.object({
+  generatedAt: z.string(),
+  sessions: z.array(SessionRowSchema),
+  // Absent from daemons before tmux control.
+  tmux: TmuxStatusSchema.optional(),
+  newSession: NewSessionOptionsSchema.optional(),
+});
+
+// GET /api/v1/sessions/{id}/screen — internal/server/sessions_tmux.go.
+export const SessionScreenSchema = z.object({
+  id: z.string(),
+  pane: z.string(),
+  label: z.string(),
+  text: z.string(),
+  lines: z.number(),
+  capturedAt: z.string(),
+});
+
+// GET /api/v1/sessions/{id}/transcript — internal/server/sessions_external.go.
+export const TranscriptEntrySchema = z.object({
+  role: z.string(), // "user" | "assistant"
+  kind: z.string(), // "text" | "tool" | "tool_result"
+  text: z.string(),
+  at: z.string().optional(),
+  truncated: z.boolean().optional(),
+});
+
+export const SessionTranscriptSchema = z.object({
+  id: z.string(),
+  backend: z.string().optional(),
+  entries: z.array(TranscriptEntrySchema),
+  // Cursor of the next older page; present only when hasMore.
+  before: z.number().optional(),
+  hasMore: z.boolean(),
+  size: z.number(),
+});
+
+export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
+export type SessionTranscript = z.infer<typeof SessionTranscriptSchema>;
+export type SessionMessageRow = z.infer<typeof SessionMessageRowSchema>;
+export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
+export type NewSessionOptions = z.infer<typeof NewSessionOptionsSchema>;
+export type SessionScreen = z.infer<typeof SessionScreenSchema>;
+export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
+export type SessionRow = z.infer<typeof SessionRowSchema>;

@@ -1,0 +1,37 @@
+[package]
+name = "itervox-desktop"
+version = "0.2.5"
+description = "Itervox menu-bar app: a thin Tauri shell over the itervox daemons"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[lib]
+# The library holds the testable logic; the binary is a two-line main.
+name = "itervox_desktop"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2.6"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Loopback-only HTTP to the daemons: no TLS stack needed.
+ureq = { version = "3", default-features = false, features = ["json"] }
+getrandom = "0.3"
+libc = "0.2"
+# macOS Keychain on macOS; the crate also builds (unused) elsewhere, where the
+# app falls back to an in-memory token store.
+keyring = "4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

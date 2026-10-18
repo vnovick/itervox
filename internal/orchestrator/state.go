@@ -7,6 +7,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/extsessions"
 )
 
 // EventType identifies the kind of OrchestratorEvent.
@@ -109,6 +110,15 @@ type OrchestratorEvent struct { //nolint:revive
 	// DiscardGen identifies the discard operation an EventDiscardComplete
 	// finishes (CORE-109); it must match the marker's Gen to clear it.
 	DiscardGen uint64
+	// SessionMessage is the operator message of an EventSessionMessage
+	// (#178); Identifier then holds the session key it was addressed to.
+	SessionMessage *SessionMessage
+	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
+	SessionDelivery *SessionDelivery
+	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
+	ExternalScan *ExternalScan
+	// Tmux is the payload of the tmux session events (#178).
+	Tmux *TmuxSessionEvent
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -744,6 +754,27 @@ type State struct {
 	// opaque ID) because that is the join key every issue-row surface
 	// (TrackerIssue, RunEntry, snapshot maps) already uses.
 	OutboxSyncing map[string]struct{}
+
+	// SessionMessages holds the operator messages sent to running sessions
+	// from the Sessions panel (#178), per issue identifier, newest last and
+	// bounded (maxSessionMessagesPerIssue). Event-loop state: recorded by
+	// EventSessionMessage, marked delivered by EventSessionMessageDelivered,
+	// and dropped when the run exits without delivering them. Session-scoped,
+	// not persisted.
+	SessionMessages map[string][]SessionMessage
+
+	// ExternalSessions are the sessions started by hand that the latest
+	// discovery pass found (#178 step 3), newest first, minus every session
+	// itervox owns. Event-loop state: replaced by
+	// EventExternalSessionsDiscovered (discovery runs off the loop).
+	// Session-scoped, not persisted.
+	ExternalSessions []extsessions.Session
+	// TmuxSessions are the tmux sessions itervox started from the Sessions
+	// panel ("New session", #178), keyed by tmux session name. Event-loop
+	// state (sessions_tmux.go): reserved, started and ended by events, panes
+	// attached and ended sessions dropped by each discovery pass.
+	// Session-scoped, carried across WORKFLOW.md reloads, not persisted.
+	TmuxSessions map[string]*TmuxSession
 }
 
 // NewState initialises a State from a config snapshot.
@@ -795,5 +826,7 @@ func NewState(cfg *config.Config) State {
 		StackUnavailable:   make(map[string]string),
 		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
+		SessionMessages:    make(map[string][]SessionMessage),
+		TmuxSessions:       make(map[string]*TmuxSession),
 	}
 }

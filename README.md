@@ -170,6 +170,10 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
   </tr>
 </table>
 
+### Mac menu-bar app
+
+A menu-bar app (built from source with `make desktop`, unsigned for now) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
+
 ### View from your phone, anywhere
 
 The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
@@ -368,7 +372,7 @@ Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the 
 | `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
 | `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md`, and on a GitHub tracker list missing state labels (`--fix` creates them) |
-| `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |
+| `itervox status [--all] [--json]` | List running daemons for this project (`--all`: every daemon on the host); `--json` prints path, pid, URL, version, start time and token posture per daemon for supervisors such as the macOS app |
 | `itervox stop` | Gracefully stop a running daemon (signals only a daemon holding the project's pid lock; `--legacy` for pre-v0.2.1 daemons) |
 | `itervox action <subcommand>` | Daemon-backed agent actions: `comment`, `comment-pr`, `merge-pr`, `create-issue`, `move-state`, `provide-input` |
 | `itervox clear [IDENTIFIER…]` | Remove workspace directories (all, or specific issues) |

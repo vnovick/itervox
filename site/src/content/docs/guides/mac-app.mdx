@@ -1,0 +1,169 @@
+---
+title: Mac app (menu bar)
+description: The Itervox menu-bar app for macOS — list every project's daemon, start, stop and restart them, get notified when an agent needs input or a run fails, open each dashboard without a terminal, and reach daemons on a VM or another machine through IAP or SSH tunnels the app keeps up.
+sidebar:
+  order: 3
+---
+
+The Itervox Mac app lives in the menu bar. It lists every project with a running daemon on your Mac, starts, stops and restarts daemons, raises a notification when an agent needs your input or a run fails, and opens a project's dashboard in a window. It needs no terminal: the daemon ships inside the app.
+
+It also reaches daemons on other machines — a cloud VM, a build box — through GCP IAP or SSH tunnels it runs and keeps up for you ([Remote daemons](#remote-daemons)).
+
+It is a thin [Tauri](https://tauri.app/) shell: the app bundle contains the same `itervox` binary you run from a terminal, and each dashboard window shows the dashboard that project's daemon serves. Nothing about a project's configuration lives in the app.
+
+:::note
+This first version is built from source and unsigned. Signed, notarized downloads come later (#130).
+:::
+
+## Build it
+
+You need, once:
+
+- Xcode Command Line Tools: `xcode-select --install`
+- Rust: [rustup](https://rustup.rs/)
+- Go (the version in `go.mod`) and Node.js 20 with pnpm 10 — the same tools as for [building the daemon](/getting-started/)
+
+Then, in a checkout of the repository:
+
+```bash
+make desktop
+open desktop/src-tauri/target/release/bundle/macos/Itervox.app
+```
+
+`make desktop` builds the dashboard, the daemon for both Mac architectures (placed as the app's sidecar), installs the Tauri CLI on first use, and bundles `Itervox.app` and a `.dmg` for your Mac's architecture under `desktop/src-tauri/target/release/bundle/`. Copy the app to `/Applications` if you like.
+
+The app has no Dock icon: look for the **I//** mark in the menu bar.
+
+## Projects
+
+The menu lists, sorted by name:
+
+- every daemon `itervox status --all --json` reports — started by the app, from a terminal, or by launchd;
+- every project you added with **Add Project…** (choose its `WORKFLOW.md`), also while its daemon is stopped.
+
+Each project shows its state and running agents, for example `running · 2 agents · 1 needs input`. The list refreshes every 3 seconds. The number next to the menu-bar icon counts the issues waiting for your input across projects.
+
+For a daemon the app started, the app reads the state with that daemon's token. For a daemon started from a terminal, it uses the auto-generated token in the daemon's `token_file` when there is one (same user, mode `0600`). A daemon with a pinned `ITERVOX_API_TOKEN` shows **token required**: the app cannot read its state, and its dashboard asks for the token.
+
+## Start, stop, restart
+
+Each project's submenu has **Start**, **Stop** and **Restart**; the menu shows *starting…* or *stopping…* until the next refresh confirms the change.
+
+- **Start** runs the bundled daemon with `--workflow <path>` in the project directory, headless, with a freshly generated supervisor token (`ITERVOX_SUPERVISOR_TOKEN`, see [Running under a supervisor](/cli/#running-under-a-supervisor)). The token is stored in your login Keychain (service `dev.itervox.desktop.supervisor-token`, account = the `WORKFLOW.md` path) and never put on a command line or in a file. If the daemon exits during startup — an invalid `WORKFLOW.md`, a port in use — the project shows the last line it printed; **Show Daemon Output** opens the full output.
+- **Stop** sends `SIGTERM` to the daemon's registered pid. The daemon drains in-flight agent turns for up to `--shutdown-grace` (30 s by default) before it exits. If it is still draining after 45 s the project says so; choose **Stop** again to stop at once.
+- **Restart** is Stop, then Start.
+
+Daemons started by the app are detached: they keep running when you quit the app (**Quit Itervox** never stops an agent), and the app finds them again, and still holds their tokens, when it starts. A project you start or stop from the app stays in the list while stopped.
+
+Two projects whose `WORKFLOW.md` names the same `server.port` cannot run at once; leave `server.port` unset (`0`) to let each daemon pick a free port.
+
+## Notifications
+
+The app raises a notification when, in a project whose state it can read:
+
+- an issue starts **waiting for input** (an agent asked a question), or
+- an agent **run fails** (or stalls).
+
+Clicking the notification opens that issue in the project's dashboard (`<dashboard>/?issue=<identifier>`). The last few events are also listed under **Recent** in the menu. Only events that happen after the app started notify, each once, so relaunching the app or restarting a daemon does not replay old questions.
+
+The first notification may ask for permission; you can change it later in **System Settings → Notifications → Itervox**.
+
+## Dashboard windows
+
+**Open Dashboard** opens the project's dashboard in its own window (the Dock icon shows while a window is open). The app hands the window the daemon's token through a script that runs before the dashboard loads and only on the daemon's own address, which writes it where the dashboard keeps its token for the session. The token is never part of a URL, so it does not appear in the window's history, the daemon's request log, or a link you copy. The dashboard's `?token=` link form still works in a browser; the app does not need it.
+
+## Sessions window
+
+**Sessions…** in the menu opens one window listing every running agent session of every daemon the app can read — local projects and remote daemons through their tunnels — grouped by daemon. A session waiting for input is badged **needs input** and listed first, and the daemon groups with a waiting session come first; the menu item shows how many are waiting, for example **Sessions… (2 waiting)**. Each daemon reports the sessions on its own host: the app reads its `GET /api/v1/sessions` with the same token it uses for the daemon's state, every few seconds while the window is open. A daemon the app cannot read shows why (for example **token required**); a daemon from a release without the Sessions API says so.
+
+Use the arrow keys (or **Home**/**End**) to move between sessions and **Return** to open one. A session opens in its daemon's dashboard window at the Sessions page (`<dashboard>/sessions?id=<session>`), with the token handed over as for **Open Dashboard**: its live transcript, and a composer to reply to a question or message the running agent (see [Sessions panel](/guides/sessions/)). The dashboard refuses to be embedded in another page, so the session opens in the dashboard window rather than inside the Sessions window.
+
+Claude Code and Codex sessions you started by hand on a daemon's host — in a terminal in that project's directory, within the last day — are listed too, after the daemon's own sessions, with a dashed outline and **started outside itervox** (the summary line counts them). The daemon finds and reads them itself (see [Sessions started by hand](/guides/sessions/#sessions-started-by-hand)); for a remote daemon these are the sessions on the remote machine. One whose CLI may still be running says **running**, and hovering it shows why; otherwise it says **exited**. Opening one shows its transcript, read-only, in the daemon's dashboard.
+
+A session running in a tmux pane carries a **tmux** badge (hover it for the pane), highlighted when the dashboard can control it — a session the daemon started with **New session**, or one you run in tmux with [`sessions.tmux_control`](/configuration/#sessions) on (see [Sessions in tmux](/guides/sessions/#sessions-in-tmux)). Under a daemon that has tmux, **New session…** opens its dashboard at the New session form. Under a daemon whose host has no tmux, the window says **tmux not found — install it to control sessions from here**, with the install command, instead.
+
+The window only reads. It never types into a terminal or drives another app: messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
+
+## Remote daemons
+
+A daemon on a cloud VM or another machine shows in the menu like a local one, under **Remotes**. The app runs one tunnel per remote daemon, health-checks it, and restarts it when it drops — also after your Mac sleeps or changes network — so you never run a tunnel command or keep a browser tab around. Agent credentials (the Claude or Codex login, tracker keys) stay on the remote machine: the app only holds each daemon's dashboard token.
+
+### Add a remote
+
+Choose **Add Remote…** and answer the prompts:
+
+1. **How this Mac reaches the host**
+   - **SSH** — a destination such as `me@build-box` or an alias from `~/.ssh/config`. Your key or `ssh-agent` must log in without a password prompt (the app has no terminal to type one in); connect once from a terminal first so the host key is known.
+   - **GCP IAP — SSH through IAP** — the VM name, and optionally its zone and project (empty uses `gcloud`'s defaults). This is how the [deployment kit](/guides/deployment/) exposes a VM: no public IP, and only the IAP SSH firewall rule. It reaches a daemon bound to the VM's loopback.
+   - **GCP IAP — direct port tunnel** — `gcloud compute start-iap-tunnel` to the daemon's port. Use it only when the daemon listens on the VM's network interface and a firewall rule lets IAP reach that port.
+2. **A name** for the remote, shown in the menu.
+3. **The command that runs itervox on the host** — `itervox` by default. Use a full path when it is not on the remote PATH for non-interactive SSH, or for example `sudo -u itervox itervox` when the daemon runs as another user.
+
+The app then runs `itervox status --all --json` **on the host, over the same transport** (`ssh <destination> …`, or `gcloud compute ssh <vm> --tunnel-through-iap --command …`) and lists every daemon running there. Choose the ones to add (all are selected); each becomes its own tunneled connection.
+
+For each daemon whose API needs a token, the app reads the daemon's auto-generated token file (`token_file` in `status --json`) over the same transport. A daemon with a pinned `ITERVOX_API_TOKEN` has no such file: the app asks you to type the token. Either way the token is stored in your login Keychain under service `dev.itervox.desktop.remote-token`, with the remote and the daemon's `WORKFLOW.md` path on the host as the account — never the local port — so two remotes, or a remote and a local project with the same path, never share a token.
+
+`ssh` and `gcloud` are found on the `PATH` your login shell sets up, the same way the daemon finds agent CLIs, so an app started from Finder finds a Homebrew or Cloud SDK `gcloud` too.
+
+### Tunnels
+
+| Transport | What the app runs |
+|---|---|
+| SSH | `ssh -o BatchMode=yes -o ServerAliveInterval=15 -o ExitOnForwardFailure=yes -N -L 127.0.0.1:<local>:127.0.0.1:<port> <destination>` |
+| IAP (SSH) | `gcloud compute ssh <vm> --tunnel-through-iap --zone=… --project=… -- -N -L 127.0.0.1:<local>:127.0.0.1:<port>` (same SSH options) |
+| IAP (port) | `gcloud compute start-iap-tunnel <vm> <port> --local-host-port=localhost:<local> --zone=… --project=…` |
+
+`<port>` is the daemon's port on the host (from `status --json`; 8090 for a daemon from an older release found without one). `<local>` is a free local port picked for that daemon alone: two daemons never share one, also while one of them is reconnecting. The app keeps a daemon on the same local port across reconnects and app restarts when it can, so an open dashboard window keeps working.
+
+Every two seconds the app checks each tunnel: the process is alive, its local port accepts a connection, and the daemon answers `GET /api/v1/health` through it. A tunnel whose process exits is restarted after 1 s, then 2, 4, … up to 30 s between attempts. A running tunnel that fails three health checks in a row (after a 20-second start-up allowance, since an IAP handshake takes a few seconds) is restarted the same way.
+
+When your Mac wakes from sleep or its network changes (Wi-Fi joined or left, a VPN up or down), every tunnel is checked at once, a tunnel that no longer answers is restarted at once, and a tunnel waiting between attempts retries at once. The app notices a wake from the jump between the wall clock and the clock that stops during sleep, and a network change from the change in your network interfaces' addresses, both checked every two seconds.
+
+### In the menu
+
+Each remote shows its state, for example `Prod VM — 2/2 connected · 1 needs input` or `reconnecting… (1/2 connected)`, and lists its daemons with their agents and local port. For each daemon:
+
+- **Open Dashboard** opens its dashboard through the tunnel (`http://127.0.0.1:<local>/`) in a window, with the token handed over exactly as for a local daemon.
+- **Enter Token… / Update Token…** reads the token file again, or asks for the token. Use it after the remote daemon restarted with a new auto-generated token (it then shows **token required**).
+
+and for the remote:
+
+- **Reconnect** restarts its tunnels now.
+- **Refresh Daemon List** runs `itervox status --all --json` on the host again: new daemons are added, gone ones removed.
+- **Remove Remote** stops its tunnels and deletes its tokens from the Keychain.
+
+Notifications work for remote daemons too: a question or a failed run on a connected remote daemon raises one, and clicking it opens the issue through the tunnel. Remote daemons cannot be started or stopped from the app; that stays with the host's service manager. Quitting the app closes its tunnels (the remote daemons keep running).
+
+## No terminal needed
+
+A Mac app started from Finder or at login gets launchd's minimal `PATH`, which does not include `claude` or `codex` installed through Homebrew, nvm, asdf or volta. The daemon resolves `PATH` from your login shell when it was not started from a terminal ([Login-shell PATH](/cli/#login-shell-path)); `itervox status --json` reports `"path_source": "login_shell"` for such a daemon. The app itself does not use `PATH`: it runs the daemon bundled next to its own executable (`Itervox.app/Contents/MacOS/itervox`).
+
+## Files
+
+| Path | What |
+|---|---|
+| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added |
+| `~/Library/Logs/dev.itervox.desktop/daemons/` | Output of daemons the app started (the daemons' own logs stay under `~/.itervox/logs/`) |
+| Login Keychain, `dev.itervox.desktop.supervisor-token` | One supervisor token per project |
+| `~/Library/Application Support/dev.itervox.desktop/remotes.json` | The remotes you added: transport, host, their daemons and the local port each last used (no tokens) |
+| `~/Library/Logs/dev.itervox.desktop/tunnels/` | Output of each tunnel process (`ssh` / `gcloud` errors) |
+| Login Keychain, `dev.itervox.desktop.remote-token` | One token per remote daemon (account: `remote/<remote>/<WORKFLOW.md path on the host>`) |
+
+## Troubleshooting
+
+- **See what the app sees.** Quit it and run `ITERVOX_DESKTOP_DEBUG=1 /Applications/Itervox.app/Contents/MacOS/itervox-desktop` in a terminal: every refresh prints each project's state and every notification.
+- **Keychain prompt after a rebuild.** An unsigned app gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**.
+- **"Itervox" cannot be opened** (a build copied from another Mac or downloaded from CI): the app is unsigned. Right-click it and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Itervox.app`.
+- **A project says token required.** Its daemon was started outside the app with a pinned `ITERVOX_API_TOKEN`. Stop it and start it from the app.
+- **A remote keeps reconnecting.** The daemon's line in the remote's submenu shows the last error from `ssh` or `gcloud`; the full output is in `~/Library/Logs/dev.itervox.desktop/tunnels/`. Run the transport's command from the table above in a terminal to see the prompt or error it hits — typically an unknown host key, a key that needs a passphrase not in `ssh-agent`, or `gcloud auth login` having expired.
+- **Add Remote finds no daemons.** The listing runs `itervox status --all --json` as the SSH user. A daemon running as another user is only found by process scan; set the remote's itervox command to `sudo -u <user> itervox`.
+
+## Development
+
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, and reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`) — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on Linux too; `app.rs` is the Tauri glue.
+
+```bash
+make desktop-test   # fmt, clippy -D warnings, unit tests, and end-to-end tests against a real daemon
+```
+
+The end-to-end tests start a real daemon the way the app does, list it, read its state with the supervisor token, restart and stop it, make a stand-in agent ask a question and check the notification link and that the Sessions window lists the waiting session (keyed by the agent CLI's session ID) and opens its `/sessions?id=` page, and start a daemon with launchd's environment to check the login-shell `PATH`. The remote tests (`tests/remote_e2e.rs`) put a stand-in `ssh` and `gcloud` on `PATH` that relay to this machine: they add an SSH and an IAP remote against real daemons, list their daemons, read their tokens and open their dashboards through the tunnels, kill tunnel processes and check they come back, simulate a wake and a network change, and check two remotes never share a port or a token. To run the app against a daemon binary of your choice, set `ITERVOX_DESKTOP_DAEMON` to its absolute path.
