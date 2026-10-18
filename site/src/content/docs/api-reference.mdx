@@ -852,6 +852,8 @@ surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 | `POST` | `/skills/fix` | `{"issueID":"UNUSED_PROFILE","fix": Fix}` | `{"status":"ok"}` | v0.2.0 only applies the non-destructive `UNUSED_PROFILE` `edit-yaml` fix; unsafe actions such as `remove-mcp` are rejected |
 | `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | Includes `HasRuntimeEvidence`; `503 analytics_unavailable` only before analytics can be computed |
 | `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; empty until `HasRuntimeEvidence` is true |
+| `POST` | `/skills/check-refs` | `{"profile":"worker","command":"codex","backend":"codex","text":"…"}` | `{"backend":"codex","sshHosts":[],"refs":[{"kind":"skill","name":"tdd","from":9,"to":12,"status":"missing","severity":"warn","issueId":"MISSING_SKILL_REF","message":"…"}]}` | #123: runs the `itervox doctor` reference check over one draft prompt (SOUL.md or INSTRUCTIONS.md) for a profile with that command and backend. `backend` is the one the daemon resolves; each reference occurrence has `status` `ok`, `missing` or `outside_repo` (only with SSH hosts), and `from`/`to` are UTF-16 offsets into `text`. `503 inventory_unavailable` before the first scan; `413` over 256 KiB |
+| `GET` | `/skills/profile-backends` | — | `{"default":"claude","profiles":{"reviewer":"codex"}}` | #123: the backend each configured profile runs on, resolved like doctor and the dispatcher do; `default` is the workflow's |
 
 `Inventory` is a direct inventory/recommendation snapshot, not a complete
 normalized capability graph in v0.2.0. The response includes `ScanTime`,

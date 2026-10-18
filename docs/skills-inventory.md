@@ -19,6 +19,7 @@ The feature lives at **Settings → Skills Inventory**. No external dependencies
 | Instructions | `<project>/CLAUDE.md`, nested CLAUDE.md, `<project>/AGENTS.md`, `~/.claude/CLAUDE.md` | claude / codex |
 | Codex skills | `~/.codex/skills/`, `~/.codex/skills/.system/`, `~/.codex/superpowers/skills/`, `~/.agents/skills/` | codex |
 | Codex plugins | `~/.codex/plugins/<name>/plugin.json` | codex |
+| Codex custom prompts | `~/.codex/prompts/*.md` (top level; run as `/prompts:<name>`, listed in `Prompts`) | codex |
 | Codex superpowers hooks | `~/.codex/superpowers/hooks/hooks.json` | codex |
 | Marketplace provenance | `~/.agents/.skill-lock.json` | (overlay) |
 
