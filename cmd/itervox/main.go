@@ -844,9 +844,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath)                // M4-close BH-M4-2
-		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))  // #136
-		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json")) // #173
+		orch.SetPendingReviewsFile(pendingReviewsPath)                                     // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                       // #136
+		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                      // #173
+		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json")) // #177
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}

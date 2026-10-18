@@ -50,6 +50,13 @@ type runHandle struct {
 	// (#178). The loop only sends (non-blocking); the worker, or its runner
 	// during a live turn, receives.
 	steer chan agent.SteerMessage
+	// stateMoveDeferred is set by the event loop when it deferred a move of
+	// this run's issue until the run exits (#177); the worker's turn loop
+	// then ends as it would on a landed move.
+	stateMoveDeferred atomic.Bool
+	// completionApplied is set by the worker once it moved its issue to
+	// completion_state (#177).
+	completionApplied atomic.Bool
 }
 
 // runUsage is a run's cumulative usage at the end of its latest turn (#136).

@@ -83,6 +83,14 @@ const (
 	// from the rule's rotation cursor and dispatches them, so the selection
 	// and the cursor advance happen together in the event loop.
 	EventDispatchCronBatch EventType = "DispatchCronBatch"
+	// EventDeferStateMove is sent by DeferAgentStateMove (#177): an agent's
+	// move of its issue, which the loop defers while a worker runs on the
+	// issue that reconciliation would stop for it. The loop answers on the
+	// event's reply channel.
+	EventDeferStateMove EventType = "DeferStateMove"
+	// EventDeferredStateMoveSettled carries the outcome of one deferred-move
+	// apply (#177) from its tracker-write goroutine.
+	EventDeferredStateMoveSettled EventType = "DeferredStateMoveSettled"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -125,6 +133,13 @@ type OrchestratorEvent struct { //nolint:revive
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
 	Tmux *TmuxSessionEvent
+	// DeferredMove is the move of an EventDeferStateMove or
+	// EventDeferredStateMoveSettled (#177).
+	DeferredMove *DeferredStateMove
+	// deferReply receives the loop's decision on an EventDeferStateMove.
+	deferReply chan bool
+	// deferFromState is the tracker state a deferred-move apply observed.
+	deferFromState string
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -752,6 +767,11 @@ type State struct {
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
+	// DeferredStateMoves (#177) holds itervox-originated state moves (an
+	// agent's move_state) deferred until the issue's running worker exits,
+	// keyed by identifier. Persisted to deferred_state_moves.json; while one
+	// is pending, normal dispatch and retries of the issue are held.
+	DeferredStateMoves map[string]DeferredStateMove
 	// Spend is the per-issue spend ledger behind agent.budget and the cost
 	// report (#136), persisted to issue_spend.json.
 	Spend SpendLedger
@@ -878,6 +898,7 @@ func NewState(cfg *config.Config) State {
 		StackOnReviewState: stackOnReviewState(cfg),
 		StackUnavailable:   make(map[string]string),
 		PendingReviews:     make(map[string]PendingReview),
+		DeferredStateMoves: make(map[string]DeferredStateMove),
 		OutboxSyncing:      make(map[string]struct{}),
 		SessionMessages:    make(map[string][]SessionMessage),
 		TmuxSessions:       make(map[string]*TmuxSession),
