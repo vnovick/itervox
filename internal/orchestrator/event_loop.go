@@ -1989,7 +1989,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		applyTmuxSessionEvent(&state, ev.Type, ev.Tmux, time.Now())
 
 	case EventSessionMessageDelivered: // #178
-		applySessionDelivery(&state, ev.SessionDelivery, time.Now())
+		now := time.Now()
+		applySessionDelivery(&state, ev.SessionDelivery, now)
+		recordRunSteers(state, ev.RunID, ev.SessionDelivery, now) // #186
 
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
@@ -2904,6 +2906,11 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.TriggerType = liveEntry.TriggerType
 		run.RulesHash = liveEntry.RulesHash
 		run.RuleIDs = liveEntry.RuleIDs
+		run.RunID = liveEntry.RunID                 // #186
+		run.PromptDigest = liveEntry.PromptDigest   // #186
+		run.PromptParts = liveEntry.PromptParts     // #186
+		run.Steers = slices.Clone(liveEntry.Steers) // #186
+		run.SteersDropped = liveEntry.SteersDropped
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the

@@ -33,14 +33,15 @@ func (o *Orchestrator) reportSessionDelivery(ctx context.Context, identifier str
 		return
 	}
 	ids := make([]string, len(msgs))
+	texts := make([]string, len(msgs))
 	for i, m := range msgs {
-		ids[i] = m.ID
+		ids[i], texts[i] = m.ID, m.Text
 	}
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:            EventSessionMessageDelivered,
 		RunID:           runIDFrom(ctx),
-		SessionDelivery: &SessionDelivery{Identifier: identifier, IDs: ids, Delivery: delivery},
+		SessionDelivery: &SessionDelivery{Identifier: identifier, IDs: ids, Texts: texts, Delivery: delivery},
 	}:
 	case <-ctx.Done():
 	}

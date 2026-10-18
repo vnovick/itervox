@@ -246,6 +246,14 @@ only the event loop mutates them.
   `EventDispatchAutomation`, and `claimPREventDedup` in the event loop decides
   managed-ness, staleness and the once-per-event dedup. Persisted to
   `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
+- Run provenance (#186) on `RunEntry` / `CompletedRun`: `PromptDigest` and
+  `PromptParts` are computed once in `startRun` (SHA-256 of SOUL.md +
+  INSTRUCTIONS.md + the resolved rules + the prompt template; hashes only,
+  never prompt text), and delivered steering messages are appended to the
+  running entry's `Steers` by the `EventSessionMessageDelivered` handler
+  (redacted, ≤ 20 × 1 KiB; snapshots deep-copy the slice). Both reach
+  `CompletedRun` (with `RunID`) only through `recordHistory` in the event
+  loop; the stall exit built by `ReconcileStalls` copies them.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is

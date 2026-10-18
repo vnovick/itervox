@@ -102,6 +102,13 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				Backend:        entry.Backend,
 				ProfileName:    entry.ProfileName,
 				TerminalReason: TerminalStalled,
+				// #157/#186: the stalled run's history keeps what it ran with.
+				RulesHash:     entry.RulesHash,
+				RuleIDs:       entry.RuleIDs,
+				PromptDigest:  entry.PromptDigest,
+				PromptParts:   entry.PromptParts,
+				Steers:        entry.Steers,
+				SteersDropped: entry.SteersDropped,
 			}
 			select {
 			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunID: entry.RunID, RunEntry: &stalledEntry}:
