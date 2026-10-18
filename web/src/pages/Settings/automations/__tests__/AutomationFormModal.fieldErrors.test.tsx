@@ -26,6 +26,11 @@ const baseValues: AutomationFormValues = {
   switchToBackend: '',
   cooldownMinutes: '',
   moveToState: '',
+  checkNames: [],
+  conclusions: [],
+  reviewStates: [],
+  reviewAuthors: [],
+  mergeableStates: [],
 };
 
 function renderForm(onSubmit: (v: AutomationFormValues) => Promise<AutomationSubmitResult>) {

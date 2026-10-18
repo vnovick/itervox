@@ -357,6 +357,37 @@ dedup ledger on `State.PRMergedDispatched`; `AutomationDispatchesPRMergedTotal`
 and `AutomationDroppedPRMergedDedupTotal` counters surface dispatch
 telemetry.
 
+### PR-event triggers (#173)
+
+`pr_check_completed`, `pr_synchronized`, `pr_review_submitted` and
+`pr_mergeable_changed` fire on GitHub activity on a **managed** PR: one whose
+URL a run's exit carried (`RunEntry.PRURL`, plus `RunEntry.HeadSHA`, the
+remote-tracking head the run left). The event loop records it in
+`State.ManagedPRs` (`recordManagedPR`, on `EventWorkerExited`).
+
+```
+ GitHub webhook (POST /api/v1/webhooks/pr-events)   poll of open managed PRs
+        │ prwatch.Handler (HMAC check)                 │ prwatch.Watcher.Poll (ETag/304)
+        └───────────────► prwatch.Event ◄──────────────┘
+                              │ cmd/itervox prEventSink: issue by identifier
+                              ▼
+        Orchestrator.DispatchPREventAutomations (off-loop: rule + PR filters)
+                              │ EventDispatchAutomation (one per matching rule)
+                              ▼
+        event loop: dispatchOrQueueAutomation → claimPREventDedup
+          managed for this issue? predates the recording run? head/mergeable
+          changed for this rule (State.PREventBaselines)? key already in
+          State.PREventDispatched? → start / queue / drop
+```
+
+`internal/prwatch` imports only stdlib, `metrics` and `tracker` (for the
+rate-limit snapshot type); it never decides dispatch. `ManagedPRs`,
+`PREventDispatched` and `PREventBaselines` are event-loop state, persisted
+together to `pr_events.json` by the ledger writer from `storeSnap`, and pruned
+by `pruneTerminalRuntimeLedgers` when the issue turns terminal. The watcher
+reads the managed PRs from the last snapshot (`Orchestrator.ManagedPRs`), never
+from live state.
+
 ### `itervox doctor` (P0-D / P0-G)
 
 A preflight subcommand that runs WORKFLOW.md schema validation + dispatch

@@ -183,6 +183,11 @@ only the event loop mutates them.
   `tracker.assignee`/`team`/`labels` are load-time fields, and the dashboard
   scope card and TUI picker change the client's runtime scope
   (`SetScope`/`SetProjectFilter`), so there is no new `cfgMu` field.
+- `CronCursors` (#176) is the per-cron-rule `filter.limit` rotation cursor
+  (automation ID → last identifier served). A limited cron tick is handed to
+  the loop whole (`EventDispatchCronBatch`); the loop selects, skips issues
+  already running/queued for that rule, dispatches and advances the cursor.
+  Persisted as `cron_cursors` in `automation_queue.json`.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
@@ -224,6 +229,14 @@ only the event loop mutates them.
   reloads by cmd/itervox (`SeedTmuxSessions`), not persisted. `TestExternalSessionInspectionIsReadOnly`
   keeps `internal/extsessions` free of writes, signals and commands other
   than `ps`/`lsof`.
+- `ManagedPRs`, `PREventDispatched` and `PREventBaselines` (#173) back the
+  PR-event triggers (`pr_check_completed`, `pr_synchronized`,
+  `pr_review_submitted`, `pr_mergeable_changed`). A PR is *managed* only once
+  an itervox run's exit recorded its URL for that issue; `internal/prwatch`
+  (webhook handler and poller, off the loop) only sends
+  `EventDispatchAutomation`, and `claimPREventDedup` in the event loop decides
+  managed-ness, staleness and the once-per-event dedup. Persisted to
+  `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -393,6 +406,9 @@ orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
               metrics, outbox, prdetector, procgroup, prompt, rules, tracker,
               workspace)
+
+prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
+         request poller — imports metrics, tracker; used by cmd/itervox)
 
 app (EnrichIssue business logic — imports domain, tracker)
 

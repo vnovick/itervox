@@ -348,6 +348,8 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		case AutomationTriggerIssueMovedBacklog:
 		case AutomationTriggerRunFailed:
 		case AutomationTriggerPROpened, AutomationTriggerPRMerged:
+		case AutomationTriggerPRCheckCompleted, AutomationTriggerPRSynchronized,
+			AutomationTriggerPRReviewSubmitted, AutomationTriggerPRMergeableChanged:
 		case AutomationTriggerBlockersResolved:
 			moveToState := strings.TrimSpace(entry.Policy.MoveToState)
 			if moveToState != "" {
@@ -443,6 +445,49 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		if (len(entry.Filter.BodyContains) > 0 || entry.Filter.BodyRegex != "") &&
 			triggerType != AutomationTriggerTrackerComment {
 			return fmt.Errorf("automation %q: filter.body_contains and filter.body_regex are only meaningful on tracker_comment_added triggers", id)
+		}
+		if err := validatePREventFilter(id, triggerType, entry.Filter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePREventFilter checks the #173 PR-event filters: each is only
+// meaningful on its own trigger, and the enumerated ones only take values
+// GitHub reports.
+func validatePREventFilter(id, triggerType string, f AutomationFilterConfig) error {
+	only := func(field, trigger string) error {
+		return fmt.Errorf("automation %q: filter.%s is only meaningful on %s triggers", id, field, trigger)
+	}
+	if (len(f.CheckNames) > 0 || len(f.Conclusions) > 0) && triggerType != AutomationTriggerPRCheckCompleted {
+		if len(f.CheckNames) > 0 {
+			return only("check_names", AutomationTriggerPRCheckCompleted)
+		}
+		return only("conclusions", AutomationTriggerPRCheckCompleted)
+	}
+	if (len(f.ReviewStates) > 0 || len(f.ReviewAuthors) > 0) && triggerType != AutomationTriggerPRReviewSubmitted {
+		if len(f.ReviewStates) > 0 {
+			return only("review_states", AutomationTriggerPRReviewSubmitted)
+		}
+		return only("review_authors", AutomationTriggerPRReviewSubmitted)
+	}
+	if len(f.MergeableStates) > 0 && triggerType != AutomationTriggerPRMergeableChanged {
+		return only("mergeable_states", AutomationTriggerPRMergeableChanged)
+	}
+	for _, set := range []struct {
+		field   string
+		values  []string
+		allowed []string
+	}{
+		{"conclusions", f.Conclusions, PRCheckConclusions},
+		{"review_states", f.ReviewStates, PRReviewStates},
+		{"mergeable_states", f.MergeableStates, PRMergeableStates},
+	} {
+		for _, v := range set.values {
+			if !slices.Contains(set.allowed, strings.ToLower(strings.TrimSpace(v))) {
+				return fmt.Errorf("automation %q: filter.%s value %q is not one of %s", id, set.field, v, strings.Join(set.allowed, ", "))
+			}
 		}
 	}
 	return nil

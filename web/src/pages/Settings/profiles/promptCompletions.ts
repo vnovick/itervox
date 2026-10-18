@@ -76,6 +76,14 @@ export const TRIGGER_VARIABLES: readonly Completion[] = [
   v('trigger.pr_branch', "Pull request's branch"),
   v('trigger.pr_base_branch', "Pull request's base branch"),
   v('trigger.resolved_blockers', 'Blockers that just resolved (blockers_resolved)'),
+  v('trigger.pr_number', 'Pull request number'),
+  v('trigger.head_sha', 'PR head commit the event is about (PR-event triggers)'),
+  v('trigger.check_name', 'Check run name or status context (pr_check_completed)'),
+  v('trigger.check_conclusion', 'Check conclusion, e.g. failure (pr_check_completed)'),
+  v('trigger.mergeable_state', "PR's mergeable_state, e.g. dirty"),
+  v('trigger.previous_mergeable_state', 'mergeable_state before the change'),
+  v('trigger.review_author', 'Review author login (pr_review_submitted)'),
+  v('trigger.review_state', 'Review state, e.g. changes_requested'),
 ];
 
 const f = (label: string, detail: string): Completion => ({

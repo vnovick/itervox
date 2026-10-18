@@ -844,8 +844,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath)               // M4-close BH-M4-2
-		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json")) // #136
+		orch.SetPendingReviewsFile(pendingReviewsPath)                // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))  // #136
+		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json")) // #173
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
@@ -1036,6 +1037,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	// Start serving on the already-bound listener.
 	//
+	// #173: the PR-event watcher (poll of the open managed PRs, plus the
+	// webhook receiver when pr_events.webhook_secret is set).
+	prEventWebhooks := startPREvents(ctx, cfg, tr, orch)
 	// #52 deferral — startDepsAutoAnalyze (below) is wired inside this
 	// `srvListener != nil` block purely because that's where depsSvc,
 	// adapter, and the other server-only wiring already live, not because
@@ -1149,7 +1153,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// CORE-048 — web client error reports feed the RecentFailures
 			// ring through the non-blocking RecordFailure (CORE-046).
 			ReportClientError: clientErrorReporter(orch),
-			Webhooks:          webhooks, // #131: signed tracker deliveries
+			Webhooks:          webhooks,        // #131: signed tracker deliveries
+			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
 			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
 		})

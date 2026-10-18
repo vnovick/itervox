@@ -294,6 +294,12 @@ export const AutomationFilterSchema = z.object({
   // rejects it on other types. Skip stale entries (queued > N minutes ago)
   // and drive the dashboard's stale badge.
   maxAgeMinutes: z.number().optional(),
+  // #173 PR-event filters; the server validator rejects each on other triggers.
+  checkNames: z.array(z.string()).optional(),
+  conclusions: z.array(z.string()).optional(),
+  reviewStates: z.array(z.string()).optional(),
+  reviewAuthors: z.array(z.string()).optional(),
+  mergeableStates: z.array(z.string()).optional(),
 });
 
 export const AutomationPolicySchema = z.object({

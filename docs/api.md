@@ -454,6 +454,10 @@ ordinary paths stay readable.
 
 Receives Linear (`linear`) or GitHub (`github`) issue webhooks when `tracker.webhooks.enabled` is set; otherwise, and for the other tracker, `404`. No bearer token (the tracker cannot send one) and exempt from the unauthenticated-mode Host guard: instead every delivery must be signed with `tracker.webhooks.secret` (`Linear-Signature`, or GitHub's `X-Hub-Signature-256`), and a Linear delivery must be less than a minute old (`webhookTimestamp`). Answers `202` for an accepted or ignored delivery, `401` for a bad signature or a stale delivery, `400` for an unreadable payload, `413` over 1 MiB. A delivery only names issues: the tracker store re-reads them by ID and keeps the ones in scope. See [Tracker webhooks](/guides/tracker-webhooks/).
 
+### `POST /api/v1/webhooks/pr-events`
+
+Receives GitHub `check_run`, `status`, `pull_request` and `pull_request_review` deliveries for the PR-event automation triggers (#173) when `pr_events.webhook_secret` is set; otherwise `404`. Same exemptions as the tracker route (no bearer token, past the Host guard) and the same rule: every delivery must carry a valid `X-Hub-Signature-256` made with `pr_events.webhook_secret`. Answers `202` for an accepted or ignored delivery (a `ping`, another event or action, a pending status, or a PR no Itervox run recorded), `401` for a bad signature, `400` for an unreadable payload, `413` over 1 MiB. Accepted deliveries only become automation dispatches through the orchestrator's event loop, which dedups them per check, push, review and mergeable transition. Counted in `itervox_tracker_webhooks_total{tracker="pr-events"}`. See [PR events](/guides/automations/#pr-events-on-managed-pull-requests).
+
 ## Client error reports
 
 ### `POST /api/v1/client-errors`
@@ -950,6 +954,8 @@ Supported trigger types:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected
+- `pr_merged` — fires when the daemon-side `merge_pr` action merges an itervox-managed PR
+- `pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed` — fire on GitHub activity on a PR an Itervox run recorded; sourced from `POST /api/v1/webhooks/pr-events` or a poll of the open managed PRs (#173)
 - `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours` cap automated switching; reaching the cap suppresses switching rather than causing the trigger.
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
