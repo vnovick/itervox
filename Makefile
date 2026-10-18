@@ -335,6 +335,7 @@ desktop-tauri-cli:
 
 # The unsigned app bundle for this Mac's architecture:
 # desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg).
-# Signing and notarization are #130.
+# Releases are signed and notarized by .github/workflows/desktop-release.yml
+# (#130, docs/release-mac.md).
 desktop: desktop-sidecar desktop-tauri-cli
 	cd $(DESKTOP_DIR) && cargo tauri build
