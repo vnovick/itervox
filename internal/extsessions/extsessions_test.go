@@ -24,15 +24,22 @@ const (
 )
 
 // fixtures copies testdata into a temp dir and stamps every transcript as
-// written an hour before now, except idClaudeOld (three days).
+// written an hour before now, except idClaudeOld (three days). The recent
+// Codex date directory (2026/10/15 in testdata) is copied under now's date,
+// so the date-directory pruning keeps walking it whatever day the test runs.
 func fixtures(t *testing.T, now time.Time) (claudeDir, codexDir string) {
 	t.Helper()
 	root := t.TempDir()
+	recentDay := filepath.FromSlash("codex/sessions/2026/10/15")
+	today := filepath.Join("codex", "sessions", filepath.FromSlash(now.UTC().Format("2006/01/02")))
 	err := filepath.WalkDir("testdata", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel("testdata", path)
+		if rel == recentDay || strings.HasPrefix(rel, recentDay+string(filepath.Separator)) {
+			rel = today + strings.TrimPrefix(rel, recentDay)
+		}
 		dst := filepath.Join(root, rel)
 		if d.IsDir() {
 			return os.MkdirAll(dst, 0o755)
