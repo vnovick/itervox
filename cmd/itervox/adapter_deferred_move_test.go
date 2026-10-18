@@ -53,7 +53,12 @@ func TestAdapterDefersAgentMoveButNotDashboardMove(t *testing.T) {
 	agentCtx := server.WithIssueStatusSource(context.Background(), server.IssueStatusSourceAgent)
 	require.NoError(t, adapter.UpdateIssueState(agentCtx, "ENG-1", "Done"))
 	assert.Equal(t, "In Progress", stateOf(), "the agent's move waits for the worker")
-	assert.Contains(t, orch.Snapshot().DeferredStateMoves, "ENG-1")
+	// The deferral is recorded by the event loop and published with the next
+	// snapshot, so the snapshot may not show it yet when UpdateIssueState returns.
+	require.Eventually(t, func() bool {
+		_, ok := orch.Snapshot().DeferredStateMoves["ENG-1"]
+		return ok
+	}, 2*time.Second, 10*time.Millisecond, "the agent's move is recorded as deferred")
 	time.Sleep(200 * time.Millisecond) // several reconcile ticks
 	assert.False(t, runner.wasCancelled(), "a deferred move never stops the worker")
 
