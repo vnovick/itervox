@@ -106,16 +106,7 @@ type FailureRecord struct {
 // sanitizeFailureMessage redacts msg and then bounds it to
 // failureMessageMaxBytes on a UTF-8 boundary.
 func sanitizeFailureMessage(msg string) string {
-	msg = strings.TrimSpace(logging.RedactString(msg))
-	if len(msg) <= failureMessageMaxBytes {
-		return msg
-	}
-	const ellipsis = "…"
-	cut := failureMessageMaxBytes - len(ellipsis)
-	for cut > 0 && !utf8.RuneStart(msg[cut]) {
-		cut--
-	}
-	return msg[:cut] + ellipsis
+	return boundUTF8(strings.TrimSpace(logging.RedactString(msg)), failureMessageMaxBytes)
 }
 
 // appendRecentFailure appends f to state.RecentFailures. Event loop only.

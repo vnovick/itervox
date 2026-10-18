@@ -20,6 +20,8 @@ import type { NormalisedSession } from '../../components/itervox/timeline/types'
 
 import { TimelineSidebar } from './components/TimelineSidebar';
 import { TimelineDetailPanel } from './components/TimelineDetailPanel';
+import { PromptVersionFilter } from './components/PromptVersionFilter';
+import { groupByPromptVersion } from '../../utils/promptVersions';
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,12 @@ export default function Timeline() {
   const historySessions = useMemo(() => rawHistory.map(fromHistory), [rawHistory]);
   const automationOnly = useUIStore((s) => s.timelineAutomationOnly);
   const setAutomationOnly = useUIStore((s) => s.setTimelineAutomationOnly);
+  // #186 — prompt-version filter over history ('' = all runs).
+  const promptVersions = useMemo(() => groupByPromptVersion(rawHistory), [rawHistory]);
+  const [promptFilter, setPromptFilter] = useState('');
+  const activePromptFilter = promptVersions.some((v) => v.digest === promptFilter)
+    ? promptFilter
+    : '';
 
   const allSessions = useMemo<NormalisedSession[]>(() => {
     // dedupSessionsPreferLive guards the ~5s stale-running window where the
@@ -41,10 +49,13 @@ export default function Timeline() {
     const sorted = dedupSessionsPreferLive([...historySessions, ...liveSessions]).sort(
       (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
     );
-    return automationOnly
-      ? sorted.filter((s) => s.automationId !== undefined && s.automationId !== '')
+    const byPrompt = activePromptFilter
+      ? sorted.filter((s) => s.promptDigest === activePromptFilter)
       : sorted;
-  }, [historySessions, liveSessions, automationOnly]);
+    return automationOnly
+      ? byPrompt.filter((s) => s.automationId !== undefined && s.automationId !== '')
+      : byPrompt;
+  }, [historySessions, liveSessions, automationOnly, activePromptFilter]);
 
   const hasAnyAutomationRun = useMemo(
     () => historySessions.some((s) => s.automationId) || liveSessions.some((s) => s.automationId),
@@ -279,6 +290,11 @@ export default function Timeline() {
         >
           automation runs only
         </button>
+        <PromptVersionFilter
+          versions={promptVersions}
+          value={activePromptFilter}
+          onChange={setPromptFilter}
+        />
         <span className="text-theme-muted ml-auto font-mono text-[10px]">
           {allSessions.length} runs
         </span>

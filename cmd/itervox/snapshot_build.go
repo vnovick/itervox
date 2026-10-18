@@ -160,6 +160,13 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				CommentCount: r.CommentCount,
 				RulesHash:    r.RulesHash,
 				RuleIDs:      r.RuleIDs,
+				ProfileName:  r.ProfileName,
+				// #186: prompt version, run ID and steering history.
+				RunID:         r.RunID,
+				PromptDigest:  r.PromptDigest,
+				PromptParts:   historyPromptParts(r.PromptParts),
+				Steers:        historySteers(r.Steers),
+				SteersDropped: r.SteersDropped,
 			})
 		}
 
@@ -300,4 +307,25 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 func isOutOfScope(set map[string]struct{}, identifier string) bool {
 	_, ok := set[identifier]
 	return ok
+}
+
+// historyPromptParts maps a run's per-component prompt digests (#186); nil
+// when none were recorded.
+func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
+	if p == (orchestrator.PromptParts{}) {
+		return nil
+	}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Template: p.Template}
+}
+
+// historySteers maps a run's delivered operator messages (#186).
+func historySteers(steers []orchestrator.RunSteer) []server.HistorySteer {
+	if len(steers) == 0 {
+		return nil
+	}
+	out := make([]server.HistorySteer, len(steers))
+	for i, s := range steers {
+		out[i] = server.HistorySteer{Text: s.Text, At: s.At, Delivery: s.Delivery}
+	}
+	return out
 }

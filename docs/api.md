@@ -448,6 +448,68 @@ ordinary paths stay readable.
 
 ---
 
+## Run history
+
+History rows (`history` in `GET /state`, and the endpoints below) describe
+finished runs, oldest first, from the same bounded ring (200 runs, persisted
+to the daemon's history file). Each row may carry, besides the fields above
+(#186):
+
+- `runId` — the run's ID (the same ID as running rows and logs).
+- `profileName` — the profile the run used.
+- `promptDigest` — the run's **prompt version**: 64 hex characters of
+  SHA-256 over a versioned, length-prefixed concatenation of the profile's
+  `SOUL.md`, its `INSTRUCTIONS.md`, the resolved rule set (sorted by id;
+  each rule's id, severity and text) and the prompt template (the
+  `WORKFLOW.md` body, or `agent.reviewer_prompt` for a reviewer run that has
+  one), computed when the run is dispatched. Two runs with the same digest
+  were given the same prompt inputs. Treat it as an opaque identifier; the
+  dashboard shows its first 12 characters.
+- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "template"? }`:
+  16-hex-character digests of each component (absent when the run had none),
+  so two versions can be compared part by part. History stores only these
+  hashes, never prompt text.
+- `steers` — operator messages delivered to the run from the Sessions panel:
+  `[{ "text", "at", "delivery": "live" | "resume" }]`, in delivery order.
+  Text is redacted like the rest of run data and cut to 1 KiB; a run keeps
+  its newest 20, and `steersDropped` counts older ones that were let go.
+  Typing into a tmux pane is not recorded.
+
+All of these are omitted on rows recorded before they existed.
+
+### `GET /api/v1/history`
+
+The run history: `{ "history": [HistoryRow] }`. `?prompt=<digest prefix>`
+(1–64 hex characters, case-insensitive) keeps only runs whose
+`promptDigest` starts with it; rows without a digest never match. An
+invalid prefix is `400 invalid_prompt_digest` (`field: "prompt"`).
+
+### `GET /api/v1/history/prompt-versions`
+
+The history grouped by prompt version, most recently used version first:
+
+```json
+{
+  "versions": [
+    {
+      "promptDigest": "3f9a…",
+      "runs": 12,
+      "statuses": { "succeeded": 9, "failed": 3 },
+      "successRate": 0.75,
+      "firstSeenAt": "2026-10-01T09:00:00Z",
+      "lastSeenAt": "2026-10-18T17:30:00Z",
+      "profiles": ["implementer"]
+    }
+  ],
+  "unversionedRuns": 4
+}
+```
+
+`statuses` counts runs per history status, `successRate` is the share that
+succeeded (0–1), and `unversionedRuns` counts rows recorded without a digest.
+
+---
+
 ## Tracker webhooks
 
 ### `POST /api/v1/webhooks/{tracker}`
@@ -686,6 +748,8 @@ pressed unless `submit` is `false` (`{"text": "…", "submit": false}`;
 the message is queued; its `status` in `GET /api/v1/sessions` moves to
 `delivered` or `dropped`. A session waiting for input takes a reply through
 `POST /issues/{identifier}/provide-input` instead.
+A delivered message is also kept, redacted, in the run's history entry
+(`steers`, see [Run history](#run-history)).
 
 | Status | Code | When |
 |---|---|---|
