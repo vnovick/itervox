@@ -126,6 +126,9 @@ func (m *Model) renderHeader(s server.StateSnapshot) string {
 		hdr.WriteString(styleGray.Render("║ ") + styleLabel.Render("SCOPE ") + styleGray.Render(" ▸ ") +
 			styleCyan.Render(truncate(scope, max(m.width-14, 10))) + "\n")
 	}
+	if m.cfg.RetirementNotice != "" { // #120
+		hdr.WriteString(styleGray.Render("║ ") + styleYellow.Render(truncate("ⓘ "+m.cfg.RetirementNotice, max(10, m.width-4))) + "\n")
+	}
 
 	// GitHub tracker info: states are mapped to issue labels
 	if m.cfg.TrackerKind == "github" {

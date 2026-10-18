@@ -77,3 +77,23 @@ func TestHeaderLineCountMatchesRenderedHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestRetirementNoticeInHeader (#120): the notice pointing to `itervox
+// watch` and `--headless` is a header line when set, absent otherwise, and
+// the frame still fits the terminal.
+func TestRetirementNoticeInHeader(t *testing.T) {
+	for _, width := range []int{160, 60} {
+		for _, notice := range []string{"", "The terminal UI is being retired: try `itervox watch`"} {
+			m := New(newTestSnap(server.StateSnapshot{}), nil, Config{MaxAgents: 5, RetirementNotice: notice}, func(string) bool { return true })
+			next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+			m = next.(Model)
+			view := ansi.Strip(m.View())
+			if got := strings.Contains(view, "terminal UI is being retired"); got != (notice != "") {
+				t.Fatalf("width %d, notice %q: shown=%t\n%s", width, notice, got, view)
+			}
+			if lines := strings.Count(view, "\n"); lines != 40 {
+				t.Fatalf("width %d, notice %q: View is %d lines for a 40-line terminal", width, notice, lines)
+			}
+		}
+	}
+}

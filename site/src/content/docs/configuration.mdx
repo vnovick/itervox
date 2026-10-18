@@ -1147,10 +1147,10 @@ then shows the "config invalid" banner and waits for a fix.
 ### Log format
 
 `--log-format text|json` (or `ITERVOX_LOG_FORMAT`; the flag wins) selects
-the format of the rotating log file **and**, when no terminal is attached
-(systemd, containers, CI), of stderr — one JSON object per log record, for
-platforms that collect stdout/stderr. With a terminal, stderr stays
-human-readable text (and once the TUI starts, logs go to the file only). Both
+the format of the rotating log file **and**, unless the terminal UI runs
+(it starts only with `--tui` since v0.2.4), of stderr — one JSON object per
+log record, for platforms that collect stdout/stderr. With `--tui` on a
+terminal, logs go to the file only. Both
 sinks go through the same secret redaction (`Bearer` tokens, `lin_api_…`,
 `ghp_…`, `sk-ant-…` are written as `***`). Lines printed before logging
 starts or outside it (usage text, fatal start-up errors, the TUI's own

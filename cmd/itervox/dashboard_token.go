@@ -143,7 +143,8 @@ func announceDashboardToken(stderrOnly, logger *slog.Logger, a dashboardTokenAnn
 	default:
 		attrs = append(attrs, "token_source", "ITERVOX_API_TOKEN")
 	}
-	attrs = append(attrs, "hint", "stderr is not a terminal (or --no-print-token/"+printTokenEnv+"=0 is set), so the token is withheld; set "+printTokenEnv+"=1 to print it")
+	// No "NAME=value" in the hint: the log redactor masks it as a secret.
+	attrs = append(attrs, "hint", "the token is withheld because stderr is not a terminal, or --headless or --no-print-token was passed, or "+printTokenEnv+" is 0; set "+printTokenEnv+" to 1 to print it")
 	logger.Info("dashboard URL (token withheld from logs)", attrs...)
 }
 

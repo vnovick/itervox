@@ -254,7 +254,7 @@ func main() {
 
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
-	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !statusui.TerminalAvailable())))
+	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !argsTerminalUI(os.Args))))
 	loadDotEnv()             // must run before config.LoadConfig / os.Getenv calls
 	installSupervisorToken() // #119: before anything reads ITERVOX_API_TOKEN
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
@@ -327,6 +327,9 @@ func main() {
 		case "report":
 			runReport(os.Args[2:])
 			return
+		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply": // #120
+			runClientCommand(os.Args[1], os.Args[2:])
+			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
 			return
@@ -341,8 +344,10 @@ func main() {
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: a per-project dir under ~/.itervox/logs)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "how long a drain waits for in-flight agent turns on SIGINT/SIGTERM (or before applying an operator edit to WORKFLOW.md) before cancelling them; a second signal stops at once")
-	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file, and for stderr when no terminal is attached (systemd, containers); with a terminal stderr stays text (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
+	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file and stderr; with --tui on a terminal logs go to the file only (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
 	flag.BoolVar(&noPrintToken, "no-print-token", false, "never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal; ITERVOX_PRINT_TOKEN=1 forces it; an auto-generated token is always written to <logs-dir>/api-token, mode 0600)")
+	flag.BoolVar(&tuiFlag, "tui", false, "start the terminal UI (deprecated, removed in v0.3); without it itervox runs headless and prints the dashboard URL")
+	flag.BoolVar(&headlessFlag, "headless", false, "headless even with --tui, and the tokenised dashboard URL never printed, even on a terminal (watch with: itervox watch)")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
@@ -436,7 +441,7 @@ func main() {
 	// Both sinks sit behind the RedactingHandler (T-29 / F-NEW-A): any
 	// string attr or msg matching a known secret pattern (Bearer tokens,
 	// lin_api_*, ghp_*, …) is rewritten to "***" before reaching either.
-	bootHandler, stderrHandler := bootLogHandlers(os.Stderr, rotatingFile, logLevel, logFormat, !statusui.TerminalAvailable())
+	bootHandler, stderrHandler := bootLogHandlers(os.Stderr, rotatingFile, logLevel, logFormat, !terminalUI())
 	slog.SetDefault(slog.New(bootHandler))
 	// stderrOnly bypasses the rotating-file sink. Use it for any record that
 	// must NEVER hit disk — e.g. the dashboard URL that intentionally carries
@@ -937,7 +942,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				Token:       tok,
 				Generated:   tokenGenerated,
 				LogsDir:     filepath.Dir(logFile),
-				NoPrintFlag: noPrintToken,
+				NoPrintFlag: noPrintToken || headlessFlag, // #120
 				PrintEnv:    os.Getenv(printTokenEnv),
 				StderrIsTTY: term.IsTerminal(os.Stderr.Fd()),
 				Supervised:  supervisorTokenActive,
@@ -995,7 +1000,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// newFileLogHandler keeps this in sync with the pre-TUI file handler above
 	// so --log-format=json survives the redirect instead of silently reverting
 	// to text once the TUI starts.
-	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler(), statusui.TerminalAvailable())))
+	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler(), terminalUI())))
 	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath, quitApp)
 	if actualAddr != "" {
 		if tok := dashboardURLToken(); tok != "" {
@@ -1004,7 +1009,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
 		}
 	}
-	tuiDone := statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
+	tuiCfg.RetirementNotice = tuiDeprecationNotice
+	tuiDone := startTUI(ctx, snap, logBuf, tuiCfg, tuiCancel)
 	// Wait for the TUI to fully restore the terminal (stty sane) before run()
 	// returns. Without this, the process can exit while the terminal is still
 	// in raw mode, leaving the user's shell broken (no Ctrl-C, no echo).

@@ -94,9 +94,23 @@ Commands:
   report  costs: tokens and estimated cost per issue and per day
              --days N   days to list (default 14)  --json  JSON output
 
+  Talking to a running daemon (it finds the daemon from .itervox/dashboard_url
+  and its token from ITERVOX_API_TOKEN, .itervox/.env or <logs-dir>/api-token;
+  every one takes --workflow, --logs-dir and --url):
+  watch   a read-only, plain-text view of running, retrying, queued,
+          input-required and paused issues, refreshed every --interval
+          (default 2s); --once prints it once (works over SSH, no TTY)
+  logs    print an issue's run log; -f keeps following new lines
+             itervox logs [-f] <issue>
+  pause    <issue>         stop the issue's agent and pause the issue
+  resume   <issue>         resume a paused issue
+  dispatch <issue>         move the issue to the first active state
+  workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
+  reply    <issue> <text>  answer an agent's question
+
   --version  Print version information
 
-Run mode (default when no command given):
+Run mode (default when no command given; headless unless --tui):
 `)
 	flag.PrintDefaults()
 }
