@@ -480,7 +480,9 @@ func TestTmuxUnavailableRefusesEveryWrite(t *testing.T) {
 	r.waitRow(handSessionID, func(s server.SessionRow) bool { return !s.Controllable && s.TmuxPane == nil })
 	require.NoError(t, r.orch.ReserveTmuxSession(orchestrator.TmuxSession{ID: "itervox-abcdef", Backend: "claude", Cwd: r.project}))
 	r.orch.FinishTmuxSessionStart("itervox-abcdef", false)
-	own := r.waitRow("itervox-abcdef", func(s server.SessionRow) bool { return s.Status == "running" })
+	// tmux is re-detected on every discovery pass, and a pass that began
+	// before PATH lost tmux may still report it: wait for one that did not.
+	own := r.waitRow("itervox-abcdef", func(s server.SessionRow) bool { return s.Status == "running" && !s.Controllable })
 	assert.False(t, own.Controllable, "not controllable while tmux is missing")
 
 	for _, id := range []string{handSessionID, "itervox-abcdef"} {
