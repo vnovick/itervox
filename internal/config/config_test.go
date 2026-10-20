@@ -1733,3 +1733,26 @@ func TestProfileRequireEvidence(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names")
 }
+
+// TestCommentCommandsConfig (#84): tracker.comment_commands parses, is off
+// by default, and is GitHub-only.
+func TestCommentCommandsConfig(t *testing.T) {
+	gh := func(extra string) string {
+		return "---\nitervox_schema_version: 2\ntracker:\n  kind: github\n  api_key: key\n  project_slug: o/r\n" + extra + "---\n\nPrompt.\n"
+	}
+	cfg, err := config.Load(workflowWithContent(t, gh("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.CommentCommands.Enabled, "off by default")
+
+	cfg, err = config.Load(workflowWithContent(t, gh("  comment_commands:\n    enabled: true\n    allow: [alice, bob]\n    allow_token_user: true\n    reply_to_unauthorized: true\n")))
+	require.NoError(t, err)
+	assert.Equal(t, config.CommentCommandsConfig{Enabled: true, Allow: []string{"alice", "bob"}, AllowTokenUser: true, ReplyToUnauthorized: true},
+		cfg.Tracker.CommentCommands)
+	require.NoError(t, config.ValidateDispatch(cfg))
+
+	cfg, err = config.Load(workflowWithContent(t, "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: p\n  comment_commands:\n    enabled: true\n---\n\nPrompt.\n"))
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.comment_commands is only supported with tracker.kind: github")
+}

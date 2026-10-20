@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1284,4 +1285,72 @@ func TestCreateLabelSendsNameAndColor(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"done"`)
 	assert.Contains(t, err.Error(), "422")
+}
+
+// TestCommentCommandClientCalls (#84): the repository comment list (issue
+// number, login, pagination), the permission check (404 = none, role_name
+// preferred) and the reaction POST.
+func TestCommentCommandClientCalls(t *testing.T) {
+	var reactionBody string
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/repos/owner/repo/issues/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "" {
+			assert.Equal(t, "2026-10-09T12:00:00Z", r.URL.Query().Get("since"))
+			assert.Equal(t, "asc", r.URL.Query().Get("direction"))
+			w.Header().Set("Link", `<`+srv.URL+`/repos/owner/repo/issues/comments?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 11, "body": "/itervox run",
+				"issue_url": srv.URL + "/repos/owner/repo/issues/42", "created_at": "2026-10-09T12:01:00Z",
+				"user": map[string]any{"login": "alice", "type": "User"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 12, "body": "hi",
+			"issue_url": srv.URL + "/repos/owner/repo/issues/7", "created_at": "2026-10-09T12:02:00Z",
+			"html_url": "https://github.com/owner/repo/pull/7#issuecomment-12",
+			"user":     map[string]any{"login": "dependabot[bot]", "type": "Bot"}}})
+	})
+	mux.HandleFunc("/repos/owner/repo/collaborators/alice/permission", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"permission": "write", "role_name": "security-writer"})
+	})
+	mux.HandleFunc("/repos/owner/repo/collaborators/mallory/permission", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/comments/11/reactions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		b, _ := io.ReadAll(r.Body)
+		reactionBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": "itervox-bot"})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	ctx := context.Background()
+
+	got, err := c.ListRepoCommentsSince(ctx, time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, got, 2, "both pages are read")
+	assert.Equal(t, ghclient.RepoComment{ID: "11", IssueNumber: "42", Body: "/itervox run", Login: "alice", UserType: "User",
+		CreatedAt: time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC)}, got[0])
+	assert.Equal(t, "7", got[1].IssueNumber)
+	assert.Equal(t, "Bot", got[1].UserType)
+	assert.True(t, got[1].OnPullRequest, "a pull request's conversation comment is marked")
+	assert.False(t, got[0].OnPullRequest)
+
+	perm, err := c.CollaboratorPermission(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "write", perm, "maintain (and custom roles derived from write) read as their base level")
+	perm, err = c.CollaboratorPermission(ctx, "mallory")
+	require.NoError(t, err)
+	assert.Equal(t, "none", perm, "not a collaborator")
+
+	require.NoError(t, c.AddCommentReaction(ctx, "11", "+1"))
+	assert.JSONEq(t, `{"content":"+1"}`, reactionBody)
+
+	login, err := c.AuthenticatedLogin(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "itervox-bot", login)
 }
