@@ -195,7 +195,7 @@ func measureMode(t *testing.T, mode string, syncEvery time.Duration, dashboard b
 	p := newDaemonProject(t)
 	ms := func(d time.Duration) int { return int(d / timeScale / time.Millisecond) }
 	store := syncEvery > 0
-	storeBlock := ""
+	storeBlock := "  store:\n    enabled: false\n" // on by default since #132
 	if store {
 		storeBlock = fmt.Sprintf("  store:\n    enabled: true\n    sync_interval_ms: %d\n    full_sync_interval_ms: %d\n",
 			ms(syncEvery), ms(55*time.Minute))
