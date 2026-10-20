@@ -24,6 +24,9 @@ const EXACT: Record<string, string> = {
   // M3 / CORE-053: the dispatch gate held the issue because its backend
   // (and every backend_fallback target) is limited.
   backend_limited: 'Agent backend limited',
+  // #193: the worktree branch is checked out in another worktree; released
+  // when that worktree frees it.
+  branch_in_use: 'Branch checked out elsewhere',
   missing_fields: 'Missing required fields',
   // Filtered out by enrich.go today; mapped so they stay readable if not.
   terminal_state: 'Not in an active state',

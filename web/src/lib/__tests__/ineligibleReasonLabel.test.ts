@@ -19,6 +19,8 @@ describe('ineligibleReasonLabel', () => {
       ['inferred_blocked_by:src', 'Inferred block: src'],
       // M3 (CORE-053): the dispatch gate held the issue for a limited backend.
       ['backend_limited', 'Agent backend limited'],
+      // #193: the worktree branch is checked out in another worktree.
+      ['branch_in_use', 'Branch checked out elsewhere'],
       ['missing_fields', 'Missing required fields'],
       ['terminal_state', 'Not in an active state'],
       ['not_active_state', 'Not in an active state'],

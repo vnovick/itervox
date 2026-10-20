@@ -67,17 +67,30 @@ func RemoteHeadSHA(ctx context.Context, wsPath, branch string) string {
 
 // FindOpenPRURL returns the URL of the open pull request for the current git
 // branch in wsPath, or "" if no open PR is found (or on any error, including
-// gh not installed or not a git repository).
+// gh not installed, not a git repository, or a detached HEAD).
+//
+// The branch is passed to gh explicitly (#193). Without an argument gh picks
+// the PR through the branch's upstream (branch.<name>.merge), and a worktree
+// branch made from another branch of the shared bare clone tracks that
+// branch: the bare clone's fetch refspec maps origin's branches onto
+// refs/heads/*, so git sets up tracking for any of them. A worktree stacked
+// on a blocker's branch therefore "found" the blocker's PR, the worker
+// commented it on the dependent as its own, and the dependent's next run
+// tried to check out the blocker's branch.
 func FindOpenPRURL(ctx context.Context, wsPath string) string {
 	if wsPath == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view",
-		"--json", "url,state",
-		"--jq", `select(.state=="OPEN").url`,
-	)
+	args := []string{"pr", "view"}
+	// Without a branch (not a git checkout, or a detached HEAD) there is no
+	// upstream for gh to follow; its own resolution is used as before.
+	if branch := GetCurrentBranch(ctx, wsPath); branch != "" {
+		args = append(args, branch)
+	}
+	args = append(args, "--json", "url,state", "--jq", `select(.state=="OPEN").url`)
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = wsPath
-	// gh resolves the repository and branch by running git itself.
+	// gh resolves the repository by running git itself.
 	cmd.Env = gitexec.Environ()
 	out, err := cmd.Output()
 	if err != nil {

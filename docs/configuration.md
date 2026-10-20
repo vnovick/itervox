@@ -523,6 +523,23 @@ changes nothing.
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
 | `base_branch` | string | `"main"` | Branch worktrees are created from |
 
+**Open pull requests and shared branches.** A worker continues an open pull
+request linked from the issue (in its description or comments) only when the
+PR is the issue's own: its head branch is the issue's branch or names the
+identifier (`vlad/eng-12-fix` for `ENG-12`), or its title or body names the
+identifier on word boundaries (`Fixes ENG-12`, `Closes #12`) or links the
+tracker issue. A PR that is only linked — a blocker's, a related one — is
+ignored. Git checks a branch out in one worktree at a time: when the branch an
+issue needs is already checked out in another worktree (another issue's, or the
+repository's own checkout), the issue is not retried. It is held with the
+`branch_in_use` ineligible reason (the dashboard shows "Branch checked out
+elsewhere") and released on the first tick after that worktree is removed or
+switches branches. The hold is runtime state; after a restart the first
+dispatch finds the branch taken again and holds the issue without spending a
+retry. Itervox does not create a second branch from the PR branch instead: the
+agent's pushes would not reach the PR. Fetches into the shared clone are
+serialized, so parallel dispatches no longer fail with `cannot lock ref`.
+
 ### Agent handoff (`.itervox/handoff/`)
 
 Each worker run can leave a Markdown deliverable at `.itervox/handoff/<ISO8601-timestamp>_<profile-name>.md` on the issue's worktree branch. Before dispatching the next worker for the same issue, the orchestrator reads every `.md` file in that directory in chronological order (the ISO8601 filename prefix sorts lexicographically), applies a token budget (default 30 KB — oldest dropped first with a `[earlier handoffs truncated]` marker), and inlines the result into the agent's prompt as a `## Prior Agent Handoffs` block. A `## Run Context` block follows with two values the agent uses to write its own deliverable:

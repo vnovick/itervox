@@ -86,6 +86,11 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 	if _, claimed := state.Claimed[issue.ID]; claimed {
 		return "claimed"
 	}
+	// #193: the worktree branch is checked out in another worktree. Checked
+	// before the slot gate so a saturated tick still names it.
+	if _, held := state.BranchInUseHolds[issue.Identifier]; held {
+		return IneligibleBranchInUse
+	}
 	if AvailableSlots(state) <= 0 {
 		return "no_slots"
 	}

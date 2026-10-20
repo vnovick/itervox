@@ -233,6 +233,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// case this returns an empty set and mutates nothing.
 	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
 	pruneStackUnavailable(&state, issues)
+	releaseBranchInUseHolds(&state, issues) // #193
 	// #182: running issues the scoped poll no longer offers (reassigned
 	// away, moved out of the project) finish, but start nothing new.
 	o.observeOutOfScope(&state, issues)
@@ -2376,6 +2377,20 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			}
 			slog.Info("orchestrator: dependent not stacked on its in-review blocker; waiting for the blocker",
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+		case TerminalBranchInUse:
+			// #193: no agent ran, and git refuses the branch the same way on
+			// every retry until the other worktree frees it. Hold instead of
+			// spending the retry budget; releaseBranchInUseHolds lets the
+			// issue go once the branch is free.
+			delete(state.Claimed, ev.IssueID)
+			if hold, ok := branchInUseHoldFrom(ev.Error, now); ok {
+				setBranchInUseHold(&state, issue.Identifier, hold)
+				slog.Warn("orchestrator: worktree branch is checked out in another worktree; holding issue (branch_in_use), not retrying",
+					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
+					"branch", hold.Branch, "holder", hold.Holder, "holder_path", hold.HolderPath)
+			}
+			o.recordWorkerFailure(&state, ev, attempt, now) // CORE-046: surfaced once
+			o.abandonReviewerRun(&state, finished, issue.Identifier)
 		case TerminalRateLimited:
 			// CORE-051: a quota limit is classified on the first failure. The
 			// rate_limited fallback is evaluated now, without consuming a retry;

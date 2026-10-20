@@ -405,6 +405,9 @@ Useful top-level fields include:
   dispatch; the running session's backend stays on `running[].backend`.
   `/api/v1/issues` rows carry the same object as `autoSwitch`, and an issue
   held by an open breaker has `ineligibleReason: "backend_limited"`.
+- An issue whose worktree branch is checked out in another worktree (#193)
+  has `ineligibleReason: "branch_in_use"` until that worktree frees the
+  branch; no retry is scheduled for it.
 - `pauseReasons` — `{ "<identifier>": "<reason>" }` for currently paused
   issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted` or
   `transition_failed` (treat unknown values as opaque). An issue paused by an

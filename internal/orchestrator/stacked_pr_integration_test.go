@@ -47,7 +47,7 @@ echo "$*" >> "` + log + `"
 case "$*" in
   "pr view --json url,state "*) echo "` + prURL + `" ;;
   "pr view ` + prURL + ` --json baseRefName"*) cat "` + base + `" ;;
-  "pr view ` + prURL + ` --json state,headRefName,body,isDraft") echo '{"state":"OPEN","headRefName":"itervox/eng-2","body":"","isDraft":false}' ;;
+  "pr view ` + prURL + ` --json state,headRefName,body,isDraft,title") echo '{"state":"OPEN","headRefName":"itervox/eng-2","body":"","isDraft":false}' ;;
   "pr edit ` + prURL + ` --base "*) printf '%s\n' "$5" > "` + base + `" ;;
 esac
 `
@@ -135,7 +135,7 @@ func TestUnstackedRunKeepsDefaultBase(t *testing.T) {
 // PR at the blocker's branch too.
 func TestStackedRunRetargetsExistingPullRequest(t *testing.T) {
 	_, calls := runStackedWorker(t, "itervox/eng-1", true)
-	assert.Contains(t, calls, "pr view https://github.com/o/r/pull/12 --json state,headRefName,body,isDraft",
+	assert.Contains(t, calls, "pr view https://github.com/o/r/pull/12 --json state,headRefName,body,isDraft,title",
 		"the linked PR must have been detected; gh calls: %v", calls)
 	assert.NotContains(t, calls, "pr view --json url,state --jq select(.state==\"OPEN\").url",
 		"with a linked PR the post-run lookup is skipped")

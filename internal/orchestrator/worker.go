@@ -172,6 +172,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// a provider that cannot stack, or a blocker branch that does not
 		// exist here, falls back to workspace.base_branch unchanged.
 		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
+		if errors.Is(err, workspace.ErrBranchInUse) {
+			// #193: deterministic — git refuses the branch until the other
+			// worktree frees it. The event loop holds the issue with
+			// branch_in_use instead of scheduling a retry.
+			slog.Warn("worker: worktree branch is checked out in another worktree; not retrying",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "branch", branchName, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
+					fmt.Sprintf("worker: workspace setup held (branch_in_use): %v", err), runLogID))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalBranchInUse, err)
+			return
+		}
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)

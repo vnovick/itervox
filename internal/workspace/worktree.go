@@ -85,9 +85,13 @@ func (m *Manager) resolveGitDir(ctx context.Context, root, branchName string) (s
 		}
 		return barePath, nil
 	}
-	// Legacy: fetch in the root repo directly.
+	// Legacy: fetch in the root repo directly. Serialized like FetchBare:
+	// every worktree shares this repository's refs (#193).
+	unlock := lockRepo(root)
 	fetchCmd := gitexec.Command(ctx, root, "-C", root, "fetch", "origin", branchName)
-	if err := fetchCmd.Run(); err != nil {
+	err := fetchCmd.Run()
+	unlock()
+	if err != nil {
 		slog.Debug("worktree: fetch failed (best-effort)", "branch", branchName, "error", err)
 	}
 	return root, nil
@@ -146,15 +150,24 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 			"identifier", identifier, "branch", branchName, "base", startPoint)
 	}
 
+	// #193: git checks a branch out in one worktree only. When another
+	// worktree holds it, `worktree add` fails the same way on every retry,
+	// so report it as a typed BranchInUseError (the orchestrator holds the
+	// issue with branch_in_use) instead of a generic failure. Stale
+	// registrations of this issue's own path are pruned first.
+	if err := checkBranchFree(ctx, gitDir, root, wtPath, branchName); err != nil {
+		return Workspace{}, err
+	}
+
 	// git -C <gitDir> worktree add <wtPath> -b <branchName> [startPoint]
 	if err := runGitWorktreeAdd(ctx, gitDir, wtPath, branchName, startPoint, true); err != nil {
 		// Branch already exists: retry without -b to check it out into a new worktree.
 		if strings.Contains(err.Error(), "already exists") {
 			if err2 := runGitWorktreeAdd(ctx, gitDir, wtPath, branchName, startPoint, false); err2 != nil {
-				return Workspace{}, fmt.Errorf("worktree: add (existing branch): %w", err2)
+				return Workspace{}, fmt.Errorf("worktree: add (existing branch): %w", classifyWorktreeAddError(root, err2))
 			}
 		} else {
-			return Workspace{}, fmt.Errorf("worktree: add: %w", err)
+			return Workspace{}, fmt.Errorf("worktree: add: %w", classifyWorktreeAddError(root, err))
 		}
 	}
 
