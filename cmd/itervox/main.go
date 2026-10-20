@@ -67,12 +67,13 @@ Commands:
           issues and a scripted agent (no tracker, keys or agent CLI).
              --dir      scratch directory (default: a new temp dir)
              --no-open  do not open the dashboard in a browser
+             --tracker  memory|local  (default: memory)
 
   quickstart  From a repository to a running board in one command:
           detect the tracker and agent CLI, write (or migrate) WORKFLOW.md,
           set up the tracker token and GitHub labels (asks first), run
           doctor, start the daemon in the background and print the URL.
-             --tracker  github|linear  (default: detected)
+             --tracker  github|linear|local  (default: detected)
              --runner   claude|codex   (default: detected)
              --dir      repository directory (default: .)
              --workflow workflow path (default: <dir>/WORKFLOW.md)
@@ -82,7 +83,7 @@ Commands:
 
   init    Scan a repository and generate a WORKFLOW.md starter file,
           or migrate an existing one with --update.
-             --tracker  linear|github  (required for new workflows)
+             --tracker  linear|github|local  (required for new workflows)
              --runner   claude|codex    (default: claude)
              --output   output file path (default: WORKFLOW.md)
              --dir      directory to scan (default: .)
@@ -110,6 +111,12 @@ Commands:
   status  List running itervox daemons for the current project
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --all      also list daemons from other projects
+
+  secret  Set or list .itervox/.env values without showing them
+             set KEY    read the value with echo off (or from stdin)
+             list       show each key as set / placeholder / empty
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --replace  (set) replace a value that is already set
 
   --version  Print version information
 
@@ -407,6 +414,9 @@ func main() {
 			return
 		case "deps":
 			runDeps(os.Args[2:])
+			return
+		case "secret":
+			runSecret(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
