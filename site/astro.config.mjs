@@ -26,6 +26,7 @@ export default defineConfig({
             { label: 'Migrating v0.1 → v0.2', slug: 'guides/migration-v01-to-v02' },
             { label: 'Linear Setup', slug: 'guides/linear-setup' },
             { label: 'GitHub Issues', slug: 'guides/github-issues' },
+            { label: 'Local issues', slug: 'guides/local-issues' },
             { label: 'Agent Profiles', slug: 'guides/agent-profiles' },
             { label: 'Cross-review preset', slug: 'guides/cross-review' },
             { label: 'Automations', slug: 'guides/automations' },

@@ -212,6 +212,10 @@ type TrackerConfig struct {
 	// the orchestrator's completion/failed-state paths. Default true; set
 	// false as a kill switch to restore the old synchronous behavior.
 	Outbox bool
+	// CommentCommands (#84) lets repository maintainers drive Itervox from
+	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
+	// GitHub only. Read once at startup.
+	CommentCommands CommentCommandsConfig
 }
 
 // PollingConfig holds polling settings.
@@ -747,12 +751,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
 	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
 	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" {
+	if cfg.Tracker.Kind == "linear" || cfg.Tracker.Kind == "local" {
 		defaultBacklog = []string{"Backlog"}
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	cc := nestedMap(tracker, "comment_commands")
+	cfg.Tracker.CommentCommands = CommentCommandsConfig{
+		Enabled:             boolField(cc, "enabled", false),
+		Allow:               strSliceField(cc, "allow", nil),
+		AllowTokenUser:      boolField(cc, "allow_token_user", false),
+		ReplyToUnauthorized: boolField(cc, "reply_to_unauthorized", false),
+	}
 
 	// Polling
 	polling := nestedMap(raw, "polling")
