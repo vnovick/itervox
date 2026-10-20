@@ -751,7 +751,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
 	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
 	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" {
+	if cfg.Tracker.Kind == "linear" || cfg.Tracker.Kind == "local" {
 		defaultBacklog = []string{"Backlog"}
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)

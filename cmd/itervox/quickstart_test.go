@@ -51,7 +51,8 @@ func repoWithRemote(t *testing.T, remote string) string {
 }
 
 // TestDetectQuickstartTrackerAndRunner (#74): the tracker comes from
-// --tracker, then a real LINEAR_API_KEY, then a github.com origin; the agent
+// --tracker, then a real LINEAR_API_KEY, then a github.com origin, then the
+// local file tracker (#85); the agent
 // from --runner, then claude, then codex on PATH.
 func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 	ghSSH := repoWithRemote(t, "git@github.com:acme/widgets.git")
@@ -62,7 +63,7 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 	cases := []struct {
 		name, dir, trackerFlag, runnerFlag, linearKey string
 		installed                                     []string
-		wantTracker, wantRunner, wantErr              string
+		wantTracker, wantRunner, wantErr, wantReason  string
 	}{
 		{name: "github ssh remote, claude", dir: ghSSH, installed: []string{"claude", "codex"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "github https remote, only codex", dir: ghHTTPS, installed: []string{"codex"}, wantTracker: "github", wantRunner: "codex"},
@@ -70,8 +71,10 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 		{name: "placeholder linear key is ignored", dir: ghSSH, linearKey: "lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", installed: []string{"claude"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "--tracker overrides detection", dir: gitlab, trackerFlag: "github", installed: []string{"claude"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "--runner overrides detection", dir: ghSSH, runnerFlag: "codex", installed: []string{"claude", "codex"}, wantTracker: "github", wantRunner: "codex"},
-		{name: "non-github remote without a key", dir: gitlab, installed: []string{"claude"}, wantErr: "origin git@gitlab.com:acme/widgets.git is not on github.com"},
-		{name: "no remote without a key", dir: noRemote, installed: []string{"claude"}, wantErr: "no origin remote and LINEAR_API_KEY is not set"},
+		// #85: with no service to detect, the local file tracker.
+		{name: "non-github remote without a key", dir: gitlab, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude", wantReason: "origin git@gitlab.com:acme/widgets.git is not on github.com"},
+		{name: "no remote without a key", dir: noRemote, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude", wantReason: "no origin remote and LINEAR_API_KEY is not set"},
+		{name: "--tracker local", dir: ghSSH, trackerFlag: "local", installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude"},
 		{name: "no agent CLI", dir: ghSSH, wantErr: "neither claude nor codex is on PATH"},
 		{name: "--runner not installed", dir: ghSSH, runnerFlag: "codex", installed: []string{"claude"}, wantErr: "--runner codex: codex is not on PATH"},
 	}
@@ -89,6 +92,7 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 			assert.Equal(t, tc.wantTracker, det.Tracker)
 			assert.Equal(t, tc.wantRunner, det.Runner)
 			assert.NotEmpty(t, det.TrackerReason)
+			assert.Contains(t, det.TrackerReason, tc.wantReason)
 			assert.NotEmpty(t, det.RunnerReason)
 		})
 	}
@@ -461,6 +465,29 @@ func TestQuickstartClearsStaleRuntimeFiles(t *testing.T) {
 	assert.NoFileExists(t, heartbeatPath(wf))
 	assert.NoFileExists(t, dashboardURLFilePath(wf))
 	assert.Contains(t, out.String(), "left by a daemon that is no longer running")
+}
+
+// TestScanRepoCloneSource (#108 review): the workspace clone source is a
+// repository that exists. A github.com origin is cloned over SSH, any other
+// origin as written, and a repository with no remote (the local tracker's
+// case) is cloned from itself.
+func TestScanRepoCloneSource(t *testing.T) {
+	gh := scanRepo(repoWithRemote(t, "https://github.com/acme/widgets"))
+	assert.Equal(t, "git@github.com:acme/widgets.git", gh.CloneURL)
+
+	gitlab := scanRepo(repoWithRemote(t, "git@gitlab.com:acme/widgets.git"))
+	assert.Equal(t, "git@gitlab.com:acme/widgets.git", gitlab.CloneURL)
+
+	dir := repoWithRemote(t, "")
+	local := scanRepo(dir)
+	top, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	got, err := filepath.EvalSymlinks(local.CloneURL)
+	require.NoError(t, err)
+	assert.Equal(t, top, got, "no remote: workspaces clone the repository itself")
+	wf := generateWorkflow("local", "claude", local, filepath.Join(dir, "WORKFLOW.md"))
+	assert.Contains(t, wf, "  clone_url: "+local.CloneURL+"\n")
+	assert.NotContains(t, wf, "git@github.com:owner/")
 }
 
 // TestQuickstartRunningDaemonNeedsTheLock (#74 review): a PID record written
