@@ -21,9 +21,38 @@ Or download the latest release from [GitHub Releases](https://github.com/vnovick
 - **An AI agent CLI** — one of:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
   - [Codex](https://github.com/openai/codex) (`codex`)
-- **A project tracker** — Linear or GitHub Issues
+- **A project tracker** — Linear or GitHub Issues, or none: the [local tracker](/guides/local-issues/) keeps issues as Markdown files in your repository
 
-## Quick Setup
+## Try it first: `itervox demo`
+
+```bash
+itervox demo
+```
+
+Opens a throwaway board with fake issues and a scripted agent: no tracker account, API keys or agent CLI needed, and nothing is written outside a temporary directory. Within about a minute you see issues run, ask for input, fail and retry, go to review and finish. See [`itervox demo`](/cli/#itervox-demo--try-it-in-30-seconds).
+
+## Quickstart: one command
+
+In your project repository:
+
+```bash
+itervox quickstart
+```
+
+It takes you from a repository to a running board:
+
+1. **Detects** the tracker and the agent CLI. `LINEAR_API_KEY` set → Linear; otherwise an `origin` remote on github.com → GitHub Issues; otherwise the [local tracker](/guides/local-issues/). The agent is `claude` if it is on your `PATH`, otherwise `codex`. Override either with `--tracker github|linear|local` and `--runner claude|codex`.
+2. **Writes `WORKFLOW.md`** (schema 2) and the `.itervox/agents/` profiles, the same files `itervox init` writes. An existing schema-2 workflow is used as it is; an older one is migrated with `itervox init --update` only after you confirm.
+3. **Sets up the tracker token.** For GitHub without `GITHUB_TOKEN`, it offers your `gh` CLI's token (`gh auth token`) and saves it to the gitignored `.itervox/.env` if you agree. For Linear, put `LINEAR_API_KEY` in `.itervox/.env` first.
+4. **Creates missing GitHub state labels** after asking (the same step as `itervox doctor --fix`).
+5. **Runs `itervox doctor`** and stops with its report if anything is wrong.
+6. **Starts the daemon in the background**, waits for `/api/v1/ready`, and prints the dashboard URL and the file that holds the API token. The daemon's output goes to `.itervox/logs/quickstart-daemon.log`; stop it with `itervox stop`.
+
+Re-running is safe: nothing is overwritten without asking, and if the daemon is already running quickstart prints its URL instead of starting another. Pass `--yes` to accept every prompt (for scripts) or `--no-start` to stop after the checks.
+
+The steps below do the same by hand.
+
+## Manual setup
 
 ### 1. Initialize WORKFLOW.md
 
