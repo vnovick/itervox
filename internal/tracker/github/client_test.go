@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1105,4 +1106,251 @@ func TestFetchPaginatedKeepsIssueWithNullPullRequest(t *testing.T) {
 	result, err := client.FetchIssuesByStates(context.Background(), []string{"closed"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"#40"}, identifiers(result))
+}
+
+// fakeIssueThread is a minimal stateful GitHub: one issue (#42) whose comment
+// thread persists across clients, so a test can play several worker runs
+// against the same tracker state. Comments are served pageSize per page with
+// a rel="next" Link header, like the real API.
+type fakeIssueThread struct {
+	mu       sync.Mutex
+	comments []string
+	posts    int
+	pageSize int
+	failGets bool // GET comments returns 500
+}
+
+func (f *fakeIssueThread) serve(t *testing.T) *httptest.Server {
+	var ts *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/issues/42", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ghIssue(42, "Issue 42", "open", []string{"todo"}))
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			var in map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			f.comments = append(f.comments, in["body"])
+			f.posts++
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": float64(len(f.comments)), "body": in["body"]})
+		case http.MethodGet:
+			if f.failGets {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			if page < 1 {
+				page = 1
+			}
+			size := f.pageSize
+			if size == 0 {
+				size = 100
+			}
+			start := min((page-1)*size, len(f.comments))
+			end := min(start+size, len(f.comments))
+			if end < len(f.comments) {
+				w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/issues/42/comments?page=%d>; rel="next"`, ts.URL, page+1))
+			}
+			out := make([]map[string]any, 0, end-start)
+			for i := start; i < end; i++ {
+				out = append(out, map[string]any{"id": float64(i + 1), "body": f.comments[i]})
+			}
+			_ = json.NewEncoder(w).Encode(out)
+		default:
+			t.Errorf("unexpected %s", r.Method)
+		}
+	})
+	ts = httptest.NewServer(mux)
+	return ts
+}
+
+// TestBranchMarkerNotRepostedAcrossRuns pins #72. Run 1 records branch
+// feature/x. Run 2 is a retry whose first-turn FetchIssueDetail failed, so it
+// starts from the list-fetched issue (no BranchName) and calls SetIssueBranch
+// with the same branch again: that must not post a second marker comment.
+// Before the fix every such call posted, notifying the issue's watchers.
+func TestBranchMarkerNotRepostedAcrossRuns(t *testing.T) {
+	thread := &fakeIssueThread{}
+	ts := thread.serve(t)
+	defer ts.Close()
+	ctx := context.Background()
+
+	run1 := ghclient.NewClient(defaultConfig(ts.URL))
+	require.NoError(t, run1.SetIssueBranch(ctx, "42", "feature/x"))
+	require.Equal(t, 1, thread.posts)
+
+	// Happy path: a retry's FetchIssueDetail restores the branch, so the
+	// worker's comparison (worker.go branch tracking) never calls SetIssueBranch.
+	run2 := ghclient.NewClient(defaultConfig(ts.URL))
+	detail, err := run2.FetchIssueDetail(ctx, "42")
+	require.NoError(t, err)
+	require.NotNil(t, detail.BranchName)
+	assert.Equal(t, "feature/x", *detail.BranchName)
+
+	// Fallback path: the worker had no stored branch and calls again.
+	require.NoError(t, run2.SetIssueBranch(ctx, "42", "feature/x"))
+	require.NoError(t, ghclient.NewClient(defaultConfig(ts.URL)).SetIssueBranch(ctx, "42", "feature/x"))
+	assert.Equal(t, 1, thread.posts, "same branch across runs must post exactly one marker")
+}
+
+// TestSetIssueBranchPostsWhenLatestMarkerDiffers pins that only the LATEST
+// marker counts: switching branches posts, and switching back to an earlier
+// branch posts again so FetchIssueDetail's last-marker-wins read stays right.
+// Markers are spread across comment pages to exercise pagination.
+func TestSetIssueBranchPostsWhenLatestMarkerDiffers(t *testing.T) {
+	thread := &fakeIssueThread{pageSize: 2}
+	thread.comments = []string{"human comment", "<!-- itervox:branch:feature/a -->", "another", "more"}
+	ts := thread.serve(t)
+	defer ts.Close()
+	ctx := context.Background()
+	c := ghclient.NewClient(defaultConfig(ts.URL))
+
+	require.NoError(t, c.SetIssueBranch(ctx, "42", "feature/a"))
+	assert.Equal(t, 0, thread.posts, "marker for feature/a on page 1 is still the latest")
+
+	require.NoError(t, c.SetIssueBranch(ctx, "42", "feature/b"))
+	require.NoError(t, c.SetIssueBranch(ctx, "42", "feature/a"))
+	assert.Equal(t, 2, thread.posts, "a different latest branch posts each time")
+
+	detail, err := c.FetchIssueDetail(ctx, "42")
+	require.NoError(t, err)
+	require.NotNil(t, detail.BranchName)
+	assert.Equal(t, "feature/a", *detail.BranchName)
+}
+
+// TestSetIssueBranchFailsOpenWhenCommentsUnreadable pins that a failed marker
+// read still records the branch: a duplicate comment is cheaper than a retry
+// that cannot find its branch.
+func TestSetIssueBranchFailsOpenWhenCommentsUnreadable(t *testing.T) {
+	thread := &fakeIssueThread{failGets: true}
+	ts := thread.serve(t)
+	defer ts.Close()
+
+	require.NoError(t, ghclient.NewClient(defaultConfig(ts.URL)).SetIssueBranch(context.Background(), "42", "feature/x"))
+	assert.Equal(t, 1, thread.posts)
+}
+
+// TestListLabelsFollowsPagination pins #75's label read: every page of
+// GET /repos/{o}/{r}/labels is followed via the Link header.
+func TestListLabelsFollowsPagination(t *testing.T) {
+	var ts *httptest.Server
+	calls := 0
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/repos/owner/repo/labels", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "done"}})
+			return
+		}
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/labels?page=2>; rel="next"`, ts.URL))
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "todo"}, {"name": "bug"}})
+	}))
+	defer ts.Close()
+
+	names, err := ghclient.NewClient(defaultConfig(ts.URL)).ListLabels(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"todo", "bug", "done"}, names)
+	assert.Equal(t, 2, calls)
+}
+
+// TestCreateLabelSendsNameAndColor pins the request body and the status
+// handling of CreateLabel: 201 succeeds, anything else is an error naming
+// the label.
+func TestCreateLabelSendsNameAndColor(t *testing.T) {
+	var got map[string]string
+	status := http.StatusCreated
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/repos/owner/repo/labels", r.URL.Path)
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	c := ghclient.NewClient(defaultConfig(ts.URL))
+
+	require.NoError(t, c.CreateLabel(context.Background(), "in-review", "#d93f0b"))
+	assert.Equal(t, map[string]string{"name": "in-review", "color": "d93f0b"}, got, "leading # is stripped")
+
+	status = http.StatusUnprocessableEntity
+	err := c.CreateLabel(context.Background(), "done", "0e8a16")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"done"`)
+	assert.Contains(t, err.Error(), "422")
+}
+
+// TestCommentCommandClientCalls (#84): the repository comment list (issue
+// number, login, pagination), the permission check (404 = none, role_name
+// preferred) and the reaction POST.
+func TestCommentCommandClientCalls(t *testing.T) {
+	var reactionBody string
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/repos/owner/repo/issues/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "" {
+			assert.Equal(t, "2026-10-09T12:00:00Z", r.URL.Query().Get("since"))
+			assert.Equal(t, "asc", r.URL.Query().Get("direction"))
+			w.Header().Set("Link", `<`+srv.URL+`/repos/owner/repo/issues/comments?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 11, "body": "/itervox run",
+				"issue_url": srv.URL + "/repos/owner/repo/issues/42", "created_at": "2026-10-09T12:01:00Z",
+				"user": map[string]any{"login": "alice", "type": "User"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 12, "body": "hi",
+			"issue_url": srv.URL + "/repos/owner/repo/issues/7", "created_at": "2026-10-09T12:02:00Z",
+			"html_url": "https://github.com/owner/repo/pull/7#issuecomment-12",
+			"user":     map[string]any{"login": "dependabot[bot]", "type": "Bot"}}})
+	})
+	mux.HandleFunc("/repos/owner/repo/collaborators/alice/permission", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"permission": "write", "role_name": "security-writer"})
+	})
+	mux.HandleFunc("/repos/owner/repo/collaborators/mallory/permission", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/comments/11/reactions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		b, _ := io.ReadAll(r.Body)
+		reactionBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": "itervox-bot"})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	ctx := context.Background()
+
+	got, err := c.ListRepoCommentsSince(ctx, time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, got, 2, "both pages are read")
+	assert.Equal(t, ghclient.RepoComment{ID: "11", IssueNumber: "42", Body: "/itervox run", Login: "alice", UserType: "User",
+		CreatedAt: time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC)}, got[0])
+	assert.Equal(t, "7", got[1].IssueNumber)
+	assert.Equal(t, "Bot", got[1].UserType)
+	assert.True(t, got[1].OnPullRequest, "a pull request's conversation comment is marked")
+	assert.False(t, got[0].OnPullRequest)
+
+	perm, err := c.CollaboratorPermission(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "write", perm, "maintain (and custom roles derived from write) read as their base level")
+	perm, err = c.CollaboratorPermission(ctx, "mallory")
+	require.NoError(t, err)
+	assert.Equal(t, "none", perm, "not a collaborator")
+
+	require.NoError(t, c.AddCommentReaction(ctx, "11", "+1"))
+	assert.JSONEq(t, `{"content":"+1"}`, reactionBody)
+
+	login, err := c.AuthenticatedLogin(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "itervox-bot", login)
 }
