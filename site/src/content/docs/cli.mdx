@@ -31,10 +31,8 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
 
-> **Note (post-v0.2):** the `-demo` flag was removed in favour of an embedded
-> quickstart template. To explore itervox without a real tracker, drop a
-> `WORKFLOW.md` with `tracker.kind: memory` in your project (the template
-> ships in `internal/templates/quickstart.md`) and run the daemon as usual.
+> To try Itervox without a tracker account, API keys or an agent CLI, run
+> [`itervox demo`](#itervox-demo--try-it-in-30-seconds).
 
 ### Examples
 
@@ -54,27 +52,47 @@ itervox -logs-dir /var/log/itervox
 
 ---
 
+## `itervox demo` — Try it in 30 seconds
+
+```bash
+itervox demo [--dir <scratch>] [--no-open] [--tracker memory|local]
+```
+
+Runs a throwaway daemon against ten fake `DEMO-n` issues with a scripted agent, and opens the dashboard. It needs no tracker account, no API keys and no `claude` or `codex` on your `PATH`.
+
+Within about a minute the board shows issues moving through **In Progress** (with streamed agent activity and a fake pull request, linked in a comment on the issue), **input required** (DEMO-2 and DEMO-7 ask a question that the demo answers itself after a few seconds), **a failure and a retry** (DEMO-4 and DEMO-9 fail their first run), **In Review**, and **Done** (the demo stands in for the reviewer after a few seconds). The header shows a **Demo mode** badge.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dir` | a new temporary directory | Scratch directory for the demo. A directory that already holds a non-demo `WORKFLOW.md` is refused, so a real project's workflow is never overwritten; a previous demo's directory is reused. |
+| `--no-open` | `false` | Do not open the dashboard in a browser; the URL is in `<dir>/.itervox/dashboard_url`. |
+| `--tracker` | `memory` | `memory` keeps the demo issues in memory (gone on exit). `local` writes them as [issue files](/guides/local-issues/) in `<dir>/.itervox/issues/`: edit one and watch the board, and a second demo in the same `--dir` continues where the first stopped. |
+
+Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `logs/`, `workspaces/` and `.itervox/`. Tools it runs (such as `gh` and `git`) get `XDG_*` and `GH_CONFIG_DIR` pointed at `.xdg/` there, so they write nothing in your home directory and do not use your own `gh` login. The dashboard listens on an OS-assigned port on `127.0.0.1` without a token. `ITERVOX_SERVER_PORT`, `ITERVOX_SERVER_HOST`, `PORT`, `ITERVOX_API_TOKEN` and `ITERVOX_DRY_RUN` are ignored for the demo. Stop it with `q` in the terminal UI, `Ctrl-C`, or `itervox stop -workflow <dir>/WORKFLOW.md`, then delete the directory.
+
+---
+
 ## `itervox quickstart` — From a repository to a running board
 
 ```bash
-itervox quickstart [--tracker github|linear] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
+itervox quickstart [--tracker github|linear|local] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com. |
+| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com, else `local` ([issue files](/guides/local-issues/), no account needed). |
 | `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
 | `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
 | `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
-| `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels). |
+| `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels, adding the issue template). |
 | `--no-start` | `false` | Stop after the checks; do not start the daemon. |
 | `--ready-timeout` | `90s` | How long to wait for the daemon to report ready. |
 
 Steps, in order:
 
-1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
+1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. It also offers the [agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
 2. If a daemon is already running for this workflow, print its dashboard URL and stop. Otherwise remove a `HEARTBEAT.md` and `dashboard_url` left behind by a daemon that died (the next daemon rewrites both).
-3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set.
+3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set. The local tracker needs none.
 4. Run `itervox doctor --fix`: missing GitHub state labels are created after confirmation. Any doctor error stops quickstart with the report.
 5. Start the daemon in its own session (output in `.itervox/logs/quickstart-daemon.log`), wait until it publishes `.itervox/dashboard_url` and `GET /api/v1/ready` returns 200, then print the URL and where the API token is: `<logs-dir>/api-token` for a generated token, or your `ITERVOX_API_TOKEN`.
 
@@ -90,13 +108,15 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--tracker` | string | _(required)_ | Issue tracker: `linear` or `github` |
+| `--tracker` | string | _(required)_ | Issue tracker: `linear`, `github` or `local`. `local` also writes an example issue, `.itervox/issues/ITX-1.md`, in Backlog and skips the initial dependency analysis. |
 | `--runner` | string | `claude` | Agent runner backend: `claude` or `codex` |
 | `--output` | string | `WORKFLOW.md` | Output file path |
 | `--workflow` | string | `WORKFLOW.md` | Workflow path to migrate when `--update` is set |
 | `--dir` | string | `.` | Directory to scan for repo metadata |
 | `--force` | bool | `false` | Overwrite output file if it already exists |
 | `--update` | bool | `false` | Migrate an existing workflow to the latest schema without requiring `--tracker` |
+| `--preset` | string | `""` | `cross-review`: the runner writes, and two read-only reviewers, one on each backend, review every successful run (`reviewer_profiles`, `review_quorum: any_block`, `auto_review`). Without it, init offers the preset `[y/N]` in a terminal when both `claude` and `codex` are installed. See [Cross-review preset](/guides/cross-review/). |
+| `--issue-template` | bool | `false` | Add the agent-ready issue template without asking: `.github/ISSUE_TEMPLATE/agent-task.md` for GitHub (never over an existing file), printed for Linear. Without it, init asks `[y/N]` when run in a terminal and skips the question otherwise (it never waits on a pipe). With a workflow already at `--output` (and no `--force`), `init --issue-template` adds only the template and changes nothing else. See [Agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). |
 
 ### Auto-detection
 
@@ -145,6 +165,69 @@ itervox init --update --workflow WORKFLOW.md
 ```
 
 `itervox init --update` creates `WORKFLOW.md.bak`, extracts each legacy inline `agent.profiles.<name>.prompt` into `.itervox/agents/<name>/INSTRUCTIONS.md`, creates compact `SOUL.md` files, rewrites the profile to `soul_file` and `instructions_file`, and sets `itervox_schema_version: 2` as the first key of the front matter. It also patches broad root `.gitignore` rules so `.itervox/agents/**` remains committable. Comments, key order, quoting and indent width in `WORKFLOW.md` are preserved — only the migrated keys change, so the diff against `WORKFLOW.md.bak` is small enough to review line by line.
+
+---
+
+## `itervox doctor` — Check a workflow
+
+```bash
+itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]] [--upgrade]
+```
+
+Validates `WORKFLOW.md` (schema 2, dispatch checks, profile commands, skill and subagent references, GitHub state labels) and the local daemon files. Exits `0` when clean, `1` on any warning or failed check, `2` when the check itself cannot run.
+
+| Flag | Description |
+|---|---|
+| `--workflow` | Path to `WORKFLOW.md` (default `WORKFLOW.md`) |
+| `--clear-startup-error` | Remove `.itervox/STARTUP_ERROR.md` after fixing its cause |
+| `--fix` | Create missing GitHub state labels after a `[y/N]` prompt; `--yes` / `-y` skips it |
+| `--deploy` | Also probe agent credentials, `gh auth`, git push auth (dry run), the tracker API and the running daemon's `/api/v1/ready` |
+| `--upgrade` | Print only the v0.2.1 upgrade notes that apply to this workflow and environment, each with its fix and a link to the note. See below. |
+
+### Upgrade check (`--upgrade`)
+
+`itervox doctor --upgrade` reads the workflow's front matter (raw, so a config that no longer loads is still explained), the environment with `.itervox/.env` loaded, and the machine, and prints each applicable note as:
+
+```text
+[note 19] A set PORT environment variable now moves the dashboard
+  why:  `PORT=3000` is set in this environment; the dashboard now binds that port instead of `server.port`
+  fix:  if `PORT` belongs to another project, unset it for the daemon or set `ITERVOX_SERVER_PORT`
+  see:  https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28 (note 19)
+```
+
+With nothing to change it prints one `upgrade: all clear` line and exits `0`; with any note it exits `1`; when the workflow cannot be read it exits `2`. It runs on its own: combine it with `--deploy` or `--fix` and it exits `2`. Run it before and after upgrading from v0.2.0 or earlier.
+
+| Note | Applies when |
+|---|---|
+| 5 — per-project workspace and log paths | `workspace.root` is unset and `~/.itervox/workspaces` still holds worktrees in the old shared layout, or this project's v0.2.0 log directory (`~/.itervox/logs/<kind>/<slug>`, or `~/.itervox/logs` with no slug) still holds runtime state |
+| 6 — `server.port` defaults to 8090 | no port is set (`server.port`, `ITERVOX_SERVER_PORT`, `PORT`) and another process already holds 8090 (this project's own daemon does not count) |
+| 9 — `dependencies.auto_analyze` deprecated | the key is set |
+| 10 — headless token no longer printed | an `itervox.service` unit is installed and `ITERVOX_API_TOKEN` is pinned neither in the environment, `.itervox/.env`, nor `/etc/itervox/secrets.env` / `/run/itervox/env` |
+| 11 — SSH host-key checking values validated | `agent.ssh_strict_host_checking` or a `ssh_strict_host_by_host` entry is not one of `yes`, `no`, `ask`, `accept-new`, `off` |
+| 12 — `.WORKFLOW.md.lock` | the `.gitignore` next to `WORKFLOW.md` does not ignore it |
+| 13, 14 — unauthenticated origin and host checks | `server.allow_unauthenticated: true` (or the old `_lan` key) with no `server.allowed_hosts` |
+| 15 — `itervox stop` and old PID files | `.itervox/daemon.pid` was written by a pre-v0.2.1 daemon |
+| 17, 22 — drain on SIGTERM, new systemd unit | the installed unit lacks `--shutdown-grace` or `KillMode=mixed` |
+| 19 — `PORT` moves the dashboard | `PORT` is set (even empty) and `ITERVOX_SERVER_PORT` is not; an invalid value is reported as a startup failure |
+| 20 — headless JSON stderr | `ITERVOX_LOG_FORMAT=json` |
+| Breaking (#48) — token auth on loopback | this project ran a pre-v0.2.1 daemon (state in its v0.2.0 per-slug log directory, or an old PID file) on a loopback or default host, auth is not disabled, and no `ITERVOX_API_TOKEN` is pinned |
+| Breaking — `allow_unauthenticated_lan` renamed | the old key is set |
+| CORE-115 — backend contradicts command | `agent`, a profile, or a `rate_limited` rule's `switch_to_backend` asks for the other backend than the command runs (the rule's `switch_to_profile` command, else `agent.command`, which defaults to `claude`); such a rule now stops the config from loading |
+
+Not reported: notes with nothing to change in a config (1–4, 7, 8, 16, 18, 21, 25–27; note 2 concerns Linear only and note 4 only setups that use a project filter, but neither needs a config change), deployment packaging (23, 24, 28–30), and keys that are new in v0.2.1, so no earlier config has them (`agent.backend_fallback`, `server.allowed_hosts` entry format). A malformed new key makes the config fail to load, which plain `itervox doctor` reports. Read every note in the [v0.2.1 CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md#021--2026-09-28).
+
+---
+
+## `itervox secret` — Set .env values without showing them
+
+```bash
+itervox secret set KEY [--workflow WORKFLOW.md] [--replace]
+itervox secret list [--workflow WORKFLOW.md]
+```
+
+`set` writes `KEY` to the `.itervox/.env` next to the workflow. On a terminal it asks for the value with echo off; otherwise it reads the first line of stdin (`openssl rand -hex 32 | itervox secret set ITERVOX_API_TOKEN --replace`). The value never appears on the command line, in shell history or in output: it prints `saved KEY to … (value not shown)`. The value is written in the first form (single-quoted, double-quoted with escapes, or bare) that the daemon's `.env` loader reads back exactly, `$`, `#`, quotes and backslashes included; a value no form can carry is refused and nothing is written. If `.env` is a symlink, its target is written; an existing file keeps its owner. The file is written atomically with mode `0600`. A placeholder (a value of only `x` characters after an optional prefix, such as the ones `itervox init` writes) or an empty value is replaced; a real value is kept unless `--replace` is given. The check uses the value the daemon would load, so a later duplicate `KEY=` line counts, and a rotation removes every older copy. A file the daemon cannot load is refused without quoting it (the loader's own errors quote secret values), and so is a change that would alter any other variable, such as a `KEY=` line inside another variable's multi-line value. The daemon reads `.env` when it starts, so restart it after a change.
+
+`list` prints each variable the daemon would load, in file order, as `set`, `placeholder` or `empty`, never its value; names come from the parsed file, so the lines of a multi-line value are never shown. The [deploy skill](/guides/deployment/#guided-deployment-with-the-deploy-skill) uses both.
 
 ---
 

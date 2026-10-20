@@ -85,17 +85,18 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | **required** | Tracker backend. `"linear"` or `"github"`. |
+| `kind` | string | **required** | Tracker backend: `"linear"`, `"github"` or `"local"` (issues as Markdown files in `.itervox/issues/`, no account or key; see [Local issues](/guides/local-issues/)). |
 | `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
-| `api_key` | string | **required** | API token. Use `$VAR_NAME` to read from an environment variable (recommended). |
-| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. |
+| `api_key` | string | **required** (Linear, GitHub) | API token; not used by `local`. Use `$VAR_NAME` to read from an environment variable (recommended). |
+| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
-| `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
+| `backlog_states` | string[] | `["Backlog"]` (Linear, local), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 | `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly, and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. Load-time only (no runtime setter). |
+| `comment_commands` | map | off | `/itervox run [profile]`, `/itervox stop` and `/itervox review` in GitHub issue comments, obeyed from users with write access or in `allow`. Keys: `enabled` (default `false`), `allow` (logins), `allow_token_user` (default `false`), `reply_to_unauthorized` (default `false`). GitHub only. See [Comment commands](/guides/github-issues/#comment-commands). |
 
 **Outbox visibility:** pending and degraded entries appear in the dashboard's
 Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
@@ -298,15 +299,35 @@ not lower it below `polling.interval_ms` without first checking the rate-limit
 headroom the dashboard already reports.
 :::
 
+### Credit Itervox
+
+Both are optional and off unless you add them.
+
+- **PR footer.** Set `agent.pr_footer: true` and Itervox adds this footer to each pull request an agent opens:
+
+  ```markdown
+  ---
+  <!-- itervox:shipped -->
+  Shipped with [Itervox](https://github.com/vnovick/itervox)
+  ```
+
+  Itervox adds it after a successful run with `gh pr edit`, once per PR: the hidden marker (or the visible line) means it is already there. Only a PR on the run's own branch gets it; a PR that is merely linked from the issue, which may be someone else's, is left alone. The `gh` CLI must be authenticated for the repository.
+- **README badge.** Paste this into your README:
+
+  ```markdown
+  [![Shipped with Itervox](https://img.shields.io/badge/shipped%20with-Itervox-6f42c1)](https://github.com/vnovick/itervox)
+  ```
+
 ### Behaviour fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
-| `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
+| `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run opens on its own branch (after a successful worker run, not automation runs; PRs merely linked from the issue are left alone), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
+| `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for reviewer runs. Prefer `reviewer_profile`. The built-in default is read-only: it asks for a verdict, never a commit or push. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
-| `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. |
+| `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. Every reviewer (a single one included) is read-only, gets the diff against the base branch plus the latest handoff, and has its verdict, reasons and line comments posted on the issue; see the [cross-review preset](/guides/cross-review/). |
 | `review_quorum` | string | `"any_block"` | How reviewer verdicts combine: `any_block` (one block blocks), `majority` (strictly more than half), or `unanimous` (all must block). A reviewer that records no parseable verdict counts as a block. |
 | `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. As of v0.2.0, this safely coexists with `workspace.auto_clear` — the clear is deferred until the reviewer also completes. |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. Also counts `backend_fallback` switches of implementer runs. This cap limits switching; it is not the trigger condition. |
@@ -494,6 +515,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
 | `permission_mode` | string | `"bypass"` | Approval/sandbox flags this profile's agent turns launch with. `bypass` (default) keeps the long-standing `--dangerously-*` flags; `sandbox` uses `--permission-mode acceptEdits` (Claude) or `--sandbox workspace-write --ask-for-approval never` (Codex). Both stay non-interactive — itervox is headless, so a mode that can pause for approval hangs the turn. Unknown values warn and fall back to `bypass`. See [Agent Permissions](/guides/agent-permissions/). |
+| `require_evidence` | string[] | Optional, off by default. Checks a run of this profile must prove before Itervox moves its issue to `completion_state`, e.g. `[test, lint, ci]`. See [Done needs evidence](#done-needs-evidence). Kept as is when the profile is saved from the dashboard. |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
@@ -503,6 +525,33 @@ and writes those files before refreshing the snapshot.
 `allowed_actions` do not grant shell or tracker access by themselves. They only
 allow the daemon to mint short-lived per-run bearer grants for the corresponding
 `/api/v1/agent-actions/*` routes.
+
+### Done needs evidence
+
+An agent saying it is finished is not proof. With `require_evidence` on a profile, a successful run of that profile moves the issue to `completion_state` only when every listed check is proven:
+
+```yaml
+agent:
+  profiles:
+    implementer:
+      command: claude
+      require_evidence: [test, lint, ci]
+```
+
+- **Named checks** (`test`, `lint`, or any short name you choose): the agent records each one in a JSON file, `.itervox/evidence/<profile>.json` in the workspace, also available as `{{ run.evidence_path }}`. The run's prompt gets an `## Evidence (required)` block that names the file, the checks and the format:
+
+  ```json
+  {"commit": "<git rev-parse HEAD>", "checks": [
+    {"name": "test", "command": "make test", "output": "ok  ./... 3.2s", "passed": true}
+  ]}
+  ```
+
+  A check counts when it has `passed: true` and a non-empty `command` and `output`. In a git worktree the evidence must name the commit the checks ran on by its id (a 7+ character prefix is enough; a branch name such as `HEAD` does not count), and the only later commits allowed are ones that touch nothing outside `.itervox/` (moving code into it counts as a change) (such as the handoff commit Itervox makes after the run). Proof from before a code change never counts for new code. A staged or unstaged change to a tracked file outside `.itervox/handoff/` and `.itervox/evidence/` also voids the evidence: the checks did not run on it.
+- **`ci`**: the run's pull request must have only passing checks (`gh pr checks`; skipped checks count as passing). Pending, failing or unreadable checks, or no pull request, keep it unmet.
+
+Without the evidence, the issue is **not moved**: the run ends **input required** with a "Needs evidence before moving to …" reason listing each missing check, shown in the dashboard and posted on the issue. Reply (for example "run the tests and record them", or once CI is green) to resume the agent; the resumed run is checked again and moves the issue once the evidence is in place.
+
+Reviewer and automation runs are not gated, since they do not move the issue. Without `require_evidence` nothing changes. The value must be a list: a single value such as `require_evidence: true` is a config error, not a silent "off".
 
 ```yaml
 agent:
@@ -717,13 +766,39 @@ the first condition is checked.
 
 :::note[When stacking applies]
 Itervox does not dispatch an issue while any of its blockers is in a
-non-terminal state (`blocked_by`), and stacking only considers non-terminal
-blockers. So a normal dispatch never stacks: by the time a dependent is
-picked up, its blocker is terminal and the worktree starts from
-`base_branch`. Stacking takes effect only on paths that do not apply the
-blocker gate — a retry, a `backend_fallback` re-dispatch, a reviewer run or
-an input-required resume — typically when a blocker was added or reopened
-after the dependent was first dispatched.
+non-terminal state (`blocked_by`), with one exception when `stacked_prs` is
+on: an issue whose **only** unresolved blocker is in
+`tracker.completion_state` (its work is done and in review, not yet merged)
+is dispatched right away, stacked on that blocker's branch. That is what
+makes a chain of dependent issues move without waiting for each merge.
+
+The blocker's branch is the one its own run used: the tracker's branch name
+when the tracker reports one (Linear), otherwise `itervox/<identifier>`. On
+GitHub, a blocker counts as in review when it carries the `completion_state`
+label.
+
+If the blocker's branch is not available in this checkout, the dependent is
+**not** started on `base_branch`, which would lack the blocker's code: the
+fresh worktree is removed before any agent runs (a dependent branch that
+already has commits of its own is kept), and the issue waits for its blocker
+to land as before. The same applies to a dependent whose worktree already
+exists but is not stacked on the blocker (for example, one made from
+`base_branch` before the dependency was added): no agent runs and the issue
+waits, and that worktree is kept as it is. It gets another try once the blocker leaves review and
+comes back, or changes. While a stacked dependent runs, the Deps tab still
+lists its blocker, which has not landed yet.
+
+With `workspace.auto_clear: true` in the legacy layout (the repository at
+`workspace.root`, no `clone_url`), a blocker's finished run removes its
+worktree and local branch, so there is nothing local to stack on and
+dependents wait for the merge as before. Keep `auto_clear` off, or use
+`clone_url`, if you want stacking.
+
+Stacking also applies on paths that do not use the blocker gate (a retry, a
+`backend_fallback` re-dispatch, a reviewer run, an input-required resume),
+for example when a blocker was added or reopened after the dependent first
+started. Once the blocker lands, the dependent is restacked onto
+`base_branch` and its pull request retargeted.
 :::
 
 ```yaml
@@ -1049,11 +1124,11 @@ The body of `WORKFLOW.md` (everything after the closing `---`) is a [Liquid](htt
 |---|---|---|
 | `issue.identifier` | string | Tracker-specific issue ID (e.g. `"ENG-42"` for Linear, `"#123"` for GitHub). |
 | `issue.title` | string | Issue title. |
-| `issue.description` | string | Issue body/description. May be empty — use `{% if issue.description %}` to guard. |
+| `issue.description` | string | Issue body/description. When empty it prints as nothing, and `{% if issue.description %}` skips its block. |
 | `issue.url` | string | Full URL to the issue in the tracker. |
-| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues. |
+| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues; empty prints as nothing. |
 | `issue.labels` | string[] | Labels attached to the issue. Iterable with `{% for label in issue.labels %}`. |
-| `issue.priority` | string | Priority label (Linear: `"urgent"`, `"high"`, `"medium"`, `"low"`, `"no priority"`; GitHub: empty string). |
+| `issue.priority` | number | Priority number (Linear 0 none, 1 urgent … 4 low; GitHub `p0`–`p3` as 0–3). Unset when the tracker gives none (a GitHub issue without a `p` label), and printing it then fails under strict variables: use `{{ issue.priority \| default: "none" }}`. |
 | `issue.comments` | object[] | Comments on the issue. Each comment has `author_name`, `body`, and `created_at` fields. |
 | `id` | string | Internal tracker issue ID. |
 | `state` | string | Current issue state (e.g. `"Todo"`, `"In Progress"`). |

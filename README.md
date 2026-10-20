@@ -20,7 +20,7 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 ---
 
-Itervox is a long-running Go daemon that polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
+Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
 ## Spec conformance
 
@@ -341,6 +341,9 @@ hooks:
 # 1. Install
 brew tap vnovick/tap && brew install itervox
 
+# Optional: see it work first — fake issues, scripted agent, no keys needed
+itervox demo
+
 # 2. From your repository to a running board
 cd path/to/your/project
 itervox quickstart
@@ -358,6 +361,7 @@ Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the 
 
 | Command | Description |
 |---|---|
+| `itervox demo` | Try Itervox in about a minute: a throwaway board with fake issues and a scripted agent, no tracker, keys or agent CLI; everything stays in a temporary directory |
 | `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |

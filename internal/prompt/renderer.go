@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ func RenderWith(tmpl string, issue domain.Issue, attempt *int, extra map[string]
 		return DefaultPrompt, nil
 	}
 
-	tpl, err := liquidEngine.ParseTemplate([]byte(tmpl))
+	tpl, err := liquidEngine.ParseTemplate([]byte(blankOptionalText(tmpl)))
 	if err != nil {
 		return "", fmt.Errorf("template_parse_error: %w", err)
 	}
@@ -50,6 +51,121 @@ func RenderWith(tmpl string, issue domain.Issue, attempt *int, extra map[string]
 	return string(out), nil
 }
 
+// optionalOutputRe matches the inside of an output tag that prints an
+// optional issue field (#102): `{{ issue.description }}`,
+// `{{- issue.url | strip -}}`, `{{ issue["branch_name"] }}`. Group 1 ends
+// where the field does. These are the fields where "absent" and "empty" mean
+// the same thing to a prompt.
+var optionalOutputRe = regexp.MustCompile(`^(-?\s*` + optionalField + `)(?:\s*\||\s*-?\s*$)`)
+
+// optionalField is an optional issue field reference.
+const optionalField = `issue(?:\.(?:description|url|branch_name)|\[\s*(?:"(?:description|url|branch_name)"|'(?:description|url|branch_name)')\s*\])`
+
+var (
+	// optionalAssignRe matches an assign of an optional field, naming the
+	// alias in group 1.
+	optionalAssignRe = regexp.MustCompile(`^\{%-?\s*assign\s+(\w+)\s*=\s*` + optionalField + `\s*(?:\||-?%\}$)`)
+	// variableOutputRe matches an output tag's inside that starts with a
+	// plain variable, named in group 2; group 1 ends where the name does.
+	variableOutputRe = regexp.MustCompile(`^(-?\s*(\w+))(?:\s*\||\s*-?\s*$)`)
+)
+
+// blankOptionalText makes each output tag that prints an optional issue
+// field fall back to "" when it is unset, by adding `| default: ""` right
+// after the field; likewise an output of an alias assigned from one
+// (`{% assign d = issue.description %}…{{ d }}`). Only output tags change:
+// the binding and the alias stay nil, so a guard such as
+// `{% if issue.description %}` or `{% if d %}` keeps its meaning (an empty
+// string is truthy in Liquid). A misspelt field or alias is not matched and
+// still fails strict variables.
+//
+// The template is scanned token by token the way the engine reads it, not
+// searched with a pattern, so text that is not an output stays as written:
+// the inside of tags (quoted strings included) and {% raw %} and
+// {% comment %} blocks, each of which ends only at its own closing tag. A
+// prompt may show the agent Liquid examples.
+func blankOptionalText(tmpl string) string {
+	var b strings.Builder
+	aliases := map[string]bool{}
+	i := 0
+	for i < len(tmpl) {
+		open := strings.IndexByte(tmpl[i:], '{')
+		if open < 0 {
+			break
+		}
+		open += i
+		if open+1 >= len(tmpl) || (tmpl[open+1] != '{' && tmpl[open+1] != '%') {
+			b.WriteString(tmpl[i : open+1])
+			i = open + 1
+			continue
+		}
+		b.WriteString(tmpl[i:open])
+		closer := "}}"
+		if tmpl[open+1] == '%' {
+			closer = "%}"
+		}
+		end := tokenEnd(tmpl, open+2, closer)
+		if end < 0 {
+			i = open // unterminated: left for the parser to report
+			break
+		}
+		tok := tmpl[open:end]
+		if closer == "}}" {
+			inner := tok[2 : len(tok)-2]
+			m := optionalOutputRe.FindStringSubmatchIndex(inner)
+			if m == nil {
+				if v := variableOutputRe.FindStringSubmatchIndex(inner); v != nil && aliases[inner[v[4]:v[5]]] {
+					m = v
+				}
+			}
+			if m != nil {
+				tok = "{{" + inner[:m[3]] + ` | default: ""` + inner[m[3]:] + "}}"
+			}
+			b.WriteString(tok)
+			i = end
+			continue
+		}
+		if a := optionalAssignRe.FindStringSubmatch(tok); a != nil {
+			aliases[a[1]] = true
+		}
+		if name := verbatimTagRe.FindStringSubmatch(tok); name != nil {
+			// Copy through the block's own closing tag.
+			closeRe := endRawRe
+			if name[1] == "comment" {
+				closeRe = endCommentRe
+			}
+			loc := closeRe.FindStringIndex(tmpl[end:])
+			if loc == nil {
+				i = open
+				break
+			}
+			end += loc[1]
+		}
+		b.WriteString(tmpl[open:end])
+		i = end
+	}
+	b.WriteString(tmpl[i:])
+	return b.String()
+}
+
+// tokenEnd returns the index just past the first closer from start, or -1.
+// Like the Liquid engine's own lexer, it does not look inside quotes: a tag
+// ends at its first closer.
+func tokenEnd(s string, start int, closer string) int {
+	k := strings.Index(s[start:], closer)
+	if k < 0 {
+		return -1
+	}
+	return start + k + len(closer)
+}
+
+var (
+	// verbatimTagRe matches the opening tag of a raw or comment block.
+	verbatimTagRe = regexp.MustCompile(`^\{%-?\s*(raw|comment)\s*-?%\}$`)
+	endRawRe      = regexp.MustCompile(`\{%-?\s*endraw\s*-?%\}`)
+	endCommentRe  = regexp.MustCompile(`\{%-?\s*endcomment\s*-?%\}`)
+)
+
 // RenderPromptOverlay renders a plain-text or Liquid prompt fragment using the
 // standard issue/attempt bindings plus optional extra bindings, returning the
 // original text on parse/render errors for backward compatibility.
@@ -58,7 +174,7 @@ func RenderPromptOverlay(promptText string, issue domain.Issue, attempt *int, ex
 		return ""
 	}
 
-	tpl, err := liquidEngine.ParseTemplate([]byte(promptText))
+	tpl, err := liquidEngine.ParseTemplate([]byte(blankOptionalText(promptText)))
 	if err != nil {
 		// Not valid Liquid — return as plain text (backward-compatible).
 		return promptText
