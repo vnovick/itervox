@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/skills"
+	"github.com/vnovick/itervox/internal/tracker/local"
 )
 
 // runDoctor is the entrypoint for `itervox doctor`. It runs a fast preflight
@@ -28,6 +29,7 @@ func runDoctor(args []string) {
 	deploy := false
 	fix := false
 	assumeYes := false
+	upgrade := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -44,6 +46,8 @@ func runDoctor(args []string) {
 			fix = true
 		case a == "--yes" || a == "-y":
 			assumeYes = true
+		case a == "--upgrade":
+			upgrade = true
 		case a == "-h" || a == "--help":
 			printDoctorUsage(os.Stdout)
 			return
@@ -57,6 +61,28 @@ func runDoctor(args []string) {
 	}
 	if clearStartupError {
 		clearStartupErrorMarker(workflowPath)
+	}
+	if upgrade {
+		// #82: only the v0.2.1 upgrade notes that apply, judged against the
+		// environment the daemon would have (.itervox/.env loaded, never
+		// overriding variables already set).
+		if deploy || fix {
+			fmt.Fprintln(os.Stderr, "doctor: --upgrade runs on its own; run --deploy or --fix separately")
+			fatalExit(2)
+		}
+		loadDotEnvFrom(filepath.Dir(workflowPath))
+		report, code := runUpgradeDoctor(workflowPath)
+		dst := os.Stdout
+		if code == 2 {
+			dst = os.Stderr // the check could not run
+		}
+		if _, err := io.WriteString(dst, report); err != nil {
+			fmt.Fprintf(os.Stderr, "doctor: write report: %v\n", err)
+		}
+		if code != 0 {
+			fatalExit(code)
+		}
+		return
 	}
 	if deploy {
 		// Probe with the credentials the daemon would have: it loads
@@ -85,9 +111,10 @@ func runDoctor(args []string) {
 }
 
 func printDoctorUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]]")
+	_, _ = fmt.Fprintln(w, "usage: itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]] [--upgrade]")
 	_, _ = fmt.Fprintln(w, "  --clear-startup-error  remove .itervox/STARTUP_ERROR.md if present (use after fixing the root cause)")
 	_, _ = fmt.Fprintln(w, "  --fix                  create missing GitHub state labels (asks first; --yes / -y skips the prompt for CI)")
+	_, _ = fmt.Fprintln(w, "  --upgrade              print only the v0.2.1 upgrade notes that apply to this workflow and environment, each with its fix; exits 1 when any applies")
 	_, _ = fmt.Fprintln(w, "  --deploy               also probe agent credentials, gh auth, git push auth (dry-run), the tracker API and the daemon's /api/v1/ready; exits 1 on any [fail]")
 }
 
@@ -141,6 +168,9 @@ type DoctorReport struct {
 	// ProfileRefIssues are skill / subagent references in profile prompts
 	// that do not resolve (#86). Warnings only: they never fail doctor.
 	ProfileRefIssues []skills.InventoryIssue
+	// LocalIssueProblems are local tracker issue files that do not parse
+	// (#85). Warnings only: the daemon serves their last good version.
+	LocalIssueProblems []string
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -302,6 +332,13 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		report.ProfileRefIssues = checkProfileRefs(cfg, workflowPath)
 	}
 
+	// Local tracker issue files that do not parse (#85).
+	if cfg != nil && cfg.Tracker.Kind == "local" {
+		for _, p := range local.New(local.Config{Dir: config.LocalIssuesDir(cfg)}).Problems() {
+			report.LocalIssueProblems = append(report.LocalIssueProblems, p.Path+": "+p.Err)
+		}
+	}
+
 	// GitHub state labels: one read through the tracker client. An API
 	// failure is reported but never fails doctor.
 	if cfg != nil {
@@ -417,6 +454,9 @@ func renderDoctorReport(r DoctorReport) string {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}
 	renderProfileRefIssues(&b, r.ProfileRefIssues)
+	for _, p := range r.LocalIssueProblems {
+		fmt.Fprintf(&b, "WARNING: issue file does not parse (Itervox keeps using its last good version and will not write to it until it is fixed): %s\n", p)
+	}
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
