@@ -388,6 +388,9 @@ state changes at a bounded interval (default 15 s) via
 
 - active workflow path and `itervox_schema_version`
 - dashboard URL and tracker/project
+- tracker sync status (`## Sync`, #117): mode, last pull, lag and its warn
+  threshold, pending writes, next push, last sync error. Also rewritten when
+  the sync status changes, so `itervox doctor` reads a current last pull
 - agent capacity (running / max)
 - automation queue pressure (length / max, paused producers, recent rejects)
 - dependency audit summary (blocked / unknown / unblocked counts)
@@ -439,7 +442,7 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/server` | chi-based HTTP API, SSE broadcaster, embedded web assets |
 | `internal/statusui` | Bubbletea terminal UI; reads `Orchestrator.Snapshot()` |
 | `internal/templates` | WORKFLOW.md scaffolding and human-input template |
-| `internal/templates/scaffold` | Registry of `--template` presets for `itervox init` (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) |
+| `internal/templates/scaffold` | Registry of `itervox init --template` starter templates (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) and their one-line summaries; `cmd/itervox/init_templates.go` renders each template's profiles, review settings, backend fallback and automations |
 | `internal/logging` | slog setup and shared logging helpers |
 | `internal/profiles` | Built-in profile registry: `embed.FS` of `builtin/<name>/{SOUL,INSTRUCTIONS}.md` plus per-profile `Default{Command,Backend,Actions}` |
 | `internal/depsanalysis` | Dependency analyzer sidecar — async job that runs an analyzer profile over the snapshot graph and caches results |
