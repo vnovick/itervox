@@ -1,0 +1,335 @@
+name: Desktop release
+
+# The signed, notarized macOS release (#130): a universal Itervox.app (with
+# the itervox daemon as its sidecar) in a .dmg, the universal `itervox` CLI
+# in a .zip, and the updater archive + latest.json the app updates from.
+#
+# Called by release.yml after GoReleaser has created the GitHub release for
+# the tag, and runnable by hand (Actions → Desktop release) to build and
+# verify without publishing. Every step that needs a credential reads it
+# from a secret by name; scripts never print them. Without the Apple
+# secrets (a fork, a pull request, or not yet configured) the build still
+# runs, unsigned, with a warning, and publishes no updater manifest.
+# Required secrets and how to verify a build: docs/release-mac.md.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and upload to (vX.Y.Z)"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into the build (default: tauri.conf.json); nothing is uploaded to a release"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: Sign · notarize · publish (macOS universal)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      TAURI_DIR: desktop/src-tauri
+      BUNDLE_DIR: desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos
+      OUT: ${{ github.workspace }}/release-out
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve the version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$TAG" ]; then
+            version="${TAG#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version="$(jq -r .version "$TAURI_DIR/tauri.conf.json")"
+          fi
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a MAJOR.MINOR.PATCH[-PRERELEASE] version; the updater could not compare it"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Itervox $version"
+
+      # Decides signed vs unsigned from which secrets exist (their values
+      # stay in the environment of this step only) and fails on a
+      # half-configured set rather than shipping a broken release.
+      - name: Decide signing mode
+        id: mode
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: bash desktop/scripts/macos-release.sh mode "$TAURI_DIR/tauri.conf.json"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Set up Rust (both Mac targets)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustc --version
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-tauri
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: desktop-release-${{ runner.os }}-${{ hashFiles('desktop/src-tauri/Cargo.lock', 'Makefile') }}
+          restore-keys: desktop-release-${{ runner.os }}-
+
+      # The dashboard, then the daemon for both architectures, lipo'd into
+      # binaries/itervox-universal-apple-darwin (the sidecar of a universal
+      # app build, and the standalone CLI).
+      - name: Build the universal daemon
+        run: |
+          make desktop-sidecar
+          lipo -archs "$TAURI_DIR/binaries/itervox-universal-apple-darwin"
+
+      - name: Install the Tauri CLI
+        run: make desktop-tauri-cli
+
+      - name: Import the signing certificate
+        if: steps.mode.outputs.sign == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: bash desktop/scripts/macos-release.sh import-cert
+
+      # --- the standalone CLI ------------------------------------------------
+
+      - name: Sign the CLI
+        if: steps.mode.outputs.sign == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          mkdir -p "$OUT/cli"
+          cp "$TAURI_DIR/binaries/itervox-universal-apple-darwin" "$OUT/cli/itervox"
+          bash desktop/scripts/macos-release.sh sign "$OUT/cli/itervox" dev.itervox.cli
+
+      - name: Package the CLI unsigned
+        if: steps.mode.outputs.sign != 'true'
+        run: |
+          mkdir -p "$OUT/cli"
+          cp "$TAURI_DIR/binaries/itervox-universal-apple-darwin" "$OUT/cli/itervox"
+
+      - name: Zip the CLI
+        id: cli
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGNED: ${{ steps.mode.outputs.sign }}
+        run: |
+          suffix=""
+          [ "$SIGNED" = "true" ] || suffix="-unsigned"
+          zip="$OUT/itervox_${VERSION}_darwin_universal${suffix}.zip"
+          ditto -c -k "$OUT/cli/itervox" "$zip"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize the CLI
+        if: steps.mode.outputs.notarize == 'true'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ZIP: ${{ steps.cli.outputs.zip }}
+        run: bash desktop/scripts/macos-release.sh notarize "$ZIP"
+
+      - name: Verify the CLI signature
+        if: steps.mode.outputs.sign == 'true'
+        run: bash desktop/scripts/macos-release.sh verify-cli "$OUT/cli/itervox"
+
+      # --- the app -----------------------------------------------------------
+
+      # Tauri signs the sidecar and the app with the hardened runtime and
+      # Entitlements.plist when APPLE_SIGNING_IDENTITY is set (the keychain
+      # is the temporary one imported above). Notarization is done below, so
+      # no notarization credentials reach this step. The version is stamped
+      # from the tag so the updater compares the right numbers.
+      - name: Build the app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.mode.outputs.sign == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then unset APPLE_SIGNING_IDENTITY; fi
+          cd "$TAURI_DIR"
+          cargo tauri build --target universal-apple-darwin --bundles app \
+            --config "{\"version\":\"$VERSION\"}"
+          test -x "target/universal-apple-darwin/release/bundle/macos/Itervox.app/Contents/MacOS/itervox"
+
+      - name: Notarize and staple the app
+        if: steps.mode.outputs.notarize == 'true'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          mkdir -p "$OUT"
+          ditto -c -k --keepParent "$BUNDLE_DIR/Itervox.app" "$OUT/Itervox-notarize.zip"
+          bash desktop/scripts/macos-release.sh notarize "$OUT/Itervox-notarize.zip"
+          rm "$OUT/Itervox-notarize.zip"
+          bash desktop/scripts/macos-release.sh staple "$BUNDLE_DIR/Itervox.app"
+
+      - name: Verify the app signature (codesign --verify --deep --strict)
+        if: steps.mode.outputs.sign == 'true'
+        run: codesign --verify --deep --strict --verbose=2 "$BUNDLE_DIR/Itervox.app"
+
+      - name: Verify Gatekeeper accepts the app (spctl --assess)
+        if: steps.mode.outputs.notarize == 'true'
+        run: bash desktop/scripts/macos-release.sh verify-app "$BUNDLE_DIR/Itervox.app"
+
+      - name: Build the disk image
+        id: dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGNED: ${{ steps.mode.outputs.sign }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.mode.outputs.sign == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+        run: |
+          suffix=""
+          [ "$SIGNED" = "true" ] || suffix="-unsigned"
+          dmg="$OUT/Itervox_${VERSION}_universal${suffix}.dmg"
+          bash desktop/scripts/macos-release.sh make-dmg "$BUNDLE_DIR/Itervox.app" "$dmg"
+          if [ "$SIGNED" = "true" ]; then
+            bash desktop/scripts/macos-release.sh sign "$dmg" dev.itervox.desktop.dmg
+          fi
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize, staple and verify the disk image
+        if: steps.mode.outputs.notarize == 'true'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DMG: ${{ steps.dmg.outputs.dmg }}
+        run: |
+          bash desktop/scripts/macos-release.sh notarize "$DMG"
+          bash desktop/scripts/macos-release.sh staple "$DMG"
+          bash desktop/scripts/macos-release.sh verify-dmg "$DMG"
+
+      # --- the updater -------------------------------------------------------
+
+      - name: Release notes
+        if: steps.mode.outputs.updater == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" {inside=1; next}
+            inside && /^## \[/ {exit}
+            inside {print}
+          ' CHANGELOG.md > "$OUT/notes.md"
+          echo "Release notes: $(wc -l < "$OUT/notes.md") lines"
+
+      # The archive is made from the stapled app, then signed with the
+      # updater key; the app verifies that signature against the public key
+      # in tauri.conf.json before installing.
+      - name: Build and sign the updater archive and latest.json
+        if: steps.mode.outputs.updater == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ inputs.tag || format('v{0}', steps.version.outputs.version) }}
+          REPO: ${{ github.repository }}
+        run: |
+          archive="$OUT/Itervox_${VERSION}_universal.app.tar.gz"
+          bash desktop/scripts/macos-release.sh updater-archive "$BUNDLE_DIR/Itervox.app" "$archive"
+          (cd "$TAURI_DIR" && cargo tauri signer sign "$archive")
+          test -s "$archive.sig"
+          bash desktop/scripts/gen-latest-json.sh \
+            --version "$VERSION" \
+            --url "https://github.com/$REPO/releases/download/$TAG/$(basename "$archive")" \
+            --signature-file "$archive.sig" \
+            --notes-file "$OUT/notes.md" \
+            --out "$OUT/latest.json"
+          rm -f "$OUT/notes.md"
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: bash desktop/scripts/macos-release.sh delete-keychain
+
+      - name: List the release files
+        run: ls -la "$OUT"
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: itervox-macos-universal-${{ steps.version.outputs.version }}
+          path: |
+            release-out/*.dmg
+            release-out/*.zip
+            release-out/*.app.tar.gz
+            release-out/*.app.tar.gz.sig
+            release-out/latest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      # latest.json goes up last: the moment it is published, installed
+      # apps are offered the archive it points at, so everything it
+      # references must already be there.
+      - name: Upload to the GitHub release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=("$OUT"/*.dmg "$OUT"/*.zip "$OUT"/*.app.tar.gz "$OUT"/*.app.tar.gz.sig)
+          gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          if [ -f "$OUT/latest.json" ]; then
+            gh release upload "$TAG" "$OUT/latest.json" --clobber --repo "$GITHUB_REPOSITORY"
+          fi
