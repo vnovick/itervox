@@ -172,6 +172,11 @@ only the event loop mutates them.
   runs, and the event loop records the blocker so the issue waits for it.
   `pruneStackUnavailable` drops a record each tick once it no longer
   matches the candidate's blocker. Session-scoped, not persisted.
+- `CronCursors` (#176) is the per-cron-rule `filter.limit` rotation cursor
+  (automation ID → last identifier served). A limited cron tick is handed to
+  the loop whole (`EventDispatchCronBatch`); the loop selects, skips issues
+  already running/queued for that rule, dispatches and advances the cursor.
+  Persisted as `cron_cursors` in `automation_queue.json`.
 - `DeferredStateMoves` (#177) holds itervox-originated state moves (an
   agent's `move_state`, offered via `DeferAgentStateMove` from the adapter)
   that would make reconciliation stop the issue's running worker. They are

@@ -410,6 +410,13 @@ Used for batch-style triggers such as:
 
 If one poll or cron tick finds many matching issues, `limit` caps how many are queued from that batch.
 
+On a `cron` rule, `limit` rotates through the matching issues instead of picking the same ones every tick. Each rule keeps a cursor: the last issue it served. The next tick starts with the first matching issue after the cursor (issues are ordered by identifier), wraps around to the top, and stops after `limit` issues. With 7 matching issues and `limit: 3`, the ticks serve `1–3`, `4–6`, then `7, 1, 2`, so every issue is reached and none is served twice before all have been served once.
+
+- An issue that already has a run, or a queued dispatch, from this rule is skipped and does not use up a slot; the next issue in the rotation takes it.
+- An issue that no longer matches the filter simply drops out of the rotation. The cursor is a position, so the rotation continues even when the issue it points at has left.
+- The cursor is saved in `automation_queue.json` in the daemon log directory, with the automation queue, so a restart resumes the rotation where it stopped.
+- A cron rule without `limit` dispatches every matching issue each tick, as before. On the event-polled triggers `limit` still caps each poll batch without rotating.
+
 ## Instructions
 
 Automation instructions are a **small overlay** on top of the selected profile.
