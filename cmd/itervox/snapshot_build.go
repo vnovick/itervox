@@ -278,6 +278,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// #117 — pull lag and pending writes, from the store's and the
 			// outbox's own accessors (never orchestrator.State).
 			SyncStatus: syncSrc.row(now),
+			// #187 — the off-loop tracker poll: in flight, slow, degraded.
+			TrackerPoll: trackerPollRow(s, now),
 			// CORE-046 — the RecentFailures ring (always an array).
 			RecentFailures: recentFailureRows(s),
 			// CORE-175 — operator acks of worker failures + the capability

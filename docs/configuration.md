@@ -66,7 +66,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
+| `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds). The poll runs off the event loop (#187): one at a time, under a deadline of 3× the interval (at least 30 s, at most 2 minutes); a tick that finds the previous poll still running skips its own and logs a warning once the poll is past the interval plus half an interval. After three polls in a row hit a tracker timeout, network error or 5xx, tracker reads pause for two intervals (30 s to 5 minutes) and the poll shows as degraded on the dashboard, `HEARTBEAT.md` and `/api/v1/ready`. |
 | `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. Separately, when the tracker actually rate-limits a request (Linear: HTTP 400 `RATELIMITED`; GitHub: 429/403), the published reset is recorded once for every caller, writes are admitted ahead of reads when it lifts (Linear requests are classified by GraphQL operation), calls fail fast when the reset is more than 60s away, and a recorded window is capped at 2 hours. |
 | `automation_interval_ms` | int | `15000` | How often the automation event poll (`tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`) lists issues (#155). While the tracker reports less than 20% of its request budget left, the interval doubles after each poll, up to 8×, and returns to it once the budget recovers. The poll fetches only the states its rules need: their `filter.states` and `trigger.state`, the active states, and the backlog states only for `issue_moved_to_backlog`; never terminal states unless a rule names one. |
 
@@ -918,6 +918,8 @@ runtime queue files, or other generated daemon state.
 When a daemon starts, it writes `.itervox/HEARTBEAT.md` atomically with the
 current workflow path, schema version, dashboard URL, tracker/project,
 tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next
-push, last sync error), capacity, automation queue pressure, dependency audit
+push, last sync error), the tracker poll (`- Poll:` under `## Tracker`, #187:
+`ok, last took 840ms`, `running for 12s`, `slow, running for 47s`, or
+`degraded (3 consecutive transport failures; tracker reads paused until …)`), capacity, automation queue pressure, dependency audit
 summary, input-required count, retry count, and last notable error. Agents can read it when they need
 current daemon state; it is generated runtime state, not prompt text.

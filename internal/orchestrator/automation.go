@@ -570,6 +570,8 @@ func (o *Orchestrator) fetchInputRequiredIssue(ctx context.Context, entry *Input
 	if entry == nil {
 		return nil
 	}
+	ctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+	defer cancel()
 	if entry.IssueID != "" {
 		issue, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
 		if err != nil {

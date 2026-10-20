@@ -11,12 +11,14 @@ const readyPath = "/api/v1/ready"
 
 // ReadyTickBudget bounds how long one event-loop iteration (a poll tick or an
 // event) may run before /ready calls the loop stale. An explicit policy
-// constant, NOT derived from tracker.MaxRateLimitWait: that caps a SINGLE
-// rate-limit wait, while one tracker call can take a gate wait plus up to
-// four retry waits, and one tick makes several tracker calls (reconcile, a
-// paginated candidate fetch, resumes). Ten minutes is far past any healthy
-// tick and well inside what an operator tolerates before a restart.
-const ReadyTickBudget = 10 * time.Minute
+// constant. Since #187 the poll's tracker reads (reconcile, the paginated
+// candidate fetch, reply checks, dispatch claim reads) run off the loop, and
+// every tracker read an iteration still makes shares one 30 s deadline
+// (orchestrator.loopReadCtx), so a healthy iteration is milliseconds and a
+// degraded one is bounded by that deadline. Two minutes is four times it:
+// past anything a slow-but-working tracker produces, and a wedged loop is
+// reported in two minutes instead of ten.
+const ReadyTickBudget = 2 * time.Minute
 
 // readyMinStaleAfter floors the idle-staleness threshold so a very short
 // polling.interval_ms (tests, demos) cannot make a GC pause or a slow disk
@@ -60,6 +62,9 @@ type ReadinessSignals struct {
 	// WORKFLOW.md reload (CORE-057). A draining daemon is not ready, so a
 	// load balancer stops routing new requests to it.
 	Draining bool
+	// PollDegraded is whether the tracker breaker has the poll degraded
+	// after consecutive transport failures (#187).
+	PollDegraded bool
 }
 
 // ReadyResponse is the /api/v1/ready body: booleans and one timestamp, no
@@ -85,7 +90,8 @@ type ReadyResponse struct {
 //     (non-rate-limited) poll failures AND not draining (CORE-057).
 //   - degraded: a rate-limited poll or an open rate-limit gate, a tick that
 //     shed its poll to keep the tracker budget for writes, a failure run
-//     below the threshold, or an invalid WORKFLOW.md. None of these make the
+//     below the threshold, an open tracker breaker (#187), or an invalid
+//     WORKFLOW.md. None of these make the
 //     daemon unready: it is still working (on its last valid config, or
 //     waiting out a published reset), and pulling it out of a load balancer
 //     would only hide the dashboard an operator needs to fix it.
@@ -112,7 +118,7 @@ func EvaluateReadiness(sig ReadinessSignals, now time.Time) ReadyResponse {
 		LastPollOK:    sig.LastPollOK,
 		ConfigInvalid: sig.ConfigInvalid,
 		Degraded: sig.PollRateLimited || sig.PollShedding || sig.RateLimitedUntil != nil ||
-			sig.ConsecutivePollFailures > 0 || sig.ConfigInvalid,
+			sig.ConsecutivePollFailures > 0 || sig.ConfigInvalid || sig.PollDegraded,
 		TrackerRateLimitedUntil: sig.RateLimitedUntil,
 		Draining:                sig.Draining,
 	}

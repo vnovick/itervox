@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
-	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // ReconcileStalls checks all running sessions for stall timeout violations.
@@ -120,39 +120,52 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 	return state
 }
 
-// ReconcileTrackerStates fetches current states for all running issues and
-// reconciles: terminal→cleanup, active→update snapshot, neither→stop no cleanup.
-// If the fetch fails, workers are kept and the error is logged.
-// The optional logBuf receives per-issue explanatory messages when workers are stopped.
+// runningRunIDs is the reconcile read's work order (#187): every running
+// issue's ID mapped to the run it belongs to, captured when the read starts.
+// applyTrackerStates later acts only on runs that are still the issue's
+// current one, so a run that ended or was replaced while the read was in
+// flight is never stopped on a state read taken before it started.
+func runningRunIDs(state State) map[string]string {
+	if len(state.Running) == 0 {
+		return nil
+	}
+	ids := make(map[string]string, len(state.Running))
+	for id, entry := range state.Running {
+		runID := ""
+		if entry != nil {
+			runID = entry.RunID
+		}
+		ids[id] = runID
+	}
+	return ids
+}
+
+// applyTrackerStates reconciles running workers against refreshed, the
+// tracker's current states for the issues in fetched (runningRunIDs at the
+// read's start): terminal→cleanup, active→update snapshot, neither→stop no
+// cleanup, absent→stop. Runs on the event loop with the state it has when
+// the read's result is applied; an issue whose run is no longer the one the
+// read was taken for is skipped (#187).
+// The optional buf receives per-issue explanatory messages when workers are stopped.
 // State.ActiveStates and State.TerminalStates are used for comparison; these are
 // snapshotted from cfg under cfgMu at the start of each tick, so no lock is needed here.
-func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
-	var buf *logbuffer.Buffer
-	if len(logBuf) > 0 {
-		buf = logBuf[0]
-	}
-	if len(state.Running) == 0 {
+func applyTrackerStates(state State, fetched map[string]string, refreshed []domain.Issue, events chan OrchestratorEvent, cleanup CleanupWorker, buf *logbuffer.Buffer) State {
+	if len(fetched) == 0 || len(state.Running) == 0 {
 		return state
 	}
-
-	ids := make([]string, 0, len(state.Running))
-	for id := range state.Running {
-		ids = append(ids, id)
-	}
-
-	refreshed, err := tr.FetchIssueStatesByIDs(ctx, ids)
-	if err != nil {
-		slog.Warn("reconciliation: tracker refresh failed, keeping workers", "error", err)
-		return state
-	}
-
 	byID := make(map[string]string, len(refreshed))
 	for _, issue := range refreshed {
 		byID[issue.ID] = issue.State
 	}
 
 	now := time.Now()
-	for id, entry := range state.Running {
+	for id, runID := range fetched {
+		entry := state.Running[id]
+		if entry == nil || entry.RunID != runID {
+			// The run the read was taken for ended (or was replaced) while
+			// the read was in flight; its exit already settled it.
+			continue
+		}
 		// A finishing run settles with its own exit (#125). A worker that
 		// moved its issue to a terminal completion_state and finished was
 		// otherwise stopped here first, and its own success exit then found

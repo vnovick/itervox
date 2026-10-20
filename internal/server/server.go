@@ -803,6 +803,10 @@ type StateSnapshot struct {
 	// when none is recorded: a successful poll clears a poll failure, and a
 	// write failure ages out after an hour.
 	LastTrackerError *TrackerErrorRow `json:"lastTrackerError,omitempty"`
+	// TrackerPoll is the off-loop tracker poll's status (#187): whether a
+	// poll is in flight and for how long, whether it is slow, and whether
+	// the tracker breaker has it degraded. Absent on daemons predating it.
+	TrackerPoll *TrackerPollRow `json:"trackerPoll,omitempty"`
 	// SyncStatus is the tracker sync status (#117): last successful pull,
 	// lag, pending tracker writes and the last sync error. Absent on daemons
 	// predating it.
@@ -958,6 +962,31 @@ type TrackerErrorRow struct {
 	Message             string     `json:"message"`
 	ResetAt             *time.Time `json:"resetAt,omitempty"`
 	ConsecutiveFailures int        `json:"consecutiveFailures,omitempty"`
+}
+
+// TrackerPollRow is the wire shape of the off-loop tracker poll (#187).
+// The poll tick reads the tracker on its own goroutine, so a slow tracker no
+// longer freezes the event loop; this row is how an operator sees it.
+//
+//   - InFlight / StartedAt / RunningForMs: a poll is running, since when,
+//     and for how long at the snapshot's generation.
+//   - Slow: the running poll (or the last one) took longer than SlowAfterMs
+//     (the poll interval plus half an interval, at least 1 s).
+//   - Degraded: the tracker breaker opened after
+//     ConsecutiveTransportFailures polls in a row hit a timeout, network
+//     error or 5xx; tracker reads are skipped until BreakerOpenUntil, then
+//     one poll probes the tracker.
+type TrackerPollRow struct {
+	InFlight                     bool       `json:"inFlight"`
+	StartedAt                    *time.Time `json:"startedAt,omitempty"`
+	RunningForMs                 int64      `json:"runningForMs,omitempty"`
+	LastFinishedAt               *time.Time `json:"lastFinishedAt,omitempty"`
+	LastDurationMs               int64      `json:"lastDurationMs"`
+	SlowAfterMs                  int64      `json:"slowAfterMs"`
+	Slow                         bool       `json:"slow"`
+	Degraded                     bool       `json:"degraded"`
+	BreakerOpenUntil             *time.Time `json:"breakerOpenUntil,omitempty"`
+	ConsecutiveTransportFailures int        `json:"consecutiveTransportFailures,omitempty"`
 }
 
 // Sync modes (SyncStatusRow.Mode).

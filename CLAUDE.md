@@ -254,6 +254,20 @@ only the event loop mutates them.
   (redacted, ≤ 20 × 1 KiB; snapshots deep-copy the slice). Both reach
   `CompletedRun` (with `RunID`) only through `recordHistory` in the event
   loop; the stall exit built by `ReconcileStalls` copies them.
+- `TrackerPoll`, `TrackerBreaker` and `ClaimChecks` (#187) are event-loop
+  state for the off-loop tracker poll. A tick's tracker reads (running-state
+  reconcile, candidate list, input-required reply checks) run on ONE
+  goroutine at a time (`TrackerPoll.InFlight` latch, generation-checked,
+  watchdog past deadline + 30 s) and come back as `EventTrackerPolled`;
+  dispatch picks' #116 claim reads run off-loop too, each pick holding a slot
+  in `ClaimChecks` until `EventClaimChecked`. The loop applies results with
+  the state it has at apply time: reconcile acts only on runs whose `RunID`
+  is unchanged since the read started, and an issue whose run ended during
+  the poll (`TrackerPoll.EndedDuringPoll`) is not dispatched from that list.
+  Reads still on the loop go through `loopReadCtx` (one 30 s deadline per
+  iteration). `TrackerBreaker` opens after 3 polls in a row with a transport
+  failure and skips tracker reads for a cooldown. Session-scoped, not
+  persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is

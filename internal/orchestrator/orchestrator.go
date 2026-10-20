@@ -410,6 +410,23 @@ type Orchestrator struct {
 	// (those fields are only read under historyMu from the event-loop goroutine,
 	// and loadHistoryFromDisk has already consumed them by the time Run returns).
 	started atomic.Bool
+
+	// trackerReadBudgetOverride replaces trackerReadBudget's derived bound
+	// when non-zero (#187). Tests only; set before Run.
+	trackerReadBudgetOverride time.Duration
+	// trackerBreakerCooldownOverride replaces trackerBreakerCooldown's
+	// derived bound when non-zero (#187). Tests only; set before Run.
+	trackerBreakerCooldownOverride time.Duration
+	// trackerReadsWg joins the off-loop tracker poll and claim-read
+	// goroutines (#187) before Run returns. Their reads use Run's ctx, so
+	// shutdown cancels them.
+	trackerReadsWg sync.WaitGroup
+	// pollDegraded mirrors State.TrackerBreaker.Degraded() for /ready
+	// (#187). Written only by the event loop.
+	pollDegraded atomic.Bool
+	// pollStartedNano is when the in-flight off-loop poll started (unix
+	// nanos), 0 when none is (#187). Written only by the event loop.
+	pollStartedNano atomic.Int64
 }
 
 // New constructs an Orchestrator ready to Run. wm may be nil (workspace ops skipped).

@@ -62,6 +62,17 @@ func openAIAPIBase() string {
 	return defaultOpenAIAPIBase
 }
 
+// modelsRequestTimeout bounds one model-discovery request end to end
+// (connect, headers and body). Each request also carries a 10 s context
+// deadline; the client timeout is the backstop that holds even for a caller
+// that passes a context without one, so a hung API never pins a goroutine
+// (#187: http.DefaultClient has no timeout at all).
+const modelsRequestTimeout = 15 * time.Second
+
+// modelsHTTPClient is the client model discovery uses. A var so tests can
+// substitute a shorter timeout.
+var modelsHTTPClient = &http.Client{Timeout: modelsRequestTimeout}
+
 // ListClaudeModels queries the Anthropic API for available models.
 // Falls back to DefaultClaudeModels if ANTHROPIC_API_KEY is not set or the API fails.
 func ListClaudeModels() []ModelOption {
@@ -80,7 +91,7 @@ func ListClaudeModels() []ModelOption {
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := modelsHTTPClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -135,7 +146,7 @@ func ListCodexModels() []ModelOption {
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := modelsHTTPClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
 			_ = resp.Body.Close()
