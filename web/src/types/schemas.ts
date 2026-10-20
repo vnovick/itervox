@@ -712,6 +712,7 @@ export const StateSnapshotSchema = z.object({
   switchWindowHours: z.number(),
   rateLimits: RateLimitInfoSchema.nullable(),
   trackerKind: z.string().optional(),
+  demoMode: z.boolean().optional(),
   activeProjectFilter: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),

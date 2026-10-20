@@ -185,6 +185,85 @@ An issue is not dispatched until every blocker is closed or carries one of your 
 - A blank line, or any other word, ends the list.
 - An issue never blocks itself.
 
+## Agent-ready issue template
+
+Agents do much better with a well-specified issue. `itervox init` and `itervox quickstart` offer to add `.github/ISSUE_TEMPLATE/agent-task.md` when they write a new GitHub workflow (`[y/N]`; `itervox init --issue-template` or `itervox quickstart --yes` adds it without asking). `init` asks only when run in a terminal; otherwise it skips the question and says so. To add it to a project that already has a workflow, run `itervox init --tracker github --issue-template`: with a `WORKFLOW.md` present it adds only the template and leaves everything else as it is. It is never written over an existing file. Commit it, and **New issue** offers an "Agent task" template with these sections:
+
+- **Goal**: what should be true when the work is done.
+- **Acceptance criteria**: a checklist the agent works through.
+- **Likely files or areas**: where to start.
+- **How to verify**: the commands or steps that prove it works.
+- **Out of scope**: what not to change.
+- **Blockers**: one line per prerequisite, using a phrase from the list above, e.g. `Blocked by #12, #15`. Delete the line when there are none; left unfilled (`Blocked by #`) it declares nothing.
+
+The template sets no labels, so an issue created from it is not picked up until you give it an active-state label. For Linear, `itervox init` and `itervox quickstart` offer to print the same sections to paste into a Linear issue template; its Blockers section points to Linear's own "Blocked by" relation, which is what Itervox reads there.
+
+## Comment commands
+
+Maintainers can drive Itervox from an issue comment, without the dashboard or
+a label change. Off by default; turn it on in `WORKFLOW.md`:
+
+```yaml
+tracker:
+  kind: github
+  comment_commands:
+    enabled: true
+    # allow: [trusted-contributor]   # extra logins, besides users with write access
+    # allow_token_user: false        # see "Security model"
+    # reply_to_unauthorized: false   # reply to commands from users without access
+```
+
+The command must start the comment's first line, on an issue (comments on pull requests are ignored):
+
+| Command | What it does |
+|---|---|
+| `/itervox run` | Dispatches the issue: a paused issue is resumed; one outside the active states is moved to the first active state (`tracker.active_states[0]`), and the next poll picks it up like any other. Blockers still apply. |
+| `/itervox run <profile>` | The same, under that agent profile. |
+| `/itervox stop` | Stops the issue's running agent and pauses the issue (the dashboard's **Cancel**). |
+| `/itervox review` | Dispatches the configured `agent.reviewer_profile`. |
+
+Itervox acknowledges a command with a 👍 reaction on the comment, or 😕 and a
+short reply when it cannot do it (an unknown profile, nothing to stop, no
+reviewer configured). Replies carry Itervox's managed marker and are never
+read as commands.
+
+Itervox reads the repository's comments with **one request per 30 seconds**
+(`GET /repos/{owner}/{repo}/issues/comments?since=…`), not per issue, plus a
+permission check per commenter, cached for 10 minutes.
+
+### Security model
+
+- **Who is obeyed.** Users with write access to the repository (the
+  collaborator permission API's base level `admin` or `write`, which includes
+  `maintain` and custom roles built on write) and logins listed in `allow`.
+  The allow list matches login names only: if a listed account is deleted and
+  someone registers the name, they are obeyed, so keep it short and current. Anyone else is ignored: no action and, unless
+  `reply_to_unauthorized` is set, no reply. In a public repository, anyone can
+  comment, but only maintainers' commands do anything.
+- **Never obeyed.** Bot accounts (unless listed in `allow`), Itervox's own
+  comments, and the account Itervox's token belongs to, even if it is listed in `allow`. Agents use that
+  account too, so an agent, or an issue that talks an agent into writing
+  `/itervox run`, could otherwise trigger commands. If Itervox posts as you
+  (your personal token) and you want your own comments to count, set
+  `allow_token_user: true` and accept that risk, or give Itervox a separate
+  bot token. That is the safer setup for a public repository. This only
+  covers agents that post as the token's account: an agent on an SSH worker,
+  or one whose `gh` is signed in as someone else, posts as that account, so
+  do not give agents a maintainer's credentials. Itervox reads the token's
+  login from `GET /user`; a token that cannot (some GitHub App tokens) stops
+  commands until `allow_token_user: true` is set.
+- **Once only.** Each comment is acted on at most once. Its ID is recorded in
+  `.itervox/comment_commands.json` (gitignored runtime state) **before**
+  Itervox acts, so neither a retry nor a restart repeats it. Commands posted
+  while the daemon was down are picked up when it starts again; comments from
+  before the feature was first enabled are not. If that file is deleted or
+  unreadable, Itervox starts again from the current time, so no earlier
+  command is repeated (commands posted while the daemon was down are then
+  skipped too). Only newly created comments
+  count: editing an older comment into a command does nothing. If a
+  commenter's permission cannot be read, the command is retried for about
+  five minutes, then ignored.
+
 ## Identifiers
 
 A GitHub issue's identifier is its number with a hash: `#42`. That is what the dashboard, logs and `itervox` commands show. In prompt templates:
@@ -194,17 +273,18 @@ A GitHub issue's identifier is its number with a hash: `#42`. That is what the d
 | `issue.identifier` | `#42` | Use this in prompts and PR bodies |
 | `issue.id` | `42` | The bare number |
 | `issue.title` | | Always set |
-| `issue.description` | | The issue body; **unset when the body is empty** |
+| `issue.description` | | The issue body; empty when the body is empty |
 | `issue.url` | | The issue's GitHub URL |
 | `issue.labels` | `["todo", "bug"]` | Lower-cased label names |
 | `issue.priority` | `0`–`3` | From `p0`–`p3`; **unset when there is no priority label** |
-| `issue.branch_name` | `itervox/42` | **Unset** on the first turn of the issue's first run; afterwards the branch recorded on the issue |
+| `issue.branch_name` | `itervox/42` | Empty on the first turn of the issue's first run; afterwards the branch recorded on the issue |
 | `issue.blocked_by` | | Blockers parsed from the body |
 
-Templates render with strict variables: printing a variable that is unset fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`), and why the optional fields above need a guard:
+Templates render with strict variables: printing a variable that does not exist fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`). `issue.description`, `issue.url` and `issue.branch_name` print as nothing when they are empty (with filters too: write `{{ issue.description | size }}`, not `.size`), and `{% if … %}` on them skips its block. `issue.priority` is unset without a priority label, and printing it then fails, so give it a default:
 
 ```liquid
-{% if issue.description %}{{ issue.description }}{% endif %}
+{% if issue.description %}## Description
+{{ issue.description }}{% endif %}
 Priority: {{ issue.priority | default: "none" }}
 Branch: {{ issue.branch_name | default: issue.identifier }}
 ```
