@@ -254,7 +254,7 @@ func main() {
 
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
-	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !statusui.TerminalAvailable() || argsHeadless(os.Args))))
+	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !argsTerminalUI(os.Args))))
 	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
 	// a .env could carry): itervox may be started from a git hook, and every
@@ -337,9 +337,10 @@ func main() {
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: a per-project dir under ~/.itervox/logs)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "how long a drain waits for in-flight agent turns on SIGINT/SIGTERM (or before applying an operator edit to WORKFLOW.md) before cancelling them; a second signal stops at once")
-	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file, and for stderr when no terminal is attached (systemd, containers); with a terminal stderr stays text (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
+	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file and stderr; with --tui on a terminal logs go to the file only (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
 	flag.BoolVar(&noPrintToken, "no-print-token", false, "never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal; ITERVOX_PRINT_TOKEN=1 forces it; an auto-generated token is always written to <logs-dir>/api-token, mode 0600)")
-	flag.BoolVar(&headlessFlag, "headless", false, "no terminal UI even on a terminal: logs on stderr, the tokenised dashboard URL never printed (watch with `itervox watch`)")
+	flag.BoolVar(&tuiFlag, "tui", false, "start the terminal UI (deprecated, removed in v0.3); without it itervox runs headless and prints the dashboard URL")
+	flag.BoolVar(&headlessFlag, "headless", false, "headless even with --tui, and the tokenised dashboard URL never printed, even on a terminal (watch with: itervox watch)")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
@@ -988,7 +989,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
 		}
 	}
-	tuiCfg.RetirementNotice = tuiRetirementNotice
+	tuiCfg.RetirementNotice = tuiDeprecationNotice
 	tuiDone := startTUI(ctx, snap, logBuf, tuiCfg, tuiCancel)
 	// Wait for the TUI to fully restore the terminal (stty sane) before run()
 	// returns. Without this, the process can exit while the terminal is still
