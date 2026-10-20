@@ -25,7 +25,7 @@ func TestWithTrackerStore(t *testing.T) {
 	workflow := t.TempDir() + "/WORKFLOW.md"
 
 	off, noHooks := withTrackerStore(t.Context(), cfg, workflow, gh)
-	assert.Same(t, gh, off, "off by default")
+	assert.Same(t, gh, off, "off when disabled (enabled: false)")
 	assert.Nil(t, noHooks)
 
 	cfg.Tracker.Store.Enabled = true
