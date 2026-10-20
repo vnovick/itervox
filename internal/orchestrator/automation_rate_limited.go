@@ -574,7 +574,8 @@ func (o *Orchestrator) commentRateLimitCapExhausted(issue domain.Issue, failedPr
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := o.writeSink().CreateComment(ctx, issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
+	// #115: a person must act on this notice, so it is pushed at once.
+	if err := o.writeSink().CreateComment(urgentWrite(ctx), issue.ID, issue.Identifier, tracker.MarkManagedComment(body)); err != nil {
 		slog.Warn("orchestrator: failed to post cap-exhausted comment",
 			"issue_id", issue.ID, "error", err)
 	}

@@ -627,6 +627,45 @@ export const TrackerErrorRowSchema = z.object({
   consecutiveFailures: optionalSafeInt,
 });
 
+// SyncStatusRowSchema mirrors server.SyncStatusRow (#117): the tracker sync
+// status. mode is "store" (local tracker store pulling in the background),
+// "direct" (each poll reads the tracker) or "local_sync" (local issue files
+// synced with Linear or GitHub, #118), kept a plain string so a future
+// mode never fails the snapshot parse. lastPullAt is absent until a pull
+// succeeds; lagMs is the lag at snapshot time (the dashboard recomputes it
+// from lastPullAt on its own clock). lastError.kind is a tracker error class
+// (rate_limited, auth, not_found, api_status, graphql, timeout, network,
+// canceled, unknown), also a plain string. The pending* counts describe the
+// write-ahead outbox and overlap (an urgent write can also be retrying).
+const syncCount = z.number().int().nonnegative();
+export const SyncStatusRowSchema = z.object({
+  mode: z.string(),
+  lastPullAt: optionalTimeString,
+  lagMs: optionalSafeInt,
+  lagWarnAfterMs: syncCount,
+  stale: z.boolean(),
+  syncIntervalMs: syncCount,
+  cursorAt: optionalTimeString,
+  consecutiveFailures: optionalSafeInt,
+  lastError: z
+    .object({
+      at: z.string(),
+      kind: z.string(),
+      message: z.string(),
+    })
+    .optional(),
+  pendingWrites: syncCount,
+  pendingUrgent: syncCount,
+  pendingBatched: syncCount,
+  pendingRetrying: syncCount,
+  pendingDegraded: syncCount,
+  pendingRateLimited: syncCount,
+  oldestPendingAt: optionalTimeString,
+  nextPushAt: optionalTimeString,
+  pushIntervalMs: syncCount,
+});
+export type SyncStatusRow = z.infer<typeof SyncStatusRowSchema>;
+
 // FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
 // daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
 // tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
@@ -801,6 +840,9 @@ export const StateSnapshotSchema = z.object({
   // failed failed-state move). Absent when none is recorded and on snapshots
   // from daemons predating the field.
   lastTrackerError: TrackerErrorRowSchema.optional(),
+  // #117 — tracker sync status (pull lag, pending writes, last sync error).
+  // Absent on daemons predating it; the LiveOps sync chip then hides.
+  syncStatus: SyncStatusRowSchema.optional(),
   // CORE-046 — bounded ring of recent failures, oldest recorded first.
   // Always an array on a current daemon; absent on older daemons.
   recentFailures: z.array(FailureRowSchema).optional(),
@@ -1009,6 +1051,16 @@ export const SubagentSchema = z.object({
   ApproxTokens: z.number(),
 });
 
+// Codex custom prompt from ~/.codex/prompts/*.md, run as /prompts:<name> (#123).
+export const PromptSchema = z.object({
+  Name: z.string(),
+  Description: z.string().optional(),
+  Provider: z.string(),
+  Source: z.string(),
+  FilePath: z.string().optional(),
+  ApproxTokens: z.number(),
+});
+
 export const InstructionDocSchema = z.object({
   Name: z.string(),
   Provider: z.string(),
@@ -1088,6 +1140,7 @@ export const InventorySchema = z.object({
   Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
   Subagents: z.array(SubagentSchema).nullable().optional(),
+  Prompts: z.array(PromptSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
   Hooks: z.array(HookEntrySchema).nullable().optional(),
@@ -1097,6 +1150,36 @@ export const InventorySchema = z.object({
   // Phase-2/Phase-3 features land in the frontend.
 });
 
+// POST /api/v1/skills/check-refs (#123): the #86 reference validator run
+// over one draft prompt. Mirrors internal/server/skills_refs.go
+// promptRefCheckResponse / promptRefRow. from/to are UTF-16 offsets.
+export const PromptRefRowSchema = z.object({
+  kind: z.string(),
+  name: z.string(),
+  from: z.number(),
+  to: z.number(),
+  status: z.string(), // "ok" | "missing" | "outside_repo"; unknown values are treated as ok
+  severity: z.string().optional(),
+  issueId: z.string().optional(),
+  message: z.string().optional(),
+});
+
+export const PromptRefCheckSchema = z.object({
+  backend: z.string(),
+  sshHosts: z.array(z.string()).nullable().optional(),
+  refs: z.array(PromptRefRowSchema).nullable().optional(),
+});
+
+// GET /api/v1/skills/profile-backends (#123).
+export const ProfileBackendsSchema = z.object({
+  default: z.string(),
+  profiles: z.record(z.string(), z.string()),
+});
+
+export type PromptRefRow = z.infer<typeof PromptRefRowSchema>;
+export type PromptRefCheck = z.infer<typeof PromptRefCheckSchema>;
+export type ProfileBackends = z.infer<typeof ProfileBackendsSchema>;
+export type CodexPrompt = z.infer<typeof PromptSchema>;
 export type Skill = z.infer<typeof SkillSchema>;
 export type Subagent = z.infer<typeof SubagentSchema>;
 export type InstructionDocEntry = z.infer<typeof InstructionDocSchema>;

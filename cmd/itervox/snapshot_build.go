@@ -31,6 +31,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
 	// file has changed since the last successful load. v0.2.0 todolist6.
 	depsSidecar := depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
+	syncSrc := newSyncStatusSource(cfg, tr, ob, orch) // #117
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
@@ -261,6 +262,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			OutboxSyncing: outboxSyncingRows(s.OutboxSyncing),
 			// CORE-044 — most recent tracker failure (poll or failed-state move).
 			LastTrackerError: trackerErrorRow(s),
+			// #117 — pull lag and pending writes, from the store's and the
+			// outbox's own accessors (never orchestrator.State).
+			SyncStatus: syncSrc.row(now),
 			// CORE-046 — the RecentFailures ring (always an array).
 			RecentFailures: recentFailureRows(s),
 			// CORE-175 — operator acks of worker failures + the capability

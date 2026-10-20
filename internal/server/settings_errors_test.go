@@ -60,6 +60,10 @@ func (fencedSkillsClient) Issues() []skills.InventoryIssue                    { 
 func (fencedSkillsClient) ApplyFix(context.Context, string, skills.Fix) error { return errFence }
 func (fencedSkillsClient) Analytics() *skills.AnalyticsSnapshot               { return nil }
 func (fencedSkillsClient) AnalyticsRecommendations() []skills.Recommendation  { return nil }
+func (fencedSkillsClient) CheckPromptRefs(server.PromptRefCheckRequest) (server.PromptRefCheck, bool) {
+	return server.PromptRefCheck{}, false
+}
+func (fencedSkillsClient) ProfileBackends() map[string]string { return nil }
 
 // fencedProjectManager: the Linear project-filter save is fenced by
 // cmd/itervox's saveProjectFilter (M4-close D4/D5).

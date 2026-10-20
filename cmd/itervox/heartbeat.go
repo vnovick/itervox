@@ -45,6 +45,11 @@ type heartbeatWriter struct {
 	// the heartbeat reports degraded while the marker exists and recovers as
 	// soon as an operator clears it (`itervox doctor --clear-startup-error`).
 	startupError func() string
+	// syncProbe fingerprints the sync status (#117); Run requests a write
+	// when it changes, so the "## Sync" section's last-pull time stays
+	// current for `itervox doctor` while nothing else changes. Nil: off.
+	syncProbe func() string
+	lastSync  string
 
 	mu        sync.Mutex
 	dirty     bool
@@ -137,10 +142,23 @@ func (w *heartbeatWriter) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			w.noteSyncChange()
 			if err := w.MaybeWrite(now.UTC()); err != nil {
 				slog.Warn("heartbeat: write failed", "path", w.path, "error", err)
 			}
 		}
+	}
+}
+
+// noteSyncChange requests a write when the sync status changed since the
+// last check (#117). Run's goroutine only.
+func (w *heartbeatWriter) noteSyncChange() {
+	if w.syncProbe == nil {
+		return
+	}
+	if fp := w.syncProbe(); fp != w.lastSync {
+		w.lastSync = fp
+		w.Request()
 	}
 }
 
@@ -187,6 +205,7 @@ func renderHeartbeat(snap server.StateSnapshot, opts heartbeatOptions, now time.
 	b.WriteString("\n## Tracker\n")
 	fmt.Fprintf(&b, "- Kind: %s\n", fallbackText(snap.TrackerKind, "unknown"))
 	fmt.Fprintf(&b, "- Project: %s\n", fallbackText(snap.ProjectName, "unknown"))
+	writeHeartbeatSync(&b, snap.SyncStatus) // #117
 
 	queueLength, queueMax, saturated, paused := heartbeatQueueStats(snap)
 	b.WriteString("\n## Capacity\n")
