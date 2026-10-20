@@ -38,6 +38,8 @@ internal/agent/claude.go|go func() {|1|readLines stdout scanner: stdlib-only rea
 internal/agent/ssh.go|go func() {|1|remoteStdin payload writer (CORE-155): one io.WriteString into the ssh stdin pipe, no callbacks; joined by the caller after cmd.Wait, which closes that pipe and so unblocks it
 internal/agent/testdata/fakesshd/main.go|go func() {|2|test-only fake sshd (built by internal/agent TestMain, never linked into itervox): the stdin relay and the stdout/stderr relays, each one io.Copy between pipes; the process exits when the remote command is done
 internal/statusui/statusui.go|go func() {|2|bubbletea Program.Run catches panics and restores the terminal; the ctx->Quit forwarder has no failure mode; statusui must not import orchestrator
+cmd/itervox/demo.go|go demoOpenWhenReady(|1|demoOpenWhenReady defers RecoverGoroutine itself; a panic only loses the browser opening
+cmd/itervox/demo.go|go d.control(|1|demoRun.control defers RecoverGoroutine itself; a panic only stops the demo's stand-in operator
 internal/tracker/github/client.go|go func(i int, it T) {|1|boundedDo fan-out joined by wg.Wait in the calling goroutine (event-loop tick); fail-fast like the event loop
 ALLOW
 )

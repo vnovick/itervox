@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -67,4 +69,113 @@ func FindOpenPRURL(ctx context.Context, wsPath string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// SetPRBase points the pull request at prURL to base (#73) and reports
+// whether it changed anything. It reads the current base first so an already
+// correct PR is left alone (no edit, no notification), then runs
+// `gh pr edit <url> --base <base>`. GitHub refuses a base branch that does
+// not exist on the remote; that error is returned for the caller to log.
+func SetPRBase(ctx context.Context, prURL, base string) (bool, error) {
+	if prURL == "" || base == "" {
+		return false, nil
+	}
+	view := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "baseRefName", "--jq", ".baseRefName")
+	view.Env = gitexec.Environ()
+	out, err := view.Output()
+	if err != nil {
+		return false, fmt.Errorf("gh pr view %s: %w", prURL, err)
+	}
+	if strings.TrimSpace(string(out)) == base {
+		return false, nil
+	}
+	edit := exec.CommandContext(ctx, "gh", "pr", "edit", prURL, "--base", base)
+	edit.Env = gitexec.Environ()
+	if out, err := edit.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("gh pr edit %s --base %s: %w: %s", prURL, base, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
+// PRFooterMarker marks the Itervox footer in a pull request body (#81); a body
+// that carries it is never edited again.
+const PRFooterMarker = "<!-- itervox:shipped -->"
+
+// PRFooterText is the footer EnsurePRFooter appends.
+const PRFooterText = "Shipped with [Itervox](https://github.com/vnovick/itervox)"
+
+// EnsurePRFooter appends the Itervox footer to the body of the pull request
+// at prURL unless the body already carries PRFooterMarker or PRFooterText,
+// and reports
+// whether it edited the PR. The body is read and written with `gh pr view`
+// and `gh pr edit --body-file -`, so arbitrary body text round-trips.
+func EnsurePRFooter(ctx context.Context, prURL string) (bool, error) {
+	if prURL == "" {
+		return false, nil
+	}
+	view := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "body", "--jq", ".body")
+	view.Env = gitexec.Environ()
+	out, err := view.Output()
+	if err != nil {
+		return false, fmt.Errorf("gh pr view %s: %w", prURL, err)
+	}
+	body := strings.TrimRight(string(out), "\n")
+	// The marker is the reliable signal; the visible text also counts, so a
+	// body rewritten from a rendered view (HTML comments dropped) does not
+	// get a second footer.
+	if strings.Contains(body, PRFooterMarker) || strings.Contains(body, PRFooterText) {
+		return false, nil
+	}
+	if body != "" {
+		body += "\n\n"
+	}
+	body += "---\n" + PRFooterMarker + "\n" + PRFooterText + "\n"
+	edit := exec.CommandContext(ctx, "gh", "pr", "edit", prURL, "--body-file", "-")
+	edit.Env = gitexec.Environ()
+	edit.Stdin = strings.NewReader(body)
+	if out, err := edit.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("gh pr edit %s --body-file -: %w: %s", prURL, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
+// PRChecks summarises the CI checks on a pull request (#80).
+type PRChecks struct {
+	Total, Passed, Pending, Failed int
+}
+
+// Green reports whether every check passed (skipped checks count as
+// passed) and there is at least one.
+func (c PRChecks) Green() bool { return c.Total > 0 && c.Pending == 0 && c.Failed == 0 }
+
+// ReadPRChecks reads the checks on prURL with `gh pr checks --json`. gh
+// exits non-zero while checks are pending or failing, so the JSON is parsed
+// whenever there is any; an error means it could not be read at all (no
+// checks reported, gh missing, not authenticated).
+func ReadPRChecks(ctx context.Context, prURL string) (PRChecks, error) {
+	var sum PRChecks
+	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", prURL, "--json", "name,bucket")
+	cmd.Env = gitexec.Environ()
+	out, err := cmd.Output()
+	var rows []struct {
+		Bucket string `json:"bucket"`
+	}
+	if jsonErr := json.Unmarshal(out, &rows); jsonErr != nil || len(rows) == 0 {
+		if err == nil {
+			err = errors.New("no checks reported")
+		}
+		return sum, fmt.Errorf("gh pr checks %s: %w", prURL, err)
+	}
+	for _, r := range rows {
+		sum.Total++
+		switch r.Bucket {
+		case "pass", "skipping":
+			sum.Passed++
+		case "pending":
+			sum.Pending++
+		default: // fail, cancel
+			sum.Failed++
+		}
+	}
+	return sum, nil
 }
