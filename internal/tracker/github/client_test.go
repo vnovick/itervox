@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1233,4 +1234,123 @@ func TestSetIssueBranchFailsOpenWhenCommentsUnreadable(t *testing.T) {
 
 	require.NoError(t, ghclient.NewClient(defaultConfig(ts.URL)).SetIssueBranch(context.Background(), "42", "feature/x"))
 	assert.Equal(t, 1, thread.posts)
+}
+
+// TestListLabelsFollowsPagination pins #75's label read: every page of
+// GET /repos/{o}/{r}/labels is followed via the Link header.
+func TestListLabelsFollowsPagination(t *testing.T) {
+	var ts *httptest.Server
+	calls := 0
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/repos/owner/repo/labels", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "done"}})
+			return
+		}
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/owner/repo/labels?page=2>; rel="next"`, ts.URL))
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "todo"}, {"name": "bug"}})
+	}))
+	defer ts.Close()
+
+	names, err := ghclient.NewClient(defaultConfig(ts.URL)).ListLabels(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"todo", "bug", "done"}, names)
+	assert.Equal(t, 2, calls)
+}
+
+// TestCreateLabelSendsNameAndColor pins the request body and the status
+// handling of CreateLabel: 201 succeeds, anything else is an error naming
+// the label.
+func TestCreateLabelSendsNameAndColor(t *testing.T) {
+	var got map[string]string
+	status := http.StatusCreated
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/repos/owner/repo/labels", r.URL.Path)
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	c := ghclient.NewClient(defaultConfig(ts.URL))
+
+	require.NoError(t, c.CreateLabel(context.Background(), "in-review", "#d93f0b"))
+	assert.Equal(t, map[string]string{"name": "in-review", "color": "d93f0b"}, got, "leading # is stripped")
+
+	status = http.StatusUnprocessableEntity
+	err := c.CreateLabel(context.Background(), "done", "0e8a16")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"done"`)
+	assert.Contains(t, err.Error(), "422")
+}
+
+// TestCommentCommandClientCalls (#84): the repository comment list (issue
+// number, login, pagination), the permission check (404 = none, role_name
+// preferred) and the reaction POST.
+func TestCommentCommandClientCalls(t *testing.T) {
+	var reactionBody string
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/repos/owner/repo/issues/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "" {
+			assert.Equal(t, "2026-10-09T12:00:00Z", r.URL.Query().Get("since"))
+			assert.Equal(t, "asc", r.URL.Query().Get("direction"))
+			w.Header().Set("Link", `<`+srv.URL+`/repos/owner/repo/issues/comments?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 11, "body": "/itervox run",
+				"issue_url": srv.URL + "/repos/owner/repo/issues/42", "created_at": "2026-10-09T12:01:00Z",
+				"user": map[string]any{"login": "alice", "type": "User"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": 12, "body": "hi",
+			"issue_url": srv.URL + "/repos/owner/repo/issues/7", "created_at": "2026-10-09T12:02:00Z",
+			"html_url": "https://github.com/owner/repo/pull/7#issuecomment-12",
+			"user":     map[string]any{"login": "dependabot[bot]", "type": "Bot"}}})
+	})
+	mux.HandleFunc("/repos/owner/repo/collaborators/alice/permission", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"permission": "write", "role_name": "security-writer"})
+	})
+	mux.HandleFunc("/repos/owner/repo/collaborators/mallory/permission", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/comments/11/reactions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		b, _ := io.ReadAll(r.Body)
+		reactionBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": "itervox-bot"})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+	c := ghclient.NewClient(defaultConfig(srv.URL))
+	ctx := context.Background()
+
+	got, err := c.ListRepoCommentsSince(ctx, time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, got, 2, "both pages are read")
+	assert.Equal(t, ghclient.RepoComment{ID: "11", IssueNumber: "42", Body: "/itervox run", Login: "alice", UserType: "User",
+		CreatedAt: time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC)}, got[0])
+	assert.Equal(t, "7", got[1].IssueNumber)
+	assert.Equal(t, "Bot", got[1].UserType)
+	assert.True(t, got[1].OnPullRequest, "a pull request's conversation comment is marked")
+	assert.False(t, got[0].OnPullRequest)
+
+	perm, err := c.CollaboratorPermission(ctx, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "write", perm, "maintain (and custom roles derived from write) read as their base level")
+	perm, err = c.CollaboratorPermission(ctx, "mallory")
+	require.NoError(t, err)
+	assert.Equal(t, "none", perm, "not a collaborator")
+
+	require.NoError(t, c.AddCommentReaction(ctx, "11", "+1"))
+	assert.JSONEq(t, `{"content":"+1"}`, reactionBody)
+
+	login, err := c.AuthenticatedLogin(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "itervox-bot", login)
 }

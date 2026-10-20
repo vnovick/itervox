@@ -21,3 +21,21 @@ var HumanInput []byte
 //
 //go:embed quickstart.md
 var Quickstart []byte
+
+// AgentTaskBody is the body of the agent-ready issue template (#83): goal,
+// acceptance criteria, likely files, how to verify, out of scope, and a
+// blockers section that uses the phrases the GitHub adapter parses. Its
+// examples carry no digits, so an unfilled template declares no blocker.
+//
+//go:embed agent_task_body.md
+var AgentTaskBody []byte
+
+//go:embed agent_task_frontmatter.md
+var agentTaskFrontMatter []byte
+
+// AgentTaskGitHubTemplate is AgentTaskBody with GitHub issue-form front
+// matter, written to .github/ISSUE_TEMPLATE/agent-task.md. It sets no labels:
+// a state label would make a new issue dispatchable before it is filled in.
+func AgentTaskGitHubTemplate() []byte {
+	return append(append([]byte{}, agentTaskFrontMatter...), AgentTaskBody...)
+}

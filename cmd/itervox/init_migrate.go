@@ -533,6 +533,11 @@ func patchRootGitignoreForAgents(projectDir string) error {
 			"!.itervox/agents/**",
 			"!.itervox/handoff/",
 			"!.itervox/handoff/**",
+			// #85: local tracker issues are committed with the code by
+			// default; add .itervox/issues/ after these lines to keep them
+			// private.
+			"!.itervox/issues/",
+			"!.itervox/issues/**",
 		}
 		for _, line := range needed {
 			if !containsLine(lines, line) {
