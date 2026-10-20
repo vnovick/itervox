@@ -212,6 +212,9 @@ func (o *Orchestrator) SetIssueProfile(identifier, profileName string) {
 	} else {
 		o.issueProfiles[identifier] = profileName
 	}
+	// An operator's choice replaces a pending reviewer injection: the next
+	// run is theirs, not a (read-only) reviewer's (#79).
+	delete(o.reviewerInjectedProfiles, identifier)
 	o.issueProfilesMu.Unlock()
 	slog.Info("orchestrator: issue profile updated", "identifier", identifier, "profile", profileName)
 	if o.OnStateChange != nil {

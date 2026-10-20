@@ -85,17 +85,18 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | **required** | Tracker backend. `"linear"` or `"github"`. |
+| `kind` | string | **required** | Tracker backend: `"linear"`, `"github"` or `"local"` (issues as Markdown files in `.itervox/issues/`, no account or key; see [Local issues](/guides/local-issues/)). |
 | `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
-| `api_key` | string | **required** | API token. Use `$VAR_NAME` to read from an environment variable (recommended). |
-| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. |
+| `api_key` | string | **required** (Linear, GitHub) | API token; not used by `local`. Use `$VAR_NAME` to read from an environment variable (recommended). |
+| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. For `local` (optional): the identifier prefix for new issues, letters, digits and `_` (default `ITX`). |
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
 | `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
-| `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
+| `backlog_states` | string[] | `["Backlog"]` (Linear, local), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 | `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly, and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. Load-time only (no runtime setter). |
+| `comment_commands` | map | off | `/itervox run [profile]`, `/itervox stop` and `/itervox review` in GitHub issue comments, obeyed from users with write access or in `allow`. Keys: `enabled` (default `false`), `allow` (logins), `allow_token_user` (default `false`), `reply_to_unauthorized` (default `false`). GitHub only. See [Comment commands](/guides/github-issues/#comment-commands). |
 
 **Outbox visibility:** pending and degraded entries appear in the dashboard's
 Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
@@ -324,9 +325,9 @@ Both are optional and off unless you add them.
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run opens on its own branch (after a successful worker run, not automation runs; PRs merely linked from the issue are left alone), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
-| `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
+| `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for reviewer runs. Prefer `reviewer_profile`. The built-in default is read-only: it asks for a verdict, never a commit or push. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and profile files. Enables the AI Review button in the dashboard. |
-| `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. |
+| `reviewer_profiles` | string[] | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. With more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict, combined per `review_quorum`. Empty falls back to `reviewer_profile`. Every reviewer (a single one included) is read-only, gets the diff against the base branch plus the latest handoff, and has its verdict, reasons and line comments posted on the issue; see the [cross-review preset](/guides/cross-review/). |
 | `review_quorum` | string | `"any_block"` | How reviewer verdicts combine: `any_block` (one block blocks), `majority` (strictly more than half), or `unanimous` (all must block). A reviewer that records no parseable verdict counts as a block. |
 | `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. As of v0.2.0, this safely coexists with `workspace.auto_clear` — the clear is deferred until the reviewer also completes. |
 | `max_switches_per_issue_per_window` | int | `2` | Maximum times a `rate_limited` automation can switch an issue to a different profile within the rolling window. `0` for unlimited. Also counts `backend_fallback` switches of implementer runs. This cap limits switching; it is not the trigger condition. |
@@ -1123,11 +1124,11 @@ The body of `WORKFLOW.md` (everything after the closing `---`) is a [Liquid](htt
 |---|---|---|
 | `issue.identifier` | string | Tracker-specific issue ID (e.g. `"ENG-42"` for Linear, `"#123"` for GitHub). |
 | `issue.title` | string | Issue title. |
-| `issue.description` | string | Issue body/description. May be empty — use `{% if issue.description %}` to guard. |
+| `issue.description` | string | Issue body/description. When empty it prints as nothing, and `{% if issue.description %}` skips its block. |
 | `issue.url` | string | Full URL to the issue in the tracker. |
-| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues. |
+| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues; empty prints as nothing. |
 | `issue.labels` | string[] | Labels attached to the issue. Iterable with `{% for label in issue.labels %}`. |
-| `issue.priority` | string | Priority label (Linear: `"urgent"`, `"high"`, `"medium"`, `"low"`, `"no priority"`; GitHub: empty string). |
+| `issue.priority` | number | Priority number (Linear 0 none, 1 urgent … 4 low; GitHub `p0`–`p3` as 0–3). Unset when the tracker gives none (a GitHub issue without a `p` label), and printing it then fails under strict variables: use `{{ issue.priority \| default: "none" }}`. |
 | `issue.comments` | object[] | Comments on the issue. Each comment has `author_name`, `body`, and `created_at` fields. |
 | `id` | string | Internal tracker issue ID. |
 | `state` | string | Current issue state (e.g. `"Todo"`, `"In Progress"`). |

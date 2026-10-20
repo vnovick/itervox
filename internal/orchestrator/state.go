@@ -642,6 +642,10 @@ type State struct {
 	// under cfgMu. An issue whose ONLY unresolved blocker is in this state
 	// may dispatch, stacked on that blocker's branch (#73 follow-up).
 	StackOnReviewState string
+	// CompletionState is tracker.completion_state, snapshotted each tick
+	// under cfgMu. Reconciliation keeps a reviewer run alive while its issue
+	// sits there (#79), and only there.
+	CompletionState string
 	// StackUnavailable records, per dependent identifier, the review blocker
 	// (stackKey) its worktree could not be stacked on. While that blocker is
 	// unchanged the dependent waits for it as before; a new blocker or state
@@ -704,6 +708,7 @@ func NewState(cfg *config.Config) State {
 		PollIntervalMs:              cfg.Polling.IntervalMs,
 		MaxConcurrentAgents:         cfg.Agent.MaxConcurrentAgents,
 		ActiveStates:                append([]string{}, cfg.Tracker.ActiveStates...),
+		CompletionState:             cfg.Tracker.CompletionState,
 		TerminalStates:              append([]string{}, cfg.Tracker.TerminalStates...),
 		PauseDispatchWhenAnyInState: normalizePauseStates(cfg.Agent.PauseDispatchWhenAnyInState),
 		Running:                     make(map[string]*RunEntry),
