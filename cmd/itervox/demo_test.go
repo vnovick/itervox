@@ -23,12 +23,33 @@ import (
 // scripted agent and the review stand-in, and checks the dashboard is in demo
 // mode and that nothing was written outside the scratch directory.
 func TestDemoDaemonCompletesAnIssue(t *testing.T) {
+	runDemoUntilDone(t, t.TempDir())
+}
+
+// TestDemoWithLocalTrackerCompletesAnIssue (#85): `itervox demo --tracker
+// local` runs the same demo over issue files, and the issue that reached
+// Done says so in its file.
+func TestDemoWithLocalTrackerCompletesAnIssue(t *testing.T) {
+	scratch := t.TempDir()
+	done := runDemoUntilDone(t, scratch, "--tracker", "local")
+	data, err := os.ReadFile(filepath.Join(scratch, ".itervox", "issues", done+".md"))
+	require.NoError(t, err, "the demo issues are files")
+	assert.Contains(t, string(data), "\nstate: Done\n")
+	assert.Contains(t, string(data), "Reviewed and merged. (demo)", "comments are written to the file")
+	wf, err := os.ReadFile(filepath.Join(scratch, "WORKFLOW.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(wf), "kind: local")
+}
+
+// runDemoUntilDone runs `itervox demo` in scratch until an issue is Done and
+// returns its identifier.
+func runDemoUntilDone(t *testing.T, scratch string, extraArgs ...string) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("starts a daemon")
 	}
-	scratch := t.TempDir()
 	home := t.TempDir()
-	raw, err := json.Marshal([]string{"demo", "--dir", scratch, "--no-open"})
+	raw, err := json.Marshal(append([]string{"demo", "--dir", scratch, "--no-open"}, extraArgs...))
 	require.NoError(t, err)
 
 	var env []string
@@ -118,6 +139,7 @@ func TestDemoDaemonCompletesAnIssue(t *testing.T) {
 		_, statErr := os.Stat(filepath.Join(scratch, p))
 		assert.NoError(t, statErr, "the demo writes %s inside the scratch directory", p)
 	}
+	return done
 }
 
 func getJSON(client *http.Client, url string, v any) error {
@@ -176,13 +198,15 @@ func TestPrepareDemoNeverOverwritesAWorkflow(t *testing.T) {
 // comment) or ": " still loads as itself and workspaces stay inside the
 // scratch directory.
 func TestDemoWorkflowKeepsWorkspacesInScratch(t *testing.T) {
-	for _, name := range []string{"demo # scratch", "demo: scratch", `demo "q" \ x`} {
-		scratch := filepath.Join(t.TempDir(), name)
-		require.NoError(t, os.MkdirAll(scratch, 0o755))
-		wf := filepath.Join(scratch, "WORKFLOW.md")
-		require.NoError(t, os.WriteFile(wf, []byte(demoWorkflow(scratch)), 0o600))
-		cfg, err := config.Load(wf)
-		require.NoError(t, err, name)
-		assert.Equal(t, filepath.Join(scratch, "workspaces"), cfg.Workspace.Root, name)
+	for _, kind := range []string{"memory", "local"} {
+		for _, name := range []string{"demo # scratch", "demo: scratch", `demo "q" \ x`} {
+			scratch := filepath.Join(t.TempDir(), name)
+			require.NoError(t, os.MkdirAll(scratch, 0o755))
+			wf := filepath.Join(scratch, "WORKFLOW.md")
+			require.NoError(t, os.WriteFile(wf, []byte(demoWorkflow(scratch, kind)), 0o600))
+			cfg, err := config.Load(wf)
+			require.NoError(t, err, name)
+			assert.Equal(t, filepath.Join(scratch, "workspaces"), cfg.Workspace.Root, "%s %s", kind, name)
+		}
 	}
 }

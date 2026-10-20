@@ -84,7 +84,7 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 	opts := quickstartOptions{ReadyTimeout: quickstartDefaultReadyTimeout}
 	fs.StringVar(&opts.Dir, "dir", ".", "repository directory")
 	fs.StringVar(&opts.Workflow, "workflow", "", "workflow path (default <dir>/WORKFLOW.md)")
-	fs.StringVar(&opts.Tracker, "tracker", "", "tracker kind for a new workflow: github or linear (default: detected)")
+	fs.StringVar(&opts.Tracker, "tracker", "", "tracker kind for a new workflow: github, linear or local (default: detected)")
 	fs.StringVar(&opts.Runner, "runner", "", "agent CLI for a new workflow: claude or codex (default: detected)")
 	fs.BoolVar(&opts.Yes, "yes", false, "answer yes to every confirmation")
 	fs.BoolVar(&opts.Yes, "y", false, "shorthand for --yes")
@@ -97,9 +97,9 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 		return opts, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	switch opts.Tracker {
-	case "", "github", "linear":
+	case "", "github", "linear", "local":
 	default:
-		return opts, fmt.Errorf("unknown --tracker %q (github or linear)", opts.Tracker)
+		return opts, fmt.Errorf("unknown --tracker %q (github, linear or local)", opts.Tracker)
 	}
 	switch opts.Runner {
 	case "", "claude", "codex":
@@ -150,14 +150,18 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 			return 1
 		}
 		_, _ = fmt.Fprintf(out, "itervox quickstart: tracker %s (%s), agent %s (%s)\n", det.Tracker, det.TrackerReason, det.Runner, det.RunnerReason)
-		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, out); err != nil {
+		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, "", out); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 			return 1
 		}
 		ensureEnvStub(itervoxDir, det.Tracker)
+		if det.Tracker == "local" {
+			seedLocalIssues(filepath.Join(itervoxDir, "issues"), out)
+		}
 		if err := finalizeItervoxGitignore(itervoxDir); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 		}
+		offerIssueTemplate(dir, det.Tracker, opts.Yes, reader, out)
 	}
 
 	// 2. A daemon already running for this workflow is the end state.
@@ -219,7 +223,7 @@ func quickstartExistingWorkflow(workflowPath string, yes bool, in *bufio.Reader,
 		_, _ = fmt.Fprintf(out, "itervox quickstart: using the existing %s\n", workflowPath)
 		return 0
 	}
-	if !quickstartConfirm(in, out, yes, fmt.Sprintf("%s uses workflow schema %d; migrate it to schema %d with `itervox init --update` (a .bak copy is kept)?", workflowPath, version, config.LatestWorkflowSchemaVersion)) {
+	if !confirmPrompt(in, out, yes, fmt.Sprintf("%s uses workflow schema %d; migrate it to schema %d with `itervox init --update` (a .bak copy is kept)?", workflowPath, version, config.LatestWorkflowSchemaVersion)) {
 		_, _ = fmt.Fprintf(out, "itervox quickstart: left %s unchanged; migrate it with `itervox init --update --workflow %s`, then re-run.\n", workflowPath, workflowPath)
 		return 1
 	}
@@ -295,7 +299,7 @@ func quickstartCredential(workflowPath, itervoxDir string, yes bool, in *bufio.R
 			_, _ = fmt.Fprintf(out, "itervox quickstart: no GitHub token. Run `gh auth login`, or set GITHUB_TOKEN in %s, then re-run.\n", envPath)
 			return 1
 		}
-		if !quickstartConfirm(in, out, yes, fmt.Sprintf("Use your gh CLI token for the tracker and save it to %s (gitignored)?", envPath)) {
+		if !confirmPrompt(in, out, yes, fmt.Sprintf("Use your gh CLI token for the tracker and save it to %s (gitignored)?", envPath)) {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: set GITHUB_TOKEN in %s, then re-run.\n", envPath)
 			return 1
 		}
@@ -365,11 +369,11 @@ func setEnvFileVar(path, key, value string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
-// quickstartConfirm asks a [y/N] question; anything but y/yes (including
+// confirmPrompt asks a [y/N] question; anything but y/yes (including
 // EOF) is no. yes answers it without reading.
-func quickstartConfirm(in *bufio.Reader, out io.Writer, yes bool, question string) bool {
+func confirmPrompt(in *bufio.Reader, out io.Writer, yes bool, question string) bool {
 	if yes {
-		_, _ = fmt.Fprintf(out, "%s [y/N] y (--yes)\n", question)
+		_, _ = fmt.Fprintf(out, "%s [y/N] y (preset)\n", question)
 		return true
 	}
 	_, _ = fmt.Fprintf(out, "%s [y/N] ", question)

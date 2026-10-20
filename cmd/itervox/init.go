@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -38,7 +39,10 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 			slug = info.Owner + "/" + info.Repo
 		}
 	}
-	if trackerKind == "linear" {
+	switch trackerKind {
+	case "local":
+		writeLocalTrackerBlock(&b)
+	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
 		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
@@ -48,7 +52,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
 		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
 		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
-	} else {
+	default:
 		b.WriteString("  project_slug: " + slug + "\n")
 		b.WriteString("  # GitHub uses labels to map states. Labels must exist in your repo.\n")
 		b.WriteString("  # NOTE: GitHub Projects v2 'Status' field is separate from labels — Itervox\n")
@@ -125,16 +129,13 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("\n")
 	b.WriteString("    ## Your task\n")
 	b.WriteString("\n")
-	b.WriteString("    Review the pull request created for this issue.\n")
+	b.WriteString("    Review the change made for this issue. You are a read-only reviewer:\n")
+	b.WriteString("    do not edit files, commit, push or move the issue.\n")
 	b.WriteString("\n")
-	b.WriteString("    1. Run `gh pr diff` to read the PR changes\n")
-	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues, code style\n")
-	b.WriteString("    3. If you find problems:\n")
-	b.WriteString("       - Fix them directly in the workspace\n")
-	b.WriteString("       - Commit and push: `git add -A && git commit -m \"fix: reviewer corrections\" && git push`\n")
-	b.WriteString("       - Post a comment on the tracker issue summarising what you fixed\n")
-	b.WriteString("    4. If the PR is clean:\n")
-	b.WriteString("       - Post an approval comment: \"AI review passed — no issues found\"\n")
+	b.WriteString("    1. Read the \"Changes to Review\" block (the diff against the base branch) and the latest handoff\n")
+	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues\n")
+	b.WriteString("    3. Record your verdict as the \"Review Verdict (required)\" block describes: approve, or\n")
+	b.WriteString("       block with the reasons and line comments the implementer must address\n")
 	b.WriteString("\n")
 	b.WriteString("    Be concise. Focus on real bugs, not style preferences.\n")
 
@@ -228,7 +229,11 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("## Your issue\n\n")
 	b.WriteString("**{{ issue.identifier }}: {{ issue.title }}**\n\n")
 	b.WriteString("{% if issue.description %}\n{{ issue.description }}\n{% endif %}\n\n")
-	b.WriteString("Issue URL: {{ issue.url }}\n\n")
+	if trackerKind == "local" {
+		b.WriteString("Issue file: .itervox/issues/{{ issue.identifier }}.md\n\n")
+	} else {
+		b.WriteString("Issue URL: {{ issue.url }}\n\n")
+	}
 	b.WriteString("{% if issue.comments %}\n## Comments\n\n")
 	b.WriteString("{% for comment in issue.comments %}\n**{{ comment.author_name }}**: {{ comment.body }}\n\n{% endfor %}\n{% endif %}\n\n")
 	b.WriteString("---\n\n")
@@ -259,7 +264,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 
 	b.WriteString("## Step 2 — Create a branch\n\n")
 	b.WriteString("```bash\n")
-	if trackerKind == "linear" {
+	if trackerKind == "linear" || trackerKind == "local" {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}\n")
 	} else {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | replace: \"#\", \"\" | downcase }}\n")
@@ -302,12 +307,23 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("git add <specific files>\n")
 	b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
 	b.WriteString("git push -u origin HEAD\n")
-	b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+	if trackerKind == "local" {
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Resolves {{ issue.identifier }}\"   # if the repository has a GitHub remote\n")
+	} else {
+		b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
+	}
 	b.WriteString("```\n\n---\n\n")
 
-	b.WriteString("## Step 6 — Post PR link to tracker\n\n")
-	b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
-	if trackerKind == "linear" {
+	if trackerKind == "local" {
+		b.WriteString("## Step 6 — Report\n\n")
+		b.WriteString("Finish with a short summary of what changed. Itervox adds the PR link, if you opened one, ")
+		b.WriteString("and a session summary as comments in the issue file (`.itervox/issues/{{ issue.identifier }}.md`).\n\n---\n\n")
+	} else {
+		b.WriteString("## Step 6 — Post PR link to tracker\n\n")
+		b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
+	}
+	switch trackerKind {
+	case "linear":
 		b.WriteString("Linear:\n\n")
 		b.WriteString("```bash\n")
 		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
@@ -316,7 +332,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 		b.WriteString("  -H \"Content-Type: application/json\" \\\n")
 		b.WriteString("  -d \"{\\\"query\\\":\\\"mutation { commentCreate(input: { issueId: \\\\\\\"{{ issue.id }}\\\\\\\", body: \\\\\\\"PR: ${PR_URL}\\\\\\\" }) { success } }\\\"}\"\n")
 		b.WriteString("```\n\n---\n\n")
-	} else {
+	case "github":
 		b.WriteString("GitHub:\n\n")
 		b.WriteString("```bash\n")
 		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
@@ -344,7 +360,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 // generates a WORKFLOW.md pre-filled with discovered values.
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	trackerKind := fs.String("tracker", "", "tracker kind: linear or github (required)")
+	trackerKind := fs.String("tracker", "", "tracker kind: linear, github or local (required)")
 	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
 	output := fs.String("output", "WORKFLOW.md", "output file path")
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
@@ -363,6 +379,11 @@ func runInit(args []string) {
 	// the pass when the env file looks populated; skip when it still has the
 	// placeholder hex chars from the scaffold.
 	analyzeMode := fs.String("analyze", "auto", "init-time dependency analysis: auto | always | never")
+	// #83: write the agent-ready GitHub issue template (or print the Linear
+	// one) without asking. Without it, init asks on stdin; EOF means no.
+	// #79: two read-only reviewers on different backends review every run.
+	preset := fs.String("preset", "", "workflow preset: cross-review (the runner writes; a reviewer on each backend reviews every run). Without it, init offers the preset on a terminal when both claude and codex are installed")
+	issueTemplate := fs.Bool("issue-template", false, "add the agent-ready issue template without asking (GitHub: .github/ISSUE_TEMPLATE/agent-task.md; Linear: print it)")
 	_ = fs.Parse(args)
 	switch *analyzeMode {
 	case "auto", "always", "never":
@@ -426,17 +447,20 @@ func runInit(args []string) {
 	}
 
 	switch *trackerKind {
-	case "linear", "github":
+	case "linear", "github", "local":
 		// valid
 	case "":
-		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear or github)")
+		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github or local)")
 		fs.Usage()
 		fatalExit(1)
 	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github)\n", *trackerKind)
+		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, local)\n", *trackerKind)
 		fatalExit(1)
 	}
 
+	if issueTemplateOnly(*output, *dir, *trackerKind, *issueTemplate, *force, os.Stdout) {
+		return // #83: only the template, on an existing workflow
+	}
 	switch *runner {
 	case "claude", "codex":
 		// valid
@@ -464,7 +488,17 @@ func runInit(args []string) {
 		fatalExit(1)
 	}
 
-	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, os.Stdout); err != nil {
+	switch *preset {
+	case "", presetCrossReview:
+	default:
+		fmt.Fprintf(os.Stderr, "itervox init: unknown --preset %q (valid: %s)\n", *preset, presetCrossReview)
+		fatalExit(2)
+	}
+	if *preset == "" {
+		*preset = offerCrossReviewPreset(*runner, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
+	}
+
+	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, *preset, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}
@@ -477,6 +511,9 @@ func runInit(args []string) {
 	envDir := filepath.Join(outputDir, ".itervox")
 	envPath := filepath.Join(envDir, ".env")
 	ensureEnvStub(envDir, *trackerKind)
+	if *trackerKind == "local" {
+		seedLocalIssues(filepath.Join(envDir, "issues"), os.Stdout)
+	}
 
 	// Ensure .itervox runtime files are gitignored and the root .gitignore
 	// has carve-outs for agent / handoff dirs (no-op if root .gitignore
@@ -484,6 +521,12 @@ func runInit(args []string) {
 	if err := finalizeItervoxGitignore(envDir); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
 	}
+
+	// #83 — after every file init needs is written, so an interrupted
+	// prompt never leaves a half-initialised project. Asked only on a
+	// terminal: init used to be non-interactive, and a pipe that never
+	// closes must not hang it.
+	initIssueTemplateStep(*dir, *trackerKind, *issueTemplate, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
 
 	// Phase 1.3 — best-effort one-shot dependency analysis pass. Default
 	// behaviour ("auto") skips when the .env stub still has placeholder hex
@@ -495,6 +538,9 @@ func runInit(args []string) {
 	//   never            — skip; operator will run the pass later
 	shouldAnalyze := decideInitDepsAnalysis(*analyzeMode, envPath)
 	switch {
+	case *trackerKind == "local" && *analyzeMode == "auto":
+		// #85: a new local tracker holds only the example issue.
+		fmt.Printf("itervox init: skipping initial dependency analysis (no issues yet; run \"Analyze dependencies\" from the dashboard once you have some)\n")
 	case !shouldAnalyze && *analyzeMode == "never":
 		fmt.Printf("itervox init: skipping initial dependency analysis (--analyze=never)\n")
 	case !shouldAnalyze:
@@ -521,7 +567,12 @@ func runInit(args []string) {
 	}
 
 	fmt.Printf("Next steps:\n")
-	fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
+	if *trackerKind == "local" {
+		fmt.Printf("  1. Write issues in %s (copy %s.md), and set state: Todo to start one\n",
+			filepath.Join(envDir, "issues"), localSeedIdentifier)
+	} else {
+		fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
+	}
 	runCmd := "itervox"
 	if *output != "WORKFLOW.md" {
 		runCmd = "itervox -workflow " + *output
