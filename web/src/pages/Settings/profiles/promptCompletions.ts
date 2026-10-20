@@ -1,10 +1,13 @@
 // Suggestion logic for the prompt editor's autocomplete (#87): which
 // completion context the caret is in, what to suggest, and how a choice is
-// inserted. Pure functions; the component only wires them to a textarea.
+// inserted. Pure functions; the CodeMirror editor (#122) only wires them to
+// @codemirror/autocomplete (see promptEditor/promptAutocomplete.ts).
 
 import type { SkillsInventory } from '../../../types/schemas';
+import type { SupportedBackend } from '../profileCommands';
+import { backendItems } from './backendInventory';
 
-export type CompletionKind = 'skill' | 'subagent' | 'variable' | 'filter';
+export type CompletionKind = 'skill' | 'subagent' | 'prompt' | 'variable' | 'filter';
 
 export interface Completion {
   /** What is inserted, e.g. `tdd`, `issue.title`, `downcase`. */
@@ -133,38 +136,21 @@ export function completionContext(text: string, caret: number): CompletionContex
   return { kind: 'reference', query, start: caret - query.length, trigger: m[2] as '/' | '@' };
 }
 
-function firstLine(s?: string): string | undefined {
-  const line = s?.split('\n').find((l) => l.trim() !== '');
-  return line?.trim();
-}
-
-/** Skills and subagents from the inventory, deduplicated by kind and name. */
-export function referenceCompletions(inv: SkillsInventory | null | undefined): Completion[] {
-  if (!inv) return [];
-  const out: Completion[] = [];
-  const seen = new Set<string>();
-  const add = (c: Completion) => {
-    const key = `${c.kind}:${c.label}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(c);
-  };
-  for (const s of inv.Skills ?? []) {
-    add({ label: s.Name, kind: 'skill', detail: firstLine(s.Description), source: s.Source });
-  }
-  for (const a of inv.Subagents ?? []) {
-    add({ label: a.Name, kind: 'subagent', detail: firstLine(a.Description), source: a.Source });
-  }
-  for (const p of inv.Plugins ?? []) {
-    const source = `plugin:${p.Name}`;
-    for (const s of p.Skills ?? []) {
-      add({ label: s.Name, kind: 'skill', detail: firstLine(s.Description), source });
-    }
-    for (const a of p.Agents ?? []) {
-      add({ label: a.Name, kind: 'subagent', detail: firstLine(a.Description), source });
-    }
-  }
-  return out;
+/**
+ * Skills, subagents and Codex prompts from the inventory, deduplicated by
+ * kind and name. With a backend, only what that backend can use (#123; see
+ * backendInventory.ts); a Codex prompt is inserted as `prompts:<name>`.
+ */
+export function referenceCompletions(
+  inv: SkillsInventory | null | undefined,
+  backend?: SupportedBackend,
+): Completion[] {
+  return backendItems(inv, backend).map((item) => ({
+    label: item.kind === 'prompt' ? `prompts:${item.name}` : item.name,
+    kind: item.kind,
+    detail: item.description,
+    source: item.source,
+  }));
 }
 
 /** The candidates for a context. */
@@ -207,14 +193,25 @@ const WORD_AFTER: Record<CompletionContext['kind'], RegExp> = {
   filter: /^\w*/,
 };
 
-/** Inserts item for ctx, returning the new text and caret. */
-export function applyCompletion(
+/** One edit: replace [from, to) with insert, then put the caret at caret. */
+export interface CompletionEdit {
+  from: number;
+  to: number;
+  insert: string;
+  caret: number;
+}
+
+/**
+ * The edit that inserts item for ctx: what replaces which range, and where
+ * the caret lands. The editor applies it as one transaction.
+ */
+export function completionEdit(
   text: string,
   caret: number,
   ctx: CompletionContext,
   item: Completion,
   selectionEnd = caret,
-): { text: string; caret: number } {
+): CompletionEdit {
   let insert = item.label;
   // Replace the selection and the rest of the word the caret is in, so a
   // caret inside `/td|d` or `{{ |issue.ti` never leaves the old text behind.
@@ -230,6 +227,20 @@ export function applyCompletion(
   } else if (!/^\s/.test(after)) {
     insert += ' ';
   }
-  const next = text.slice(0, ctx.start) + insert + after;
-  return { text: next, caret: ctx.start + insert.length };
+  return { from: ctx.start, to: end + word.length, insert, caret: ctx.start + insert.length };
+}
+
+/** Inserts item for ctx, returning the new text and caret. */
+export function applyCompletion(
+  text: string,
+  caret: number,
+  ctx: CompletionContext,
+  item: Completion,
+  selectionEnd = caret,
+): { text: string; caret: number } {
+  const edit = completionEdit(text, caret, ctx, item, selectionEnd);
+  return {
+    text: text.slice(0, edit.from) + edit.insert + text.slice(edit.to),
+    caret: edit.caret,
+  };
 }

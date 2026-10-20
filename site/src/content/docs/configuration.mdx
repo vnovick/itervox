@@ -98,6 +98,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `backlog_states` | string[] | `["Backlog"]` (Linear, local), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
 | `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
 | `outbox` | bool | `true` | Write-ahead outbox for tracker state transitions and comments. Writes are persisted durably to `.itervox/outbox.json` and flushed by an independent worker, instead of being made synchronously from the orchestrator's completion/failed-state paths — so a tracker outage or rate-limit stall cannot lose a transition. Set `false` as a kill switch to restore synchronous behaviour. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly, and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. Load-time only (no runtime setter). |
+| `push_interval_ms` | int | `10000` | Coalesced push (needs `outbox: true`). A tracker write waits this long in its issue's batch before the outbox pushes it, so several changes to one issue cost one round of requests and the tracker never shows the intermediate states: of the state moves queued for an issue inside one interval only the **last** is sent (on GitHub, where a state is a label, this also merges the label swaps — Itervox writes no other labels); comments are kept and posted in order. A batch's deadline is set by its first write, so a stream of changes cannot hold it back. The write lands in the local tracker store at once — the board, the orchestrator's tick and automations see the issue in its new state immediately, while the store's own copy stays the tracker's so the outbox's reconciliation (a person's later change in the tracker wins) still compares against the real tracker state. Batched writes are in `.itervox/outbox.json` from the moment they are queued, so a crash or restart before the push loses nothing: the restarted daemon pushes them when they come due, with the outbox's usual retries. **Urgent writes skip the batch** and are pushed at once, taking the issue's earlier queued writes with them (an issue's writes are always delivered in order): input-required questions and the replies sent back to the agent, the max-retries-exhausted failure comment, the move to `failed_state`, the rate-limit auto-switch "budget exhausted" comment, and operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`). `0` pushes every write as soon as the flusher sees it (within 5 s, as before coalesced push); a negative value falls back to the default. Load-time only. |
 | `store.enabled` | bool | `true` | Local tracker store, on by default since v0.2.4 (set `false` to poll the tracker directly, as before). Itervox keeps a copy of the tracked issues in `.itervox/tracker_store.json` (gitignored, mode 0600) and answers the orchestrator's and dashboard's list reads from it, so a tick makes no list requests to the tracker and the board keeps working through a tracker outage. A background sync re-pulls from the tracker every `store.sync_interval_ms`; Itervox's own state, branch and create writes apply to the store and the file at once, so a restart does not undo them. A restart serves from the file; a cold start (no file, or a file from another tracker, endpoint, `project_slug` or `active_states` list) pulls once before the first read is answered. Reads of one issue (the state check after each agent turn, retries, stopping a cancelled issue's worker, detail with comments) still go to the tracker, so a running worker sees a state change at once. Before any agent starts (a dispatch, retry, reviewer, automation run, answered question or backend-fallback re-dispatch), the issue is read once more from the tracker by ID (the *claim check*), so an issue a person closed, moved out of an active state or deleted since the last pull is not started; a queued Itervox state write that the person's later change superseded, and that is still queued at that point, is dropped, so the person's state wins (a write the outbox already delivered is not undone). When the tracker cannot be read the start is deferred, never dropped. Linear and GitHub only; `local` and `memory` trackers ignore it. Load-time only. |
 | `webhooks.enabled` | bool | `false` | Receive Linear or GitHub issue webhooks on `POST /api/v1/webhooks/<kind>` and refresh the tracker store by issue as they arrive, instead of waiting for the next pull; the store's periodic pull slows to `webhooks.safety_net_interval_ms`. Needs `store.enabled: true` and a `webhooks.secret`; Linear and GitHub only. Setup, including a relay for a daemon the tracker cannot reach: [Tracker webhooks](/guides/tracker-webhooks/). Load-time only. |
 | `webhooks.secret` | string | — | The webhook signing secret, usually `$ITERVOX_WEBHOOK_SECRET` from `.itervox/.env` (`itervox secret set ITERVOX_WEBHOOK_SECRET`). Every delivery must carry its HMAC-SHA256 signature; anything else is dropped. Required when `webhooks.enabled`, at least 16 characters. |
@@ -105,6 +106,13 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `store.sync_interval_ms` | int | `60000` | How often the tracker store pulls from the tracker. On Linear and GitHub a pull asks only for the issues updated since the last one: one request (paginated) for the whole project, in any state, so an issue edited, closed, moved out of the active states, trashed or archived is applied and one moved into an active state becomes a candidate. The cursor is the newest update time the tracker reported, saved with the store; each pull asks from one minute before it, so a late-committed update is not missed. A failed pull keeps it and is retried after 5 s, doubling up to this interval. A GitHub issue closed without `closed` among the terminal states leaves the store, as a full pull would not list it. Lower it for faster pickup of changes made in the tracker; raise it to spend fewer requests. Load-time only. |
 | `store.full_sync_interval_ms` | int | `3600000` | How often a pull is a full one even so (the candidate list and each state set the board, backlog and cleanup read). It catches what a changes listing cannot show: an issue moved to another Linear project or transferred to another GitHub repository, or a deleted GitHub issue. Between full pulls, the blocker state an issue records for a blocker outside the tracked project is not refreshed (the changes listing covers the project only), so it can be up to this interval old; a blocker inside the project is refreshed when it changes. Load-time only. |
 | `comment_commands` | map | off | `/itervox run [profile]`, `/itervox stop` and `/itervox review` in GitHub issue comments, obeyed from users with write access or in `allow`. Keys: `enabled` (default `false`), `allow` (logins), `allow_token_user` (default `false`), `reply_to_unauthorized` (default `false`). GitHub only. See [Comment commands](/guides/github-issues/#comment-commands). |
+| `sync.kind` | string | off | `local` only: two-way sync of the issue files with a Linear project (`linear`) or GitHub repository (`github`). New files are created on the remote and get a `remote:` key; new remote issues become files; title, description, state, labels, priority, blockers and comments sync both ways, and when both sides changed a field the more recent edit wins (recorded as a comment in the file). See [Local issues: sync](/guides/local-issues/#sync-with-linear-or-github). Load-time only. |
+| `sync.api_key`, `sync.project_slug`, `sync.endpoint` | string | **required** (`endpoint` optional) | The remote's credentials and scope, with the same meaning and `$VAR` resolution as the top-level keys of a `linear` or `github` tracker. `project_slug` is required for both: the Linear project new issues are created in (in its first team), or `owner/repo`. |
+| `sync.active_states`, `sync.terminal_states`, `sync.backlog_states`, `sync.completion_state` | | as for `tracker:` | The remote's own state names (on GitHub, the state labels), with the same defaults as the top-level keys. On GitHub these labels are the issue's state, so they are not synced as labels. |
+| `sync.state_map` | map | `{}` | Local state name → remote state name, for states named differently on the two sides (`Review: "In Review"`); a state not listed has the same name on both sides. |
+| `sync.pull_states` | string[] | remote active + backlog states, and `completion_state` | Remote states whose issues not yet in a file are pulled into new files. Issues already linked sync in any state. |
+| `sync.interval_ms` | int | `60000` | How often the sync runs; a file edit also starts one within seconds. Between full pulls a cycle asks the remote only for the issues changed since the last one. |
+| `sync.full_sync_interval_ms` | int | `3600000` | How often a cycle lists every issue in `pull_states` (and re-reads every linked issue) instead of the changes since the last cycle. |
 
 **Outbox visibility:** pending and degraded entries appear in the dashboard's
 Outbox panel and LiveOps tile, each with Retry and Discard controls. An entry
@@ -1148,6 +1156,32 @@ Linear workflows skip the check.
 including no input at all, creates nothing. Pass `--yes` (or `-y`) to skip the
 prompt in CI. The token needs write access to the repository.
 
+### Tracker sync status in `itervox doctor`
+
+When a live daemon owns this project's `.itervox/HEARTBEAT.md`, `itervox
+doctor` prints its tracker sync status (#117) from the heartbeat's `## Sync`
+section — no API token needed:
+
+```text
+sync: store · last pull 2026-10-14T10:00:00Z (42s ago) · warns after 5m0s · pending writes 3 (urgent 1, batched 2, retrying 0, degraded 0, rate limited 0) · next push 2026-10-14T10:00:08Z
+```
+
+The lag is computed at doctor's own clock. Past the threshold it prints
+`WARNING: tracker sync lag 12m0s is past 5m0s — the board and dispatch are
+working from tracker data that old; last sync error: network at …: tracker
+unreachable (network error)`. It warns, too, when the daemon has never pulled
+and its pulls are failing. The threshold is three pull intervals and at least
+five minutes: 5 minutes at the default `tracker.store.sync_interval_ms`
+(60 s), 30 minutes with `tracker.webhooks` (10-minute safety net), and
+`polling.interval_ms` × 3 (at least 5 minutes) without the tracker store. It
+is not configurable. A lagging sync is a warning only: it does not change the
+exit code. The error is classified (`rate_limited`, `auth`, `not_found`,
+`api_status`, `graphql`, `timeout`, `network`, `canceled`, `unknown`) with a
+fixed summary, never the tracker's response. The heartbeat is rewritten when
+the sync status changes (a pull, a queued or delivered write), so its last
+pull time is at most one heartbeat interval (15 s) behind. The same status is
+on the dashboard's LiveOps strip and in `GET /api/v1/state` as `syncStatus`.
+
 ### Deployment preflight: `itervox doctor --deploy`
 
 `itervox doctor --deploy [--workflow PATH]` runs the normal doctor checks
@@ -1201,14 +1235,17 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 ## Settings files (JSONC layers)
 
-Settings in the `agent`, `polling`, `workspace` and `server` sections can also live in two JSONC files, so a default you use everywhere is set once:
+Settings in the `agent`, `polling`, `workspace` and `server` sections can also live in three JSONC files, so a default you use everywhere is set once:
 
 | Layer | File | Wins over |
 |-------|------|-----------|
 | `default` | built in | — |
 | `user` | `~/.itervox/settings.jsonc` (or the path in `ITERVOX_USER_SETTINGS`; `off` disables it) | defaults |
-| `project` | `.itervox/settings.jsonc` next to `WORKFLOW.md` | user |
+| `project` | `.itervox/settings.jsonc` next to `WORKFLOW.md` (committed) | user |
+| `local` | `.itervox/settings.local.jsonc` next to `WORKFLOW.md` (gitignored: your own overrides for this project) | project |
 | `workflow` | `WORKFLOW.md` front matter | everything |
+
+`itervox init` (and `itervox init --update`) adds `.itervox/settings.local.jsonc` to the ignore lists, and a save to the local layer from the dashboard or `itervox config set --local` makes sure `.itervox/.gitignore` ignores it.
 
 The keys are the same as in the front matter. Maps merge key by key (a user file can set `agent.max_turns` while the workflow sets `agent.max_concurrent_agents`); any other value, a list included, is replaced whole by a higher layer. The tracker, hooks, dependencies, automations and the prompt stay in `WORKFLOW.md`: a settings file that sets another section, or does not parse, stops the load with an error naming the file.
 
@@ -1225,11 +1262,88 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 
 `itervox init` writes most of these keys into `WORKFLOW.md`, and `WORKFLOW.md` wins; delete a key there to let a settings file decide it.
 
-**Dashboard and TUI saves.** A setting saved from the dashboard or the TUI in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear) is written to `.itervox/settings.jsonc`, which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were — so the saved value is the one the next load uses. If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Tracker states, the failed state, the project filter, dependencies, automations and agent profiles are saved to `WORKFLOW.md` as before.
+**The settings schema.** Every key of these sections is described by a JSON Schema generated from Itervox's config registry, with a label, a description, its type, enum values, minimum and default: [`https://itervox.dev/schema/settings.schema.json`](https://itervox.dev/schema/settings.schema.json) (`site/public/schema/settings.schema.json`, printed by `itervox config schema`). Point `"$schema"` at it for completion and checks in your editor; a settings file may carry that `"$schema"` key. A test fails when the loader reads a layered key that has no schema entry, and when the published file is stale (`make settings-schema` regenerates it).
+
+**The Settings page.** The dashboard's Settings page has an **All settings** section rendered from that schema: every layered setting, grouped by section and topic, with a control for its type (a toggle, a number, a choice, a one-per-line list, `key = value` lines for a map; a value with its own shape, such as `agent.profiles` or `agent.backend_fallback`, is shown read-only and edited on its own page or in the JSON view). Each field shows whether this layer sets it or which layer it inherits from, and whether a change applies at once or after a restart. A tab picks the layer every save writes — **User**, **Project** or **Project local** — and a **JSON** view shows that layer's file as text, comments included, checked against the schema as you type. Saves go through the same comment-preserving writer as `itervox config set` (the JSON view's text is written as typed). A save to the project or local layer also moves the keys it sets out of `WORKFLOW.md`, which would otherwise win; a user-layer save never edits the project, and the page says when a higher layer still overrides the value. Settings with a runtime setter (max workers, max retries, the switch budget and window, inline input, dispatch strategy, the reviewer profile and auto-review, the dependency analyzer profile, SSH hosts and their descriptions, available models, workspace auto-clear) apply to the running daemon at once; the rest apply at the next restart or `WORKFLOW.md` reload, and the save says which. A save made against a file someone else changed meanwhile is refused and the page reloads the file.
+
+**Moving between Symphony and Itervox.** `itervox import WORKFLOW.md` converts a Symphony workflow, or an Itervox v0.x one, into this layout (settings to `.itervox/settings.jsonc`, profile prompts to prompt files, a `WORKFLOW.md.bak`, and a list of every key it could not map); `itervox export --symphony` writes a Symphony `WORKFLOW.md` with the Symphony core keys and the worker prompt and lists the Itervox-only features it dropped. See the [CLI reference](/cli/#itervox-import--convert-a-symphony-or-older-itervox-workflow).
+
+**Dashboard and TUI saves.** A setting saved from the dashboard or the TUI in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear) is written to `.itervox/settings.jsonc`, which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were — so the saved value is the one the next load uses. If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Tracker states, the failed state, the project filter, dependencies, automations and agent profiles are saved to `WORKFLOW.md` as before, each through one generic front-matter writer that changes only that key's lines.
 
 **See where each value comes from.** `itervox config show` prints every setting Itervox reads, its effective value and its layer (with the file for `user` and `project`), plus `environment` (and the variable) for a server bind set by `ITERVOX_SERVER_HOST`, `ITERVOX_SERVER_PORT` or `PORT`; `--json` for scripts. A key a layer sets that Itervox does not read is listed with a note, and so is a value of the wrong type that was ignored for the default. Secrets such as `tracker.api_key` are shown as `(set, hidden)`, and a password inside a URL as `hidden`.
 
-**Edit a file.** `itervox config set agent.max_turns 40` writes `.itervox/settings.jsonc` (`--user` writes the user file) and `itervox config unset KEY` removes a key. Comments, and every other key, are kept; the file is laid out again on each write. The value is read as JSON (`40`, `true`, `["a","b"]`, `"text"`) or else as text. A value of the wrong type for the key (`agent.max_turns lots`), or a change the workflow then fails to load with, is refused and the file is left as it was. `set` warns when a higher layer also sets the key (so the change has no effect) and when Itervox does not read the key at all (a typo). A running daemon applies a settings-file change the next time it loads `WORKFLOW.md`: restart it, or save `WORKFLOW.md`.
+**Edit a file.** `itervox config set agent.max_turns 40` writes `.itervox/settings.jsonc` (`--user` writes the user file, `--local` the project-local one) and `itervox config unset KEY` removes a key. Comments, and every other key, are kept; the file is laid out again on each write. The value is read as JSON (`40`, `true`, `["a","b"]`, `"text"`) or else as text. A value of the wrong type for the key (`agent.max_turns lots`), or a change the workflow then fails to load with, is refused and the file is left as it was. `set` warns when a higher layer also sets the key (so the change has no effect) and when Itervox does not read the key at all (a typo). A running daemon applies a settings-file change the next time it loads `WORKFLOW.md`: restart it, or save `WORKFLOW.md`.
+
+---
+
+## Rules (layered JSONC)
+
+Rules are short instructions every agent run follows: "always use pnpm", "keep pull requests small". Write one once and it reaches every worker, reviewer and dependency-analyzer run, on every project and daemon that reads the file. They come from three JSONC files (comments and trailing commas are fine):
+
+| Layer | File | Committed |
+|-------|------|-----------|
+| `user` | `~/.itervox/rules.json` (or the path in `ITERVOX_USER_RULES`; `off` disables it) | never |
+| `project` | `.itervox/rules.json` next to `WORKFLOW.md` | yes |
+| `local` (project local) | `.itervox/rules.local.json` next to `WORKFLOW.md` | no (gitignored) |
+
+```jsonc
+// .itervox/rules.json
+{
+  "$schema": "https://itervox.dev/schema/rules.schema.json",
+  "rules": [
+    {"id": "pnpm", "severity": "must", "text": "Use pnpm, never npm or yarn."},
+    {
+      "id": "small-prs",
+      "severity": "should",
+      "text": "Keep each pull request under about 400 changed lines.",
+      "description": "Reviews of large PRs stall.", // shown in the editor, not sent to the agent
+      "scope": {"profiles": ["implementer"], "backends": ["claude", "codex"]},
+    },
+  ],
+}
+```
+
+Each rule has:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `id` | yes | Letters, digits, `.`, `_`, `-` (64 at most), unique within the file (case-insensitive). A later layer's rule with the same id replaces this one. |
+| `severity` | yes | `must` (a requirement) or `should` (a strong default the agent may depart from with a stated reason). |
+| `text` | yes | The instruction the agent is given. |
+| `description` | no | Why the rule exists. Shown in the editor; not sent to the agent. |
+| `scope.projects` | no | The project: the name of the directory holding `WORKFLOW.md`, or a `tracker.project_slug` entry. |
+| `scope.profiles` | no | Agent profile names. A run without a named profile is `default`. |
+| `scope.backends` | no | Agent backends (`claude`, `codex`). |
+
+A missing or empty scope list matches every run; entries match case-insensitively and may use `*` and `?` (`"projects": ["web-*"]`). A rule applies when all its lists match. The JSON Schema is published at [`https://itervox.dev/schema/rules.schema.json`](https://itervox.dev/schema/rules.schema.json) (`site/public/schema/rules.schema.json`); point `$schema` at it for completion and checks in your editor.
+
+**Merging.** At every dispatch the daemon reads the three files again, so an edit applies to the next run with no restart. Layers merge in the order user < project < local: a rule replaces a lower layer's rule with the same id, in place. A **user `must` rule** is the exception: no later layer can override it. A project or local rule with its id is ignored, and the conflict is reported in the run's log (`rules: the project rule "pnpm" was ignored: …`), in the daemon log, and in the editor's preview. A file that does not parse, or breaks a rule above, is skipped with the same reports, and the other layers still apply.
+
+**Injection.** The rules in scope for the run's project, profile and backend are rendered as one block, must rules first:
+
+```markdown
+## Rules
+
+The operator set these rules for every run. A must rule is a requirement. A should rule is a strong default: depart from it only with a reason you state in your handoff.
+
+### Must
+
+- Use pnpm, never npm or yarn. (pnpm)
+
+### Should
+
+- Keep each pull request under about 400 changed lines. (small-prs)
+```
+
+It goes ahead of the profile's SOUL.md and INSTRUCTIONS.md, for workers, reviewers and automation runs, and at the top of the dependency analyzer's prompt. With no rule in scope, nothing is added.
+
+**Placing the rules yourself.** A template can print the rules where it wants them: `{{ rules }}` prints the whole block, `{{ rules.must }}` and `{{ rules.should }}` print just that severity's list, and `rules.ids` and `rules.hash` describe the set. When the workflow prompt (or the reviewer prompt), the profile's SOUL.md or INSTRUCTIONS.md, or an automation's instructions print `rules` or one of its fields, the run gets no automatic block, so the rules never appear twice. (The dependency analyzer's files are not rendered as Liquid; it always gets the block.)
+
+**Per-run record.** Each run records the rule set it used: `rulesHash` (a hash of the rules' ids, severities and texts, in prompt order) and `ruleIds` on its running row and in run history (`/api/v1/state`), empty when no rule applied. Two runs with the same hash were given the same rules.
+
+**Rules editor.** The dashboard's **Rules** page has a tab per layer. The form view edits rules field by field; its save rewrites only the rules and fields that changed, through the same comment-preserving JSONC writer as the settings files, so comments elsewhere in the file stay. The JSON view edits the file as text, checks it against the schema as you type, and saves it exactly as written. A missing file is created on the first save. A save made after the file changed on disk (another tab, an editor) is refused and the page reloads the file. The preview panel shows the effective rules for a profile and an issue (the issue's profile and backend overrides apply), with conflicts and broken layers.
+
+**Git.** `itervox init` and `itervox init --update` keep `.itervox/rules.json` committable (a `!/rules.json` carve-out in `.itervox/.gitignore`, and `!.itervox/rules.json` in a root `.gitignore` that hides `.itervox/`) and add `.itervox/rules.local.json` to the root `.gitignore`.
 
 ---
 
@@ -1237,7 +1351,7 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 
 `itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter profile files. Commit `.itervox/agents/**`: those files are project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
 
-On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
+On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next push, last sync error), capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
 
 ---
 
@@ -1263,6 +1377,7 @@ The body of `WORKFLOW.md` (everything after the closing `---`) is a [Liquid](htt
 | `created_at` | string | Issue creation timestamp (ISO 8601). |
 | `updated_at` | string | Issue last update timestamp (ISO 8601). |
 | `attempt` | int\|null | Current retry attempt number. `null` on the first attempt. |
+| `rules` | object | The run's [rules](#rules-layered-jsonc). `{{ rules }}` prints the `## Rules` block; `rules.must` and `rules.should` print one severity's list; `rules.ids` and `rules.hash` describe the set. Printing it turns off the automatic block. Also available in SOUL.md, INSTRUCTIONS.md and automation instructions. |
 
 ### Example template
 

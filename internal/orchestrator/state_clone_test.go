@@ -26,6 +26,12 @@ var cloneAllowlist = map[string]string{
 	"RunEntry.RetryAttempt": "immutable *int (reassigned, never written through)",
 	"RunEntry.CostUSD":      "immutable *float64 (reassigned from a fresh copy, never written through)",
 	"RetryEntry.Error":      "immutable *string",
+	// #157: a run's rule ids are set once by startRun from a fresh slice
+	// (rules.Set.IDs) and never appended to or written through. Evidence:
+	// grep -rnE 'RuleIDs(\[[^]]*\])? *=|append\([^,]*RuleIDs' internal/orchestrator → only
+	// the startRun assignment and struct copies.
+	"RunEntry.RuleIDs":      "immutable []string (set once at dispatch, never written through)",
+	"RunRecord.RuleIDs":     "immutable []string (copied from RunEntry.RuleIDs, never written through)",
 	"Issue.Priority":        "immutable *int from the tracker adapter",
 	"Issue.BranchName":      "immutable *string from the tracker adapter",
 	"Issue.Description":     "immutable *string from the tracker adapter",

@@ -23,6 +23,7 @@ type Inventory struct {
 	Capabilities []Capability                   // reserved normalized graph nodes
 	Skills       []Skill                        // Claude + Codex + shared
 	Subagents    []Subagent                     // Claude Code subagents: .claude/agents (project, user) + plugin agents
+	Prompts      []Prompt                       // Codex custom prompts: ~/.codex/prompts/*.md (#123)
 	Plugins      []Plugin
 	MCPServers   []MCPServer
 	Hooks        []HookEntry
@@ -63,6 +64,19 @@ type Subagent struct {
 	Model        string   // from the `model` frontmatter; empty means "inherit"
 	Provider     string   // always "claude"
 	Source       string   // "project" | "user" | "plugin:{name}"
+	FilePath     string
+	ApproxTokens int
+}
+
+// Prompt is a Codex custom prompt: a Markdown file directly under
+// ~/.codex/prompts/ that Codex runs as the slash command
+// `/prompts:<name>` (#123). Claude Code has no equivalent, so Provider is
+// always "codex". The optional YAML frontmatter supplies a description.
+type Prompt struct {
+	Name         string
+	Description  string
+	Provider     string // always "codex"
+	Source       string // "user-codex"
 	FilePath     string
 	ApproxTokens int
 }

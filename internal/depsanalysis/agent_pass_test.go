@@ -247,3 +247,17 @@ func TestAgentPassClampsConfidence(t *testing.T) {
 	assert.Equal(t, 1.0, edges[0].Confidence, "confidence above 1 clamps to 1")
 	assert.Equal(t, 0.0, edges[1].Confidence, "confidence below 0 clamps to 0")
 }
+
+// TestAnalyzerPromptLeadsWithRulesBlock (#157): the dependency analyzer gets
+// the rules too, ahead of its SOUL.md and INSTRUCTIONS.md.
+func TestAnalyzerPromptLeadsWithRulesBlock(t *testing.T) {
+	profile := config.AgentProfile{Soul: "ANALYZER-SOUL", Instructions: "ANALYZER-INSTRUCTIONS"}
+	p := buildAnalyzerPrompt(profile, "## Rules\n\n- RULE-TEXT (r1)", nil, nil)
+	rulesAt, soulAt, instrAt := strings.Index(p, "## Rules"), strings.Index(p, "ANALYZER-SOUL"), strings.Index(p, "ANALYZER-INSTRUCTIONS")
+	if rulesAt != 0 || soulAt < rulesAt || instrAt < soulAt {
+		t.Fatalf("want rules, then SOUL, then INSTRUCTIONS; got %d %d %d:\n%s", rulesAt, soulAt, instrAt, p)
+	}
+	if strings.Contains(buildAnalyzerPrompt(profile, "", nil, nil), "## Rules") {
+		t.Fatal("no rules, no block")
+	}
+}
