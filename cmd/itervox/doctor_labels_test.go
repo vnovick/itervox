@@ -152,7 +152,9 @@ func TestDoctorGitHubLabelsAllPresent(t *testing.T) {
 	assert.True(t, report.Labels.Ran)
 	assert.Equal(t, wantStateLabels, report.Labels.Checked)
 	assert.Empty(t, report.Labels.Missing)
-	assert.Contains(t, renderDoctorReport(report), "github labels: OK (6 state labels present on owner/repo)")
+	out := renderDoctorReport(report)
+	assert.Contains(t, out, "github labels: OK (6 state labels present on owner/repo)")
+	assert.NotContains(t, out, "GitHub setup guide", "no guide link when nothing is wrong")
 }
 
 // TestDoctorGitHubLabelsMissing pins #75: every missing state label is listed
@@ -174,6 +176,7 @@ func TestDoctorGitHubLabelsMissing(t *testing.T) {
 		assert.Contains(t, out, line)
 	}
 	assert.NotContains(t, out, `gh label create "closed"`)
+	assert.Contains(t, out, "GitHub setup guide (labels, priority, blockers, gh auth): https://itervox.dev/guides/github-issues/")
 	assert.Equal(t, 1, doctorExitCode(DoctorReport{SchemaPassed: true, Labels: report.Labels}))
 }
 
@@ -189,6 +192,7 @@ func TestDoctorGitHubLabelsAPIErrorIsReportedNotFatal(t *testing.T) {
 	assert.Empty(t, report.Labels.Missing)
 	out := renderDoctorReport(report)
 	assert.Contains(t, out, "github labels: could not check owner/repo")
+	assert.Contains(t, out, githubSetupGuideURL)
 	assert.NotContains(t, out, "test-token")
 	assert.Equal(t, 0, doctorExitCode(DoctorReport{SchemaPassed: true, Labels: report.Labels}))
 

@@ -220,3 +220,36 @@ func TestPopulateBlockerStatesCachesOpenUnlabeledBlocker(t *testing.T) {
 	assert.Equal(t, int32(1), blockerCalls.Load(),
 		"a successfully fetched but state-unresolved blocker must be cached — one GET across two polls within TTL")
 }
+
+// TestBlockerInCompletionStateReadsAsThatState (#103): an open blocker whose
+// state label is tracker.completion_state ("in-review") resolves to that
+// state, not to "" — stacked PRs need to tell a blocker in review apart
+// from an unlabelled one. Without a CompletionState it stays unresolved.
+func TestBlockerInCompletionStateReadsAsThatState(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		issue := ghIssue(1, "Blocked issue", "open", []string{"todo"})
+		issue["body"] = "Blocked by #10"
+		_ = json.NewEncoder(w).Encode([]interface{}{issue})
+	})
+	mux.HandleFunc("/repos/owner/repo/issues/10", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ghIssue(10, "Blocker", "open", []string{"In-Review"}))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.CompletionState = "in-review"
+	issues, err := ghclient.NewClient(cfg).FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.Len(t, issues[0].BlockedBy, 1)
+	require.NotNil(t, issues[0].BlockedBy[0].State)
+	assert.Equal(t, "in-review", *issues[0].BlockedBy[0].State)
+
+	issues, err = ghclient.NewClient(defaultConfig(ts.URL)).FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, issues[0].BlockedBy[0].State, "without completion_state the label is not a state")
+}

@@ -345,6 +345,23 @@ type Orchestrator struct {
 	// rewrite from stale memory.
 	commentWg sync.WaitGroup
 
+	// prRetargetWg tracks the background `gh pr edit --base` calls that
+	// retarget a stacked pull request after its dependent was restacked onto
+	// workspace.base_branch (#73), so Run waits for them like the comments.
+	prRetargetWg sync.WaitGroup
+
+	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
+	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.
+	// Tests replace them.
+	findOpenPRURL func(ctx context.Context, wsPath string) string
+	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
+	// means workspace.EnsurePRFooter.
+	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)
+	// readPRChecks is the gh seam for require_evidence "ci" (#80); nil means
+	// workspace.ReadPRChecks.
+	readPRChecks func(ctx context.Context, prURL string) (workspace.PRChecks, error)
+
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather
 	// than mislabelling it a user cancel (#42-F).
@@ -838,15 +855,6 @@ func (o *Orchestrator) reviewerChainCfg() []string {
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
 	return ReviewerProfileChain(o.cfg)
-}
-
-// reviewVerdictRelPathCfg is reviewVerdictRelPathFor read under cfgMu. Called
-// from runWorker — a worker goroutine — which must never touch o.cfg
-// directly; see reviewerChainCfg for the writer it races.
-func (o *Orchestrator) reviewVerdictRelPathCfg(identifier, profileName string) string {
-	o.cfgMu.RLock()
-	defer o.cfgMu.RUnlock()
-	return reviewVerdictRelPathFor(o.cfg, identifier, profileName)
 }
 
 // DepsAnalyzerProfileCfg returns the configured deps-analyzer profile name
