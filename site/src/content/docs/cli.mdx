@@ -205,6 +205,16 @@ itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--ye
 
 Validates `WORKFLOW.md` (schema 2, dispatch checks, profile commands, skill and subagent references, GitHub state labels) and the local daemon files. Exits `0` when clean, `1` on any warning or failed check, `2` when the check itself cannot run.
 
+Doctor resolves PATH the way the daemon does (see [Login-shell PATH](#login-shell-path)) and reports it before the other checks:
+
+```
+PATH source: login shell (/bin/zsh, 412ms, +4 dirs) — not started from an interactive shell
+agent CLI claude: /Users/me/.nvm/versions/node/v22.11.0/bin/claude
+WARNING: agent CLI codex not found on PATH — install it, set the command to an absolute path, or check ITERVOX_LOGIN_SHELL_PATH
+```
+
+`PATH source: inherited — <reason>` means the PATH it was started with was kept. The `agent CLI` lines cover the default `agent.command` and every enabled profile's command; a missing one is a warning and does not change the exit code (the daemon refuses to start without its default CLI).
+
 | Flag | Description |
 |---|---|
 | `--workflow` | Path to `WORKFLOW.md` (default `WORKFLOW.md`) |
@@ -315,6 +325,62 @@ itervox clear -workflow path/to/WORKFLOW.md ENG-42
 
 ---
 
+## `itervox status` — List running daemons
+
+```bash
+itervox status [--workflow PATH] [--all] [--json]
+```
+
+Lists the daemons of this project (the directory of `--workflow`, default `WORKFLOW.md`); `--all` adds every other `itervox` daemon on the host. `--json` prints a JSON array instead of text, one object per daemon, `[]` when none:
+
+```json
+[
+  {
+    "schema_version": 1,
+    "pid": 48211,
+    "workflow": "/Users/me/src/app/WORKFLOW.md",
+    "project_dir": "/Users/me/src/app",
+    "url": "http://127.0.0.1:8090/",
+    "host": "127.0.0.1",
+    "port": 8090,
+    "version": "0.2.5",
+    "commit": "a1b2c3d",
+    "started_at": "2026-10-14T09:12:44Z",
+    "token_required": true,
+    "token_source": "supervisor",
+    "token_file": "",
+    "logs_dir": "/Users/me/.itervox/logs/github/me_app-3f2a9c1e",
+    "heartbeat": "/Users/me/src/app/.itervox/HEARTBEAT.md",
+    "executable": "/Applications/Itervox.app/Contents/MacOS/itervox",
+    "path_source": "login_shell",
+    "source": "registry"
+  }
+]
+```
+
+Every object carries every key. `token_source` is `supervisor`, `env` (`ITERVOX_API_TOKEN`), `generated` (the token is in `token_file`), `none` (`server.allow_unauthenticated: true`) or `unknown`; no token value is ever printed. The data comes from the host registry: each daemon writes `~/.itervox/daemons/<pid>.json` (mode `0600`) once its port is bound and removes it on shutdown; a record whose daemon is gone (killed with `SIGKILL`) is skipped and deleted, even when its pid now belongs to another process: the daemon's pid lock must still be held. Paths in the output (`logs_dir`, `token_file`, …) are absolute, a relative `--logs-dir` resolved against the daemon's working directory. Daemons started by an older binary, which write no record, are found by process scan (`source: "process_scan"`, with `version`, `commit` and `started_at` empty). The format is versioned by `schema_version`: keys may be added, never renamed or removed within a version. Full reference: the supervisor contract in [`docs/api.md`](https://github.com/vnovick/itervox/blob/main/docs/api.md#supervisor-contract).
+
+### Running under a supervisor
+
+A program that starts and manages daemons — the macOS menu-bar app, a process manager — should:
+
+1. Start `itervox --workflow <path>` with `ITERVOX_SUPERVISOR_TOKEN=<token>` in the environment (`openssl rand -hex 32`). The API requires exactly that token, even with `server.allow_unauthenticated: true` or a different `ITERVOX_API_TOKEN` in `.itervox/.env`, and the daemon never prints or writes it: no tokenised URL on stderr (whatever `ITERVOX_PRINT_TOKEN` says), none in the log file, `HEARTBEAT.md`, `dashboard_url`, the registry or `<logs-dir>/api-token`.
+2. Find it, and daemons started elsewhere, with `itervox status --all --json`; poll `GET {url}api/v1/health` (no token) for liveness.
+3. Call the API with `Authorization: Bearer <token>`; stop a daemon with `itervox stop --workflow <path>` or `SIGTERM`.
+
+Started from Finder or launchd, the daemon finds `claude` and `codex` through the user's login shell (next section).
+
+### Login-shell PATH
+
+Apps started from Finder or launchd get a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so agent CLIs installed with nvm, asdf, volta or Homebrew are not found. At startup the daemon (and `itervox doctor`) therefore runs the user's login shell once — `$SHELL -l -i -c 'printenv PATH'` for sh, bash, zsh, ksh, dash and fish; for csh and tcsh, which refuse `-l` with other options, `$SHELL -c` (reading `~/.tcshrc` or `~/.cshrc`) after sourcing `/etc/csh.login` and `~/.login` — using the shell from the account database when `$SHELL` is unset, in its own session with no terminal, bounded to 5 seconds and killed with its children after that, and installs the resulting PATH, byte for byte, for itself, its hooks and its agents. It does so only when:
+
+- the process was not started from an interactive shell (no terminal on stdin or stderr and no `SHLVL`, as under Finder, launchd or systemd), or
+- an agent CLI the workflow names (the default `agent.command` or an enabled profile's command, by bare name) is not on the inherited PATH.
+
+Not started from a shell, the login shell's directories come first and inherited-only directories follow; started from a shell but missing a CLI, the inherited order is kept and the login shell's extra directories are appended. If the shell fails or times out, the inherited PATH is kept and a warning is logged. The startup log line `PATH resolved` gives the source, the reason, the shell, the time taken and how many directories were added (never the PATH itself); `itervox doctor` prints the same as `PATH source:`, and `status --json` as `path_source`. `ITERVOX_LOGIN_SHELL_PATH=always` forces the lookup, `never` turns it off.
+
+---
+
 ## `itervox --version` — Print version
 
 Prints the binary version, commit hash, and build date, then exits.
@@ -356,6 +422,8 @@ itervox -h
 | `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The dashboard URL that carries the token is printed to stderr once, only when stderr is a terminal (see `ITERVOX_PRINT_TOKEN`); an auto-generated token is also written to `<logs-dir>/api-token` (mode 0600, rewritten on every start), which is where a headless run (systemd, containers) finds it. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
 | `ITERVOX_USER_SETTINGS` | `""` | Path of the user [settings file](/configuration/#settings-files-jsonc-layers) instead of `~/.itervox/settings.jsonc`; `off` turns the user layer off. |
 | `ITERVOX_PRINT_TOKEN` | `""` | `1`/`true` prints the tokenised dashboard URL on stderr even when stderr is not a terminal; `0`/`false` suppresses it even on a terminal. Unset: printed only on a terminal. `-no-print-token` always wins. |
+| `ITERVOX_SUPERVISOR_TOKEN` | `""` | The API token a supervisor (the macOS app, a process manager) starts the daemon with. Required as the bearer token like `ITERVOX_API_TOKEN`, which it replaces, and even with `server.allow_unauthenticated: true`; never printed or written anywhere (stderr, log file, terminal UI, `HEARTBEAT.md`, `api-token`). 16–512 printable ASCII characters without spaces, or the process exits with code 2. See [Running under a supervisor](#running-under-a-supervisor). |
+| `ITERVOX_LOGIN_SHELL_PATH` | `auto` | When to take PATH from the user's login shell: `auto` (not started from an interactive shell, or an agent CLI missing), `always` (`1`/`true`) or `never` (`0`/`false`). See [Login-shell PATH](#login-shell-path). |
 
 ### Auto-loading
 
