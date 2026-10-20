@@ -34,12 +34,13 @@ import (
 // file list so a future file with the same class of goroutine is one line
 // to add, not a second copy of this test.
 func TestEventLoopGoroutinesAreWaitgroupTracked(t *testing.T) {
-	files := []string{"event_loop.go", "automation_rate_limited.go"}
+	files := []string{"event_loop.go", "automation_rate_limited.go", "restack.go"}
 
 	knownWGs := map[string]struct{}{
-		"autoClearWg": {},
-		"discardWg":   {},
-		"commentWg":   {},
+		"autoClearWg":  {},
+		"discardWg":    {},
+		"commentWg":    {},
+		"prRetargetWg": {},
 	}
 
 	var violations []string
