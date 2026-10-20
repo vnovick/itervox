@@ -3,6 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { proseClass } from '../../../utils/format';
 import { fieldLabelCls, helperTextCls, textareaCls } from '../formStyles';
+import { PromptAutocompleteTextarea } from './PromptAutocompleteTextarea';
+import { PROFILE_VARIABLES, type Completion } from './promptCompletions';
 
 interface MarkdownPromptEditorProps {
   value: string;
@@ -10,6 +12,8 @@ interface MarkdownPromptEditorProps {
   label?: string;
   placeholder?: string;
   helperText?: ReactNode;
+  /** Liquid variables the autocomplete offers after `{{` (#87). */
+  variables?: readonly Completion[];
 }
 
 export function MarkdownPromptEditor({
@@ -18,6 +22,7 @@ export function MarkdownPromptEditor({
   label = 'Prompt',
   placeholder = 'Write the profile instructions in Markdown. Liquid variables are rendered at runtime.',
   helperText,
+  variables = PROFILE_VARIABLES,
 }: MarkdownPromptEditorProps) {
   const [tab, setTab] = useState<'write' | 'preview'>('write');
   const deferredValue = useDeferredValue(value);
@@ -49,11 +54,11 @@ export function MarkdownPromptEditor({
       </div>
 
       {tab === 'write' ? (
-        <textarea
+        <PromptAutocompleteTextarea
           value={value}
-          onChange={(event) => {
-            onChange(event.target.value);
-          }}
+          onChange={onChange}
+          label={label}
+          variables={variables}
           placeholder={placeholder}
           className={`${textareaCls} min-h-[420px] text-[13px] leading-6`}
         />
@@ -74,7 +79,9 @@ export function MarkdownPromptEditor({
           <>
             Profile prompts are rendered with Liquid before each run. Use plain Markdown for
             structure and <span className="font-mono">{'{{ issue.* }}'}</span> variables for
-            issue-specific data.
+            issue-specific data. Type <span className="font-mono">{'{{'}</span> for variables,{' '}
+            <span className="font-mono">/</span> or <span className="font-mono">@</span> for skills
+            and subagents.
           </>
         )}
       </p>
