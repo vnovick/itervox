@@ -62,6 +62,9 @@ func runDoctor(args []string) {
 	if clearStartupError {
 		clearStartupErrorMarker(workflowPath)
 	}
+	// #119: check agent CLIs against the PATH the daemon would resolve
+	// (login shell when not started from one); the report names the source.
+	applyLoginShellPATH(workflowPath)
 	if upgrade {
 		// #82: only the v0.2.1 upgrade notes that apply, judged against the
 		// environment the daemon would have (.itervox/.env loaded, never
@@ -177,6 +180,16 @@ type DoctorReport struct {
 	// a lagging sync is an outage to look at, not a broken configuration.
 	Sync           *doctorSync
 	SyncLagWarning string
+	// PATHSource is where PATH came from (#119): "inherited — <why>" or
+	// "login shell (<shell>, <elapsed>, +N dirs) — <why>". Empty when no
+	// resolution ran in this process.
+	PATHSource string
+	// AgentCLIs are the workflow's agent CLIs found on that PATH, as
+	// "name: /abs/path"; MissingAgentCLIs those that were not. Informational:
+	// the daemon's own startup validation decides whether a missing default
+	// CLI is fatal.
+	AgentCLIs        []string
+	MissingAgentCLIs []string
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -227,6 +240,11 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	if err != nil {
 		report.WorkflowError = err.Error()
 	}
+
+	if r := currentPATHResolution(); r != nil {
+		report.PATHSource = r.String()
+	}
+	report.AgentCLIs, report.MissingAgentCLIs = agentCLIReport(cfg)
 
 	report.RunningBinary, _ = os.Executable()
 	report.PathBinary = whichItervox()
@@ -426,6 +444,15 @@ func renderDoctorReport(r DoctorReport) string {
 	}
 	fmt.Fprintf(&b, "running binary: %s\n", r.RunningBinary)
 	fmt.Fprintf(&b, "PATH itervox:   %s\n", or(r.PathBinary, "(none on system PATH)"))
+	if r.PATHSource != "" {
+		fmt.Fprintf(&b, "PATH source: %s\n", r.PATHSource)
+	}
+	for _, cli := range r.AgentCLIs {
+		fmt.Fprintf(&b, "agent CLI %s\n", cli)
+	}
+	for _, name := range r.MissingAgentCLIs {
+		fmt.Fprintf(&b, "WARNING: agent CLI %s not found on PATH — install it, set the command to an absolute path, or check %s\n", name, loginShellPATHEnv)
+	}
 	// P0-A — surface the built-in profiles so operators know what `profile:
 	// merge-bot {}` expands to.
 	if names := profiles.Names(); len(names) > 0 {
