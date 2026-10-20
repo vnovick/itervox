@@ -40,6 +40,7 @@ import (
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
+	"github.com/vnovick/itervox/internal/tracker/local"
 	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -66,12 +67,13 @@ Commands:
           issues and a scripted agent (no tracker, keys or agent CLI).
              --dir      scratch directory (default: a new temp dir)
              --no-open  do not open the dashboard in a browser
+             --tracker  memory|local  (default: memory)
 
   quickstart  From a repository to a running board in one command:
           detect the tracker and agent CLI, write (or migrate) WORKFLOW.md,
           set up the tracker token and GitHub labels (asks first), run
           doctor, start the daemon in the background and print the URL.
-             --tracker  github|linear  (default: detected)
+             --tracker  github|linear|local  (default: detected)
              --runner   claude|codex   (default: detected)
              --dir      repository directory (default: .)
              --workflow workflow path (default: <dir>/WORKFLOW.md)
@@ -81,11 +83,13 @@ Commands:
 
   init    Scan a repository and generate a WORKFLOW.md starter file,
           or migrate an existing one with --update.
-             --tracker  linear|github  (required for new workflows)
+             --tracker  linear|github|local  (required for new workflows)
              --runner   claude|codex    (default: claude)
              --output   output file path (default: WORKFLOW.md)
              --dir      directory to scan (default: .)
              --force    overwrite existing output file
+             --issue-template  add the agent-ready issue template
+                        without asking (GitHub; printed for Linear)
              --update   migrate an existing WORKFLOW.md to the latest
                         schema (writes WORKFLOW.md.bak, extracts inline
                         profile prompts to .itervox/agents/<name>/
@@ -107,6 +111,12 @@ Commands:
   status  List running itervox daemons for the current project
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --all      also list daemons from other projects
+
+  secret  Set or list .itervox/.env values without showing them
+             set KEY    read the value with echo off (or from stdin)
+             list       show each key as set / placeholder / empty
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --replace  (set) replace a value that is already set
 
   --version  Print version information
 
@@ -404,6 +414,9 @@ func main() {
 			return
 		case "deps":
 			runDeps(os.Args[2:])
+			return
+		case "secret":
+			runSecret(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
@@ -1237,6 +1250,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	startAutomations(ctx, cfg, tr, orch)
+	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, tr, orch) // #84
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1279,6 +1293,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
+	<-commentCommandsDone
 	final := orch.Snapshot()
 	failureCarry.store(final.RecentFailures, final.FailureAcks)
 	return runErr
@@ -1714,13 +1729,25 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			BacklogStates:  cfg.Tracker.BacklogStates,
-			Endpoint:       cfg.Tracker.Endpoint,
+			// Read once at startup; the client is rebuilt on a WORKFLOW.md
+			// reload.
+			CompletionState: cfg.Tracker.CompletionState,
+			Endpoint:        cfg.Tracker.Endpoint,
+		}), nil
+	case "local":
+		// #85: one Markdown file per issue under .itervox/issues/; the
+		// project_slug, when set, is the identifier prefix (default ITX).
+		return local.New(local.Config{
+			Dir:            config.LocalIssuesDir(cfg),
+			Prefix:         cfg.Tracker.ProjectSlug,
+			ActiveStates:   cfg.Tracker.ActiveStates,
+			TerminalStates: cfg.Tracker.TerminalStates,
 		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
 		return tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates), nil
 	default:
-		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, memory)", cfg.Tracker.Kind)
+		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, local, memory)", cfg.Tracker.Kind)
 	}
 }
 
