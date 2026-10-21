@@ -393,7 +393,7 @@ apply).
 | `POST` | `/issues/{identifier}/resume` | — | `{"resumed":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/reanalyze` | — | `{"queued":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/terminate` | — | `{"terminated":true,"identifier":"ENG-1"}` | `404 not_found` if not running or paused |
-| `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch |
+| `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch: a fresh review by the configured reviewers (the whole `reviewer_profiles` chain, previous verdicts cleared) |
 | `PATCH` | `/issues/{identifier}/state` | `{"state":"In Review"}` | `{"ok":true,"identifier":"ENG-1","state":"In Review"}` | Triggers immediate refresh |
 
 While the daemon is draining (see `draining` under `/ready`), `resume`,
@@ -861,6 +861,11 @@ Important fields include:
 - `blockedByDetails`: richer blocker metadata for UI/API clients. Each entry has
   `identifier` and may include `state` and `url`. `blockedBy` remains the
   compatibility string-array form.
+- `review` (`GET /issues/{identifier}` only): the issue's latest review, when it
+  has one. `verdicts` lists each finished reviewer (`profile`, `verdict`
+  `approve`/`block`, `reasons`, line `comments`, `recordedAt`); `outcome`
+  (`blocked`, `approvals`, `blocks`, `quorum`) appears once every reviewer has
+  run; `inProgress` is set while a multi-reviewer chain is still running.
 
 ### `IssueLogEntry`
 
