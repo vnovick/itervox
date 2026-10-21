@@ -234,6 +234,7 @@ var bootCrash crashReport
 var noPrintToken bool
 
 func main() {
+	runGuardrailEntrypoint(os.Args) // #204: shims and hooks, before any daemon start-up work
 	// TTY recovery safety net (T-12) for panics on the MAIN goroutine only.
 	// recover() cannot see a panic on any other goroutine: those are handled
 	// where they start — orchestrator.RecoverGoroutine for one-shot tasks and
@@ -1140,6 +1141,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Memory:           newMemoryAdapter(cfg, orch),         // #202, #203
 			SettingsLayers:   adapter,                             // #158
 			DepsAnalyzer:     depsSvc,
+			// #204: the guardrail endpoints of agent shims and hooks.
+			Guardrails: wireGuardrails(cfg, orch, sessTmux, actionTokenStore, actualAddr),
 			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
 			// is passed by value rather than via cfgMu-guarded accessors.
 			MergeStrategy:       cfg.Agent.MergeStrategy,

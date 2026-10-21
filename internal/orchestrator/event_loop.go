@@ -1109,6 +1109,10 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		if !replied || strings.TrimSpace(replyComment.Body) == "" {
 			continue // no reply yet
 		}
+		if entry.GuardrailApprovalID != "" { // #204: the reply decides the approval
+			o.resolveGuardrailApproval(&state, entry, replyComment.Body, "tracker")
+			continue
+		}
 		slog.Info("orchestrator: tracker comment reply detected, queuing pending resume",
 			"identifier", identifier, "reply_length", len(replyComment.Body))
 		if o.logBuf != nil {
@@ -1853,6 +1857,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Warn("orchestrator: provide-input for unknown identifier", "identifier", ev.Identifier)
 			return state
 		}
+		if entry.GuardrailApprovalID != "" { // #204
+			if ev.FromAgent {
+				slog.Warn("guardrails: an agent tried to answer a guardrail approval; ignored",
+					"identifier", ev.Identifier)
+				return state
+			}
+			o.resolveGuardrailApproval(&state, entry, ev.Message, "dashboard")
+			return state
+		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
 		slog.Info("orchestrator: user provided input, queued pending resume",
@@ -1876,6 +1889,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		entry, ok := state.InputRequiredIssues[ev.Identifier]
 		if !ok {
 			slog.Warn("orchestrator: dismiss-input for unknown identifier", "identifier", ev.Identifier)
+			return state
+		}
+		if entry.GuardrailApprovalID != "" { // #204: dismissing rejects; the run keeps going
+			o.resolveGuardrailApproval(&state, entry, "dismissed", "dismiss")
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
@@ -2045,6 +2062,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
 	case EventClaimChecked: // #187
 		return o.applyClaimBatch(ctx, state, ev.ClaimBatch, time.Now())
+	case EventGuardrailApproval: // #204
+		o.handleGuardrailApproval(&state, ev)
 	case EventWorkerExited:
 		// #187: a poll in flight may have listed this issue before its run
 		// moved it; that list must not dispatch it again.
@@ -2062,6 +2081,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.handleStaleExit(ev, current)
 			return state
 		}
+		// #204: an approval the run was waiting for dies with it.
+		o.dropGuardrailApprovals(&state, exitIdentifier(liveEntry, ev))
 		if liveEntry != nil {
 			liveEntry.Phase = RunExited
 		}

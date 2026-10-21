@@ -152,6 +152,7 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 	// just work. The actual bound URL is written to .itervox/dashboard_url
 	// (read by the Vite dev proxy) and surfaced in HEARTBEAT.md + the
 	// startup banner.
+	writeGuardrailsBlock(&b) // #204
 	b.WriteString("\nserver:\n  port: 0\n")
 
 	writeAutomations(&b, plan)
@@ -346,8 +347,12 @@ func runInit(args []string) {
 			if len(result.Profiles) > 0 {
 				fmt.Printf("itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
 			}
+
 		} else {
 			fmt.Printf("itervox init --update: %s already uses schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
+		}
+		if result.AddedGuardrails {
+			fmt.Printf("itervox init --update: added the guardrails: block (#204) with its defaults to %s\n", *workflowPath)
 		}
 		if *serverPort >= 0 {
 			if err := rewriteServerPort(*workflowPath, *serverPort); err != nil {

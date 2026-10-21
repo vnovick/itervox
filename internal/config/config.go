@@ -824,6 +824,10 @@ type Config struct {
 	// Memory configures the managed memory block of each run (#202).
 	// Read-only after startup.
 	Memory MemoryConfig
+	// Guardrails limits what agents Itervox starts may do with git, the
+	// GitHub/GitLab CLIs and deploy commands (#204). Read-only after
+	// startup.
+	Guardrails GuardrailsConfig
 	// PREvents is pr_events (#173): how the PR-event automation triggers
 	// (pr_check_completed, pr_synchronized, pr_review_submitted,
 	// pr_mergeable_changed) learn about GitHub activity. Read once at
@@ -1140,6 +1144,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Memory (#202)
 	cfg.Memory = parseMemoryConfig(nestedMap(raw, "memory"))
+
+	// Guardrails (#204)
+	cfg.Guardrails = parseGuardrailsConfig(nestedMap(raw, "guardrails"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

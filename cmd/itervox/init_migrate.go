@@ -24,6 +24,9 @@ type workflowMigrationResult struct {
 	BackupPath string
 	Profiles   []string
 	Warnings   []string
+	// AddedGuardrails: the workflow had no guardrails: block and one was
+	// written with the defaults (#204).
+	AddedGuardrails bool
 }
 
 // migrateWorkflowToSchema2 runs the whole read-modify-write of WORKFLOW.md
@@ -117,11 +120,22 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	// Without --force the legacy reviewer_prompt yields a warning only, so
 	// the caller can decide whether to re-run with --force after reading the
 	// reviewer profile's INSTRUCTIONS.md.
+	// #204: workflows from before guardrails get the block written out with
+	// its defaults, so the operator sees (and can edit) what applies.
+	_, hasGuardrails := doc["guardrails"]
 	needsRewrite := inlinePromptSeen || (legacyReviewerPromptSeen && force) || needsDepsAnalyzerScaffold
 	if version == config.LatestWorkflowSchemaVersion && !needsRewrite {
 		if legacyReviewerPromptSeen {
 			result.Warnings = append(result.Warnings,
 				"agent.reviewer_prompt is a legacy field still consumed by worker.go (base Liquid template for reviewer runs). Re-run with --force to append it to the reviewer profile's INSTRUCTIONS.md and delete the inline field. NOTE: with --force the migrated content becomes an appended profile block instead of the base template — placeholders still resolve identically, but the prompt ordering changes (base falls back to DefaultReviewerPrompt). Review the appended section before the next reviewer run.")
+		}
+		if !hasGuardrails {
+			// Text append, not a re-encode: an up-to-date workflow keeps
+			// its formatting byte for byte apart from the new block.
+			if err := appendGuardrailsText(workflowPath, front, body); err != nil {
+				return result, err
+			}
+			result.AddedGuardrails = true
 		}
 		if err := patchRootGitignoreForAgents(filepath.Dir(workflowPath)); err != nil {
 			return result, err
@@ -221,6 +235,10 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			agent["deps_analyzer_profile"] = initDepsAnalyzerProfileName
 			yamlNodeSet(agentNode, "deps_analyzer_profile", yamlStringNode(initDepsAnalyzerProfileName))
 		}
+	}
+	if !hasGuardrails {
+		appendGuardrailsBlock(rootNode)
+		result.AddedGuardrails = true
 	}
 	// v0.2.0 todolist5 — legacy `agent.reviewer_prompt` migration. Append the
 	// template into the reviewer profile's INSTRUCTIONS.md under a clearly

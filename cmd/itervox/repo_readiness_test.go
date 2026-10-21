@@ -26,6 +26,7 @@ import (
 // doctorReadinessEnv itself. Tests that exercise a tracker API do so through
 // their own fake servers.
 func TestMain(m *testing.M) {
+	runGuardrailEntrypoint(os.Args) // #204: the test binary stands in for itervox in shims
 	doctorReadinessEnv = func() repoReadinessEnv {
 		return stubTrackerProbe(deploySkipped, "not probed in tests")
 	}

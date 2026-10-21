@@ -92,9 +92,14 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/create-issue`
 - `POST /agent-actions/{identifier}/move-state`
 - `POST /agent-actions/{identifier}/provide-input`
+- `POST /agent-actions/{identifier}/guardrail/events` (#204)
+- `POST /agent-actions/{identifier}/guardrail/approvals` (#204)
+- `GET /agent-actions/{identifier}/guardrail/approvals/{id}` (#204)
 
 Profiles opt into these capabilities with `allowed_actions` and
-`create_issue_state` in `WORKFLOW.md`.
+`create_issue_state` in `WORKFLOW.md`. The guardrail routes take a separate
+per-run guardrail grant that only the guardrail shims and hooks hold (see
+[Guardrail endpoints](#guardrail-endpoints-204)).
 
 ## Supervisor contract
 
@@ -1427,6 +1432,35 @@ daemon-backed permissions through profile `allowed_actions`.
 
 These routes require an `Authorization: Bearer <grant-token>` header carrying a
 short-lived action grant for the specific issue and action.
+
+`provide-input` never answers a guardrail approval request (#204): the
+request stays open and the daemon logs the attempt.
+
+### Guardrail endpoints (#204)
+
+Called by the [guardrail](https://itervox.dev/guides/guardrails/) shims and
+pre-push hook of a guarded run, with the run's guardrail grant
+(`Authorization: Bearer <grant>`, action `guardrail`, scoped to the issue — or
+the tmux session ID — and the run). None of them runs anything: the command an
+agent waits to run stays on the agent's side, and only its redacted display
+form reaches the daemon.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `POST` | `/agent-actions/{identifier}/guardrail/events` | `{"kind":"self_merge","tool":"gh","command":"gh pr merge 12"}` | `204` |
+| `POST` | `/agent-actions/{identifier}/guardrail/approvals` | `{"key":"<sha256 of the exact command>","command":"vercel --prod"}` | `{"id":"…","status":"pending"}` |
+| `GET` | `/agent-actions/{identifier}/guardrail/approvals/{id}` | — | `{"id":"…","status":"pending"\|"approved"\|"rejected"\|"unknown","message":"<reply>"}` |
+
+`kind` is one of `branch`, `force_push`, `delete`, `tag`, `hook_bypass`,
+`self_merge`, `approval_rejected`, `approval_unavailable` (anything else is
+`400`); a report is logged, written to the issue's log, recorded in
+`recentFailures` (kind `guardrail`, source = the kind) and counted in
+`itervox_guardrail_blocks_total{kind}`. A new approval request shows as an
+input-required entry of the running issue ("Agent wants to run: …") and is
+posted to the tracker; a request with the same `key` as an open one joins it.
+An `approved` status is returned to exactly one read, which spends it; later
+reads answer `unknown`, as do requests of a run that has ended. Without an
+action-grant store the routes answer `501`; a full event queue answers `503`.
 
 When the daemon spawns a **local** agent subprocess for a profile that has any
 `allowed_actions` configured, the following environment variables are injected

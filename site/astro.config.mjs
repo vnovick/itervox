@@ -38,6 +38,7 @@ export default defineConfig({
             { label: 'Sessions panel', slug: 'guides/sessions' },
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },
             { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
+            { label: 'Guardrails', slug: 'guides/guardrails' },
             { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },
           ],
         },
