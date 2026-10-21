@@ -20,7 +20,7 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 ---
 
-Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
+Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and terminal commands (`itervox watch`, `itervox logs -f`) while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
 ## Spec conformance
 
@@ -79,7 +79,7 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
 - **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
-- **Automations** — trigger helper runs from ten event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
+- **Automations** — trigger helper runs from fourteen event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, the GitHub PR events on Itervox-managed PRs (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`), `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
 - **Built-in `merge-bot` profile** — ships embedded in the binary; reference it from `WORKFLOW.md` with `agent.profiles.merge-bot: {}` and the daemon resolves SOUL/INSTRUCTIONS from the embedded registry. The new `merge_pr` agent action runs `gh pr view` / `gh pr checks --required` / `gh pr merge` with required-check + block-label guards.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
@@ -186,7 +186,9 @@ The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunne
 
 ## Or stay in the terminal
 
-A full-featured Bubbletea TUI with the same real-time data as the web dashboard.
+`itervox watch` shows the running, retrying, waiting and paused issues of the daemon in any terminal, over SSH or in a pipe; `itervox logs -f <issue>` follows an issue's run log, and `itervox pause|resume|dispatch|workers|reply` act on it. See the [CLI reference](https://itervox.dev/cli/).
+
+The Bubbletea terminal UI below is **deprecated** and will be removed in v0.3. Since v0.2.4 Itervox runs headless by default; `itervox --tui` still starts it.
 
 <table>
   <tr>
@@ -369,7 +371,7 @@ Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the 
 | `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
-| `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
+| `itervox init --template <name>` | Starter template: `minimal` (one implementer), `full` (four profiles, auto-review chain, common automations), `rate-limit-fallback` (backend fallback plus a `rate_limited` switch), `pr-review` (PR reviewer automations), `daily-qa` (daily cron QA). Without it, the standard four-profile scaffold. See the [CLI reference](site/src/content/docs/cli.mdx#starter-templates) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
 | `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md`, and on a GitHub tracker list missing state labels (`--fix` creates them) |
 | `itervox status [--all] [--json]` | List running daemons for this project (`--all`: every daemon on the host); `--json` prints path, pid, URL, version, start time and token posture per daemon for supervisors such as the macOS app |

@@ -802,16 +802,35 @@ type Config struct {
 	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	Dependencies DependenciesConfig
+	// Sessions configures the Sessions panel's discovery of agent sessions
+	// started by hand (#178). Read-only after startup.
+	Sessions SessionsConfig
+	// PREvents is pr_events (#173): how the PR-event automation triggers
+	// (pr_check_completed, pr_synchronized, pr_review_submitted,
+	// pr_mergeable_changed) learn about GitHub activity. Read once at
+	// startup.
+	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+}
+
+// PREventsConfig is pr_events (#173).
+type PREventsConfig struct {
+	// WebhookSecret, when set, serves POST /api/v1/webhooks/pr-events for
+	// signed GitHub check_run, status, pull_request and pull_request_review
+	// deliveries ($VAR resolves from the environment). Checks and reviews
+	// then arrive by webhook and the poll only reads each managed PR (head
+	// SHA and mergeable_state, which GitHub sends no event for). Empty: the
+	// poll also reads check runs, commit statuses and reviews.
+	WebhookSecret string
 }
 
 // Load reads a WORKFLOW.md file, parses front matter, applies defaults, and resolves env vars.
@@ -910,6 +929,12 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Sync = parseTrackerSync(tracker) // #118
 	if err := validateTrackerSync(cfg.Tracker); err != nil {
 		return nil, err
+	}
+	cfg.PREvents = PREventsConfig{
+		WebhookSecret: resolveSecret(strField(nestedMap(raw, "pr_events"), "webhook_secret", "")),
+	}
+	if s := cfg.PREvents.WebhookSecret; s != "" && len(s) < MinWebhookSecretLength {
+		return nil, fmt.Errorf("config: pr_events.webhook_secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
 	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{
@@ -1088,6 +1113,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
 	}
+
+	// Sessions (#178)
+	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

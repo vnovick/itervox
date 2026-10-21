@@ -1,6 +1,6 @@
 ---
 title: Sessions panel
-description: One tab per running Claude Code or Codex session of a daemon — waiting-for-input sessions first — with the live transcript, a reply box for questions, and a composer to message a running agent.
+description: One tab per Claude Code or Codex session of a daemon — waiting-for-input sessions first, sessions started by hand last — with the transcript, a reply box for questions, a composer to message a running agent, read-only transcripts of sessions you started yourself, and control of sessions running in tmux.
 sidebar:
   order: 3
 ---
@@ -11,13 +11,13 @@ A **session** is an agent CLI session, identified by the CLI's own session ID (C
 
 ## Tabs
 
-Each running itervox agent run has a tab: the issue, its profile, backend and SSH host. Sessions **waiting for input** are badged **needs input** and listed first, then sessions whose reply was received and are resuming, then running sessions, oldest first. The sidebar's Sessions icon shows how many are waiting.
+Each running itervox agent run has a tab: the issue, its profile, backend and SSH host. Sessions itervox started in tmux ([New session](#new-session)) have a tab too. Sessions **waiting for input** are badged **needs input** and listed first, then sessions whose reply was received and are resuming, then running sessions, oldest first. [Sessions started by hand](#sessions-started-by-hand) come last, greyed and labelled **started outside itervox**, most recent first. The sidebar's Sessions icon shows how many are waiting.
 
 Move between tabs with the arrow keys, **Home** and **End**. The selected tab is in the address (`/sessions?id=<session>`), so a link opens that session directly.
 
 ## Transcript
 
-The tab shows the issue's live log — the same stream as the Logs page — following the bottom as the agent works.
+For an itervox run, the tab shows the issue's live log — the same stream as the Logs page — following the bottom as the agent works. For a session started by hand, it shows the CLI's own transcript: user and agent messages, tool calls by name and abbreviated tool results, newest at the bottom, re-read every few seconds. **Load earlier messages** pages further back. The daemon reads the transcript file itself and passes every text through the same secret redaction as its logs; thinking blocks, sub-agent sidechains and the CLI's own context messages are left out.
 
 ## Replying and messaging
 
@@ -43,13 +43,78 @@ agent:
 
 It changes how every local Claude turn is started: the prompt goes to the CLI as the first stream-json message on its stdin, and stdin is closed when the turn's result arrives, so the CLI finishes and exits as before. If `agent.command` (or a profile's command) is a wrapper script that reads its stdin to the end before it starts Claude, keep live steering off: in streaming mode stdin stays open until the turn ends.
 
-## Only sessions itervox started
+## Sessions started by hand
 
-Itervox writes only to sessions it owns: the stdin of the agent process this daemon started for the run, or the prompt of that run's next resumed turn. It never types into a terminal, never injects keystrokes, and never uses macOS Accessibility or AppleScript automation to drive another app; a static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears. Every session in the panel today is owned by itervox; a session itervox did not start would be shown read-only.
+Claude Code and Codex sessions you start yourself in a terminal on the daemon's host are listed too, read-only. The daemon finds them in the CLIs' own transcript directories:
+
+- Claude Code: `~/.claude/projects/<encoded directory>/<session id>.jsonl` (under `$CLAUDE_CONFIG_DIR/projects` when that is set);
+- Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<session id>.jsonl` (under `$CODEX_HOME/sessions` when set), both the current layout with a `session_meta` header and the earlier one.
+
+These are the CLIs' private file formats, not APIs. The daemon reads them tolerantly — it skips records it does not know — and if a future CLI release changes the layout, sessions simply stop appearing rather than showing garbage.
+
+**What is listed (privacy).** Only sessions written to within the last 24 hours, and — by default — only sessions whose working directory is inside the project: the directory of `WORKFLOW.md`, plus any `sessions.external_roots`. Sessions from unrelated directories are never read or shown unless you set `sessions.external_scope: all`. Itervox's own sessions are never listed as hand-started: not its running or waiting runs, and nothing under its workspace root. A remote daemon lists the sessions on its own host. Turn discovery off with `sessions.external: false` (see [Configuration → sessions](/configuration/#sessions)). Transcripts are served only to clients holding the daemon's API token, like logs.
+
+**Still running?** A hand-started session's tab says **running** while the CLI that started it may still be running — hover it, or open it, to see why — and **exited** once it is not. Either way the session stays read-only. The daemon decides this without touching the process — it only inspects: on Linux it reads `/proc` (each `claude` or `codex` process's working directory and open files); on macOS it runs `ps` and `lsof` on your own processes, which needs no privacy permission. A session counts as **running** when:
+
+- a `claude` / `codex` process has its transcript open, or was started with its session ID (for example `claude --resume <id>`);
+- a `claude` / `codex` process is running in the session's directory — Claude Code does not keep its transcript open, so itervox cannot tell which of several sessions in that directory the process belongs to and assumes it might be this one;
+- the process list could not be read; or
+- the transcript was written to within the last two minutes.
+
+When in doubt, it is treated as running. Quit the CLI (or wait for it to finish) and the tab becomes **exited** within a few seconds.
+
+## Sessions in tmux
+
+Itervox can show and type into an agent CLI that runs inside [tmux](https://github.com/tmux/tmux): sessions you start by hand in a tmux pane (opt-in), and sessions it starts in tmux itself with **New session**. It does this only through tmux's own commands — a paste buffer and key events — never by writing to a terminal device.
+
+### Controlling a session you run in tmux
+
+Turn it on in `WORKFLOW.md` (read at startup):
+
+```yaml
+sessions:
+  tmux_control: true
+```
+
+Then run `claude` (or `codex`) inside a tmux pane in the project directory. On every discovery pass (every 15 s) the daemon lists tmux's panes and matches a hand-started session to the pane its CLI runs in: the `claude`/`codex` process the liveness check found must be the pane's own process or a descendant of it, **and** the pane's current directory must be the session's. Only sessions the panel already lists (the privacy scope above) are ever matched. When several sessions of one directory point at the same process, the most recently written one gets the pane. The tab shows a **tmux** badge with the pane (`session:window.pane`) and, when it is controllable, **controllable**.
+
+A controllable session's tab shows the pane's screen instead of the transcript — captured as plain text about once a second while the tab is visible — with:
+
+- a text box: **Send** pastes the text (as a bracketed paste) and presses Enter; **Type without Enter** only pastes it;
+- key buttons: **Esc**, **Enter**, **↑**, **↓**, **1**, **2**, **3** (for a CLI's numbered permission prompt) and **Ctrl-C** (asks first). The daemon accepts only Enter, Escape, Up, Down, Left, Right, Tab, C-c and the digits 1–9.
+
+Before every write the daemon checks again that the pane still exists and still runs that session's process; if not, the write is refused (`409 pane_gone`). Without `tmux_control`, a session in tmux is still badged but stays read-only, and its tab says: *Run claude inside tmux and enable sessions.tmux_control to control it from here.*
+
+### New session
+
+**New session** (top of the tab list) starts an agent in a new tmux session on the daemon's host. Choose the agent (Claude Code or Codex), the folder — the project folder (default) or one of itervox's workspaces; a folder outside the project and the workspace root is refused — an optional profile and an optional first prompt. The daemon runs the **interactive** CLI (no `-p`, no stream-json) in `tmux new-session -d -s itervox-<id>` with:
+
+- the profile's command when one is chosen, else `agent.command`, when its binary is that agent; otherwise the agent's own binary (`claude` / `codex`) — a wrapper script is not used, since it would usually run the CLI headless;
+- the profile's `permission_mode`, else the confining default: `--permission-mode acceptEdits` for Claude, `--sandbox workspace-write` for Codex (`bypass` maps to the usual skip/bypass flags);
+- the first prompt as the CLI's positional argument.
+
+These sessions are itervox's (tab detail **started in tmux**): controllable whatever `sessions.tmux_control` says, with the attach command (`tmux attach -t itervox-<id>`) and a copy button, so you can take over in a terminal, and **Stop session**, which runs `tmux kill-session` (only for sessions itervox started). They do not count toward `max_concurrent_agents`; at most 8 run at once. When you quit the CLI the tmux session ends and the tab goes away. They survive a `WORKFLOW.md` reload; after a daemon restart they are still running in tmux, but itervox no longer owns them — they are listed like any session started by hand (controllable only with `tmux_control`).
+
+In the [Mac app's Sessions window](/guides/mac-app/#sessions-window), **New session…** under a daemon opens its dashboard at this form.
+
+### When tmux is not installed
+
+If `tmux` is not on the daemon's `PATH`, the panel stays read-only for tmux: a banner at the top and the composer of a session started by hand both say **tmux not found — install it to control sessions from here**, with the install command for the daemon's platform (`brew install tmux` on macOS, `sudo apt install tmux` or your distribution's package manager on Linux) and a copy button, and **New session** is disabled. Every tmux write is refused with `409 tmux_unavailable`. The daemon looks for tmux again on every discovery pass, so installing it lifts the warning within seconds, without a restart. The Mac app's Sessions window shows the same warning under that daemon.
+
+### Security
+
+**Anyone holding the dashboard's API token can type into your opted-in tmux sessions** — and into every session started with New session — as if at your keyboard, including answering an agent's permission prompts. Keep `sessions.tmux_control` off on a daemon whose token is shared, and treat the token like a shell login. Every write is audited: the daemon logs `sessions: tmux send` at info level with the session ID, the pane, the kind (`text` or `key`) and the size in bytes — never the text itself — and counts it in the `itervox_tmux_sends_total{kind}` metric. The screen is served as the pane shows it — unlike transcripts it is not redacted — and only to clients holding the token.
+
+## What itervox writes to
+
+Itervox writes to the agent processes it started — the stdin of the process this daemon started for a run, or the prompt of that run's next resumed turn — and, through tmux only, to sessions running in a tmux pane: ones it started with New session, and hand-started ones you opted in with `sessions.tmux_control`. It never writes to a terminal device, never pushes bytes into another terminal's input, and never uses macOS Accessibility or AppleScript automation to drive another app. A static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears, if any package but `internal/tmuxctl` runs `tmux` or names its write commands, or if `internal/tmuxctl` runs anything but `tmux`. A session started by hand is only read — its transcript file and the process list — and another static test (`TestExternalSessionInspectionIsReadOnly`) keeps that code free of writes, signals and any command but `ps` and `lsof`.
 
 ## API
 
-- `GET /api/v1/sessions` — the sessions, in panel order.
-- `POST /api/v1/sessions/{id}/message` — message a running session.
+- `GET /api/v1/sessions` — the sessions, in panel order (`owner: "external"` for sessions started by hand).
+- `POST /api/v1/sessions/{id}/message` — message a running session, or type into a controllable tmux session (`{text, submit}`).
+- `GET /api/v1/sessions/{id}/transcript` — a page of a hand-started session's transcript.
+- `GET /api/v1/sessions/{id}/screen` and `POST /api/v1/sessions/{id}/keys` — a controllable session's screen and keys.
+- `POST /api/v1/sessions` and `DELETE /api/v1/sessions/{id}` — New session, and stopping one.
 
 See [API reference → Sessions](/api-reference/#sessions).

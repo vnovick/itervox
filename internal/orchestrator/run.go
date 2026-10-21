@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/rules"
 )
 
 // RunPhase is where a run is in its lifecycle (#125):
@@ -36,6 +37,10 @@ type runHandle struct {
 	id        string
 	kind      string
 	finishing atomic.Bool
+	// rules is the rule set the run was dispatched with (#157), resolved by
+	// startRun from the rules files on disk. Set before the worker starts and
+	// never changed, so the worker reads it without a lock.
+	rules rules.Set
 	// usage is the run's latest cumulative usage, recorded by its worker
 	// after every turn whatever the turn's outcome (#136). The worker's exit
 	// carries it, so the event loop settles a run's final usage even when
@@ -45,6 +50,13 @@ type runHandle struct {
 	// (#178). The loop only sends (non-blocking); the worker, or its runner
 	// during a live turn, receives.
 	steer chan agent.SteerMessage
+	// stateMoveDeferred is set by the event loop when it deferred a move of
+	// this run's issue until the run exits (#177); the worker's turn loop
+	// then ends as it would on a landed move.
+	stateMoveDeferred atomic.Bool
+	// completionApplied is set by the worker once it moved its issue to
+	// completion_state (#177).
+	completionApplied atomic.Bool
 }
 
 // runUsage is a run's cumulative usage at the end of its latest turn (#136).
@@ -109,6 +121,9 @@ type RunRecord struct {
 	Stopped bool
 	// Exited is set once the run's own exit has been handled.
 	Exited bool
+	// RulesHash / RuleIDs name the rule set the run used (#157).
+	RulesHash string
+	RuleIDs   []string
 }
 
 // IsReviewer reports whether the recorded run was a reviewer.
@@ -119,12 +134,18 @@ func (r RunRecord) IsReviewer() bool { return r.Kind == "reviewer" }
 // loop only.
 func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEntry) context.Context {
 	h := &runHandle{id: generateRunID(), kind: entry.Kind, steer: make(chan agent.SteerMessage, steerInboxSize)}
+	// #157: the rules files are read again for every run, so an edit applies
+	// to the next dispatch without a restart.
+	h.rules = o.resolveRunRules(entry.ProfileName, entry.Backend)
+	used := h.rules.Record()
+	entry.RulesHash, entry.RuleIDs = used.Hash, used.IDs
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}
 		}
 		state.LatestRun[entry.Issue.ID] = RunRecord{
 			ID: h.id, Identifier: entry.Issue.Identifier, Kind: entry.Kind, ProfileName: entry.ProfileName,
+			RulesHash: used.Hash, RuleIDs: used.IDs,
 		}
 	}
 	entry.RunID = h.id
@@ -231,6 +252,7 @@ func finishedRun(state State, live *RunEntry, ev OrchestratorEvent) (RunRecord, 
 		return RunRecord{
 			ID: live.RunID, Identifier: live.Issue.Identifier, Kind: live.Kind, ProfileName: live.ProfileName,
 			Stopped: recorded && rec.Stopped, Exited: recorded && rec.Exited,
+			RulesHash: live.RulesHash, RuleIDs: live.RuleIDs,
 		}, true
 	}
 	return rec, recorded

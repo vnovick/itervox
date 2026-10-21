@@ -79,6 +79,30 @@ type AutomationTriggerContext struct {
 	// MergedAt is set on pr_merged only. Zero value means "not a merge event".
 	MergedAt time.Time
 
+	// ─── PR-event trigger fields (#173) ───────────────────────────────
+	// pr_check_completed / pr_synchronized / pr_review_submitted /
+	// pr_mergeable_changed also set PRURL, PRNumber and PRBranch.
+	// HeadSHA is the PR head commit the event is about.
+	HeadSHA string
+	// CheckName / CheckConclusion / CheckCompletedAt: pr_check_completed.
+	// CheckName is the check run name or the commit status context.
+	CheckName        string
+	CheckConclusion  string
+	CheckCompletedAt time.Time
+	// MergeableState is GitHub's mergeable_state when known (every PR-event
+	// trigger); PreviousMergeableState is set on pr_mergeable_changed.
+	MergeableState         string
+	PreviousMergeableState string
+	// ReviewID / ReviewAuthor / ReviewState / ReviewSubmittedAt:
+	// pr_review_submitted. ReviewState is lower case (approved,
+	// changes_requested, commented, dismissed).
+	ReviewID          string
+	ReviewAuthor      string
+	ReviewState       string
+	ReviewSubmittedAt time.Time
+	// EventSource is "webhook" or "poll".
+	EventSource string
+
 	// ─── rate_limited trigger fields (gap E) ──────────────────────────
 	FailedProfile         string
 	FailedBackend         string
@@ -271,7 +295,10 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 	defer cancel()
 	now := time.Now()
 	for _, rule := range rules {
-		if sendCtx.Err() != nil {
+		if err := sendCtx.Err(); err != nil {
+			metrics.EventDropped() // CORE-045
+			slog.Warn("orchestrator: pr_opened dispatch skipped: context done before send",
+				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL, "error", err)
 			return
 		}
 		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
@@ -300,6 +327,10 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 			Issue:      &issue,
 			Automation: &dispatch,
 		}:
+		case <-o.loopExitedCh(): // nil before Run: never ready
+			slog.Warn("orchestrator: pr_opened dispatch event dropped (orchestrator exited)",
+				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL)
+			return
 		case <-sendCtx.Done():
 			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: pr_opened dispatch event not accepted before context done",

@@ -1167,3 +1167,29 @@ func TestPatchTrackerFailedState_SetAndClear(t *testing.T) {
 	assert.NotContains(t, string(data), "failed_state:")
 	assert.Contains(t, string(data), "  kind: linear") // sibling preserved
 }
+
+// TestPatchAutomationsBlock_PREventFilters (#173): the PR-event filters
+// survive a dashboard save of the automations block.
+func TestPatchAutomationsBlock_PREventFilters(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\nagent:\n  command: claude\n---\n\nPrompt body.\n"), 0o644))
+	require.NoError(t, workflow.PatchAutomationsBlock(f, []workflow.AutomationEntry{{
+		ID: "fix-ci", Enabled: true, Profile: "fixer",
+		Trigger: workflow.AutomationTriggerEntry{Type: "pr_check_completed"},
+		Filter: workflow.AutomationFilterEntry{
+			CheckNames: []string{"ci", "Chromatic"}, Conclusions: []string{"failure"},
+			ReviewStates: []string{"commented"}, ReviewAuthors: []string{"greptile-apps[bot]"},
+			MergeableStates: []string{"dirty"},
+		},
+	}}))
+	wf, err := workflow.Load(f)
+	require.NoError(t, err)
+	automations, ok := wf.Config["automations"].([]any)
+	require.True(t, ok)
+	filter := automations[0].(map[string]any)["filter"].(map[string]any)
+	assert.Equal(t, []any{"ci", "Chromatic"}, filter["check_names"])
+	assert.Equal(t, []any{"failure"}, filter["conclusions"])
+	assert.Equal(t, []any{"commented"}, filter["review_states"])
+	assert.Equal(t, []any{"greptile-apps[bot]"}, filter["review_authors"])
+	assert.Equal(t, []any{"dirty"}, filter["mergeable_states"])
+}

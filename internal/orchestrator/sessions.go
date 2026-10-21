@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/extsessions"
 	"github.com/vnovick/itervox/internal/metrics"
 )
 
@@ -20,9 +21,8 @@ import (
 // Invariant: itervox writes only to sessions it owns. A message goes to the
 // stdin of the CLI process this daemon started for the run, or into the
 // prompt of the run's next resumed turn — never to a terminal or another
-// process. Every session listed here has Owner SessionOwnerItervox; a later
-// step adds read-only SessionOwnerExternal sessions, which SendSessionMessage
-// refuses.
+// process. Step 3 (sessions_external.go) lists sessions started by hand as
+// read-only SessionOwnerExternal sessions, which SendSessionMessage refuses.
 //
 // SessionMessages is event-loop state: SendSessionMessage only sends
 // EventSessionMessage, and the worker reports deliveries with
@@ -134,6 +134,18 @@ type AgentSession struct {
 	// session takes no message (it is waiting for input: reply instead).
 	Steering string
 	Messages []SessionMessage
+	// Cwd is the directory of a hand-started session (#178 step 3); "" for
+	// an issue run.
+	Cwd string
+	// UpdatedAt is a hand-started session's last transcript write.
+	UpdatedAt time.Time
+	// InUseReason says why a hand-started session counts as still running
+	// (Status SessionStatusRunning, Owner external).
+	InUseReason string
+	// TmuxPane is the tmux pane the session runs in (a hand-started session
+	// matched by process ancestry, or a tmux session itervox started); zero
+	// when none.
+	TmuxPane extsessions.TmuxPane
 }
 
 // Key is the id clients address the session by: the CLI session ID, or the
@@ -196,16 +208,34 @@ func Sessions(snap State, liveSteering bool) []AgentSession {
 			Messages: cloneSlice(snap.SessionMessages[e.Identifier]),
 		})
 	}
+	owned := ownedSessionIDs(snap)
+	for _, e := range snap.ExternalSessions {
+		if owned[e.ID] {
+			continue // owned since the last discovery pass
+		}
+		row := AgentSession{
+			ID: e.ID, Owner: SessionOwnerExternal, Title: e.Title, Backend: e.Backend, Cwd: e.Cwd,
+			Status: SessionStatusExited, StartedAt: e.StartedAt, UpdatedAt: e.UpdatedAt, TmuxPane: e.TmuxPane,
+		}
+		if e.Running {
+			row.Status, row.InUseReason = SessionStatusRunning, e.RunningReason
+		}
+		out = append(out, row)
+	}
+	out = append(out, tmuxSessionRows(snap)...)
 	SortSessions(out)
 	return out
 }
 
-// sessionStatusRank orders the panel: waiting for input first.
-func sessionStatusRank(status string) int {
-	switch status {
-	case SessionStatusInputRequired:
+// sessionRank orders the panel: waiting for input first, then itervox's
+// running sessions, then sessions started outside itervox.
+func sessionRank(s AgentSession) int {
+	switch {
+	case s.Owner == SessionOwnerExternal:
+		return 4
+	case s.Status == SessionStatusInputRequired:
 		return 0
-	case SessionStatusPendingInputResume:
+	case s.Status == SessionStatusPendingInputResume:
 		return 1
 	default:
 		return 2
@@ -215,9 +245,12 @@ func sessionStatusRank(status string) int {
 // SortSessions orders sessions as the panel shows them.
 func SortSessions(s []AgentSession) {
 	sort.SliceStable(s, func(i, j int) bool {
-		ri, rj := sessionStatusRank(s[i].Status), sessionStatusRank(s[j].Status)
+		ri, rj := sessionRank(s[i]), sessionRank(s[j])
 		if ri != rj {
 			return ri < rj
+		}
+		if ri == 4 && !s[i].UpdatedAt.Equal(s[j].UpdatedAt) {
+			return s[i].UpdatedAt.After(s[j].UpdatedAt) // most recent first
 		}
 		ti, tj := s[i].StartedAt, s[j].StartedAt
 		if s[i].Status != SessionStatusRunning {
@@ -226,7 +259,10 @@ func SortSessions(s []AgentSession) {
 		if !ti.Equal(tj) {
 			return ti.Before(tj)
 		}
-		return s[i].Identifier < s[j].Identifier
+		if s[i].Identifier != s[j].Identifier {
+			return s[i].Identifier < s[j].Identifier
+		}
+		return s[i].ID < s[j].ID
 	})
 }
 
@@ -270,21 +306,22 @@ func (o *Orchestrator) SendSessionMessage(key, text string) (SessionMessage, err
 		return SessionMessage{}, ErrInvalidSessionMessage
 	}
 	snap := o.Snapshot()
-	entry := findRunningSession(snap, key)
-	if entry == nil {
+	msg := SessionMessage{
+		ID:       "msg-" + strings.TrimPrefix(generateRunID(), "run-"),
+		Text:     text,
+		Status:   SessionMessageQueued,
+		QueuedAt: time.Now(),
+	}
+	if entry := findRunningSession(snap, key); entry != nil {
+		msg.Identifier, msg.RunID, msg.SessionID = entry.Issue.Identifier, entry.RunID, entry.AgentSessionID
+	} else {
 		if sessionWaitingForInput(snap, key) {
 			return SessionMessage{}, ErrSessionInputRequired
 		}
+		if _, external := findExternalSession(snap, key); external {
+			return SessionMessage{}, ErrSessionNotOwned
+		}
 		return SessionMessage{}, ErrSessionNotFound
-	}
-	msg := SessionMessage{
-		ID:         "msg-" + strings.TrimPrefix(generateRunID(), "run-"),
-		Identifier: entry.Issue.Identifier,
-		RunID:      entry.RunID,
-		SessionID:  entry.AgentSessionID,
-		Text:       text,
-		Status:     SessionMessageQueued,
-		QueuedAt:   time.Now(),
 	}
 	select {
 	case o.events <- OrchestratorEvent{Type: EventSessionMessage, Identifier: key, SessionMessage: &msg}:

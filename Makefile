@@ -1,4 +1,4 @@
-.PHONY: all build verify chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -140,6 +140,12 @@ clean:
 	rm -f itervox coverage.out coverage.html
 	go clean $(GO_PACKAGES)
 
+# Regenerate the published settings JSON Schema (#158) from the config
+# registry (internal/config/settings_fields.go). TestSettingsSchemaPublishedFileIsCurrent
+# fails when the published file is stale.
+settings-schema:
+	go generate ./cmd/itervox/
+
 # Regenerate catwalk golden files after intentional TUI render changes.
 tui-golden:
 	go test ./internal/statusui/... -args -rewrite
@@ -214,6 +220,7 @@ dev:
 # PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
 .PHONY: deploy-test
 deploy-test:
+	bash scripts/chaos_test.sh
 	bash deploy/lib/fetch-secrets_test.sh
 	bash deploy/bootstrap_test.sh
 	bash deploy/aws/provision_test.sh

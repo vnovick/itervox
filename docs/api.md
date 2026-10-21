@@ -454,6 +454,10 @@ ordinary paths stay readable.
 
 Receives Linear (`linear`) or GitHub (`github`) issue webhooks when `tracker.webhooks.enabled` is set; otherwise, and for the other tracker, `404`. No bearer token (the tracker cannot send one) and exempt from the unauthenticated-mode Host guard: instead every delivery must be signed with `tracker.webhooks.secret` (`Linear-Signature`, or GitHub's `X-Hub-Signature-256`), and a Linear delivery must be less than a minute old (`webhookTimestamp`). Answers `202` for an accepted or ignored delivery, `401` for a bad signature or a stale delivery, `400` for an unreadable payload, `413` over 1 MiB. A delivery only names issues: the tracker store re-reads them by ID and keeps the ones in scope. See [Tracker webhooks](/guides/tracker-webhooks/).
 
+### `POST /api/v1/webhooks/pr-events`
+
+Receives GitHub `check_run`, `status`, `pull_request` and `pull_request_review` deliveries for the PR-event automation triggers (#173) when `pr_events.webhook_secret` is set; otherwise `404`. Same exemptions as the tracker route (no bearer token, past the Host guard) and the same rule: every delivery must carry a valid `X-Hub-Signature-256` made with `pr_events.webhook_secret`. Answers `202` for an accepted or ignored delivery (a `ping`, another event or action, a pending status, or a PR no Itervox run recorded), `401` for a bad signature, `400` for an unreadable payload, `413` over 1 MiB. Accepted deliveries only become automation dispatches through the orchestrator's event loop, which dedups them per check, push, review and mergeable transition. Counted in `itervox_tracker_webhooks_total{tracker="pr-events"}`. See [PR events](/guides/automations/#pr-events-on-managed-pull-requests).
+
 ## Client error reports
 
 ### `POST /api/v1/client-errors`
@@ -577,13 +581,16 @@ oversize body returns `400 bad_request` with `field: "body"`.
 
 The Sessions panel (#178) — the dashboard's `/sessions` page and the Mac app's
 Sessions window. A session is an agent CLI session, identified by the CLI's
-own session ID; itervox writes only to sessions it started.
+own session ID; itervox writes only to sessions it started. Sessions started
+by hand on the daemon's host are listed read-only with `owner: "external"`.
 
 ### `GET /api/v1/sessions`
 
-The daemon's agent sessions: every running itervox run, and every session
-waiting for (or resuming from) a human reply. Sessions waiting for input come
-first, then resuming ones, then running ones, oldest first within each.
+The daemon's agent sessions: every running itervox run, every session
+waiting for (or resuming from) a human reply, and the recent sessions started
+by hand on the daemon's host. Sessions waiting for input come first, then
+resuming ones, then running ones, oldest first within each; sessions started
+by hand come last, most recently written first.
 
 ```json
 {
@@ -616,6 +623,18 @@ first, then resuming ones, then running ones, oldest first within each.
         {"id": "msg-…", "text": "Also update the docs.", "status": "delivered",
          "delivery": "resume", "queuedAt": "…", "deliveredAt": "…"}
       ]
+    },
+    {
+      "id": "c41d…",
+      "owner": "external",
+      "identifier": "",
+      "title": "Add a health check",
+      "backend": "claude",
+      "status": "running",
+      "cwd": "/work/app",
+      "startedAt": "2026-10-15T07:10:00Z",
+      "updatedAt": "2026-10-15T08:58:00Z",
+      "inUseReason": "a claude process (4242) is running in the session's directory; it may be this session"
     }
   ]
 }
@@ -625,20 +644,39 @@ first, then resuming ones, then running ones, oldest first within each.
 |---|---|
 | `id` | The agent CLI's session ID (Claude Code session, Codex thread). Empty in the first seconds of a run, until the CLI reports it; `runId` addresses the session meanwhile. |
 | `runId` | Itervox's run ID (running sessions only). |
-| `owner` | `itervox` for this daemon's runs. Only those take replies and messages. |
-| `status` | `running`, `input_required` or `pending_input_resume`. |
+| `owner` | `itervox` for this daemon's runs — only those take replies and messages; `external` for a session started by hand (read-only, no `identifier`). |
+| `status` | `running`, `input_required` or `pending_input_resume`; for a session started by hand, `running` while its CLI may still be running (with `inUseReason`) and `exited` once it is not. |
+| `cwd` | The directory of a session started by hand. |
+| `updatedAt` | A session started by hand: its transcript's last write. |
+| `inUseReason` | A session started by hand with `status: "running"`: why it counts as still running. |
+| `kind` | `tmux` for a session itervox started in tmux (New session); `reviewer` for a reviewer run. |
+| `tmuxPane` | The tmux pane the session runs in, `{"id": "%3", "label": "work:0.0"}`; `null` when none. |
+| `controllable` | The panel may show its screen and type into it ([Sessions in tmux](#sessions-in-tmux)): a session itervox started in tmux, or a hand-started one in a matched pane with `sessions.tmux_control`, while tmux is installed. |
+| `attachCommand` | A session itervox started in tmux: the command that attaches a terminal to it. |
 | `startedAt` / `queuedAt` | When the run started / when it started waiting for input. |
 | `inputContext` | The agent's question while it waits. |
 | `steering` | Running sessions: `live` (a message is written into the running turn — local Claude with `agent.live_steering`) or `resume` (delivered as the prompt of the next turn, which resumes the session). |
 | `messages` | Operator messages sent to the issue's sessions, newest last (at most 20): `status` `queued`, `delivered` (with `delivery` `live` or `resume`) or `dropped` (with `reason`). |
 
+The response also carries `tmux` — `{"available": true, "version": "tmux 3.4",
+"installHint": "brew install tmux", "control": false}`, re-detected every
+discovery pass (`control` is `sessions.tmux_control`) — and `newSession` —
+`{"projectRoot": "…", "folders": ["…"], "profiles": ["…"], "max": 8}`, what
+New session offers (the project directory, then itervox's workspaces).
+
 `503 not_configured` when the daemon was built without the sessions client.
-Messages are runtime state: they do not survive a daemon restart.
+Messages are runtime state: they do not survive a daemon restart. Which sessions started by hand are listed is set by
+[`sessions:`](configuration.md#sessions) (default: the last 24 hours, inside
+the project directory only).
 
 ### `POST /api/v1/sessions/{id}/message`
 
 Queues an operator message for a running session. `{id}` is the session's
-`id`, or its `runId` before the CLI reported an ID.
+`id`, or its `runId` before the CLI reported an ID. For a controllable
+session in tmux the text is pasted into its pane instead, then Enter is
+pressed unless `submit` is `false` (`{"text": "…", "submit": false}`;
+`message` and `text` are interchangeable), and the answer is `202` with
+`"status": "delivered", "delivery": "tmux"`.
 
 ```json
 {"message": "Also update the docs."}
@@ -652,10 +690,114 @@ the message is queued; its `status` in `GET /api/v1/sessions` moves to
 | Status | Code | When |
 |---|---|---|
 | `400` | `bad_request` | Missing, empty or over-10 KiB `message` (`field: "message"`) |
-| `403` | `not_owned` | Itervox did not start that session |
+| `403` | `not_owned` | Itervox did not start that session and it is not controllable through tmux |
 | `404` | `not_found` | No running session with that ID |
 | `409` | `input_required` | The session is waiting for input: use `provide-input` |
+| `409` | `tmux_unavailable` / `pane_gone` | A tmux session: see [Sessions in tmux](#sessions-in-tmux) |
 | `503` | `orchestrator_busy` | Event queue full (`Retry-After: 1`) |
+
+### `GET /api/v1/sessions/{id}/transcript`
+
+A page of the transcript of a session started by hand, read from the CLI's
+own transcript file. Query: `limit` (1–500,
+default 100 entries) and `before` (the cursor from the previous page; omitted
+= the newest entries). Entries are oldest first; each text is redacted with
+the daemon's log redaction and abbreviated (`truncated: true`). Tool calls
+appear by name (`kind: "tool"`), tool results abbreviated
+(`kind: "tool_result"`); thinking, sub-agent sidechains and the CLI's own
+context messages are left out.
+
+```json
+{
+  "id": "c41d…",
+  "backend": "claude",
+  "entries": [
+    {"role": "user", "kind": "text", "text": "Add a health check", "at": "2026-10-15T07:10:02Z"},
+    {"role": "assistant", "kind": "tool", "text": "Edit", "at": "…"},
+    {"role": "assistant", "kind": "text", "text": "Done: GET /healthz returns 200.", "at": "…"}
+  ],
+  "before": 73400320,
+  "hasMore": true,
+  "size": 74066206
+}
+```
+
+`before` is present only when `hasMore`. `404 not_found` for a session that is
+not listed (only a listed session's transcript can be read — the path never
+comes from the client); `400 bad_request` for a bad `before` or `limit`.
+
+### Sessions in tmux
+
+Sessions running in a tmux pane (#178) — hand-started ones the daemon matched
+to a pane, and the ones it started with `POST /api/v1/sessions` — can be read
+and typed into through tmux. A hand-started session is controllable only with
+[`sessions.tmux_control: true`](configuration.md#sessions); every write needs `tmux` on the
+daemon's `PATH` and re-checks, at that moment, that the pane still exists and
+still runs the session's process. Writes are audited (`sessions: tmux send`
+with session, pane, kind and size — never the text) and counted in
+`itervox_tmux_sends_total{kind}`.
+
+Errors common to the tmux endpoints:
+
+| Status | Code | When |
+|---|---|---|
+| `403` | `not_controllable` | Not running in a pane itervox may control (keys, screen) |
+| `409` | `tmux_unavailable` | `tmux` is not installed on the daemon's host; `message` carries the install command |
+| `409` | `pane_gone` | The pane is gone, or no longer runs this session |
+
+#### `GET /api/v1/sessions/{id}/screen`
+
+The pane's text: `capture-pane` of the last `lines` (1–2000, default 200)
+lines of screen and scrollback, plain text without escape sequences.
+
+```json
+{"id": "itervox-3f9a1c", "pane": "%7", "label": "itervox-3f9a1c:0.0", "text": "╭─ Claude Code …", "lines": 200, "capturedAt": "2026-10-15T09:00:01Z"}
+```
+
+`404 not_found` for an unknown session; `400 bad_request` for a bad `lines`.
+
+#### `POST /api/v1/sessions/{id}/keys`
+
+Presses one key: `{"key": "Enter"}`. Only `Enter`, `Escape`, `Up`, `Down`,
+`Left`, `Right`, `Tab`, `C-c` and the digits `1`–`9` are accepted
+(`400 key_not_allowed` otherwise). `202 {"ok": true, "key": "Enter"}`.
+
+#### `POST /api/v1/sessions`
+
+Starts an interactive agent CLI in a new tmux session `itervox-<id>` (New
+session):
+
+```json
+{"backend": "claude", "cwd": "/work/app", "profile": "coder", "prompt": "Fix the flaky login test."}
+```
+
+`backend` is `claude` or `codex`. `cwd` (default: the `WORKFLOW.md`
+directory) must be the project directory, a directory inside it, or one of
+itervox's workspaces. The CLI is the profile's command (else `agent.command`)
+when its binary is that backend, else the backend's binary, run interactively
+(no `-p`) with the profile's `permission_mode` — by default the confining one:
+`--permission-mode acceptEdits` (Claude), `--sandbox workspace-write` (Codex) —
+and `prompt` as its first prompt. The session is owned by itervox (`owner:
+"itervox"`, `kind: "tmux"`), controllable whatever `sessions.tmux_control`
+says, and does not count toward `max_concurrent_agents`.
+
+`201 {"session":{…,"kind":"tmux","controllable":true,"attachCommand":"tmux attach -t itervox-3f9a1c"}}`.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Bad `backend`, a `cwd` outside the project and workspaces (`field: "cwd"`), an unknown `profile`, the CLI not on the daemon's `PATH` (`field: "backend"`), an over-10 KiB `prompt` |
+| `409` | `tmux_unavailable` | `tmux` is not installed |
+| `429` | `too_many_sessions` | 8 tmux sessions itervox started are running |
+
+These sessions are runtime state carried across `WORKFLOW.md` reloads; after
+a daemon restart they keep running in tmux but are listed as sessions started
+by hand.
+
+#### `DELETE /api/v1/sessions/{id}`
+
+Kills a tmux session itervox started (`tmux kill-session`). `200 {"ok": true}`;
+`403 not_owned` for any other session; `404 not_found` for an unknown id;
+`409 tmux_unavailable` without tmux.
 
 ## Logs
 
@@ -726,6 +868,8 @@ surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 | `POST` | `/skills/fix` | `{"issueID":"UNUSED_PROFILE","fix": Fix}` | `{"status":"ok"}` | v0.2.0 only applies the non-destructive `UNUSED_PROFILE` `edit-yaml` fix; unsafe actions such as `remove-mcp` are rejected |
 | `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | Includes `HasRuntimeEvidence`; `503 analytics_unavailable` only before analytics can be computed |
 | `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; empty until `HasRuntimeEvidence` is true |
+| `POST` | `/skills/check-refs` | `{"profile":"worker","command":"codex","backend":"codex","text":"…"}` | `{"backend":"codex","sshHosts":[],"refs":[{"kind":"skill","name":"tdd","from":9,"to":12,"status":"missing","severity":"warn","issueId":"MISSING_SKILL_REF","message":"…"}]}` | #123: runs the `itervox doctor` reference check over one draft prompt (SOUL.md or INSTRUCTIONS.md) for a profile with that command and backend. `backend` is the one the daemon resolves; each reference occurrence has `status` `ok`, `missing` or `outside_repo` (only with SSH hosts), and `from`/`to` are UTF-16 offsets into `text`. `503 inventory_unavailable` before the first scan; `413` over 256 KiB |
+| `GET` | `/skills/profile-backends` | — | `{"default":"claude","profiles":{"reviewer":"codex"}}` | #123: the backend each configured profile runs on, resolved like doctor and the dispatcher do; `default` is the workflow's |
 
 ### Dependency analyzer sidecar
 
@@ -810,6 +954,8 @@ Supported trigger types:
 - `issue_moved_to_backlog`
 - `run_failed`
 - `pr_opened` — fires when a worker's PR is detected
+- `pr_merged` — fires when the daemon-side `merge_pr` action merges an itervox-managed PR
+- `pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed` — fire on GitHub activity on a PR an Itervox run recorded; sourced from `POST /api/v1/webhooks/pr-events` or a poll of the open managed PRs (#173)
 - `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours` cap automated switching; reaching the cap suppresses switching rather than causing the trigger.
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 

@@ -163,6 +163,11 @@ func automationQueueKey(issue domain.Issue, dispatch AutomationDispatch) string 
 	switch dispatch.Trigger.Type {
 	case config.AutomationTriggerPROpened:
 		parts = append(parts, dispatch.Trigger.PRURL)
+	case config.AutomationTriggerPRCheckCompleted, config.AutomationTriggerPRSynchronized,
+		config.AutomationTriggerPRReviewSubmitted, config.AutomationTriggerPRMergeableChanged:
+		// #173: one queue entry per PR event, so a second failing check is
+		// not folded into the first.
+		parts = append(parts, prEventKey(dispatch.AutomationID, dispatch.Trigger))
 	case config.AutomationTriggerRateLimited:
 		parts = append(parts, dispatch.Trigger.FailedProfile, dispatch.Trigger.FailedBackend)
 	case config.AutomationTriggerInputRequired:
@@ -503,6 +508,12 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 	// pr_opened dedup: resumed workers, retries, and
 	// secondary runs on the same issue all re-detect the same PR URL.
 	if !claimPROpenedDedup(state, issue, dispatch) {
+		return false
+	}
+	// #173: PR-event triggers dispatch only for managed PRs, only on a
+	// change, and once per event key.
+	dispatch, claimed := o.claimPREventDedup(state, issue, dispatch, now)
+	if !claimed {
 		return false
 	}
 	if reason := o.automationProfileUnavailableReason(dispatch); reason != "" {

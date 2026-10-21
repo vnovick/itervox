@@ -158,6 +158,11 @@ type Orchestrator struct {
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string
+	// deferredStateMovesFile persists State.DeferredStateMoves (#177).
+	deferredStateMovesFile string
+	// prEventsFile persists State.ManagedPRs, PREventDispatched and
+	// PREventBaselines (#173).
+	prEventsFile string
 	// daemonInstanceID stamps the queue persistence envelope so a reader can
 	// distinguish state written by this daemon from state inherited from
 	// another (todolist4 A.2). Set once at construction; reads are lock-free.
@@ -182,6 +187,7 @@ type Orchestrator struct {
 	failureEventsDropped atomic.Int64
 	seedFailures         []FailureRecord
 	seedFailureAcks      map[string]time.Time // M6-close V3 (CORE-175 acks across reload)
+	seedTmux             []TmuxSession        // #178: SeedTmuxSessions, applied at the top of Run
 
 	// CORE-043: readiness signals, written only by the event loop and read
 	// lock-free by the /ready probe (see readiness.go).
@@ -278,6 +284,9 @@ type Orchestrator struct {
 	// prMergedAutomations (P1) mirrors prOpenedAutomations for the merge-side
 	// trigger. Compiled rules are installed via SetPRMergedAutomations.
 	prMergedAutomations []PRMergedAutomation
+	// prEventAutomations holds the compiled PR-event rules (#173),
+	// installed via SetPREventAutomations under automationsMu.
+	prEventAutomations []PREventAutomation
 
 	// trackerCommentAutomations (P0-B) holds compiled tracker_comment_added
 	// rules so the body-filter dispatch helper can short-circuit comments
@@ -371,6 +380,13 @@ type Orchestrator struct {
 	// depsRefreshWg tracks the in-flight dependency-refresh goroutine so Run
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup
+
+	// #178 step 3: discovery of sessions started by hand
+	// (sessions_external.go). Set before Run; the discovery goroutine is
+	// joined through extSessionsWg.
+	extSessions         ExternalSessionSource
+	extSessionsInterval time.Duration
+	extSessionsWg       sync.WaitGroup
 
 	// workersWg joins every runWorker goroutine before Run returns, bounded
 	// by workerJoinGrace (CORE-026, worker_join.go). Added on the event loop

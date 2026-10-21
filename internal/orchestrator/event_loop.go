@@ -36,6 +36,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state.FailureAcks = o.seedFailureAcks
 	o.seedFailureAcks = nil
 	pruneFailureAcks(&state)
+	// #178: itervox's tmux sessions survive a WORKFLOW.md reload too.
+	seedTmuxState(&state, o.seedTmux)
+	o.seedTmux = nil
 	state = o.loadPausedFromDisk(state)
 	state = o.loadPauseReasonsFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
@@ -45,10 +48,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
+	state = o.loadPREventsFromDisk(state)           // #173
+	state = o.loadDeferredStateMovesFromDisk(state) // #177
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
 	o.startPersistence()
+	o.startExternalSessionDiscovery(ctx) // #178 step 3
 	tick := time.NewTimer(0)
 	defer tick.Stop()
 
@@ -133,6 +139,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
+	o.extSessionsWg.Wait()
 	return loopErr
 }
 
@@ -348,6 +355,9 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state = o.processPendingInputResumes(ctx, state, now)
 	// M4-close BH-M4-2: reviews refused by a drain run before new work.
 	o.resumePendingReviews(ctx, &state, now)
+	// #177: moves deferred for a worker that has exited (or loaded after a
+	// restart) are applied before new work.
+	o.applyPendingDeferredStateMoves(&state, now)
 	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
 
 	slots := AvailableSlots(state)
@@ -589,6 +599,11 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 				"issue_id", issueID, "identifier", entry.Identifier)
 			state = CancelRetry(state, issueID)
 			delete(state.OutOfScope, entry.Identifier)
+			continue
+		}
+		// #177: not before the move the last run deferred has landed (or
+		// been dropped); the retry stays due and fires on a later tick.
+		if _, pending := state.DeferredStateMoves[entry.Identifier]; pending {
 			continue
 		}
 
@@ -1837,6 +1852,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventInputQuestionFallback:
 		state = o.handleInputQuestionFallback(state, ev)
 
+	case EventDeferStateMove: // #177
+		deferred := o.handleDeferStateMove(&state, ev, time.Now())
+		if ev.deferReply != nil {
+			ev.deferReply <- deferred
+		}
+
+	case EventDeferredStateMoveSettled: // #177
+		o.handleDeferredStateMoveSettled(&state, ev, time.Now())
+
 	case EventAckFailures: // CORE-175
 		applyFailureAck(&state, ev.Identifier, ev.AckUpTo)
 		if o.OnStateChange != nil {
@@ -1924,6 +1948,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		o.dispatchOrQueueAutomation(ctx, &state, *ev.Issue, *ev.Automation, time.Now())
 
+	case EventDispatchCronBatch:
+		if ev.CronBatch != nil {
+			o.dispatchCronAutomationBatch(ctx, &state, *ev.CronBatch, time.Now())
+		}
+
 	case EventIssueStatusChanged:
 		if ev.StatusChange != nil {
 			appendIssueStatusChange(&state, *ev.StatusChange)
@@ -1950,6 +1979,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventSessionMessage: // #178
 		o.applySessionMessage(&state, ev)
 
+	case EventExternalSessionsDiscovered: // #178 step 3
+		if ev.ExternalScan != nil {
+			applyTmuxPanes(&state, *ev.ExternalScan)
+			applyExternalSessions(&state, ev.ExternalScan.Sessions)
+		}
+
+	case EventTmuxSessionReserve, EventTmuxSessionStarted, EventTmuxSessionEnded: // #178 tmux
+		applyTmuxSessionEvent(&state, ev.Type, ev.Tmux, time.Now())
+
 	case EventSessionMessageDelivered: // #178
 		applySessionDelivery(&state, ev.SessionDelivery, time.Now())
 
@@ -1975,6 +2013,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// detection already deleted the entry.
 		finished, finishedKnown := finishedRun(state, liveEntry, ev)
 		delete(state.Running, ev.IssueID)
+		// #177: a state move deferred for this run is settled by its exit.
+		o.settleDeferredMoveOnExit(&state, ev, liveEntry)
 
 		if ev.RunEntry == nil {
 			// Emitted by ReconcileTrackerStates (not-found/non-active path);
@@ -2020,6 +2060,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.cancelAndCleanupWorker(ev.RunEntry.Issue.Identifier)
 
 		now := time.Now()
+		// #173: the PR this run created or continued is managed from now on.
+		recordManagedPR(&state, liveEntry, ev.RunEntry, now)
 		issue := ev.RunEntry.Issue
 		attempt := 0
 		if ev.RunEntry.RetryAttempt != nil {
@@ -2463,6 +2505,18 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 					o.logger().Warn("orchestrator: vendor limit, every backend limited; issue held",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 						"hold", describeHold(state.BackendLimitedHolds[issue.Identifier]))
+					// #127: a held reviewer continues as a reviewer retry,
+					// which keeps the claim, so the next poll cannot
+					// dispatch it as implementer work.
+					if rp := reviewerProfileOf(finished); rp != "" {
+						delay := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
+						if hold, held := state.BackendLimitedHolds[issue.Identifier]; held {
+							delay = holdRetryDelay(state, hold, now)
+						}
+						state = ScheduleRetry(state, ev.IssueID, attempt, issue.Identifier,
+							"backend limited: "+describeHold(state.BackendLimitedHolds[issue.Identifier]), now, delay)
+						retryAs(state, ev.IssueID, rp)
+					}
 				}
 				return state
 			}
@@ -2848,6 +2902,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.SessionID = liveEntry.SessionID
 		run.AutomationID = liveEntry.AutomationID
 		run.TriggerType = liveEntry.TriggerType
+		run.RulesHash = liveEntry.RulesHash
+		run.RuleIDs = liveEntry.RuleIDs
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the

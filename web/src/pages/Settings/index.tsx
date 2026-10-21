@@ -10,6 +10,7 @@ import { RetriesCard } from './RetriesCard';
 import { CapacityCard } from './CapacityCard';
 import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
 import { BrowserNotificationsCard } from './BrowserNotificationsCard';
+import { SchemaSettingsCard } from './schema/SchemaSettingsCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
 import { useSettingsPageData } from './useSettingsPageData';
@@ -183,6 +184,22 @@ export default function Settings() {
             Skills Inventory
           </h2>
           <SkillsCard />
+        </section>
+
+        {/* #158 — every layered setting, rendered from the settings schema. */}
+        <section aria-labelledby="section-all-settings">
+          <h2
+            id="section-all-settings"
+            className="mb-1 text-xs font-semibold tracking-widest uppercase"
+          >
+            All settings
+          </h2>
+          <p className="text-theme-muted mb-3 text-xs">
+            Every agent, polling, server and workspace setting, from the settings schema. Pick the
+            layer a save writes: your user file, the project file (committed) or the project-local
+            file (gitignored). WORKFLOW.md still wins over all three.
+          </p>
+          <SchemaSettingsCard />
         </section>
 
         <section aria-labelledby="section-logs">

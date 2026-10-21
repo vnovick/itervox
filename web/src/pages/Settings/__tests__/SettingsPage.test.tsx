@@ -38,6 +38,10 @@ vi.mock('../DependenciesCard', () => ({
   DependenciesCard: (props: unknown) => dependenciesCardMock(props),
 }));
 
+vi.mock('../schema/SchemaSettingsCard', () => ({
+  SchemaSettingsCard: () => <div data-testid="schema-settings-card" />,
+}));
+
 vi.mock('../CapacityCard', () => ({
   CapacityCard: () => <div data-testid="capacity-card">capacity</div>,
 }));
@@ -134,6 +138,12 @@ describe('Settings page', () => {
     const next = retries?.nextElementSibling;
     expect(next?.querySelector('h2')).toHaveTextContent('Capacity');
     expect(next).toContainElement(screen.getByTestId('capacity-card'));
+  });
+
+  it('renders the schema-driven All settings section (#158)', () => {
+    const { container } = render(<Settings />);
+    const section = container.querySelector('#section-all-settings')?.closest('section');
+    expect(section).toContainElement(screen.getByTestId('schema-settings-card'));
   });
 
   it('page description names what Settings holds (no stale "profiles")', () => {
