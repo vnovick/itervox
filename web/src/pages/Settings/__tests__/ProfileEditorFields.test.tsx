@@ -1,6 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { makeTestQueryClient } from '../../../test/queryClient';
+import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ProfileEditorFields } from '../profiles/ProfileEditorFields';
+
+// The prompt editor's autocomplete reads the skills inventory (#87).
+const render = (ui: ReactElement) =>
+  rtlRender(<QueryClientProvider client={makeTestQueryClient()}>{ui}</QueryClientProvider>);
 
 describe('ProfileEditorFields', () => {
   it('renders separate SOUL and INSTRUCTIONS editors for file-backed profiles', () => {

@@ -424,8 +424,9 @@ func (b *Buffer) sweep(dir string) error {
 	return first
 }
 
-// discard fails the control ops in ops with ErrClosed and counts the appends
-// as dropped.
+// discard counts the appends in ops as dropped, then fails the control ops
+// with ErrClosed. Counting first means a caller released by its failed Flush
+// already sees the drops in DroppedDiskLines.
 func (b *Buffer) discard(ops []diskOp, why string) {
 	var appends int64
 	id := ""
@@ -433,12 +434,15 @@ func (b *Buffer) discard(ops []diskOp, why string) {
 		if op.kind == opAppend {
 			appends++
 			id = op.identifier
-			continue
 		}
-		finish(op, diskResult{err: ErrClosed})
 	}
 	if appends > 0 {
 		b.w.noteDropped(id, why, appends)
+	}
+	for _, op := range ops {
+		if op.kind != opAppend {
+			finish(op, diskResult{err: ErrClosed})
+		}
 	}
 }
 

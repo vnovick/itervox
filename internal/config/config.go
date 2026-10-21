@@ -212,6 +212,10 @@ type TrackerConfig struct {
 	// the orchestrator's completion/failed-state paths. Default true; set
 	// false as a kill switch to restore the old synchronous behavior.
 	Outbox bool
+	// CommentCommands (#84) lets repository maintainers drive Itervox from
+	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
+	// GitHub only. Read once at startup.
+	CommentCommands CommentCommandsConfig
 }
 
 // PollingConfig holds polling settings.
@@ -250,21 +254,24 @@ type WorkspaceConfig struct {
 }
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
-const DefaultReviewerPrompt = `You are an AI code reviewer for issue {{ issue.identifier }}.
+//
+// Reviewers are read-only (#79): they judge the change and record a verdict;
+// they never commit, push or move the issue. Requested fixes go back to the
+// worker through the verdict's reasons and line comments, which Itervox posts
+// on the issue.
+const DefaultReviewerPrompt = `You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.
+
+You are a read-only reviewer. Do not edit files, commit, push or move the issue:
+Itervox flags a reviewer that changes the branch and counts its verdict as a block.
 
 Your job:
-1. Run: gh pr diff to read the PR changes on branch {{ issue.branch_name }}
-2. Review for: correctness, test coverage, edge cases, security issues, code style
-3. If you find problems:
-   - Fix them directly in the workspace
-   - Push the fixes: git add -A && git commit -m "fix: reviewer corrections" && git push
-   - Post a comment on the issue summarising what you fixed
-   - Move issue {{ issue.identifier }} to state "Rework"
-4. If the PR is clean:
-   - Post an approval comment: "AI review passed ✓ — no issues found"
-   - Move issue {{ issue.identifier }} to state "Merging"
+1. Read the "## Changes to Review" block below (the diff against the base branch)
+   and the latest handoff. Open files in the workspace for context as needed.
+2. Review for: correctness, test coverage, edge cases, security issues.
+3. Record your verdict as the "## Review Verdict (required)" block describes:
+   approve, or block with the reasons and line comments the worker must address.
 
-Be concise in your review comments. Focus on real problems, not style nits.`
+Be concise. Focus on real problems, not style nits.`
 
 // AgentProfile holds settings for a named agent profile.
 type AgentProfile struct {
@@ -301,6 +308,13 @@ type AgentProfile struct {
 	// that can pause for approval hangs the turn until the timeout kills it.
 	// See internal/agent/permission.go (issue #66).
 	PermissionMode string
+	// RequireEvidence lists the checks a run of this profile must prove
+	// before Itervox moves its issue to completion_state (#80). Each name
+	// but "ci" must appear as a passing entry in the run's evidence file
+	// (run.evidence_path), recorded on the worktree's current commit; "ci"
+	// requires the run's pull request to have only passing checks. Empty
+	// (the default) turns the gate off. YAML key: require_evidence.
+	RequireEvidence []string
 }
 
 // AgentConfig holds agent runner settings.
@@ -516,6 +530,10 @@ type AgentConfig struct {
 	// When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
+	// PRFooter appends a one-line "Shipped with Itervox" footer to each pull
+	// request an agent run produces, once per PR (#81). Off by default.
+	// YAML key: agent.pr_footer.
+	PRFooter bool
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -733,12 +751,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
 	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
 	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" {
+	if cfg.Tracker.Kind == "linear" || cfg.Tracker.Kind == "local" {
 		defaultBacklog = []string{"Backlog"}
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	cc := nestedMap(tracker, "comment_commands")
+	cfg.Tracker.CommentCommands = CommentCommandsConfig{
+		Enabled:             boolField(cc, "enabled", false),
+		Allow:               strSliceField(cc, "allow", nil),
+		AllowTokenUser:      boolField(cc, "allow_token_user", false),
+		ReplyToUnauthorized: boolField(cc, "reply_to_unauthorized", false),
+	}
 
 	// Polling
 	polling := nestedMap(raw, "polling")
@@ -828,6 +853,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Agent.BackendFallback = backendFallback
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
+	cfg.Agent.PRFooter = boolField(agent, "pr_footer", false)
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err
@@ -1194,6 +1220,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if len(allowed) == 0 && builtin != nil {
 				allowed = NormalizeAllowedActions(builtin.DefaultActions)
 			}
+			requireEvidence, err := evidenceChecksField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:          cmd,
 				SoulFile:         soulFile,
@@ -1205,12 +1235,17 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
 				PermissionMode:   strField(m, "permission_mode", ""),
+				RequireEvidence:  requireEvidence,
 			}
 			continue
 		}
 		cmd := strField(m, "command", "")
 		if cmd == "" {
 			continue
+		}
+		requireEvidence, err := evidenceChecksField(m, name)
+		if err != nil {
+			return nil, err
 		}
 		profiles[name] = AgentProfile{
 			Command:          cmd,
@@ -1220,6 +1255,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
 			PermissionMode:   strField(m, "permission_mode", ""),
+			RequireEvidence:  requireEvidence,
 		}
 	}
 	if len(profiles) == 0 {
@@ -1472,23 +1508,19 @@ func toFloat(v any) (float64, bool) {
 }
 
 // normalizeReviewerProfiles makes a reviewer_profiles-only configuration
-// usable and predictable while reviewer fan-out is disabled for the v0.2.1
-// release (see orchestrator.ReviewerProfileChain for the three reproduced
-// failures that gate it).
-//
-// Two problems it solves:
+// usable. Every listed reviewer runs (sequentially, see
+// orchestrator.ReviewerProfileChain); this only keeps the singular field in
+// step with the list:
 //
 //   - ValidateReviewerAutoReview checks the SINGULAR reviewer_profile, so
-//     `auto_review: true` with only reviewer_profiles set hard-failed at
-//     startup — the very shape the fan-out feature's own tests use.
+//     `auto_review: true` with only reviewer_profiles set would hard-fail at
+//     startup.
 //   - Several dispatch decisions read cfg.Agent.ReviewerProfile directly, so
-//     even if such a config booted, no review would ever run: the daemon
-//     would silently do nothing rather than review with the listed profile.
+//     without a value there no review would ever start.
 //
-// Promoting the first entry into reviewer_profile collapses both onto the
-// long-standing, working single-reviewer path. The warning is deliberately
-// loud: an operator who listed several reviewers must know only the first
-// one runs, rather than discovering it from a quiet dashboard.
+// Promoting the first entry into reviewer_profile when it is unset satisfies
+// both. It does not change which reviewers run: the chain is built from the
+// full list.
 func normalizeReviewerProfiles(agent *AgentConfig) {
 	trimmed := make([]string, 0, len(agent.ReviewerProfiles))
 	for _, p := range agent.ReviewerProfiles {
@@ -1502,11 +1534,7 @@ func normalizeReviewerProfiles(agent *AgentConfig) {
 	}
 	if agent.ReviewerProfile == "" {
 		agent.ReviewerProfile = trimmed[0]
-		slog.Warn("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry",
-			"reviewer_profile", trimmed[0])
-	}
-	if len(trimmed) > 1 {
-		slog.Warn("config: multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs",
-			"running", agent.ReviewerProfile, "ignored", trimmed[1:])
+		slog.Info("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry as the primary reviewer",
+			"reviewer_profile", trimmed[0], "reviewer_profiles", trimmed)
 	}
 }

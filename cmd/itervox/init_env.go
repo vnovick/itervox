@@ -32,6 +32,8 @@ func ensureEnvStub(itervoxDir, trackerKind string) {
 		envContent = header + "LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
 	case "github":
 		envContent = header + "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+	case "local":
+		envContent = header + "# The local tracker needs no credentials.\n"
 	default:
 		// Unknown tracker: still create the file with the header so the
 		// operator has an obvious place to put credentials, rather than
@@ -44,6 +46,10 @@ func ensureEnvStub(itervoxDir, trackerKind string) {
 	}
 	if err := os.WriteFile(envPath, []byte(envContent), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", envPath, err)
+		return
+	}
+	if trackerKind == "local" {
+		fmt.Printf("itervox init: wrote %s\n", envPath)
 		return
 	}
 	fmt.Printf("itervox init: wrote %s — fill in your credentials before starting the daemon\n", envPath)

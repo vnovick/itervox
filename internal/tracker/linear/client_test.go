@@ -1726,3 +1726,33 @@ func TestLinearFindCommentByKeyGraphQLErrorsIsUnknown(t *testing.T) {
 	require.Error(t, err, "a non-empty top-level errors array is unknown, even with well-formed data")
 	assert.False(t, found)
 }
+
+// TestLinearBlockersCarryBranchName (#103): relation and sub-issue blockers
+// carry the blocker's Linear branchName, the branch its run used, so a
+// dependent can stack on it; and every query selects it.
+func TestLinearBlockersCarryBranchName(t *testing.T) {
+	node := linearIssueNode("id-1", "ENG-1", "Todo")
+	node["inverseRelations"] = map[string]interface{}{
+		"nodes": []interface{}{map[string]interface{}{
+			"type": "blocks",
+			"issue": map[string]interface{}{"id": "b1", "identifier": "ENG-0", "branchName": "alex/eng-0-parser",
+				"state": map[string]interface{}{"name": "In Review"}},
+		}},
+	}
+	node["children"] = map[string]interface{}{
+		"nodes": []interface{}{map[string]interface{}{"id": "c1", "identifier": "ENG-3", "branchName": "alex/eng-3-child",
+			"state": map[string]interface{}{"name": "In Review"}}},
+	}
+	srv := serveJSON(t, []map[string]interface{}{singlePageResponse([]map[string]interface{}{node})})
+	defer srv.Close()
+	client := linear.NewClient(linear.ClientConfig{APIKey: "k", ProjectSlug: "p", ActiveStates: []string{"Todo"}, Endpoint: srv.URL})
+	issues, err := client.FetchCandidateIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	branches := map[string]string{}
+	for _, b := range issues[0].BlockedBy {
+		require.NotNil(t, b.BranchName, "blocker %s", *b.Identifier)
+		branches[*b.Identifier] = *b.BranchName
+	}
+	assert.Equal(t, map[string]string{"ENG-0": "alex/eng-0-parser", "ENG-3": "alex/eng-3-child"}, branches)
+}
