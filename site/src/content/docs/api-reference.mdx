@@ -27,6 +27,7 @@ loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
 one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
+- If `ITERVOX_SUPERVISOR_TOKEN` is set (by a supervisor such as the macOS app), that value is required instead — even with `server.allow_unauthenticated: true` — and the daemon never prints or writes it. See [Running under a supervisor](/cli/#running-under-a-supervisor).
 - If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
   `false` (the default), Itervox auto-generates an ephemeral token at
   startup and prints the tokened dashboard URL to stderr once — only when
