@@ -174,6 +174,12 @@ func startOutboxFlusher(ctx context.Context, ob *outbox.Outbox, tr tracker.Track
 			select {
 			case <-ctx.Done():
 				return
+			case <-ob.Wake():
+				// #115: an urgent write (a question a person must answer, a
+				// failure notice, an operator comment) was enqueued; push it
+				// now instead of on the next tick. Delivery only — the
+				// absent-issue reconcile keeps its own pacing below.
+				runOutboxFlusherTickForAdapter(ctx, ob, tr, orch, time.Now(), adapter)
 			case <-ticker.C:
 				now := time.Now()
 				runOutboxFlusherTickForAdapter(ctx, ob, tr, orch, now, adapter)
@@ -225,18 +231,36 @@ func runOutboxFlusherTickForAdapter(ctx context.Context, ob *outbox.Outbox, tr t
 // With a backlog of ~200 issues after an outage that turned one tick into
 // hours. Once the gate is open the tick stops, logged once at Debug, and the
 // remaining entries are left exactly as they were for a later tick.
+//
+// A tick pushes each issue's whole due batch (#115), not only its head: once
+// a head is delivered, the next entry for that issue becomes the head and, if
+// it is due too, goes in the same tick. Each pass asks Due again; an entry is
+// attempted at most once per tick (a failed one backs off past now anyway),
+// so the loop ends.
 func runOutboxFlusherTickGated(ctx context.Context, ob *outbox.Outbox, tr tracker.Tracker, orch outboxRefresher, now time.Time, adapter string) {
 	gate := tracker.SharedRateLimitGate()
-	for _, entry := range ob.Due(now) {
-		if ctx.Err() != nil {
+	attempted := make(map[string]bool)
+	for {
+		progressed := false
+		for _, entry := range ob.Due(now) {
+			if attempted[entry.ID] {
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			if until, open := gate.OpenUntil(adapter); open {
+				slog.Debug("outbox flusher: rate-limit gate open, stopping tick",
+					"adapter", adapter, "until", until, "next_id", entry.ID)
+				return
+			}
+			attempted[entry.ID] = true
+			progressed = true
+			flushOutboxEntry(ctx, ob, tr, orch, entry, now)
+		}
+		if !progressed {
 			return
 		}
-		if until, open := gate.OpenUntil(adapter); open {
-			slog.Debug("outbox flusher: rate-limit gate open, stopping tick",
-				"adapter", adapter, "until", until, "next_id", entry.ID)
-			return
-		}
-		flushOutboxEntry(ctx, ob, tr, orch, entry, now)
 	}
 }
 

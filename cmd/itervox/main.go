@@ -813,7 +813,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
+	resolveTrackerAssignee(ctx, cfg, tr) // #182: off the event loop, before the store reads through it
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
+	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -896,6 +898,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	if cfg.Tracker.Outbox {
 		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
 		orch.SetOutbox(ob)
+		wireCoalescedPush(cfg, ob, tr) // #115
 	}
 
 	var agentSessionsDir string
@@ -916,8 +919,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
-	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
-		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
+	if name := cfg.Tracker.ScopeName(); cfg.Tracker.Kind != "" && name != "" {
+		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + name)
 	}
 
 	appSessionID := newAppSessionID()
@@ -1091,6 +1094,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		DashboardURL:  heartbeatDashboardURL,
 		LastCrash:     bootCrash,
 	}, snap, heartbeatMinInterval)
+	heartbeat.syncProbe = newSyncStatusSource(cfg, tr, ob, orch).fingerprint // #117
 	if err := heartbeat.WriteNow(time.Now().UTC()); err != nil {
 		slog.Warn("heartbeat: startup write failed", "path", heartbeat.path, "error", err)
 	}
@@ -1189,6 +1193,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Client:           adapter,
 			FetchIssue:       fetchIssue,
 			ProjectManager:   pm,
+			ScopeManager:     newScopeManager(tr, workflowPath, settingsGen), // #182
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
@@ -1246,6 +1251,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
 	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                // #118: local issue files <-> tracker.sync
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1289,6 +1295,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
 	<-commentCommandsDone
+	<-localSyncDone
 	final := orch.Snapshot()
 	failureCarry.store(final.RecentFailures, final.FailureAcks)
 	return runErr
@@ -1336,9 +1343,7 @@ func buildTUIConfig(
 			}
 			return items, nil
 		}
-		tuiCfg.SetProjectFilter = func(slugs []string) {
-			_ = saveProjectFilter(tpm, workflowPath, settingsGen, slugs, "tui") // logged inside
-		}
+		tuiCfg.SetProjectFilter = tuiProjectFilterSaver(tpm, cfg, workflowPath, settingsGen) // #182
 	}
 	tuiCfg.AdjustWorkers = func(delta int) {
 		// V4: same serialized write-then-apply as the dashboard's
@@ -1713,6 +1718,9 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 		return linear.NewClient(linear.ClientConfig{
 			APIKey:         cfg.Tracker.APIKey,
 			ProjectSlug:    cfg.Tracker.ProjectSlug,
+			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee), // #182: project AND assignee AND labels
+			Team:           strings.TrimSpace(cfg.Tracker.Team),
+			Labels:         cfg.Tracker.Labels,
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			Endpoint:       cfg.Tracker.Endpoint,

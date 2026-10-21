@@ -134,6 +134,9 @@ export const RunningRowSchema = z.object({
   triggerType: z.string().optional(),
   // Reviewer/comment-count surface (T-6). Absent when zero.
   commentCount: z.number().optional(),
+  // #182 — the issue left the tracker scope mid-run (reassigned away, moved
+  // out of the project): the run finishes, no new run is dispatched.
+  outOfScope: z.boolean().optional(),
 });
 
 export const HistoryRowSchema = z.object({
@@ -621,6 +624,45 @@ export const TrackerErrorRowSchema = z.object({
   consecutiveFailures: optionalSafeInt,
 });
 
+// SyncStatusRowSchema mirrors server.SyncStatusRow (#117): the tracker sync
+// status. mode is "store" (local tracker store pulling in the background),
+// "direct" (each poll reads the tracker) or "local_sync" (local issue files
+// synced with Linear or GitHub, #118), kept a plain string so a future
+// mode never fails the snapshot parse. lastPullAt is absent until a pull
+// succeeds; lagMs is the lag at snapshot time (the dashboard recomputes it
+// from lastPullAt on its own clock). lastError.kind is a tracker error class
+// (rate_limited, auth, not_found, api_status, graphql, timeout, network,
+// canceled, unknown), also a plain string. The pending* counts describe the
+// write-ahead outbox and overlap (an urgent write can also be retrying).
+const syncCount = z.number().int().nonnegative();
+export const SyncStatusRowSchema = z.object({
+  mode: z.string(),
+  lastPullAt: optionalTimeString,
+  lagMs: optionalSafeInt,
+  lagWarnAfterMs: syncCount,
+  stale: z.boolean(),
+  syncIntervalMs: syncCount,
+  cursorAt: optionalTimeString,
+  consecutiveFailures: optionalSafeInt,
+  lastError: z
+    .object({
+      at: z.string(),
+      kind: z.string(),
+      message: z.string(),
+    })
+    .optional(),
+  pendingWrites: syncCount,
+  pendingUrgent: syncCount,
+  pendingBatched: syncCount,
+  pendingRetrying: syncCount,
+  pendingDegraded: syncCount,
+  pendingRateLimited: syncCount,
+  oldestPendingAt: optionalTimeString,
+  nextPushAt: optionalTimeString,
+  pushIntervalMs: syncCount,
+});
+export type SyncStatusRow = z.infer<typeof SyncStatusRowSchema>;
+
 // FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
 // daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
 // tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
@@ -715,6 +757,14 @@ export const StateSnapshotSchema = z.object({
   trackerKind: z.string().optional(),
   demoMode: z.boolean().optional(),
   activeProjectFilter: z.array(z.string()).optional(),
+  // #182 — the tracker's combined read scope (projects AND assignee AND
+  // any-of labels): its header label ("ENG · assigned to me · label:
+  // agent"), the assignee spec and who it resolved to, and the labels.
+  // Absent for trackers without a combinable scope.
+  trackerScope: z.string().optional(),
+  scopeAssignee: z.string().optional(),
+  scopeAssigneeName: z.string().optional(),
+  scopeLabels: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),
@@ -795,6 +845,9 @@ export const StateSnapshotSchema = z.object({
   // failed failed-state move). Absent when none is recorded and on snapshots
   // from daemons predating the field.
   lastTrackerError: TrackerErrorRowSchema.optional(),
+  // #117 — tracker sync status (pull lag, pending writes, last sync error).
+  // Absent on daemons predating it; the LiveOps sync chip then hides.
+  syncStatus: SyncStatusRowSchema.optional(),
   // CORE-046 — bounded ring of recent failures, oldest recorded first.
   // Always an array on a current daemon; absent on older daemons.
   recentFailures: z.array(FailureRowSchema).optional(),

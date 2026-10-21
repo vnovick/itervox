@@ -86,6 +86,29 @@ GITHUB_TOKEN=ghp_xxxxx
 
 Reference them in WORKFLOW.md as `$LINEAR_API_KEY` or `$GITHUB_TOKEN`.
 
+#### Linear: choose what Itervox reads
+
+A Linear tracker's scope is the **AND** of three optional filters. Leave them all out to read every project.
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: ENG          # only this project (omit: every project)
+  assignee: me               # only issues assigned to this user: me, a user id or an email (omit: anyone)
+  labels: ["agent"]          # only issues carrying ANY of these labels (omit: no label filter)
+```
+
+| Set | Itervox reads |
+|---|---|
+| nothing | every issue the key can read, in every project |
+| `project_slug` | that project's issues (as before) |
+| `assignee` | that user's issues across every project and team the key can read (`team: ENG` narrows to one team) |
+| `project_slug` + `assignee` | that user's issues inside the project |
+| `labels` with any of the above | only the issues among them carrying at least one of the labels |
+
+With `assignee: me` a dedicated "Itervox" Linear user can own the agent lane: assign a ticket to it to hand it to the agents, reassign it to take it back. Itervox never changes an issue's assignee or labels itself, so a run never moves its own issue out of scope. Change the scope at runtime in the dashboard's **Settings → Tracker Scope**. `itervox doctor` checks that the assignee resolves and its issues are readable. See [Linear setup → Scope](/guides/linear-setup/#scope-project-assignee-labels).
+
 Commit `.itervox/agents/**`; those files define your project agent profiles. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, or runtime queue files.
 
 ### 3. Run

@@ -165,6 +165,9 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
+	// Assignee is the Linear assignee-scope check (#182). Zero value when
+	// the tracker has no assignee scope.
+	Assignee AssigneeCheck
 	// LabelFixError is why `doctor --fix` did not finish repairing the
 	// labels (a failed create or re-check). Non-empty means exit 1.
 	LabelFixError string
@@ -174,6 +177,12 @@ type DoctorReport struct {
 	// LocalIssueProblems are local tracker issue files that do not parse
 	// (#85). Warnings only: the daemon serves their last good version.
 	LocalIssueProblems []string
+	// Sync is the running daemon's tracker sync status (#117), read from a
+	// live HEARTBEAT.md; nil when no live daemon wrote one. SyncLagWarning
+	// is set when the lag is past the daemon's threshold. A warning only:
+	// a lagging sync is an outage to look at, not a broken configuration.
+	Sync           *doctorSync
+	SyncLagWarning string
 	// PATHSource is where PATH came from (#119): "inherited — <why>" or
 	// "login shell (<shell>, <elapsed>, +N dirs) — <why>". Empty when no
 	// resolution ran in this process.
@@ -315,6 +324,8 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 				report.HeartbeatStaleWarning = fmt.Sprintf(
 					"%s exists but no live daemon owns it (pid in daemon.pid = %d, alive = %v) — delete the stale file or `itervox` to start fresh",
 					hbPath, pid, pidErr == nil && processAlive(pid))
+			} else {
+				report.Sync, report.SyncLagWarning = collectDoctorSync(hbPath, time.Now())
 			}
 		}
 	}
@@ -365,6 +376,14 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Linear assignee scope (#182): the user resolves, and its issues are
+	// readable. An unresolvable user or unknown team fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), assigneeCheckTimeout)
+		report.Assignee = checkLinearAssignee(ctx, cfg)
+		cancel()
+	}
+
 	return report, cfg
 }
 
@@ -397,6 +416,9 @@ func doctorExitCode(report DoctorReport) int {
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
 	case report.LabelFixError != "":
+		exitCode = 1
+	case assigneeCheckFailed(report.Assignee):
+		// #182: the daemon's polls fail until the assignee resolves.
 		exitCode = 1
 	}
 	return exitCode
@@ -476,7 +498,9 @@ func renderDoctorReport(r DoctorReport) string {
 			fmt.Fprintf(&b, "dashboard URL: %s (NOT reachable — daemon may have died after writing this file)\n", r.DashboardURL)
 		}
 	}
+	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
 	renderLabelCheck(&b, r.Labels)
+	renderAssigneeCheck(&b, r.Assignee)
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}

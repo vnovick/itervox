@@ -69,6 +69,15 @@ func (fencedProjectManager) FetchProjects(context.Context) ([]server.Project, er
 func (fencedProjectManager) SetProjectFilter([]string) error                         { return errFence }
 func (fencedProjectManager) GetProjectFilter() []string                              { return nil }
 
+// fencedScopeManager: the combined tracker-scope save (#182) is fenced by
+// cmd/itervox's saveTrackerScope.
+type fencedScopeManager struct{}
+
+func (fencedScopeManager) GetScope() server.TrackerScope                            { return server.TrackerScope{} }
+func (fencedScopeManager) SetScope(context.Context, server.TrackerScope) error      { return errFence }
+func (fencedScopeManager) FetchLabels(context.Context) ([]string, error)            { return nil, nil }
+func (fencedScopeManager) FetchUsers(context.Context) ([]server.TrackerUser, error) { return nil, nil }
+
 // M1-close C2/D2/E1: every settings route whose adapter method the reload fence
 // guards must answer a refused save with a retryable 503 settings_reloading
 // and Retry-After: 1 — never a 400/409/500 that tells the client the value
@@ -99,12 +108,15 @@ func TestSettingsSaveRefusedByReloadFenceIs503(t *testing.T) {
 		// M4-close D4/D5: the project-filter save is fenced (saveProjectFilter).
 		{http.MethodPut, "/api/v1/projects/filter", `{"slugs":["alpha"]}`},
 		{http.MethodPut, "/api/v1/projects/filter", `{}`},
+		// #182: the combined scope save is fenced the same way (saveTrackerScope).
+		{http.MethodPut, "/api/v1/tracker/scope", `{"projects":["alpha"],"assignee":"me","labels":["agent"]}`},
 	} {
 		t.Run(tc.method+" "+tc.path+" "+tc.body, func(t *testing.T) {
 			cfg := makeTestConfig(baseSnap())
 			cfg.Client = fencedRefreshClient{fencedClient()}
 			cfg.SkillsClient = fencedSkillsClient{}
 			cfg.ProjectManager = fencedProjectManager{}
+			cfg.ScopeManager = fencedScopeManager{}
 			srv := server.New(cfg)
 			var req *http.Request
 			if tc.body == "" {

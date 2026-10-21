@@ -17,6 +17,9 @@
 //   - Writes go to the tracker. A successful state, branch or create write is
 //     applied to the store and saved at once, so the next tick, and a
 //     restart, see it; the next sync is authoritative.
+//   - A state move queued in the write-ahead outbox and not pushed yet
+//     (#115) is laid over every list read (SetPendingStates, pending.go), so
+//     the board sees it at once; the store's own copy stays the tracker's.
 //
 // A full pull is FetchCandidateIssues plus FetchIssuesByStates for each
 // view. Between full pulls, an adapter that implements
@@ -131,9 +134,13 @@ type Store struct {
 	fileMu sync.Mutex
 	mu     sync.Mutex
 
-	synced     bool
-	syncedAt   time.Time
-	lastErr    error
+	synced   bool
+	syncedAt time.Time
+	lastErr  error
+	// lastErrAt and failures describe the run of failed pulls since the last
+	// good one (#117): when the newest failed and how many failed in a row.
+	lastErrAt  time.Time
+	failures   int
 	active     []string
 	issues     map[string]domain.Issue
 	candidates []string
@@ -160,6 +167,10 @@ type Store struct {
 	// next pull is full. fullAt is when the last full pull committed.
 	cursor time.Time
 	fullAt time.Time
+
+	// pending returns the state moves queued for push and not yet sent
+	// (#115), by issue ID; nil when nothing queues writes. See pending.go.
+	pending func() map[string]string
 }
 
 // DefaultFullSyncInterval is Config.FullSyncInterval when unset.
@@ -177,7 +188,8 @@ type baseUpstream interface {
 
 // Wrap returns a store over up, loading cfg.Path when it holds this scope.
 // The result also implements tracker.DetailBatcher and
-// tracker.ProjectManager exactly when up does (Linear does, GitHub does not).
+// tracker.ProjectManager exactly when up does (Linear does, GitHub does not),
+// and tracker.ScopeManager when up also does (#182).
 // It fails for an adapter without the base optional interfaces (the local
 // and memory trackers, which need no store).
 func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
@@ -220,6 +232,9 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 	_, batches := up.(tracker.DetailBatcher)
 	_, projects := up.(tracker.ProjectManager)
 	if batches && projects {
+		if _, scoped := up.(tracker.ScopeManager); scoped {
+			return &scopedStore{&linearStore{s}}, s, nil
+		}
 		return &linearStore{s}, s, nil
 	}
 	return s, s, nil
@@ -513,6 +528,47 @@ func (s *Store) Status() (syncedAt time.Time, lastErr error) {
 	return s.syncedAt, s.lastErr
 }
 
+// SyncStatus is the store's sync state (#117), read by the snapshot, the
+// HEARTBEAT and through them `itervox doctor`.
+type SyncStatus struct {
+	// SyncedAt is when the store last pulled successfully (loaded from the
+	// store file after a restart); zero when it never has.
+	SyncedAt time.Time
+	// Cursor is the newest update time the tracker reported (#114); zero
+	// before the first full pull.
+	Cursor time.Time
+	// LastErr is the error of the newest failed pull, nil when the last pull
+	// succeeded. It is the tracker adapter's error: callers must classify it
+	// (tracker.ClassifyError) before showing it, never print it raw.
+	LastErr error
+	// LastErrAt is when LastErr happened; Failures counts the failed pulls
+	// since the last good one.
+	LastErrAt time.Time
+	Failures  int
+	// Interval is the periodic pull interval (Config.SyncInterval).
+	Interval time.Duration
+}
+
+// SyncStatus reports the store's sync state. Safe from any goroutine.
+func (s *Store) SyncStatus() SyncStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SyncStatus{
+		SyncedAt:  s.syncedAt,
+		Cursor:    s.cursor,
+		LastErr:   s.lastErr,
+		LastErrAt: s.lastErrAt,
+		Failures:  s.failures,
+		Interval:  s.cfg.SyncInterval,
+	}
+}
+
+// failLocked records a failed pull. Caller holds mu.
+func (s *Store) failLocked(err error) {
+	s.lastErr, s.lastErrAt = err, s.now()
+	s.failures++
+}
+
 // ensureSynced pulls once if the store has no data yet.
 func (s *Store) ensureSynced(ctx context.Context) error {
 	s.mu.Lock()
@@ -589,7 +645,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	}
 	if err != nil {
 		s.mu.Lock()
-		s.lastErr = err
+		s.failLocked(err)
 		s.fullNext = s.fullNext || forced
 		s.mu.Unlock()
 		return false, err
@@ -656,7 +712,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 			s.placeLocked(iss)
 		}
 	}
-	s.synced, s.syncedAt, s.lastErr = true, s.now(), nil
+	s.synced, s.syncedAt, s.lastErr, s.failures = true, s.now(), nil, 0
 	s.mu.Unlock()
 
 	s.persist()
@@ -689,7 +745,7 @@ func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher,
 	changed, gone, err := inc.FetchIssuesUpdatedSince(ctx, since)
 	if err != nil {
 		s.mu.Lock()
-		s.lastErr = err
+		s.failLocked(err)
 		s.mu.Unlock()
 		return false, err
 	}
@@ -743,7 +799,7 @@ func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher,
 	}
 	moved := !cursor.Equal(s.cursor)
 	s.cursor = cursor
-	s.synced, s.syncedAt, s.lastErr = true, s.now(), nil
+	s.synced, s.syncedAt, s.lastErr, s.failures = true, s.now(), nil, 0
 	s.mu.Unlock()
 	if dirty || moved {
 		s.persist()
@@ -915,9 +971,10 @@ func (s *Store) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error
 	if err := s.ensureSynced(ctx); err != nil {
 		return nil, err
 	}
+	pend := s.pendingStates()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.listLocked(s.candidates), nil
+	return s.overlayLocked(s.candidates, pend, s.active), nil
 }
 
 // FetchIssuesByStates implements tracker.Tracker from the store; a state set
@@ -930,10 +987,11 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 		return nil, err
 	}
 	key := viewKey(stateNames)
+	pend := s.pendingStates()
 	s.mu.Lock()
 	if v, ok := s.views[key]; ok {
 		v.LastRead = s.now()
-		out := s.listLocked(v.IDs)
+		out := s.overlayLocked(v.IDs, pend, v.States)
 		s.mu.Unlock()
 		return out, nil
 	}
@@ -979,7 +1037,7 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 		}
 	}
 	s.views[key] = v
-	return s.listLocked(v.IDs), nil
+	return s.overlayLocked(v.IDs, pend, v.States), nil
 }
 
 // FetchIssueStatesByIDs implements tracker.Tracker from the tracker (see
@@ -1149,3 +1207,53 @@ func (l *linearStore) SetProjectFilter(slugs []string) {
 	l.up.(tracker.ProjectManager).SetProjectFilter(slugs)
 	l.invalidate(nil)
 }
+
+// scopedStore is a linearStore over an adapter whose scope combines a
+// project, an assignee and labels (#182). The scope itself lives in the
+// adapter; another scope means other issues, so SetScope makes the store
+// pull again, like SetProjectFilter.
+type scopedStore struct{ *linearStore }
+
+var _ tracker.ScopeManager = (*scopedStore)(nil)
+
+func (a *scopedStore) sm() tracker.ScopeManager { return a.up.(tracker.ScopeManager) }
+
+// Scope implements tracker.ScopeManager.
+func (a *scopedStore) Scope() tracker.Scope { return a.sm().Scope() }
+
+// SetScope implements tracker.ScopeManager.
+func (a *scopedStore) SetScope(sc tracker.Scope) {
+	a.sm().SetScope(sc)
+	a.invalidate(nil)
+}
+
+// ResolveUser implements tracker.ScopeManager.
+func (a *scopedStore) ResolveUser(ctx context.Context, spec string) (tracker.AssigneeUser, error) {
+	return a.sm().ResolveUser(ctx, spec)
+}
+
+// ResolveAssignee implements tracker.ScopeManager.
+func (a *scopedStore) ResolveAssignee(ctx context.Context) (tracker.AssigneeUser, error) {
+	return a.sm().ResolveAssignee(ctx)
+}
+
+// ResolvedAssignee implements tracker.ScopeManager.
+func (a *scopedStore) ResolvedAssignee() (tracker.AssigneeUser, bool) {
+	return a.sm().ResolvedAssignee()
+}
+
+// FetchLabels implements tracker.ScopeManager.
+func (a *scopedStore) FetchLabels(ctx context.Context) ([]string, error) {
+	return a.sm().FetchLabels(ctx)
+}
+
+// FetchUsers implements tracker.ScopeManager.
+func (a *scopedStore) FetchUsers(ctx context.Context) ([]tracker.AssigneeUser, error) {
+	return a.sm().FetchUsers(ctx)
+}
+
+// ScopeKey implements tracker.ScopeManager.
+func (a *scopedStore) ScopeKey() string { return a.sm().ScopeKey() }
+
+// ScopeLabel implements tracker.ScopeManager.
+func (a *scopedStore) ScopeLabel() string { return a.sm().ScopeLabel() }

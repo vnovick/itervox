@@ -1,0 +1,24 @@
+{
+  "mode": "store",
+  "lastPullAt": "2026-05-25T12:00:00Z",
+  "lagMs": 720000,
+  "lagWarnAfterMs": 300000,
+  "stale": true,
+  "syncIntervalMs": 60000,
+  "cursorAt": "2026-05-25T11:59:00Z",
+  "consecutiveFailures": 4,
+  "lastError": {
+    "at": "2026-05-25T12:00:10Z",
+    "kind": "network",
+    "message": "tracker unreachable (network error)"
+  },
+  "pendingWrites": 3,
+  "pendingUrgent": 1,
+  "pendingBatched": 1,
+  "pendingRetrying": 1,
+  "pendingDegraded": 0,
+  "pendingRateLimited": 1,
+  "oldestPendingAt": "2026-05-25T11:58:00Z",
+  "nextPushAt": "2026-05-25T12:10:00Z",
+  "pushIntervalMs": 10000
+}

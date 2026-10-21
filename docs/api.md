@@ -356,6 +356,37 @@ Useful top-level fields include:
   `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
+- `syncStatus` (#117) — the tracker sync status, absent on older daemons:
+  `{ "mode": "store" | "direct" | "local_sync", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
+  "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,
+  "lastError"?: { "at", "kind", "message" }, "pendingWrites",
+  "pendingUrgent", "pendingBatched", "pendingRetrying", "pendingDegraded",
+  "pendingRateLimited", "oldestPendingAt"?, "nextPushAt"?, "pushIntervalMs" }`.
+  `mode` is `store` when the local tracker store pulls in the background
+  (`tracker.store.enabled`), `direct` when each poll reads the tracker, and
+  `local_sync` (#118) when local issue files are synced with Linear or
+  GitHub (`tracker.sync`): `lastPullAt` is then the sync's last good cycle,
+  `syncIntervalMs` is `tracker.sync.interval_ms`, and the `pending*` counts
+  include the sync's queued remote writes.
+  `lastPullAt` is the last successful pull (store) or candidate poll
+  (direct), absent until one succeeds; `lagMs` is now − `lastPullAt` when the
+  snapshot was built (clients should recompute it on their own clock).
+  `stale` is `lagMs > lagWarnAfterMs`, or "never pulled and the last pull
+  failed". `lagWarnAfterMs` is three pull intervals and at least five
+  minutes (`syncIntervalMs`: `tracker.store.sync_interval_ms`, the webhook
+  safety net with `tracker.webhooks`, or `polling.interval_ms` in direct
+  mode). `cursorAt` is the newest tracker update the store has seen.
+  `lastError` is the newest failed pull while pulls keep failing (a good
+  pull clears it), classified: `kind` is `rate_limited`, `auth`,
+  `not_found`, `api_status`, `graphql`, `timeout`, `network`, `canceled` or
+  `unknown` (treat unknown values as opaque), and `message` is a fixed
+  summary, never the tracker's response. The `pending*` counts describe the
+  write-ahead outbox and overlap: `pendingBatched` waits for
+  `tracker.push_interval_ms` (`pushIntervalMs`, 0 with the outbox off),
+  `pendingRetrying` failed at least once, `pendingDegraded` failed five
+  times or more, `pendingRateLimited` waits for a tracker rate-limit reset.
+  `nextPushAt` is when the next queued write is due (at or before
+  `generatedAt` means now).
 - `outboxEntries[].lastFailedAt` — when that outbox entry last failed to
   deliver (rate-limit deferrals do not count).
 - `backendHealth` (CORE-055) — one row per agent backend, and per SSH host
@@ -866,6 +897,36 @@ Notes:
 - A save applies to the tracker immediately and never reloads `WORKFLOW.md`
   (CORE-160). A save that raced a reload is not written (the next
   generation keeps the file's value); re-send it.
+- A project filter save changes only the project part of the combined
+  scope below; the assignee and labels stay.
+
+### Combined tracker scope (#182, Linear only)
+
+The scope is the AND of the projects, an assignee and a label filter (any
+of the labels). `501 not_supported` for trackers without it.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/tracker/scope` | — | `{"scope":{"projects":["ENG"],"assignee":"me","labels":["agent"]}}` |
+| `PUT` | `/tracker/scope` | `{"projects":[...],"assignee":"me","labels":[...]}` | `{"scope":{...},"ok":true}` |
+| `GET` | `/tracker/labels` | — | `{"labels":["agent","bug"]}` |
+| `GET` | `/tracker/users` | — | `{"users":[{"id":"…","name":"Ada","email":"ada@example.com"}]}` |
+
+- Empty `projects` is every project, `""` `assignee` anyone (`me`, a user id
+  or an email otherwise), empty `labels` no label filter. Any combination is
+  allowed.
+- The assignee is resolved before anything is written: one that matches no
+  user the key can see answers `422 assignee_not_found` and nothing changes.
+  The reload fence answers `503 settings_reloading`, a failed resolve or
+  write `500 tracker_scope_not_saved`.
+- The save writes `project_slug` (commented out for every project),
+  `assignee` and `labels` in `WORKFLOW.md` (a cleared key is commented out),
+  applies the scope in memory without a reload, and makes the tracker store
+  pull again.
+- The snapshot carries `trackerScope` (the header label, e.g.
+  `ENG · assigned to me · label: agent`), `scopeAssignee`,
+  `scopeAssigneeName` and `scopeLabels`; a running row whose issue left the
+  scope mid-run has `outOfScope: true`.
 
 ---
 

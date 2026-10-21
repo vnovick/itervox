@@ -31,6 +31,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
 	// file has changed since the last successful load. v0.2.0 todolist6.
 	depsSidecar := depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
+	syncSrc := newSyncStatusSource(cfg, tr, ob, orch) // #117
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
@@ -80,6 +81,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:     r.StartedAt,
 				SubagentCount: subCount,
+				OutOfScope:    isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -110,6 +112,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
 			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
 		}
+		scopeView := trackerScopeView(tr) // #182
 		profiles := orch.ProfilesCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
 		depsAnalysisMode := orch.DepsAnalysisModeCfg()
@@ -204,6 +207,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DemoMode:                     demoSession != nil,
 			ProjectName:                  projectName,
 			ActiveProjectFilter:          activeProjectFilter,
+			TrackerScope:                 scopeView.label,
+			ScopeAssignee:                scopeView.assignee,
+			ScopeAssigneeName:            scopeView.assigneeName,
+			ScopeLabels:                  scopeView.labels,
 			AvailableProfiles:            availableProfiles,
 			ProfileDefs:                  profileDefs,
 			ActiveStates:                 activeStates,
@@ -257,6 +264,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			OutboxSyncing: outboxSyncingRows(s.OutboxSyncing),
 			// CORE-044 — most recent tracker failure (poll or failed-state move).
 			LastTrackerError: trackerErrorRow(s),
+			// #117 — pull lag and pending writes, from the store's and the
+			// outbox's own accessors (never orchestrator.State).
+			SyncStatus: syncSrc.row(now),
 			// CORE-046 — the RecentFailures ring (always an array).
 			RecentFailures: recentFailureRows(s),
 			// CORE-175 — operator acks of worker failures + the capability
@@ -279,4 +289,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		snap.ConfigInvalid = loadConfigInvalid()
 		return snap
 	}
+}
+
+// isOutOfScope reports whether identifier is in the orchestrator's
+// out-of-scope set (#182).
+func isOutOfScope(set map[string]struct{}, identifier string) bool {
+	_, ok := set[identifier]
+	return ok
 }

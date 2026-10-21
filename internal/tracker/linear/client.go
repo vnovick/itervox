@@ -29,6 +29,14 @@ type ClientConfig struct {
 	ActiveStates   []string
 	TerminalStates []string
 	Endpoint       string
+	// Assignee is the assignee scope (#182): "me", a user id or an email.
+	// ANDed with the project filter and Labels: the client reads the
+	// issues assigned to that user (in ProjectSlug's project when set).
+	Assignee string
+	// Team narrows the assignee scope to one team, by key or id.
+	Team string
+	// Labels narrows the scope to issues carrying any of them (#182).
+	Labels []string
 }
 
 // linearProject is the internal representation of a Linear project.
@@ -64,6 +72,16 @@ type Client struct {
 	// non-nil with slugs = filter to those projects.
 	projectFilterMu sync.RWMutex
 	projectFilter   *[]string
+
+	// assigneeOverride and labelsOverride are the runtime assignee and
+	// label filters (#182), guarded by projectFilterMu like projectFilter;
+	// nil means WORKFLOW.md's.
+	assigneeOverride *string
+	labelsOverride   *[]string
+
+	// assigneeMu guards users, the assignee specs resolved so far (#182).
+	assigneeMu sync.Mutex
+	users      map[string]tracker.AssigneeUser
 
 	// stateCacheMu guards teamOfIssue and statesOfTeam, the workflow-state
 	// resolution cache used by UpdateIssueState.
@@ -135,6 +153,7 @@ func NewClient(cfg ClientConfig) *Client {
 		httpClient:   &http.Client{Timeout: httpTimeout},
 		teamOfIssue:  make(map[string]string),
 		statesOfTeam: make(map[string]map[string]string),
+		users:        make(map[string]tracker.AssigneeUser),
 	}
 }
 
@@ -291,41 +310,44 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 // the merge semantics live in exactly one place instead of two near-identical
 // copies that could silently drift apart.
 func (c *Client) fetchWithProjectFilter(ctx context.Context, states []string) ([]domain.Issue, error) {
-	filter := c.GetProjectFilter()
-
-	// nil = runtime filter not set; fall back to WORKFLOW.md project_slug.
-	if filter == nil {
-		if c.cfg.ProjectSlug != "" {
-			return c.fetchByProjectSlug(ctx, states, c.cfg.ProjectSlug, nil, nil)
+	sc := c.Scope()
+	base := map[string]any{
+		"stateNames":    states,
+		"relationFirst": pageSize,
+	}
+	var buckets []func() ([]domain.Issue, error)
+	switch {
+	case narrowed(sc):
+		// #182: the project filter ANDed with the assignee and labels.
+		bs, err := c.scopeBuckets(ctx, sc)
+		if err != nil {
+			return nil, err
 		}
-		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    states,
-			"relationFirst": pageSize,
-		}, nil, nil)
+		for _, b := range bs {
+			vars := maps.Clone(b.vars)
+			maps.Copy(vars, base)
+			query := candidateIssuesQuery("ItervoxLinearPollScoped", b.params, b.filter)
+			buckets = append(buckets, func() ([]domain.Issue, error) { return c.fetchByStatesPage(ctx, query, vars, nil, nil) })
+		}
+	case len(sc.Projects) == 0:
+		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, base, nil, nil)
+	default:
+		for _, slug := range sc.Projects {
+			if slug == noProjectSentinel {
+				buckets = append(buckets, func() ([]domain.Issue, error) {
+					return c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, base, nil, nil)
+				})
+				continue
+			}
+			buckets = append(buckets, func() ([]domain.Issue, error) { return c.fetchByProjectSlug(ctx, states, slug, nil, nil) })
+		}
 	}
 
-	// Empty filter = all issues regardless of project.
-	if len(filter) == 0 {
-		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    states,
-			"relationFirst": pageSize,
-		}, nil, nil)
-	}
-
-	// Specific project/no-project filter: fetch each and merge.
+	// Fetch each bucket and merge, deduplicating by issue ID.
 	seen := make(map[string]struct{})
 	var all []domain.Issue
-	for _, slug := range filter {
-		var issues []domain.Issue
-		var err error
-		if slug == noProjectSentinel {
-			issues, err = c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, map[string]any{
-				"stateNames":    states,
-				"relationFirst": pageSize,
-			}, nil, nil)
-		} else {
-			issues, err = c.fetchByProjectSlug(ctx, states, slug, nil, nil)
-		}
+	for _, fetch := range buckets {
+		issues, err := fetch()
 		if err != nil {
 			return nil, err
 		}
@@ -1360,13 +1382,15 @@ var _ tracker.IdempotentCommenter = (*Client)(nil)
 
 // FetchIssuesInScope implements tracker.ScopedFetcher (#131): it reads the
 // issues by ID in batches (no list request) and keeps the ones the current
-// project filter covers, with the same rules as FetchCandidateIssues: no
-// runtime filter means project_slug (or every project when that is empty),
-// an empty filter means every project, and the no-project sentinel covers
-// issues without one.
+// scope covers, with the same rules as FetchCandidateIssues: no runtime
+// filter means project_slug (or every project when it is empty), an empty filter means every project, the no-project sentinel
+// covers issues without one, and the assignee and labels (#182) narrow it.
 func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	valid, _ := partitionValidIssueRefs(issueIDs)
-	inScope := c.projectScope()
+	inScope, err := c.scopeCheck(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("linear_fetch_in_scope: %w", err)
+	}
 	var out []domain.Issue
 	for len(valid) > 0 {
 		batch := valid[:min(len(valid), pageSize)]
@@ -1393,11 +1417,7 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 			if !ok {
 				continue
 			}
-			slug := ""
-			if p, ok := node["project"].(map[string]any); ok {
-				slug, _ = p["slugId"].(string)
-			}
-			if !inScope(slug) {
+			if !inScope(node) {
 				continue
 			}
 			if iss := normalizeIssue(node); iss != nil {
@@ -1409,27 +1429,3 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 }
 
 var _ tracker.ScopedFetcher = (*Client)(nil)
-
-// projectScope reports whether an issue in the project with slug ("" for
-// none) is covered by the current project filter.
-func (c *Client) projectScope() func(slug string) bool {
-	filter := c.GetProjectFilter()
-	if filter == nil {
-		if c.cfg.ProjectSlug == "" {
-			return func(string) bool { return true }
-		}
-		want := c.cfg.ProjectSlug
-		return func(slug string) bool { return slug == want }
-	}
-	if len(filter) == 0 {
-		return func(string) bool { return true }
-	}
-	return func(slug string) bool {
-		for _, f := range filter {
-			if f == slug || (f == noProjectSentinel && slug == "") {
-				return true
-			}
-		}
-		return false
-	}
-}

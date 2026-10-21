@@ -48,6 +48,7 @@ func (s State) Clone() State {
 	c.BackendLimitedHolds = maps.Clone(s.BackendLimitedHolds)
 	c.ForceReanalyze = maps.Clone(s.ForceReanalyze)
 	c.PendingRestacks = maps.Clone(s.PendingRestacks)
+	c.OutOfScope = maps.Clone(s.OutOfScope)
 	c.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	c.PrevIssueStates = maps.Clone(s.PrevIssueStates)
 	c.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)

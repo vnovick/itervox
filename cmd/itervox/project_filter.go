@@ -71,30 +71,7 @@ func saveProjectFilter(pm tracker.ProjectManager, path string, gen uint64, slugs
 // a self-write (CORE-116/CORE-160): the caller applies the filter in memory.
 func updateWorkflowProjectSlug(path string, slugs []string) error {
 	err := workflow.ApplyAndWriteFrontMatter(path, func(frontLines []string) ([]string, error) {
-		found := false
-		for i, line := range frontLines {
-			// Match both commented and uncommented project_slug lines.
-			stripped := strings.TrimLeft(line, " #")
-			if !strings.HasPrefix(stripped, "project_slug:") {
-				continue
-			}
-			indent := strings.Repeat(" ", len(line)-len(strings.TrimLeft(line, " ")))
-			if len(slugs) == 0 {
-				frontLines[i] = indent + "# project_slug:  # Optional — select interactively via TUI (p) or web dashboard"
-			} else {
-				frontLines[i] = indent + "project_slug: " + strings.Join(slugs, ", ")
-			}
-			found = true
-			break
-		}
-		if found || len(slugs) == 0 {
-			// No key and "all issues": an absent project_slug already means
-			// no filter, so the file agrees without a write.
-			return frontLines, nil
-		}
-		// M4-close D4: no project_slug line at all — insert one at the end
-		// of the top-level tracker: block, with the block's indentation.
-		return insertTrackerKey(frontLines, "project_slug: "+strings.Join(slugs, ", "))
+		return setProjectSlugLine(frontLines, slugs)
 	})
 	if err != nil {
 		return fmt.Errorf("project_slug: update %s: %w", path, err)
@@ -145,4 +122,33 @@ func insertTrackerKey(frontLines []string, kv string) ([]string, error) {
 	out = append(out, frontLines[:last+1]...)
 	out = append(out, indent+kv)
 	return append(out, frontLines[last+1:]...), nil
+}
+
+// setProjectSlugLine is updateWorkflowProjectSlug's edit of the front-matter
+// lines, shared with the combined scope save (#182).
+func setProjectSlugLine(frontLines []string, slugs []string) ([]string, error) {
+	found := false
+	for i, line := range frontLines {
+		// Match both commented and uncommented project_slug lines.
+		stripped := strings.TrimLeft(line, " #")
+		if !strings.HasPrefix(stripped, "project_slug:") {
+			continue
+		}
+		indent := strings.Repeat(" ", len(line)-len(strings.TrimLeft(line, " ")))
+		if len(slugs) == 0 {
+			frontLines[i] = indent + "# project_slug:  # Optional — select interactively via TUI (p) or web dashboard"
+		} else {
+			frontLines[i] = indent + "project_slug: " + strings.Join(slugs, ", ")
+		}
+		found = true
+		break
+	}
+	if found || len(slugs) == 0 {
+		// No key and "all issues": an absent project_slug already means
+		// no filter, so the file agrees without a write.
+		return frontLines, nil
+	}
+	// M4-close D4: no project_slug line at all — insert one at the end
+	// of the top-level tracker: block, with the block's indentation.
+	return insertTrackerKey(frontLines, "project_slug: "+strings.Join(slugs, ", "))
 }

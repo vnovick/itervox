@@ -226,6 +226,9 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// case this returns an empty set and mutates nothing.
 	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
 	pruneStackUnavailable(&state, issues)
+	// #182: running issues the scoped poll no longer offers (reassigned
+	// away, moved out of the project) finish, but start nothing new.
+	o.observeOutOfScope(&state, issues)
 
 	// unified-dependency-graph Task 4 — recompute the inferred-dependency
 	// gating layer against this tick's candidate set before the audit/dispatch
@@ -578,6 +581,16 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		if now.Before(entry.DueAt) {
 			continue
 		}
+		// #182: the issue left the tracker's scope while its run was going
+		// (reassigned away, moved out of the project). The by-ID read below
+		// is unscoped and would admit it, so release the claim here.
+		if _, out := state.OutOfScope[entry.Identifier]; out {
+			slog.Info("retry: issue left the tracker scope, releasing claim",
+				"issue_id", issueID, "identifier", entry.Identifier)
+			state = CancelRetry(state, issueID)
+			delete(state.OutOfScope, entry.Identifier)
+			continue
+		}
 
 		refreshed, err := o.tracker.FetchIssueStatesByIDs(ctx, []string{issueID})
 		if err != nil {
@@ -694,7 +707,9 @@ func boundInputRequiredContext(text string) string {
 // nil.
 func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) error {
 	if o.sinkEnqueuesLocally() {
-		if err := o.writeSink().CreateKeyedComment(context.Background(), issueID, identifier, key, body); err != nil {
+		// #115: a person waits on the question (and the agent on the
+		// reply), so neither waits for the push interval.
+		if err := o.writeSink().CreateKeyedComment(urgentWrite(context.Background()), issueID, identifier, key, body); err != nil {
 			return fmt.Errorf("orchestrator: enqueue input-required %s: %w", what, err)
 		}
 		return nil
@@ -2654,7 +2669,8 @@ func maxRetriesExhaustedBody(attempts int, lastErr string) string {
 func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, body string) {
 	comment := tracker.MarkManagedComment(body)
 	if o.sinkEnqueuesLocally() {
-		if err := o.writeSink().CreateComment(context.Background(), issue.ID, issue.Identifier, comment); err != nil {
+		// #115: a failure notice is pushed at once, not batched.
+		if err := o.writeSink().CreateComment(urgentWrite(context.Background()), issue.ID, issue.Identifier, comment); err != nil {
 			slog.Warn("worker: failed to enqueue max-retries comment", "issue_id", issue.ID, "error", err)
 		}
 		return
@@ -2705,7 +2721,9 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 		// of the failed state would have had that move overwritten. Empty
 		// stays permitted for callers that genuinely cannot observe the
 		// state; this caller can.
-		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, fromState)
+		// #115: the move to the failed state is a failure notice a person
+		// acts on, so it is pushed at once rather than batched.
+		err := o.writeSink().UpdateIssueState(urgentWrite(updateCtx), issueID, identifier, targetState, fromState)
 		updateCancel()
 		if err != nil {
 			// Error, not Warn (CORE-044): retries are exhausted and the
