@@ -672,6 +672,7 @@ func copyRunningMap(m map[string]*RunEntry) map[string]*RunEntry {
 		e.WorkerCancel = nil // not safe to share across goroutines
 		e.run = nil          // the worker's handle stays with the live entry
 		e.Issue = copyDomainIssue(v.Issue)
+		e.Steers = slices.Clone(v.Steers) // #186
 		cp[k] = &e
 	}
 	return cp

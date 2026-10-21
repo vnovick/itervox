@@ -139,6 +139,8 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	h.rules = o.resolveRunRules(entry.ProfileName, entry.Backend)
 	used := h.rules.Record()
 	entry.RulesHash, entry.RuleIDs = used.Hash, used.IDs
+	// #186: the prompt version this run is dispatched with.
+	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules).digest()
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}

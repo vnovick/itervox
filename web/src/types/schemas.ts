@@ -142,6 +142,22 @@ export const RunningRowSchema = z.object({
   ruleIds: z.array(z.string()).optional(),
 });
 
+// #186 — per-component digests of a run's prompt version (hashes only).
+export const PromptPartsSchema = z.object({
+  soul: z.string().optional(),
+  instructions: z.string().optional(),
+  rules: z.string().optional(),
+  template: z.string().optional(),
+});
+
+// #186 — one operator message delivered to a run. Unknown delivery values
+// fall back to 'resume' (the path every backend supports).
+export const RunSteerSchema = z.object({
+  text: z.string(),
+  at: z.string(),
+  delivery: tolerantEnum('history.steers.delivery', ['live', 'resume'], 'resume'),
+});
+
 export const HistoryRowSchema = z.object({
   identifier: z.string(),
   title: z.string().optional(),
@@ -170,6 +186,16 @@ export const HistoryRowSchema = z.object({
   // #157 — the rule set the run used; absent when no rule applied.
   rulesHash: z.string().optional(),
   ruleIds: z.array(z.string()).optional(),
+  // #186 — run provenance; all absent on rows recorded before it existed.
+  profileName: z.string().optional(),
+  runId: z.string().optional(),
+  // Prompt version: 64-hex SHA-256 of SOUL.md + INSTRUCTIONS.md + rules +
+  // template. Opaque; the dashboard shows the first 12 characters.
+  promptDigest: z.string().optional(),
+  promptParts: PromptPartsSchema.optional(),
+  // Operator messages delivered to the run (redacted, bounded).
+  steers: z.array(RunSteerSchema).optional(),
+  steersDropped: z.number().optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -1009,6 +1035,8 @@ export type SSHHostInfo = z.infer<typeof SSHHostInfoSchema>;
 export type CommentRow = z.infer<typeof CommentRowSchema>;
 export type RunningRow = z.infer<typeof RunningRowSchema>;
 export type HistoryRow = z.infer<typeof HistoryRowSchema>;
+export type RunSteer = z.infer<typeof RunSteerSchema>;
+export type PromptParts = z.infer<typeof PromptPartsSchema>;
 export type RetryRow = z.infer<typeof RetryRowSchema>;
 export type Counts = z.infer<typeof CountsSchema>;
 export type RateLimitInfo = z.infer<typeof RateLimitInfoSchema>;

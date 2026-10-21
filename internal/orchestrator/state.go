@@ -361,6 +361,19 @@ type RunEntry struct {
 	// applied. RuleIDs is shared with snapshot copies: it is immutable.
 	RulesHash string
 	RuleIDs   []string
+	// PromptDigest / PromptParts identify the prompt version the run was
+	// dispatched with (#186): SHA-256 over SOUL.md, INSTRUCTIONS.md, the
+	// resolved rules and the prompt template (see run_provenance.go). Set
+	// once at dispatch (startRun) and never mutated. Hashes only.
+	PromptDigest string
+	PromptParts  PromptParts
+	// Steers are the operator messages delivered to this run (#186), redacted
+	// and bounded (maxRunSteers, maxRunSteerBytes); SteersDropped counts the
+	// older ones the bound let go. Appended by the event loop on
+	// EventSessionMessageDelivered (replacing the slice); snapshots deep-copy
+	// it (copyRunningMap).
+	Steers        []RunSteer
+	SteersDropped int
 	// totalsInput/totalsOutput/totalsCounted record what this run has
 	// already contributed to State.Totals (CORE-091). Unexported: event-loop
 	// bookkeeping, not part of the snapshot.
@@ -403,6 +416,19 @@ type CompletedRun struct {
 	// no rule applied.
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIDs,omitempty"`
+	// RunID is the run's ID (#125, #186); empty for entries written before
+	// it was recorded.
+	RunID string `json:"runID,omitempty"`
+	// PromptDigest identifies the prompt version the run was dispatched with
+	// (#186): 64 hex chars of SHA-256 over SOUL.md + INSTRUCTIONS.md + the
+	// resolved rules + the prompt template. PromptParts are the per-component
+	// digests. Hashes only: history never stores prompt text.
+	PromptDigest string      `json:"promptDigest,omitempty"`
+	PromptParts  PromptParts `json:"promptParts,omitzero"`
+	// Steers are the operator messages delivered to the run (#186), redacted
+	// and bounded; SteersDropped counts older ones the bound let go.
+	Steers        []RunSteer `json:"steers,omitempty"`
+	SteersDropped int        `json:"steersDropped,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.

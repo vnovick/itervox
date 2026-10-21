@@ -97,6 +97,9 @@ type HistoryRow struct {
 	SessionID    string    `json:"sessionId,omitempty"`
 	AppSessionID string    `json:"appSessionId,omitempty"`
 	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer" | "automation"
+	// ProfileName is the profile the run used (#186: prompt versions are
+	// per profile).
+	ProfileName string `json:"profileName,omitempty"`
 	// AutomationID / TriggerType propagate the automation context onto
 	// completed runs so that the Activity tab and Timeline filter chip can
 	// scope history per-automation. Empty for manual runs.
@@ -107,6 +110,36 @@ type HistoryRow struct {
 	// RulesHash / RuleIDs name the rule set the run used (#157).
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// RunID names the run (#125, #186); empty for runs recorded before it was kept.
+	RunID string `json:"runId,omitempty"`
+	// PromptDigest identifies the prompt version the run was dispatched with
+	// (#186): 64 hex chars of SHA-256 over SOUL.md + INSTRUCTIONS.md + the
+	// resolved rules + the prompt template. PromptParts are per-component
+	// digests. Hashes only, never prompt text.
+	PromptDigest string              `json:"promptDigest,omitempty"`
+	PromptParts  *HistoryPromptParts `json:"promptParts,omitempty"`
+	// Steers are the operator messages delivered to the run (#186), redacted
+	// and bounded; SteersDropped counts the older ones not kept.
+	Steers        []HistorySteer `json:"steers,omitempty"`
+	SteersDropped int            `json:"steersDropped,omitempty"`
+}
+
+// HistoryPromptParts are the per-component digests of a run's prompt
+// version (#186): truncated SHA-256 hex, "" for a component the run lacked.
+type HistoryPromptParts struct {
+	Soul         string `json:"soul,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	Rules        string `json:"rules,omitempty"`
+	Template     string `json:"template,omitempty"`
+}
+
+// HistorySteer is one operator message delivered to a run (#178, #186).
+type HistorySteer struct {
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+	// Delivery is "live" (written into the running turn) or "resume" (the
+	// prompt of the next resumed turn).
+	Delivery string `json:"delivery"`
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -1600,6 +1633,8 @@ func (s *Server) routes() {
 			}
 
 			r.Get("/state", s.handleState)
+			r.Get("/history", s.handleHistory)                               // #186
+			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)
