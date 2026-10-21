@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -37,6 +38,12 @@ type ClientConfig struct {
 	Team string
 	// Labels narrows the scope to issues carrying any of them (#182).
 	Labels []string
+	// Filter is tracker.filter (#198): when set it replaces the legacy
+	// project/assignee/team/labels scope (config validation refuses both).
+	Filter issuefilter.Filter
+	// WorkingState is tracker.working_state: a filter's states condition
+	// always admits it, so a dispatched issue stays in scope (#198).
+	WorkingState string
 }
 
 // linearProject is the internal representation of a Linear project.
@@ -78,6 +85,10 @@ type Client struct {
 	// nil means WORKFLOW.md's.
 	assigneeOverride *string
 	labelsOverride   *[]string
+	// filterOverride is the runtime tracker filter (#198), guarded by
+	// projectFilterMu: nil means WORKFLOW.md's (tracker.filter, else the
+	// legacy keys); empty means the legacy scope.
+	filterOverride *issuefilter.Filter
 
 	// assigneeMu guards users, the assignee specs resolved so far (#182).
 	assigneeMu sync.Mutex
@@ -315,20 +326,18 @@ func (c *Client) fetchWithProjectFilter(ctx context.Context, states []string) ([
 		"stateNames":    states,
 		"relationFirst": pageSize,
 	}
+	// #182/#198: a filter (or a legacy scope narrowed by an assignee or
+	// labels) is one request over the compiled IssueFilter.
+	groups, compiled, err := c.compiledScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if compiled {
+		return c.fetchByStatesPage(ctx, filteredPollQuery("ItervoxLinearPollScoped"),
+			map[string]any{"filter": pollFilter(states, groups), "relationFirst": pageSize}, nil, nil)
+	}
 	var buckets []func() ([]domain.Issue, error)
 	switch {
-	case narrowed(sc):
-		// #182: the project filter ANDed with the assignee and labels.
-		bs, err := c.scopeBuckets(ctx, sc)
-		if err != nil {
-			return nil, err
-		}
-		for _, b := range bs {
-			vars := maps.Clone(b.vars)
-			maps.Copy(vars, base)
-			query := candidateIssuesQuery("ItervoxLinearPollScoped", b.params, b.filter)
-			buckets = append(buckets, func() ([]domain.Issue, error) { return c.fetchByStatesPage(ctx, query, vars, nil, nil) })
-		}
 	case len(sc.Projects) == 0:
 		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, base, nil, nil)
 	default:
@@ -1387,8 +1396,9 @@ var _ tracker.IdempotentCommenter = (*Client)(nil)
 // covers issues without one, and the assignee and labels (#182) narrow it.
 func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	valid, _ := partitionValidIssueRefs(issueIDs)
-	inScope, err := c.scopeCheck(ctx)
-	if err != nil {
+	// #198: the effective filter, evaluated in memory on each issue read
+	// with its filter fields — the same predicate the list reads compile.
+	if err := c.ResolveFilter(ctx, c.Filter()); err != nil {
 		return nil, fmt.Errorf("linear_fetch_in_scope: %w", err)
 	}
 	var out []domain.Issue
@@ -1417,11 +1427,10 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 			if !ok {
 				continue
 			}
-			if !inScope(node) {
-				continue
-			}
 			if iss := normalizeIssue(node); iss != nil {
-				out = append(out, *iss)
+				if in, _ := c.MatchesFilter(*iss); in {
+					out = append(out, *iss)
+				}
 			}
 		}
 	}

@@ -487,6 +487,9 @@ func buildAutomationFilterLines(filter AutomationFilterEntry) []string {
 	if len(filter.LabelsAny) > 0 {
 		lines = append(lines, "      labels_any: "+marshalStringSliceInline(filter.LabelsAny))
 	}
+	if len(filter.Groups) > 0 {
+		lines = append(lines, "      groups: "+filter.Groups.YAMLFlow()) // #198
+	}
 	if filter.IdentifierRegex != "" {
 		lines = append(lines, "      identifier_regex: "+strconv.Quote(filter.IdentifierRegex))
 	}

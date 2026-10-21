@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workflow"
 )
@@ -41,6 +42,11 @@ func (m *linearProjectManager) SetProjectFilter(slugs []string) error {
 // the tracker client keeps its current filter, so memory never disagrees with
 // WORKFLOW.md.
 func saveProjectFilter(pm tracker.ProjectManager, path string, gen uint64, slugs []string, who string) error {
+	// #198: project_slug and tracker.filter cannot both be set.
+	if fm, ok := pm.(tracker.FilterManager); ok && fm.FilterMode() {
+		slog.Warn(who + ": project filter not saved; tracker.filter is in effect")
+		return server.ErrTrackerFilterInEffect
+	}
 	if path != "" {
 		unlock, err := beginSettingsSave(path, gen)
 		if err != nil {

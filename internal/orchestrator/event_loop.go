@@ -662,6 +662,16 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			state = CancelRetry(state, issueID)
 			continue
 		}
+		// #198: the by-ID read is unscoped. An issue that left the tracker
+		// filter while its retry waited (a label added that the filter
+		// excludes, reassigned, moved) is released, by the same predicate
+		// the scoped reads compile.
+		if leftTrackerScope(o.tracker, refreshed[0]) {
+			slog.Info("retry: issue no longer matches the tracker filter, releasing claim",
+				"issue_id", issueID, "identifier", entry.Identifier)
+			state = CancelRetry(state, issueID)
+			continue
+		}
 		// #116: the read above is the claim check's; pending local writes a
 		// person's later change superseded are dropped.
 		// A reviewer's retry is admitted where a reviewer is (#116): its
