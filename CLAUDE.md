@@ -199,6 +199,11 @@ only the event loop mutates them.
   pending, dispatch and retries hold the issue (`state_move_pending`). A
   person's move (dashboard/tracker) is never deferred and still stops the
   worker.
+- `LessonCorrections` / `LessonProposals` (#203) are the lesson detector's
+  per-issue ledgers: the human corrections since the issue's last successful
+  worker run (bounded, redacted) and the rate-limit stamps. Event-loop state,
+  session-scoped, not persisted; a proposal that wrote nothing new gives its
+  stamp back through `EventLessonDrafted`.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
@@ -375,6 +380,21 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   by `memoryWg`. Every save redacts secrets (`logging.RedactString`) and
   rejects entries over the size caps; writes go through `atomicfs` under the
   package's process-wide lock.
+- **Lessons (#203)** are `lesson` memory entries Itervox proposes itself
+  (`status: proposed`, never used until approved). Detection is event-loop
+  only: `EventProvideInput` / a tracker reply (`applyReplyChecks`) →
+  `observeInputReply`, `EventSessionMessageDelivered` → `observeSteers`, and a
+  worker's `TerminalSucceeded` after a failed/stalled run → `observeRunSucceeded`.
+  The loop records corrections in `State.LessonCorrections`, applies the
+  per-issue rate limit in `State.LessonProposals`, resolves the drafting
+  profile (`lessonDraftPlan`, cfgMu read on the loop) and hands drafting plus
+  the proposal write to a `goSafe` goroutine joined by `lessonWg`, which
+  reports back with `EventLessonDrafted`. Drafting goes through `o.runner`
+  with the sandbox mode, an empty temp dir and a hard token/time budget,
+  falling back to `memory.TemplateDraft`. Tests must use fake runners
+  (`gateRunner`, `blockedRunner`); never a real CLI. `memory.lessons.*` is
+  load-time config, NOT in the cfgMu list. Rejections live in
+  `.itervox/lessons-rejected.json` (normalized words + fingerprint).
 - **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
   root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
   Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and

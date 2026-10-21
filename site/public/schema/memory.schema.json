@@ -60,7 +60,7 @@
         "status": {
           "type": "string",
           "enum": ["active", "proposed", "archived"],
-          "description": "Only active entries are used. proposed: waiting for a human to approve it (lessons). archived: kept, not used."
+          "description": "Only active entries are used. proposed: a lesson waiting for a human to approve it in the Memory page's Lessons tab. archived: kept, not used."
         },
         "source": {
           "type": "object",
@@ -84,6 +84,27 @@
           "type": "integer",
           "minimum": 0,
           "description": "Maintained by the daemon: how many runs had the entry in their prompt."
+        },
+        "lesson": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trigger"],
+          "description": "A lesson's review record, written by the daemon when it proposes a lesson: what it applies to, what went wrong and what worked, confidence and how often it was seen.",
+          "properties": {
+            "trigger": {
+              "type": "string",
+              "enum": ["input_reply", "steering", "failed_then_succeeded"],
+              "description": "What made Itervox propose it: a reply to an input-required question, a steering message, or a failed run followed by a successful one."
+            },
+            "situation": { "type": "string", "maxLength": 2000, "description": "When the lesson applies." },
+            "wentWrong": { "type": "string", "maxLength": 2000, "description": "What the agent did, or what failed." },
+            "worked": { "type": "string", "maxLength": 2000, "description": "What fixed it." },
+            "correction": { "type": "string", "maxLength": 2000, "description": "The human's words the lesson came from (redacted). Proposals are deduplicated on it." },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "How sure Itervox is; raised each time the same lesson is seen again." },
+            "evidence": { "type": "integer", "minimum": 0, "description": "How many times the lesson was seen." },
+            "draftedBy": { "type": "string", "maxLength": 512, "description": "template, or profile:<name> for a lesson drafted by an agent profile." },
+            "approvedAt": { "type": "string", "format": "date-time", "description": "When a human approved it (or it was auto-approved)." }
+          }
         }
       }
     },

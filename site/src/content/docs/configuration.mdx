@@ -1105,6 +1105,32 @@ memory:
   token_budget: 1000
 ```
 
+### memory.lessons
+
+Lessons Itervox proposes itself (see the [Memory guide](/guides/memory/#lessons)): from a human's correction in an input-required reply or a steering message, and from a run that failed or stalled followed by a successful run on the same issue after a change. A proposal is a `lesson` entry with `status: proposed`; no run uses it until someone approves it. Read at startup. Lessons need `memory.enabled`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Propose lessons. |
+| `profile` | string | the reviewer profile | The agent profile whose backend drafts a lesson's wording, in one short call with no tools in an empty temporary directory (sandbox permission mode). Empty: `agent.reviewer_profile` when one is set. `template`, or no profile: every lesson is filled in from a template ("When …, do … Instead of: …") from the correction text, with no agent call. A failed, over-budget or unusable call also falls back to the template. |
+| `scope` | `private` \| `project` | `private` | The memory file proposals are written to. `private` falls back to the project file when private memory is off. |
+| `auto_approve` | bool or map | `false` | Approve proposals at once instead of queueing them. `true` covers both scopes; a map sets them one by one (`auto_approve: {private: true, project: false}`); it applies to the scope a proposal lands in. |
+| `max_per_issue` | int | `3` | The most lessons one issue may propose within `rate_window_hours`. A proposal that only bumped an existing lesson, or that was suppressed as rejected, does not count. |
+| `rate_window_hours` | int | `24` | The per-issue rate-limit window. |
+| `draft_token_budget` | int | `6000` | The most tokens (input plus output, as the agent reports them) the drafting call may use; past it the call is stopped and the template is used. |
+| `draft_timeout_ms` | int | `60000` | The drafting call's time limit; past it the template is used. |
+| `stale_after_runs` | int | `20` | An approved lesson that none of the last this-many runs (since its approval) used is listed under **Not helping**, as is one whose recent runs mostly failed. |
+
+Zero or negative limits fall back to their defaults.
+
+```yaml
+memory:
+  lessons:
+    profile: template      # never call an agent to draft
+    auto_approve:
+      private: true        # your own lessons apply at once
+```
+
 ---
 
 ## server
@@ -1496,6 +1522,7 @@ Memory is what Itervox carries from one run to the next: a correction you made o
 | `source` | no | Provenance: `kind` (`manual`, `lesson`, …), `issue`, `runIds`, `links` (PRs, comments). |
 | `created`, `updated` | no | Set by the daemon. |
 | `lastUsed`, `useCount` | no | Maintained by the daemon: each run whose prompt carried the entry bumps them. |
+| `lesson` | no | A lesson's review record, written when Itervox proposes it (#203): `trigger` (`input_reply`, `steering` or `failed_then_succeeded`), `situation`, `wentWrong`, `worked`, `correction` (the human's words, redacted), `confidence` (0 to 1), `evidence` (times seen), `draftedBy` (`template` or `profile:<name>`) and `approvedAt`. |
 
 Lists hold at most 32 items of at most 512 bytes; a file holds at most 1000 entries. The JSON Schema is published at [`https://itervox.dev/schema/memory.schema.json`](https://itervox.dev/schema/memory.schema.json) (`site/public/schema/memory.schema.json`).
 

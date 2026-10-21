@@ -25,6 +25,10 @@ import (
 type memoryAdapter struct {
 	cfg     *config.Config
 	history func() []orchestrator.CompletedRun
+	// reviewerProfile reads agent.reviewer_profile (cfgMu-guarded, so
+	// through the orchestrator's accessor): the default lesson drafter
+	// (#203). Nil in tests.
+	reviewerProfile func() string
 }
 
 // memoryRunRefsPerEntry bounds the runs listed per entry.
@@ -88,6 +92,7 @@ func (a *memoryAdapter) ListMemory() server.MemoryView {
 			out.Entries = append(out.Entries, a.view(e, refs))
 		}
 	}
+	a.annotateLessons(&out) // #203
 	return out
 }
 

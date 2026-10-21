@@ -197,6 +197,7 @@ func TestPublishedMemorySchemaMatchesParser(t *testing.T) {
 	assert.ElementsMatch(t, toStrings(Scopes), p["scope"].Enum)
 	assert.Equal(t, MaxTextBytes, p["text"].MaxLength)
 	assert.ElementsMatch(t, []string{"kind", "issue", "runIds", "links"}, keys(p["source"].Properties))
+	assert.ElementsMatch(t, lessonKeys, keys(p["lesson"].Properties), "#203: the lesson record")
 	assert.Equal(t, MaxListItems, schema.Defs.Names.MaxItems)
 	assert.Equal(t, MaxItemBytes, schema.Defs.Names.Items.MaxLength)
 }

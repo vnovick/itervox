@@ -364,6 +364,12 @@ type Orchestrator struct {
 	// EventMemoryUsed hands the lastUsed/useCount rewrite of the memory
 	// files to one, and Run waits for them before returning.
 	memoryWg sync.WaitGroup
+	// lessonWg tracks the lesson-drafting goroutines (#203): detection on
+	// the event loop hands drafting and the proposal write to a goroutine
+	// that reports back with EventLessonDrafted. Run joins it after the
+	// loop exits (the drafting call's context is Run's, so it ends
+	// promptly).
+	lessonWg sync.WaitGroup
 
 	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
 	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.

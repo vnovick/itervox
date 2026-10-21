@@ -149,6 +149,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
 	o.memoryWg.Wait() // #202: memory usage writes
+	o.lessonWg.Wait() // #203: lesson drafting
 	o.depsRefreshWg.Wait()
 	o.trackerReadsWg.Wait() // #187: off-loop polls and claim reads (ctx cancelled)
 	o.extSessionsWg.Wait()
@@ -1116,6 +1117,7 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		}
 		delete(state.InputRequiredIssues, identifier)
 		state.PendingInputResumes[identifier] = buildPendingInputResumeEntry(entry, replyComment.Body)
+		o.observeInputReply(&state, entry, replyComment.Body) // #203
 	}
 	return state
 }
@@ -1855,6 +1857,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
+		o.observeInputReply(&state, entry, ev.Message) // #203
 		// Post the user's reply so the conversation is visible in the
 		// tracker. Enqueued after the question (see postInputRequiredComment).
 		// A failed reply enqueue only loses the tracker mirror: the resume
@@ -2030,9 +2033,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		now := time.Now()
 		applySessionDelivery(&state, ev.SessionDelivery, now)
 		recordRunSteers(state, ev.RunID, ev.SessionDelivery, now) // #186
+		o.observeSteers(&state, ev.RunID, ev.SessionDelivery)     // #203
 
 	case EventMemoryUsed: // #202
 		o.applyMemoryUsed(ev)
+
+	case EventLessonDrafted: // #203
+		o.applyLessonDrafted(&state, ev)
 
 	case EventTrackerPolled: // #187
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
@@ -2300,6 +2307,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				o.saveAutoSwitchedToDisk(&state)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
+			o.observeRunSucceeded(&state, liveEntry, issue) // #203
 			// Auto-clear workspace if configured.
 			//
 			// New semantics (v0.2.0): clear only when the issue reaches a

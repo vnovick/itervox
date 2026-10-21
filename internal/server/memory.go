@@ -31,6 +31,12 @@ type MemoryClient interface {
 	// PromoteMemory moves a private entry into the project's shared file and
 	// returns the file's git diff.
 	PromoteMemory(ctx context.Context, id string) (MemoryPromoteResult, error)
+	// ApproveLesson makes a proposed lesson active in the chosen scope,
+	// with the reviewer's edited text when given (#203).
+	ApproveLesson(id string, opt memory.ApproveOptions) (MemoryEntryView, error)
+	// RejectLesson removes a proposed lesson and remembers it so the same
+	// lesson is not proposed again (#203).
+	RejectLesson(id string) (MemoryEntryView, error)
 }
 
 // MemoryView is GET /api/v1/memory.
@@ -44,6 +50,27 @@ type MemoryView struct {
 	Files             []MemoryFileView `json:"files"`
 	// Entries are both files' entries, private first, in file order.
 	Entries []MemoryEntryView `json:"entries"`
+	// Lessons is the lessons configuration the Lessons tab explains
+	// (#203).
+	Lessons MemoryLessonsView `json:"lessons"`
+}
+
+// MemoryLessonsView is memory.lessons as the Lessons tab shows it (#203).
+type MemoryLessonsView struct {
+	// Enabled: lessons are proposed (memory.enabled and
+	// memory.lessons.enabled).
+	Enabled bool `json:"enabled"`
+	// Drafter is "template" or "profile:<name>": what drafts new lessons.
+	Drafter string `json:"drafter"`
+	// Scope is the file new proposals go to.
+	Scope              memory.Scope `json:"scope"`
+	AutoApprovePrivate bool         `json:"autoApprovePrivate"`
+	AutoApproveProject bool         `json:"autoApproveProject"`
+	MaxPerIssue        int          `json:"maxPerIssue"`
+	RateWindowHours    int          `json:"rateWindowHours"`
+	StaleAfterRuns     int          `json:"staleAfterRuns"`
+	// Rejected is how many rejections are remembered.
+	Rejected int `json:"rejected"`
 }
 
 // MemoryFileView is one memory file.
@@ -64,6 +91,12 @@ type MemoryEntryView struct {
 	Path string `json:"path"`
 	// Runs are the newest runs in history whose prompt carried the entry.
 	Runs []MemoryRunRef `json:"runs"`
+	// NotHelping flags an approved lesson that is not helping (#203):
+	// "unused" (none of the last memory.lessons.stale_after_runs runs used
+	// it) or "failing" (most runs that used it failed); NotHelpingReason
+	// says it in words. Empty otherwise.
+	NotHelping       memory.LessonHealth `json:"notHelping,omitempty"`
+	NotHelpingReason string              `json:"notHelpingReason,omitempty"`
 }
 
 // MemoryRunRef is a run that used an entry.
@@ -135,6 +168,7 @@ func (s *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, err)
 		return
 	}
+	s.Notify() // a status change moves the nav's lesson count
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -152,6 +186,7 @@ func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, err)
 		return
 	}
+	s.Notify() // a status change moves the nav's lesson count
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -164,6 +199,7 @@ func (s *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, err)
 		return
 	}
+	s.Notify() // a status change moves the nav's lesson count
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -194,5 +230,39 @@ func (s *Server) handlePromoteMemory(w http.ResponseWriter, r *http.Request) {
 		writeMemoryError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleApproveLesson is POST /api/v1/memory/{id}/approve (#203). The body
+// is optional: {"scope": "private"|"project", "text": "edited text"}.
+func (s *Server) handleApproveLesson(w http.ResponseWriter, r *http.Request) {
+	if !s.memoryReady(w) {
+		return
+	}
+	var opt memory.ApproveOptions
+	if err := decodeJSONBody(w, r, &opt); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_body", "invalid JSON body")
+		return
+	}
+	out, err := s.memory.ApproveLesson(chi.URLParam(r, "id"), opt)
+	if err != nil {
+		writeMemoryError(w, err)
+		return
+	}
+	s.Notify() // the nav's lesson count
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleRejectLesson is POST /api/v1/memory/{id}/reject (#203).
+func (s *Server) handleRejectLesson(w http.ResponseWriter, r *http.Request) {
+	if !s.memoryReady(w) {
+		return
+	}
+	out, err := s.memory.RejectLesson(chi.URLParam(r, "id"))
+	if err != nil {
+		writeMemoryError(w, err)
+		return
+	}
+	s.Notify() // the nav's lesson count
 	writeJSON(w, http.StatusOK, out)
 }

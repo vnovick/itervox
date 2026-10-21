@@ -968,6 +968,8 @@ export const StateSnapshotSchema = z.object({
   // optional/omitempty: absent on daemons predating CORE-053/055.
   backendHealth: z.array(BackendHealthRowSchema).optional(),
   autoSwitches: z.array(AutoSwitchRowSchema).optional(),
+  // #203 — proposed lessons waiting for review (the Memory nav count).
+  proposedLessons: z.number().optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -1565,6 +1567,21 @@ export const MemoryRunRefSchema = z.object({
   finishedAt: z.string(),
 });
 
+// #203 — a lesson's review record (memory.Lesson).
+export const LESSON_TRIGGERS = ['input_reply', 'steering', 'failed_then_succeeded'] as const;
+
+export const MemoryLessonSchema = z.object({
+  trigger: tolerantEnum('memory.lesson.trigger', LESSON_TRIGGERS, 'input_reply'),
+  situation: z.string().optional(),
+  wentWrong: z.string().optional(),
+  worked: z.string().optional(),
+  correction: z.string().optional(),
+  confidence: z.number().optional(),
+  evidence: z.number().optional(),
+  draftedBy: z.string().optional(),
+  approvedAt: z.string().optional(),
+});
+
 export const MemoryEntrySchema = z.object({
   id: z.string(),
   type: tolerantEnum('memory.type', MEMORY_TYPES, 'fact'),
@@ -1584,6 +1601,10 @@ export const MemoryEntrySchema = z.object({
     .array(MemoryRunRefSchema)
     .nullish()
     .transform((v) => v ?? []),
+  // #203 — lessons: the review record and the "not helping" flag.
+  lesson: MemoryLessonSchema.optional(),
+  notHelping: z.enum(['unused', 'failing']).optional(),
+  notHelpingReason: z.string().optional(),
 });
 
 export const MemoryFileSchema = z.object({
@@ -1594,6 +1615,19 @@ export const MemoryFileSchema = z.object({
   error: z.string().optional(),
 });
 
+// #203 — memory.lessons as the Lessons tab explains it.
+export const MemoryLessonsViewSchema = z.object({
+  enabled: z.boolean(),
+  drafter: z.string(),
+  scope: tolerantEnum('memory.lessons.scope', MEMORY_SCOPES, 'private'),
+  autoApprovePrivate: z.boolean(),
+  autoApproveProject: z.boolean(),
+  maxPerIssue: z.number(),
+  rateWindowHours: z.number(),
+  staleAfterRuns: z.number(),
+  rejected: z.number(),
+});
+
 export const MemoryViewSchema = z.object({
   enabled: z.boolean(),
   tokenBudget: z.number(),
@@ -1601,6 +1635,7 @@ export const MemoryViewSchema = z.object({
   schemaUrl: z.string(),
   files: z.array(MemoryFileSchema),
   entries: z.array(MemoryEntrySchema),
+  lessons: MemoryLessonsViewSchema.optional(),
 });
 
 export const MemoryPromoteResultSchema = z.object({
@@ -1616,6 +1651,7 @@ export type MemoryScope = (typeof MEMORY_SCOPES)[number];
 export type MemoryEntry = z.infer<typeof MemoryEntrySchema>;
 export type MemoryView = z.infer<typeof MemoryViewSchema>;
 export type MemoryPromoteResult = z.infer<typeof MemoryPromoteResultSchema>;
+export type MemoryLessonsView = z.infer<typeof MemoryLessonsViewSchema>;
 
 // ─── Settings layers and schema (#158) ───────────────────────────────────────
 // Mirrors internal/server/settings_layers.go and the JSON Schema published at
