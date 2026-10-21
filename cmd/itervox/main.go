@@ -118,49 +118,21 @@ Commands:
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --replace  (set) replace a value that is already set
 
+  config  Show the effective settings and the layer each came from
+          (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
+          WORKFLOW.md), or edit a settings file with its comments kept
+             show       every value with its layer (--json for JSON)
+             set KEY VALUE  set agent.*, polling.*, server.* or
+                        workspace.* in .itervox/settings.jsonc (--user:
+                        ~/.itervox/settings.jsonc)
+             unset KEY  remove a key from that file
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+
   --version  Print version information
 
 Run mode (default when no command given):
 `)
 	flag.PrintDefaults()
-}
-
-// defaultLogsDir returns a per-project logs directory under ~/.itervox/logs/
-// derived from the tracker kind and project slug in the WORKFLOW.md at path.
-// Falls back to ~/.itervox/logs if the config can't be read or has no slug.
-func defaultLogsDir(workflowPath string) string {
-	base := filepath.Join("~", ".itervox", "logs")
-	if home, err := os.UserHomeDir(); err == nil {
-		base = filepath.Join(home, ".itervox", "logs")
-	}
-	cfg, err := config.Load(workflowPath)
-	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ProjectSlug == "" {
-		// No slug to namespace by — fall back to a directory derived from the
-		// workflow's own path rather than the shared base.
-		//
-		// The shared base was a cross-project state collision: this directory
-		// holds automation_queue.json, which carries the DEPENDENCY AUDIT, so
-		// every project without a project_slug read and wrote one another's
-		// audit rows. Observed live — a Linear project inherited ten
-		// `demo-id-*` rows written by an unrelated `kind: memory` run, then
-		// asked Linear about issues that had never existed there on every
-		// refresh cycle.
-		return filepath.Join(base, "workflow", config.WorkspaceProjectKey(workflowPath))
-	}
-	// Encode the slug so it is safe as a directory name component, and append
-	// the workflow key.
-	//
-	// The slug ALONE is not a project identity: two checkouts of one repo (a
-	// git worktree dev setup), or several repos driven by one Linear project,
-	// share a slug and would share this directory — which holds
-	// automation_queue.json and therefore the dependency audit, plus
-	// history.json, paused.json and input_required.json. The PID guard does
-	// not stop it: it keys on the workflow's directory, so both checkouts pass.
-	//
-	// The slug stays in the path so the directory remains recognisable to a
-	// human browsing ~/.itervox/logs.
-	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
-	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+config.WorkspaceProjectKey(workflowPath))
 }
 
 func configuredBackend(command, explicit string) string {
@@ -417,6 +389,9 @@ func main() {
 			return
 		case "secret":
 			runSecret(os.Args[2:])
+			return
+		case "config":
+			runConfig(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
@@ -1357,8 +1332,8 @@ func buildTUIConfig(
 		}
 		defer unlock()
 		next := max(1, min(orch.MaxWorkers()+delta, 50))
-		if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", next); err != nil {
-			slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md; worker count unchanged", "error", err)
+		if err := persistMaxWorkers(workflowPath, next); err != nil {
+			slog.Warn("failed to persist agent.max_concurrent_agents; worker count unchanged", "error", err)
 			return
 		}
 		orch.SetMaxWorkers(next)

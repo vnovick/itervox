@@ -11,6 +11,8 @@ Itervox is configured entirely through a single `WORKFLOW.md` file in your proje
 
 Run `itervox init` in your project directory to generate a starter file for Linear or GitHub.
 
+`agent`, `polling`, `workspace` and `server` settings can also come from [settings files](#settings-files-jsonc-layers) shared by every project or kept per project; `WORKFLOW.md` still wins over them.
+
 ---
 
 ## File format
@@ -1107,6 +1109,40 @@ A typical `.itervox/.env` looks like:
 LINEAR_API_KEY=lin_api_xxxxxxxxxxxx
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 ```
+
+## Settings files (JSONC layers)
+
+Settings in the `agent`, `polling`, `workspace` and `server` sections can also live in two JSONC files, so a default you use everywhere is set once:
+
+| Layer | File | Wins over |
+|-------|------|-----------|
+| `default` | built in | — |
+| `user` | `~/.itervox/settings.jsonc` (or the path in `ITERVOX_USER_SETTINGS`; `off` disables it) | defaults |
+| `project` | `.itervox/settings.jsonc` next to `WORKFLOW.md` | user |
+| `workflow` | `WORKFLOW.md` front matter | everything |
+
+The keys are the same as in the front matter. Maps merge key by key (a user file can set `agent.max_turns` while the workflow sets `agent.max_concurrent_agents`); any other value, a list included, is replaced whole by a higher layer. The tracker, hooks, dependencies, automations and the prompt stay in `WORKFLOW.md`: a settings file that sets another section, or does not parse, stops the load with an error naming the file.
+
+```jsonc
+// ~/.itervox/settings.jsonc
+{
+  "agent": {
+    "max_concurrent_agents": 2, // this laptop
+    "max_turns": 40,
+  },
+  "polling": {"interval_ms": 60000},
+}
+```
+
+`itervox init` writes most of these keys into `WORKFLOW.md`, and `WORKFLOW.md` wins; delete a key there to let a settings file decide it.
+
+**Dashboard and TUI saves.** A setting saved from the dashboard or the TUI in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear) is written to `.itervox/settings.jsonc`, which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were — so the saved value is the one the next load uses. If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Tracker states, the failed state, the project filter, dependencies, automations and agent profiles are saved to `WORKFLOW.md` as before.
+
+**See where each value comes from.** `itervox config show` prints every setting Itervox reads, its effective value and its layer (with the file for `user` and `project`), plus `environment` (and the variable) for a server bind set by `ITERVOX_SERVER_HOST`, `ITERVOX_SERVER_PORT` or `PORT`; `--json` for scripts. A key a layer sets that Itervox does not read is listed with a note, and so is a value of the wrong type that was ignored for the default. Secrets such as `tracker.api_key` are shown as `(set, hidden)`, and a password inside a URL as `hidden`.
+
+**Edit a file.** `itervox config set agent.max_turns 40` writes `.itervox/settings.jsonc` (`--user` writes the user file) and `itervox config unset KEY` removes a key. Comments, and every other key, are kept; the file is laid out again on each write. The value is read as JSON (`40`, `true`, `["a","b"]`, `"text"`) or else as text. A value of the wrong type for the key (`agent.max_turns lots`), or a change the workflow then fails to load with, is refused and the file is left as it was. `set` warns when a higher layer also sets the key (so the change has no effect) and when Itervox does not read the key at all (a typo). A running daemon applies a settings-file change the next time it loads `WORKFLOW.md`: restart it, or save `WORKFLOW.md`.
+
+---
 
 ## `.itervox` project files
 

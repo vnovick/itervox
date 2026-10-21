@@ -14,6 +14,7 @@ require (
 	github.com/knz/catwalk v0.1.4
 	github.com/osteele/liquid v1.8.1
 	github.com/stretchr/testify v1.11.1
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
