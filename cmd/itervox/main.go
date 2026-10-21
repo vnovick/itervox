@@ -1136,8 +1136,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
-			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157
-			SettingsLayers:   adapter,                             // #158
+			Rules:            &rulesAdapter{cfg: cfg, orch: orch},                // #157
+			Memory:           &memoryAdapter{cfg: cfg, history: orch.RunHistory}, // #202
+			SettingsLayers:   adapter,                                            // #158
 			DepsAnalyzer:     depsSvc,
 			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
 			// is passed by value rather than via cfgMu-guarded accessors.

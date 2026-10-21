@@ -35,7 +35,9 @@ import (
 // to add, not a second copy of this test.
 func TestEventLoopGoroutinesAreWaitgroupTracked(t *testing.T) {
 	// #187: the off-loop tracker poll and claim reads.
-	files := []string{"event_loop.go", "automation_rate_limited.go", "restack.go", "tracker_poll.go", "claim_async.go"}
+	files := []string{"event_loop.go", "automation_rate_limited.go", "restack.go", "tracker_poll.go", "claim_async.go",
+		// #202: the memory usage writes.
+		"memory.go"}
 
 	knownWGs := map[string]struct{}{
 		"autoClearWg":  {},
@@ -44,6 +46,8 @@ func TestEventLoopGoroutinesAreWaitgroupTracked(t *testing.T) {
 		"prRetargetWg": {},
 		// #187: joined in Run after the loop, like depsRefreshWg.
 		"trackerReadsWg": {},
+		// #202: joined in Run after the loop.
+		"memoryWg": {},
 	}
 
 	var violations []string

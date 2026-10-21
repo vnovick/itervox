@@ -469,6 +469,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	ruleSet := o.runRules(ctx, profileName, backend)
 	runVars["rules"] = ruleSet.Binding()
 	o.reportRuleProblems(ruleSet, issue.Identifier, runLogID)
+	// #202: the memory this run was dispatched with, as a `## Memory` block
+	// after the rules. Its use is reported once, when it first reaches the
+	// agent.
+	memSel := o.runMemory(ctx, profileName, issue, ruleSet)
+	memoryReported := false
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -591,6 +596,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// the profile sections a dispatched worker sees.
 		renderedPrompt += profilePromptTail(profileTailInput{
 			Rules:         ruleSet,
+			Memory:        memSel,
 			Template:      promptTemplate,
 			ProfileName:   profileName,
 			Profiles:      profilesSnap,
@@ -705,6 +711,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
+		}
+		// #202: this turn's prompt carries the run's memory block (a resumed
+		// turn whose prompt is an operator reply does not): report its use
+		// once, through the event loop.
+		if !memoryReported && len(memSel.Entries) > 0 && strings.Contains(renderedPrompt, memSel.Block()) {
+			memoryReported = true
+			o.reportMemoryUsed(ctx, issue.Identifier, memSel.IDs())
 		}
 		turnStart := time.Now()
 		logDir := ""

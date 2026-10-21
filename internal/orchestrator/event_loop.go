@@ -148,6 +148,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.discardWg.Wait()
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
+	o.memoryWg.Wait() // #202: memory usage writes
 	o.depsRefreshWg.Wait()
 	o.trackerReadsWg.Wait() // #187: off-loop polls and claim reads (ctx cancelled)
 	o.extSessionsWg.Wait()
@@ -2030,6 +2031,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		applySessionDelivery(&state, ev.SessionDelivery, now)
 		recordRunSteers(state, ev.RunID, ev.SessionDelivery, now) // #186
 
+	case EventMemoryUsed: // #202
+		o.applyMemoryUsed(ev)
+
 	case EventTrackerPolled: // #187
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
 	case EventClaimChecked: // #187
@@ -2966,6 +2970,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.TriggerType = liveEntry.TriggerType
 		run.RulesHash = liveEntry.RulesHash
 		run.RuleIDs = liveEntry.RuleIDs
+		run.MemoryIDs = liveEntry.MemoryIDs         // #202
 		run.RunID = liveEntry.RunID                 // #186
 		run.PromptDigest = liveEntry.PromptDigest   // #186
 		run.PromptParts = liveEntry.PromptParts     // #186

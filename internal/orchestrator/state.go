@@ -141,6 +141,9 @@ type OrchestratorEvent struct { //nolint:revive
 	SessionMessage *SessionMessage
 	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
 	SessionDelivery *SessionDelivery
+	// MemoryUse reports the memory a run's prompt carried (EventMemoryUsed,
+	// #202).
+	MemoryUse *MemoryUse
 	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
@@ -379,9 +382,14 @@ type RunEntry struct {
 	// applied. RuleIDs is shared with snapshot copies: it is immutable.
 	RulesHash string
 	RuleIDs   []string
+	// MemoryIDs are the ids of the memory entries in this run's `## Memory`
+	// block (#202), in block order. Set once at dispatch (startRun) and
+	// never mutated; shared with snapshot copies like RuleIDs.
+	MemoryIDs []string
 	// PromptDigest / PromptParts identify the prompt version the run was
 	// dispatched with (#186): SHA-256 over SOUL.md, INSTRUCTIONS.md, the
-	// resolved rules and the prompt template (see run_provenance.go). Set
+	// resolved rules, the memory block (#202) and the prompt template (see
+	// run_provenance.go). Set
 	// once at dispatch (startRun) and never mutated. Hashes only.
 	PromptDigest string
 	PromptParts  PromptParts
@@ -437,6 +445,9 @@ type CompletedRun struct {
 	// no rule applied.
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIDs,omitempty"`
+	// MemoryIDs are the memory entries the run's prompt carried (#202);
+	// empty when it had none.
+	MemoryIDs []string `json:"memoryIDs,omitempty"`
 	// RunID is the run's ID (#125, #186); empty for entries written before
 	// it was recorded.
 	RunID string `json:"runID,omitempty"`

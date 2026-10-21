@@ -243,11 +243,21 @@ Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
    edit applies to the next run; the run records the set's hash and ids.
    Omitted when a template prints `{{ rules }}` (or a field of it) itself.
    The dependency analyzer gets the same block at the top of its prompt.
-5. **SOUL.md** — compact identity ("who you are"), appended via
+5. **`## Memory`** block (#202) — managed memory: `internal/memory` reads
+   `~/.itervox/memory.json` (private) and `.itervox/memory.json` (project
+   shared) again at every dispatch (`startRun` → `runHandle.memory`), keeps
+   the active entries whose profiles match, always includes the pinned ones
+   and adds the rest ranked by lexical overlap with the issue within
+   `memory.token_budget` (and what the rules leave of
+   `memory.prompt_share_tokens`). The run records the entry ids
+   (`CompletedRun.MemoryIDs`) and the selection is a prompt-digest
+   component. The worker's `EventMemoryUsed` makes the event loop hand the
+   `lastUsed`/`useCount` rewrite to a goroutine joined by `Run` (`memoryWg`).
+6. **SOUL.md** — compact identity ("who you are"), appended via
    `renderProfilePromptBlocks`.
-6. **INSTRUCTIONS.md** — operational rules, checklists, including the
+7. **INSTRUCTIONS.md** — operational rules, checklists, including the
    "Handoff Protocol" section that points at `run.handoff_path`.
-7. Optional appends: automation instructions, action context, sub-agent
+8. Optional appends: automation instructions, action context, sub-agent
    roster, first-turn PR context.
 
 The concatenated result is passed to the agent subprocess. Inline `prompt:`

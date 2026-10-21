@@ -8,6 +8,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/memory"
 	"github.com/vnovick/itervox/internal/prompt"
 	"github.com/vnovick/itervox/internal/rules"
 )
@@ -16,6 +17,7 @@ import (
 // the caller (runWorker reads cfg under cfgMu before the turn loop).
 type profileTailInput struct {
 	Rules         rules.Set
+	Memory        memory.Selection
 	Template      string // the run's base template (WORKFLOW.md body or reviewer_prompt)
 	ProfileName   string
 	Profiles      map[string]config.AgentProfile
@@ -29,7 +31,8 @@ type profileTailInput struct {
 
 // profilePromptTail renders the profile-dependent tail of a worker prompt,
 // each block preceded by a blank line: the #157 `## Rules` block (unless one
-// of the run's templates places the rules itself), the profile's SOUL.md and
+// of the run's templates places the rules itself), the #202 `## Memory`
+// block, the profile's SOUL.md and
 // INSTRUCTIONS.md, the automation's instructions, the daemon action notice
 // and the sub-agent roster. runWorker and ComposeEvalPrompt (#189) share it,
 // so a live eval judges the prompt a dispatched worker actually receives.
@@ -51,6 +54,8 @@ func profilePromptTail(in profileTailInput) string {
 		ruleTemplates = append(ruleTemplates, in.Automation.Instructions)
 	}
 	add(rulesPromptBlock(in.Rules, ruleTemplates...))
+	// #202: the memory block, after the rules and ahead of SOUL.md.
+	add(memoryPromptBlock(in.Memory))
 
 	// Append the active profile's prompt (role context) whenever a named
 	// profile is selected. The pre-removal `agent_mode == "teams"` gate
@@ -99,13 +104,17 @@ type EvalPromptInput struct {
 	StartedAt time.Time
 }
 
-// EvalPrompt is a composed prompt plus the rule set it embeds.
+// EvalPrompt is a composed prompt plus the rule set and memory it embeds.
 type EvalPrompt struct {
 	Text  string
 	Rules rules.Set
+	// Memory is the memory selection the prompt carries (#202): what a
+	// dispatched run of the profile on the scenario's issue would get.
+	Memory memory.Selection
 	// Digest is the prompt version a dispatched run of the profile under
 	// the same config gets (#186): the same digest function over SOUL.md,
-	// INSTRUCTIONS.md, the resolved rules and the prompt template, so an
+	// INSTRUCTIONS.md, the resolved rules, the memory (#202) and the prompt
+	// template, so an
 	// eval result names the version the Prompt versions section shows (#201).
 	Digest string
 }
@@ -113,7 +122,7 @@ type EvalPrompt struct {
 // ComposeEvalPrompt renders the first-turn prompt a fresh local dispatch of
 // in.ProfileName would receive (#189): the WORKFLOW.md body, the operator
 // reply envelope, the run context, the evidence block, and the shared
-// profilePromptTail (rules, SOUL.md, INSTRUCTIONS.md, automation instructions,
+// profilePromptTail (rules, memory, SOUL.md, INSTRUCTIONS.md, automation instructions,
 // action notice, sub-agent roster). It runs no worker, touches no tracker
 // and needs no Orchestrator; the eval live mode calls it so it judges the
 // prompt the daemon would send rather than a hand-maintained copy.
@@ -143,6 +152,7 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 	runVars := runBindings(runTimestamp, runHandoffRelPath, cfg.Workspace.BaseBranch, evidencePath, nil)
 	ruleSet := resolveRulesFor(cfg, in.ProfileName, backend)
 	runVars["rules"] = ruleSet.Binding()
+	memSel, _ := resolveMemoryFor(cfg, in.ProfileName, in.Issue, ruleSet)
 
 	rendered, err := prompt.RenderWith(cfg.PromptTemplate, in.Issue, nil, runVars)
 	if err != nil {
@@ -160,6 +170,7 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 	actions := filterAllowedActionsForAutomation(profile.AllowedActions, in.Automation)
 	rendered += profilePromptTail(profileTailInput{
 		Rules:         ruleSet,
+		Memory:        memSel,
 		Template:      cfg.PromptTemplate,
 		ProfileName:   in.ProfileName,
 		Profiles:      profiles,
@@ -169,6 +180,6 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 		ActionContext: buildAgentActionContext(actions, strings.TrimSpace(profile.CreateIssueState), moveState, false),
 		Backend:       backend,
 	})
-	digest, _ := profilePromptComponents(cfg, in.ProfileName, false, ruleSet).digest()
-	return EvalPrompt{Text: rendered, Rules: ruleSet, Digest: digest}, nil
+	digest, _ := profilePromptComponents(cfg, in.ProfileName, false, ruleSet, memSel).digest()
+	return EvalPrompt{Text: rendered, Rules: ruleSet, Memory: memSel, Digest: digest}, nil
 }

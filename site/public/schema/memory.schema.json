@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://itervox.dev/schema/memory.schema.json",
+  "title": "Itervox memory file",
+  "description": "Managed memory carried from one Itervox run to the next: ~/.itervox/memory.json (private, never committed) and .itervox/memory.json (project shared, committed). The daemon rewrites these files (it records lastUsed and useCount), so comments are not preserved.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The schema URL, for editor support."
+    },
+    "memories": {
+      "type": "array",
+      "maxItems": 1000,
+      "description": "The entries this file holds.",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "text", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique across both files (case-insensitive). The dashboard generates m-<hex> ids.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["preference", "fact", "decision", "lesson"],
+          "description": "What the entry remembers."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S",
+          "description": "What the agent is told. At most 2000 bytes; secrets are redacted when the daemon saves it."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["private", "project"],
+          "description": "Written by the daemon for reference: the file that holds the entry decides its scope."
+        },
+        "profiles": {
+          "$ref": "#/$defs/names",
+          "description": "Agent profiles the entry is used for (* and ? globs allowed; a run without a named profile is \"default\"). Missing or empty: every run."
+        },
+        "tags": {
+          "$ref": "#/$defs/names",
+          "description": "Free-form tags. A tag that names an issue label or a word of the issue ranks the entry higher."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "A pinned entry is always included in a run's memory block."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "proposed", "archived"],
+          "description": "Only active entries are used. proposed: waiting for a human to approve it (lessons). archived: kept, not used."
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Provenance: where the entry came from and the evidence for it.",
+          "properties": {
+            "kind": { "type": "string", "description": "manual, lesson, import, ..." },
+            "issue": { "type": "string", "description": "The tracker identifier the entry came from." },
+            "runIds": { "$ref": "#/$defs/names", "description": "The runs the entry came from." },
+            "links": { "$ref": "#/$defs/names", "description": "PR, comment or other URLs backing the entry." }
+          }
+        },
+        "created": { "type": "string", "format": "date-time" },
+        "updated": { "type": "string", "format": "date-time" },
+        "lastUsed": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Maintained by the daemon: when a run last had the entry in its prompt."
+        },
+        "useCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maintained by the daemon: how many runs had the entry in their prompt."
+        }
+      }
+    },
+    "names": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S" }
+    }
+  }
+}

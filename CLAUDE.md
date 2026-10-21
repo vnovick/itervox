@@ -250,7 +250,8 @@ only the event loop mutates them.
   `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
 - Run provenance (#186) on `RunEntry` / `CompletedRun`: `PromptDigest` and
   `PromptParts` are computed once in `startRun` (SHA-256 of SOUL.md +
-  INSTRUCTIONS.md + the resolved rules + the prompt template; hashes only,
+  INSTRUCTIONS.md + the resolved rules + the memory selection (#202, only
+  when non-empty) + the prompt template; hashes only,
   never prompt text), and delivered steering messages are appended to the
   running entry's `Steers` by the `EventSessionMessageDelivered` handler
   (redacted, ≤ 20 × 1 KiB; snapshots deep-copy the slice). Both reach
@@ -335,10 +336,16 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   must reference its identity and operating instructions via `soul_file` and
   `instructions_file`, typically `.itervox/agents/<name>/SOUL.md` and
   `.itervox/agents/<name>/INSTRUCTIONS.md`.
-- **Prompt assembly order** at dispatch time: SOUL.md → INSTRUCTIONS.md → the
-  per-issue Liquid prompt template. Concatenated and passed to the agent
-  subprocess via stdin/argv depending on backend. SOUL is the compact identity
-  ("who you are"); INSTRUCTIONS is the operational/behavioural rules.
+- **Prompt assembly order** at dispatch time: the per-issue Liquid prompt
+  template (WORKFLOW.md body, or `agent.reviewer_prompt` for a reviewer) and
+  the daemon's blocks (reply envelope, handoffs, run context), then the
+  profile tail `profilePromptTail` shares with the eval composer: `## Rules`
+  → `## Memory` (#202) → SOUL.md → INSTRUCTIONS.md → automation
+  instructions / action notice / sub-agent roster. Concatenated and passed to
+  the agent subprocess via stdin/argv depending on backend. SOUL is the
+  compact identity ("who you are"); INSTRUCTIONS is the
+  operational/behavioural rules. `TestPromptAssemblyOrderRulesMemorySoul`
+  pins the tail order.
 - **Rules (#157)** go in a `## Rules` block immediately ahead of the profile's
   SOUL.md/INSTRUCTIONS.md blocks (workers, reviewers, automation runs; the
   dependency analyzer gets it at the top of its prompt). `internal/rules` reads
@@ -351,6 +358,23 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   `config.ParseJSONC` / `config.PatchJSONC` / `config.WriteJSONCFile`, the same
   reader/writer as the settings layers. `.itervox/rules.json` is committable;
   `.itervox/rules.local.json` is gitignored by `itervox init` / `init --update`.
+- **Memory (#202)** goes in a `## Memory` block after the rules and ahead of
+  SOUL.md. `internal/memory` reads `~/.itervox/memory.json` (private;
+  `ITERVOX_USER_MEMORY`) and `.itervox/memory.json` (project shared,
+  committable: `!/memory.json` / `!.itervox/memory.json` carve-outs, checked
+  by repo readiness) on every dispatch (`startRun` → `runHandle.memory`; NOT
+  a cfg field). Pinned entries always, the rest ranked lexically against the
+  issue within `memory.token_budget` and what the rules leave of
+  `memory.prompt_share_tokens` (both load-time, NOT in the cfgMu list).
+  Only `active` entries are used (`proposed` lessons wait for approval).
+  The run records `MemoryIDs` on `RunEntry`/`CompletedRun`; the selection is
+  a prompt-digest component (`PromptParts.Memory`, written only when
+  non-empty). Usage (`lastUsed`/`useCount`) is updated ONLY via
+  `EventMemoryUsed` (sent by the worker once the block reaches the agent),
+  whose loop handler hands the file rewrite to a `goSafe` goroutine joined
+  by `memoryWg`. Every save redacts secrets (`logging.RedactString`) and
+  rejects entries over the size caps; writes go through `atomicfs` under the
+  package's process-wide lock.
 - **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
   root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
   Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and
@@ -424,6 +448,10 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator and cmd/itervox)
 
+memory (managed memory files, selection and the `## Memory` block — imports
+        atomicfs, config, logging; imported by orchestrator, server and
+        cmd/itervox)
+
 gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
          & co. and requires a dir; audited by TestNoRawGitExecOutsideGitexec)
 
@@ -437,15 +465,15 @@ agent (claude/codex subprocess runners — imports domain, config, procgroup,
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
-              metrics, outbox, prdetector, procgroup, prompt, rules, tracker,
-              workspace)
+              memory, metrics, outbox, prdetector, procgroup, prompt, rules,
+              tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)
 
 app (EnrichIssue business logic — imports domain, tracker)
 
-server (HTTP API — imports domain, config, rules)
+server (HTTP API — imports domain, config, memory, rules)
 
 statusui (Bubbletea TUI — imports domain)
 
