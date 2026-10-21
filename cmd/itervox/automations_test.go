@@ -485,8 +485,17 @@ func (t *pollTracker) FetchIssuesByStates(context.Context, []string) ([]domain.I
 	return append([]domain.Issue(nil), t.issuesByRun[index]...), nil
 }
 
-func (t *pollTracker) FetchIssueStatesByIDs(context.Context, []string) ([]domain.Issue, error) {
-	return nil, nil
+// FetchIssueStatesByIDs answers from the current poll's details, like
+// FetchIssueDetail: the claim check (#116) reads an issue by ID before an
+// automation run starts.
+func (t *pollTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]domain.Issue, error) {
+	var out []domain.Issue
+	for _, id := range ids {
+		if iss, err := t.FetchIssueDetail(ctx, id); err == nil {
+			out = append(out, *iss)
+		}
+	}
+	return out, nil
 }
 
 func (t *pollTracker) CreateComment(context.Context, string, string) (*domain.Comment, error) {
