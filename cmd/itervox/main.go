@@ -745,9 +745,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
-	// #182: resolve an assignee scope's user once per generation, off the
-	// event loop, before the store and the orchestrator read through it.
-	resolveTrackerAssignee(ctx, cfg, tr)
+	resolveTrackerAssignee(ctx, cfg, tr) // #182: off the event loop, before the store reads through it
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
@@ -1195,8 +1193,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
 	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
-	// #118: the local issue files' sync with Linear or GitHub (tracker.sync).
-	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                // #118: local issue files <-> tracker.sync
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1661,10 +1658,9 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 	switch cfg.Tracker.Kind {
 	case "linear":
 		return linear.NewClient(linear.ClientConfig{
-			APIKey: cfg.Tracker.APIKey,
-			// #182: project, assignee and labels AND.
+			APIKey:         cfg.Tracker.APIKey,
 			ProjectSlug:    cfg.Tracker.ProjectSlug,
-			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee),
+			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee), // #182: project AND assignee AND labels
 			Team:           strings.TrimSpace(cfg.Tracker.Team),
 			Labels:         cfg.Tracker.Labels,
 			ActiveStates:   cfg.Tracker.ActiveStates,
