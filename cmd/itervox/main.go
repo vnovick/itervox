@@ -1227,6 +1227,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	startAutomations(ctx, cfg, tr, orch)
+	// #133: a local issue file edit polls at once.
+	startLocalIssueWatch(ctx, tr, orch.Refresh)
 	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
