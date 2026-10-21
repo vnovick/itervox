@@ -1,0 +1,55 @@
+---
+title: Sessions panel
+description: One tab per running Claude Code or Codex session of a daemon — waiting-for-input sessions first — with the live transcript, a reply box for questions, and a composer to message a running agent.
+sidebar:
+  order: 3
+---
+
+The dashboard's **Sessions** page (`/sessions`, in the sidebar) shows every agent session the daemon is running, one tab per session, with its live transcript and a composer. The [Mac app's Sessions window](/guides/mac-app/#sessions-window) lists the sessions of every daemon you have — local and remote — and opens each one here.
+
+A **session** is an agent CLI session, identified by the CLI's own session ID (Claude Code's session, Codex's thread), not by the issue: a run that resumes the same session keeps its tab. In the first seconds of a run, before the CLI has reported its ID, the session is addressed by itervox's run ID.
+
+## Tabs
+
+Each running itervox agent run has a tab: the issue, its profile, backend and SSH host. Sessions **waiting for input** are badged **needs input** and listed first, then sessions whose reply was received and are resuming, then running sessions, oldest first. The sidebar's Sessions icon shows how many are waiting.
+
+Move between tabs with the arrow keys, **Home** and **End**. The selected tab is in the address (`/sessions?id=<session>`), so a link opens that session directly.
+
+## Transcript
+
+The tab shows the issue's live log — the same stream as the Logs page — following the bottom as the agent works.
+
+## Replying and messaging
+
+What the composer does depends on the session:
+
+- **Waiting for input** — the agent's question, and a reply box. **Reply & Resume Agent** sends your answer through the usual input-required path ([`POST /api/v1/issues/{identifier}/provide-input`](/api-reference/#per-issue-overrides-and-human-input-flow)): the same session resumes with your reply. With `agent.inline_input: true` you reply on the tracker instead.
+- **Running** — a message box. A message is an extra instruction for the agent while it works (“also update the docs”, “stop and summarise”). It is sent with `POST /api/v1/sessions/{id}/message` and reaches the session one of two ways:
+  - **Live** — a local Claude Code worker with [`agent.live_steering: true`](/configuration/#agent): the turn runs with `--input-format stream-json`, and the message is written into the running turn as a user message. The agent reads it while it works.
+  - **On resume** — Codex (`codex exec` takes no input while it runs), SSH workers, and Claude without live steering: the message waits for the current turn to end, then the same session is resumed (`claude --resume <id> -p`, `codex exec resume <id> -`) with your message as the prompt. Messages that arrive during one turn are delivered together.
+
+  Each message shows where it is: **queued**, **delivered live**, **delivered on resume**, or **not delivered** with the reason — the run ended (finished, failed, or stopped to wait for input) before it could be delivered.
+
+The composer says which delivery applies to the selected session.
+
+### Live steering
+
+Live steering is off by default. Turn it on in `WORKFLOW.md`:
+
+```yaml
+agent:
+  live_steering: true
+```
+
+It changes how every local Claude turn is started: the prompt goes to the CLI as the first stream-json message on its stdin, and stdin is closed when the turn's result arrives, so the CLI finishes and exits as before. If `agent.command` (or a profile's command) is a wrapper script that reads its stdin to the end before it starts Claude, keep live steering off: in streaming mode stdin stays open until the turn ends.
+
+## Only sessions itervox started
+
+Itervox writes only to sessions it owns: the stdin of the agent process this daemon started for the run, or the prompt of that run's next resumed turn. It never types into a terminal, never injects keystrokes, and never uses macOS Accessibility or AppleScript automation to drive another app; a static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears. Every session in the panel today is owned by itervox; a session itervox did not start would be shown read-only.
+
+## API
+
+- `GET /api/v1/sessions` — the sessions, in panel order.
+- `POST /api/v1/sessions/{id}/message` — message a running session.
+
+See [API reference → Sessions](/api-reference/#sessions).

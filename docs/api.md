@@ -98,8 +98,8 @@ Profiles opt into these capabilities with `allowed_actions` and
 
 ## Supervisor contract
 
-What a supervisor (the macOS menu-bar app, #128) relies on to find, start and
-talk to daemons. Stable within `schema_version` 1: fields may be added, but a
+What a supervisor (the macOS menu-bar app in `desktop/`, #128) relies on to
+find, start and talk to daemons. Stable within `schema_version` 1: fields may be added, but a
 rename, removal or change of meaning bumps the version.
 
 **Start.** Run the `itervox` binary with `--workflow <path>` and
@@ -572,6 +572,90 @@ outbox when it is enabled. To answer an input-required agent, use
 oversize body returns `400 bad_request` with `field: "body"`.
 
 ---
+
+## Sessions
+
+The Sessions panel (#178) — the dashboard's `/sessions` page and the Mac app's
+Sessions window. A session is an agent CLI session, identified by the CLI's
+own session ID; itervox writes only to sessions it started.
+
+### `GET /api/v1/sessions`
+
+The daemon's agent sessions: every running itervox run, and every session
+waiting for (or resuming from) a human reply. Sessions waiting for input come
+first, then resuming ones, then running ones, oldest first within each.
+
+```json
+{
+  "generatedAt": "2026-10-15T09:00:00Z",
+  "sessions": [
+    {
+      "id": "6f1c…",
+      "owner": "itervox",
+      "identifier": "ENG-2",
+      "backend": "claude",
+      "status": "input_required",
+      "queuedAt": "2026-10-15T08:59:00Z",
+      "inputContext": "Which database should I use?"
+    },
+    {
+      "id": "0b9e…",
+      "runId": "run-2a78…",
+      "owner": "itervox",
+      "identifier": "ENG-1",
+      "title": "Fix the login redirect",
+      "profile": "coder",
+      "backend": "claude",
+      "workerHost": "gpu-1",
+      "status": "running",
+      "startedAt": "2026-10-15T08:40:00Z",
+      "turnCount": 2,
+      "lastEvent": "Running the test suite",
+      "steering": "resume",
+      "messages": [
+        {"id": "msg-…", "text": "Also update the docs.", "status": "delivered",
+         "delivery": "resume", "queuedAt": "…", "deliveredAt": "…"}
+      ]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | The agent CLI's session ID (Claude Code session, Codex thread). Empty in the first seconds of a run, until the CLI reports it; `runId` addresses the session meanwhile. |
+| `runId` | Itervox's run ID (running sessions only). |
+| `owner` | `itervox` for this daemon's runs. Only those take replies and messages. |
+| `status` | `running`, `input_required` or `pending_input_resume`. |
+| `startedAt` / `queuedAt` | When the run started / when it started waiting for input. |
+| `inputContext` | The agent's question while it waits. |
+| `steering` | Running sessions: `live` (a message is written into the running turn — local Claude with `agent.live_steering`) or `resume` (delivered as the prompt of the next turn, which resumes the session). |
+| `messages` | Operator messages sent to the issue's sessions, newest last (at most 20): `status` `queued`, `delivered` (with `delivery` `live` or `resume`) or `dropped` (with `reason`). |
+
+`503 not_configured` when the daemon was built without the sessions client.
+Messages are runtime state: they do not survive a daemon restart.
+
+### `POST /api/v1/sessions/{id}/message`
+
+Queues an operator message for a running session. `{id}` is the session's
+`id`, or its `runId` before the CLI reported an ID.
+
+```json
+{"message": "Also update the docs."}
+```
+
+`202 {"message":{"id":"msg-…","text":"…","status":"queued","queuedAt":"…"}}` —
+the message is queued; its `status` in `GET /api/v1/sessions` moves to
+`delivered` or `dropped`. A session waiting for input takes a reply through
+`POST /issues/{identifier}/provide-input` instead.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Missing, empty or over-10 KiB `message` (`field: "message"`) |
+| `403` | `not_owned` | Itervox did not start that session |
+| `404` | `not_found` | No running session with that ID |
+| `409` | `input_required` | The session is waiting for input: use `provide-input` |
+| `503` | `orchestrator_busy` | Event queue full (`Retry-After: 1`) |
 
 ## Logs
 

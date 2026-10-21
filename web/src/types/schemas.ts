@@ -1198,3 +1198,48 @@ export type CapabilityStat = z.infer<typeof CapabilityStatSchema>;
 export type ProfileCost = z.infer<typeof ProfileCostSchema>;
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 export type AnalyticsSnapshotData = z.infer<typeof AnalyticsSnapshotSchema>;
+
+// ─── Sessions panel (#178) ────────────────────────────────────────────────────
+// GET /api/v1/sessions — internal/server/sessions.go SessionRow. A session
+// is an agent CLI session keyed by the CLI's own session id (`id`); until
+// the CLI reports one, `runId` addresses it.
+
+export const SessionMessageRowSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  status: z.enum(['queued', 'delivered', 'dropped']),
+  delivery: z.enum(['live', 'resume']).optional(),
+  reason: z.string().optional(),
+  queuedAt: z.string(),
+  deliveredAt: z.string().optional(),
+});
+
+export const SessionRowSchema = z.object({
+  id: z.string(),
+  runId: z.string().optional(),
+  // "itervox": this daemon started it and may write to it. Anything else is
+  // read-only (sessions started by hand, a later step).
+  owner: z.string(),
+  identifier: z.string(),
+  title: z.string().optional(),
+  profile: z.string().optional(),
+  backend: z.string().optional(),
+  workerHost: z.string().optional(),
+  kind: z.string().optional(),
+  status: z.string(), // "running" | "input_required" | "pending_input_resume"
+  startedAt: z.string().optional(),
+  queuedAt: z.string().optional(),
+  turnCount: z.number().optional(),
+  lastEvent: z.string().optional(),
+  inputContext: z.string().optional(),
+  steering: z.enum(['live', 'resume']).optional(),
+  messages: z.array(SessionMessageRowSchema).optional(),
+});
+
+export const SessionsResponseSchema = z.object({
+  generatedAt: z.string(),
+  sessions: z.array(SessionRowSchema),
+});
+
+export type SessionMessageRow = z.infer<typeof SessionMessageRowSchema>;
+export type SessionRow = z.infer<typeof SessionRowSchema>;

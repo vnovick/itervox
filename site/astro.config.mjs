@@ -33,6 +33,8 @@ export default defineConfig({
             { label: 'Automations', slug: 'guides/automations' },
             { label: 'Skills Inventory', slug: 'guides/skills-inventory' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
+            { label: 'Sessions panel', slug: 'guides/sessions' },
+            { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },
             { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
             { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },
           ],

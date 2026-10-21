@@ -187,6 +187,18 @@ only the event loop mutates them.
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
   again). Event-loop state, session-scoped, not persisted.
+- `SessionMessages` (#178) holds the operator messages sent from the Sessions
+  panel, per issue identifier (bounded, 20). `SendSessionMessage` (HTTP
+  goroutine) only classifies the target against `Snapshot()` and sends
+  `EventSessionMessage`; the loop records the message and hands it to the run
+  through `runHandle.steer` (non-blocking). The worker reports deliveries with
+  `EventSessionMessageDelivered` — live (written into a local Claude turn's
+  stream-json stdin, `agent.live_steering`) or on resume (the next turn's
+  prompt, `--resume` / `exec resume`) — and the run's exit marks whatever it
+  did not deliver `dropped`. Session-scoped, not persisted. Invariant:
+  itervox writes only to agent processes it started (no TTY injection, no
+  Accessibility/AppleScript automation), enforced by
+  `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -375,6 +387,7 @@ cmd/itervox (wires everything)
 | `web/src/pages/Dashboard/components/AutomationQueueList.tsx` | Durable automation queue list and local search surface |
 | `web/src/pages/Dashboard/components/AutomationQueueDetailPanel.tsx` | Queue entry detail panel for trigger/profile/permission/dependency context |
 | `web/src/pages/Dashboard/components/DepsGraph.tsx` | Read-only React Flow dependency graph over blocker -> blocked issue rows |
+| `web/src/pages/Sessions/index.tsx` | Sessions panel (#178): one tab per agent session (input-required first), transcript from the issue log stream, composer (provide-input reply or `POST /api/v1/sessions/{id}/message`) |
 | `web/src/components/itervox/IssueStatusChanges.tsx` | Per-issue status-change timeline rendered inside issue detail |
 | `web/src/components/itervox/QueueSearchInput.tsx` | Shared local search input for queue-like dashboard panels |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |

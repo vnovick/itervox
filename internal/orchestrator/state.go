@@ -109,6 +109,11 @@ type OrchestratorEvent struct { //nolint:revive
 	// DiscardGen identifies the discard operation an EventDiscardComplete
 	// finishes (CORE-109); it must match the marker's Gen to clear it.
 	DiscardGen uint64
+	// SessionMessage is the operator message of an EventSessionMessage
+	// (#178); Identifier then holds the session key it was addressed to.
+	SessionMessage *SessionMessage
+	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
+	SessionDelivery *SessionDelivery
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -744,6 +749,14 @@ type State struct {
 	// opaque ID) because that is the join key every issue-row surface
 	// (TrackerIssue, RunEntry, snapshot maps) already uses.
 	OutboxSyncing map[string]struct{}
+
+	// SessionMessages holds the operator messages sent to running sessions
+	// from the Sessions panel (#178), per issue identifier, newest last and
+	// bounded (maxSessionMessagesPerIssue). Event-loop state: recorded by
+	// EventSessionMessage, marked delivered by EventSessionMessageDelivered,
+	// and dropped when the run exits without delivering them. Session-scoped,
+	// not persisted.
+	SessionMessages map[string][]SessionMessage
 }
 
 // NewState initialises a State from a config snapshot.
@@ -795,5 +808,6 @@ func NewState(cfg *config.Config) State {
 		StackUnavailable:   make(map[string]string),
 		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
+		SessionMessages:    make(map[string][]SessionMessage),
 	}
 }
