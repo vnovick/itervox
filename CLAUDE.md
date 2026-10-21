@@ -27,6 +27,10 @@ go test -race ./cmd/... ./internal/...
 # Single package
 go test -race ./internal/orchestrator/...
 
+# Orchestrator + tracker tests repeated under CPU saturation (#126; slow,
+# not part of verify; CI runs it nightly and on the `ci:chaos` label)
+make chaos   # CHAOS_COUNT / CHAOS_RUN / CHAOS_PACKAGES / CHAOS_CPU to narrow
+
 # Frontend
 cd web && pnpm install --frozen-lockfile && pnpm test:coverage
 pnpm build   # production bundle
