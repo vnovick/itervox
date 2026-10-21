@@ -221,6 +221,10 @@ type TrackerConfig struct {
 	// background sync refreshes it from the tracker. Linear and GitHub only.
 	// Read once at startup.
 	Store TrackerStoreConfig
+	// Webhooks is tracker.webhooks (#131): signed Linear/GitHub deliveries
+	// refresh the store by issue, and the store's periodic pull slows to the
+	// safety-net interval.
+	Webhooks TrackerWebhooksConfig
 }
 
 // TrackerStoreConfig configures the local tracker store (#113).
@@ -233,6 +237,24 @@ type TrackerStoreConfig struct {
 	// (default 60000). Reads between syncs cost no tracker requests.
 	SyncIntervalMs int
 }
+
+// TrackerWebhooksConfig is tracker.webhooks (#131).
+type TrackerWebhooksConfig struct {
+	// Enabled serves POST /api/v1/webhooks/<kind> and slows the store's
+	// periodic pull to SafetyNetIntervalMs. Needs tracker.store.enabled and
+	// a Secret.
+	Enabled bool
+	// Secret signs deliveries ($VAR resolves from the environment); an
+	// unsigned or wrongly signed delivery is dropped.
+	Secret string
+	// SafetyNetIntervalMs is the store's pull interval while webhooks are on
+	// (default 600000): it repairs missed deliveries.
+	SafetyNetIntervalMs int
+}
+
+// DefaultTrackerWebhookSafetyNetMs is tracker.webhooks.safety_net_interval_ms
+// when unset.
+const DefaultTrackerWebhookSafetyNetMs = 600000
 
 // PollingConfig holds polling settings.
 type PollingConfig struct {
@@ -789,6 +811,15 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Store = TrackerStoreConfig{
 		Enabled:        boolField(store, "enabled", false),
 		SyncIntervalMs: positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+	}
+	wh := nestedMap(tracker, "webhooks")
+	cfg.Tracker.Webhooks = TrackerWebhooksConfig{
+		Enabled:             boolField(wh, "enabled", false),
+		Secret:              resolveSecret(strField(wh, "secret", "")),
+		SafetyNetIntervalMs: positiveIntField(wh, "safety_net_interval_ms", DefaultTrackerWebhookSafetyNetMs),
+	}
+	if err := validateTrackerWebhooks(cfg.Tracker); err != nil {
+		return nil, err
 	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{
@@ -1368,6 +1399,30 @@ func parseAvailableModels(raw map[string]any) map[string][]ModelOption {
 	}
 	return result
 }
+
+// validateTrackerWebhooks refuses webhooks that could not work or would
+// accept unsigned deliveries.
+func validateTrackerWebhooks(t TrackerConfig) error {
+	if !t.Webhooks.Enabled {
+		return nil
+	}
+	switch {
+	case t.Kind != "linear" && t.Kind != "github":
+		return fmt.Errorf("config: tracker.webhooks is for linear and github trackers, not %q", t.Kind)
+	case !t.Store.Enabled:
+		return errors.New("config: tracker.webhooks needs tracker.store.enabled: true (webhooks refresh the store)")
+	case t.Webhooks.Secret == "":
+		return errors.New("config: tracker.webhooks.secret is empty (set it, e.g. secret: $ITERVOX_WEBHOOK_SECRET, and use the same value in the tracker's webhook settings)")
+	case len(t.Webhooks.Secret) < MinWebhookSecretLength:
+		return fmt.Errorf("config: tracker.webhooks.secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
+	}
+	return nil
+}
+
+// MinWebhookSecretLength is the shortest tracker.webhooks.secret accepted: a
+// guessable secret would let anyone trigger refreshes, and log redaction
+// skips very short values.
+const MinWebhookSecretLength = 16
 
 // --- helpers ---
 

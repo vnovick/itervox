@@ -47,6 +47,15 @@ type DetailBatcher interface {
 	FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
 }
 
+// ScopedFetcher is an optional interface implemented by remote adapters that
+// can read issues by ID and say which of them the tracker's scope (the
+// project filter, the repository) covers, without a list request (#131).
+// The result holds the in-scope issues that exist; an ID absent from it is
+// out of scope, deleted, or trashed.
+type ScopedFetcher interface {
+	FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
+}
+
 // IdempotentCommenter is an optional interface implemented by tracker
 // adapters that can post a comment under a caller-supplied idempotency key
 // and later answer whether a comment with that key exists. Callers should

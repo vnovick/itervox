@@ -266,6 +266,38 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
   }
 }`
 
+// QueryIssuesInScopeByIDs reads issues by ID with their project, so a
+// webhook-named issue can be checked against the project filter (#131).
+const QueryIssuesInScopeByIDs = `
+query ItervoxLinearIssuesInScope($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+  issues(filter: {id: {in: $ids}}, first: $first) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      trashed
+      project { slugId }
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier url branchName state { name } }
+        }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url branchName state { name } }
+      }
+      createdAt
+      updatedAt
+    }
+  }
+}`
+
 // mutationUpdateIssueState transitions an issue to a resolved state UUID.
 // Package-level (rather than local to UpdateIssueState, like the client's
 // other mutations) solely so intent_internal_test.go can exercise
