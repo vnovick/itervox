@@ -701,6 +701,24 @@ export const SyncStatusRowSchema = z.object({
 });
 export type SyncStatusRow = z.infer<typeof SyncStatusRowSchema>;
 
+// TrackerPollRowSchema mirrors server.TrackerPollRow (#187): the off-loop
+// tracker poll — whether one is in flight and for how long, whether it (or
+// the last one) passed the slow threshold, and whether the tracker breaker
+// has the poll degraded after consecutive transport failures.
+export const TrackerPollRowSchema = z.object({
+  inFlight: z.boolean(),
+  startedAt: optionalTimeString,
+  runningForMs: optionalSafeInt,
+  lastFinishedAt: optionalTimeString,
+  lastDurationMs: syncCount,
+  slowAfterMs: syncCount,
+  slow: z.boolean(),
+  degraded: z.boolean(),
+  breakerOpenUntil: optionalTimeString,
+  consecutiveTransportFailures: optionalSafeInt,
+});
+export type TrackerPollRow = z.infer<typeof TrackerPollRowSchema>;
+
 // FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
 // daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
 // tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
@@ -886,6 +904,9 @@ export const StateSnapshotSchema = z.object({
   // #117 — tracker sync status (pull lag, pending writes, last sync error).
   // Absent on daemons predating it; the LiveOps sync chip then hides.
   syncStatus: SyncStatusRowSchema.optional(),
+  // #187 — the off-loop tracker poll (in flight, slow, degraded). Absent on
+  // daemons predating it; the LiveOps tracker poll chip then hides.
+  trackerPoll: TrackerPollRowSchema.optional(),
   // CORE-046 — bounded ring of recent failures, oldest recorded first.
   // Always an array on a current daemon; absent on older daemons.
   recentFailures: z.array(FailureRowSchema).optional(),

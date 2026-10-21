@@ -170,7 +170,7 @@ Controls how frequently Itervox checks the tracker for new or updated issues.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `interval_ms` | int | `30000` | Polling interval in milliseconds. |
+| `interval_ms` | int | `30000` | Polling interval in milliseconds. The poll runs off the event loop: one at a time, under a deadline of 3× the interval (at least 30 s, at most 2 minutes), so a slow or rate-limited tracker never freezes worker exits, operator actions or the dashboard. A poll past the interval plus half an interval is logged and shown as slow; after three polls in a row hit a tracker timeout, network error or 5xx, tracker reads pause for two intervals (30 s to 5 minutes) and the poll shows as degraded on the dashboard, `HEARTBEAT.md` and `/api/v1/ready`. |
 | `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. Set `0` to disable. |
 | `automation_interval_ms` | int | `15000` | How often the automation event poll (`tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`) lists issues. While the tracker reports less than 20% of its request budget left, the interval doubles after each poll, up to 8× this value, and returns to it once the budget recovers. Zero or a negative value means the default. Read at load time. See [Automation event poll](#automation-event-poll). |
 

@@ -91,6 +91,16 @@ const (
 	// EventDeferredStateMoveSettled carries the outcome of one deferred-move
 	// apply (#177) from its tracker-write goroutine.
 	EventDeferredStateMoveSettled EventType = "DeferredStateMoveSettled"
+	// EventTrackerPolled carries the result of one off-loop tracker poll
+	// (#187): the running issues' states, the candidate list and the
+	// input-required reply reads. The poll goroutine does tracker I/O only;
+	// the loop applies the result with the state it has when the event
+	// arrives.
+	EventTrackerPolled EventType = "TrackerPolled"
+	// EventClaimChecked carries the off-loop #116 claim reads of one batch of
+	// dispatch picks (#187). The loop re-checks eligibility and starts the
+	// issues the tracker still admits.
+	EventClaimChecked EventType = "ClaimChecked"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -113,6 +123,8 @@ type OrchestratorEvent struct { //nolint:revive
 	CronBatch          *CronAutomationBatch     // used by EventDispatchCronBatch
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
 	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
+	TrackerPoll        *trackerPollResult       // used by EventTrackerPolled (#187)
+	ClaimBatch         *claimBatchResult        // used by EventClaimChecked (#187)
 	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
 	Failure            *FailureRecord           // used by EventFailureRecorded
 	// Limit is the vendor limit signal of a failed turn (CORE-050/051):
@@ -649,6 +661,23 @@ type State struct {
 	// agent.max_concurrent_agents would actually buy throughput. Session-
 	// scoped and not persisted; see dispatch_pressure.go.
 	DispatchPressure DispatchPressure
+	// TrackerPoll is the off-loop tracker poll's single-flight latch and
+	// timing (#187): whether a poll is in flight, since when, and how long
+	// the last one took. Event-loop state (tracker_poll.go); session-scoped,
+	// not persisted.
+	TrackerPoll TrackerPollState
+	// TrackerBreaker is the tracker transport circuit breaker (#187): after
+	// TrackerBreakerThreshold consecutive polls with a transport failure
+	// (timeout, network error, 5xx) the loop skips tracker reads until
+	// OpenUntil and reports the poll degraded. Event-loop state
+	// (tracker_breaker.go); session-scoped, not persisted.
+	TrackerBreaker TrackerBreakerState
+	// ClaimChecks are dispatch picks whose #116 claim read runs off the loop
+	// (#187), keyed by issue ID. Each holds a dispatch slot (AvailableSlots)
+	// and makes its issue ineligible until EventClaimChecked settles it or
+	// the watchdog releases it. Event-loop state; session-scoped, not
+	// persisted.
+	ClaimChecks map[string]ClaimCheckPending
 	// LastTrackerError is the most recent tracker failure (CORE-044): a
 	// failed poll (op "poll", set in onTick) or a failed failed-state move
 	// (op "update_state", reported back on EventDiscardComplete). Written
@@ -940,6 +969,7 @@ func NewState(cfg *config.Config) State {
 		PendingReviews:     make(map[string]PendingReview),
 		DeferredStateMoves: make(map[string]DeferredStateMove),
 		OutboxSyncing:      make(map[string]struct{}),
+		ClaimChecks:        make(map[string]ClaimCheckPending),
 		SessionMessages:    make(map[string][]SessionMessage),
 		TmuxSessions:       make(map[string]*TmuxSession),
 	}

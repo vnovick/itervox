@@ -216,10 +216,10 @@ booleans and one timestamp:
 | Field | Meaning |
 |---|---|
 | `ready` | `loop_fresh`, fewer than 3 consecutive failed tracker polls, and not `draining`. |
-| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event — for example a slow tracker call — it stays fresh for up to 10 minutes (the tick budget). Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
+| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event it stays fresh for up to 2 minutes (the tick budget): since #187 the poll's tracker reads run off the event loop and the tracker reads an iteration still makes share one 30 s deadline, so a healthy iteration takes milliseconds. Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
 | `last_poll_ok` | The most recent tick polled the tracker and the poll succeeded (`false` before the first poll and while polling is shed for budget). |
 | `config_invalid` | The last `WORKFLOW.md` reload failed validation; the daemon keeps running on its last valid config. |
-| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
+| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, an open tracker breaker (#187: three polls in a row hit a timeout, network error or 5xx), 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
 | `tracker_rate_limited_until` | RFC 3339 instant the tracker rate-limit gate lifts, `null` while it is closed. |
 | `draining` | The daemon is draining — after `SIGTERM`/`SIGINT`, or before applying an operator edit to `WORKFLOW.md` — and admits no new work while in-flight agent turns finish. A draining daemon answers `503` so a load balancer stops routing to it; `loop_fresh` stays `true`. |
 
@@ -356,6 +356,21 @@ Useful top-level fields include:
   `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
+- `trackerPoll` (#187) — the off-loop tracker poll, absent on older daemons:
+  `{ "inFlight", "startedAt"?, "runningForMs"?, "lastFinishedAt"?,
+  "lastDurationMs", "slowAfterMs", "slow", "degraded", "breakerOpenUntil"?,
+  "consecutiveTransportFailures"? }`. The poll tick reads the tracker
+  (running issues' states, the candidate list, input-required reply checks)
+  on its own goroutine, at most one poll at a time, under a deadline of
+  3 × `polling.interval_ms` (at least 30 s, at most 2 minutes); the event
+  loop keeps handling worker exits and operator actions meanwhile.
+  `inFlight`/`startedAt`/`runningForMs` describe the poll now running;
+  `slow` is set when it (or, when idle, the last one) took longer than
+  `slowAfterMs` (the interval plus half an interval, at least 1 s).
+  `degraded` is set once three polls in a row hit a transport failure: the
+  daemon then skips tracker reads until `breakerOpenUntil` (two poll
+  intervals, 30 s to 5 minutes), then one poll probes the tracker; a probe
+  that succeeds clears it.
 - `syncStatus` (#117) — the tracker sync status, absent on older daemons:
   `{ "mode": "store" | "direct" | "local_sync", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
   "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,

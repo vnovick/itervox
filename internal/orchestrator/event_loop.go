@@ -85,20 +85,30 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			loopErr = ctx.Err()
 		case <-tick.C:
-			o.markLoopBusy()
-			state = o.onTick(ctx, state)
+			began := o.markLoopBusy()
+			ictx, end := o.beginLoopIteration(ctx)
+			state = o.startTick(ictx, state)
+			end()
 			o.storeSnap(state)
+			o.noteSlowLoopIteration("tick", began)
 			tick.Reset(time.Duration(state.PollIntervalMs) * time.Millisecond)
 		case <-o.refresh:
 			// Immediate re-poll triggered by the web dashboard refresh button.
-			o.markLoopBusy()
-			state = o.onTick(ctx, state)
+			began := o.markLoopBusy()
+			ictx, end := o.beginLoopIteration(ctx)
+			state = o.startTick(ictx, state)
+			end()
 			o.storeSnap(state)
+			o.noteSlowLoopIteration("refresh", began)
 			tick.Reset(time.Duration(state.PollIntervalMs) * time.Millisecond)
 		case ev := <-o.events:
-			o.markLoopBusy()
-			state = o.handleEvent(ctx, state, ev)
+			began := o.markLoopBusy()
+			// #187: every tracker read this event makes shares one deadline.
+			ictx, end := o.beginLoopIteration(ctx)
+			state = o.handleEvent(ictx, state, ev)
+			end()
 			o.storeSnap(state)
+			o.noteSlowLoopIteration(string(ev.Type), began)
 		}
 		// CORE-057: a drain ends once no worker is left running.
 		o.observeDrained(state)
@@ -139,12 +149,29 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
+	o.trackerReadsWg.Wait() // #187: off-loop polls and claim reads (ctx cancelled)
 	o.extSessionsWg.Wait()
 	return loopErr
 }
 
-func (o *Orchestrator) onTick(ctx context.Context, state State) State {
+// startTick is the poll tick as Run drives it (#187): the on-loop prelude,
+// then this tick's tracker poll started off the loop. The poll's result
+// arrives as EventTrackerPolled and is applied by applyTrackerPoll. A tick
+// that finds the previous poll still running (or the tracker breaker open)
+// starts none.
+func (o *Orchestrator) startTick(ctx context.Context, state State) State {
 	now := time.Now()
+	state = o.tickPrelude(ctx, state, now)
+	if req := o.planTrackerPoll(&state, now); req != nil {
+		o.startTrackerPoll(ctx, &state, req)
+	}
+	return state
+}
+
+// tickPrelude is the part of a tick that needs no tracker list read: the cfg
+// snapshot, the watchdogs, the backend breakers, due retries and stall
+// detection. Event loop.
+func (o *Orchestrator) tickPrelude(ctx context.Context, state State, now time.Time) State {
 
 	// Snapshot runtime-mutable cfg fields into the event-loop State so that
 	// AvailableSlots and dispatch helpers read a stable, lock-free copy for
@@ -165,6 +192,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// to recover from. Safe to also run again inside reconcileDependencyRefresh
 	// on the success path below; it is idempotent.
 	o.reclaimStuckDependencyRefresh(&state, now)
+	// #187: the off-loop poll and claim reads' watchdog.
+	o.reclaimStuckTrackerReads(&state, now)
 
 	// 1. Revert expired auto-switch overrides before retries or fresh
 	// dispatch can reuse a stale fallback profile/backend.
@@ -180,27 +209,53 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// 2. Fire any retries whose DueAt has passed.
 	state = o.fireRetries(ctx, state, now)
 
-	// 3. Stall detection and tracker-state reconciliation. Pass the
-	// orchestrator's cancelAndCleanupWorker so reconcile-driven cancels
-	// release the workerCancels-map entry even if the EventWorkerExited
-	// send drops under load (T-09).
+	// 3. Stall detection. Tracker-state reconciliation runs on the poll's
+	// result (applyTrackerPoll). Pass the orchestrator's
+	// cancelAndCleanupWorker so stall-driven cancels release the
+	// workerCancels-map entry even if the EventWorkerExited send drops under
+	// load (T-09).
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
-	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
+	return state
+}
 
-	// 4. Fetch candidates and dispatch eligible issues.
+// applyTrackerPoll applies one tracker poll's result with the state the loop
+// has now (#187): tracker-state reconciliation of the runs the poll read,
+// then — unless the poll shed its list read — the candidate list: outbox
+// overlay, dependency graph, auto-resume, reply checks, queued resumes and
+// reviews, the automation queue, dispatch and the janitors. claims says where
+// dispatch picks' #116 claim reads run. Event loop.
+func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *trackerPollResult, claims claimMode) State {
+	now := time.Now()
+	if !o.acceptTrackerPoll(&state, res, now) {
+		return state
+	}
+	req := res.Req
+	endedDuringPoll := state.TrackerPoll.EndedDuringPoll
+	state.TrackerPoll.EndedDuringPoll = nil
+
+	// Reconcile the runs the poll read, skipping any that ended or were
+	// replaced while it was in flight (applyTrackerStates).
+	if res.RefreshRan {
+		if res.RefreshErr != nil {
+			slog.Warn("reconciliation: tracker refresh failed, keeping workers", "error", res.RefreshErr)
+		} else {
+			state = applyTrackerStates(state, req.Running, res.Refreshed, o.events, o.cancelAndCleanupWorker, o.logBuf)
+		}
+	}
+
+	// 4. Candidates and dispatch.
 	//
 	// #42-E — write priority. When the tracker budget has fallen into the
-	// write reserve, skip the polling reads for this tick so the remaining
+	// write reserve, the poll skipped its polling reads so the remaining
 	// requests are available for WRITES: state transitions, comments, and the
 	// resume-path detail fetch below. Reads and writes drew on one budget, so
 	// the polling loops exhausted the hour early and then every operation
 	// that would have drained the queue failed — and those loops scale with
 	// the number of stuck issues, which is what made it self-sustaining.
 	//
-	// Skipping the tick is safe: dispatch simply does not advance until the
+	// Skipping the poll is safe: dispatch simply does not advance until the
 	// budget resets, whereas continuing to poll guarantees the writes fail.
-	shedReads := shouldShedPollingReads(o.tracker, o.rateLimitReservePercent())
-	if shedReads {
+	if req.Shed {
 		logReadShedding(o.tracker)
 		// BH-M2-6: no poll this tick — say so, or /ready keeps reporting
 		// the last real poll's result for as long as shedding lasts.
@@ -211,12 +266,12 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		state = o.processPendingInputResumes(ctx, state, now)
 		return state
 	}
-	issues, err := o.tracker.FetchCandidateIssues(ctx)
-	if err != nil {
-		state = o.recordPollFailure(state, err, now)
+	if res.FetchErr != nil {
+		state = o.recordPollFailure(state, res.FetchErr, now)
 		return state
 	}
 	state = o.recordPollSuccess(state, now)
+	issues := res.Issues
 
 	// outbox Task 3 — reconcile pending write-ahead-outbox entries against
 	// this tick's freshly polled issues, then overlay each surviving
@@ -344,15 +399,12 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	prevActive := state.PrevActiveIdentifiers
 	state.PrevActiveIdentifiers = currentActive
 
-	// Check for tracker comment replies to input-required issues.
-	// If a user replied via Linear/GitHub, auto-resume the agent.
-	// checkTrackerReplies is a polling read: it re-fetches issues nobody has
-	// necessarily touched, looking for a reply. processPendingInputResumes is
-	// not — its fetch is the one that lets a queued resume proceed — so it
+	// Apply the poll's tracker comment reads for input-required issues.
+	// If a user replied via Linear/GitHub, auto-resume the agent. The reply
+	// check is a polling read (a shed poll skips it); processPendingInputResumes
+	// is not — its fetch is the one that lets a queued resume proceed — so it
 	// runs regardless of the reserve.
-	if !shedReads {
-		state = o.checkTrackerReplies(ctx, state)
-	}
+	state = o.applyReplyChecks(ctx, state, res)
 	state = o.processPendingInputResumes(ctx, state, now)
 	// M4-close BH-M4-2: reviews refused by a drain run before new work.
 	o.resumePendingReviews(ctx, &state, now)
@@ -370,6 +422,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	)
 
 	dispatched, held := 0, 0
+	var picks []domain.Issue
+	claimGen := state.TrackerPoll.ClaimGeneration + 1
 	// critical-path-ordering Task 3 — dependencies.ordering is read-only
 	// config (validated/defaulted at load time in internal/config), so no
 	// cfgMu is needed here. "simple" keeps legacy priority/created_at/
@@ -411,54 +465,32 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			)
 			continue
 		}
+		// #187: the poll's list may predate a state move the issue's run
+		// made before it ended; the next poll decides on a fresh list.
+		if _, ended := endedDuringPoll[issue.ID]; ended {
+			slog.Info("orchestrator: issue's run ended while the poll was in flight; not dispatching from its list",
+				"identifier", issue.Identifier)
+			continue
+		}
 		// #116 claim check: the list may come from the local store, so read
 		// the issue from the tracker before starting it. The same read
-		// serves the input-required recovery below.
-		detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
-		if errors.Is(err, tracker.ErrNotFound) || (err == nil && detailed == nil) {
-			slog.Info("orchestrator: claim check: the tracker no longer has the issue; not starting it",
-				"identifier", issue.Identifier, "path", admitDispatch)
-			o.forgetLocally(issue.ID)
+		// serves the input-required recovery. Off the loop (#187), the pick
+		// holds its slot until the read comes back.
+		if claims == claimsOffLoop {
+			reserveClaimCheck(&state, issue, claimGen, now)
+			picks = append(picks, issue)
 			continue
 		}
-		if err != nil {
-			slog.Warn("orchestrator: claim check: tracker read failed, not starting the issue now",
-				"identifier", issue.Identifier, "error", err)
-			continue
-		}
-		claimed, verdict := o.claimCheck(ctx, &state, issue, detailed, admitDispatch, func(v domain.Issue) string {
-			return IneligibleReason(v, state, o.cfg)
-		}, now)
-		if verdict != claimAdmit {
-			continue
-		}
-		issue = claimed
-		// Guard: if the latest comment is an unresolved Itervox input-required
-		// comment, restore the issue to InputRequiredIssues instead of dispatching
-		// a fresh worker. This recovers from daemon restarts / state loss.
-		if entry := recoverInputRequired(issue, detailed); entry != nil {
-			state.InputRequiredIssues[issue.Identifier] = entry
-			// Recovery path: no live RunEntry — the previous worker is gone
-			// (daemon restart / state loss). B1 self-reentry guard does not
-			// apply here; pass nil so the dispatch proceeds normally.
-			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now, nil)
-			slog.Info("orchestrator: recovered input-required from tracker comment",
-				"identifier", issue.Identifier)
-			if o.logBuf != nil {
-				o.logBuf.Add(issue.Identifier, makeBufLine("INFO",
-					"worker: awaiting user input (recovered from tracker comment)"))
-			}
-			continue
-		}
-		_, wasRunning := state.Running[issue.ID]
-		state = o.dispatch(ctx, state, issue, 0)
-		// CORE-173 b: a hold (or any other refusal) is not a dispatch.
-		if _, running := state.Running[issue.ID]; running && !wasRunning {
+		rctx, cancel := loopReadCtx(ctx)
+		detailed, err := o.tracker.FetchIssueDetail(rctx, issue.ID)
+		cancel()
+		if d, h := o.admitClaimRead(ctx, &state, issue, detailed, err, now); d {
 			dispatched++
-		} else if _, isHeld := state.BackendLimitedHolds[issue.Identifier]; isHeld {
+		} else if h {
 			held++
 		}
 	}
+	o.startClaimChecks(ctx, &state, picks, claimGen)
 	o.forgetLoggedHolds(state)
 	if dispatched > 0 || len(issues) > 0 {
 		slog.Info("orchestrator: dispatch complete",
@@ -608,7 +640,14 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			continue
 		}
 
-		refreshed, err := o.tracker.FetchIssueStatesByIDs(ctx, []string{issueID})
+		// #187: while the tracker breaker is open the retry stays due and
+		// spends no read (and no attempt); a later tick fires it.
+		if trackerReadsBlocked(state, now) {
+			continue
+		}
+		rctx, cancel := loopReadCtx(ctx)
+		refreshed, err := o.tracker.FetchIssueStatesByIDs(rctx, []string{issueID})
+		cancel()
 		if err != nil {
 			slog.Warn("retry: tracker fetch failed, rescheduling",
 				"issue_id", issueID, "error", err)
@@ -999,58 +1038,33 @@ func branchNameValue(branchName *string) string {
 	return *branchName
 }
 
-// checkTrackerReplies polls tracker comments for each InputRequiredIssues entry.
-// If a non-Itervox	 comment appeared after the agent's question, treat it as
-// the user's reply and resume the agent — same as ProvideInput from the dashboard.
-func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) State {
-	if len(state.InputRequiredIssues) == 0 {
+// applyReplyChecks applies the poll's tracker comment reads for the
+// input-required entries it selected (selectReplyTargets). If a non-Itervox
+// comment appeared after the agent's question, treat it as the user's reply
+// and resume the agent — same as ProvideInput from the dashboard. An entry
+// answered, dismissed or replaced while the read was in flight is skipped:
+// the read was taken for the entry it selected, not for its successor (#187).
+// Event loop.
+func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *trackerPollResult) State {
+	if res == nil || res.Req == nil {
 		return state
 	}
-	// Bounded, least-recently-checked-first. Ranging over the whole map cost
-	// one tracker request per input-required issue per tick, so this loop's
-	// request rate scaled with the backlog it exists to clear (issue #42).
-	selected := selectTrackerReplyCheckBatch(state.InputRequiredIssues, trackerReplyCheckPerTickBudget)
-	// Collapse the whole tick's reads into one request where the tracker can
-	// do it (issue #42: this loop was ~15% of the measured budget). A tracker
-	// without DetailBatcher returns nil here and every entry below takes the
-	// unchanged per-issue path.
-	replyIDs := make([]string, 0, len(selected))
-	for _, identifier := range selected {
-		if e := state.InputRequiredIssues[identifier]; e != nil {
-			replyIDs = append(replyIDs, e.IssueID)
-		}
-	}
-	prefetched := tracker.PrefetchDetails(ctx, o.tracker, replyIDs)
-
-	for _, identifier := range selected {
+	for _, target := range res.Req.Replies {
+		identifier := target.Identifier
 		entry := state.InputRequiredIssues[identifier]
-		if entry == nil {
+		if entry == nil || entry != target.entry {
 			continue
 		}
-		// Stamp before the fetch, not after: a failing fetch must still
-		// advance this entry's place in the queue, or a permanently
-		// unreachable issue would monopolise the budget every tick and
-		// starve every other entry — the exact starvation the ordering is
-		// here to prevent.
-		entry.LastReplyCheckAt = time.Now()
-		o.warnIfQuestionStuck(identifier, entry)
-		detailed := prefetched[entry.IssueID]
+		if err := res.ReplyErrs[target.IssueID]; err != nil {
+			slog.Warn("orchestrator: tracker-reply check failed",
+				"identifier", identifier, "error", err)
+			continue
+		}
+		detailed := res.ReplyDetails[target.IssueID]
 		if detailed == nil {
-			// Not in the batch — either the tracker cannot batch, or this id
-			// was absent from the response. Absence is NOT deletion, so
-			// confirm with an authoritative single fetch rather than
-			// treating it as gone.
-			var err error
-			detailed, err = o.tracker.FetchIssueDetail(ctx, entry.IssueID)
-			if err != nil {
-				slog.Warn("orchestrator: tracker-reply check failed",
-					"identifier", identifier, "error", err)
-				continue
-			}
+			continue
 		}
-		if detailed != nil {
-			o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, time.Now())
-		}
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, time.Now())
 		questionIdx, questionComment, ok := findTrackedQuestionComment(detailed.Comments, entry)
 		var replyComment domain.Comment
 		var replied bool
@@ -1111,7 +1125,13 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	// bookkeeping below stays unbudgeted.
 	fetchAllowed := make(map[string]struct{}, trackerReplyCheckPerTickBudget)
 	resumeIDs := make([]string, 0, trackerReplyCheckPerTickBudget)
-	for _, identifier := range selectPendingResumeFetchBatch(state.PendingInputResumes, trackerReplyCheckPerTickBudget) {
+	budget := trackerReplyCheckPerTickBudget
+	if trackerReadsBlocked(state, now) {
+		// #187: the tracker breaker is open; every resume keeps its reply
+		// and waits for the tracker, spending no read.
+		budget = 0
+	}
+	for _, identifier := range selectPendingResumeFetchBatch(state.PendingInputResumes, budget) {
 		fetchAllowed[identifier] = struct{}{}
 		if e := state.PendingInputResumes[identifier]; e != nil {
 			resumeIDs = append(resumeIDs, e.IssueID)
@@ -1121,7 +1141,11 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	// (issue #42: this loop was ~11% of the measured budget). Prefetching
 	// exactly the fetchAllowed set — not every pending entry — keeps the
 	// budget's meaning intact: entries this tick will not read are not read.
-	resumePrefetched := tracker.PrefetchDetails(ctx, o.tracker, resumeIDs)
+	// #187: this loop's reads block the event loop, so they share the
+	// iteration's read deadline.
+	rctx, cancelReads := loopReadCtx(ctx)
+	defer cancelReads()
+	resumePrefetched := tracker.PrefetchDetails(rctx, o.tracker, resumeIDs)
 
 	for _, identifier := range identifiers {
 		o.syncDrainRequest(&state)      // M4-close D2
@@ -1192,7 +1216,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			// authoritatively before acting on it, since the branches below
 			// delete state on terminal/non-active.
 			var err error
-			detailed, err = o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+			detailed, err = o.tracker.FetchIssueDetail(rctx, entry.IssueID)
 			if err != nil {
 				slog.Warn("orchestrator: pending input resume detail fetch failed",
 					"identifier", identifier, "error", err)
@@ -1914,7 +1938,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			allStates = append(allStates, o.cfg.Tracker.CompletionState)
 		}
 		o.cfgMu.RUnlock()
-		issues, err := o.tracker.FetchIssuesByStates(ctx, allStates)
+		rctx, cancel := loopReadCtx(ctx) // #187
+		issues, err := o.tracker.FetchIssuesByStates(rctx, allStates)
+		cancel()
 		if err != nil {
 			slog.Warn("orchestrator: reviewer fetch failed", "identifier", ev.Identifier, "error", err)
 			return state
@@ -1994,7 +2020,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		applySessionDelivery(&state, ev.SessionDelivery, now)
 		recordRunSteers(state, ev.RunID, ev.SessionDelivery, now) // #186
 
+	case EventTrackerPolled: // #187
+		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
+	case EventClaimChecked: // #187
+		return o.applyClaimBatch(ctx, state, ev.ClaimBatch, time.Now())
 	case EventWorkerExited:
+		// #187: a poll in flight may have listed this issue before its run
+		// moved it; that list must not dispatch it again.
+		noteRunEndedDuringPoll(&state, ev.IssueID)
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
 		// #178: whatever this run did not deliver, nothing will.

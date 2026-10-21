@@ -77,6 +77,8 @@ func (s State) Clone() State {
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
 	c.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
 	c.OutboxSyncing = maps.Clone(s.OutboxSyncing)
+	c.ClaimChecks = maps.Clone(s.ClaimChecks) // value type, no reference fields
+	c.TrackerPoll.EndedDuringPoll = maps.Clone(s.TrackerPoll.EndedDuringPoll)
 	c.RecentFailures = cloneSlice(s.RecentFailures)
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)
 	c.FailureAcks = maps.Clone(s.FailureAcks)

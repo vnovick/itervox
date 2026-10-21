@@ -40,6 +40,12 @@ type Readiness struct {
 	// Draining is whether the loop is draining for shutdown or reload
 	// (CORE-057); /ready then reports not-ready so a load balancer drains too.
 	Draining bool
+	// PollDegraded is whether the tracker breaker opened after consecutive
+	// transport failures and has not recovered yet (#187).
+	PollDegraded bool
+	// PollStarted is when the off-loop tracker poll now in flight started,
+	// zero when none is (#187).
+	PollStarted time.Time
 }
 
 // Readiness returns the published readiness signals. Safe from any goroutine.
@@ -52,6 +58,10 @@ func (o *Orchestrator) Readiness() Readiness {
 		ConsecutivePollFailures: int(o.pollFailuresCount.Load()),
 		PollFailureThreshold:    PollFailureEscalationThreshold,
 		Draining:                o.draining.Load(),
+		PollDegraded:            o.pollDegraded.Load(),
+	}
+	if n := o.pollStartedNano.Load(); n != 0 {
+		r.PollStarted = time.Unix(0, n)
 	}
 	if n := o.loopIdleNano.Load(); n != 0 {
 		r.LoopStarted = true
@@ -66,9 +76,23 @@ func (o *Orchestrator) Readiness() Readiness {
 	return r
 }
 
-// markLoopBusy stamps the start of an event-loop iteration. Event loop only.
-func (o *Orchestrator) markLoopBusy() {
-	o.tickStartedNano.Store(time.Now().UnixNano())
+// markLoopBusy stamps the start of an event-loop iteration and returns it.
+// Event loop only.
+func (o *Orchestrator) markLoopBusy() time.Time {
+	now := time.Now()
+	o.tickStartedNano.Store(now.UnixNano())
+	return now
+}
+
+// noteSlowLoopIteration logs an event-loop iteration that ran longer than
+// SlowLoopIterationWarn (#187): while it ran, no other event was handled.
+// Event loop only.
+func (o *Orchestrator) noteSlowLoopIteration(kind string, began time.Time) {
+	if took := time.Since(began); took > SlowLoopIterationWarn {
+		o.logger().Warn("orchestrator: event loop iteration was slow; events waited behind it",
+			"kind", kind, "took", took.Round(time.Millisecond).String(),
+			"threshold", SlowLoopIterationWarn.String())
+	}
 }
 
 // markLoopIdle stamps the end of an event-loop iteration (and the loop's
@@ -87,6 +111,16 @@ func (o *Orchestrator) publishPollStatus(state State, ok, rateLimited bool) {
 		o.lastPollOKNano.Store(time.Now().UnixNano())
 	}
 	o.pollRateLimited.Store(rateLimited)
+	o.pollFailuresCount.Store(int32(min(state.ConsecutivePollFailures, 1<<30)))
+}
+
+// publishPollDegraded records a tick that skipped its poll because the
+// tracker breaker is open (#187). Event loop only.
+func (o *Orchestrator) publishPollDegraded(state State) {
+	o.lastPollOK.Store(false)
+	o.pollRateLimited.Store(false)
+	o.pollShedding.Store(false)
+	o.pollDegraded.Store(true)
 	o.pollFailuresCount.Store(int32(min(state.ConsecutivePollFailures, 1<<30)))
 }
 

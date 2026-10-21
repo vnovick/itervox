@@ -738,11 +738,13 @@ func (o *Orchestrator) refreshQueuedAutomationIssue(
 		issue *domain.Issue
 		err   error
 	)
+	rctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+	defer cancel()
 	switch {
 	case entry.Issue.ID != "":
-		issue, err = o.tracker.FetchIssueDetail(ctx, entry.Issue.ID)
+		issue, err = o.tracker.FetchIssueDetail(rctx, entry.Issue.ID)
 	case entry.Issue.Identifier != "":
-		issue, err = o.tracker.FetchIssueByIdentifier(ctx, entry.Issue.Identifier)
+		issue, err = o.tracker.FetchIssueByIdentifier(rctx, entry.Issue.Identifier)
 	default:
 		return entry.Issue, true
 	}
