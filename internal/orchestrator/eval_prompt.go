@@ -103,6 +103,11 @@ type EvalPromptInput struct {
 type EvalPrompt struct {
 	Text  string
 	Rules rules.Set
+	// Digest is the prompt version a dispatched run of the profile under
+	// the same config gets (#186): the same digest function over SOUL.md,
+	// INSTRUCTIONS.md, the resolved rules and the prompt template, so an
+	// eval result names the version the Prompt versions section shows (#201).
+	Digest string
 }
 
 // ComposeEvalPrompt renders the first-turn prompt a fresh local dispatch of
@@ -164,5 +169,6 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 		ActionContext: buildAgentActionContext(actions, strings.TrimSpace(profile.CreateIssueState), moveState, false),
 		Backend:       backend,
 	})
-	return EvalPrompt{Text: rendered, Rules: ruleSet}, nil
+	digest, _ := profilePromptComponents(cfg, in.ProfileName, false, ruleSet).digest()
+	return EvalPrompt{Text: rendered, Rules: ruleSet, Digest: digest}, nil
 }

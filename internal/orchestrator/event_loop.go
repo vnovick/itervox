@@ -2067,6 +2067,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// claim and retry already managed by the reconcile function.
 			return state
 		}
+		noteRunExit(liveEntry, ev.RunEntry) // #201: branch and PR for history
 		if ev.RunEntry.TerminalReason != TerminalCanceledByReconciliation {
 			// Reconcile's own stop event precedes the run's exit; only the
 			// run's exit closes its record.
@@ -2241,6 +2242,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// #58 — collect this reviewer's verdict and either dispatch
 				// the next reviewer in the chain or close the quorum.
 				state = o.advanceReviewChainForIssue(ctx, state, issue, finished.ProfileName, now)
+				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName) // #201
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -2969,6 +2971,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.PromptParts = liveEntry.PromptParts     // #186
 		run.Steers = slices.Clone(liveEntry.Steers) // #186
 		run.SteersDropped = liveEntry.SteersDropped
+		run.PRURL = liveEntry.PRURL                 // #201
+		run.ReviewVerdict = liveEntry.reviewVerdict // #201
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the
@@ -2983,6 +2987,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 	} else {
 		run.StartedAt = finishedAt
 	}
+	run.BranchName = historyBranch(liveEntry, issue) // #201
 	o.addCompletedRun(run)
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/rules"
 )
@@ -134,19 +135,27 @@ func (c promptComponents) digest() (string, PromptParts) {
 // agent.reviewer_prompt for a reviewer run when one is configured. Event
 // loop only (startRun); Profiles and ReviewerProfile are cfgMu fields.
 func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set) promptComponents {
-	c := promptComponents{rules: set}
 	if o == nil || o.cfg == nil || entry == nil {
-		return c
+		return promptComponents{rules: set}
 	}
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
-	if p, ok := o.cfg.Agent.Profiles[entry.ProfileName]; ok && entry.ProfileName != "" {
+	return profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set)
+}
+
+// profilePromptComponents is what a run of profile is prompted with under
+// cfg: its SOUL.md and INSTRUCTIONS.md, the resolved rules, and the
+// WORKFLOW.md body — or agent.reviewer_prompt for a reviewer when one is
+// configured. startRun (via runPromptComponents, under cfgMu) and
+// ComposeEvalPrompt (#201, a loaded config nobody else holds) share it, so
+// an eval and a dispatched run of one prompt version get one digest.
+func profilePromptComponents(cfg *config.Config, profile string, reviewerRun bool, set rules.Set) promptComponents {
+	c := promptComponents{rules: set, template: cfg.PromptTemplate}
+	if p, ok := cfg.Agent.Profiles[profile]; ok && profile != "" {
 		c.soul, c.instructions = p.Soul, p.Instructions
 	}
-	c.template = o.cfg.PromptTemplate
-	reviewer := entry.Kind == "reviewer" || isReviewerProfile(o.cfg, entry.ProfileName)
-	if reviewer && o.cfg.Agent.ReviewerPrompt != "" {
-		c.template = o.cfg.Agent.ReviewerPrompt
+	if (reviewerRun || isReviewerProfile(cfg, profile)) && cfg.Agent.ReviewerPrompt != "" {
+		c.template = cfg.Agent.ReviewerPrompt
 	}
 	return c
 }

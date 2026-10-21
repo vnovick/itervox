@@ -83,3 +83,38 @@ func TestEvalsCLIPromote(t *testing.T) {
 		t.Errorf("forced promotion must surface the failing replay and exit 1; got %d:\n%s", code, out.String())
 	}
 }
+
+// TestEvalsCLIRecordedSavesReport (#201): `itervox-evals recorded` (what
+// `make evals` runs) judges the committed recordings and saves the report
+// as JSON under -results-dir; -results-dir "" saves nothing.
+func TestEvalsCLIRecordedSavesReport(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "evals")
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"recorded", "-fixtures", "../../internal/evals/fixtures", "-results-dir", dir}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out.String(), errOut.String())
+	}
+	sum, err := evals.LoadResults(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Reports) != 1 || sum.Reports[0].Mode != evals.ModeRecorded || sum.Reports[0].Total == 0 || sum.Reports[0].Pass != sum.Reports[0].Total {
+		t.Fatalf("saved report = %+v", sum.Reports)
+	}
+	if !strings.Contains(out.String(), "[evals] report saved to "+filepath.Join(dir, sum.Reports[0].File)) {
+		t.Errorf("the CLI names the saved file; got %q", out.String())
+	}
+
+	fixtures, err := filepath.Abs("../../internal/evals/fixtures")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if code := run(context.Background(), []string{"recorded", "-fixtures", fixtures, "-results-dir", "", "-profile", "reviewer"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if entries, _ := os.ReadDir(cwd); len(entries) != 0 {
+		t.Errorf(`-results-dir "" must not save; the working dir has %v`, entries)
+	}
+}

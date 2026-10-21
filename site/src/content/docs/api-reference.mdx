@@ -494,6 +494,130 @@ anything that is not a pass. Check IDs, in order:
 
 `503 readiness_unavailable` when the daemon was built without the checks.
 
+## Repo evals
+
+### `GET /api/v1/repo/evals`
+
+The latest saved eval result per profile and scenario (#201), for the
+dashboard's **Repo Analysis → Evals** section. `make evals` (recorded mode),
+`make evals-live`, `make evals-record` and `itervox-evals` save each judged
+report as JSON to `<project>/.itervox/evals/<ISO8601>.json` (the newest 20
+kept; the directory carries its own `.gitignore`); the endpoint reads the
+newest of those files on the request goroutine. It never starts an eval run.
+
+```json
+{
+  "dir": "/srv/app/.itervox/evals",
+  "reports": [
+    { "file": "20261021T090000.000Z.json", "mode": "live", "finishedAt": "2026-10-21T09:00:00Z", "pass": 7, "total": 8 }
+  ],
+  "cases": [
+    {
+      "profile": "reviewer", "scenario": "rejects-and-moves-back", "pass": false,
+      "failures": ["forbidden phrase present in comments: /ai-approved"],
+      "promptDigest": "9f2c…", "digestSource": "live",
+      "ranAt": "2026-10-21T09:00:00Z", "mode": "live", "file": "20261021T090000.000Z.json",
+      "regression": true, "previousDigest": "41ab…", "previousAt": "2026-10-20T09:00:00Z",
+      "results": 3
+    }
+  ]
+}
+```
+
+- `failures` lists every failed assertion: missing required actions,
+  forbidden actions, `forbidden_phrases` present, missing marker phrases.
+  `error` is a live run that could not be judged as complete (backend failure,
+  budget); `stale` a recording older than its sources.
+- `promptDigest` is the prompt version the case ran against, computed with
+  the same digest as run history (#186), so it matches **Prompt versions**.
+  `digestSource` is `live` (computed by the live run from the workflow it ran)
+  or `recording` (read from a live recording's `meta` line). Recorded mode
+  replays a fixed transcript, so it has a digest only when the recording was
+  made by a live run since #201; the hand-written fixtures have none.
+- `regression` is set when the case fails on its digest and the newest result
+  on the previous digest passed (`previousDigest`, `previousAt`). Results
+  without a digest never mark one.
+- `mode` is `recorded`, `live` or `record`; `results` counts the reports read
+  that include the case. `error` at the top level means the directory could
+  not be read; no directory is an empty list.
+
+`503 evals_unavailable` when the daemon was built without the provider.
+
+## Repo hotspots
+
+### `GET /api/v1/repo/hotspots`
+
+Files and directories ranked by how often agent work on them went wrong
+(#201), for **Repo Analysis → Hotspots**. A run in the history window counts
+when it `failed` or `stalled`, asked for input (`input_request`), was a
+reviewer whose verdict was `block` (`change_request`), or opened a PR that
+was later reverted on the base branch (`reverted`). Each such run is
+attributed to the files its branch changed.
+
+A background job in the daemon computes it, never on the orchestrator's event
+loop: it reads run history and runs read-only git through `internal/gitexec`
+(no fetch), one refresh at a time, at most 100 run lookups per refresh, each
+git call under a 10 s timeout and the refresh under 2 minutes. A request
+returns the latest result at once and starts a refresh only when that result
+is older than 10 minutes (`refreshing: true` while it runs; the dashboard
+polls until it lands). Each run's changed files are cached by run ID, so a
+refresh runs git only for runs it has not attributed yet (an unattributed run
+is retried after an hour).
+
+```json
+{
+  "generatedAt": "2026-10-21T09:05:00Z",
+  "refreshing": false,
+  "repo": "/srv/ws/.bare",
+  "baseRef": "refs/remotes/origin/main",
+  "runsConsidered": 200, "runsWithSignals": 31, "runsAttributed": 27, "runsUnattributed": 4,
+  "files": [
+    {
+      "path": "internal/orchestrator/event_loop.go",
+      "failed": 3, "stalled": 1, "changeRequests": 2, "inputRequests": 0, "reverted": 1, "total": 7,
+      "issues": ["ENG-12", "ENG-40"],
+      "runs": [
+        { "runId": "r-…", "identifier": "ENG-40", "status": "succeeded", "kind": "reviewer", "profile": "reviewer",
+          "finishedAt": "2026-10-21T08:40:00Z", "signals": ["change_request"] }
+      ]
+    }
+  ],
+  "directories": [ { "path": "internal/orchestrator/", "…": "same shape" } ],
+  "notes": ["4 run(s) that went wrong could not be attributed to files: …"]
+}
+```
+
+Rows are sorted by `total` (a run with two signals counts twice), at most 50
+per list, with at most 20 runs each, newest first; a directory counts a run
+once however many of its files the run changed.
+
+How the signals are read, and where they are approximations:
+
+- **Repository.** The shared bare clone in worktree mode with
+  `workspace.clone_url`, the workspace root in plain worktree mode, otherwise
+  the directory holding `WORKFLOW.md`. Refs are as fresh as the daemon's (or
+  your) last fetch. The base is `workspace.base_branch` on origin, else the
+  local branch.
+- **Changed files.** Run history now records each run's branch (the branch
+  its exit reported, else the issue's worktree branch), its PR URL and a
+  reviewer's verdict. While the branch exists and adds commits, the files are
+  `git diff <base>...<branch>` (against the merge base) — the branch's
+  current state, not exactly what that one run changed. Once the branch is
+  merged or gone, they are the files of the commit on the base whose message
+  names the PR (`(#N)` squash subject or `Merge pull request #N`), against
+  its first parent. A run with neither is counted in `runsUnattributed`.
+- **Change requests** count reviewer runs whose recorded verdict was `block`.
+  Reviewer runs recorded before #201 carry no verdict and are not counted (a
+  note says how many).
+- **Reverted PRs** come from the newest 500 commits on the base: a revert
+  subject `Revert "… (#N)"`, a GitHub revert branch `revert-N-…`, or the PR
+  number in the subject of a commit a revert names (`This reverts commit <sha>`).
+  The newest non-reviewer run with that PR URL gets the signal.
+  Reverts outside that window, or of commits that name no PR, are missed.
+- The window is the daemon's run history (the newest 200 runs).
+
+`503 hotspots_unavailable` when the daemon was built without the job.
+
 ---
 
 ## Tracker webhooks

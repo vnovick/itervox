@@ -1,11 +1,11 @@
 ---
 title: Repo Analysis
-description: One dashboard page for repository-level signals — the skills inventory, runtime usage and cost, prompt versions with their outcomes, and the itervox doctor readiness checks.
+description: One dashboard page for repository-level signals — the skills inventory, runtime usage and cost, prompt versions with their outcomes, the itervox doctor readiness checks, the latest eval results and the files where agent work goes wrong.
 sidebar:
   order: 9
 ---
 
-The dashboard's **Repo Analysis** page (`/repo`, in the sidebar after Rules) gathers what Itervox knows about the repository your agents work in: what they load, what it costs, which prompt version produced which runs, and whether the repository is set up for agents. On a wide screen each part is a tab; on a phone they are stacked. Each has a deep link:
+The dashboard's **Repo Analysis** page (`/repo`, in the sidebar after Rules) gathers what Itervox knows about the repository your agents work in: what they load, what it costs, which prompt version produced which runs, whether the repository is set up for agents, how the profile evals score, and where agent work goes wrong. On a wide screen each part is a tab; on a phone they are stacked. Each has a deep link:
 
 | Section | Link | What it shows |
 |---|---|---|
@@ -13,6 +13,8 @@ The dashboard's **Repo Analysis** page (`/repo`, in the sidebar after Rules) gat
 | [Runtime usage and cost](#runtime-usage-and-cost) | `/repo#usage` | Runtime analytics and their recommendations, tokens per profile |
 | [Prompt versions](#prompt-versions) | `/repo#prompts` | Per profile, each prompt version with its runs, success rate and duration |
 | [Agent readiness](#agent-readiness) | `/repo#readiness` | The repository checks `itervox doctor` runs, pass / warn / fail with the fix |
+| [Evals](#evals) | `/repo#evals` | The latest saved eval result per profile and scenario: pass / fail, failed assertions, prompt digest, regressions |
+| [Hotspots](#hotspots) | `/repo#hotspots` | Files and directories ranked by failed or stalled runs, change requests, input requests and reverted PRs |
 
 In the [Mac app](/guides/mac-app/), each daemon's menu has a **Repo Analysis** item that opens this page in the daemon's dashboard window. The command palette lists it too (`g p`).
 
@@ -46,3 +48,22 @@ The repository-level checks of [`itervox doctor`](/cli/#itervox-doctor--check-a-
 | Tracker reachable | one read of the Linear or GitHub API succeeds (local issues need none) | **fail** when it fails or does not answer within 8 seconds; **warn** for a GitHub token without push access |
 
 The checks run when the section opens and on **Re-run checks**, on the request, never on the daemon's dispatch loop: a slow or unreachable tracker delays only this section, by at most its timeout.
+
+## Evals
+
+The latest result of each [profile eval](https://github.com/vnovick/itervox/blob/main/docs/evals.md) scenario, from `GET /api/v1/repo/evals`. `make evals` (replays the committed recordings; free), `ITERVOX_EVALS_LIVE=1 make evals-live` and `make evals-record` save each judged report to `.itervox/evals/<ISO8601>.json` in the project (gitignored; the newest 20 are kept), and this section reads the newest of them. It never starts an eval run: run them from the project root, where the daemon's `WORKFLOW.md` is.
+
+Per profile, each scenario shows **pass** or **fail**, every assertion that failed (a missing or forbidden action, a `forbidden_phrases` match, a missing marker phrase), a live run's error, when and in which mode it ran, and the **prompt version** it ran against — the same digest the [Prompt versions](#prompt-versions) section shows. A live run computes it from the workflow it used; recorded mode reads it from the recording when a live run made it, and shows "unknown" for the hand-written fixtures. A case that fails on the current digest after passing on the previous one is marked **regression**, with both digests: the prompt change is the first suspect.
+
+## Hotspots
+
+Files and directories ranked by how often agent work on them went wrong, from `GET /api/v1/repo/hotspots`. Over the run history (the newest 200 runs), a run counts when it **failed** or **stalled**, **asked for input**, was a reviewer that **requested changes** (verdict `block`), or opened a PR that was later **reverted** on the base branch. Each such run is attributed to the files its branch changed. Each row shows its count per signal, the issues involved (linked to their logs), and the runs (expand **N runs**), with their PR.
+
+The daemon computes it in the background, never on its dispatch loop, and refreshes it at most every 10 minutes; the section shows "Computing…" or "Refreshing…" until a result lands. Git is read-only, through the same scrubbed git runner as the rest of the daemon, with no fetch, and each run's files are cached by run ID, so a refresh only runs git for runs it has not attributed yet. **Files** and **Directories** switch the list; a directory counts a run once however many of its files it changed.
+
+Some signals are approximations, and the notes under the list say when one applied:
+
+- **Files a run changed.** Run history records each run's branch, PR and (for a reviewer) verdict from this release on. While the branch exists, the files are its diff against the merge base with the base branch — the branch's state now, not only that run's commits. Once it is merged or deleted, they are the files of the commit on the base branch whose message names the PR (`(#N)` or `Merge pull request #N`). A run with neither is counted as not attributed.
+- **Repository.** The shared bare clone (worktree mode with `clone_url`), the workspace root (worktree mode), or the project directory otherwise; refs are as fresh as the last fetch.
+- **Change requests** count only reviewer runs recorded with a verdict, so reviews from before this release are left out.
+- **Reverted PRs** are found in the newest 500 commits on the base branch, by `Revert "… (#N)"` subjects, GitHub `revert-N-…` branches, and the PR numbers of commits a revert names.

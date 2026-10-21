@@ -202,6 +202,22 @@ export async function installMockApi(page: Page, scenario: Scenario): Promise<Mo
     if (/\/api\/v1\/history$/.test(path)) {
       return jsonRoute(route, { history: current.snapshot.history ?? [] });
     }
+    // Repo Analysis (#201): no saved eval reports, no hotspots yet.
+    if (/\/api\/v1\/repo\/evals$/.test(path)) {
+      return jsonRoute(route, { dir: '.itervox/evals', reports: [], cases: [] });
+    }
+    if (/\/api\/v1\/repo\/hotspots$/.test(path)) {
+      return jsonRoute(route, {
+        generatedAt: new Date().toISOString(),
+        refreshing: false,
+        runsConsidered: 0,
+        runsWithSignals: 0,
+        runsAttributed: 0,
+        runsUnattributed: 0,
+        files: [],
+        directories: [],
+      });
+    }
     if (/\/api\/v1\/repo\/readiness$/.test(path)) {
       return jsonRoute(route, {
         workflow: 'WORKFLOW.md',
