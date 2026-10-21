@@ -648,6 +648,26 @@ sessions:
 
 ---
 
+## `guardrails`
+
+Limits on what agents Itervox starts may do with git, the GitHub and GitLab
+CLIs and deploy commands (#204). They apply to dispatched runs on the
+daemon's host and to tmux sessions started with **New session**; never to
+sessions started by hand. Read at startup. See the
+[Guardrails guide](https://itervox.dev/guides/guardrails/).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Pushes only to the issue branch (no tags, no protected branches), no `gh pr merge` / `glab mr merge` / merge API calls / merges into the default branch, and a human approval before an `approval_commands` command runs. |
+| `allow_force_push` | bool | `false` | Let an agent force-push and delete its own issue branch. Other branches and tags stay refused. |
+| `approval_commands` | []string | `vercel --prod`, `fly deploy`, `kubectl apply`, `terraform apply`, `gcloud deploy`, `npm publish`, `cargo publish` | Glob-token patterns: the first token matches the program, the rest must match arguments in order (others may sit between). A list replaces the defaults; `[]` turns approvals off. |
+
+Guidance, not a sandbox: an agent that runs git by an absolute path or
+rewrites its own `PATH` / environment is not stopped. Runs on SSH worker
+hosts are not guarded in v1.
+
+---
+
 ## `server`
 
 | Field | Type | Default | Description |

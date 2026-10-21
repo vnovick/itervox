@@ -334,6 +334,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
+	// #204: guardrails for this run's agent (local runs). The runner applies
+	// their environment after the command's own assignments (the action
+	// bridge's PATH below), so the shims stay first on PATH.
+	guardEnv, guard, guardToken := o.prepareRunGuardrails(ctx, issue.Identifier, runLogID, wsPath, workerHost,
+		activeBranchName, turnTimeoutMs, maxTurns)
+	if guard != nil {
+		ctx = agent.WithRunEnv(ctx, guardEnv)
+	}
+	defer func() {
+		o.agentActionTokens.Revoke(guardToken)
+		guard.Remove()
+	}()
+
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
 	// Resolved once from the same cfgMu snapshot as the rest of the profile,
 	// so every turn of this run launches with a consistent permission mode
@@ -366,6 +379,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			pathValue := shimDir
 			if currentPath := os.Getenv("PATH"); currentPath != "" {
 				pathValue = shimDir + string(os.PathListSeparator) + currentPath
+			}
+			if guard != nil { // #204: this assignment replaces PATH; the guardrail shims stay first
+				pathValue = guard.BinDir() + string(os.PathListSeparator) + pathValue
 			}
 			agentCommand = prependEnvToCommand(agentCommand, map[string]string{
 				"ITERVOX_ACTION_TOKEN":       token,
@@ -770,6 +786,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 						issue.BranchName = &b
 						activeBranchName = currentBranch
 						workerLog.Info("worker: branch tracked on issue", "branch", currentBranch)
+						if err := guard.SetIssueBranch(currentBranch); err != nil { // #204
+							workerLog.Warn("guardrails: issue branch not updated", "branch", currentBranch, "error", err)
+						}
 					}
 				}
 			}

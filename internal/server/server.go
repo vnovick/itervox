@@ -1460,6 +1460,9 @@ type Config struct {
 	Rules RulesClient
 	// Memory backs the Memory page endpoints (#202). Nil → 503.
 	Memory MemoryClient
+	// Guardrails backs the guardrail endpoints of agent shims and hooks
+	// (#204). Nil → 501.
+	Guardrails GuardrailsClient
 	// SettingsLayers backs the schema-driven Settings page's layer
 	// endpoints (#158). Nil → 503 (the schema endpoint always answers).
 	SettingsLayers SettingsLayersClient
@@ -1555,6 +1558,7 @@ type Server struct {
 	skills       SkillsClient
 	rules        RulesClient
 	memory       MemoryClient
+	guardrails   GuardrailsClient
 	// settingsLayers mirrors Config.SettingsLayers (#158).
 	settingsLayers SettingsLayersClient
 	depsAnalyzer   DepsAnalyzer
@@ -1617,6 +1621,7 @@ func New(cfg Config) *Server {
 		skills:         skillsClient,
 		rules:          cfg.Rules,
 		memory:         cfg.Memory,
+		guardrails:     cfg.Guardrails,
 		settingsLayers: cfg.SettingsLayers,
 		depsAnalyzer:   cfg.DepsAnalyzer,
 
@@ -1717,6 +1722,10 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
+		// #204: guardrail shims and hooks, gated by the run's guardrail token.
+		r.Post("/agent-actions/{identifier}/guardrail/events", s.handleGuardrailEvent)
+		r.Post("/agent-actions/{identifier}/guardrail/approvals", s.handleGuardrailApprovalRequest)
+		r.Get("/agent-actions/{identifier}/guardrail/approvals/{id}", s.handleGuardrailApprovalStatus)
 		// Tracker webhooks (#131): signed by the webhook secret, not the
 		// bearer token.
 		r.Post("/webhooks/{tracker}", s.handleWebhook)

@@ -153,9 +153,19 @@ func TestUpgradeFromV021(t *testing.T) {
 	out, err := update.CombinedOutput()
 	require.NoError(t, err, "init --update failed:\n%s", out)
 	assert.Contains(t, string(out), "already uses schema 2")
+	assert.Contains(t, string(out), "added the guardrails: block (#204)")
 	migrated, err := os.ReadFile(p.Workflow)
 	require.NoError(t, err)
-	assert.Equal(t, string(original), string(migrated), "a v0.2.1 workflow needs no rewrite")
+	// A v0.2.1 workflow needs no rewrite: the only change is the guardrails:
+	// block (#204) appended to the front matter, every other byte as it was.
+	front, body, ok := splitWorkflowFrontMatter(string(original))
+	require.True(t, ok)
+	if !strings.HasSuffix(front, "\n") {
+		front += "\n"
+	}
+	var block strings.Builder
+	writeGuardrailsBlock(&block)
+	assert.Equal(t, "---\n"+front+block.String()+"---\n"+body, string(migrated))
 	// v0.2.1 wrote the agents and handoff carve-outs; the update adds the
 	// local tracker's issues carve-out (v0.2.2) and the rules layers' lines
 	// (v0.2.5: the project layer committed, the local one ignored), the

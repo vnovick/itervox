@@ -134,7 +134,7 @@ func (c *CodexRunner) RunTurn(
 			// fd 3, not stdin: a login profile that reads stdin cannot eat
 			// the prompt (see ClaudeRunner.RunTurn).
 			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode))
+				RunEnvFrom(ctx).shellPrefix()+buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode))
 			setPromptFD3(cmd, promptIn)
 		}
 	}
@@ -146,7 +146,11 @@ func (c *CodexRunner) RunTurn(
 	// nil, so leaving it unset on any path silently drops the marker. For the
 	// SSH path cmd.Env applies to the local ssh process only — the marker
 	// travels in the shell command instead (see above).
-	cmd.Env = itervoxAgentEnv()
+	var runEnv []string
+	if workerHost == "" {
+		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
+	}
+	cmd.Env = itervoxAgentEnv(runEnv...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

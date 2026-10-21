@@ -84,6 +84,7 @@ var (
 	webhooks        = newCounterVec("tracker", "result")
 	storePulls      = newCounterVec("trigger")
 	tmuxSends       = newCounterVec("kind")
+	guardrailBlocks = newCounterVec("kind")
 	goroutinePanics atomic.Uint64
 	eventsDropped   atomic.Uint64
 )
@@ -168,6 +169,25 @@ func StorePullCount(trigger string) uint64 { return storePulls.get(trigger).Load
 func TmuxSend(kind string) {
 	tmuxSends.get(kind).Add(1)
 }
+
+// GuardrailBlock counts one agent operation a guardrail refused (#204) by
+// kind (internal/guardrails Kinds: branch, force_push, delete, tag,
+// hook_bypass, self_merge, approval_rejected, approval_unavailable). The
+// caller passes only known kinds.
+func GuardrailBlock(kind string) {
+	guardrailBlocks.get(kind).Add(1)
+}
+
+// PreinitGuardrailBlocks exports kinds at 0.
+func PreinitGuardrailBlocks(kinds ...string) {
+	for _, k := range kinds {
+		guardrailBlocks.get(k)
+	}
+}
+
+// GuardrailBlockCount reads one guardrail block counter. A cross-package
+// test reader; kept in production code (deadcode allowlist).
+func GuardrailBlockCount(kind string) uint64 { return guardrailBlocks.get(kind).Load() }
 
 // GoroutinePanic counts one panic recovered on a daemon goroutine. The site
 // is in the panic's own log line; the counter is unlabelled so an alert can
