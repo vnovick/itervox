@@ -215,3 +215,29 @@ func TestWatchDirectoryReadErrorIsReportedNotServed(t *testing.T) {
 	assert.Len(t, got, 1)
 	assert.Empty(t, tr.Problems())
 }
+
+// A read in the gap between the directory watch being added and the watch's
+// first load must not be served from the still-empty entries (#133): it used
+// to see the watch as healthy already and return no issues.
+func TestWatchDoesNotServeReadsBeforeItsFirstLoad(t *testing.T) {
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
+	inGap := make(chan int, 1)
+	prev := watchAddedHook
+	watchAddedHook = func() {
+		got, err := tr.FetchCandidateIssues(context.Background())
+		if err != nil {
+			inGap <- -1
+			return
+		}
+		inGap <- len(got)
+	}
+	t.Cleanup(func() { watchAddedHook = prev })
+	startWatch(t, func(ctx context.Context, changed func()) { tr.Watch(ctx, time.Hour, changed) })
+	select {
+	case n := <-inGap:
+		require.Equal(t, 1, n, "a read between the watch being added and its first load saw no issues")
+	case <-time.After(3 * time.Second):
+		t.Fatal("the watch was never added")
+	}
+}
