@@ -170,6 +170,10 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
   </tr>
 </table>
 
+### Mac menu-bar app
+
+A menu-bar app (built from source with `make desktop`, unsigned for now) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
+
 ### View from your phone, anywhere
 
 The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
