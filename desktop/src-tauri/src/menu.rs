@@ -35,6 +35,9 @@ pub enum MenuAction {
     /// The Sessions window: every daemon's agent sessions (#178).
     OpenSessions,
     RefreshNow,
+    CheckForUpdates,
+    InstallUpdate,
+    InstallCli,
     Quit,
 }
 
@@ -300,6 +303,30 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
     }
 }
 
+/// Inserts the app section (updates, the command-line tool) right above
+/// the Quit item, which stays last. Items are `(label, enabled, action)`;
+/// `None` makes a label.
+pub fn append_app_section(spec: &mut MenuSpec, items: Vec<(String, bool, Option<MenuAction>)>) {
+    if items.is_empty() {
+        return;
+    }
+    // build_menu ends with Separator, Quit.
+    let at = spec
+        .entries
+        .iter()
+        .rposition(|e| matches!(e, MenuEntry::Separator))
+        .unwrap_or(spec.entries.len());
+    let mut section = vec![MenuEntry::Separator];
+    for (n, (label, enabled, action)) in items.into_iter().enumerate() {
+        let id = format!("itervox-app-{n}");
+        if let Some(a) = action {
+            spec.actions.insert(id.clone(), a);
+        }
+        section.push(MenuEntry::Item { id, label, enabled });
+    }
+    spec.entries.splice(at..at, section);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +558,70 @@ mod tests {
             .actions
             .values()
             .any(|a| *a == MenuAction::RemoveRemote("prod".into())));
+    }
+
+    #[test]
+    fn app_section_sits_above_quit() {
+        let mut spec = build_menu(&[view("/up", true)], &[], [].iter(), None);
+        append_app_section(
+            &mut spec,
+            vec![
+                (
+                    "Update available — Install and Restart".into(),
+                    true,
+                    Some(MenuAction::InstallUpdate),
+                ),
+                ("Itervox 0.2.6 (you have 0.2.5)".into(), false, None),
+                (
+                    "Install Command-Line Tool…".into(),
+                    true,
+                    Some(MenuAction::InstallCli),
+                ),
+            ],
+        );
+        let labels: Vec<_> = spec
+            .entries
+            .iter()
+            .map(|e| match e {
+                MenuEntry::Item { label, .. } => label.as_str(),
+                MenuEntry::Separator => "-",
+                MenuEntry::Submenu { .. } => "submenu",
+            })
+            .collect();
+        let n = labels.len();
+        assert_eq!(
+            labels[n - 6..],
+            [
+                "-",
+                "Update available — Install and Restart",
+                "Itervox 0.2.6 (you have 0.2.5)",
+                "Install Command-Line Tool…",
+                "-",
+                "Quit Itervox (daemons keep running)"
+            ]
+        );
+        let install = spec.entries.iter().find_map(|e| match e {
+            MenuEntry::Item { id, label, enabled } if label.starts_with("Update available") => {
+                Some((id.clone(), *enabled))
+            }
+            _ => None,
+        });
+        let (id, enabled) = install.unwrap();
+        assert!(enabled);
+        assert_eq!(spec.actions[&id], MenuAction::InstallUpdate);
+        // Ids stay unique across the whole menu.
+        fn ids<'a>(entries: &'a [MenuEntry], out: &mut Vec<&'a str>) {
+            for e in entries {
+                match e {
+                    MenuEntry::Item { id, .. } => out.push(id),
+                    MenuEntry::Submenu { items, .. } => ids(items, out),
+                    MenuEntry::Separator => {}
+                }
+            }
+        }
+        let mut all = Vec::new();
+        ids(&spec.entries, &mut all);
+        let unique: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(unique.len(), all.len());
     }
 }
