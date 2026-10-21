@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/memory"
 	"github.com/vnovick/itervox/internal/rules"
 )
 
@@ -41,6 +42,10 @@ type runHandle struct {
 	// startRun from the rules files on disk. Set before the worker starts and
 	// never changed, so the worker reads it without a lock.
 	rules rules.Set
+	// memory is the memory the run was dispatched with (#202), selected by
+	// startRun from the memory files on disk. Set before the worker starts
+	// and never changed.
+	memory memory.Selection
 	// usage is the run's latest cumulative usage, recorded by its worker
 	// after every turn whatever the turn's outcome (#136). The worker's exit
 	// carries it, so the event loop settles a run's final usage even when
@@ -139,8 +144,11 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	h.rules = o.resolveRunRules(entry.ProfileName, entry.Backend)
 	used := h.rules.Record()
 	entry.RulesHash, entry.RuleIDs = used.Hash, used.IDs
+	// #202: so are the memory files; the selection depends on the issue.
+	h.memory = o.resolveRunMemory(entry, h.rules)
+	entry.MemoryIDs = h.memory.IDs()
 	// #186: the prompt version this run is dispatched with.
-	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules).digest()
+	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory).digest()
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}

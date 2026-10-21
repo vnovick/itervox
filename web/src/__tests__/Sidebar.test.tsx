@@ -101,4 +101,18 @@ describe('Sidebar', () => {
       .map((l) => l.getAttribute('href'));
     expect(names.indexOf('/repo')).toBe(names.indexOf('/rules') + 1);
   });
+
+  // #202 — Memory is a top-level page, listed after Repo Analysis.
+  it('lists Memory in the main nav after Repo Analysis', () => {
+    renderShell();
+    const links = screen.getAllByRole('link', { name: 'Memory', hidden: true });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) expect(link).toHaveAttribute('href', '/memory');
+    const nav = links[0].closest('nav');
+    if (!nav) throw new Error('Memory link is outside the nav');
+    const names = within(nav)
+      .getAllByRole('link', { hidden: true })
+      .map((l) => l.getAttribute('href'));
+    expect(names.indexOf('/memory')).toBe(names.indexOf('/repo') + 1);
+  });
 });

@@ -169,6 +169,23 @@ func TestRepoReadinessCarveOutsMatchInit(t *testing.T) {
 	assert.Equal(t, server.RepoReadinessPass, c.Status, c.Detail)
 }
 
+// TestRepoReadinessWarnsWithoutMemoryCarveOut (#202): a root .gitignore
+// that hides .itervox/ and has the agents and handoff carve-outs but not
+// !.itervox/memory.json is a warning naming the missing line, so the
+// project-shared memory is not silently left out of commits.
+func TestRepoReadinessWarnsWithoutMemoryCarveOut(t *testing.T) {
+	wf := readinessFixture(t)
+	lines := []string{"node_modules/", ".itervox/", "!.itervox/", "!.itervox/agents/", "!.itervox/agents/**", "!.itervox/handoff/", "!.itervox/handoff/**"}
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(wf), ".gitignore"), []byte(strings.Join(lines, "\n")+"\n"), 0o644))
+	c := gitignoreReadiness(wf)
+	assert.Equal(t, server.RepoReadinessWarn, c.Status)
+	assert.Contains(t, c.Detail, "!.itervox/memory.json")
+	assert.NotContains(t, c.Detail, "!.itervox/agents/**")
+
+	require.NoError(t, patchRootGitignoreForAgents(filepath.Dir(wf)))
+	assert.Equal(t, server.RepoReadinessPass, gitignoreReadiness(wf).Status, "init --update adds it")
+}
+
 // countingTracker counts the candidate reads, one per orchestrator tick.
 type countingTracker struct {
 	*tracker.MemoryTracker

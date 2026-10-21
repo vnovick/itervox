@@ -478,12 +478,17 @@ to the daemon's history file). Each row may carry, besides the fields above
 - `promptDigest` — the run's **prompt version**: 64 hex characters of
   SHA-256 over a versioned, length-prefixed concatenation of the profile's
   `SOUL.md`, its `INSTRUCTIONS.md`, the resolved rule set (sorted by id;
-  each rule's id, severity and text) and the prompt template (the
+  each rule's id, severity and text), the run's memory selection (#202;
+  sorted by id, each entry's id, type and text; left out entirely when the
+  run had no memory, so such runs keep their earlier digest) and the
+  prompt template (the
   `WORKFLOW.md` body, or `agent.reviewer_prompt` for a reviewer run that has
   one), computed when the run is dispatched. Two runs with the same digest
   were given the same prompt inputs. Treat it as an opaque identifier; the
   dashboard shows its first 12 characters.
-- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "template"? }`:
+- `memoryIds` — the ids of the memory entries the run's prompt carried
+  (#202), in block order; omitted when it had none.
+- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "memory"?, "template"? }`:
   16-hex-character digests of each component (absent when the run had none),
   so two versions can be compared part by part. History stores only these
   hashes, never prompt text.
@@ -550,7 +555,7 @@ is reported as `fail` when it does not answer in time.
   "generatedAt": "2026-10-21T10:00:00Z",
   "checks": [
     { "id": "schema_version", "title": "WORKFLOW.md schema 2 marker", "status": "pass", "detail": "itervox_schema_version: 2" },
-    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents and .itervox/handoff committable", "status": "warn",
+    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable", "status": "warn",
       "detail": "the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/** …",
       "fix": "run `itervox init --update --workflow /srv/app/WORKFLOW.md` (adds the carve-outs), or add the lines yourself" }
   ]
@@ -1103,6 +1108,35 @@ Linear project filter (`PUT /projects/filter`) and
 | `DELETE` | `/workspaces` | — | `202 {"ok":true}`; `409 clear_in_progress` while an earlier clear is still running (CORE-114) |
 | `POST` | `/refresh` | — | `202 {"queued":true,"queued_at":"..."}` |
 | `POST` | `/automations/{id}/test` | `{"identifier":"ENG-42"}` (target issue identifier) | `{"ok":true}` |
+
+---
+
+## Memory
+
+The Memory page's endpoints (#202). Memory lives in two files the daemon
+reads again for every run (`~/.itervox/memory.json`, private, and
+`.itervox/memory.json`, project shared; see the configuration reference,
+"Memory files"), so a change applies to the next run and reloads nothing.
+Every write redacts secrets first; text over 2000 bytes (or a list over 32
+items of 512 bytes) is refused.
+
+| Method | Path | Request body | Success response | Errors |
+|---|---|---|---|---|
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry]}` | — |
+| `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
+| `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
+| `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
+| `POST` | `/memory/{id}/pin` | `{"pinned":true\|false}` (empty body pins) | the entry | `404 memory_not_found` |
+| `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
+
+An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
+`text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
+`source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?)
+plus `path` (the file that holds it) and `runs` (the newest runs in history whose prompt
+carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20). A promote's `diff`
+is `git diff` of the project file after the move, or the whole file when git does not track it
+yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
+reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.
 
 ---
 

@@ -1090,6 +1090,23 @@ A remote daemon lists the sessions on its own host. Transcripts are served only 
 
 ---
 
+## memory
+
+How much [managed memory](#memory-files) each run gets. Read at startup (changing it needs a restart; the memory files themselves are read again for every run).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Give runs a `## Memory` block. `false`: no run gets memory; the Memory page can still edit the files. |
+| `token_budget` | int | `2000` | The most tokens (estimated at four bytes each) the memory block may take. Pinned entries are always included; the rest fill what is left, best match first, and the first that does not fit ends the block, so the lowest-ranked are dropped first. Zero or negative falls back to the default. |
+| `prompt_share_tokens` | int | `8000` | The most tokens the rules block and the memory block add to a prompt together. Memory gets what the rules leave, up to `token_budget`; rules are never cut. Pinned entries are the one exception: they are kept even past the share (a warning is logged). Zero or negative falls back to the default. |
+
+```yaml
+memory:
+  token_budget: 1000
+```
+
+---
+
 ## server
 
 Controls the built-in HTTP server that serves the web dashboard and REST API.
@@ -1432,6 +1449,73 @@ It goes ahead of the profile's SOUL.md and INSTRUCTIONS.md, for workers, reviewe
 **Rules editor.** The dashboard's **Rules** page has a tab per layer. The form view edits rules field by field; its save rewrites only the rules and fields that changed, through the same comment-preserving JSONC writer as the settings files, so comments elsewhere in the file stay. The JSON view edits the file as text, checks it against the schema as you type, and saves it exactly as written. A missing file is created on the first save. A save made after the file changed on disk (another tab, an editor) is refused and the page reloads the file. The preview panel shows the effective rules for a profile and an issue (the issue's profile and backend overrides apply), with conflicts and broken layers.
 
 **Git.** `itervox init` and `itervox init --update` keep `.itervox/rules.json` committable (a `!/rules.json` carve-out in `.itervox/.gitignore`, and `!.itervox/rules.json` in a root `.gitignore` that hides `.itervox/`) and add `.itervox/rules.local.json` to the root `.gitignore`.
+
+---
+
+## Memory files
+
+Memory is what Itervox carries from one run to the next: a correction you made once ("this repo uses pnpm, not npm"), a fact ("the staging DB is read-only on Fridays"), a decision, or a lesson. Unlike rules, entries are ranked against each issue and only the best matches go into the prompt, within a budget (see [`memory`](#memory)). Two JSON files hold them:
+
+| Scope | File | Committed |
+|-------|------|-----------|
+| `private` | `~/.itervox/memory.json` (or the path in `ITERVOX_USER_MEMORY`; `off` disables it). On a remote daemon this is the daemon user's home, like the user rules. | never |
+| `project` (project shared) | `.itervox/memory.json` next to `WORKFLOW.md` | yes |
+
+```json
+{
+  "$schema": "https://itervox.dev/schema/memory.schema.json",
+  "memories": [
+    {
+      "id": "m-3f9a1c2b7d",
+      "type": "fact",
+      "text": "This repo uses pnpm, never npm.",
+      "scope": "project",
+      "tags": ["tooling"],
+      "pinned": true,
+      "status": "active",
+      "source": {"kind": "manual", "issue": "ENG-7", "links": ["https://github.com/acme/app/pull/3"]},
+      "created": "2026-10-01T12:00:00Z",
+      "updated": "2026-10-01T12:00:00Z",
+      "lastUsed": "2026-10-02T09:00:00Z",
+      "useCount": 4
+    }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `id` | yes | Letters, digits, `.`, `_`, `-` (64 at most), unique across both files. The dashboard generates `m-<hex>` ids. |
+| `type` | yes | `preference`, `fact`, `decision` or `lesson`. |
+| `text` | yes | What the agent is told. At most 2000 bytes; a longer entry is rejected, never cut. |
+| `scope` | no | Written for reference; the file that holds the entry decides it. |
+| `profiles` | no | Agent profiles the entry is used for (`*` and `?` globs; a run without a named profile is `default`). Empty: every run. |
+| `tags` | no | Free-form. A tag naming one of the issue's labels, or a word of the issue, ranks the entry higher. |
+| `pinned` | no | Always included in the run's memory block. |
+| `status` | yes | `active` (used), `proposed` (a lesson waiting for approval: never used until approved) or `archived` (kept, not used). |
+| `source` | no | Provenance: `kind` (`manual`, `lesson`, …), `issue`, `runIds`, `links` (PRs, comments). |
+| `created`, `updated` | no | Set by the daemon. |
+| `lastUsed`, `useCount` | no | Maintained by the daemon: each run whose prompt carried the entry bumps them. |
+
+Lists hold at most 32 items of at most 512 bytes; a file holds at most 1000 entries. The JSON Schema is published at [`https://itervox.dev/schema/memory.schema.json`](https://itervox.dev/schema/memory.schema.json) (`site/public/schema/memory.schema.json`).
+
+**Secrets.** Every save (the dashboard, the API, a promote) runs the entry through the same redaction as the daemon log, so tokens, keys and passwords are replaced by `***` before anything is written. The rendered block is redacted again, so a secret typed into a file by hand never reaches a prompt either.
+
+**Selection.** At every dispatch the daemon reads both files again, keeps the `active` entries whose `profiles` match the run, and ranks them by how many of their words and tags also appear in the issue's title, description and labels and the profile name (no embeddings; ties go to the more used, then the more recently updated entry). Pinned entries come first and are always included; the rest are added in rank order within the budget. A file that does not parse contributes nothing (the run's log and the daemon log say why) and the dashboard will not rewrite it until it is fixed. The daemon rewrites these files to record usage, so comments are not kept.
+
+**Prompt.** The selection is rendered after the `## Rules` block and ahead of the profile's SOUL.md and INSTRUCTIONS.md:
+
+```markdown
+## Memory
+
+What earlier runs and the people you work with want remembered. Treat each item as context, not as a rule. If one is wrong or out of date for this task, say so in your handoff.
+
+- [fact] This repo uses pnpm, never npm. (m-3f9a1c2b7d)
+```
+
+**Per-run record.** Each run records the ids of the entries its prompt carried as `memoryIds` in run history, and the memory is part of its [prompt version](/guides/repo-analysis/) (`promptParts.memory`): editing an entry's text changes the version, bumping its usage does not. Once the block has reached the agent, the entry's `lastUsed` and `useCount` are updated through the orchestrator's event loop.
+
+**Git.** `itervox init`, `itervox init --update` and the daemon's startup keep `.itervox/memory.json` committable (`!/memory.json` in `.itervox/.gitignore`, and `!.itervox/memory.json` in a root `.gitignore` that hides `.itervox/`); `itervox doctor`'s repo readiness checks the carve-out. See the [Memory guide](/guides/memory/) for the dashboard page.
 
 ---
 

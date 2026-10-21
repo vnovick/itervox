@@ -15,6 +15,7 @@ import {
   AutomationsIcon,
   DashboardIcon,
   LogsIcon,
+  MemoryIcon,
   RepoIcon,
   RulesIcon,
   SessionsIcon,
@@ -40,6 +41,7 @@ const Agents = lazy(() => import('./pages/Agents'));
 const Automations = lazy(() => import('./pages/Automations'));
 const Rules = lazy(() => import('./pages/Rules'));
 const RepoAnalysis = lazy(() => import('./pages/Repo'));
+const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 
@@ -55,6 +57,7 @@ const NAV_ITEMS = [
   { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
   { to: '/rules', icon: <RulesIcon />, label: 'Rules' },
   { to: '/repo', icon: <RepoIcon />, label: 'Repo Analysis' },
+  { to: '/memory', icon: <MemoryIcon />, label: 'Memory' },
   { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
@@ -269,6 +272,16 @@ export function AppRouteTable() {
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
                 <Rules />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/memory"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Memory />
               </PageErrorBoundary>
             </Suspense>
           }

@@ -33,6 +33,7 @@ export default defineConfig({
             { label: 'Automations', slug: 'guides/automations' },
             { label: 'Skills Inventory', slug: 'guides/skills-inventory' },
             { label: 'Repo Analysis', slug: 'guides/repo-analysis' },
+            { label: 'Memory', slug: 'guides/memory' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
             { label: 'Sessions panel', slug: 'guides/sessions' },
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },

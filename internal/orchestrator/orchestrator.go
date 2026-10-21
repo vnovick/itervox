@@ -360,6 +360,11 @@ type Orchestrator struct {
 	// workspace.base_branch (#73), so Run waits for them like the comments.
 	prRetargetWg sync.WaitGroup
 
+	// memoryWg tracks the goroutines that record memory usage (#202):
+	// EventMemoryUsed hands the lastUsed/useCount rewrite of the memory
+	// files to one, and Run waits for them before returning.
+	memoryWg sync.WaitGroup
+
 	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
 	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.
 	// Tests replace them.

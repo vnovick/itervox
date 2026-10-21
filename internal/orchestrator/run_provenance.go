@@ -13,6 +13,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/memory"
 	"github.com/vnovick/itervox/internal/rules"
 )
 
@@ -46,13 +47,16 @@ type PromptParts struct {
 	Soul         string `json:"soul,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 	Rules        string `json:"rules,omitempty"`
-	Template     string `json:"template,omitempty"`
+	// Memory is the digest of the run's `## Memory` block (#202).
+	Memory   string `json:"memory,omitempty"`
+	Template string `json:"template,omitempty"`
 }
 
 // promptComponents are the inputs of a run's prompt version.
 type promptComponents struct {
 	soul, instructions, template string
 	rules                        rules.Set
+	memory                       memory.Selection
 }
 
 // writeField writes a length-prefixed field: an 8-byte big-endian length,
@@ -91,6 +95,33 @@ func canonicalRules(set rules.Set) []byte {
 	return []byte(b.String())
 }
 
+// canonicalMemory serializes the run's memory selection independent of
+// rank order and file: the entries sorted by id, each as its id, type and
+// text (what the prompt's memory block carries). Usage counters and
+// timestamps are left out, so a run that only bumps them does not change
+// the version. nil for an empty selection.
+func canonicalMemory(sel memory.Selection) []byte {
+	if len(sel.Entries) == 0 {
+		return nil
+	}
+	sorted := slices.Clone(sel.Entries)
+	slices.SortFunc(sorted, func(a, b memory.Entry) int {
+		return cmp.Or(cmp.Compare(a.ID, b.ID), cmp.Compare(a.Type, b.Type), cmp.Compare(a.Text, b.Text))
+	})
+	var b strings.Builder
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(sorted)))
+	b.Write(n[:])
+	for _, e := range sorted {
+		for _, f := range []string{e.ID, string(e.Type), e.Text} {
+			binary.BigEndian.PutUint64(n[:], uint64(len(f)))
+			b.Write(n[:])
+			b.WriteString(f)
+		}
+	}
+	return []byte(b.String())
+}
+
 // partDigest is the short digest of one component; "" when it is empty.
 func partDigest(b []byte) string {
 	if len(b) == 0 {
@@ -100,21 +131,27 @@ func partDigest(b []byte) string {
 	return hex.EncodeToString(sum[:])[:promptPartDigestLen]
 }
 
+// digestField is one tagged component of the digest input.
+type digestField struct {
+	tag  string
+	body []byte
+}
+
 // digest returns the run's prompt-version digest (64 hex chars) and its
 // per-component digests. The digest is SHA-256 over a versioned,
 // length-prefixed concatenation of SOUL.md, INSTRUCTIONS.md, the canonical
-// rule set and the prompt template source, in that order.
+// rule set, the canonical memory selection (#202) and the prompt template
+// source, in that order. The memory field is written only when the run has
+// memory, so a run without any keeps the digest it had before memory
+// existed.
 func (c promptComponents) digest() (string, PromptParts) {
-	ruleBytes := canonicalRules(c.rules)
-	fields := []struct {
-		tag  string
-		body []byte
-	}{
-		{"soul", []byte(c.soul)},
-		{"instructions", []byte(c.instructions)},
-		{"rules", ruleBytes},
-		{"template", []byte(c.template)},
+	soul, instructions, template := []byte(c.soul), []byte(c.instructions), []byte(c.template)
+	ruleBytes, memBytes := canonicalRules(c.rules), canonicalMemory(c.memory)
+	fields := []digestField{{"soul", soul}, {"instructions", instructions}, {"rules", ruleBytes}}
+	if len(memBytes) > 0 {
+		fields = append(fields, digestField{"memory", memBytes})
 	}
+	fields = append(fields, digestField{"template", template})
 	h := sha256.New()
 	writeField(h, []byte(promptDigestVersion))
 	for _, f := range fields {
@@ -122,35 +159,37 @@ func (c promptComponents) digest() (string, PromptParts) {
 		writeField(h, f.body)
 	}
 	return hex.EncodeToString(h.Sum(nil)), PromptParts{
-		Soul:         partDigest(fields[0].body),
-		Instructions: partDigest(fields[1].body),
-		Rules:        partDigest(fields[2].body),
-		Template:     partDigest(fields[3].body),
+		Soul:         partDigest(soul),
+		Instructions: partDigest(instructions),
+		Rules:        partDigest(ruleBytes),
+		Memory:       partDigest(memBytes),
+		Template:     partDigest(template),
 	}
 }
 
 // runPromptComponents gathers what a run of entry's profile is prompted
 // with, the way runWorker assembles it: the profile's SOUL.md and
-// INSTRUCTIONS.md, the run's resolved rules, and the WORKFLOW.md body — or
-// agent.reviewer_prompt for a reviewer run when one is configured. Event
-// loop only (startRun); Profiles and ReviewerProfile are cfgMu fields.
-func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set) promptComponents {
+// INSTRUCTIONS.md, the run's resolved rules and memory, and the WORKFLOW.md
+// body — or agent.reviewer_prompt for a reviewer run when one is
+// configured. Event loop only (startRun); Profiles and ReviewerProfile are
+// cfgMu fields.
+func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set, mem memory.Selection) promptComponents {
 	if o == nil || o.cfg == nil || entry == nil {
-		return promptComponents{rules: set}
+		return promptComponents{rules: set, memory: mem}
 	}
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
-	return profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set)
+	return profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set, mem)
 }
 
 // profilePromptComponents is what a run of profile is prompted with under
-// cfg: its SOUL.md and INSTRUCTIONS.md, the resolved rules, and the
+// cfg: its SOUL.md and INSTRUCTIONS.md, the resolved rules and memory, and the
 // WORKFLOW.md body — or agent.reviewer_prompt for a reviewer when one is
 // configured. startRun (via runPromptComponents, under cfgMu) and
 // ComposeEvalPrompt (#201, a loaded config nobody else holds) share it, so
 // an eval and a dispatched run of one prompt version get one digest.
-func profilePromptComponents(cfg *config.Config, profile string, reviewerRun bool, set rules.Set) promptComponents {
-	c := promptComponents{rules: set, template: cfg.PromptTemplate}
+func profilePromptComponents(cfg *config.Config, profile string, reviewerRun bool, set rules.Set, mem memory.Selection) promptComponents {
+	c := promptComponents{rules: set, memory: mem, template: cfg.PromptTemplate}
 	if p, ok := cfg.Agent.Profiles[profile]; ok && profile != "" {
 		c.soul, c.instructions = p.Soul, p.Instructions
 	}

@@ -88,6 +88,8 @@ The first notification may ask for permission; you can change it later in **Syst
 
 **Repo Analysis** opens the same window at the dashboard's [Repo Analysis](/guides/repo-analysis/) page (`<dashboard>/repo`), with the token handed over the same way.
 
+**Memory** opens it at the dashboard's [Memory](/guides/memory/) page (`<dashboard>/memory`) the same way.
+
 ## Sessions window
 
 **Sessions…** in the menu opens one window listing every running agent session of every daemon the app can read — local projects and remote daemons through their tunnels — grouped by daemon. A session waiting for input is badged **needs input** and listed first, and the daemon groups with a waiting session come first; the menu item shows how many are waiting, for example **Sessions… (2 waiting)**. Each daemon reports the sessions on its own host: the app reads its `GET /api/v1/sessions` with the same token it uses for the daemon's state, every few seconds while the window is open. A daemon the app cannot read shows why (for example **token required**); a daemon from a release without the Sessions API says so.
@@ -141,6 +143,7 @@ Each remote shows its state, for example `Prod VM — 2/2 connected · 1 needs i
 
 - **Open Dashboard** opens its dashboard through the tunnel (`http://127.0.0.1:<local>/`) in a window, with the token handed over exactly as for a local daemon.
 - **Repo Analysis** opens that dashboard's [Repo Analysis](/guides/repo-analysis/) page (`/repo`) through the tunnel, the same way.
+- **Memory** opens that dashboard's [Memory](/guides/memory/) page (`/memory`) through the tunnel, the same way.
 - **Enter Token… / Update Token…** reads the token file again, or asks for the token. Use it after the remote daemon restarted with a new auto-generated token (it then shows **token required**).
 
 and for the remote:
