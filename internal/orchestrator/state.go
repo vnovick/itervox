@@ -77,6 +77,19 @@ const (
 	// EventAckFailures records an operator acknowledgement of an issue's
 	// worker failures up to a time (CORE-175).
 	EventAckFailures EventType = "AckFailures"
+	// EventDispatchCronBatch carries one tick of a cron automation whose
+	// filter.limit is set (#176). The loop picks the next `limit` issues
+	// from the rule's rotation cursor and dispatches them, so the selection
+	// and the cursor advance happen together in the event loop.
+	EventDispatchCronBatch EventType = "DispatchCronBatch"
+	// EventDeferStateMove is sent by DeferAgentStateMove (#177): an agent's
+	// move of its issue, which the loop defers while a worker runs on the
+	// issue that reconciliation would stop for it. The loop answers on the
+	// event's reply channel.
+	EventDeferStateMove EventType = "DeferStateMove"
+	// EventDeferredStateMoveSettled carries the outcome of one deferred-move
+	// apply (#177) from its tracker-write goroutine.
+	EventDeferredStateMoveSettled EventType = "DeferredStateMoveSettled"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -96,6 +109,7 @@ type OrchestratorEvent struct { //nolint:revive
 	InputRequiredEntry *InputRequiredEntry      // used by TerminalInputRequired
 	Issue              *domain.Issue            // used by EventDispatchAutomation
 	Automation         *AutomationDispatch      // used by EventDispatchAutomation
+	CronBatch          *CronAutomationBatch     // used by EventDispatchCronBatch
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
 	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
 	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
@@ -109,6 +123,13 @@ type OrchestratorEvent struct { //nolint:revive
 	// DiscardGen identifies the discard operation an EventDiscardComplete
 	// finishes (CORE-109); it must match the marker's Gen to clear it.
 	DiscardGen uint64
+	// DeferredMove is the move of an EventDeferStateMove or
+	// EventDeferredStateMoveSettled (#177).
+	DeferredMove *DeferredStateMove
+	// deferReply receives the loop's decision on an EventDeferStateMove.
+	deferReply chan bool
+	// deferFromState is the tracker state a deferred-move apply observed.
+	deferFromState string
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -665,6 +686,14 @@ type State struct {
 	AutomationDroppedPREventDedupTotal     uint64
 	AutomationDroppedPREventUnmanagedTotal uint64
 
+	// CronCursors (#176) is the filter.limit rotation cursor of each cron
+	// automation: automation ID -> identifier of the last issue that rule's
+	// rotation served. The next tick starts after it (wrapping), so a rule
+	// with more matches than its limit reaches every issue instead of the
+	// first N every time. Event-loop state, persisted with the automation
+	// queue (automation_queue.json) so a restart resumes the rotation.
+	CronCursors map[string]string
+
 	// AutomationDropsSelfReentryTotal is a monotonic counter incremented every
 	// time an `input_required` automation dispatch is suppressed because the
 	// previous worker on this issue was itself an automation-driven run
@@ -722,6 +751,11 @@ type State struct {
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
+	// DeferredStateMoves (#177) holds itervox-originated state moves (an
+	// agent's move_state) deferred until the issue's running worker exits,
+	// keyed by identifier. Persisted to deferred_state_moves.json; while one
+	// is pending, normal dispatch and retries of the issue are held.
+	DeferredStateMoves map[string]DeferredStateMove
 	// Spend is the per-issue spend ledger behind agent.budget and the cost
 	// report (#136), persisted to issue_spend.json.
 	Spend SpendLedger
@@ -821,11 +855,13 @@ func NewState(cfg *config.Config) State {
 		ManagedPRs:         make(map[string]ManagedPR),
 		PREventDispatched:  make(map[string]time.Time),
 		PREventBaselines:   make(map[string]string),
+		CronCursors:        make(map[string]string),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
 		StackOnReviewState: stackOnReviewState(cfg),
 		StackUnavailable:   make(map[string]string),
 		PendingReviews:     make(map[string]PendingReview),
+		DeferredStateMoves: make(map[string]DeferredStateMove),
 		OutboxSyncing:      make(map[string]struct{}),
 	}
 }

@@ -469,31 +469,42 @@ func runCronAutomation(
 	slices.SortFunc(matches, func(a, b domain.Issue) int {
 		return cmp.Compare(a.Identifier, b.Identifier)
 	})
-
-	limit := entry.cfg.Filter.Limit
-	if limit > 0 && len(matches) > limit {
-		matches = matches[:limit]
-	}
 	if len(matches) == 0 {
+		return
+	}
+
+	dispatch := orchestrator.AutomationDispatch{
+		AutomationID: entry.cfg.ID,
+		ProfileName:  entry.cfg.Profile,
+		Instructions: entry.cfg.Instructions,
+		AutoResume:   entry.cfg.Policy.AutoResume,
+		Trigger: orchestrator.AutomationTriggerContext{
+			Type:         config.AutomationTriggerCron,
+			FiredAt:      now,
+			AutomationID: entry.cfg.ID,
+			Cron:         entry.cfg.Trigger.Cron,
+			Timezone:     entry.cfg.Trigger.Timezone,
+		},
+	}
+
+	// #176: with filter.limit set, the event loop picks which `limit`
+	// matches this tick serves, rotating from the rule's persisted cursor and
+	// skipping issues already running or queued for this rule. Truncating
+	// here picked the same first N every tick and starved the rest.
+	if limit := entry.cfg.Filter.Limit; limit > 0 {
+		orch.DispatchCronAutomationBatch(ctx, orchestrator.CronAutomationBatch{
+			Dispatch:   dispatch,
+			Candidates: matches,
+			Limit:      limit,
+		})
 		return
 	}
 
 	count := 0
 	for _, issue := range matches {
-		if orch.DispatchAutomation(ctx, issue, orchestrator.AutomationDispatch{
-			AutomationID: entry.cfg.ID,
-			ProfileName:  entry.cfg.Profile,
-			Instructions: entry.cfg.Instructions,
-			AutoResume:   entry.cfg.Policy.AutoResume,
-			Trigger: orchestrator.AutomationTriggerContext{
-				Type:         config.AutomationTriggerCron,
-				FiredAt:      now,
-				AutomationID: entry.cfg.ID,
-				Cron:         entry.cfg.Trigger.Cron,
-				Timezone:     entry.cfg.Trigger.Timezone,
-				CurrentState: issue.State,
-			},
-		}) {
+		d := dispatch
+		d.Trigger.CurrentState = issue.State
+		if orch.DispatchAutomation(ctx, issue, d) {
 			count++
 		}
 	}

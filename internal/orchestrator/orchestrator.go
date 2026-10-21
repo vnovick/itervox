@@ -158,6 +158,8 @@ type Orchestrator struct {
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string
+	// deferredStateMovesFile persists State.DeferredStateMoves (#177).
+	deferredStateMovesFile string
 	// prEventsFile persists State.ManagedPRs, PREventDispatched and
 	// PREventBaselines (#173).
 	prEventsFile string

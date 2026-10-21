@@ -65,10 +65,12 @@ func (s State) Clone() State {
 	c.ManagedPRs = maps.Clone(s.ManagedPRs) // value type, no reference fields
 	c.PREventDispatched = maps.Clone(s.PREventDispatched)
 	c.PREventBaselines = maps.Clone(s.PREventBaselines)
+	c.CronCursors = maps.Clone(s.CronCursors)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
 	c.StackUnavailable = maps.Clone(s.StackUnavailable)
-	c.PendingReviews = maps.Clone(s.PendingReviews) // value type, no reference fields
+	c.PendingReviews = maps.Clone(s.PendingReviews)         // value type, no reference fields
+	c.DeferredStateMoves = maps.Clone(s.DeferredStateMoves) // value type, no reference fields
 	c.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
 	c.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
