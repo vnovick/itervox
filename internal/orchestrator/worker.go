@@ -196,6 +196,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		if ws.BareFetchFailure != "" {
+			// #195: a failing shared-clone fetch used to be a WARN line only,
+			// so a base that stopped moving went unnoticed. The workspace
+			// reports each distinct failure once until a fetch succeeds.
+			o.RecordFailure(FailureRecord{
+				Kind:       FailureKindWorkspaceFetch,
+				Identifier: issue.Identifier,
+				Source:     "bare_fetch",
+				Message:    ws.BareFetchFailure,
+			})
+		}
 		// #73 follow-up: an issue whose only blocker is in review is admitted
 		// so it can start stacked on that blocker's branch. If its worktree
 		// is not stacked on it (the branch is not here, or a reused worktree

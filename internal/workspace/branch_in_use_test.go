@@ -177,9 +177,13 @@ func TestFindOpenPRURLQueriesWorktreeBranchExplicitly(t *testing.T) {
 	m, _ := prBareManager(t, upstreamWithPRBranch(t))
 	stacked, err := m.EnsureWorkspaceFrom(context.Background(), "B-1", "user/b-1-work", prBranch)
 	require.NoError(t, err)
-	out, err := gitexec.Command(context.Background(), stacked.Path, "config", "--get", "branch.user/b-1-work.merge").Output()
-	require.NoError(t, err)
-	require.Equal(t, "refs/heads/"+prBranch, strings.TrimSpace(string(out)), "precondition: git set the blocker's branch as upstream")
+	// #195 stopped new branches tracking their start point; recreate the
+	// pre-#195 layout (the blocker's branch as upstream) by hand so this
+	// test still pins the explicit branch argument.
+	for _, kv := range [][2]string{{"branch.user/b-1-work.remote", "origin"}, {"branch.user/b-1-work.merge", "refs/heads/" + prBranch}} {
+		out, err := gitexec.Command(context.Background(), stacked.Path, "config", kv[0], kv[1]).CombinedOutput()
+		require.NoError(t, err, "%s", out)
+	}
 
 	dir := t.TempDir()
 	script := `#!/bin/sh

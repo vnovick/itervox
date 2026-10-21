@@ -193,6 +193,9 @@ type DoctorReport struct {
 	// CLI is fatal.
 	AgentCLIs        []string
 	MissingAgentCLIs []string
+	// BareFetch is the shared bare clone's fetch check (#195): a failing
+	// fetch fails doctor; a stale one or the pre-#195 refspec warns.
+	BareFetch BareFetchCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -376,6 +379,13 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Shared bare clone fetch (#195): local git only, no network.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		report.BareFetch = checkBareFetch(ctx, cfg, time.Now())
+		cancel()
+	}
+
 	// Linear assignee scope (#182): the user resolves, and its issues are
 	// readable. An unresolvable user or unknown team fails doctor.
 	if cfg != nil {
@@ -416,6 +426,9 @@ func doctorExitCode(report DoctorReport) int {
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
 	case report.LabelFixError != "":
+		exitCode = 1
+	case report.BareFetch.Failing:
+		// #195: every new worktree starts from a base that no longer moves.
 		exitCode = 1
 	case assigneeCheckFailed(report.Assignee):
 		// #182: the daemon's polls fail until the assignee resolves.
@@ -499,6 +512,7 @@ func renderDoctorReport(r DoctorReport) string {
 		}
 	}
 	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
+	renderBareFetchCheck(&b, r.BareFetch)
 	renderLabelCheck(&b, r.Labels)
 	renderAssigneeCheck(&b, r.Assignee)
 	if r.LabelFixError != "" {

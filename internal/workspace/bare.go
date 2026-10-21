@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vnovick/itervox/internal/gitexec"
 )
@@ -80,11 +81,14 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 	}
 
 	// git clone --bare does not set a fetch refspec by default, so
-	// "git fetch" would be a no-op. Configure one that maps remote branches
-	// directly to refs/heads/* (not refs/remotes/origin/*). This keeps HEAD
-	// valid since HEAD points to refs/heads/<default_branch>.
+	// "git fetch" would be a no-op. Origin's branches go to
+	// refs/remotes/origin/* (#195): mapping them onto refs/heads/* made every
+	// fetch fail once a worktree had one of them checked out, and made new
+	// branches track whatever local branch they started from. HEAD stays
+	// valid: the clone's own refs/heads/<default> is kept and fast-forwarded
+	// from origin after each fetch (see syncLocalBase).
 	refspecCmd := gitexec.Command(ctx, ".", "-C", barePath,
-		"config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
+		"config", "remote.origin.fetch", BareFetchRefspec)
 	refspecCmd.Env = append(refspecCmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := refspecCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("bare: set fetch refspec: %w: %s", err, strings.TrimSpace(string(out)))
@@ -110,15 +114,28 @@ func lockRepo(path string) func() {
 }
 
 // FetchBare runs git fetch --all --prune in the bare clone to update all
-// remote refs. Concurrent calls for one bare clone run one at a time.
+// remote-tracking refs. Concurrent calls for one bare clone run one at a time.
+//
+// A clone made before #195 is migrated first (its legacy refspec rewritten),
+// and the first successful fetch after that repairs branch upstreams that
+// point at another branch. The outcome is recorded in BareFetchStatusFile
+// for `itervox doctor`.
 func FetchBare(ctx context.Context, barePath string) error {
 	unlock := lockRepo(barePath)
 	defer unlock()
+	if err := migrateBareRefspec(ctx, barePath); err != nil {
+		writeBareFetchStatus(barePath, err, time.Now())
+		return err
+	}
 	cmd := gitexec.Command(ctx, ".", "-C", barePath, "fetch", "--all", "--prune")
 	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("bare: fetch: %w: %s", err, strings.TrimSpace(string(out)))
+		ferr := fmt.Errorf("bare: fetch: %w: %s", err, strings.TrimSpace(string(out)))
+		writeBareFetchStatus(barePath, ferr, time.Now())
+		return ferr
 	}
+	writeBareFetchStatus(barePath, nil, time.Now())
+	repairUpstreamsIfPending(ctx, barePath)
 	return nil
 }
 

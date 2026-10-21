@@ -1053,7 +1053,8 @@ type SyncErrorRow struct {
 
 // FailureRow is the wire shape of one orchestrator.FailureRecord (CORE-046).
 // Kind is worker_failed | worker_stalled | tracker_poll | tracker_write |
-// persist | outbox | panic | client (clients must tolerate new kinds).
+// persist | outbox | panic | client | automation | workspace_fetch (clients
+// must tolerate new kinds).
 // OccurredAt is when the producer saw the failure (latest repeat when Count >
 // 1); RecordedAt is when the event loop recorded it. The ring is ordered by
 // RecordedAt; the dashboard sorts by OccurredAt.
