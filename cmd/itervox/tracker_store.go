@@ -61,6 +61,8 @@ func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath stri
 		ActiveStates: t.ActiveStates,
 		Views:        views,
 		SyncInterval: time.Duration(storeSyncIntervalMs(t)) * time.Millisecond,
+		// #114: full pulls in between catch what a changes listing misses.
+		FullSyncInterval: time.Duration(t.Store.FullSyncIntervalMs) * time.Millisecond,
 	})
 	if err != nil {
 		slog.Warn("tracker store: not used", "error", err)
@@ -70,7 +72,8 @@ func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath stri
 		defer failFastOnPanic("tracker-store-sync")
 		s.Run(ctx)
 	}()
-	slog.Info("tracker store: enabled", "path", trackerStorePath(workflowPath), "sync_interval_ms", storeSyncIntervalMs(t))
+	slog.Info("tracker store: enabled", "path", trackerStorePath(workflowPath), "sync_interval_ms", storeSyncIntervalMs(t),
+		"full_sync_interval_ms", t.Store.FullSyncIntervalMs)
 	if !t.Webhooks.Enabled {
 		return wrapped, nil
 	}

@@ -3,9 +3,9 @@ title: Tracker webhooks
 description: Let Linear or GitHub tell Itervox about issue changes as they happen, directly or through a relay, instead of waiting for the next pull.
 ---
 
-With the [tracker store](/configuration/#tracker) on, Itervox answers its list reads from a local copy of your issues and re-pulls them every `tracker.store.sync_interval_ms`. A change made in the tracker (an issue moved to Todo, a label added) is seen at the next pull, and every pull spends rate-limit budget.
+With the [tracker store](/configuration/#tracker) (on by default for Linear and GitHub since v0.2.4), Itervox answers its list reads from a local copy of your issues and re-pulls them every `tracker.store.sync_interval_ms`. A change made in the tracker (an issue moved to Todo, a label added) is seen at the next pull, and every pull spends rate-limit budget.
 
-With webhooks, the tracker tells Itervox as soon as an issue changes. Itervox re-reads just that issue by ID, so it reaches the board within seconds, with no list request. The full pull keeps running as a safety net (every 10 minutes by default) to repair any delivery that was missed.
+With webhooks, the tracker tells Itervox as soon as an issue changes. Itervox re-reads just that issue by ID, so it reaches the board within seconds, with no list request. The store's sync keeps running as a safety net (every 10 minutes by default) to repair any delivery that was missed: on Linear and GitHub each one asks for the issues updated since the last, and a full pull still runs every `tracker.store.full_sync_interval_ms`.
 
 ## How it works
 
@@ -81,12 +81,11 @@ The secret must be at least 16 characters.
 
 ```yaml
 tracker:
-  store:
-    enabled: true
+  # store.enabled is true by default; webhooks need it on.
   webhooks:
     enabled: true
     secret: $ITERVOX_WEBHOOK_SECRET
-    # safety_net_interval_ms: 600000   # the full pull while webhooks are on
+    # safety_net_interval_ms: 600000   # the store's sync interval while webhooks are on
 ```
 
 Restart the daemon. Its log says `tracker webhooks: receiving path=/api/v1/webhooks/<kind>`. A missing or short secret stops the start with an error that says so.

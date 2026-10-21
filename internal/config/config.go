@@ -229,13 +229,21 @@ type TrackerConfig struct {
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
-	// Enabled turns the store on. Default false: until the claim check
-	// (#116) lands, an issue a person moves out of an active state can be
-	// dispatched once more within one sync interval.
+	// Enabled turns the store on (Linear and GitHub only). Default true
+	// (#132): the claim check (#116) re-reads each issue by ID before an
+	// agent starts, so a change a person made since the last sync is seen.
+	// `enabled: false` restores direct polling.
 	Enabled bool
 	// SyncIntervalMs is how often the store re-pulls from the tracker
-	// (default 60000). Reads between syncs cost no tracker requests.
+	// (default 60000). Reads between syncs cost no tracker requests. On
+	// Linear and GitHub a pull asks only for what changed since the last one
+	// (#114).
 	SyncIntervalMs int
+	// FullSyncIntervalMs is how often a pull is a full one even so (#114,
+	// default 3600000): it catches what a changes listing cannot show, such
+	// as an issue moved to another project or repository, or deleted on
+	// GitHub.
+	FullSyncIntervalMs int
 }
 
 // TrackerWebhooksConfig is tracker.webhooks (#131).
@@ -306,6 +314,10 @@ type WorkspaceConfig struct {
 // DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
 // unset.
 const DefaultTrackerStoreSyncIntervalMs = 60000
+
+// DefaultTrackerStoreFullSyncIntervalMs is tracker.store.full_sync_interval_ms
+// when unset or not positive (#114).
+const DefaultTrackerStoreFullSyncIntervalMs = 3600000
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
 //
@@ -824,8 +836,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
 	store := nestedMap(tracker, "store")
 	cfg.Tracker.Store = TrackerStoreConfig{
-		Enabled:        boolField(store, "enabled", false),
-		SyncIntervalMs: positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+		Enabled:            boolField(store, "enabled", true), // #132: on by default
+		SyncIntervalMs:     positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+		FullSyncIntervalMs: positiveIntField(store, "full_sync_interval_ms", DefaultTrackerStoreFullSyncIntervalMs),
 	}
 	wh := nestedMap(tracker, "webhooks")
 	cfg.Tracker.Webhooks = TrackerWebhooksConfig{
