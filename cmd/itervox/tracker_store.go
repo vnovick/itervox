@@ -47,6 +47,10 @@ func trackerStoreScope(cfg *config.Config) string {
 		slices.Sort(labels)
 		parts = append(parts, "labels="+strings.Join(labels, ","))
 	}
+	if len(cfg.Tracker.Filter) > 0 {
+		// #198: another filter is another set of issues.
+		parts = append(parts, "filter="+cfg.Tracker.Filter.Key())
+	}
 	return strings.Join(parts, "|")
 }
 

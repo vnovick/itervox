@@ -1667,6 +1667,8 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee),
 			Team:           strings.TrimSpace(cfg.Tracker.Team),
 			Labels:         cfg.Tracker.Labels,
+			Filter:         cfg.Tracker.Filter, // #198
+			WorkingState:   cfg.Tracker.WorkingState,
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			Endpoint:       cfg.Tracker.Endpoint,
@@ -1682,6 +1684,8 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			// reload.
 			CompletionState: cfg.Tracker.CompletionState,
 			Endpoint:        cfg.Tracker.Endpoint,
+			Filter:          cfg.Tracker.Filter, // #198
+			WorkingState:    cfg.Tracker.WorkingState,
 		}), nil
 	case "local":
 		// #85: one Markdown file per issue under .itervox/issues/; the

@@ -1,5 +1,7 @@
 package automationdef
 
+import "github.com/vnovick/itervox/internal/issuefilter"
+
 // Trigger is the serializable automation trigger definition used by the API
 // and WORKFLOW.md patching code.
 type Trigger struct {
@@ -12,12 +14,15 @@ type Trigger struct {
 // Filter is the serializable automation issue filter definition used by the
 // API and WORKFLOW.md patching code.
 type Filter struct {
-	MatchMode         string   `json:"matchMode,omitempty"`
-	States            []string `json:"states,omitempty"`
-	LabelsAny         []string `json:"labelsAny,omitempty"`
-	IdentifierRegex   string   `json:"identifierRegex,omitempty"`
-	Limit             int      `json:"limit,omitempty"`
-	InputContextRegex string   `json:"inputContextRegex,omitempty"`
+	MatchMode string   `json:"matchMode,omitempty"`
+	States    []string `json:"states,omitempty"`
+	LabelsAny []string `json:"labelsAny,omitempty"`
+	// Groups is the tracker-filter group syntax (#198), kept through the
+	// dashboard round-trip.
+	Groups            issuefilter.Filter `json:"groups,omitempty"`
+	IdentifierRegex   string             `json:"identifierRegex,omitempty"`
+	Limit             int                `json:"limit,omitempty"`
+	InputContextRegex string             `json:"inputContextRegex,omitempty"`
 	// MaxAgeMinutes skips stale input_required entries. Only meaningful on
 	// input_required triggers; config validation rejects it on other types.
 	MaxAgeMinutes int `json:"maxAgeMinutes,omitempty"`

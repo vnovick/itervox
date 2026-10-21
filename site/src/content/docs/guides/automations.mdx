@@ -296,6 +296,7 @@ Supported filters:
 
 - `states`
 - `labels_any`
+- `groups` — the [tracker filter](/configuration/#tracker-filter) group syntax
 - `identifier_regex`
 - `input_context_regex` for `input_required`
 - `body_contains` / `body_regex` for `tracker_comment_added`
@@ -337,6 +338,30 @@ Current UI behavior:
 - free-form typing is still allowed
 
 That is deliberate. Itervox does not currently fetch a tracker-wide label catalogue, so the UI can only suggest labels it has already seen.
+
+### `groups`
+
+The same group syntax as [`tracker.filter`](/configuration/#tracker-filter) (#198): conditions inside a group must all match, and the filter matches when **any** group does. Write `filter:` as the list of groups itself, or put `groups:` beside the other filters, where it is one more check combined by `match_mode`:
+
+```yaml
+automations:
+  - id: plan-agent-work
+    profile: planner
+    trigger: {type: cron, cron: "0 9 * * 1-5"}
+    filter:                          # groups only
+      - labels_any: [agent, ai]
+        labels_none: [blocked, needs-human]
+      - labels_all: [urgent, backend]
+
+  - id: triage-urgent
+    profile: triage
+    trigger: {type: issue_entered_state, state: Todo}
+    filter:
+      states: [Todo]
+      groups: [{priority: [1]}, {labels_any: [incident]}]
+```
+
+`labels_any` keeps working as before. In automations the conditions are evaluated on the issue the trigger fired for: `states` is plain membership, and `assignee` compares the user id (Linear) or login (GitHub) as written — `me` is not resolved here. The dashboard's automation editor keeps groups written in `WORKFLOW.md` when you edit the rule and shows them in the rule's summary; edit them in `WORKFLOW.md`.
 
 ### `identifier_regex`
 

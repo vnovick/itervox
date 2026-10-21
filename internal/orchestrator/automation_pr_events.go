@@ -10,6 +10,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/metrics"
 )
 
@@ -54,6 +55,7 @@ type PREventAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	// CheckNames / Conclusions filter pr_check_completed; ReviewStates /
 	// ReviewAuthors filter pr_review_submitted; MergeableStates filters
@@ -142,7 +144,7 @@ func (o *Orchestrator) DispatchPREventAutomations(ctx context.Context, issue dom
 		if rule.TriggerType != ev.TriggerType || !prEventFilterMatches(rule, ev) {
 			continue
 		}
-		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.Groups, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{

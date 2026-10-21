@@ -12,6 +12,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/metrics"
 )
 
@@ -152,6 +153,7 @@ type InputRequiredAutomation struct {
 	MatchMode         string
 	States            []string
 	LabelsAny         []string
+	Groups            issuefilter.Filter // #198
 	IdentifierRegex   *regexp.Regexp
 	InputContextRegex *regexp.Regexp
 	AutoResume        bool
@@ -173,6 +175,7 @@ type RunFailedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 }
 
@@ -188,6 +191,7 @@ type PROpenedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 }
 
@@ -204,6 +208,7 @@ type RateLimitedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	AutoResume      bool
 	SwitchToProfile string
@@ -221,6 +226,7 @@ type BlockersResolvedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	MoveToState     string
 }
@@ -301,7 +307,7 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL, "error", err)
 			return
 		}
-		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.Groups, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{
@@ -613,6 +619,7 @@ func matchesInputRequiredAutomation(issue domain.Issue, automation InputRequired
 		automation.MatchMode,
 		automation.States,
 		automation.LabelsAny,
+		automation.Groups,
 		automation.IdentifierRegex,
 		automation.InputContextRegex,
 		inputContext,
@@ -637,6 +644,7 @@ func (o *Orchestrator) dispatchMatchingRunFailedAutomations(
 			automation.MatchMode,
 			automation.States,
 			automation.LabelsAny,
+			automation.Groups,
 			automation.IdentifierRegex,
 			nil,
 			"",
@@ -677,6 +685,7 @@ func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
 			automation.MatchMode,
 			automation.States,
 			automation.LabelsAny,
+			automation.Groups,
 			automation.IdentifierRegex,
 			nil,
 			"",
@@ -707,14 +716,15 @@ func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
 // MatchesAutomationFilter is the single automation filter matcher (CORE-111),
 // shared by the orchestrator's trigger dispatchers and cmd/itervox's cron /
 // input-required watcher. Each configured criterion — identifier regex,
-// states (case-insensitive), labels_any (case-insensitive), input-context
-// regex — is one check; match mode "any" needs one to pass, anything else
+// states (case-insensitive), labels_any (case-insensitive), the #198
+// filter groups (any group matching), input-context regex — is one check; match mode "any" needs one to pass, anything else
 // needs all. No criteria matches everything.
 func MatchesAutomationFilter(
 	issue domain.Issue,
 	matchMode string,
 	states []string,
 	labelsAny []string,
+	groups issuefilter.Filter,
 	identifierRegex *regexp.Regexp,
 	inputContextRegex *regexp.Regexp,
 	inputContext string,
@@ -735,6 +745,11 @@ func MatchesAutomationFilter(
 			})
 		})
 		checks = append(checks, labelMatch)
+	}
+	if len(groups) > 0 {
+		// #198: the tracker-filter groups, by the shared matcher.
+		m, _ := groups.Match(issue, issuefilter.Env{})
+		checks = append(checks, m)
 	}
 	if inputContextRegex != nil {
 		checks = append(checks, inputContextRegex.MatchString(inputContext))

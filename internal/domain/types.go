@@ -66,6 +66,25 @@ type Issue struct {
 	Comments  []Comment
 	CreatedAt *time.Time
 	UpdatedAt *time.Time
+
+	// The fields a tracker filter reads (#198), set by the adapters that
+	// know them; empty when unknown or unset. issuefilter.Match reads them.
+	//
+	// ProjectSlug is the Linear project's slug ("" without a project).
+	ProjectSlug string
+	// TeamID and TeamKey identify the Linear team.
+	TeamID  string
+	TeamKey string
+	// Assignees are the assignees' ids (Linear: the one user id; GitHub:
+	// the logins).
+	Assignees []string
+	// CycleID is the Linear cycle's id; CycleActive is whether it is the
+	// team's current cycle.
+	CycleID     string
+	CycleActive bool
+	// Milestone is the Linear project milestone's or GitHub milestone's
+	// name.
+	Milestone string
 }
 
 // BlockerRef — a lightweight reference to a blocking issue.

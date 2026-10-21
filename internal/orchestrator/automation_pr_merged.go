@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"regexp"
+
+	"github.com/vnovick/itervox/internal/issuefilter"
 )
 
 // PRMergedAutomation is the compiled, event-loop-ready form of a `pr_merged`
@@ -15,6 +17,7 @@ type PRMergedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 }
 

@@ -19,6 +19,11 @@ query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: 
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -49,6 +54,11 @@ query ItervoxIssueDetail($id: String!) {
     url
     trashed
     labels { nodes { name } }
+    project { slugId }
+    team { id key }
+    assignee { id }
+    cycle { id isActive }
+    projectMilestone { name }
     inverseRelations(first: 50) {
       nodes {
         type
@@ -126,6 +136,11 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -158,6 +173,11 @@ query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relatio
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -212,6 +232,11 @@ query ItervoxLinearIssueDetailsById($ids: [ID!]!, $first: Int!, $relationFirst: 
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -251,6 +276,11 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -282,10 +312,12 @@ query ItervoxLinearIssuesInScope($ids: [ID!]!, $first: Int!, $relationFirst: Int
       branchName
       url
       trashed
-      project { slugId }
-      assignee { id }
-      team { id key }
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -326,6 +358,11 @@ const candidateNodeFields = `
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -339,13 +376,3 @@ const candidateNodeFields = `
       updatedAt
     }
     pageInfo { hasNextPage endCursor }`
-
-// candidateIssuesQuery builds a paginated candidate poll by state, with
-// extra parameter declarations and an extra filter fragment (ending in
-// ", "). Used for the assignee scope (#182), whose filter depends on whether
-// a team narrows it.
-func candidateIssuesQuery(name, params, filter string) string {
-	return "query " + name + "($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String" + params + ") {\n" +
-		"  issues(filter: {" + filter + "state: {name: {in: $stateNames}}}, first: $first, after: $after) {" +
-		candidateNodeFields + "\n  }\n}"
-}

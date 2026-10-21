@@ -4,15 +4,8 @@ import { useToastStore } from '../store/toastStore';
 import { ApiError, apiRequest } from '../auth/apiRequest';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
 import { SettingsError } from '../auth/SettingsError';
-import type { AutomationDef } from '../types/schemas';
+import type { AutomationDef, FilterGroup } from '../types/schemas';
 import { automationDefToWire, withUnknownAllowedActions } from '../types/configRoundTrip';
-
-/** #182 — PUT /api/v1/tracker/scope body; empty projects = every project, '' assignee = anyone. */
-export interface TrackerScopeInput {
-  projects: string[];
-  assignee: string;
-  labels: string[];
-}
 
 // Read refreshSnapshot from the store directly (not via selector) so
 // the returned action functions have stable references across renders.
@@ -239,9 +232,15 @@ const actions = {
   setProjectFilter: async (slugs: string[] | null): Promise<boolean> =>
     settingsFetch('/api/v1/projects/filter', 'PUT', { slugs }, 'Failed to update project filter.'),
 
-  // #182 — the combined scope: projects AND assignee AND any-of labels.
-  setTrackerScope: async (scope: TrackerScopeInput): Promise<boolean> =>
-    settingsFetch('/api/v1/tracker/scope', 'PUT', scope, 'Failed to update the tracker scope.'),
+  // #198 — the tracker filter: groups ORed, conditions inside a group ANDed;
+  // written to WORKFLOW.md as tracker.filter. [] reads every issue.
+  setTrackerFilter: async (filter: FilterGroup[]): Promise<boolean> =>
+    settingsFetch(
+      '/api/v1/tracker/scope',
+      'PUT',
+      { filter },
+      'Failed to update the tracker filter.',
+    ),
 
   addSSHHost: async (host: string, description: string): Promise<boolean> =>
     settingsFetch(

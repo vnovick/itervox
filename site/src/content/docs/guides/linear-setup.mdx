@@ -60,6 +60,30 @@ tracker:
 - `itervox doctor` checks that the assignee resolves to a user the key can see (exit 1 if not, or if `team` names no team the key can read) and that the key can read the issues assigned to that user across its teams.
 - `tracker.sync` (the local issue sync) accepts `assignee` and `labels` with its required `project_slug`: they narrow the project it pulls from.
 
+### Filter groups: AND, OR and NOT
+
+The keys above are one AND of three filters. For anything else — several required labels, excluded labels, OR across fields, teams, priority, states, cycles or milestones — write `tracker.filter` instead (#198): a list of groups, every condition in a group must match, and an issue is read when **any** group matches.
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  filter:
+    - projects: [eng-platform]        # the agent lane of one project…
+      labels_any: [agent, ai]
+      labels_none: [blocked, needs-human]
+    - assignee: me                    # …OR anything assigned to the bot
+    - teams: [OPS]                    # …OR urgent ops work in the current cycle
+      priority: [1]
+      cycle: current
+```
+
+- Conditions: `projects`, `teams` (key or id), `assignee` (`me`, a user id or an email), `labels_any`, `labels_all`, `labels_none`, `priority` (0 none, 1 urgent, 2 high, 3 normal, 4 low), `states` (narrows `active_states`; `working_state` always stays in, so a dispatched issue is not lost), `cycle` (`current` or a cycle id) and `milestone` (a project milestone name). See the [configuration reference](/configuration/#tracker-filter).
+- `filter` replaces `project_slug`, `assignee`, `team` and `labels`; setting both is a config error naming the keys. The legacy keys mean exactly the one group `{projects, assignee, teams (with the assignee), labels_any}`.
+- Itervox compiles the filter to one Linear `IssueFilter` (`{or: [{and: [...]}, ...]}`), so the poll, the store's pulls, the webhook refresh, the dependency analyzer and automation polls read the same issues. `labels_all` requires each label (one `labels.some` per label); `labels_none` keeps unlabelled issues.
+- **Settings → Tracker Scope** is a group builder: add or remove groups, add conditions with pickers fed by your projects, teams, labels and users, with **AND** inside a group and **OR** between groups marked, and a live count of the issues the draft matches (read-only, refreshed as you edit). Saving writes `tracker.filter` to `WORKFLOW.md` as one line and comments the legacy keys out, without a reload. The header summarises it, e.g. `eng-platform · agent|ai · ¬blocked ¬needs-human  OR  me`.
+- `itervox doctor` validates the filter, resolves its assignees and prints how many issues in the active states it matches.
+
 ## Initialize WORKFLOW.md
 
 Run the init command from the root of your repository:

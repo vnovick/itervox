@@ -222,6 +222,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			ScopeAssignee:                scopeView.assignee,
 			ScopeAssigneeName:            scopeView.assigneeName,
 			ScopeLabels:                  scopeView.labels,
+			FilterConditions:             scopeView.conditions, // #198
 			AvailableProfiles:            availableProfiles,
 			ProfileDefs:                  profileDefs,
 			ActiveStates:                 activeStates,

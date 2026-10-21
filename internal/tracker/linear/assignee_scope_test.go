@@ -45,6 +45,10 @@ type fakeIssue struct {
 	id, identifier, state, assignee, teamID, teamKey, project string
 	labels                                                    []string
 	updatedAt                                                 time.Time
+	// #198 filter fields.
+	priority         int
+	cycle, milestone string
+	cycleActive      bool
 }
 
 type fakeUser struct{ id, name, email string }
@@ -56,6 +60,7 @@ type fakeLinear struct {
 	users  []fakeUser
 	viewer string
 	hidden bool // list reads return nothing (a cold store pull before the issues exist)
+	teams  []map[string]any
 	ops    []string
 }
 
@@ -79,11 +84,11 @@ func newFakeLinear(t *testing.T) (*fakeLinear, *httptest.Server) {
 			{otherID, "Ada Lovelace", "ada@example.com"},
 		},
 		issues: []*fakeIssue{
-			{issueUUID(1), "ENG-1", "Todo", meID, engID, "ENG", "alpha", []string{"agent"}, at},
-			{issueUUID(2), "OPS-2", "In Progress", meID, opsID, "OPS", "beta", nil, at},
-			{issueUUID(3), "ENG-3", "Backlog", meID, engID, "ENG", "", []string{"agent", "bug"}, at},
-			{issueUUID(4), "ENG-4", "Todo", otherID, engID, "ENG", "alpha", []string{"agent"}, at},
-			{issueUUID(5), "ENG-5", "Todo", "", engID, "ENG", "alpha", []string{"bug"}, at},
+			{issueUUID(1), "ENG-1", "Todo", meID, engID, "ENG", "alpha", []string{"agent"}, at, 0, "", "", false},
+			{issueUUID(2), "OPS-2", "In Progress", meID, opsID, "OPS", "beta", nil, at, 0, "", "", false},
+			{issueUUID(3), "ENG-3", "Backlog", meID, engID, "ENG", "", []string{"agent", "bug"}, at, 0, "", "", false},
+			{issueUUID(4), "ENG-4", "Todo", otherID, engID, "ENG", "alpha", []string{"agent"}, at, 0, "", "", false},
+			{issueUUID(5), "ENG-5", "Todo", "", engID, "ENG", "alpha", []string{"bug"}, at, 0, "", "", false},
 		},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
@@ -149,6 +154,12 @@ func (f *fakeLinear) answer(op string, req gqlRequest) map[string]any {
 		return map[string]any{"data": map[string]any{"issues": map[string]any{
 			"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false},
 		}}}
+	case "ItervoxScopeTeams":
+		nodes := []any{}
+		for _, tm := range f.teams {
+			nodes = append(nodes, tm)
+		}
+		return map[string]any{"data": map[string]any{"teams": map[string]any{"nodes": nodes}}}
 	case "ItervoxLinearIssuesInScope":
 		ids, _ := v["ids"].([]any)
 		var nodes []any
@@ -191,6 +202,10 @@ func (f *fakeLinear) matches(is *fakeIssue, req gqlRequest) bool {
 	if names, ok := v["stateNames"].([]any); ok && !slices.Contains(names, any(is.state)) {
 		return false
 	}
+	// #198: the compiled IssueFilter variable, evaluated for real.
+	if fv, ok := v["filter"].(map[string]any); ok && !evalIssueFilter(f.t, is, fv) {
+		return false
+	}
 	if since, ok := v["since"].(string); ok {
 		s, err := time.Parse(time.RFC3339Nano, since)
 		require.NoError(f.t, err)
@@ -221,6 +236,13 @@ func (is *fakeIssue) node() map[string]any {
 	}
 	if is.project != "" {
 		n["project"] = map[string]any{"slugId": is.project}
+	}
+	n["priority"] = is.priority
+	if is.cycle != "" {
+		n["cycle"] = map[string]any{"id": is.cycle, "isActive": is.cycleActive}
+	}
+	if is.milestone != "" {
+		n["projectMilestone"] = map[string]any{"name": is.milestone}
 	}
 	return n
 }

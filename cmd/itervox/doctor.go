@@ -168,6 +168,9 @@ type DoctorReport struct {
 	// Assignee is the Linear assignee-scope check (#182). Zero value when
 	// the tracker has no assignee scope.
 	Assignee AssigneeCheck
+	// Filter is the tracker.filter check (#198): validated with the
+	// workflow, then its match count. Zero value without tracker.filter.
+	Filter FilterCheck
 	// LabelFixError is why `doctor --fix` did not finish repairing the
 	// labels (a failed create or re-check). Non-empty means exit 1.
 	LabelFixError string
@@ -394,6 +397,14 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// tracker.filter (#198): its assignees resolve, and how many issues it
+	// matches. An unresolvable assignee fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), filterCheckTimeout)
+		report.Filter = checkTrackerFilter(ctx, cfg, report.SchemaPassed)
+		cancel()
+	}
+
 	return report, cfg
 }
 
@@ -432,6 +443,9 @@ func doctorExitCode(report DoctorReport) int {
 		exitCode = 1
 	case assigneeCheckFailed(report.Assignee):
 		// #182: the daemon's polls fail until the assignee resolves.
+		exitCode = 1
+	case filterCheckFailed(report.Filter):
+		// #198: likewise for a tracker.filter assignee.
 		exitCode = 1
 	}
 	return exitCode
@@ -515,6 +529,7 @@ func renderDoctorReport(r DoctorReport) string {
 	renderBareFetchCheck(&b, r.BareFetch)
 	renderLabelCheck(&b, r.Labels)
 	renderAssigneeCheck(&b, r.Assignee)
+	renderFilterCheck(&b, r.Filter)
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}

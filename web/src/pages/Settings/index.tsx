@@ -4,6 +4,7 @@ import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
 import { DependenciesCard } from './DependenciesCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
+import { TrackerFilterCard } from './trackerFilter/TrackerFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
 import { SkillsCard } from './SkillsCard';
 import { RetriesCard } from './RetriesCard';
@@ -26,6 +27,7 @@ export default function Settings() {
     inlineInput,
     trackerKind,
     activeProjectFilter,
+    filterSupported,
     maxRetries,
     failedState,
     maxSwitchesPerIssuePerWindow,
@@ -35,7 +37,7 @@ export default function Settings() {
     setAutoClearWorkspace,
     setDepsAnalysisMode,
     setProjectFilter,
-    setTrackerScope,
+    setTrackerFilter,
     setInlineInput,
     setMaxRetries,
     setFailedState,
@@ -93,12 +95,15 @@ export default function Settings() {
               initialCompletionState={completionState}
               onSave={updateTrackerStates}
             />
-            {trackerKind === 'linear' && (
-              <ProjectFilterCard
-                activeFilter={activeProjectFilter}
-                onSetFilter={setProjectFilter}
-                onSetScope={setTrackerScope}
-              />
+            {filterSupported ? (
+              <TrackerFilterCard onSave={setTrackerFilter} />
+            ) : (
+              trackerKind === 'linear' && (
+                <ProjectFilterCard
+                  activeFilter={activeProjectFilter}
+                  onSetFilter={setProjectFilter}
+                />
+              )
             )}
           </div>
         </section>

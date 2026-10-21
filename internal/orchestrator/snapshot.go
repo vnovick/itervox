@@ -793,6 +793,7 @@ func copyDomainIssue(issue domain.Issue) domain.Issue {
 	cp.Labels = append([]string(nil), issue.Labels...)
 	cp.BlockedBy = copyBlockerRefs(issue.BlockedBy)
 	cp.Comments = append([]domain.Comment(nil), issue.Comments...)
+	cp.Assignees = append([]string(nil), issue.Assignees...) // #198
 	return cp
 }
 

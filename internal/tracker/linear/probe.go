@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/issuefilter"
 )
 
 // ProbeViewer is a read-only credential check (CORE-063, `itervox doctor
@@ -57,15 +57,15 @@ func (c *Client) ProbeAssigneeScope(ctx context.Context) (AssigneeProbe, error) 
 	}
 	// The assignee (and team) alone: the check is whether the key can read
 	// the user's issues across its teams, whatever the project and labels.
-	bs, err := c.scopeBuckets(ctx, tracker.Scope{Assignee: spec})
+	f := issuefilter.FromLegacy(nil, spec, c.cfg.Team, nil)
+	groups, err := c.compileFilter(ctx, f)
 	if err != nil {
 		return AssigneeProbe{}, err
 	}
-	b := bs[0]
-	query := "query ItervoxDoctorAssigneeReads(" + strings.TrimPrefix(b.params, ", ") + ") {\n" +
+	query := "query ItervoxDoctorAssigneeReads($filter: IssueFilter!) {\n" +
 		"  teams(first: 100) { nodes { id key } }\n" +
-		"  issues(filter: {" + strings.TrimSuffix(b.filter, ", ") + "}, first: 50) { nodes { team { key } } }\n}"
-	body, err := c.graphql(ctx, query, b.vars)
+		"  issues(filter: $filter, first: 50) { nodes { team { key } } }\n}"
+	body, err := c.graphql(ctx, query, map[string]any{"filter": groups})
 	if err != nil {
 		return AssigneeProbe{}, err
 	}

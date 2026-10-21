@@ -84,6 +84,23 @@ func normalizeIssue(raw map[string]any, derivedState string) *domain.Issue {
 	}
 	// branch_name: always nil for GitHub
 	issue.BranchName = nil
+	// #198: the fields a tracker filter reads.
+	if assignees, ok := raw["assignees"].([]any); ok {
+		for _, a := range assignees {
+			if obj, ok := a.(map[string]any); ok {
+				if login, _ := obj["login"].(string); login != "" {
+					issue.Assignees = append(issue.Assignees, login)
+				}
+			}
+		}
+	} else if a, ok := raw["assignee"].(map[string]any); ok {
+		if login, _ := a["login"].(string); login != "" {
+			issue.Assignees = []string{login}
+		}
+	}
+	if m, ok := raw["milestone"].(map[string]any); ok {
+		issue.Milestone, _ = m["title"].(string)
+	}
 
 	return issue
 }
