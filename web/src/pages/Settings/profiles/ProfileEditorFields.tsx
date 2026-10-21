@@ -18,6 +18,8 @@ import {
   selectCls,
 } from '../formStyles';
 import { MarkdownPromptEditor } from './MarkdownPromptEditor';
+import { ProfileReferencePicker } from './ProfileReferencePicker';
+import { appendReference, guessProfileBackend } from './backendInventory';
 
 function ModelInput({
   id,
@@ -125,6 +127,8 @@ interface ProfileEditorFieldsProps {
   onAllowedActionsChange: (value: AllowedAgentAction[]) => void;
   onCreateIssueStateChange: (value: string) => void;
   dynamicModels?: Record<string, ModelOption[]>;
+  /** Profile name, used in reference-check messages (#123). */
+  profileName?: string;
 }
 
 export function ProfileEditorFields({
@@ -150,6 +154,7 @@ export function ProfileEditorFields({
   onAllowedActionsChange,
   onCreateIssueStateChange,
   dynamicModels,
+  profileName = '',
 }: ProfileEditorFieldsProps) {
   const isCustomCommand = !isSimpleBackendCommand(command, backend);
   const canCreateIssue = allowedActions.includes('create_issue');
@@ -158,6 +163,11 @@ export function ProfileEditorFields({
   const [prevIsCustomCommand, setPrevIsCustomCommand] = useState(isCustomCommand);
   const isFileBacked =
     !!soulFile || !!instructionsFile || soul !== undefined || instructions !== undefined;
+  // The prompt editors check references and filter suggestions for this
+  // draft's backend (#123); the daemon resolves it from command + backend.
+  const profileContext = { name: profileName, command, backend };
+  const instructionsValue = instructions ?? prompt;
+  const onInstructions = onInstructionsChange ?? onPromptChange;
 
   if (isCustomCommand !== prevIsCustomCommand) {
     setPrevIsCustomCommand(isCustomCommand);
@@ -287,6 +297,7 @@ export function ProfileEditorFields({
             onChange={onSoulChange ?? (() => {})}
             label="SOUL.md"
             placeholder="Describe this profile's stable identity, purpose, boundaries, and collaboration style."
+            profile={profileContext}
             helperText={
               <>
                 {soulFile && (
@@ -299,9 +310,10 @@ export function ProfileEditorFields({
             }
           />
           <MarkdownPromptEditor
-            value={instructions ?? prompt}
-            onChange={onInstructionsChange ?? onPromptChange}
+            value={instructionsValue}
+            onChange={onInstructions}
             label="INSTRUCTIONS.md"
+            profile={profileContext}
             placeholder="Write this profile's workflow rules, checklists, and done criteria."
             helperText={
               <>
@@ -317,8 +329,15 @@ export function ProfileEditorFields({
           />
         </div>
       ) : (
-        <MarkdownPromptEditor value={prompt} onChange={onPromptChange} />
+        <MarkdownPromptEditor value={prompt} onChange={onPromptChange} profile={profileContext} />
       )}
+
+      <ProfileReferencePicker
+        backend={guessProfileBackend(command, backend)}
+        onInsert={(reference) => {
+          onInstructions(appendReference(instructionsValue, reference));
+        }}
+      />
 
       <details
         className={fieldSurfaceCls}

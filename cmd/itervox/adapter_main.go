@@ -353,6 +353,9 @@ func (a *orchestratorAdapter) PostOperatorComment(ctx context.Context, identifie
 			IssueID:    issue.ID,
 			Identifier: issue.Identifier,
 			Body:       body,
+			// #115: the operator who wrote it is watching for it, so it
+			// skips the push interval.
+			Urgent: true,
 		})
 	}
 	_, err = a.tr.CreateComment(ctx, issue.ID, body)

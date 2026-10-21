@@ -60,6 +60,14 @@ func (o *Orchestrator) reconcileAndOverlayOutbox(issues []domain.Issue, now time
 			syncing[issue.Identifier] = struct{}{}
 		}
 	}
+	// #115: a queued move can take its issue out of the candidate list (the
+	// tracker store lays it over the list), yet the board still shows the
+	// card in its new column and must badge it as syncing.
+	for _, entry := range o.outbox.Snapshot() {
+		if entry.Kind == outbox.KindUpdateState && entry.Identifier != "" {
+			syncing[entry.Identifier] = struct{}{}
+		}
+	}
 	return syncing
 }
 
@@ -82,6 +90,16 @@ func (o *Orchestrator) reconcileAndOverlayOutbox(issues []domain.Issue, now time
 // only leave the outbox via a successful flush or an explicit operator
 // discard (a later task's DELETE /api/v1/outbox/{id} endpoint).
 func (o *Orchestrator) reconcilePendingOutboxEntries(issue domain.Issue, _ time.Time) {
+	// #115: behind the local tracker store the listed state already carries
+	// the pending overlay, which equals the queued target by construction,
+	// so judging against it would drop every queued move as
+	// "already_applied" before it was pushed. Judge against the store's
+	// copy of the tracker state instead.
+	if tc, ok := o.tracker.(trackerCopier); ok {
+		if observed, found := tc.TrackerCopy(issue.ID); found {
+			issue = observed
+		}
+	}
 	for _, entry := range o.outbox.PendingFor(issue.ID) {
 		if entry.Kind != outbox.KindUpdateState {
 			continue
@@ -90,6 +108,12 @@ func (o *Orchestrator) reconcilePendingOutboxEntries(issue domain.Issue, _ time.
 			o.outbox.Drop(entry.ID, reason)
 		}
 	}
+}
+
+// trackerCopier is the local tracker store's view of an issue as the
+// tracker last reported it, without the pending-write overlay (#115).
+type trackerCopier interface {
+	TrackerCopy(id string) (domain.Issue, bool)
 }
 
 // lastPendingUpdateStateTarget returns the TargetState of the most
