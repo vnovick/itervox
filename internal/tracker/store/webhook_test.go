@@ -280,7 +280,11 @@ func TestWebhooksKeepListPullsAtTheSafetyNet(t *testing.T) {
 	pulls := metrics.StorePullCount(metrics.StorePullInterval) - intervalPulls
 	assert.LessOrEqual(t, pulls, uint64(elapsed/safetyNet)+1, "pulls run at the safety-net interval")
 	// One list request per configured view plus the candidates per pull.
-	assert.LessOrEqual(t, tr.listCalls()-lists, int64(pulls)*2)
+	// A pull is counted when it starts, before its list requests: one that
+	// started before the baselines above (the cold pull racing the setup's
+	// first read) can still send its requests after them, so the bound
+	// allows that one pull.
+	assert.LessOrEqual(t, tr.listCalls()-lists, int64(pulls+1)*2)
 	assert.Positive(t, tr.scoped.Load(), "deliveries were applied by ID")
 	got, _ := s.FetchCandidateIssues(t.Context())
 	assert.Greater(t, len(got), 1, "new issues reached the board")
