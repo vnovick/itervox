@@ -56,6 +56,11 @@ func (t *Tracker) Watch(ctx context.Context, rescan time.Duration, changed func(
 	t.watch(ctx, w.Events, w.Errors, rescan, changed, add)
 }
 
+// watchAddedHook runs right after the directory watch is added and before
+// the rescan that lets the watch serve reads. Tests use it to read in that
+// gap; it does nothing in production.
+var watchAddedHook = func() {}
+
 // watch is Watch's loop over an event source. add (re)starts the directory
 // watch and reports whether it holds; nil means there are no file events.
 func (t *Tracker) watch(ctx context.Context, events <-chan fsnotify.Event, errs <-chan error, rescan time.Duration, changed func(), add func() bool) {
@@ -79,13 +84,18 @@ func (t *Tracker) watch(ctx context.Context, events <-chan fsnotify.Event, errs 
 
 	var seen uint64
 	check := func() {
+		on := watching
 		if !watching && add != nil {
 			// Before the rescan, so an edit made after the directory
 			// (re)appeared is either rescanned now or seen as an event.
-			setWatching(add())
+			on = add()
+			watchAddedHook()
 		}
 		t.mu.Lock()
 		_ = t.refreshLocked() // a failed scan is kept in scanErr: reads rescan and report it
+		// Marked watched only together with the rescan (#133): a read
+		// between the two would otherwise be served stale entries.
+		watching, t.watched = on, on
 		n := t.changes
 		t.mu.Unlock()
 		// Compared with the count, not the result of this rescan: a tracker
@@ -95,13 +105,17 @@ func (t *Tracker) watch(ctx context.Context, events <-chan fsnotify.Event, errs 
 			changed()
 		}
 	}
+	on := false
 	if add != nil {
-		setWatching(add())
+		on = add()
+		watchAddedHook()
 	}
 	// Load the entries the watch now serves; what is already on disk is not
-	// a change.
+	// a change. The watch only serves reads once they are loaded: a read
+	// between add and this rescan must rescan itself, not see no entries.
 	t.mu.Lock()
 	_ = t.refreshLocked()
+	watching, t.watched = on, on
 	seen = t.changes
 	t.mu.Unlock()
 	dir := filepath.Clean(t.dir)
