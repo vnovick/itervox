@@ -30,6 +30,8 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			Enabled:          enabledField,
 			AllowedActions:   config.NormalizeAllowedActions(profile.AllowedActions),
 			CreateIssueState: strings.TrimSpace(profile.CreateIssueState),
+			PermissionMode:   strings.TrimSpace(profile.PermissionMode),
+			RequireEvidence:  config.NormalizeEvidenceChecks(profile.RequireEvidence),
 		}
 	}
 	return out
@@ -123,36 +125,68 @@ func removeAutomationsForProfile(
 	return updated, changed
 }
 
-func persistReviewerConfig(path, profile string, autoReview bool) error {
-	return workflow.PatchReviewerConfig(path, profile, autoReview)
+// persistReviewerConfig saves agent.reviewer_profile and agent.auto_review
+// to .itervox/settings.jsonc (#129, see persistSettings). Both are written
+// explicitly, "" and false included, so a value in the user settings file
+// cannot show through a cleared reviewer.
+func persistReviewerConfig(path, profile string, autoReview bool, extra ...workflow.Mutator) error {
+	return persistSettings(path, reviewerSettings(profile, autoReview), extra...)
+}
+
+func reviewerSettings(profile string, autoReview bool) []setting {
+	return []setting{
+		{Key: "agent.reviewer_profile", Value: profile},
+		{Key: "agent.auto_review", Value: autoReview},
+	}
 }
 
 // persistTrackerStates is a self-write (CORE-116/CORE-160): the caller
 // applies the lists in memory through SetTrackerStatesCfg AND the tracker
 // client's tracker.StateListSetter, so the save needs no reload and never
-// stops an in-flight turn.
+// stops an in-flight turn. tracker.* is not a layered section, so it stays in
+// WORKFLOW.md.
 func persistTrackerStates(path string, active, terminal []string, completion string) error {
 	return workflow.ApplyAndWriteFrontMatter(path, workflow.MutateTrackerStates(active, terminal, completion))
 }
 
-func persistMaxRetries(path string, n int) error {
-	return workflow.PatchAgentMaxRetries(path, n)
+// persistMaxWorkers saves agent.max_concurrent_agents (dashboard SetWorkers,
+// BumpWorkers and the TUI's worker keys).
+func persistMaxWorkers(path string, n int) error {
+	return persistSettings(path, []setting{{Key: "agent.max_concurrent_agents", Value: n}})
 }
 
+// persistSSHHosts saves agent.ssh_hosts and agent.ssh_host_descriptions in
+// one write of each file (T-30/T-40: no torn pair). Both are written whole:
+// an empty list or map is written as such, not removed, so the project file
+// states the dashboard's list.
+func persistSSHHosts(path string, hosts []string, descs map[string]string) error {
+	if hosts == nil {
+		hosts = []string{}
+	}
+	if descs == nil {
+		descs = map[string]string{}
+	}
+	return persistSettings(path, []setting{
+		{Key: "agent.ssh_hosts", Value: hosts},
+		{Key: "agent.ssh_host_descriptions", Value: descs},
+	})
+}
+
+func persistMaxRetries(path string, n int) error {
+	return persistSettings(path, []setting{{Key: "agent.max_retries", Value: n}})
+}
+
+// persistFailedState writes WORKFLOW.md: tracker.* is not layered.
 func persistFailedState(path, stateName string) error {
 	return workflow.PatchTrackerFailedState(path, stateName)
 }
 
-// persistMaxSwitchesPerIssuePerWindow / persistSwitchWindowHours (gap E)
-// reuse the same MutateAgentIntField shape as G's max_retries patcher.
 func persistMaxSwitchesPerIssuePerWindow(path string, n int) error {
-	return workflow.ApplyAndWriteFrontMatter(path,
-		workflow.MutateAgentIntField("max_switches_per_issue_per_window", n))
+	return persistSettings(path, []setting{{Key: "agent.max_switches_per_issue_per_window", Value: n}})
 }
 
 func persistSwitchWindowHours(path string, h int) error {
-	return workflow.ApplyAndWriteFrontMatter(path,
-		workflow.MutateAgentIntField("switch_window_hours", h))
+	return persistSettings(path, []setting{{Key: "agent.switch_window_hours", Value: h}})
 }
 
 // reloadPlanForRunExit classifies why run() returned and returns the message

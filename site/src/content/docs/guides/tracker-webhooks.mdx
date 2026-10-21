@@ -1,0 +1,100 @@
+---
+title: Tracker webhooks
+description: Let Linear or GitHub tell Itervox about issue changes as they happen, directly or through a relay, instead of waiting for the next pull.
+---
+
+With the [tracker store](/configuration/#tracker) (on by default for Linear and GitHub since v0.2.4), Itervox answers its list reads from a local copy of your issues and re-pulls them every `tracker.store.sync_interval_ms`. A change made in the tracker (an issue moved to Todo, a label added) is seen at the next pull, and every pull spends rate-limit budget.
+
+With webhooks, the tracker tells Itervox as soon as an issue changes. Itervox re-reads just that issue by ID, so it reaches the board within seconds, with no list request. The store's sync keeps running as a safety net (every 10 minutes by default) to repair any delivery that was missed: on Linear and GitHub each one asks for the issues updated since the last, and a full pull still runs every `tracker.store.full_sync_interval_ms`.
+
+## How it works
+
+- Itervox serves `POST /api/v1/webhooks/linear` or `POST /api/v1/webhooks/github` on its normal port.
+- Every delivery must be signed with your webhook secret (HMAC-SHA256). An unsigned or wrongly signed delivery is dropped with `401`, and so is a Linear delivery more than a minute old (a replayed one).
+- A delivery only names issues. Itervox re-reads them from the tracker by ID, in one batch per burst: the payload itself never changes the board.
+- Each issue read back is checked against your scope (`project_slug` or the dashboard's project filter on Linear, the repository on GitHub). An issue in scope is placed on the board, a new one included. An issue that left the project, or was deleted or transferred, is removed. An issue of another project costs that one read and nothing more.
+- Comments, pull requests, other repositories and other event types are acknowledged and ignored.
+
+## 1. Make the daemon reachable
+
+The tracker has to reach the daemon over HTTPS. Pick one:
+
+**Direct.** The daemon already runs where the tracker can reach it, for example on a VM behind a reverse proxy with TLS (see [Deployment](/guides/deployment/)). The webhook URL is `https://<your-host>/api/v1/webhooks/<kind>`.
+
+**Relay: `gh webhook forward` (GitHub, nothing to host).** The GitHub CLI's webhook extension creates a temporary repository webhook and relays its deliveries to your machine while it runs, signed with the secret you give it. Run it after step 2, which creates the secret:
+
+```bash
+gh extension install cli/gh-webhook
+gh webhook forward --repo=OWNER/REPO --events=issues \
+  --url=http://localhost:8090/api/v1/webhooks/github \
+  --secret="$ITERVOX_WEBHOOK_SECRET"
+```
+
+It is meant for development: one forwarder per repository at a time, and only while the command runs. The safety-net pull covers the gaps. With it you skip creating the webhook in step 2.
+
+**Relay: a tunnel (Linear or GitHub).** A tunnel such as Cloudflare's gives the local daemon a public HTTPS name:
+
+```bash
+cloudflared tunnel --url http://localhost:8090
+# → https://<random>.trycloudflare.com
+```
+
+The webhook URL is `https://<random>.trycloudflare.com/api/v1/webhooks/<kind>`. A quick tunnel's name changes on every start; a named tunnel keeps it.
+
+:::caution
+A tunnel exposes the whole daemon, not just the webhook route. With an API token (the default) every other dashboard and API route still needs it, and the agent-action routes need their per-run token. With `server.allow_unauthenticated: true`, the Host guard refuses every other route for the tunnel's name unless you list that name in `server.allowed_hosts`. Do not list it: the webhook route does not need it.
+:::
+
+## 2. Create the webhook and store its secret
+
+**GitHub.** Generate a secret and store it in `.itervox/.env` (keep the shell open: the GitHub form and `gh webhook forward` use it):
+
+```bash
+export ITERVOX_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+printf '%s' "$ITERVOX_WEBHOOK_SECRET" | itervox secret set ITERVOX_WEBHOOK_SECRET
+```
+
+Then add the webhook in the repository's **Settings → Webhooks → Add webhook**:
+- **Payload URL:** the URL from step 1.
+- **Content type:** `application/json`.
+- **Secret:** the value of `$ITERVOX_WEBHOOK_SECRET`.
+- **Events:** "Let me select individual events" → **Issues**.
+
+GitHub sends a `ping` at once. It fails until step 3 is done; that is harmless, and you can redeliver it from the webhook's page.
+
+**Linear.** Linear generates the signing secret. Add the webhook in **Settings → API → Webhooks → New webhook** (a workspace admin):
+- **URL:** the URL from step 1.
+- **Team:** the team your `project_slug` belongs to.
+- **Data change events:** **Issues**.
+
+Then copy the webhook's signing secret into `.itervox/.env`. `itervox secret set` asks for it without echoing it:
+
+```bash
+itervox secret set ITERVOX_WEBHOOK_SECRET
+```
+
+Linear webhooks cover a whole team. Changes to the team's other projects are delivered too; each costs Itervox one read by ID and is then ignored.
+
+The secret must be at least 16 characters.
+
+## 3. Turn it on
+
+```yaml
+tracker:
+  # store.enabled is true by default; webhooks need it on.
+  webhooks:
+    enabled: true
+    secret: $ITERVOX_WEBHOOK_SECRET
+    # safety_net_interval_ms: 600000   # the store's sync interval while webhooks are on
+```
+
+Restart the daemon. Its log says `tracker webhooks: receiving path=/api/v1/webhooks/<kind>`. A missing or short secret stops the start with an error that says so.
+
+## 4. Check it
+
+Change an issue in the tracker; it moves on the board within seconds. With `server.metrics.enabled: true`:
+
+- `itervox_tracker_webhooks_total{result="accepted"}` counts deliveries. A rising `bad_signature` means the secrets differ, and `stale` means the daemon's clock is off by more than a minute (Linear). Dropped deliveries are logged at most once a minute; the counter has every one.
+- `itervox_tracker_store_pulls_total{trigger="interval"}` now rises once per safety-net interval instead of once per `sync_interval_ms`. `trigger="webhook"` counts pulls deliveries asked for: when a by-ID read failed, or when more than 500 issues were waiting at once.
+
+If deliveries stop arriving, nothing breaks: the safety-net pull keeps the board at most one interval behind.

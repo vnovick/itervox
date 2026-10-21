@@ -1,0 +1,162 @@
+name: Release acceptance
+
+# #137: the two release checks that need real accounts, run by hand before a
+# release (see docs/release-checks.md). Both are manual-dispatch only and run
+# in the `acceptance` environment, which holds their secrets; give that
+# environment required reviewers so a run is always approved by a maintainer.
+#
+#   self-hosted  Itervox, built from the dispatched ref, completes a labelled
+#                test issue of this repository with a real Claude agent and
+#                opens a pull request. Uploads the daemon log and the agent
+#                sessions as the record.
+#   deploy-gcp   BILLABLE. Provisions a GCP VM with the deploy kit, bootstraps
+#                the release `version`, passes `itervox doctor --deploy`,
+#                serves the dashboard through the IAP tunnel, and tears
+#                everything down.
+#
+# Secrets (environment `acceptance`): ANTHROPIC_API_KEY or
+# CLAUDE_CODE_OAUTH_TOKEN; for deploy-gcp, GCP_WORKLOAD_IDENTITY_PROVIDER and
+# GCP_SERVICE_ACCOUNT (workload identity federation, no key file) and the
+# variable GCP_PROJECT_ID.
+on:
+  workflow_dispatch:
+    inputs:
+      check:
+        description: Which release check to run
+        type: choice
+        options: [self-hosted, deploy-gcp]
+        required: true
+      issue:
+        description: 'self-hosted: number of an open test issue in this repository'
+        type: string
+        required: false
+      version:
+        description: 'deploy-gcp: the release tag to deploy (v0.2.2 or later)'
+        type: string
+        required: false
+      zone:
+        description: 'deploy-gcp: GCE zone'
+        type: string
+        default: us-central1-a
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-${{ inputs.check }}
+  cancel-in-progress: false
+
+jobs:
+  self-hosted:
+    if: inputs.check == 'self-hosted'
+    name: Self-hosted issue run
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: acceptance
+    permissions:
+      contents: write       # the agent pushes its branch
+      issues: write         # labels on the test issue
+      pull-requests: write  # the agent opens the pull request
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build itervox
+        run: make build
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Git identity for the agent's commits
+        run: |
+          git config --global user.name "itervox-acceptance"
+          git config --global user.email "itervox-acceptance@users.noreply.github.com"
+
+      - name: Run the check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          deploy/acceptance/self-hosted-run.sh --repo "$GITHUB_REPOSITORY" --issue "$ISSUE" \
+            --itervox ./itervox --out "$RUNNER_TEMP/acceptance" --timeout-min 75
+          cat "$RUNNER_TEMP/acceptance/result.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-hosted-run-${{ inputs.issue }}-${{ github.run_id }}
+          # The logs and sessions; never the api-token file or the workspaces.
+          path: |
+            ${{ runner.temp }}/acceptance/result.md
+            ${{ runner.temp }}/acceptance/daemon.stderr
+            ${{ runner.temp }}/acceptance/project/WORKFLOW.md
+            ${{ runner.temp }}/acceptance/logs/
+            !${{ runner.temp }}/acceptance/logs/api-token
+          if-no-files-found: warn
+          retention-days: 90
+
+  deploy-gcp:
+    if: inputs.check == 'deploy-gcp'
+    name: GCP deploy smoke (billable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: acceptance
+    permissions:
+      contents: read
+      id-token: write  # workload identity federation
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run the check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          ZONE: ${{ inputs.zone }}
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          deploy/acceptance/gcp-deploy-smoke.sh --version "$VERSION" --project "$PROJECT" --zone "$ZONE" \
+            --name "itervox-smoke-${GITHUB_RUN_ID}" 2>&1 | tee "$RUNNER_TEMP/deploy-smoke.log"
+          { echo '```'; tail -n 40 "$RUNNER_TEMP/deploy-smoke.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-gcp-${{ inputs.version }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/deploy-smoke.log
+          if-no-files-found: warn
+          retention-days: 90

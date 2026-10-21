@@ -171,6 +171,8 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" http://localhost:8090/metrics
 | `itervox_goroutine_panics_total` | counter | | Panics recovered on daemon goroutines (the site is in the log line). |
 | `itervox_events_dropped_total` | counter | | Orchestrator events that could not be delivered (full channel or send timeout). |
 | `itervox_client_errors_total` | counter | `kind`, `outcome` | Dashboard error reports on `POST /api/v1/client-errors`; `kind` is `render`, `error`, `unhandledrejection`, `schema` or `other`, `outcome` is `accepted`, `rate_limited` or `dropped`. |
+| `itervox_tracker_webhooks_total` | counter | `tracker`, `result` | Tracker webhook deliveries (`tracker.webhooks`); `result` is `accepted`, `ignored` (another repository, a pull request, a comment), `bad_signature`, `stale` (a Linear delivery outside the one-minute replay window) or `malformed`. |
+| `itervox_tracker_store_pulls_total` | counter | `trigger` | List pulls of the tracker store: `cold` (first pull), `interval` (the periodic pull; with webhooks on, the safety net), `webhook` (a delivery whose by-ID read failed) or `view` (a state set read for the first time). |
 | `itervox_persist_write_errors_total` | counter | | Failed runtime-ledger writes. Resets on a `WORKFLOW.md` reload. |
 | `itervox_transport_failures_total` | counter | | Retry-exhausted runs classified as transport failures. Resets on reload. |
 | `itervox_dispatch_ticks_total` | counter | `bound` | Poll ticks observed (`any`), and those that were slot-bound (`slot`) or dependency-bound (`dependency`). Resets on reload. |
@@ -328,6 +330,12 @@ ordinary paths stay readable.
 
 ---
 
+## Tracker webhooks
+
+### `POST /api/v1/webhooks/{tracker}`
+
+Receives Linear (`linear`) or GitHub (`github`) issue webhooks when `tracker.webhooks.enabled` is set; otherwise, and for the other tracker, `404`. No bearer token (the tracker cannot send one) and exempt from the unauthenticated-mode Host guard: instead every delivery must be signed with `tracker.webhooks.secret` (`Linear-Signature`, or GitHub's `X-Hub-Signature-256`), and a Linear delivery must be less than a minute old (`webhookTimestamp`). Answers `202` for an accepted or ignored delivery, `401` for a bad signature or a stale delivery, `400` for an unreadable payload, `413` over 1 MiB. A delivery only names issues: the tracker store re-reads them by ID and keeps the ones in scope. See [Tracker webhooks](/guides/tracker-webhooks/).
+
 ## Client error reports
 
 ### `POST /api/v1/client-errors`
@@ -377,7 +385,7 @@ apply).
 | `POST` | `/issues/{identifier}/resume` | — | `{"resumed":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/reanalyze` | — | `{"queued":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/terminate` | — | `{"terminated":true,"identifier":"ENG-1"}` | `404 not_found` if not running or paused |
-| `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch |
+| `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch: a fresh review by the configured reviewers (the whole `reviewer_profiles` chain, previous verdicts cleared) |
 
 While the daemon is draining (see `draining` under `/ready`), `resume`,
 `reanalyze`, `ai-review` and `provide-input` are refused with
@@ -603,8 +611,10 @@ Supported trigger types:
 - `rate_limited` — fires when a worker run exhausts retries and Itervox classifies the terminal failure as rate-limit-driven. `agent.max_switches_per_issue_per_window` and `agent.switch_window_hours` cap automated switching; reaching the cap suppresses switching rather than causing the trigger.
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
 
-Tracker event triggers are poll-derived, not webhook-derived. The automation
-loop runs every 15 seconds. `tracker_comment_added` compares only the latest
+Tracker event triggers are poll-derived, not webhook-derived. The event poll
+runs every `polling.automation_interval_ms` (default 15 seconds) and fetches only
+the states its rules need (see `polling.automation_interval_ms` in
+[configuration.md](configuration.md)). `tracker_comment_added` compares only the latest
 observed comment, so multiple comments between polls collapse to the latest
 comment for trigger purposes.
 
@@ -837,6 +847,11 @@ Important fields include:
 - `blockedByDetails`: richer blocker metadata for UI/API clients. Each entry has
   `identifier` and may include `state` and `url`. `blockedBy` remains the
   compatibility string-array form.
+- `review` (`GET /issues/{identifier}` only): the issue's latest review, when it
+  has one. `verdicts` lists each finished reviewer (`profile`, `verdict`
+  `approve`/`block`, `reasons`, line `comments`, `recordedAt`); `outcome`
+  (`blocked`, `approvals`, `blocks`, `quorum`) appears once every reviewer has
+  run; `inProgress` is set while a multi-reviewer chain is still running.
 
 ### `IssueLogEntry`
 

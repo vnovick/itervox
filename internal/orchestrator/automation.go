@@ -725,29 +725,33 @@ func MatchesAutomationFilter(
 	return true
 }
 
-// startAutomationRunOrHold is startAutomationRun that also reports a
-// backend hold (CORE-053): held is true when the run was not started only
-// because the backend gate refused its target, so the caller queues it with
-// the backend_limited reason instead of dropping it.
+// startAutomationRunOrHold is startAutomationRun that also reports a hold:
+// hold is the queue reason when the run was not started only because it
+// must wait, so the caller queues it with that reason instead of dropping
+// it — backend_limited when the backend gate refused its target (CORE-053),
+// tracker_unavailable when the claim check could not read the issue (#116).
 func (o *Orchestrator) startAutomationRunOrHold(
 	ctx context.Context,
 	state *State,
 	issue domain.Issue,
 	now time.Time,
 	automation AutomationDispatch,
-) (started, held bool) {
+) (started bool, hold AutomationQueueReason) {
 	if automation.ProfileName == "" {
-		return false, false
+		return false, ""
 	}
 	if _, running := state.Running[issue.ID]; running {
-		return false, false
+		return false, ""
 	}
 	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return false, false
+		return false, ""
 	}
 	o.syncDrainRequest(state)        // M4-close D2
 	if AvailableSlots(*state) <= 0 { // 0 while draining (CORE-057)
-		return false, false
+		return false, ""
+	}
+	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136: paused, run dropped
+		return false, ""
 	}
 
 	o.cfgMu.RLock()
@@ -760,12 +764,22 @@ func (o *Orchestrator) startAutomationRunOrHold(
 
 	if !ok {
 		slog.Warn("orchestrator: automation profile not found", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return false, false
+		return false, ""
 	}
 	if !config.ProfileEnabled(profile) {
 		slog.Warn("orchestrator: automation profile disabled", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return false, false
+		return false, ""
 	}
+	// #116 claim check: an automation may run on any state but a terminal
+	// one, so it is refused only when the tracker has closed or lost it.
+	claimed, verdict := o.claimCheck(ctx, state, issue, nil, admitAutomation, o.claimNotTerminal(state, false), now)
+	switch verdict {
+	case claimUnreachable:
+		return false, AutomationQueueReasonTrackerUnavailable // queued, never dropped
+	case claimRefuse:
+		return false, ""
+	}
+	issue = claimed
 
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
@@ -801,7 +815,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 		o.logger().Info("orchestrator: automation held, backend limited",
 			"identifier", issue.Identifier, "automation", automation.AutomationID,
 			"hold", describeHold(gate.hold))
-		return false, true
+		return false, AutomationQueueReasonBackendLimited
 	}
 	o.saveBackendHealthToDisk(state)
 	target := gate.target
@@ -827,7 +841,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 			"worker_host", workerHost,
 			"backend", backend)
 		state.Claimed[issue.ID] = struct{}{}
-		return true, false
+		return true, ""
 	}
 
 	state.Claimed[issue.ID] = struct{}{}
@@ -848,6 +862,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
+	workerCtx = o.startRun(workerCtx, state, state.Running[issue.ID])
 
 	o.workerCancelsMu.Lock()
 	o.workerCancels[issue.Identifier] = workerCancel
@@ -865,7 +880,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 	o.workersWg.Add(issue.Identifier)
 	switchNotice := o.backendSwitchNotice(state, issue.Identifier, backend, profileName, &automation) // CORE-101
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, &automation, switchNotice)
-	return true, false
+	return true, ""
 }
 
 // AutomationFiredLogPrefix is the canonical leading token of the synthetic

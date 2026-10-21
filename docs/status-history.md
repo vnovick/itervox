@@ -15,7 +15,11 @@ Status changes can come from:
   - `absent_from_tracker` — absent-issue pruning removed runtime ledger entries for an issue no longer present in tracker polls (after a two-tick grace window).
 - `system`: fallback source for internal daemon changes.
 
-Automation rows include automation ID, trigger type, profile, backend, and worker host when those fields are available. Janitor rows include the `Reason` tag listed above; the row is a backend-only ledger entry today and is not yet propagated through the `IssueStatusChangeRow` DTO consumed by the dashboard. Operators can read it via the daemon log and forthcoming snapshot surface.
+The claim check (#116) records `tracker_observed` rows with a `Reason` tag too:
+  - `claim_check` — just before an agent started, the tracker's state differed from Itervox's local copy (a person changed the issue since the last pull).
+  - `pending_write_dropped` — a queued Itervox state write was dropped because a person changed the issue in the tracker after it was queued; the row goes from the write's state to the person's.
+
+Automation rows include automation ID, trigger type, profile, backend, and worker host when those fields are available. Janitor and claim-check rows include the `Reason` tags listed above; the row is a backend-only ledger entry today and is not yet propagated through the `IssueStatusChangeRow` DTO consumed by the dashboard. Operators can read it via the daemon log and forthcoming snapshot surface.
 
 ## Retention
 

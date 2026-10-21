@@ -202,6 +202,10 @@ extracts inline `agent.profiles.<name>.prompt` content into per-profile
 `INSTRUCTIONS.md` files, generates starter `SOUL.md` files, writes a
 `WORKFLOW.md.bak`, patches the root `.gitignore` so `.itervox/agents/**` is
 committable, and stamps `itervox_schema_version: 2` on the migrated file.
+The rewrite edits the YAML node tree (`yaml.v3` `Node`) rather than
+re-marshalling a map, so comments, key order, scalar styles and the file's
+indent width are preserved; `itervox_schema_version: 2` is inserted as the
+first key and only the migrated keys change (#71).
 
 ### Built-in profile registry
 
@@ -303,6 +307,13 @@ identifier is absent from the candidate set AND whose most-recent change is
 older than `issueStatusHistoryRetention` (default 7 days). Live issues are
 preserved regardless of age. Janitor runs at the tail of every `onTick`.
 
+The latest finished review shown in issue detail (`ReviewVerdicts` and
+`ReviewOutcomes`, #135) shares this retention: `pruneReviewLedgers` keeps an
+untracked issue's verdicts and outcome while it still has a status-history
+entry, and drops them with it. `ReviewChainIndex`, the in-flight marker, is
+not retained that way, so an abandoned chain's marker is still pruned as soon
+as the issue is untracked and no review is mid-chain.
+
 The ledger is session-local in v0.2.0. Cross-restart persistence is gated on
 the queue-persistence v2 envelope described in the next section.
 
@@ -348,6 +359,13 @@ between the running daemon's binary (`os.Executable()`) and whatever
 shipped built-in profile names (`profiles.Names()`) and surfaces any
 existing `.itervox/STARTUP_ERROR.md`. Exits non-zero on schema failure,
 binary drift, version mismatch, or a present startup-error marker.
+
+On a GitHub tracker it also lists the repository's labels through the
+tracker client and reports every configured state label that is missing
+(`cmd/itervox/doctor_labels.go`, #75), because a state whose label does not
+exist matches no issue and fails silently. Missing labels exit `1`; an API
+error is reported and never fails doctor. `itervox doctor --fix` creates the
+missing labels after a `[y/N]` prompt (`--yes` for non-interactive runs).
 
 On startup config-load failure the daemon writes
 `.itervox/STARTUP_ERROR.md` (timestamp, workflow path, YAML/schema diagnostic,

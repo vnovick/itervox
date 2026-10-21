@@ -1,0 +1,1 @@
+{"version":1,"backends":{"claude":{"backend":"claude","status":"limited","kind":"quota","limit_type":"five_hour","source":"rate_limit_event","limited_until":"2099-01-01T00:00:00Z","reset_known":true,"since":"2026-09-01T12:00:00Z","hits":2,"last_issue":"#9"}}}

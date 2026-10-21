@@ -226,6 +226,26 @@ func TestMaxRetriesZeroMeansUnlimited(t *testing.T) {
 	assert.Equal(t, 0, cfg.Agent.MaxRetries)
 }
 
+func TestAgentBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want config.BudgetConfig
+	}{
+		{"absent means no limit", "", config.BudgetConfig{}},
+		{"tokens and cost", "agent:\n  budget:\n    tokens: 500000\n    cost_usd: 2.5\n", config.BudgetConfig{Tokens: 500000, CostUSD: 2.5}},
+		{"negative is no limit", "agent:\n  budget:\n    tokens: -1\n    cost_usd: -3\n", config.BudgetConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, minimal(tc.yaml)))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Agent.Budget)
+			assert.Equal(t, tc.want != config.BudgetConfig{}, cfg.Agent.Budget.Enabled())
+		})
+	}
+}
+
 func TestDefaultAutomationQueueLength(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
@@ -283,6 +303,47 @@ func TestTrackerOutboxExplicitTrue(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.True(t, cfg.Tracker.Outbox)
+}
+
+// TestTrackerStoreConfig pins tracker.store (#113): off with a 60s sync by
+// default, and both keys round-trip.
+func TestTrackerStoreConfig(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Store.Enabled, "#132: on by default")
+	assert.Equal(t, 60000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 3600000, cfg.Tracker.Store.FullSyncIntervalMs, "#114: a full pull hourly by default")
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n    full_sync_interval_ms: 900000\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Store.Enabled)
+	assert.Equal(t, 120000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 900000, cfg.Tracker.Store.FullSyncIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: false\n")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Store.Enabled, "the opt-out")
+}
+
+// TestAutomationPollIntervalConfigRoundTrip pins polling.automation_interval_ms
+// (#155): 15s when absent, the configured value when set, and the default
+// again for zero or a negative value (positiveIntField).
+func TestAutomationPollIntervalConfigRoundTrip(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, 15000, cfg.Polling.AutomationIntervalMs)
+	assert.Equal(t, config.DefaultAutomationPollIntervalMs, cfg.Polling.AutomationIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("polling:\n  interval_ms: 30000\n  automation_interval_ms: 120000\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 120000, cfg.Polling.AutomationIntervalMs)
+	assert.Equal(t, 30000, cfg.Polling.IntervalMs, "the candidate poll keeps its own interval")
+
+	for _, v := range []string{"0", "-5"} {
+		cfg, err = config.Load(workflowWithContent(t, minimal("polling:\n  automation_interval_ms: "+v+"\n")))
+		require.NoError(t, err)
+		assert.Equal(t, 15000, cfg.Polling.AutomationIntervalMs, "non-positive %s falls back to the default", v)
+	}
 }
 
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
@@ -1462,6 +1523,37 @@ func TestReviewerProfilesAndQuorumParsed(t *testing.T) {
 	assert.Equal(t, config.ReviewQuorumMajority, cfg.Agent.ReviewQuorum)
 }
 
+// TestReviewerProfilesKeepsEveryEntryWithoutDisabledWarning pins #69: fan-out
+// is enabled (orchestrator.ReviewerProfileChain runs every entry), so loading
+// a multi-reviewer config must keep the full list, promote the first entry
+// into the singular reviewer_profile when that is unset, and must NOT log the
+// old "fan-out is disabled" warning that told operators only the first
+// reviewer runs.
+func TestReviewerProfilesKeepsEveryEntryWithoutDisabledWarning(t *testing.T) {
+	path := workflowWithContent(t, minimal(
+		"agent:\n"+
+			"  reviewer_profiles:\n"+
+			"    - security\n"+
+			"    - correctness\n"))
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"security", "correctness"}, cfg.Agent.ReviewerProfiles,
+		"every listed reviewer must survive normalization")
+	assert.Equal(t, "security", cfg.Agent.ReviewerProfile,
+		"the first entry is promoted into reviewer_profile so validation and dispatch have a primary reviewer")
+	assert.NotContains(t, buf.String(), "disabled",
+		"no startup log may claim multi-reviewer fan-out is disabled")
+	assert.NotContains(t, buf.String(), "level=WARN",
+		"a reviewer_profiles-only config is valid and must not warn")
+}
+
 func TestReviewQuorumDefaultsToAnyBlock(t *testing.T) {
 	cfg, err := config.Load(workflowWithContent(t, minimal("")))
 	require.NoError(t, err)
@@ -1637,4 +1729,118 @@ func TestDependenciesAutoAnalyzeIntervalsParsed(t *testing.T) {
 		assert.Equal(t, config.DefaultDependenciesAutoAnalyzeMinIntervalMinutes, cfg.Dependencies.AutoAnalyzeMinIntervalMinutes)
 		assert.Equal(t, config.DefaultDependenciesAutoAnalyzeDebounceMinutes, cfg.Dependencies.AutoAnalyzeDebounceMinutes)
 	})
+}
+
+// TestAgentPRFooter (#81): agent.pr_footer parses and defaults to off.
+func TestAgentPRFooter(t *testing.T) {
+	for _, tc := range []struct {
+		name, agentBlock string
+		want             bool
+	}{
+		{"absent", "", false},
+		{"true", "agent:\n  pr_footer: true\n", true},
+		{"false", "agent:\n  pr_footer: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\n" + tc.agentBlock + "---\n\nPrompt.\n"
+			cfg, err := config.Load(workflowWithContent(t, content))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Agent.PRFooter)
+		})
+	}
+}
+
+// TestProfileRequireEvidence (#80): require_evidence parses (normalised),
+// defaults to off, and rejects malformed check names.
+func TestProfileRequireEvidence(t *testing.T) {
+	load := func(profileBlock string) (*config.Config, error) {
+		content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nagent:\n  profiles:\n    impl:\n      command: claude\n" + profileBlock + "---\n\nPrompt.\n"
+		return config.Load(workflowWithContent(t, content))
+	}
+	cfg, err := load("")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Agent.Profiles["impl"].RequireEvidence, "off by default")
+
+	cfg, err = load("      require_evidence: [Test, lint, test, ' ci ']\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "lint", "ci"}, cfg.Agent.Profiles["impl"].RequireEvidence)
+
+	cfg, err = load("      require_evidence: [\"unit tests\"]\n")
+	require.NoError(t, err)
+	err = config.ValidateAgentProfiles(cfg.Agent.Profiles) // run by ValidateDispatch at startup and in doctor
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `require_evidence entry "unit tests"`)
+
+	// A scalar is an error, never a silent "off": `true` reads as turning
+	// the gate on.
+	for _, scalar := range []string{"true", "test", `"test, lint"`} {
+		_, err = load("      require_evidence: " + scalar + "\n")
+		require.Error(t, err, scalar)
+		assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names", scalar)
+	}
+	_, err = load("      require_evidence: [test, 3]\n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "require_evidence entries must be names")
+
+	// The schema-2 (file-backed profiles) branch parses it the same way.
+	loadV2 := func(value string) (*config.Config, error) {
+		block := "      command: claude\n" + schema2ProfileFileFields(t, "      ") + "      require_evidence: " + value + "\n"
+		return config.Load(workflowWithContent(t, minimalV2("agent:\n  profiles:\n    impl:\n"+block)))
+	}
+	cfg, err = loadV2("[Test, lint]")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"test", "lint"}, cfg.Agent.Profiles["impl"].RequireEvidence)
+	_, err = loadV2("true")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names")
+}
+
+// TestCommentCommandsConfig (#84): tracker.comment_commands parses, is off
+// by default, and is GitHub-only.
+func TestCommentCommandsConfig(t *testing.T) {
+	gh := func(extra string) string {
+		return "---\nitervox_schema_version: 2\ntracker:\n  kind: github\n  api_key: key\n  project_slug: o/r\n" + extra + "---\n\nPrompt.\n"
+	}
+	cfg, err := config.Load(workflowWithContent(t, gh("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.CommentCommands.Enabled, "off by default")
+
+	cfg, err = config.Load(workflowWithContent(t, gh("  comment_commands:\n    enabled: true\n    allow: [alice, bob]\n    allow_token_user: true\n    reply_to_unauthorized: true\n")))
+	require.NoError(t, err)
+	assert.Equal(t, config.CommentCommandsConfig{Enabled: true, Allow: []string{"alice", "bob"}, AllowTokenUser: true, ReplyToUnauthorized: true},
+		cfg.Tracker.CommentCommands)
+	require.NoError(t, config.ValidateDispatch(cfg))
+
+	cfg, err = config.Load(workflowWithContent(t, "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: p\n  comment_commands:\n    enabled: true\n---\n\nPrompt.\n"))
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.comment_commands is only supported with tracker.kind: github")
+}
+
+// TestTrackerWebhooksConfig (#131): off by default; on, it needs the store
+// (on by default since #132) and a secret, which resolves from the environment.
+func TestTrackerWebhooksConfig(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, 600000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	t.Setenv("ITERVOX_TEST_WEBHOOK_SECRET", "s3cret-0123456789abcdef")
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n    safety_net_interval_ms: 900000\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, "s3cret-0123456789abcdef", cfg.Tracker.Webhooks.Secret)
+	assert.Equal(t, 900000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: false\n  webhooks:\n    enabled: true\n    secret: x\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks needs tracker.store.enabled")
+	// #132: the store is on by default, so webhooks need no store block.
+	cfg, err = config.Load(workflowWithContent(t, minimal("  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_UNSET_SECRET\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks.secret is empty")
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: short\n")))
+	assert.ErrorContains(t, err, "shorter than 16 characters")
 }

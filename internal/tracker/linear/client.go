@@ -1357,3 +1357,79 @@ var _ tracker.DetailBatcher = (*Client)(nil)
 // or FindCommentByKey would silently demote the outbox flusher to
 // non-idempotent posting, with no test failing.
 var _ tracker.IdempotentCommenter = (*Client)(nil)
+
+// FetchIssuesInScope implements tracker.ScopedFetcher (#131): it reads the
+// issues by ID in batches (no list request) and keeps the ones the current
+// project filter covers, with the same rules as FetchCandidateIssues: no
+// runtime filter means project_slug (or every project when that is empty),
+// an empty filter means every project, and the no-project sentinel covers
+// issues without one.
+func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	valid, _ := partitionValidIssueRefs(issueIDs)
+	inScope := c.projectScope()
+	var out []domain.Issue
+	for len(valid) > 0 {
+		batch := valid[:min(len(valid), pageSize)]
+		valid = valid[len(batch):]
+		body, err := c.graphql(ctx, QueryIssuesInScopeByIDs, map[string]any{
+			"ids":           batch,
+			"first":         len(batch),
+			"relationFirst": pageSize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("linear_fetch_in_scope: %w", err)
+		}
+		data, ok := body["data"].(map[string]any)
+		if !ok {
+			return nil, decodeError(body)
+		}
+		block, _ := data["issues"].(map[string]any)
+		nodes, ok := block["nodes"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("linear_unknown_payload: missing nodes")
+		}
+		for _, n := range nodes {
+			node, ok := n.(map[string]any)
+			if !ok {
+				continue
+			}
+			slug := ""
+			if p, ok := node["project"].(map[string]any); ok {
+				slug, _ = p["slugId"].(string)
+			}
+			if !inScope(slug) {
+				continue
+			}
+			if iss := normalizeIssue(node); iss != nil {
+				out = append(out, *iss)
+			}
+		}
+	}
+	return out, nil
+}
+
+var _ tracker.ScopedFetcher = (*Client)(nil)
+
+// projectScope reports whether an issue in the project with slug ("" for
+// none) is covered by the current project filter.
+func (c *Client) projectScope() func(slug string) bool {
+	filter := c.GetProjectFilter()
+	if filter == nil {
+		if c.cfg.ProjectSlug == "" {
+			return func(string) bool { return true }
+		}
+		want := c.cfg.ProjectSlug
+		return func(slug string) bool { return slug == want }
+	}
+	if len(filter) == 0 {
+		return func(string) bool { return true }
+	}
+	return func(slug string) bool {
+		for _, f := range filter {
+			if f == slug || (f == noProjectSentinel && slug == "") {
+				return true
+			}
+		}
+		return false
+	}
+}

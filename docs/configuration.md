@@ -42,7 +42,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `kind` | string | yes | — | Tracker backend: `linear` or `github` |
+| `kind` | string | yes | — | Tracker backend: `linear`, `github` or `local` (one Markdown file per issue in `.itervox/issues/`; no `api_key`; `project_slug` is the optional identifier prefix, default `ITX`) |
 | `api_key` | string | yes | — | API key. Use `$ENV_VAR` for env var substitution |
 | `project_slug` | string | github: yes | `""` | GitHub: `owner/repo`. Linear: optional project slug filter |
 | `endpoint` | string | no | Linear: `https://api.linear.app/graphql`; GitHub: provider default | Override the API endpoint |
@@ -53,6 +53,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched |
 | `failed_state` | string | no | `""` | State assigned when max retries are exhausted. When empty, failed issues are paused instead |
 | `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry. Comments carry an idempotency key, so a retry checks whether the earlier attempt landed before posting again (never a duplicate; an unanswerable lookup defers). A write rejected by a tracker rate limit waits for the published reset, shows a "rate limited until HH:MM" chip, and does not count toward the degraded badge. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly (`200`), and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. If the outbox cannot store an input-required question (for example `.itervox/` is not writable), the question is posted directly once instead, without a key |
+| `comment_commands` | map | no | off | `/itervox run [profile]`, `/itervox stop`, `/itervox review` in GitHub issue comments, from users with write access or listed in `allow`. Keys: `enabled`, `allow`, `allow_token_user` (the token's own account, which agents also use; default `false`), `reply_to_unauthorized`. GitHub only; each comment is acted on once (recorded in `.itervox/comment_commands.json`). See docs/github-tracker.md "Comment commands" |
 
 ---
 
@@ -62,6 +63,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 |---|---|---|---|
 | `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
 | `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. Separately, when the tracker actually rate-limits a request (Linear: HTTP 400 `RATELIMITED`; GitHub: 429/403), the published reset is recorded once for every caller, writes are admitted ahead of reads when it lifts (Linear requests are classified by GraphQL operation), calls fail fast when the reset is more than 60s away, and a recorded window is capped at 2 hours. |
+| `automation_interval_ms` | int | `15000` | How often the automation event poll (`tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`) lists issues (#155). While the tracker reports less than 20% of its request budget left, the interval doubles after each poll, up to 8×, and returns to it once the budget recovers. The poll fetches only the states its rules need: their `filter.states` and `trigger.state`, the active states, and the backlog states only for `issue_moved_to_backlog`; never terminal states unless a rule names one. |
 
 ---
 
@@ -81,6 +83,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). `0`/negative values fall back to the default; use `max_retries` to control retry count |
 | `max_retries` | int | `5` | Maximum retry attempts before moving to `failed_state`. `0` means unlimited. When the failed turn carried a vendor limit signal, the retry waits for the vendor's reset time or retry delay (at most 6 hours) instead of the normal back-off, if that is longer |
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |
+| `pr_footer` | bool | `false` | Append a one-line "Shipped with Itervox" footer to each PR an agent run opens on its own branch (not PRs merely linked from the issue), once per PR (hidden `<!-- itervox:shipped -->` marker; added with `gh pr edit` after a successful worker run). README badge: `[![Shipped with Itervox](https://img.shields.io/badge/shipped%20with-Itervox-6f42c1)](https://github.com/vnovick/itervox)` |
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `rate_limit_error_patterns` | []string | `[]` | Custom case-insensitive substrings for detecting rate-limit errors, matched verbatim against the whole failure text (agent-reported failure and CLI stderr). How they combine with the built-in defaults is set by `rate_limit_error_patterns_mode`. Empty falls back to the built-in defaults: `rate_limit_exceeded`, `rate limit`, `http 429`, `status: 429`, `(429)`, `429 too many requests`, `insufficient_quota`, `quota exceeded for`, `usage quota`, `exceeded your current quota`, `too many requests`, `out of extra usage`, `reached the limit for your current claude`, `out of credits`, `resets at`, `you hit your spend cap`, `usage limit`, `session limit`, `weekly limit`, `spend limit`, `spend cap`, `credit balance is too low`, `credits required`, `temporarily limiting requests`, plus the clause rule "`you've hit your` followed by limit wording in the same clause" and a standalone `429` token. The standalone `429` counts only in the agent-reported failure, never in CLI stderr; a bare `quota` never counts. WORKFLOW.md only |
 | `rate_limit_error_patterns_mode` | string | `"replace"` | How a non-empty `rate_limit_error_patterns` combines with the built-in defaults: `replace` (default, the earlier behaviour) uses only your list, so a custom list silently turns every default off; `extend` checks your list **and** the defaults. An empty list means the defaults in either mode. Any other value fails config load. WORKFLOW.md only (CORE-100) |
@@ -97,7 +100,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `reviewer_profiles` | []string | `[]` | Ordered list of reviewer profiles for multi-reviewer fan-out. When it has more than one entry, each reviewer runs **sequentially and independently** over the same issue and records a verdict; the combined result is decided by `review_quorum`. Empty falls back to `reviewer_profile`, so existing single-reviewer configs are unaffected. Sequential rather than concurrent because `State.Running` is keyed by issue — fan-out buys independence of judgement, not wall-clock |
 | `review_quorum` | string | `"any_block"` | How multiple reviewer verdicts combine. One of `any_block` (default — a single blocking verdict blocks), `majority` (strictly more than half), or `unanimous` (every reviewer must block). The default is the strictest on purpose: adding a reviewer must never make it *easier* to ship. A reviewer that runs but records no parseable verdict counts as a **block**, so a crashing reviewer cannot shrink the quorum until the gate passes |
 | `auto_review` | bool | `false` | When `true`, dispatches a reviewer worker after every successful worker completion |
-| `reviewer_prompt` | string | Built-in default | **Deprecated** — prefer `reviewer_profile`. Liquid template used when no reviewer profile is set |
+| `reviewer_prompt` | string | Built-in default | **Deprecated** — prefer `reviewer_profile`. Liquid template used for reviewer runs; the built-in default is read-only (a verdict, never a commit or push). Every reviewer is read-only: Itervox does not push or commit for a reviewer run, flags a reviewer that changes the branch (its verdict counts as a block), gives reviewers the diff against the base plus the latest handoff, and posts each verdict (reasons and line comments) and the quorum result on the issue. Preset: `itervox init --preset cross-review` (site guide: Cross-review preset) |
 | `profiles` | map | `{}` | Named agent profiles — see below. Runtime-editable |
 | `available_models` | map | discovered at init | Backend → model-option list used by the dashboard model picker. Populated by `itervox init` from the Anthropic / OpenAI APIs when keys are set (fallback: hardcoded defaults). Refresh after a new model release via `itervox models refresh` (CLI) or the dashboard Settings → Models → **Refresh** button (HTTP `POST /api/v1/settings/models/refresh`). |
 | `pause_dispatch_when_any_in_state` | []string | `[]` | When ANY tracked issue is in one of these case-insensitive state names, no new dispatch begins. Use case: pause Todo dispatch while any issue is "In Review" so PRs queue/merge before the next start. Empty disables the guard. Load-time only (no runtime setter) |
@@ -224,6 +227,7 @@ script.
 | `enabled` | Optional boolean. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | Optional list of daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | Required when `allowed_actions` includes `create_issue`; the tracker state/column for follow-up issues. |
+| `require_evidence` | Optional list of checks (e.g. `[test, lint, ci]`) a run must prove before the issue moves to `completion_state`: named checks as passing entries in `.itervox/evidence/<profile>.json` (`run.evidence_path`) stamped with the commit they ran on (later commits may only touch `.itervox/`, and no tracked file may have an uncommitted change), `ci` as all-passing PR checks. Without it the run ends input-required with a "Needs evidence" reason. Off by default; must be a list. See the site's [Done needs evidence](https://itervox.dev/configuration/#done-needs-evidence). |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same
 Liquid bindings as the main workflow prompt. Automation `instructions` are
@@ -429,7 +433,7 @@ edges factor into automation dispatch gating. See the deps-analyzer agent pass
 | `ordering` | string | `"critical_path"` | Dispatch ordering strategy for eligible issues. One of `critical_path` (default), `critical_path_strict`, or `simple`. See [Ordering modes](#ordering-modes) below. An unrecognized value falls back to the default with a `slog.Warn` |
 | `escalate_blocked_after_hours` | int | `48` | How long an issue may sit blocked before it becomes eligible for the `blockers_resolved`/attention automation surface (`state.DependencyAttention`, kind `stale_blocker`). **`0` is a meaningful, explicit value that disables the escalation** — it is not treated as "absent"; only a negative value falls back to the default (with a `slog.Warn`) |
 | `analysis_mode` | string | `"auto"` | How the LLM dependency analyzer is triggered. `auto`: on the scheduler's debounce/min-interval rules. `manual`: only via the Deps tab's Analyze button or `POST /api/v1/deps/analyze`. The blocker audit is unaffected. Runtime-editable from Settings → Dependencies. `auto_analyze` (bool) is a deprecated alias: `false` = `manual`. Changing the mode from the dashboard leaves the old `auto_analyze` line in `WORKFLOW.md`; delete it by hand to stop the "both set" warning on every reload |
-| `stacked_prs` | bool | `false` | Branch an issue's worktree from its blocker's branch instead of `workspace.base_branch`, when the issue has exactly one live blocker that carries an identifier. Best-effort: several live blockers give no unambiguous base, and a blocker branch missing locally falls back to `base_branch` rather than failing the dispatch. The PR base is not yet set from the blocker (#60) |
+| `stacked_prs` | bool | `false` | Branch an issue's worktree from its blocker's branch instead of `workspace.base_branch`, when the issue has exactly one live blocker that carries an identifier. Best-effort: several live blockers give no unambiguous base, and a blocker branch missing locally falls back to `base_branch` rather than failing the dispatch (except for the in-review admission below, which waits instead). The blocker's branch is the tracker's branch name when it has one (Linear), else `itervox/<identifier>`; on GitHub a blocker with the `completion_state` label counts as in review. A stacked run's pull request is pointed at the blocker's branch (`run.pr_base_branch` in the prompt, then `gh pr edit --base` after the run), and back to `base_branch` once the dependent is restacked there. An issue whose only unresolved blocker is in `tracker.completion_state` (in review) is dispatched without waiting for the merge, stacked on that blocker's branch; if that branch is not available locally, no agent runs and the issue waits for the blocker. See the site's [Stacked worktrees](https://itervox.dev/configuration/#stacked-worktrees) section |
 | `auto_analyze_min_interval_minutes` | int | `60` | Minimum gap between consecutive scheduled analysis passes. Parsed via `positiveIntField`; non-positive values fall back to the default — there is no meaningful zero here (the analyzer must not run every tick) |
 | `auto_analyze_debounce_minutes` | int | `5` | Delay after a dispatch-affecting change before a scheduled analysis pass starts, so analysis waits for state to settle instead of racing an in-flight dispatch. Parsed via `positiveIntField`; non-positive values fall back to the default |
 
@@ -505,6 +509,8 @@ Both are also Liquid bindings (`{{ run.timestamp }}`, `{{ run.handoff_path }}`) 
 - `run.previous_backend`, `run.previous_profile` — what the issue ran on before the switch
 - `run.switch_reason` — e.g. `rate_limited automation "switch-to-codex"` or `backend_fallback: claude limited until …`
 - `run.limit_resets_at` — the previous backend's vendor-published reset (RFC 3339, UTC), empty when unknown
+
+`run.pr_base_branch` is the branch a pull request from this run should target: the blocker's branch when the worktree is stacked on it (`dependencies.stacked_prs`), otherwise `workspace.base_branch`. A stacked run also gets a `## Stacked Branch` block after the Run Context.
 
 When a worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the most recent matching `<timestamp>_<profile>.md` to `<timestamp>_<profile>.partial.md` so subsequent agents can distinguish a crash-mid-deliverable from a clean handoff. `TerminalInputRequired` does not mark partial — the agent intentionally paused.
 
@@ -736,6 +742,35 @@ with an error naming the variable and the range (an unbounded size used to
 overflow the log writer and make every log write fail). The startup line `logging to file` shows the policy in
 effect. Per-issue logs under `<logs-dir>` have their own size cap and
 rotation and are not affected.
+
+### GitHub state labels: `itervox doctor --fix`
+
+The GitHub tracker maps every state to an issue label: `active_states`,
+`working_state`, `completion_state`, `terminal_states` (except `closed`,
+GitHub's native state), `backlog_states` and `failed_state`. A state whose
+label does not exist on the repository matches no issue, so nothing is
+dispatched or moved and nothing reports why.
+
+`itervox doctor` reads the repository's labels with `tracker.api_key` and
+lists each missing one with the command that creates it:
+
+```
+ERROR: 2 state label(s) missing on owner/repo — issues in those states are never dispatched or moved. Create them with `itervox doctor --fix`, or:
+  gh label create "in-review" --color "d93f0b" --repo owner/repo
+  gh label create "backlog" --color "f9f9f9" --repo owner/repo
+```
+
+Missing labels make doctor exit `1`. If the API cannot be reached or rejects
+the token, doctor prints `github labels: could not check …` and the exit code
+is unaffected. When `tracker.api_key` is empty it prints `github labels: not
+checked` instead: plain `doctor` does not load `.itervox/.env`, so keep the token
+in the environment or run `itervox doctor --deploy`, which loads that file first.
+Linear workflows skip the check.
+
+`itervox doctor --fix` creates the missing labels after asking
+`Create N label(s) on owner/repo …? [y/N]`. Any answer other than `y`/`yes`,
+including no input at all, creates nothing. Pass `--yes` (or `-y`) to skip the
+prompt in CI. The token needs write access to the repository.
 
 ### Deployment preflight: `itervox doctor --deploy`
 

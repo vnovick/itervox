@@ -42,6 +42,10 @@ type ReviewVerdict struct {
 	// Reasons is the reviewer's rationale, surfaced to the operator. Not
 	// interpreted by the quorum.
 	Reasons []string `json:"reasons,omitempty"`
+	// Comments are line-level findings (#79), posted on the issue with the
+	// verdict so the implementer can address them. Not interpreted by the
+	// quorum.
+	Comments []ReviewComment `json:"comments,omitempty"`
 	// RecordedAt is when the orchestrator ingested the verdict.
 	RecordedAt time.Time `json:"recordedAt"`
 }
@@ -59,6 +63,13 @@ func NormalizeReviewVerdict(raw string) string {
 		return ReviewVerdictApprove
 	}
 	return ReviewVerdictBlock
+}
+
+// ReviewComment is one line-level review finding.
+type ReviewComment struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+	Body string `json:"body"`
 }
 
 // ReviewOutcome is the combined result of every reviewer that ran.
@@ -141,12 +152,12 @@ func ReviewerProfileChain(cfg *config.Config) []string {
 	//     tracker.completion_state set, the worker moves the issue terminal,
 	//     so ReconcileTrackerStates deleted the run from state.Running before
 	//     the reviewer's own exit event arrived — liveEntry was nil, the guard
-	//     never fired, and the quorum never closed. The handler now recovers
-	//     the reviewer identity from reviewerInjectedProfiles, which
-	//     reconciliation does not touch.
+	//     never fired, and the quorum never closed. The handler now reads
+	//     the finishing run's own record (State.LatestRun, #127), which
+	//     reconciliation does not delete.
 	//
 	//  2. The workspace was auto-cleared while a reviewer was still live. The
-	//     clear decision keyed off runEligibleForAutoReview, which answers
+	//     clear decision keyed off runStartsAReview, which answers
 	//     "would a FRESH review start?" and is false for a reviewer's own exit
 	//     by design. The decision now also consults reviewChainInFlight, so
 	//     the worktree survives until the quorum actually closes.
@@ -209,17 +220,7 @@ func AdvanceReviewChain(
 	quorum string,
 	now time.Time,
 ) (nextProfile string, done bool) {
-	if verdictErr != nil {
-		verdict = ReviewVerdict{
-			Profile: finishedProfile,
-			Verdict: ReviewVerdictBlock,
-			Reasons: []string{"no parseable verdict recorded: " + verdictErr.Error()},
-		}
-	}
-	verdict.Profile = finishedProfile
-	verdict.Verdict = NormalizeReviewVerdict(verdict.Verdict)
-	verdict.RecordedAt = now
-
+	verdict = finishedVerdict(finishedProfile, verdict, verdictErr, now)
 	state.ReviewVerdicts[identifier] = UpsertReviewVerdict(state.ReviewVerdicts[identifier], verdict)
 
 	next := state.ReviewChainIndex[identifier] + 1
@@ -233,13 +234,86 @@ func AdvanceReviewChain(
 	return "", true
 }
 
+// finishedVerdict is the verdict recorded for a finished reviewer: what it
+// wrote, normalized, or a block when it wrote nothing parseable.
+func finishedVerdict(profile string, verdict ReviewVerdict, verdictErr error, now time.Time) ReviewVerdict {
+	if verdictErr != nil {
+		verdict = ReviewVerdict{
+			Verdict: ReviewVerdictBlock,
+			Reasons: []string{"no parseable verdict recorded: " + verdictErr.Error()},
+		}
+	}
+	verdict.Profile = profile
+	verdict.Verdict = NormalizeReviewVerdict(verdict.Verdict)
+	verdict.RecordedAt = now
+	return verdict
+}
+
+// readFinishedVerdict reads a finished reviewer's verdict off the issue
+// workspace (event loop; a small local file).
+func (o *Orchestrator) readFinishedVerdict(identifier, profile string, now time.Time) (ReviewVerdict, error) {
+	if o.workspace != nil {
+		if wsPath := o.workspace.ResolvePath(identifier); wsPath != "" {
+			return ReadReviewVerdict(wsPath, identifier, profile, now)
+		}
+	}
+	return ReviewVerdict{}, errNoWorkspaceForReview
+}
+
+// startReview dispatches a fresh review of issue by the configured reviewers:
+// a multi-reviewer chain from its first reviewer, with the previous round's
+// verdicts cleared, or the single reviewer. When the first reviewer does not
+// start and nothing will start it later (a missing or disabled profile, a dry
+// run) the chain is closed again, so it never sits "in flight" with no
+// reviewer running (#135).
+func (o *Orchestrator) startReview(ctx context.Context, state *State, issue domain.Issue, reviewerProfile string, now time.Time) {
+	chain := o.reviewerChainCfg()
+	if len(chain) > 1 {
+		ResetReviewChain(state, issue.Identifier)
+		reviewerProfile = chain[0]
+	}
+	o.dispatchReviewerForIssue(ctx, state, issue, reviewerProfile, now)
+	if len(chain) <= 1 {
+		return
+	}
+	closeChainIfNotStarted(state, issue, reviewerProfile)
+}
+
+// closeChainIfNotStarted closes issue's reviewer chain when the reviewer just
+// dispatched did not start and nothing will start it later (no run, retry or
+// pending review), so the chain never sits "in flight" with no reviewer:
+// a missing or disabled profile, a dry run, or a claim check that refused
+// the issue (#116).
+func closeChainIfNotStarted(state *State, issue domain.Issue, reviewerProfile string) {
+	_, running := state.Running[issue.ID]
+	_, retrying := state.RetryAttempts[issue.ID]
+	_, pending := state.PendingReviews[issue.Identifier]
+	if !running && !retrying && !pending {
+		delete(state.ReviewChainIndex, issue.Identifier)
+		slog.Warn("orchestrator: review not started; the reviewer chain is closed",
+			"identifier", issue.Identifier, "reviewer", reviewerProfile)
+	}
+}
+
+// recordSingleReview keeps the verdict of a single-reviewer review as the
+// issue's review (#135), so the dashboard shows it like a chain's: the
+// verdict replaces the previous round's, and the outcome is that one vote.
+func (o *Orchestrator) recordSingleReview(state *State, identifier, profile string, now time.Time) {
+	verdict, err := o.readFinishedVerdict(identifier, profile, now)
+	v := finishedVerdict(profile, verdict, err, now)
+	state.ReviewVerdicts[identifier] = []ReviewVerdict{v}
+	state.ReviewOutcomes[identifier] = EvaluateReviewQuorum(state.ReviewVerdicts[identifier], o.cfg.Agent.ReviewQuorum)
+	// A chain marker left by a multi-reviewer config before a reload is not
+	// a review in progress.
+	delete(state.ReviewChainIndex, identifier)
+}
+
 // advanceReviewChainForIssue is the event-loop side of the reviewer chain: it
 // reads the finished reviewer's verdict off the issue workspace, records it,
 // and either dispatches the next reviewer or logs the closed quorum.
 //
-// No-ops when the chain has one entry or fewer, so single-reviewer setups —
-// the existing behavior for every current config — are completely untouched
-// by this path.
+// With a chain of one entry or fewer it only records the verdict as the
+// issue's review (#135); nothing is dispatched or posted.
 func (o *Orchestrator) advanceReviewChainForIssue(
 	ctx context.Context,
 	state State,
@@ -249,21 +323,14 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 ) State {
 	chain := o.reviewerChainCfg()
 	if len(chain) <= 1 {
+		o.recordSingleReview(&state, issue.Identifier, finishedProfile, now)
 		return state
 	}
 	if _, inFlight := state.ReviewChainIndex[issue.Identifier]; !inFlight {
 		return state
 	}
 
-	var (
-		verdict    ReviewVerdict
-		verdictErr = errNoWorkspaceForReview
-	)
-	if o.workspace != nil {
-		if wsPath := o.workspace.ResolvePath(issue.Identifier); wsPath != "" {
-			verdict, verdictErr = ReadReviewVerdict(wsPath, issue.Identifier, finishedProfile, now)
-		}
-	}
+	verdict, verdictErr := o.readFinishedVerdict(issue.Identifier, finishedProfile, now)
 
 	next, done := AdvanceReviewChain(
 		&state, issue.Identifier, finishedProfile, verdict, verdictErr,
@@ -273,6 +340,7 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 		slog.Info("orchestrator: review chain advancing",
 			"identifier", issue.Identifier, "finished", finishedProfile, "next", next)
 		o.dispatchReviewerForIssue(ctx, &state, issue, next, now)
+		closeChainIfNotStarted(&state, issue, next)
 		return state
 	}
 
@@ -289,6 +357,9 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 			outcome.Quorum, outcome.Approvals, outcome.Blocks,
 			map[bool]string{true: "BLOCKED", false: "passed"}[outcome.Blocked])))
 	}
+	// #79: the closed quorum goes on the issue next to each reviewer's
+	// verdict comment, posted off the event loop.
+	o.postReviewComment(issue.ID, issue.Identifier, formatReviewOutcomeComment(outcome, state.ReviewVerdicts[issue.Identifier]))
 	return state
 }
 

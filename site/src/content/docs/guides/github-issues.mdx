@@ -1,57 +1,69 @@
 ---
 title: GitHub Issues
-description: Set up Itervox to resolve GitHub Issues with AI agents.
+description: Set up Itervox to resolve GitHub Issues with AI agents — state labels, priority labels, blocker phrases, identifiers and gh auth.
 sidebar:
   order: 4
 ---
 
-This guide shows you how to connect Itervox to a GitHub repository so AI agents automatically pick up open issues and resolve them.
+This guide connects Itervox to a GitHub repository so agents pick up issues and open pull requests. GitHub is the quickest tracker to start with, but it works differently from Linear in a few ways that matter: **states are labels**, **priority is a label**, and **blockers are phrases in the issue body**. Each is covered below.
 
 ## Prerequisites
 
-- A GitHub repository (public or private)
-- A GitHub Personal Access Token (PAT) with the correct scopes (see below)
-- The `itervox` binary installed and available on your `$PATH`
-- The repository checked out locally
+- A GitHub repository (public or private) and a local checkout of it
+- A GitHub token with the scopes below
+- The `itervox` binary on your `$PATH`
+- The [GitHub CLI](https://cli.github.com/) (`gh`), authenticated — see [gh auth](#authenticate-gh)
 
-## Create a Personal Access Token
+## Create a token
 
-Itervox needs permission to read issues and create pull requests.
+Itervox reads issues, changes their labels and posts comments. Agents push branches and open pull requests.
 
 ### Fine-grained token (recommended)
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
 2. Click **Generate new token**.
-3. Under **Repository access**, select **Only select repositories** and choose your target repo.
+3. Under **Repository access**, choose **Only select repositories** and pick your repo.
 4. Under **Permissions**, grant:
-   - **Issues** — Read and write
+   - **Issues** — Read and write (labels, comments)
    - **Pull requests** — Read and write
-   - **Contents** — Read and write (required for agents that push branches)
-5. Click **Generate token** and copy it immediately.
+   - **Contents** — Read and write (agents push branches)
+5. Generate the token and copy it.
 
-### Classic token (alternative)
+### Classic token
 
-If you prefer a classic token, create one with the `repo` scope at **Settings → Developer settings → Personal access tokens → Tokens (classic)**.
+A classic token with the `repo` scope also works.
 
-Store the token in an environment variable:
+Put the token where the daemon reads it. `itervox init` creates `.itervox/.env` (gitignored), which the daemon loads at startup:
 
 ```bash
-export GITHUB_TOKEN="github_pat_xxxxxxxxxxxxxxxxxxxx"
+# .itervox/.env
+GITHUB_TOKEN=github_pat_xxxxxxxxxxxxxxxxxxxx
 ```
+
+An exported `GITHUB_TOKEN` in your shell works too.
+
+## Authenticate gh
+
+The daemon and the agents call the `gh` CLI for pull-request work: detecting the PR for an issue (`gh pr view`), posting PR comments (`gh pr comment`), merging from the dashboard, and opening PRs from the agent's prompt. `gh` uses `GH_TOKEN` or `GITHUB_TOKEN` when one is in its environment (the daemon's environment includes `.itervox/.env`, so usually the same token as above), and otherwise its own login. Make sure it works on the machine that runs Itervox:
+
+```bash
+gh auth login        # interactive
+# or, non-interactive (servers, CI):
+export GH_TOKEN=github_pat_xxxxxxxxxxxxxxxxxxxx
+gh auth status       # should report "Logged in to github.com"
+```
+
+`itervox doctor --deploy` runs `gh auth status` for you: a missing `gh` is a warning, a logged-out one a failure.
 
 ## Initialize WORKFLOW.md
 
-Run the init command from the root of your repository:
+From the root of the repository:
 
 ```bash
 itervox init --tracker github
 ```
 
-This creates a `WORKFLOW.md` with YAML front matter and a default Liquid prompt template. Open the file and fill in the required fields.
-
-## Configure WORKFLOW.md
-
-GitHub Issues have a simpler state model than Linear: issues are either `open` or `closed`. Itervox maps these states directly.
+This writes `WORKFLOW.md` and the `.itervox/` scaffolding. A minimal tracker section:
 
 ```yaml
 ---
@@ -59,91 +71,262 @@ itervox_schema_version: 2
 
 tracker:
   kind: github
-  api_key: $GITHUB_TOKEN          # resolved from env at runtime
-  project_slug: owner/repo        # GitHub "owner/repo" path
-
-  # Issues must be open to be dispatched; closed issues are terminal
-  active_states:
-    - open
-
-  # Itervox does not transition GitHub issue state automatically by default.
-  # Set completion_state to "closed" to close issues on success,
-  # or leave empty to leave them open until a human closes them.
-  completion_state: ""
-
-  terminal_states:
-    - closed
-
-agent:
-  max_concurrent_agents: 3
-
-polling:
-  interval_ms: 30000
+  api_key: $GITHUB_TOKEN        # resolved from the environment at runtime
+  project_slug: owner/repo      # the repository, as owner/repo
+  active_states: ["todo", "in-progress"]
+  working_state: "in-progress"  # label applied when an agent starts
+  completion_state: "in-review" # label applied when the agent finishes
+  terminal_states: ["done", "cancelled"]
+  backlog_states: ["backlog"]
 ---
 
-You are an AI agent resolving GitHub issue #{{ issue.number }}: {{ issue.title }}.
+You are working on {{ issue.identifier }}: {{ issue.title }}.
 
+{% if issue.description %}
 {{ issue.description }}
+{% endif %}
 
-Complete the task, push your changes to a new branch, and open a pull request.
+Push your changes to a new branch and open a pull request whose body says "Closes {{ issue.identifier }}".
 ```
 
-### State fields for GitHub
+## States are labels
 
-| Field | Value | Notes |
-|---|---|---|
-| `active_states` | `["open"]` | Only open issues are dispatched |
-| `terminal_states` | `["closed"]` | Closed issues are never re-dispatched |
-| `working_state` | *(empty)* | GitHub has no intermediate states; leave empty |
-| `completion_state` | `"closed"` or `""` | Set to `"closed"` to auto-close issues on success |
-| `backlog_states` | `[]` | Not applicable for GitHub |
+GitHub issues are only `open` or `closed`. Every other state Itervox needs — "to do", "in progress", "in review" — is an **issue label**. Each state name in `WORKFLOW.md` is the name of a label on the repository:
 
-## Run Itervox
+| Field | What Itervox does with it |
+|---|---|
+| `active_states` | Fetches **open** issues carrying one of these labels and dispatches them. An open issue with none of them is never picked up. |
+| `working_state` | Adds this label when an agent starts, removing any `active_states`, `terminal_states` and `backlog_states` labels. |
+| `completion_state` | Adds this label when the agent finishes successfully. It does **not** close the issue. |
+| `terminal_states` | Issues with one of these labels are done. `closed` is special: any **closed** issue counts as terminal, labelled or not. An **open** issue that carries both an active and a terminal label counts as active. |
+| `backlog_states` | Fetched and shown as the leftmost board column; never dispatched. |
+| `failed_state` | Added when retries are exhausted. |
 
-From the directory containing `WORKFLOW.md`:
+Two consequences that catch people out:
+
+- **`active_states: ["open"]` does not mean "all open issues".** `open` is read as a label name, so only issues labelled `open` are dispatched. Use a real label such as `todo`.
+- **`completion_state: closed` does not close the issue.** It adds a label named `closed`; the issue stays open on GitHub. Let the pull request close it instead: a PR body containing `Closes #42` closes issue #42 when the PR merges into the default branch.
+
+### Create the labels
+
+Labels must exist on the repository before Itervox can find issues by them. `itervox doctor` checks every configured state label and prints the command for each missing one:
+
+```text
+ERROR: 3 state label(s) missing on owner/repo — issues in those states are never dispatched or moved. Create them with `itervox doctor --fix`, or:
+  gh label create "todo" --color "0075ca" --repo owner/repo
+  gh label create "in-progress" --color "e4e669" --repo owner/repo
+  gh label create "in-review" --color "d93f0b" --repo owner/repo
+```
+
+Create them all at once:
 
 ```bash
-itervox
+itervox doctor --fix          # asks before creating
+itervox doctor --fix --yes    # no prompt (CI)
 ```
 
-Itervox polls the GitHub Issues API every `interval_ms` milliseconds and dispatches an agent for each open issue that does not already have a running worker.
+Or by hand, one per state:
 
-Open the dashboard at [http://localhost:8090](http://localhost:8090) to monitor progress.
+```bash
+gh label create "todo"        --color "0075ca" --repo owner/repo
+gh label create "in-progress" --color "e4e669" --repo owner/repo
+gh label create "in-review"   --color "d93f0b" --repo owner/repo
+gh label create "done"        --color "0e8a16" --repo owner/repo
+gh label create "cancelled"   --color "cccccc" --repo owner/repo
+gh label create "backlog"     --color "f9f9f9" --repo owner/repo
+```
 
-## Using labels as states
+Label names match case-insensitively, as on GitHub. Then add the `todo` label to an issue to hand it to an agent.
 
-GitHub Issues has only two native states: `open` and `closed`. To get intermediate states (like "in progress", "in review"), Itervox uses **labels as state proxies**.
+## Priority labels
 
-When you set `active_states: ["todo", "in-progress"]`, Itervox fetches open issues that have a `todo` or `in-progress` label. When it transitions state (e.g., on completion), it removes the old state label and adds the new one.
+GitHub has no priority field. Itervox reads priority from labels named `p0`, `p1`, `p2` and `p3` (any case):
+
+| Label | Priority | Dispatch order |
+|---|---|---|
+| `p0` | 0 | first |
+| `p1` | 1 | |
+| `p2` | 2 | |
+| `p3` | 3 | |
+| none | — | after every prioritised issue |
+
+When several eligible issues compete for free agent slots, lower numbers go first and issues without a priority label go last. That holds for `dependencies.ordering: critical_path` (the default) and `simple`; under `critical_path_strict`, how many issues a candidate unblocks outranks its priority. If an issue carries more than one `p` label, the first one in its label list counts, not the lowest. Any other label (`urgent`, `high`, `priority: high`) is ignored for ordering.
+
+```bash
+gh label create "p0" --color "b60205" --repo owner/repo
+gh label create "p1" --color "d93f0b" --repo owner/repo
+gh label create "p2" --color "fbca04" --repo owner/repo
+gh label create "p3" --color "0e8a16" --repo owner/repo
+```
+
+## Blockers: phrases in the issue body
+
+GitHub's native issue relationships are not read. A blocker is declared by writing one of these phrases in the **issue body**, followed by issue references:
+
+- `blocked by` / `blocked on`
+- `depends on` / `depends upon`
+- `requires`
+- `waiting on` / `waiting for`
+
+Phrases are case-insensitive and may end with a colon. References are same-repository `#N` numbers, separated by spaces, commas, `and` or `&`, or written as a bullet list on the following lines:
+
+```markdown
+Depends on #12 and #15.
+
+Blocked by: #20, #21
+
+Waiting on:
+- #30
+- #31
+```
+
+An issue is not dispatched until every blocker is closed or carries one of your `terminal_states` labels. A blocker whose state cannot be read counts as unresolved. Details:
+
+- A bare `#12` without a phrase is **not** a blocker.
+- Casual wording matches too: "requires #5 to be reviewed" declares #5 as a blocker.
+- `owner/repo#N` references to other repositories are skipped; the list continues past them.
+- A blank line, or any other word, ends the list.
+- An issue never blocks itself.
+
+## Agent-ready issue template
+
+Agents do much better with a well-specified issue. `itervox init` and `itervox quickstart` offer to add `.github/ISSUE_TEMPLATE/agent-task.md` when they write a new GitHub workflow (`[y/N]`; `itervox init --issue-template` or `itervox quickstart --yes` adds it without asking). `init` asks only when run in a terminal; otherwise it skips the question and says so. To add it to a project that already has a workflow, run `itervox init --tracker github --issue-template`: with a `WORKFLOW.md` present it adds only the template and leaves everything else as it is. It is never written over an existing file. Commit it, and **New issue** offers an "Agent task" template with these sections:
+
+- **Goal**: what should be true when the work is done.
+- **Acceptance criteria**: a checklist the agent works through.
+- **Likely files or areas**: where to start.
+- **How to verify**: the commands or steps that prove it works.
+- **Out of scope**: what not to change.
+- **Blockers**: one line per prerequisite, using a phrase from the list above, e.g. `Blocked by #12, #15`. Delete the line when there are none; left unfilled (`Blocked by #`) it declares nothing.
+
+The template sets no labels, so an issue created from it is not picked up until you give it an active-state label. For Linear, `itervox init` and `itervox quickstart` offer to print the same sections to paste into a Linear issue template; its Blockers section points to Linear's own "Blocked by" relation, which is what Itervox reads there.
+
+## Comment commands
+
+Maintainers can drive Itervox from an issue comment, without the dashboard or
+a label change. Off by default; turn it on in `WORKFLOW.md`:
 
 ```yaml
 tracker:
-  active_states:
-    - todo
-    - in-progress
-  terminal_states:
-    - done
-    - closed
-  completion_state: done     # adds "done" label when agent finishes
-  backlog_states:
-    - backlog               # optional: enables the backlog panel in TUI/dashboard
+  kind: github
+  comment_commands:
+    enabled: true
+    # allow: [trusted-contributor]   # extra logins, besides users with write access
+    # allow_token_user: false        # see "Security model"
+    # reply_to_unauthorized: false   # reply to commands from users without access
 ```
 
-Create these labels in your GitHub repository before running Itervox. Then assign the `todo` label to issues you want agents to pick up.
+The command must start the comment's first line, on an issue (comments on pull requests are ignored):
 
-### GitHub Projects (v2) are not supported
+| Command | What it does |
+|---|---|
+| `/itervox run` | Dispatches the issue: a paused issue is resumed; one outside the active states is moved to the first active state (`tracker.active_states[0]`), and the next poll picks it up like any other. Blockers still apply. |
+| `/itervox run <profile>` | The same, under that agent profile. |
+| `/itervox stop` | Stops the issue's running agent and pauses the issue (the dashboard's **Cancel**). |
+| `/itervox review` | Dispatches the configured `agent.reviewer_profile`. |
 
-Itervox works with **GitHub Issues + labels** directly. It does not integrate with GitHub Projects v2 (the board/kanban feature). This means:
+Itervox acknowledges a command with a 👍 reaction on the comment, or 😕 and a
+short reply when it cannot do it (an unknown profile, nothing to stop, no
+reviewer configured). Replies carry Itervox's managed marker and are never
+read as commands.
 
-- No column-based state management (cards don't move between project board columns)
-- No project board filtering or views
-- The TUI/dashboard project picker is not available for GitHub (it's a Linear-only feature)
+Itervox reads the repository's comments with **one request per 30 seconds**
+(`GET /repos/{owner}/{repo}/issues/comments?since=…`), not per issue, plus a
+permission check per commenter, cached for 10 minutes.
 
-If your team uses GitHub Projects for tracking, you can still use Itervox — just make sure your issues also have the correct state labels. Itervox reads labels, not board columns.
+### Security model
 
-### GitHub Enterprise
+- **Who is obeyed.** Users with write access to the repository (the
+  collaborator permission API's base level `admin` or `write`, which includes
+  `maintain` and custom roles built on write) and logins listed in `allow`.
+  The allow list matches login names only: if a listed account is deleted and
+  someone registers the name, they are obeyed, so keep it short and current. Anyone else is ignored: no action and, unless
+  `reply_to_unauthorized` is set, no reply. In a public repository, anyone can
+  comment, but only maintainers' commands do anything.
+- **Never obeyed.** Bot accounts (unless listed in `allow`), Itervox's own
+  comments, and the account Itervox's token belongs to, even if it is listed in `allow`. Agents use that
+  account too, so an agent, or an issue that talks an agent into writing
+  `/itervox run`, could otherwise trigger commands. If Itervox posts as you
+  (your personal token) and you want your own comments to count, set
+  `allow_token_user: true` and accept that risk, or give Itervox a separate
+  bot token. That is the safer setup for a public repository. This only
+  covers agents that post as the token's account: an agent on an SSH worker,
+  or one whose `gh` is signed in as someone else, posts as that account, so
+  do not give agents a maintainer's credentials. Itervox reads the token's
+  login from `GET /user`; a token that cannot (some GitHub App tokens) stops
+  commands until `allow_token_user: true` is set.
+- **Once only.** Each comment is acted on at most once. Its ID is recorded in
+  `.itervox/comment_commands.json` (gitignored runtime state) **before**
+  Itervox acts, so neither a retry nor a restart repeats it. Commands posted
+  while the daemon was down are picked up when it starts again; comments from
+  before the feature was first enabled are not. If that file is deleted or
+  unreadable, Itervox starts again from the current time, so no earlier
+  command is repeated (commands posted while the daemon was down are then
+  skipped too). Only newly created comments
+  count: editing an older comment into a command does nothing. If a
+  commenter's permission cannot be read, the command is retried for about
+  five minutes, then ignored.
 
-For GitHub Enterprise Server, set `tracker.endpoint` in your WORKFLOW.md:
+## Identifiers
+
+A GitHub issue's identifier is its number with a hash: `#42`. That is what the dashboard, logs and `itervox` commands show. In prompt templates:
+
+| Variable | Example | Notes |
+|---|---|---|
+| `issue.identifier` | `#42` | Use this in prompts and PR bodies |
+| `issue.id` | `42` | The bare number |
+| `issue.title` | | Always set |
+| `issue.description` | | The issue body; empty when the body is empty |
+| `issue.url` | | The issue's GitHub URL |
+| `issue.labels` | `["todo", "bug"]` | Lower-cased label names |
+| `issue.priority` | `0`–`3` | From `p0`–`p3`; **unset when there is no priority label** |
+| `issue.branch_name` | `itervox/42` | Empty on the first turn of the issue's first run; afterwards the branch recorded on the issue |
+| `issue.blocked_by` | | Blockers parsed from the body |
+
+Templates render with strict variables: printing a variable that does not exist fails the dispatch with `undefined variable`. That is why there is no `{{ issue.number }}` (use `issue.identifier` or `issue.id`). `issue.description`, `issue.url` and `issue.branch_name` print as nothing when they are empty (with filters too: write `{{ issue.description | size }}`, not `.size`), and `{% if … %}` on them skips its block. `issue.priority` is unset without a priority label, and printing it then fails, so give it a default:
+
+```liquid
+{% if issue.description %}## Description
+{{ issue.description }}{% endif %}
+Priority: {{ issue.priority | default: "none" }}
+Branch: {{ issue.branch_name | default: issue.identifier }}
+```
+
+`p0` is the number `0`, which Liquid treats as set, so these guards keep it.
+
+Branches: with `workspace.worktree: true`, which `itervox init` writes, each issue gets its own git worktree on a branch named after it, `itervox/42` for `#42`. A later run checks that branch out again when it still exists, so work continues where it stopped. When the worktree is first created and the issue body links an open pull request (a `https://github.com/…/pull/N` URL, checked with `gh`), the worktree uses the pull request's branch instead.
+
+After a turn that ends on any branch other than `main`, `master` or `develop` (or a detached `HEAD`), Itervox records the branch on the issue as a hidden comment (`<!-- itervox:branch:<name> -->`), because GitHub issues have no branch field. With worktrees that happens after the first turn, since `itervox/42` already counts. The comment is posted again only when the branch changes. The first turn of each later run reads it back, so `{{ issue.branch_name }}` names the branch in the prompt.
+
+Only issues are picked up. GitHub's issues API also returns pull requests, and a PR can carry the same labels, but Itervox skips every pull request.
+
+## Run Itervox
+
+```bash
+itervox doctor     # schema, labels, agent commands
+itervox            # start the daemon
+```
+
+Itervox polls every `polling.interval_ms`, dispatches labelled issues up to `agent.max_concurrent_agents`, and serves the dashboard (the URL is in `.itervox/dashboard_url`).
+
+## Differences from Linear
+
+| | GitHub | Linear |
+|---|---|---|
+| Workflow states | Labels you create on the repo | Native workflow states |
+| Scope | One repository (`project_slug: owner/repo`). No project filter: GitHub Projects (v2) boards are not read, and the dashboard project picker is Linear-only. | A team, optionally filtered to one project (`project_slug`) and switchable at runtime |
+| Priority | `p0`–`p3` labels | Native priority field |
+| Blockers | Phrases in the issue body | Native "blocked by" relations, plus **sub-issue gating**: an unfinished child blocks its parent |
+| Sub-issues | Not read; a parent is never held back by its sub-issues | Gate the parent |
+| State refresh | One API request **per issue** (no batch endpoint); blocker states are also read per blocker, cached for 5 minutes | Batched GraphQL queries (one per page of issues) |
+| Branch | Hidden marker comment on the issue | Native branch field |
+| Identifier | `#42` | `ENG-42` |
+
+The per-issue reads are why polling cost grows with the number of running issues on GitHub. The 5,000 requests per hour of an authenticated token is plenty for a handful of concurrent agents at the default interval; lower `polling.interval_ms` only if you need faster pickup. If GitHub does rate-limit Itervox, it waits for the published reset, and queued comments and label changes show a **rate limited until HH:MM** chip in the dashboard's Outbox panel. They are held until the reset, not dropped or posted twice.
+
+## GitHub Enterprise
+
+Point `tracker.endpoint` at your server's API:
 
 ```yaml
 tracker:
@@ -153,76 +336,26 @@ tracker:
   project_slug: org/repo
 ```
 
-## Using labels for filtering
+Authenticate `gh` against the same host: `gh auth login --hostname github.yourcompany.com`.
 
-The Liquid prompt template has access to the full issue object, including its labels. You can use this to give agents specialised instructions based on how the issue is tagged.
+## Prompt tips
 
-```yaml
----
-itervox_schema_version: 2
+Labels are available to the prompt, so one workflow can brief agents differently per issue type:
 
-tracker:
-  kind: github
-  api_key: $GITHUB_TOKEN
-  project_slug: owner/repo
-  active_states:
-    - open
-  terminal_states:
-    - closed
+```liquid
+You are working on {{ issue.identifier }}: {{ issue.title }}.
 
-agent:
-  max_concurrent_agents: 5
----
-
-You are an AI agent resolving GitHub issue #{{ issue.number }}: {{ issue.title }}.
-
+{% if issue.description %}
 {{ issue.description }}
+{% endif %}
 
 {% if issue.labels contains "bug" %}
-This is a **bug report**. Your priority is to:
-1. Reproduce the bug with a failing test.
-2. Fix the root cause.
-3. Verify the fix passes all existing tests.
-4. Open a pull request with a clear description of the fix.
-{% elsif issue.labels contains "feature" %}
-This is a **feature request**. Your priority is to:
-1. Implement the feature as described.
-2. Add appropriate tests.
-3. Update documentation if needed.
-4. Open a pull request.
+This is a bug. Reproduce it with a failing test, fix the root cause, and keep every existing test passing.
 {% else %}
-Implement the changes described in the issue, add tests, and open a pull request.
+Implement the change, add tests, and update the docs it affects.
 {% endif %}
+
+Open a pull request whose body says "Closes {{ issue.identifier }}".
 ```
 
-### Available issue fields in templates
-
-| Field | Description |
-|---|---|
-| `issue.number` | GitHub issue number |
-| `issue.title` | Issue title |
-| `issue.description` | Issue body text |
-| `issue.labels` | Array of label names |
-| `issue.branch_name` | Branch name created for this issue |
-| `issue.identifier` | Same as `issue.number` for GitHub |
-
-## Tips
-
-### Filtering by label in `active_states`
-
-You can narrow which issues get dispatched by using specific labels in `active_states`. For example, set `active_states: ["ready"]` and only assign the `ready` label to issues you want agents to work on. Use the TUI or web dashboard to pause individual issues while you refine your workflow.
-
-### Auto-closing issues on success
-
-Set `completion_state: closed` to have Itervox close issues automatically when an agent finishes. Combine this with a pull-request merge hook so the issue closes only after the PR lands:
-
-```yaml
-hooks:
-  after_run: ./scripts/close-issue-on-merge.sh
-```
-
-### Rate limits
-
-The GitHub API allows up to 5 000 authenticated requests per hour for fine-grained tokens. With the default 30-second polling interval and a small number of concurrent agents, you are well within limits. Lower `interval_ms` only if you need near-real-time dispatch.
-
-If GitHub does rate-limit Itervox, it honours `Retry-After` for secondary limits and `X-RateLimit-Reset` once the hourly budget is spent. Queued comments and label changes wait for the reset and show a **rate limited until HH:MM** chip in the dashboard's Outbox panel — they are never dropped and never posted twice.
+To limit which issues agents take, use a dedicated label such as `ready` as the only entry in `active_states`, and add it only to issues you have triaged.

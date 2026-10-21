@@ -440,14 +440,29 @@ func automationQueueIdentifiers(state *State) map[string]struct{} {
 // ReviewChainIndex forever and verdicts/outcomes were only reset when the same
 // issue was reviewed again. Returns the number of entries removed.
 //
+// A finished review (its verdicts and outcome) is the issue's latest review in
+// issue detail (#135), so those two maps share IssueStatusHistory's retention:
+// they are also kept while the issue still has a status-history entry, which
+// pruneIssueStatusHistory (run earlier on the same tick) bounds to
+// issueStatusHistoryRetention after the issue leaves the candidate set. The
+// chain index is the in-flight marker only, so an abandoned chain's index is
+// still dropped as soon as the issue is untracked and idle.
+//
 // INVARIANT: must only be called from the single event-loop goroutine.
 func pruneReviewLedgers(state *State, untracked, midChain func(ident string) bool) int {
 	if len(state.ReviewVerdicts)+len(state.ReviewOutcomes)+len(state.ReviewChainIndex) == 0 {
 		return 0
 	}
 	keep := func(ident string) bool { return !untracked(ident) || midChain(ident) }
-	removed := pruneMap(state.ReviewVerdicts, identOfKey, keep)
-	removed += pruneMap(state.ReviewOutcomes, identOfKey, keep)
+	keepRecord := func(ident string) bool {
+		if keep(ident) {
+			return true
+		}
+		_, retained := state.IssueStatusHistory[ident]
+		return retained
+	}
+	removed := pruneMap(state.ReviewVerdicts, identOfKey, keepRecord)
+	removed += pruneMap(state.ReviewOutcomes, identOfKey, keepRecord)
 	removed += pruneMap(state.ReviewChainIndex, identOfKey, keep)
 	return removed
 }
@@ -472,11 +487,11 @@ func untrackedIdentifierPredicate(terminal, currentActive, prevActive map[string
 
 // reviewMidChainPredicate reports whether a review may still be in flight for
 // an identifier: a run (any kind) is live for it, a retry is pending for it,
-// or a reviewer was dispatched for it and has not yet succeeded or been
-// abandoned (reviewerInjectedProfiles, read once under issueProfilesMu). The
-// last signal matters because ReconcileTrackerStates deletes a fan-out
-// reviewer's Running entry BEFORE the reviewer's own success exit advances
-// the chain (#58 defect 1) — pruning in that window would strand the quorum.
+// or its latest run is a reviewer whose own exit has not been handled yet
+// (its run record, #127). The last signal matters because
+// ReconcileTrackerStates can delete a reviewer's Running entry BEFORE the
+// reviewer's own success exit advances the chain (#58 defect 1) — pruning in
+// that window would strand the quorum.
 func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 	busy := make(map[string]struct{}, len(state.Running)+len(state.RetryAttempts))
 	for _, e := range state.Running {
@@ -489,11 +504,11 @@ func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 			busy[r.Identifier] = struct{}{}
 		}
 	}
-	o.issueProfilesMu.RLock()
-	for ident := range o.reviewerInjectedProfiles {
-		busy[ident] = struct{}{}
+	for _, rec := range state.LatestRun {
+		if rec.IsReviewer() && !rec.Exited && rec.Identifier != "" {
+			busy[rec.Identifier] = struct{}{}
+		}
 	}
-	o.issueProfilesMu.RUnlock()
 	return func(ident string) bool {
 		_, ok := busy[ident]
 		return ok

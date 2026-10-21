@@ -44,6 +44,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPendingReviewsFromDisk(state)
+	state = o.loadSpendFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -130,6 +131,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
 	o.commentWg.Wait()
+	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
 	return loopErr
 }
@@ -144,6 +146,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	state.ActiveStates = append([]string{}, o.cfg.Tracker.ActiveStates...)
 	state.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
+	state.CompletionState = o.cfg.Tracker.CompletionState
+	state.StackOnReviewState = stackOnReviewState(o.cfg)
 	o.cfgMu.RUnlock()
 
 	// Gap D (Task 6 review): run the dependency-refresh watchdog before the
@@ -221,6 +225,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// whenever cfg.Tracker.Outbox is false (the kill switch), in which
 	// case this returns an empty set and mutates nothing.
 	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
+	pruneStackUnavailable(&state, issues)
 
 	// unified-dependency-graph Task 4 — recompute the inferred-dependency
 	// gating layer against this tick's candidate set before the audit/dispatch
@@ -392,10 +397,32 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			)
 			continue
 		}
+		// #116 claim check: the list may come from the local store, so read
+		// the issue from the tracker before starting it. The same read
+		// serves the input-required recovery below.
+		detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
+		if errors.Is(err, tracker.ErrNotFound) || (err == nil && detailed == nil) {
+			slog.Info("orchestrator: claim check: the tracker no longer has the issue; not starting it",
+				"identifier", issue.Identifier, "path", admitDispatch)
+			o.forgetLocally(issue.ID)
+			continue
+		}
+		if err != nil {
+			slog.Warn("orchestrator: claim check: tracker read failed, not starting the issue now",
+				"identifier", issue.Identifier, "error", err)
+			continue
+		}
+		claimed, verdict := o.claimCheck(ctx, &state, issue, detailed, admitDispatch, func(v domain.Issue) string {
+			return IneligibleReason(v, state, o.cfg)
+		}, now)
+		if verdict != claimAdmit {
+			continue
+		}
+		issue = claimed
 		// Guard: if the latest comment is an unresolved Itervox input-required
 		// comment, restore the issue to InputRequiredIssues instead of dispatching
 		// a fresh worker. This recovers from daemon restarts / state loss.
-		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
+		if entry := recoverInputRequired(issue, detailed); entry != nil {
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Recovery path: no live RunEntry — the previous worker is gone
 			// (daemon restart / state loss). B1 self-reentry guard does not
@@ -558,31 +585,48 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 				"issue_id", issueID, "error", err)
 			state = ScheduleRetry(state, issueID, entry.Attempt+1, entry.Identifier,
 				"retry poll failed", now, BackoffMs(entry.Attempt+1, o.cfg.Agent.MaxRetryBackoffMs))
+			retryAs(state, issueID, entry.ReviewerProfile)
 			continue
 		}
 
-		if len(refreshed) == 0 || !isActiveState(refreshed[0].State, state) {
+		if len(refreshed) == 0 {
 			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
 			state = CancelRetry(state, issueID)
 			continue
 		}
-		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, refreshed[0], now)
+		// #116: the read above is the claim check's; pending local writes a
+		// person's later change superseded are dropped.
+		// A reviewer's retry is admitted where a reviewer is (#116): its
+		// issue may wait in a non-active completion state.
+		eligible := claimActive(&state)
+		if entry.ReviewerProfile != "" {
+			eligible = o.claimNotTerminal(&state, true)
+		}
+		issue, verdict := o.claimCheck(ctx, &state, refreshed[0], &refreshed[0], admitRetry, eligible, now)
+		if verdict != claimAdmit {
+			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
+			state = CancelRetry(state, issueID)
+			continue
+		}
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issue, now)
 
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("retry: no slots, rescheduling", "issue_id", issueID)
 			state = ScheduleRetry(state, issueID, entry.Attempt, entry.Identifier,
 				"no available orchestrator slots", now, 1000)
+			retryAs(state, issueID, entry.ReviewerProfile)
 			continue
 		}
 
 		delete(state.RetryAttempts, issueID)
-		state = o.dispatch(ctx, state, refreshed[0], entry.Attempt)
+		state = o.dispatchRun(ctx, state, issue, entry.Attempt, entry.ReviewerProfile)
 		// CORE-053: a retry the backend gate held keeps its attempt and its
 		// claim; it is due again when the breaker can admit it.
 		if hold, held := state.BackendLimitedHolds[entry.Identifier]; held {
 			if _, running := state.Running[issueID]; !running {
 				state = ScheduleRetry(state, issueID, entry.Attempt, entry.Identifier,
 					"backend limited: "+describeHold(hold), now, holdRetryDelay(state, hold, now))
+				retryAs(state, issueID, entry.ReviewerProfile)
 			}
 		}
 	}
@@ -718,6 +762,7 @@ func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string)
 		Command:            entry.Command,
 		WorkerHost:         entry.WorkerHost,
 		ProfileName:        entry.ProfileName,
+		Reviewer:           entry.Reviewer,
 		QuestionCommentKey: entry.QuestionCommentKey,
 		QuestionCommentID:  entry.QuestionCommentID,
 		QuestionAuthorID:   entry.QuestionAuthorID,
@@ -740,6 +785,7 @@ func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequire
 		Command:            entry.Command,
 		WorkerHost:         entry.WorkerHost,
 		ProfileName:        entry.ProfileName,
+		Reviewer:           entry.Reviewer,
 		QuestionCommentKey: entry.QuestionCommentKey,
 		QuestionCommentID:  entry.QuestionCommentID,
 		QuestionAuthorID:   entry.QuestionAuthorID,
@@ -867,14 +913,8 @@ func findReplySince(comments []domain.Comment, since time.Time, question domain.
 // preventing a wasteful fresh dispatch. This path is intentionally best-effort:
 // session/backend/host continuity comes from the locally persisted
 // InputRequiredIssues file, not tracker comment metadata.
-func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
-	detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
-	if err != nil {
-		slog.Warn("orchestrator: recoverInputRequired detail fetch failed",
-			"identifier", issue.Identifier, "error", err)
-		return nil
-	}
-	if len(detailed.Comments) == 0 {
+func recoverInputRequired(issue domain.Issue, detailed *domain.Issue) *InputRequiredEntry {
+	if detailed == nil || len(detailed.Comments) == 0 {
 		return nil
 	}
 	// Walk comments in reverse to find the last Itervox question.
@@ -1074,6 +1114,12 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 				"identifier", identifier)
 			continue
 		}
+		// #136: an issue at its budget is paused instead of resumed; like
+		// any paused issue it then drops the pending resume.
+		if o.refuseOverBudget(&state, entry.IssueID, identifier) {
+			delete(state.PendingInputResumes, identifier)
+			continue
+		}
 		if _, discarding := state.DiscardingIdentifiers[identifier]; discarding {
 			delete(state.PendingInputResumes, identifier)
 			slog.Info("orchestrator: dropping pending input resume for discarding issue",
@@ -1125,6 +1171,11 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		if detailed == nil {
 			continue
 		}
+		// #116 claim check, on the read above: pending local writes a
+		// person's later change superseded are dropped before the state
+		// checks below decide.
+		claimed := o.claimView(&state, domain.Issue{}, *detailed, admitInputResume, now)
+		detailed = &claimed
 		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, now)
 		if isTerminalState(detailed.State, state) {
 			delete(state.PendingInputResumes, identifier)
@@ -1153,6 +1204,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		state.Claimed[entry.IssueID] = struct{}{}
 		state.Running[entry.IssueID] = &RunEntry{
 			Issue:              resumeIssue,
+			Kind:               reviewerKind(entry.Reviewer),
 			AgentSessionID:     entry.SessionID,
 			WorkerHost:         entry.WorkerHost,
 			Backend:            entry.Backend,
@@ -1161,6 +1213,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			BranchName:         branchNameValue(resumeIssue.BranchName),
 			StartedAt:          now,
 		}
+		workerCtx = o.startRun(workerCtx, &state, state.Running[entry.IssueID])
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
@@ -1176,10 +1229,22 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.Issue, attempt int) State {
+	return o.dispatchRun(ctx, state, issue, attempt, "")
+}
+
+// dispatchRun is dispatch for a run that continues a reviewer when
+// reviewerProfile is set (#127): a reviewer's retry, a re-dispatch after its
+// backend was limited, or the resume of a paused reviewer. The run is a
+// reviewer under that profile, not the issue's implementer profile. A paused
+// reviewer is recognised from its PausedSessions entry.
+func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domain.Issue, attempt int, reviewerProfile string) State {
 	o.syncDrainRequest(&state) // M4-close D2
 	if state.Draining {        // CORE-057: no new worker while draining
 		slog.Info("orchestrator: dispatch refused, daemon is draining",
 			"issue_identifier", issue.Identifier, "attempt", attempt)
+		return state
+	}
+	if o.refuseOverBudget(&state, issue.ID, issue.Identifier) { // #136
 		return state
 	}
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -1210,7 +1275,14 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	// compute the effective (cmd, runnerCmd, backend) via the shared helper.
 	// The same resolver powers reviewer and automation dispatch — see
 	// resolveDispatchTarget (CORE-115).
-	profileName := o.issueProfileForDispatch(state, issue.Identifier)
+	if paused := state.PausedSessions[issue.Identifier]; reviewerProfile == "" && paused != nil && paused.Reviewer {
+		reviewerProfile = paused.ProfileName
+	}
+	reviewerRun := reviewerProfile != ""
+	profileName := reviewerProfile
+	if !reviewerRun {
+		profileName = o.issueProfileForDispatch(state, issue.Identifier)
+	}
 	var profilePtr *config.AgentProfile
 	if profileName != "" {
 		o.cfgMu.RLock()
@@ -1234,11 +1306,10 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	// CORE-053/054: the backend circuit breaker gates the resolved target
 	// (CORE-115 resolver inside gateDispatch) before anything is claimed.
 	// A limited target is rerouted through agent.backend_fallback, or the
-	// issue is held with the backend_limited reason. A reviewer retry
-	// (reviewer profile injected) reroutes per run; an implementer reroute
-	// is a sticky, cap-counted switch.
+	// issue is held with the backend_limited reason. A reviewer run
+	// reroutes per run; an implementer reroute is a sticky, cap-counted
+	// switch.
 	now := time.Now()
-	reviewerRun := o.isReviewerInjected(issue.Identifier)
 	req := gateRequest{
 		identifier: issue.Identifier,
 		in: dispatchTargetInput{
@@ -1267,10 +1338,6 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		profileName = gate.profileName
 		if !reviewerRun {
 			o.recordFallbackSwitch(&state, issue, gate, now)
-		} else {
-			o.issueProfilesMu.Lock()
-			o.issueProfiles[issue.Identifier] = profileName
-			o.issueProfilesMu.Unlock()
 		}
 	}
 	o.saveBackendHealthToDisk(&state)
@@ -1297,6 +1364,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	state.Claimed[issue.ID] = struct{}{}
 	state.Running[issue.ID] = &RunEntry{
 		Issue:        issue,
+		Kind:         reviewerKind(reviewerRun),
 		WorkerHost:   workerHost,
 		Backend:      backend,
 		ProfileName:  profileName,
@@ -1304,6 +1372,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
+	workerCtx = o.startRun(workerCtx, &state, state.Running[issue.ID])
 
 	// Register the cancel func in the concurrent-safe map so CancelIssue (called
 	// from HTTP handler goroutines) can reach it without going through the snapshot,
@@ -1330,9 +1399,14 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		// runnerCommand; an empty stored backend (legacy disk entry) or any
 		// backend outside {claude, codex} is a mismatch, because MultiRunner
 		// silently falls back to its default runner for those.
-		if resolved := agent.BackendFromCommand(runnerCommand); resumeBackendMatches(entry.Backend, resolved) {
+		resolved := agent.BackendFromCommand(runnerCommand)
+		switch {
+		case entry.SessionID == "":
+			// A paused reviewer is recorded even without a session (#127),
+			// so it resumes as the reviewer; it starts a fresh session.
+		case resumeBackendMatches(entry.Backend, resolved):
 			resumeCtx = &ResumeContext{SessionID: entry.SessionID}
-		} else if entry.SessionID != "" {
+		default:
 			slog.Info("orchestrator: paused session belongs to a different backend, starting a fresh session",
 				"identifier", issue.Identifier, "stored_backend", entry.Backend, "resolved_backend", resolved)
 		}
@@ -1382,6 +1456,16 @@ func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) s
 // using the specified profile. The reviewer enters the regular worker queue with
 // Kind="reviewer" and gets full retry/pause/resume support.
 func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *State, issue domain.Issue, profileName string, now time.Time) {
+	o.dispatchReviewer(ctx, state, issue, nil, profileName, now)
+}
+
+// dispatchReviewer is dispatchReviewerForIssue with fresh, the caller's own
+// read of the issue by ID in this admission, for the claim check (nil: it
+// reads one).
+func (o *Orchestrator) dispatchReviewer(ctx context.Context, state *State, issue domain.Issue, fresh *domain.Issue, profileName string, now time.Time) {
+	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136
+		return
+	}
 	o.syncDrainRequest(state) // M4-close D2
 	if state.Draining {       // CORE-057
 		// M4-close BH-M4-2: keep the review, not just a log line. The
@@ -1411,6 +1495,21 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 			"issue_identifier", issue.Identifier, "profile", profileName)
 		return
 	}
+	// #116 claim check: a person may have closed or deleted the issue since
+	// it was last read. A reviewer is admitted anywhere but a terminal state
+	// other than tracker.completion_state.
+	claimed, verdict := o.claimCheck(ctx, state, issue, fresh, admitReviewer, o.claimNotTerminal(state, true), now)
+	switch verdict {
+	case claimUnreachable:
+		// Deferred, never dropped: a reviewer retry reads the issue again.
+		*state = ScheduleRetry(*state, issue.ID, 0, issue.Identifier,
+			"claim check: the tracker could not be read", now, int(claimRetryDelay.Milliseconds()))
+		retryAs(*state, issue.ID, profileName) // #127: the retry is this reviewer
+		return
+	case claimRefuse:
+		return
+	}
+	issue = claimed
 
 	// Same per-issue backend lookup as worker and automation dispatch
 	// (operator pin, else auto-switch) and the same resolver (CORE-115).
@@ -1419,9 +1518,8 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	// CORE-053/054: gate the reviewer's target. A limited reviewer backend
 	// is rerouted through the reviewer's own profile_map entry (per run: no
 	// per-issue override, so the implementer's profile is untouched), or the
-	// review is held: the reviewer profile is installed for the next
-	// dispatch and a retry is scheduled for when the breaker can admit it,
-	// exactly like a failed reviewer turn's retry.
+	// review is held: a reviewer retry is scheduled for when the breaker can
+	// admit it, exactly like a failed reviewer turn's retry.
 	gate := o.gateDispatch(state, gateRequest{
 		identifier: issue.Identifier,
 		in: dispatchTargetInput{
@@ -1436,12 +1534,9 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		allowReroute: o.operatorPinnedBackend(issue.Identifier) == "",
 	}, now)
 	if gate.held {
-		o.issueProfilesMu.Lock()
-		o.issueProfiles[issue.Identifier] = profileName
-		o.reviewerInjectedProfiles[issue.Identifier] = struct{}{}
-		o.issueProfilesMu.Unlock()
 		*state = ScheduleRetry(*state, issue.ID, 0, issue.Identifier,
 			"backend limited: "+describeHold(gate.hold), now, holdRetryDelay(*state, gate.hold, now))
+		retryAs(*state, issue.ID, profileName) // #127: the retry is this reviewer
 		o.logger().Info("orchestrator: reviewer held, backend limited",
 			"identifier", issue.Identifier, "profile", profileName, "hold", describeHold(gate.hold))
 		return
@@ -1480,23 +1575,18 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
+	workerCtx = o.startRun(workerCtx, state, state.Running[issue.ID])
 
 	o.workerCancelsMu.Lock()
 	o.workerCancels[issue.Identifier] = workerCancel
 	o.workerCancelsMu.Unlock()
 	o.clearPendingReview(state, issue.Identifier) // M4-close BH-M4-2: the review is running
 
+	// The reviewer's profile is this run's own (RunEntry.ProfileName and the
+	// runWorker argument); the issue's profile override is the operator's and
+	// is left alone (#127).
 	slog.Info("orchestrator: dispatching reviewer",
 		"issue_identifier", issue.Identifier, "profile", profileName, "backend", backend, "worker_host", workerHost)
-
-	// Set the issue's profile to the reviewer profile so runWorker uses the
-	// reviewer's prompt (appended via the profile system). Mark this entry
-	// as reviewer-injected so TerminalSucceeded knows to clear it without
-	// touching user-set overrides (T-21).
-	o.issueProfilesMu.Lock()
-	o.issueProfiles[issue.Identifier] = profileName
-	o.reviewerInjectedProfiles[issue.Identifier] = struct{}{}
-	o.issueProfilesMu.Unlock()
 
 	o.workersWg.Add(issue.Identifier)
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, nil, nil)
@@ -1551,10 +1641,16 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	}()
 	switch ev.Type {
 	case EventWorkerUpdate:
-		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil {
+		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil && !entry.isStaleFor(ev.RunID) {
+			if entry.Phase == RunDispatched {
+				entry.Phase = RunRunning
+			}
 			// CORE-091: fold the update into the session totals before the
 			// entry takes the new counts.
-			state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			// #136: and into the issue's spend, which agent.budget caps.
+			added := state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			state.Spend.record(entry.Issue.Identifier, time.Now(), added)
+			o.stopOverBudgetRun(&state, entry)
 			if ev.RunEntry.CostUSD != nil {
 				c := *ev.RunEntry.CostUSD
 				entry.CostUSD = &c
@@ -1797,7 +1893,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Warn("orchestrator: reviewer issue not found", "identifier", ev.Identifier)
 			return state
 		}
-		o.dispatchReviewerForIssue(ctx, &state, *found, ev.ReviewerProfile, time.Now())
+		// #135: a manual review is a fresh review by the configured
+		// reviewers — the whole chain from its first reviewer, judged on its
+		// own verdicts, exactly like an auto-review. Not while a retry (a
+		// reviewer's included) is waiting: that run is still the issue's.
+		if _, retrying := state.RetryAttempts[found.ID]; retrying {
+			slog.Warn("orchestrator: cannot dispatch reviewer — a retry is pending", "identifier", ev.Identifier)
+			return state
+		}
+		o.startReview(ctx, &state, *found, ev.ReviewerProfile, time.Now())
 
 	case EventDispatchAutomation:
 		if ev.Issue == nil || ev.Automation == nil {
@@ -1831,6 +1935,22 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
+		if current, superseded := supersededRun(state, liveEntry, ev); superseded {
+			// #125: the exit of a run that is no longer the issue's current
+			// one (reconcile or stall detection already stopped it, and the
+			// issue was dispatched again). It must not touch the new run,
+			// whether that run is still going or has already exited and left
+			// a retry behind.
+			o.handleStaleExit(ev, current)
+			return state
+		}
+		if liveEntry != nil {
+			liveEntry.Phase = RunExited
+		}
+		// #127: which run finished, and what it was, comes from the run
+		// itself: its live entry, or its record when reconcile or stall
+		// detection already deleted the entry.
+		finished, finishedKnown := finishedRun(state, liveEntry, ev)
 		delete(state.Running, ev.IssueID)
 
 		if ev.RunEntry == nil {
@@ -1838,6 +1958,33 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// claim and retry already managed by the reconcile function.
 			return state
 		}
+		if ev.RunEntry.TerminalReason != TerminalCanceledByReconciliation {
+			// Reconcile's own stop event precedes the run's exit; only the
+			// run's exit closes its record.
+			markRunExited(state, ev.IssueID, ev.RunID)
+		}
+		// #136: a run's spend is final at its exit. The exit carries the
+		// run's final usage, which settles what the progress updates did not
+		// (a failed turn sends none; a dropped update loses its counts) —
+		// before anything below decides on a retry. accountRunUpdate adds
+		// only what the run has not contributed yet, so usage its updates
+		// already counted is not counted again. Without the live entry
+		// (reconcile or stall detection deleted it) the run's baseline is
+		// gone, and settling could double-count: it is skipped.
+		if liveEntry != nil {
+			settled := state.Totals.accountRunUpdate(liveEntry, ev.RunEntry)
+			state.Spend.record(ev.RunEntry.Issue.Identifier, time.Now(), settled)
+			if ev.RunEntry.TotalTokens > liveEntry.TotalTokens { // the run's record shows them
+				liveEntry.TotalTokens = ev.RunEntry.TotalTokens
+				liveEntry.InputTokens = ev.RunEntry.InputTokens
+				liveEntry.OutputTokens = ev.RunEntry.OutputTokens
+			}
+		}
+		budgetStopped := ev.RunID != "" && state.BudgetStops[ev.RunEntry.Issue.Identifier] == ev.RunID
+		if budgetStopped {
+			delete(state.BudgetStops, ev.RunEntry.Issue.Identifier)
+		}
+		o.saveSpendToDisk(&state)
 		// CORE-045: one count per processed worker exit, by terminal reason.
 		metrics.WorkerExit(string(ev.RunEntry.TerminalReason))
 
@@ -1887,6 +2034,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			reason := PauseReasonUserCancelled
 			if o.takeTransitionFailed(issue.Identifier) {
 				reason = PauseReasonTransitionFailed
+			} else if budgetStopped {
+				reason = PauseReasonBudgetExceeded // #136
 			}
 			setPauseReason(&state, issue.Identifier, reason)
 			// Capture session info so resume can continue the same agent session
@@ -1900,6 +2049,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					SessionID:  liveEntry.AgentSessionID,
 					WorkerHost: liveEntry.WorkerHost,
 					Backend:    liveEntry.Backend,
+					Reviewer:   finished.IsReviewer(),
 				}
 				// Resolve command for resume. The live RunEntry carries the
 				// resolved profile name; command still comes from cfg so a resume
@@ -1919,6 +2069,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				}
 				state.PausedSessions[issue.Identifier].Command = resumeCommand
 				state.PausedSessions[issue.Identifier].ProfileName = profileName
+			} else if finished.IsReviewer() {
+				// #127: a paused reviewer resumes as the reviewer even with
+				// no session to continue.
+				state.PausedSessions[issue.Identifier] = &PausedSessionInfo{
+					IssueID: issue.ID, ProfileName: finished.ProfileName, Reviewer: true,
+				}
 			}
 			delete(state.Claimed, ev.IssueID)
 			savedSession := ""
@@ -1941,7 +2097,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Info("orchestrator: issue terminated by user (claim released)",
 				"issue_id", ev.IssueID, "identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "cancelled")
-			o.abandonReviewerRun(&state, liveEntry, issue.Identifier) // CORE-157
+			o.abandonReviewerRun(&state, finished, issue.Identifier) // CORE-157
 
 			// Move the issue to backlog so the working-state label is cleared and
 			// the issue is not immediately re-dispatched on the next poll cycle.
@@ -1966,52 +2122,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Do NOT schedule a retry; successful completions must not appear in
 			// the retry queue and must not cause infinite re-dispatch loops.
 			delete(state.Claimed, ev.IssueID)
-			// T-21: clear reviewer-injected profile overrides only. A user-set
-			// override (via SetIssueProfile HTTP) is left intact even on a
-			// reviewer-Kind completion, since the user never asked us to forget it.
-			// #58 defect 1 — the reviewer's identity must survive a missing
-			// live entry.
-			//
-			// With tracker.completion_state set, a successful worker moves the
-			// issue terminal, so ReconcileTrackerStates deletes the run from
-			// state.Running BEFORE the run's own exit event arrives. liveEntry
-			// is then nil, the `liveEntry.Kind == "reviewer"` guard never
-			// fires, and the chain never advances — the quorum stayed open
-			// forever, which is why multi-reviewer fan-out was gated off.
-			//
-			// reviewerInjectedProfiles is written at reviewer dispatch and is
-			// NOT touched by reconciliation, so it still identifies the run.
-			// Recovering from it is strictly narrower than failing open: it
-			// says "this exact issue had a reviewer profile injected", not
-			// "we could not prove otherwise" — the distinction that made
-			// runEligibleForAutoReview fail closed.
-			finishedKind, finishedProfile := "", ""
-			if liveEntry != nil {
-				finishedKind, finishedProfile = liveEntry.Kind, liveEntry.ProfileName
-			}
-			o.issueProfilesMu.Lock()
-			if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
-				if finishedKind == "" {
-					finishedKind = "reviewer"
-				}
-				if finishedProfile == "" {
-					finishedProfile = o.issueProfiles[issue.Identifier]
-				}
-			}
-			o.issueProfilesMu.Unlock()
-
-			if finishedKind == "reviewer" {
-				o.issueProfilesMu.Lock()
-				if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
-					delete(o.issueProfiles, issue.Identifier)
-					delete(o.reviewerInjectedProfiles, issue.Identifier)
-				}
-				o.issueProfilesMu.Unlock()
+			// #58 defect 1, #127 — a reviewer is identified by its own run
+			// record, which survives reconcile deleting its Running entry
+			// before its exit arrives. A reviewer never touched the issue's
+			// profile override, so there is nothing to clear here.
+			if finished.IsReviewer() {
 				// #58 — collect this reviewer's verdict and either dispatch
-				// the next reviewer in the chain or close the quorum. Must
-				// run AFTER the profile-override cleanup above so the next
-				// reviewer's dispatch installs its own override cleanly.
-				state = o.advanceReviewChainForIssue(ctx, state, issue, finishedProfile, now)
+				// the next reviewer in the chain or close the quorum.
+				state = o.advanceReviewChainForIssue(ctx, state, issue, finished.ProfileName, now)
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -2080,8 +2198,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			reviewerProfile := o.cfg.Agent.ReviewerProfile
 			autoReview := o.cfg.Agent.AutoReview
 			o.cfgMu.RUnlock()
-			reviewerWillRun := autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry)
-			// #58 defect 2 — runEligibleForAutoReview answers "would a FRESH
+			reviewerWillRun := autoReview && reviewerProfile != "" && runStartsAReview(finished, finishedKnown)
+			// #58 defect 2 — runStartsAReview answers "would a FRESH
 			// review start?", not "is a review in progress?". For a reviewer's
 			// own exit it is false by design (that is what stops review
 			// loops), so with a multi-reviewer chain the workspace was cleared
@@ -2111,11 +2229,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// advanceReviewChainForIssue knows a chain is in flight. When
 				// the chain has a single entry this is inert bookkeeping and
 				// the reviewer behaves exactly as before.
-				if chain := o.reviewerChainCfg(); len(chain) > 1 {
-					ResetReviewChain(&state, issue.Identifier)
-					reviewerProfile = chain[0]
-				}
-				o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
+				o.startReview(ctx, &state, issue, reviewerProfile, now)
 			}
 
 		case TerminalStalled:
@@ -2126,10 +2240,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.recordHistory(ev.RunEntry, issue, now, "stalled")
 			o.recordWorkerFailure(&state, ev, attempt, now) // CORE-046
 			// CORE-157: a stall normally schedules a retry inline (the retry
-			// re-runs the reviewer, so the marker must stay); only a stall
-			// with no retry pending abandons the reviewer run.
+			// re-runs the reviewer, #127); only a stall with no retry pending
+			// abandons the reviewer run.
 			if _, retryPending := state.RetryAttempts[ev.IssueID]; !retryPending {
-				o.abandonReviewerRun(&state, liveEntry, issue.Identifier)
+				o.abandonReviewerRun(&state, finished, issue.Identifier)
 			}
 			// Mark any in-flight handoff file as .partial.md so subsequent
 			// agents can see the stalled worker's partial deliverable without
@@ -2183,13 +2297,25 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "input_required")
 
+		case TerminalStackUnavailable:
+			// No agent ran. Remember the blocker so the dependent waits for
+			// it instead of being admitted (and backing out) every tick.
+			delete(state.Claimed, ev.IssueID)
+			if state.StackUnavailable == nil {
+				state.StackUnavailable = make(map[string]string)
+			}
+			if key := reviewStackKey(ev.RunEntry.Issue, state); key != "" {
+				state.StackUnavailable[issue.Identifier] = key
+			}
+			slog.Info("orchestrator: dependent not stacked on its in-review blocker; waiting for the blocker",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 		case TerminalRateLimited:
 			// CORE-051: a quota limit is classified on the first failure. The
 			// rate_limited fallback is evaluated now, without consuming a retry;
 			// with no eligible fallback it falls through to the failed path.
-			state = o.handleFailedExit(ctx, state, ev, liveEntry, now)
+			state = o.handleFailedExit(ctx, state, ev, liveEntry, finished, now)
 		default: // TerminalFailed (and any other unhandled terminal reasons)
-			state = o.handleFailedExit(ctx, state, ev, liveEntry, now)
+			state = o.handleFailedExit(ctx, state, ev, liveEntry, finished, now)
 		}
 	}
 	return state
@@ -2201,7 +2327,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 // CORE-051), then a retry — delayed by the vendor's limit hint when the exit
 // carries one — or, once retries are exhausted, the rate_limited recovery /
 // failed state / pause.
-func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev OrchestratorEvent, liveEntry *RunEntry, now time.Time) State {
+func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev OrchestratorEvent, liveEntry *RunEntry, finished RunRecord, now time.Time) State {
 	issue := ev.RunEntry.Issue
 	attempt := 0
 	if ev.RunEntry.RetryAttempt != nil {
@@ -2221,9 +2347,9 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 			delete(state.Claimed, ev.IssueID)
 			slog.Info("orchestrator: worker context cancelled, claim released for re-dispatch",
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
-			// CORE-157: nothing will re-run this reviewer; the fresh
-			// re-dispatch must resolve the implementer profile.
-			o.abandonReviewerRun(&state, liveEntry, issue.Identifier)
+			// CORE-157: nothing will re-run this reviewer; its chain is
+			// closed and the fresh re-dispatch is an implementer run.
+			o.abandonReviewerRun(&state, finished, issue.Identifier)
 		} else {
 			slog.Info("orchestrator: worker context cancelled, claim retained for pending retry",
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
@@ -2246,6 +2372,14 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 		// distinctly from a clean handoff. No-op if the agent never
 		// wrote a handoff this turn.
 		o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
+		// #136: a failed run that has used the issue's budget is not run
+		// again, by a retry or a fallback: the issue is paused with
+		// budget_exceeded. Its spend was settled from the exit above.
+		if o.refuseOverBudget(&state, ev.IssueID, issue.Identifier) {
+			o.abandonReviewerRun(&state, finished, issue.Identifier) // CORE-157: nothing re-runs it
+			o.recordHistory(liveEntry, issue, now, "failed")
+			return state
+		}
 		errMsg := ""
 		if ev.Error != nil {
 			errMsg = ev.Error.Error()
@@ -2277,20 +2411,39 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 				// attempt (no retry consumed): the gate reroutes it, or holds
 				// it with backend_limited when every target is limited.
 				delete(state.Claimed, ev.IssueID)
-				state = o.dispatch(ctx, state, issue, attempt)
+				// #116 claim check before the re-dispatch.
+				eligible := claimActive(&state)
+				if reviewerProfileOf(finished) != "" {
+					eligible = o.claimNotTerminal(&state, true)
+				}
+				claimed, verdict := o.claimCheck(ctx, &state, issue, nil, admitFallback, eligible, now)
+				admit := verdict == claimAdmit
+				if admit {
+					state = o.dispatchRun(ctx, state, claimed, attempt, reviewerProfileOf(finished))
+				} else if verdict == claimUnreachable && reviewerProfileOf(finished) != "" {
+					// A worker is dispatched again by the next tick; a reviewer
+					// is not, so it is deferred to a retry.
+					state = ScheduleRetry(state, issue.ID, attempt, issue.Identifier,
+						"claim check: the tracker could not be read", now, int(claimRetryDelay.Milliseconds()))
+					retryAs(state, issue.ID, reviewerProfileOf(finished))
+				}
 				o.recordHistory(liveEntry, issue, now, "failed")
-				if _, running := state.Running[ev.IssueID]; running {
+				_, running := state.Running[ev.IssueID]
+				switch {
+				case !admit:
+					// The claim check logged why; nothing is re-dispatched.
+				case running:
 					o.logger().Warn("orchestrator: vendor limit, backend_fallback rerouted without consuming a retry",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier, "attempt", attempt,
 						"backend", state.Running[ev.IssueID].Backend, "profile", state.Running[ev.IssueID].ProfileName)
-				} else {
+				default:
 					o.logger().Warn("orchestrator: vendor limit, every backend limited; issue held",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 						"hold", describeHold(state.BackendLimitedHolds[issue.Identifier]))
 				}
 				return state
 			}
-			if o.exitedRunIsReviewer(liveEntry, issue.Identifier) {
+			if finished.IsReviewer() {
 				slog.Info("orchestrator: rate-limited reviewer run, skipping rate_limited switch",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 			} else {
@@ -2345,7 +2498,7 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 			// very exit already evaluated the fallback above, it is not
 			// evaluated twice.
 			rateLimited := (o.isRateLimitFailureCfg(errMsg) || ev.Limit.Terminal()) && !limitSwitchTried
-			if rateLimited && o.exitedRunIsReviewer(liveEntry, issue.Identifier) {
+			if rateLimited && finished.IsReviewer() {
 				// CORE-031: rate_limited rules switch the issue to an
 				// IMPLEMENTER profile and dispatch Kind="worker"; doing
 				// that for a reviewer would replace the review with an
@@ -2401,9 +2554,8 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 				o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 			}
 			// CORE-157: retries are exhausted, so a reviewer run is
-			// abandoned. Runs after the exitedRunIsReviewer read above,
-			// which needs the marker.
-			o.abandonReviewerRun(&state, liveEntry, issue.Identifier)
+			// abandoned.
+			o.abandonReviewerRun(&state, finished, issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "failed")
 		} else {
 			backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
@@ -2414,6 +2566,7 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 			// including with max_retries: 0.
 			backoff = max(backoff, vendorRetryDelayMs(ev.Limit, now))
 			state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
+			retryAs(state, ev.IssueID, reviewerProfileOf(finished)) // #127: the retry is the reviewer
 			// liveEntry may be nil when a reconcile kill path already
 			// removed the entry and the worker's exit event arrived
 			// late (ORCH-1) — never dereference it unguarded.
@@ -2434,51 +2587,26 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 }
 
 // abandonReviewerRun is the non-success counterpart of the TerminalSucceeded
-// reviewer cleanup (CORE-157). Call it only on an exit after which nothing
+// reviewer handling (CORE-157). Call it only on an exit after which nothing
 // will re-run this reviewer: retries exhausted, cancelled or stalled with no
-// retry pending, or hard-terminated by the user. It clears the reviewer
-// profile override and its reviewerInjectedProfiles marker (under
-// issueProfilesMu) so the next dispatch of the issue resolves the implementer
-// profile, and closes the multi-reviewer chain, which can no longer advance.
+// retry pending, or hard-terminated by the user. It closes the multi-reviewer
+// chain, which can no longer advance. The next dispatch of the issue resolves
+// the implementer profile on its own: a reviewer never wrote the issue's
+// profile override (#127).
 //
 // Deliberately NOT called for: a failure that schedules a retry (the retry is
-// the reviewer — exitedRunIsReviewer relies on the marker surviving it),
-// TerminalCanceledByReconciliation (reconcile emits it BEFORE a fan-out
-// reviewer's own success exit, which still needs the marker — #58 defect 1),
-// TerminalInputRequired and a user pause (the reviewer session is suspended
-// and resumes under the same profile), and the hand-off between reviewers of a
-// chain (advanceReviewChainForIssue re-installs the marker for the next one).
-// No-op when the exited run was not a reviewer.
-func (o *Orchestrator) abandonReviewerRun(state *State, liveEntry *RunEntry, identifier string) {
-	if !o.exitedRunIsReviewer(liveEntry, identifier) {
+// the reviewer), TerminalCanceledByReconciliation (reconcile emits it BEFORE a
+// fan-out reviewer's own success exit — #58 defect 1), TerminalInputRequired
+// and a user pause (the reviewer session is suspended and resumes as the
+// reviewer), and the hand-off between reviewers of a chain. No-op when the
+// exited run was not a reviewer.
+func (o *Orchestrator) abandonReviewerRun(state *State, finished RunRecord, identifier string) {
+	if !finished.IsReviewer() {
 		return
 	}
-	o.issueProfilesMu.Lock()
-	if _, injected := o.reviewerInjectedProfiles[identifier]; injected {
-		delete(o.issueProfiles, identifier)
-		delete(o.reviewerInjectedProfiles, identifier)
-	}
-	o.issueProfilesMu.Unlock()
 	delete(state.ReviewChainIndex, identifier)
-	slog.Info("orchestrator: reviewer run abandoned, reviewer profile override cleared",
-		"issue_identifier", identifier)
-}
-
-// exitedRunIsReviewer reports whether the run that just exited was a
-// reviewer. liveEntry.Kind alone is not enough: a reviewer's retries go
-// through fireRetries → dispatch(), whose RunEntry carries no Kind, so the
-// durable signal is reviewerInjectedProfiles — written at reviewer dispatch,
-// cleared only when the reviewer succeeds, untouched by reconciliation (the
-// same source the TerminalSucceeded path uses, #58). Read under
-// issueProfilesMu, which guards that map.
-func (o *Orchestrator) exitedRunIsReviewer(liveEntry *RunEntry, identifier string) bool {
-	if liveEntry != nil && liveEntry.Kind == "reviewer" {
-		return true
-	}
-	o.issueProfilesMu.RLock()
-	_, injected := o.reviewerInjectedProfiles[identifier]
-	o.issueProfilesMu.RUnlock()
-	return injected
+	slog.Info("orchestrator: reviewer run abandoned, review chain closed",
+		"issue_identifier", identifier, "profile", finished.ProfileName)
 }
 
 func shouldDrainAutomationQueueAfterEvent(eventType EventType) bool {
@@ -2714,29 +2842,23 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 	o.ResetCommentCount(issue.Identifier)
 }
 
-func runEligibleForAutoReview(liveEntry *RunEntry) bool {
-	// A nil liveEntry means state.Running no longer holds this run, so we
-	// cannot establish that what just finished was a reviewable worker. It
-	// must fail CLOSED.
-	//
-	// It used to return true, and that was an unbounded agent-spawn loop.
-	// ReconcileTrackerStates deletes the Running entry when an issue reaches
-	// a terminal state — which is exactly what tracker.completion_state makes
-	// the worker do on success — and the stopped run's own goroutine then
-	// delivers its real EventWorkerExited a moment later, by which point the
-	// entry is gone. Failing open told the handler "a plain worker
-	// succeeded", so it dispatched a reviewer; reconciliation stopped that
-	// reviewer for the same reason; its exit arrived nil too; repeat. The
-	// issue sits terminal, so nothing ever breaks the cycle.
-	//
-	// Measured on a 50ms poll: 30 RunTurn calls in 1.5s against an expected
-	// 2. On a real tracker each iteration is a billed agent run plus tracker
-	// writes. Failing closed costs at most one skipped review on a run we
-	// have no record of; failing open costs the fleet.
-	if liveEntry == nil {
+// runStartsAReview reports whether a successful exit of the finished run
+// starts an auto-review: it was a plain worker (not a reviewer or an
+// automation) whose work ran to completion. A run reconcile or stall detection
+// stopped is not reviewed, and neither is a run the loop has no record of.
+//
+// The stopped case is what bounds review dispatch. Reconcile stops runs on an
+// issue that went terminal, and the stopped run's own goroutine can still
+// deliver a success exit a moment later. Reviewing it dispatched a reviewer
+// that reconciliation stopped for the same reason, whose exit dispatched
+// another: measured at 30 RunTurn calls in 1.5s against an expected 2.
+// Reviewers are never reviewed, and a run that finishes normally is not
+// stopped by reconcile (#125), so a review starts once per finished worker.
+func runStartsAReview(finished RunRecord, known bool) bool {
+	if !known || finished.Stopped {
 		return false
 	}
-	return liveEntry.Kind == "" || liveEntry.Kind == "worker"
+	return finished.Kind == "" || finished.Kind == "worker"
 }
 
 // markStalledHandoffPartial renames the in-flight handoff file authored by
