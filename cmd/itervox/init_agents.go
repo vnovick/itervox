@@ -47,26 +47,6 @@ var initAgentProfileNames = []string{"implementer", "reviewer", "input-responder
 // wired to this name in the generated WORKFLOW.md front matter.
 const initDepsAnalyzerProfileName = "deps-analyzer"
 
-func writeInitAgentFiles(workflowPath, runner string) error {
-	baseDir := filepath.Dir(workflowPath)
-	if baseDir == "" {
-		baseDir = "."
-	}
-	for _, profile := range initAgentProfileNames {
-		profileDir := filepath.Join(baseDir, ".itervox", "agents", profile)
-		if err := os.MkdirAll(profileDir, 0o755); err != nil {
-			return fmt.Errorf("itervox init: create %s: %w", profileDir, err)
-		}
-		if err := writeFileIfMissing(filepath.Join(profileDir, "SOUL.md"), initSoulContent(profile)); err != nil {
-			return err
-		}
-		if err := writeFileIfMissing(filepath.Join(profileDir, "INSTRUCTIONS.md"), initInstructionsContent(profile, runner)); err != nil {
-			return err
-		}
-	}
-	return ensureItervoxGitignore(filepath.Join(baseDir, ".itervox"))
-}
-
 func writeFileIfMissing(path string, content string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
@@ -103,7 +83,10 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	path := filepath.Join(itervoxDir, ".gitignore")
 	// run/ holds transient per-daemon runtime state such as the CORE-042
 	// orphan process-group ledger, run/agent-pgids.json (agentPGIDLedgerRel).
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "bin/", "*.db"}
+	// #157: rules.json is the committed project rules layer, carved out of
+	// the runtime /*.json ignore (the negation must follow it);
+	// rules.local.json is the operator's private layer and stays ignored.
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "/rules.local.json", "bin/", "*.db"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)
@@ -182,6 +165,10 @@ func initSoulContent(profile string) string {
 		profile = "reviewer" // preset reviewers (#79) share the read-only reviewer files
 	}
 	switch profile {
+	case prReviewerProfileName:
+		return prReviewerSoul
+	case qaProfileName:
+		return qaSoul
 	case initDepsAnalyzerProfileName:
 		return `# deps-analyzer SOUL
 
@@ -273,6 +260,10 @@ func initInstructionsContent(profile string, runner string) string {
 		profile = "reviewer" // preset reviewers (#79) share the read-only reviewer files
 	}
 	switch profile {
+	case prReviewerProfileName:
+		return prReviewerInstructions
+	case qaProfileName:
+		return qaInstructions
 	case initDepsAnalyzerProfileName:
 		return `# deps-analyzer INSTRUCTIONS
 

@@ -4,6 +4,10 @@ type ViewMode = 'board' | 'list' | 'agents' | 'deps' | 'notifications';
 
 export type AutomationsTab = 'configure' | 'activity';
 
+/** Rules editor (#157): which layer tab, which view, and the preview inputs. */
+export type RulesLayerTab = 'user' | 'project' | 'local';
+export type RulesEditorView = 'form' | 'json';
+
 interface UIState {
   // Dashboard preferences (ZUSTAND-3) — persist across navigation
   dashboardViewMode: ViewMode;
@@ -26,6 +30,12 @@ interface UIState {
 
   // CORE-095 — command palette (Mod+K or the header button).
   commandPaletteOpen: boolean;
+
+  // #157 — Rules editor, kept across navigation.
+  rulesLayer: RulesLayerTab;
+  rulesView: RulesEditorView;
+  rulesPreviewProfile: string;
+  rulesPreviewIssue: string;
 }
 
 interface UIActions {
@@ -39,6 +49,10 @@ interface UIActions {
   setLogsIssueSearch: (search: string) => void;
   setTimelineAutomationOnly: (value: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setRulesLayer: (layer: RulesLayerTab) => void;
+  setRulesView: (view: RulesEditorView) => void;
+  setRulesPreviewProfile: (profile: string) => void;
+  setRulesPreviewIssue: (issue: string) => void;
 }
 
 export const useUIStore = create<UIState & UIActions>((set) => ({
@@ -52,6 +66,10 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   logsIssueSearch: '',
   timelineAutomationOnly: false,
   commandPaletteOpen: false,
+  rulesLayer: 'project',
+  rulesView: 'form',
+  rulesPreviewProfile: '',
+  rulesPreviewIssue: '',
 
   setDashboardViewMode: (dashboardViewMode) => {
     set({ dashboardViewMode });
@@ -82,5 +100,17 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setCommandPaletteOpen: (commandPaletteOpen) => {
     set({ commandPaletteOpen });
+  },
+  setRulesLayer: (rulesLayer) => {
+    set({ rulesLayer });
+  },
+  setRulesView: (rulesView) => {
+    set({ rulesView });
+  },
+  setRulesPreviewProfile: (rulesPreviewProfile) => {
+    set({ rulesPreviewProfile });
+  },
+  setRulesPreviewIssue: (rulesPreviewIssue) => {
+    set({ rulesPreviewIssue });
   },
 }));

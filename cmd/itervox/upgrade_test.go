@@ -157,10 +157,13 @@ func TestUpgradeFromV021(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(original), string(migrated), "a v0.2.1 workflow needs no rewrite")
 	// v0.2.1 wrote the agents and handoff carve-outs; the update adds the
-	// local tracker's issues carve-out (v0.2.2) and changes nothing else.
+	// local tracker's issues carve-out (v0.2.2) and the rules layers' lines
+	// (v0.2.5: the project layer committed, the local one ignored), and
+	// changes nothing else.
 	gitignore, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	require.NoError(t, err)
-	assert.Equal(t, string(originalIgnore)+"!.itervox/issues/\n!.itervox/issues/**\n", string(gitignore))
+	assert.Equal(t, string(originalIgnore)+"!.itervox/issues/\n!.itervox/issues/**\n"+
+		"!.itervox/rules.json\n.itervox/rules.local.json\n", string(gitignore))
 
 	// 2. The migrated config loads, profiles and all.
 	t.Setenv("GITHUB_TOKEN", "fixture-token") // tracker.api_key: $GITHUB_TOKEN
