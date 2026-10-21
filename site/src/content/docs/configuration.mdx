@@ -230,7 +230,9 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
-| `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. |
+| `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. With `clone_url`, new worktrees start from `origin/<base_branch>` as last fetched. |
+
+With `clone_url`, the bare clone at `<root>/.bare` fetches origin's branches into `refs/remotes/origin/*`, so a fetch never overwrites a local branch (an agent's unpushed commits are safe) and a branch checked out in a worktree cannot make it fail. New worktree branches are created with `--no-track`; their only upstream is their own name on origin. A clone made by an older version (fetch refspec `+refs/heads/*:refs/heads/*`) is migrated automatically on first use, and upstreams that point at a different branch are repaired. A failing fetch shows up once in recent failures, and `itervox doctor` reports the clone's last successful fetch.
 
 ```yaml
 workspace:

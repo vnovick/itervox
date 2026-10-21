@@ -540,6 +540,31 @@ retry. Itervox does not create a second branch from the PR branch instead: the
 agent's pushes would not reach the PR. Fetches into the shared clone are
 serialized, so parallel dispatches no longer fail with `cannot lock ref`.
 
+**The shared bare clone (`clone_url`).** With `worktree: true` and a
+`clone_url`, Itervox keeps one bare clone at `<root>/.bare` and adds each
+issue's worktree under `<root>/worktrees/<identifier>`. The clone fetches
+origin's branches into `refs/remotes/origin/*`
+(`+refs/heads/*:refs/remotes/origin/*`) before every new worktree; a fetch
+never writes a local branch, so an agent's unpushed commits are never
+overwritten and a branch checked out in a worktree cannot make the fetch fail.
+A new worktree's branch starts from `origin/<base_branch>` (or from its
+blocker's branch when stacked PRs apply) and is created with `--no-track`: its
+only upstream is its own name on origin, set when origin already has it, so
+`git push` and `gh pr view` never act on another issue's branch. A branch only
+origin has (an open PR's branch) is created from `origin/<branch>`; an existing
+local copy is fast-forwarded to it, never rewound, and never while another
+worktree has it checked out. The clone's local `<base_branch>` is
+fast-forwarded after each fetch the same way. A failing fetch is recorded once
+in recent failures (`workspace_fetch`) until a fetch succeeds, and
+`itervox doctor` prints the clone's last successful fetch: a failing fetch is
+an `ERROR` (exit 1), a fetch older than 24 hours or a clone still on the
+pre-#195 refspec `+refs/heads/*:refs/heads/*` a `WARNING`. Such a clone is
+migrated automatically the first time it is used: the refspec is rewritten,
+one fetch populates `refs/remotes/origin/*`, and branch upstreams that point
+at a different branch are repointed at the branch's own name on origin (or
+unset when origin lacks it). Nothing is deleted. The last fetch outcome is
+kept in `<root>/.bare/itervox-fetch-status.json`.
+
 ### Agent handoff (`.itervox/handoff/`)
 
 Each worker run can leave a Markdown deliverable at `.itervox/handoff/<ISO8601-timestamp>_<profile-name>.md` on the issue's worktree branch. Before dispatching the next worker for the same issue, the orchestrator reads every `.md` file in that directory in chronological order (the ISO8601 filename prefix sorts lexicographically), applies a token budget (default 30 KB — oldest dropped first with a `[earlier handoffs truncated]` marker), and inlines the result into the agent's prompt as a `## Prior Agent Handoffs` block. A `## Run Context` block follows with two values the agent uses to write its own deliverable:

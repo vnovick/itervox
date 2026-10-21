@@ -71,9 +71,11 @@ func RemoteHeadSHA(ctx context.Context, wsPath, branch string) string {
 //
 // The branch is passed to gh explicitly (#193). Without an argument gh picks
 // the PR through the branch's upstream (branch.<name>.merge), and a worktree
-// branch made from another branch of the shared bare clone tracks that
-// branch: the bare clone's fetch refspec maps origin's branches onto
-// refs/heads/*, so git sets up tracking for any of them. A worktree stacked
+// branch made from another branch of the shared bare clone tracked that
+// branch: before #195 the bare clone's fetch refspec mapped origin's branches
+// onto refs/heads/*, so git set up tracking for any of them (new branches
+// are now created with --no-track, and #195's migration repairs old ones;
+// the explicit argument stays as the guard). A worktree stacked
 // on a blocker's branch therefore "found" the blocker's PR, the worker
 // commented it on the dependent as its own, and the dependent's next run
 // tried to check out the blocker's branch.
