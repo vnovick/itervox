@@ -2364,6 +2364,18 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 					o.logger().Warn("orchestrator: vendor limit, every backend limited; issue held",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 						"hold", describeHold(state.BackendLimitedHolds[issue.Identifier]))
+					// #127: a held reviewer continues as a reviewer retry,
+					// which keeps the claim, so the next poll cannot
+					// dispatch it as implementer work.
+					if rp := reviewerProfileOf(finished); rp != "" {
+						delay := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
+						if hold, held := state.BackendLimitedHolds[issue.Identifier]; held {
+							delay = holdRetryDelay(state, hold, now)
+						}
+						state = ScheduleRetry(state, ev.IssueID, attempt, issue.Identifier,
+							"backend limited: "+describeHold(state.BackendLimitedHolds[issue.Identifier]), now, delay)
+						retryAs(state, ev.IssueID, rp)
+					}
 				}
 				return state
 			}
