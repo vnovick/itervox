@@ -1,0 +1,590 @@
+{
+  "$id": "https://itervox.dev/schema/settings.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A settings layer: ~/.itervox/settings.jsonc (user), .itervox/settings.jsonc (project, committed) or .itervox/settings.local.jsonc (project local, gitignored). Later layers win, and WORKFLOW.md wins over all of them. The files are JSONC: comments and trailing commas are allowed. Generated from the Itervox config registry; do not edit by hand.",
+  "properties": {
+    "$schema": {
+      "description": "The schema URL, for editor support.",
+      "type": "string"
+    },
+    "agent": {
+      "additionalProperties": false,
+      "description": "The agent runner: command, capacity, retries, timeouts, review, SSH and rate limits.",
+      "properties": {
+        "allow_unchecked_merge": {
+          "default": false,
+          "description": "When off, the merge_pr action refuses to merge on a repository with no required checks. On: merge anyway (a warning is logged).",
+          "title": "Allow merging without required checks",
+          "type": "boolean",
+          "x-itervox-group": "Merging"
+        },
+        "auto_review": {
+          "default": false,
+          "description": "Dispatch a reviewer after each successful run. Needs a reviewer profile.",
+          "title": "Auto-review",
+          "type": "boolean",
+          "x-itervox-group": "Review",
+          "x-itervox-live": true
+        },
+        "available_models": {
+          "default": {},
+          "description": "Models per backend offered in the profile editor: {\"claude\": [{\"id\": ..., \"label\": ...}]}. Filled by `itervox models refresh`.",
+          "title": "Available models",
+          "type": "object",
+          "x-itervox-group": "Models",
+          "x-itervox-live": true
+        },
+        "backend": {
+          "default": "",
+          "description": "Runner backend for agent.command. Only needed when the command is a wrapper script whose backend Itervox cannot infer.",
+          "enum": [
+            "",
+            "claude",
+            "codex"
+          ],
+          "title": "Backend",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
+        "backend_fallback": {
+          "description": "Reroute work when a backend hits its usage limit, with switch-back at the reset time. See the configuration docs for its keys. Read at load time.",
+          "title": "Backend fallback",
+          "type": "object",
+          "x-itervox-group": "Rate limits"
+        },
+        "base_branch": {
+          "default": "",
+          "description": "Remote branch used as the base for git diffs in PR context (e.g. origin/develop). Empty: detected from origin/HEAD.",
+          "title": "Diff base branch",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
+        "budget": {
+          "additionalProperties": false,
+          "properties": {
+            "cost_usd": {
+              "default": 0,
+              "description": "The most estimated cost one issue may use across all its runs. 0: no limit.",
+              "minimum": 0,
+              "title": "Per-issue cost budget (USD)",
+              "type": "number",
+              "x-itervox-group": "Budgets"
+            },
+            "tokens": {
+              "default": 0,
+              "description": "The most tokens (input + output) one issue may use across all its runs. 0: no limit.",
+              "minimum": 0,
+              "title": "Per-issue token budget",
+              "type": "integer",
+              "x-itervox-group": "Budgets"
+            }
+          },
+          "type": "object"
+        },
+        "command": {
+          "default": "claude",
+          "description": "CLI command that launches the agent; may include flags.",
+          "title": "Agent command",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
+        "dependency_audit_refresh_batch_size": {
+          "default": 100,
+          "description": "Most audit rows one refresh batch fetches. Read at startup.",
+          "minimum": 1,
+          "title": "Dependency audit batch size",
+          "type": "integer",
+          "x-itervox-group": "Dependencies"
+        },
+        "dependency_audit_refresh_interval_ms": {
+          "default": 600000,
+          "description": "How often blocker state is refreshed from the tracker. Each row costs a tracker request. Read at startup.",
+          "minimum": 1,
+          "title": "Dependency audit interval (ms)",
+          "type": "integer",
+          "x-itervox-group": "Dependencies"
+        },
+        "dependency_audit_refresh_timeout_ms": {
+          "default": 30000,
+          "description": "Bound on one refresh batch. Read at startup.",
+          "minimum": 1,
+          "title": "Dependency audit timeout (ms)",
+          "type": "integer",
+          "x-itervox-group": "Dependencies"
+        },
+        "deps_analyzer_chunk_size": {
+          "default": 75,
+          "description": "Most issues sent to the analyzer in one turn; relations spanning two chunks are not examined.",
+          "minimum": 1,
+          "title": "Dependency analyzer chunk size",
+          "type": "integer",
+          "x-itervox-group": "Dependencies"
+        },
+        "deps_analyzer_profile": {
+          "default": "",
+          "description": "Agent profile that runs the dependency analyzer. Empty: the analyzer is off.",
+          "title": "Dependency analyzer profile",
+          "type": "string",
+          "x-itervox-group": "Dependencies",
+          "x-itervox-live": true
+        },
+        "deps_analyzer_timeout_ms": {
+          "default": 600000,
+          "description": "Wall-clock limit for one analyzer job across all chunks.",
+          "minimum": 1,
+          "title": "Dependency analyzer timeout (ms)",
+          "type": "integer",
+          "x-itervox-group": "Dependencies"
+        },
+        "dispatch_strategy": {
+          "default": "round-robin",
+          "description": "How issues are routed to SSH hosts: in turn, or to the host with the fewest workers.",
+          "enum": [
+            "round-robin",
+            "least-loaded"
+          ],
+          "title": "Dispatch strategy",
+          "type": "string",
+          "x-itervox-group": "SSH",
+          "x-itervox-live": true
+        },
+        "inline_input": {
+          "default": false,
+          "description": "When an agent asks for input, the tracker issue is the only place to reply (the dashboard reply box is hidden).",
+          "title": "Inline input via tracker comments",
+          "type": "boolean",
+          "x-itervox-group": "Core",
+          "x-itervox-live": true
+        },
+        "max_automation_queue_length": {
+          "default": 100,
+          "description": "Most automation dispatches waiting for capacity or dependencies.",
+          "minimum": 1,
+          "title": "Automation queue length",
+          "type": "integer",
+          "x-itervox-group": "Capacity"
+        },
+        "max_concurrent_agents": {
+          "default": 10,
+          "description": "Most agent workers running at once across all issues.",
+          "minimum": 1,
+          "title": "Max concurrent agents",
+          "type": "integer",
+          "x-itervox-group": "Capacity",
+          "x-itervox-live": true
+        },
+        "max_concurrent_agents_by_state": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Per-state limits that override the global one. Keys are lowercase state names.",
+          "title": "Max concurrent agents by state",
+          "type": "object",
+          "x-itervox-group": "Capacity"
+        },
+        "max_retries": {
+          "default": 5,
+          "description": "Retry attempts before an issue moves to the failed state (or pauses). 0: unlimited.",
+          "minimum": 0,
+          "title": "Max retries",
+          "type": "integer",
+          "x-itervox-group": "Retries",
+          "x-itervox-live": true
+        },
+        "max_retry_backoff_ms": {
+          "default": 300000,
+          "description": "Cap on the exponential retry back-off (10s × 2^(attempt-1)).",
+          "minimum": 1,
+          "title": "Max retry back-off (ms)",
+          "type": "integer",
+          "x-itervox-group": "Retries"
+        },
+        "max_switches_per_issue_per_window": {
+          "default": 2,
+          "description": "Most profile or backend switches for one issue within the window. 0: unlimited.",
+          "minimum": 0,
+          "title": "Max switches per issue per window",
+          "type": "integer",
+          "x-itervox-group": "Rate limits",
+          "x-itervox-live": true
+        },
+        "max_turns": {
+          "default": 20,
+          "description": "Most agent turns per session.",
+          "minimum": 1,
+          "title": "Max turns",
+          "type": "integer",
+          "x-itervox-group": "Core"
+        },
+        "merge_block_labels": {
+          "default": [
+            "needs-human",
+            "migration",
+            "auth",
+            "feature-flag",
+            "breaking"
+          ],
+          "description": "A pull request carrying any of these labels is never merged by merge_pr.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Merge block labels",
+          "type": "array",
+          "x-itervox-group": "Merging"
+        },
+        "merge_strategy": {
+          "default": "squash",
+          "description": "How merge_pr merges a pull request.",
+          "enum": [
+            "squash",
+            "rebase",
+            "merge"
+          ],
+          "title": "Merge strategy",
+          "type": "string",
+          "x-itervox-group": "Merging"
+        },
+        "pause_dispatch_when_any_in_state": {
+          "default": [],
+          "description": "Tracker states that pause new dispatches while any issue sits in one of them.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Pause dispatch while any issue is in",
+          "type": "array",
+          "x-itervox-group": "Capacity"
+        },
+        "pr_footer": {
+          "default": false,
+          "description": "Add a one-line \"Shipped with Itervox\" footer to pull requests agents open.",
+          "title": "PR footer",
+          "type": "boolean",
+          "x-itervox-group": "Core"
+        },
+        "profiles": {
+          "default": {},
+          "description": "Named agent profiles. Edited on the Agents page, which writes WORKFLOW.md and the profile files.",
+          "title": "Agent profiles",
+          "type": "object",
+          "x-itervox-editor": "profiles",
+          "x-itervox-group": "Profiles"
+        },
+        "rate_limit_error_patterns": {
+          "default": [],
+          "description": "Case-insensitive substrings that mark a failure as a rate limit. Empty: the built-in list.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Rate-limit error patterns",
+          "type": "array",
+          "x-itervox-group": "Rate limits"
+        },
+        "rate_limit_error_patterns_mode": {
+          "default": "replace",
+          "description": "replace: your patterns are the whole list. extend: they are added to the built-in list.",
+          "enum": [
+            "replace",
+            "extend"
+          ],
+          "title": "Rate-limit patterns mode",
+          "type": "string",
+          "x-itervox-group": "Rate limits"
+        },
+        "read_timeout_ms": {
+          "default": 30000,
+          "description": "Kill the agent when its output pipe is silent this long.",
+          "minimum": 1,
+          "title": "Read timeout (ms)",
+          "type": "integer",
+          "x-itervox-group": "Timeouts"
+        },
+        "review_quorum": {
+          "default": "any_block",
+          "description": "How several reviewers' verdicts combine.",
+          "enum": [
+            "any_block",
+            "majority",
+            "unanimous"
+          ],
+          "title": "Review quorum",
+          "type": "string",
+          "x-itervox-group": "Review"
+        },
+        "reviewer_profile": {
+          "default": "",
+          "description": "Agent profile used for code review. Enables the AI Review button.",
+          "title": "Reviewer profile",
+          "type": "string",
+          "x-itervox-group": "Review",
+          "x-itervox-live": true
+        },
+        "reviewer_profiles": {
+          "default": [],
+          "description": "Ordered reviewer profiles for multi-reviewer fan-out. Empty: the reviewer profile alone.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Reviewer profiles",
+          "type": "array",
+          "x-itervox-group": "Review"
+        },
+        "reviewer_prompt": {
+          "default": "You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n\nYou are a read-only reviewer. Do not edit files, commit, push or move the issue:\nItervox flags a reviewer that changes the branch and counts its verdict as a block.\n\nYour job:\n1. Read the \"## Changes to Review\" block below (the diff against the base branch)\n   and the latest handoff. Open files in the workspace for context as needed.\n2. Review for: correctness, test coverage, edge cases, security issues.\n3. Record your verdict as the \"## Review Verdict (required)\" block describes:\n   approve, or block with the reasons and line comments the worker must address.\n\nBe concise. Focus on real problems, not style nits.",
+          "deprecated": true,
+          "description": "Liquid template for reviewer runs. Prefer a reviewer profile.",
+          "title": "Reviewer prompt (deprecated)",
+          "type": "string",
+          "x-itervox-group": "Review",
+          "x-itervox-replaced-by": "agent.reviewer_profile"
+        },
+        "sort": {
+          "additionalProperties": false,
+          "properties": {
+            "prefer_high_outdegree": {
+              "default": false,
+              "description": "Dispatch issues that block more siblings first, after priority.",
+              "title": "Prefer issues that unblock others",
+              "type": "boolean",
+              "x-itervox-group": "Capacity"
+            }
+          },
+          "type": "object"
+        },
+        "ssh_host_descriptions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Display labels for SSH hosts, keyed by host.",
+          "title": "SSH host descriptions",
+          "type": "object",
+          "x-itervox-group": "SSH",
+          "x-itervox-live": true
+        },
+        "ssh_hosts": {
+          "default": [],
+          "description": "Hosts (host or host:port) agents run on over SSH. Empty: agents run locally.",
+          "items": {
+            "type": "string"
+          },
+          "title": "SSH hosts",
+          "type": "array",
+          "x-itervox-group": "SSH",
+          "x-itervox-live": true
+        },
+        "ssh_strict_host_by_host": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Per-host StrictHostKeyChecking overrides (accept-new, yes, no, off, ask).",
+          "title": "Strict host key checking by host",
+          "type": "object",
+          "x-itervox-group": "SSH"
+        },
+        "ssh_strict_host_checking": {
+          "default": "",
+          "description": "StrictHostKeyChecking for SSH workers. Empty: accept-new (pin a host's key on first contact).",
+          "enum": [
+            "",
+            "accept-new",
+            "yes",
+            "no",
+            "off",
+            "ask"
+          ],
+          "title": "Strict host key checking",
+          "type": "string",
+          "x-itervox-group": "SSH"
+        },
+        "stall_timeout_ms": {
+          "default": 300000,
+          "description": "Retry an issue whose agent produced no events this long. 0 or less: off.",
+          "title": "Stall timeout (ms)",
+          "type": "integer",
+          "x-itervox-group": "Timeouts"
+        },
+        "switch_revert_hours": {
+          "default": 0,
+          "description": "Revert an automatic profile or backend switch after this long. 0: never.",
+          "minimum": 0,
+          "title": "Switch revert (hours)",
+          "type": "integer",
+          "x-itervox-group": "Rate limits"
+        },
+        "switch_window_hours": {
+          "default": 6,
+          "description": "Rolling window for the switch cap.",
+          "minimum": 1,
+          "title": "Switch window (hours)",
+          "type": "integer",
+          "x-itervox-group": "Rate limits",
+          "x-itervox-live": true
+        },
+        "transport_error_patterns": {
+          "default": [
+            "stream disconnected",
+            "connection reset",
+            "i/o timeout"
+          ],
+          "description": "Substrings that mark an exhausted-retry exit as a transient transport failure.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Transport error patterns",
+          "type": "array",
+          "x-itervox-group": "Retries"
+        },
+        "turn_timeout_ms": {
+          "default": 3600000,
+          "description": "Wall-clock limit for a whole agent session. 0 or less: off.",
+          "title": "Session timeout (ms)",
+          "type": "integer",
+          "x-itervox-group": "Timeouts"
+        }
+      },
+      "title": "Agent",
+      "type": "object"
+    },
+    "polling": {
+      "additionalProperties": false,
+      "description": "How often the tracker is polled.",
+      "properties": {
+        "automation_interval_ms": {
+          "default": 15000,
+          "description": "How often the automation event poll lists issues. Read at load time.",
+          "minimum": 1,
+          "title": "Automation poll interval (ms)",
+          "type": "integer",
+          "x-itervox-group": "Polling"
+        },
+        "interval_ms": {
+          "default": 30000,
+          "description": "How often the tracker is checked for new or updated issues.",
+          "minimum": 1,
+          "title": "Poll interval (ms)",
+          "type": "integer",
+          "x-itervox-group": "Polling"
+        },
+        "rate_limit_reserve_percent": {
+          "default": 10,
+          "description": "Share of the tracker's request budget held back for writes. 0: off.",
+          "minimum": 0,
+          "title": "Rate-limit reserve (%)",
+          "type": "integer",
+          "x-itervox-group": "Polling"
+        }
+      },
+      "title": "Polling",
+      "type": "object"
+    },
+    "server": {
+      "additionalProperties": false,
+      "description": "The dashboard and API server.",
+      "properties": {
+        "allow_unauthenticated": {
+          "default": false,
+          "description": "Serve the dashboard and API without a bearer token. Only for fully local, trusted setups. Read at startup.",
+          "title": "Allow unauthenticated access",
+          "type": "boolean",
+          "x-itervox-group": "Server"
+        },
+        "allow_unauthenticated_lan": {
+          "deprecated": true,
+          "description": "Deprecated spelling of server.allow_unauthenticated.",
+          "title": "Allow unauthenticated access (old name)",
+          "type": "boolean",
+          "x-itervox-group": "Server",
+          "x-itervox-replaced-by": "server.allow_unauthenticated"
+        },
+        "allowed_hosts": {
+          "default": [],
+          "description": "Extra Host names the unauthenticated dashboard answers (proxy, tunnel, MagicDNS names). Read at startup.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed hosts",
+          "type": "array",
+          "x-itervox-group": "Server"
+        },
+        "host": {
+          "default": "127.0.0.1",
+          "description": "Interface the server listens on. ITERVOX_SERVER_HOST overrides it. Read at startup.",
+          "title": "Listen host",
+          "type": "string",
+          "x-itervox-group": "Server"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Serve Prometheus metrics at /metrics (needs the bearer token). Read at startup.",
+              "title": "Prometheus metrics",
+              "type": "boolean",
+              "x-itervox-group": "Server"
+            }
+          },
+          "type": "object"
+        },
+        "port": {
+          "default": 8090,
+          "description": "TCP port; 0 lets the OS pick one. ITERVOX_SERVER_PORT, then PORT, override it. Read at startup.",
+          "minimum": 0,
+          "title": "Listen port",
+          "type": "integer",
+          "x-itervox-group": "Server"
+        }
+      },
+      "title": "Server",
+      "type": "object"
+    },
+    "workspace": {
+      "additionalProperties": false,
+      "description": "Per-issue working directories.",
+      "properties": {
+        "auto_clear": {
+          "default": false,
+          "description": "Delete an issue's workspace once it reaches a terminal tracker state. Logs are kept.",
+          "title": "Auto-clear workspace",
+          "type": "boolean",
+          "x-itervox-group": "Workspace",
+          "x-itervox-live": true
+        },
+        "base_branch": {
+          "default": "main",
+          "description": "Branch new worktrees start from (with worktree on).",
+          "title": "Worktree base branch",
+          "type": "string",
+          "x-itervox-group": "Workspace"
+        },
+        "clone_url": {
+          "default": "",
+          "description": "Remote used to create the shared clone when worktree is on and the root holds no repository.",
+          "title": "Clone URL",
+          "type": "string",
+          "x-itervox-group": "Workspace"
+        },
+        "root": {
+          "description": "Directory per-issue workspaces are created in. Default: ~/.itervox/workspaces/<project>. ~ and $VAR are expanded.",
+          "title": "Workspace root",
+          "type": "string",
+          "x-itervox-group": "Workspace"
+        },
+        "worktree": {
+          "default": false,
+          "description": "Create per-issue branches as worktrees of one shared clone at the root.",
+          "title": "Use git worktrees",
+          "type": "boolean",
+          "x-itervox-group": "Workspace"
+        }
+      },
+      "title": "Workspace",
+      "type": "object"
+    }
+  },
+  "title": "Itervox settings file",
+  "type": "object"
+}

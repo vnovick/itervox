@@ -274,11 +274,52 @@ itervox secret list [--workflow WORKFLOW.md]
 
 ```bash
 itervox config show [--workflow WORKFLOW.md] [--json]
-itervox config set KEY VALUE [--user] [--workflow WORKFLOW.md]
-itervox config unset KEY [--user] [--workflow WORKFLOW.md]
+itervox config set KEY VALUE [--user|--local] [--workflow WORKFLOW.md]
+itervox config unset KEY [--user|--local] [--workflow WORKFLOW.md]
+itervox config schema
 ```
 
-`show` prints every setting Itervox reads with its effective value and the layer it came from: `default`, `user` (`~/.itervox/settings.jsonc`), `project` (`.itervox/settings.jsonc`), `workflow` (`WORKFLOW.md`) or `environment` (the server bind variables). Keys a layer sets that Itervox does not read, and wrong-typed values it ignored, carry a note. Secrets are hidden wherever they appear: in a note, and under any key of a map or list. `workspace.root` is the directory the daemon uses (the per-project default when unset, `~` and `$VAR` expanded). `set` and `unset` edit the project file, or the user file with `--user`, keeping its comments; a wrong-typed value, or a change the workflow does not load with, is refused and nothing changes. See [Settings files](/configuration/#settings-files-jsonc-layers).
+`show` prints every setting Itervox reads with its effective value and the layer it came from: `default`, `user` (`~/.itervox/settings.jsonc`), `project` (`.itervox/settings.jsonc`), `local` (`.itervox/settings.local.jsonc`), `workflow` (`WORKFLOW.md`) or `environment` (the server bind variables). Keys a layer sets that Itervox does not read, and wrong-typed values it ignored, carry a note. Secrets are hidden wherever they appear: in a note, and under any key of a map or list. `workspace.root` is the directory the daemon uses (the per-project default when unset, `~` and `$VAR` expanded). `set` and `unset` edit the project file, the user file with `--user`, or the gitignored project-local file with `--local` (which also makes sure `.itervox/.gitignore` ignores it), keeping its comments; a wrong-typed value, or a change the workflow does not load with, is refused and nothing changes. `schema` prints the settings JSON Schema, generated from the config registry; it is the file published at [`https://itervox.dev/schema/settings.schema.json`](https://itervox.dev/schema/settings.schema.json). See [Settings files](/configuration/#settings-files-jsonc-layers).
+
+---
+
+## `itervox import` — Convert a Symphony or older Itervox workflow
+
+```bash
+itervox import [--force] WORKFLOW.md
+```
+
+Converts the workflow in place into the current layout:
+
+- the agent, polling, server and workspace settings move to `.itervox/settings.jsonc` (written with the comment-preserving settings writer) and out of `WORKFLOW.md`;
+- for an **Itervox v0.x** workflow, inline profile prompts move to prompt files (`.itervox/agents/<name>/SOUL.md` and `INSTRUCTIONS.md`), exactly as `itervox init --update` does; the profiles themselves and `agent.available_models` stay in `WORKFLOW.md`, where the Agents page and `itervox models refresh` write them;
+- for a **Symphony** workflow, `codex.command`, `codex.turn_timeout_ms`, `codex.read_timeout_ms` and `codex.stall_timeout_ms` become `agent.command` (Symphony's `codex app-server` becomes `codex`, since Itervox runs `codex exec`), `agent.backend: codex` and the agent timeouts; `itervox_schema_version: 2` is stamped;
+- the tracker, hooks and the worker prompt (the body) stay in `WORKFLOW.md`, comments included.
+
+The original is kept as `WORKFLOW.md.bak` (an existing one is not overwritten without `--force`). The command prints every setting it wrote and every key it could not map: a key Itervox does not read is left in `WORKFLOW.md`, and Symphony's `codex.approval_policy`, `codex.thread_sandbox` and `codex.turn_sandbox_policy` (Itervox's Codex runner sets its own approval and sandbox flags; see a profile's `permission_mode`) are kept in the `codex:` block, which Itervox does not read, so `itervox export --symphony` can write them back.
+
+---
+
+## `itervox export --symphony` — Write a Symphony WORKFLOW.md
+
+```bash
+itervox export --symphony [--workflow WORKFLOW.md] [--out PATH|-] [--force]
+```
+
+Writes a Symphony `WORKFLOW.md` (default `WORKFLOW.symphony.md` next to the workflow; `--out -` prints it) with the Symphony core keys this project sets, wherever they live (`WORKFLOW.md` or a settings layer), and the worker prompt:
+
+| Symphony key | From |
+|---|---|
+| `tracker.kind`, `endpoint`, `api_key`, `project_slug`, `active_states`, `terminal_states` | the same `tracker.*` keys |
+| `polling.interval_ms`, `workspace.root` | the same keys |
+| `hooks.after_create`, `before_run`, `after_run`, `before_remove`, `timeout_ms` | the same `hooks.*` keys |
+| `agent.max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `max_concurrent_agents_by_state` | the same `agent.*` keys |
+| `codex.command` | `agent.command`, when it runs Codex (`codex` becomes `codex app-server`) |
+| `codex.turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms` | `agent.turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms` |
+| `codex.approval_policy`, `thread_sandbox`, `turn_sandbox_policy` | the `codex:` block an import kept |
+| `server.port` | `server.port` |
+
+A key no layer sets is left out, so Symphony applies its own default. A literal `tracker.api_key` is never written: `$LINEAR_API_KEY` stands in for it. The command then lists every Itervox-only feature it dropped (profiles and their prompt files, automations, dependencies, SSH hosts, reviewer settings, any other setting) and notes a Claude `agent.command`, a tracker other than Linear, and Itervox-only Liquid variables (`run.*`, `rules`) in the prompt. `itervox import` followed by `itervox export --symphony` gives back a Symphony workflow's core keys and prompt unchanged (pinned by `TestImportExportSymphonyRoundTrip`).
 
 ---
 

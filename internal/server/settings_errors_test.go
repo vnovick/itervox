@@ -73,6 +73,18 @@ func (fencedProjectManager) FetchProjects(context.Context) ([]server.Project, er
 func (fencedProjectManager) SetProjectFilter([]string) error                         { return errFence }
 func (fencedProjectManager) GetProjectFilter() []string                              { return nil }
 
+// fencedSettingsLayers: the schema-driven Settings page's layer save (#158)
+// holds the reload fence like every other settings save.
+type fencedSettingsLayers struct{}
+
+func (fencedSettingsLayers) SettingsLayers() (server.SettingsLayersView, error) {
+	return server.SettingsLayersView{}, nil
+}
+
+func (fencedSettingsLayers) SaveSettingsLayer(string, server.SettingsLayerSaveRequest) (server.SettingsLayerSaveResult, error) {
+	return server.SettingsLayerSaveResult{}, errFence
+}
+
 // M1-close C2/D2/E1: every settings route whose adapter method the reload fence
 // guards must answer a refused save with a retryable 503 settings_reloading
 // and Retry-After: 1 — never a 400/409/500 that tells the client the value
@@ -103,12 +115,15 @@ func TestSettingsSaveRefusedByReloadFenceIs503(t *testing.T) {
 		// M4-close D4/D5: the project-filter save is fenced (saveProjectFilter).
 		{http.MethodPut, "/api/v1/projects/filter", `{"slugs":["alpha"]}`},
 		{http.MethodPut, "/api/v1/projects/filter", `{}`},
+		// #158: the schema-driven Settings page's layer save.
+		{http.MethodPut, "/api/v1/settings/layers/project", `{"baseVersion":"","values":{"agent.max_turns":4}}`},
 	} {
 		t.Run(tc.method+" "+tc.path+" "+tc.body, func(t *testing.T) {
 			cfg := makeTestConfig(baseSnap())
 			cfg.Client = fencedRefreshClient{fencedClient()}
 			cfg.SkillsClient = fencedSkillsClient{}
 			cfg.ProjectManager = fencedProjectManager{}
+			cfg.SettingsLayers = fencedSettingsLayers{}
 			srv := server.New(cfg)
 			var req *http.Request
 			if tc.body == "" {

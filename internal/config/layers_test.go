@@ -348,3 +348,28 @@ func TestExplainShowsTheResolvedWorkspaceRoot(t *testing.T) {
 	assert.Equal(t, os.Getenv("ITERVOX_TEST_WS"), byKey["workspace.root"].Value, "the variable expanded")
 	assert.Equal(t, config.LayerProject, byKey["workspace.root"].Layer)
 }
+
+// TestLocalSettingsLayerSitsBetweenProjectAndWorkflow (#158): the
+// project-local file wins over the project file, WORKFLOW.md wins over it,
+// and Explain names it.
+func TestLocalSettingsLayerSitsBetweenProjectAndWorkflow(t *testing.T) {
+	wf := layeredProject(t, "agent:\n  max_retries: 9\n", "", `{"agent": {"max_turns": 4, "max_retries": 1, "max_concurrent_agents": 3}}`)
+	writeSettings(t, config.LocalSettingsPath(wf), `// mine
+{"$schema": "https://itervox.dev/schema/settings.schema.json", "agent": {"max_turns": 6, "max_retries": 2}}`)
+	cfg, err := config.Load(wf)
+	require.NoError(t, err)
+	assert.Equal(t, 6, cfg.Agent.MaxTurns, "local wins over project")
+	assert.Equal(t, 9, cfg.Agent.MaxRetries, "WORKFLOW.md wins over local")
+	assert.Equal(t, 3, cfg.Agent.MaxConcurrentAgents, "maps merge key by key")
+	settings, err := config.Explain(wf)
+	require.NoError(t, err)
+	for _, s := range settings {
+		if s.Key == "agent.max_turns" {
+			assert.Equal(t, config.LayerLocal, s.Layer)
+			assert.Equal(t, config.LocalSettingsPath(wf), s.Path)
+		}
+		assert.NotEqual(t, "$schema", s.Key)
+	}
+	assert.Equal(t, config.LocalSettingsPath(wf), config.SettingsLayerPath(wf, config.LayerLocal))
+	assert.Empty(t, config.SettingsLayerPath(wf, "org"))
+}
