@@ -32,6 +32,7 @@ export default defineConfig({
             { label: 'Cross-review preset', slug: 'guides/cross-review' },
             { label: 'Automations', slug: 'guides/automations' },
             { label: 'Skills Inventory', slug: 'guides/skills-inventory' },
+            { label: 'Repo Analysis', slug: 'guides/repo-analysis' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
             { label: 'Sessions panel', slug: 'guides/sessions' },
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },

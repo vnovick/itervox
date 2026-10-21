@@ -1636,3 +1636,49 @@ export type SettingsEffective = z.infer<typeof SettingsEffectiveSchema>;
 export type SettingsLayersView = z.infer<typeof SettingsLayersViewSchema>;
 export type SettingsSaveResult = z.infer<typeof SettingsSaveResultSchema>;
 export type SettingsSchemaDoc = z.infer<typeof SettingsSchemaDocSchema>;
+
+// ─── Repo Analysis (#200) ─────────────────────────────────────────────────────
+
+// GET /api/v1/history/prompt-versions — internal/server/history.go
+// PromptVersionRow: run counts and outcomes per prompt digest (#186, #200).
+export const PromptVersionRowSchema = z.object({
+  promptDigest: z.string(),
+  runs: z.number(),
+  statuses: z.record(z.string(), z.number()).nullable().optional(),
+  successRate: z.number(),
+  firstSeenAt: z.string(),
+  lastSeenAt: z.string(),
+  avgDurationMs: z.number().optional(),
+  profiles: z.array(z.string()).nullable().optional(),
+});
+
+export const PromptVersionsResponseSchema = z.object({
+  versions: z.array(PromptVersionRowSchema).nullable(),
+  unversionedRuns: z.number().optional(),
+});
+
+// GET /api/v1/history[?prompt=] — internal/server/history.go HistoryResponse.
+export const HistoryResponseSchema = z.object({
+  history: z.array(HistoryRowSchema).nullable(),
+});
+
+// GET /api/v1/repo/readiness — internal/server/repo_readiness.go. Unknown
+// statuses fall back to 'warn': never shown as a pass.
+export const RepoReadinessCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: tolerantEnum('readiness.status', ['pass', 'warn', 'fail'], 'warn'),
+  detail: z.string().optional(),
+  fix: z.string().optional(),
+});
+
+export const RepoReadinessResponseSchema = z.object({
+  workflow: z.string().optional(),
+  generatedAt: z.string().optional(),
+  checks: z.array(RepoReadinessCheckSchema).nullable(),
+});
+
+export type PromptVersionRow = z.infer<typeof PromptVersionRowSchema>;
+export type PromptVersionsResponse = z.infer<typeof PromptVersionsResponseSchema>;
+export type RepoReadinessCheck = z.infer<typeof RepoReadinessCheckSchema>;
+export type RepoReadinessResponse = z.infer<typeof RepoReadinessResponseSchema>;

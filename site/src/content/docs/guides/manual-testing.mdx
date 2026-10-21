@@ -593,7 +593,13 @@ Walk through each dashboard view and confirm visual coverage.
 **Settings:**
 - Automation editor: all 9 trigger types selectable, IANA timezone typeahead works
 - Profile editor: SOUL/INSTRUCTIONS files visible, daemon actions checkboxes mutable
-- Skills Inventory: scan shows skills/plugins/hooks/MCP/instructions counts; re-scan button works
+- Skills Inventory moved: Settings shows "Skills inventory moved to Repo Analysis" linking to `/repo#capabilities`
+
+**Repo Analysis (`/repo`):**
+- Capabilities: scan shows skills/plugins/hooks/MCP/instructions counts; re-scan button works
+- Runtime usage and cost: analytics recommendations and tokens per profile
+- Prompt versions: per-profile versions; selecting one lists its runs
+- Agent readiness: pass / warn / fail rows match `itervox doctor`'s `repo readiness:` section
 
 **Auth flow:**
 - Start the daemon on the default loopback bind (`127.0.0.1:8090`)

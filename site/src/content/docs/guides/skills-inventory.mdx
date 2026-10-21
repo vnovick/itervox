@@ -12,6 +12,8 @@ The system has two complementary halves:
 - **Phase 1 — Static analyzer.** Scans the file system on demand. Catches duplicates, unused profiles, bloated profiles, large contexts, instruction shadowing, and orphaned MCP registrations.
 - **Phase 2 — Runtime analytics.** Reads JSONL session logs the daemon already writes for every dispatch. Catches what's *actually* used at runtime versus what's merely configured.
 
+In the dashboard the inventory lives at **Repo Analysis → Capabilities** (`/repo#capabilities`, see the [Repo Analysis guide](/guides/repo-analysis/)); it moved there from Settings in v0.2.7. The runtime analytics are under **Repo Analysis → Runtime usage and cost** (`/repo#usage`).
+
 The two halves combine into a single dashboard surface. Understanding the difference matters because Phase 2 recommendations require real recent-session evidence.
 
 ---
@@ -89,7 +91,7 @@ Runtime analytics are **evidence-based**, not prescriptive. Every Phase-2 recomm
 
 ## Dashboard surface
 
-The Settings → Skills card hydrates from the skills endpoints:
+The **Repo Analysis → Capabilities** section (`/repo#capabilities`) and **Repo Analysis → Runtime usage and cost** (`/repo#usage`) hydrate from the skills endpoints:
 
 - `GET /api/v1/skills/inventory` — cached static inventory (returns `503` before the first scan).
 - `GET /api/v1/skills/issues` — static analyzer output.
@@ -103,11 +105,11 @@ The card also exposes:
 
 All routes use the standard bearer-token auth (`Authorization: Bearer <ITERVOX_API_TOKEN>`).
 
-Scanner failures are best-effort. If one source fails but another succeeds, Itervox returns the partial inventory with warning fields and the Settings UI keeps showing the successfully collected data.
+Scanner failures are best-effort. If one source fails but another succeeds, Itervox returns the partial inventory with warning fields and Repo Analysis → Capabilities keeps showing the successfully collected data.
 
 ### Scan freshness
 
-The Settings card shows the last scan timestamp plus a status badge next to **Re-scan**. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since the last scan, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
+Repo Analysis → Capabilities shows the last scan timestamp plus a status badge next to **Re-scan**. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since the last scan, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
 
 Automatic stale detection covers only the files the scanner tracks from known roots. Subagents are the exception: every `.claude/agents` directory (and each subfolder in it) is watched, so adding an agent file marks the inventory stale. Newly-created skill files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred to avoid a noisy watcher in the launch release.
 

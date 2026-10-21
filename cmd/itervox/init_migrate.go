@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -535,12 +536,9 @@ func patchRootGitignoreForAgents(projectDir string) error {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	changed := false
 	if rootGitignoreHidesAgents(text) {
-		needed := []string{
-			"!.itervox/",
-			"!.itervox/agents/",
-			"!.itervox/agents/**",
-			"!.itervox/handoff/",
-			"!.itervox/handoff/**",
+		// The agents/handoff carve-outs are shared with the #200 readiness
+		// check, which reports a .gitignore missing any of them.
+		needed := append(slices.Clone(agentsGitignoreCarveOuts),
 			// #85: local tracker issues are committed with the code by
 			// default; add .itervox/issues/ after these lines to keep them
 			// private.
@@ -548,7 +546,7 @@ func patchRootGitignoreForAgents(projectDir string) error {
 			"!.itervox/issues/**",
 			// #157: the project rules layer is committed with the code.
 			"!.itervox/rules.json",
-		}
+		)
 		for _, line := range needed {
 			if !containsLine(lines, line) {
 				lines = append(lines, line)

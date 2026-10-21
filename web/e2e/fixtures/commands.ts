@@ -27,7 +27,11 @@ export async function bootApp(page: Page, options: BootOptions): Promise<BootRes
   const api = await installMockApi(page, scenario);
   await installMockSse(page, scenario, sseMode);
 
-  const target = token ? `${route}?token=${encodeURIComponent(token)}` : route;
+  // The token query goes before any #hash (e.g. /repo#usage, #200).
+  const hashAt = route.indexOf('#');
+  const path = hashAt < 0 ? route : route.slice(0, hashAt);
+  const hash = hashAt < 0 ? '' : route.slice(hashAt);
+  const target = token ? `${path}?token=${encodeURIComponent(token)}${hash}` : route;
   await page.goto(target);
 
   return { api };

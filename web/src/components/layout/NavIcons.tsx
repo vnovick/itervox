@@ -1,5 +1,6 @@
 import {
   Bot,
+  FolderGit2,
   LayoutDashboard,
   Logs,
   MessagesSquare,
@@ -47,4 +48,8 @@ export function SessionsIcon({ className }: { className?: string }) {
 
 export function RulesIcon({ className }: { className?: string }) {
   return <ScrollText {...iconProps(className)} />;
+}
+
+export function RepoIcon({ className }: { className?: string }) {
+  return <FolderGit2 {...iconProps(className)} />;
 }

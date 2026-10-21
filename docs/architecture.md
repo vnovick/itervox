@@ -485,5 +485,5 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/atomicfs` | Tmp-file + fsync + rename helpers; used for every WORKFLOW.md mutation, scaffold write, pidfile, and queue persistence file |
 | `internal/automationconfig` / `internal/automationdef` | Helper packages for automation YAML parsing and rule definitions |
 | `internal/schedule` | Cron parsing for the `cron` automation trigger and the legacy `schedules:` block |
-| `internal/skills` | Capability inventory scanner for the Settings → Skills surface |
+| `internal/skills` | Capability inventory scanner for the Repo Analysis → Capabilities surface |
 | `web/` | React 19 + Vite + TypeScript dashboard, embedded into the binary via `internal/server/embed.go` (`go:embed web/dist`) |

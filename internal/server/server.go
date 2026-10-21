@@ -1510,6 +1510,10 @@ type Config struct {
 	// messages, transcripts, tmux screen and keys, and New session / kill.
 	// Nil answers 503.
 	Sessions SessionsClient
+	// RepoReadiness runs the repository readiness checks for GET
+	// /api/v1/repo/readiness (#200): the same check functions as
+	// `itervox doctor`, injected by cmd/itervox. Nil answers 503.
+	RepoReadiness RepoReadinessFunc
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1557,6 +1561,8 @@ type Server struct {
 	prEventWebhooks   WebhookHandler
 	clientErrors      *ClientErrorLimiter
 	sessions          SessionsClient
+	// repoReadiness mirrors Config.RepoReadiness (#200).
+	repoReadiness RepoReadinessFunc
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1601,6 +1607,7 @@ func New(cfg Config) *Server {
 		prEventWebhooks:     cfg.PREventWebhooks,
 		clientErrors:        cfg.ClientErrorLimiter,
 		sessions:            cfg.Sessions,
+		repoReadiness:       cfg.RepoReadiness,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1704,6 +1711,7 @@ func (s *Server) routes() {
 			r.Get("/state", s.handleState)
 			r.Get("/history", s.handleHistory)                               // #186
 			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
+			r.Get("/repo/readiness", s.handleRepoReadiness)                  // #200
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)
