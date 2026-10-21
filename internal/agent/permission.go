@@ -77,3 +77,20 @@ func codexPermissionFlags(mode PermissionMode) []string {
 	}
 	return []string{"--dangerously-bypass-approvals-and-sandbox"}
 }
+
+// InteractivePermissionFlags returns the approval flags for an INTERACTIVE
+// CLI session itervox starts in tmux from the Sessions panel (#178), where
+// an operator watches the session and can answer its prompts. Sandbox is
+// the confining default: Claude accepts edits without asking
+// (--permission-mode acceptEdits) and Codex is confined to the workspace
+// (--sandbox workspace-write) but may still ask. Bypass mirrors the
+// headless runs.
+func InteractivePermissionFlags(backend string, mode PermissionMode) []string {
+	if backend == "codex" {
+		if mode == PermissionSandbox {
+			return []string{"--sandbox", "workspace-write"}
+		}
+		return codexPermissionFlags(mode)
+	}
+	return claudePermissionFlags(mode)
+}

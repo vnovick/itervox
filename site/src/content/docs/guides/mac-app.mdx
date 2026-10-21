@@ -94,7 +94,9 @@ Use the arrow keys (or **Home**/**End**) to move between sessions and **Return**
 
 Claude Code and Codex sessions you started by hand on a daemon's host — in a terminal in that project's directory, within the last day — are listed too, after the daemon's own sessions, with a dashed outline and **started outside itervox** (the summary line counts them). The daemon finds and reads them itself (see [Sessions started by hand](/guides/sessions/#sessions-started-by-hand)); for a remote daemon these are the sessions on the remote machine. One whose CLI may still be running says **running**, and hovering it shows why; otherwise it says **exited**. Opening one shows its transcript, read-only, in the daemon's dashboard.
 
-The window only reads. It never types into a terminal or drives another app: messages go through the daemon, which writes only to agent processes it started itself.
+A session running in a tmux pane carries a **tmux** badge (hover it for the pane), highlighted when the dashboard can control it — a session the daemon started with **New session**, or one you run in tmux with [`sessions.tmux_control`](/configuration/#sessions) on (see [Sessions in tmux](/guides/sessions/#sessions-in-tmux)). Under a daemon that has tmux, **New session…** opens its dashboard at the New session form. Under a daemon whose host has no tmux, the window says **tmux not found — install it to control sessions from here**, with the install command, instead.
+
+The window only reads. It never types into a terminal or drives another app: messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
 
 ## Remote daemons
 

@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use crate::daemon_state::{parse_state, StateSummary};
-use crate::sessions::{parse_sessions, Session};
+use crate::sessions::{parse_read, SessionsRead};
 
 /// Per-request bound; a hung daemon must not stall the refresh loop.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -52,9 +52,9 @@ pub fn fetch_state(base_url: &str, token: Option<&str>) -> Result<StateSummary, 
 }
 
 /// GET `{base_url}api/v1/sessions` (#178): the daemon's agent sessions.
-pub fn fetch_sessions(base_url: &str, token: Option<&str>) -> Result<Vec<Session>, FetchError> {
+pub fn fetch_sessions(base_url: &str, token: Option<&str>) -> Result<SessionsRead, FetchError> {
     let body = get(base_url, "api/v1/sessions", token)?;
-    parse_sessions(&body).map_err(FetchError::Parse)
+    parse_read(&body).map_err(FetchError::Parse)
 }
 
 /// A bounded loopback GET of `path` under `base_url`.

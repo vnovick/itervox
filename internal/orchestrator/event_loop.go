@@ -36,6 +36,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state.FailureAcks = o.seedFailureAcks
 	o.seedFailureAcks = nil
 	pruneFailureAcks(&state)
+	// #178: itervox's tmux sessions survive a WORKFLOW.md reload too.
+	seedTmuxState(&state, o.seedTmux)
+	o.seedTmux = nil
 	state = o.loadPausedFromDisk(state)
 	state = o.loadPauseReasonsFromDisk(state)
 	state = o.loadAutoSwitchedFromDisk(state)
@@ -1938,7 +1941,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.applySessionMessage(&state, ev)
 
 	case EventExternalSessionsDiscovered: // #178 step 3
-		applyExternalSessions(&state, ev.ExternalSessions)
+		if ev.ExternalScan != nil {
+			applyTmuxPanes(&state, *ev.ExternalScan)
+			applyExternalSessions(&state, ev.ExternalScan.Sessions)
+		}
+
+	case EventTmuxSessionReserve, EventTmuxSessionStarted, EventTmuxSessionEnded: // #178 tmux
+		applyTmuxSessionEvent(&state, ev.Type, ev.Tmux, time.Now())
 
 	case EventSessionMessageDelivered: // #178
 		applySessionDelivery(&state, ev.SessionDelivery, time.Now())
