@@ -8,11 +8,19 @@ import (
 )
 
 // startLocalIssueWatch wakes the orchestrator as soon as a local issue file
-// changes (#133) instead of at the next poll, until ctx ends. A no-op for
-// other trackers.
+// changes (#133) instead of at the next poll, until ctx ends; with
+// tracker.sync it also starts a sync cycle (#118). A no-op for other
+// trackers.
 func startLocalIssueWatch(ctx context.Context, tr tracker.Tracker, refresh func()) {
-	lt, ok := tr.(*local.Tracker)
-	if !ok {
+	var lt *local.Tracker
+	switch t := tr.(type) {
+	case *local.Tracker:
+		lt = t
+	case *syncedLocal:
+		lt = t.Tracker
+		orchRefresh := refresh
+		refresh = func() { orchRefresh(); t.syncer.Nudge() }
+	default:
 		return
 	}
 	go func() {
