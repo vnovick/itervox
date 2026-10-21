@@ -85,6 +85,8 @@ func (s State) Clone() State {
 	c.SessionMessages = copySessionMessages(s.SessionMessages)
 	c.ExternalSessions = cloneSlice(s.ExternalSessions)
 	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
+	c.LessonCorrections = copySliceMap(s.LessonCorrections) // #203
+	c.LessonProposals = copySliceMap(s.LessonProposals)     // #203
 	return c
 }
 
@@ -94,6 +96,19 @@ func cloneSlice[T any](s []T) []T {
 		return nil
 	}
 	return append([]T(nil), s...)
+}
+
+// copySliceMap copies a map of slices whose elements hold no reference
+// fields, giving each key its own slice (maps.Clone would share them).
+func copySliceMap[K comparable, V any](m map[K][]V) map[K][]V {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[K][]V, len(m))
+	for k, v := range m {
+		cp[k] = cloneSlice(v)
+	}
+	return cp
 }
 
 // copyPtrValueMap copies a map of pointers to structs that hold no reference

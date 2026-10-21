@@ -12,6 +12,9 @@ export type RulesEditorView = 'form' | 'json';
 /** Memory page (#202): the Entries list or the Lessons review queue. */
 export type MemoryTab = 'entries' | 'lessons';
 
+/** Lessons tab (#203): the review queue or the approved lessons not helping. */
+export type LessonsView = 'queue' | 'not-helping';
+
 export type MemoryUsageFilter = 'all' | 'used' | 'unused';
 
 export interface MemoryFilters {
@@ -72,6 +75,8 @@ interface UIState {
   memoryFilters: MemoryFilters;
   memorySelectedId: string | null;
   memoryUndo: MemoryEntry | null;
+  // #203 — Lessons tab: review queue or "not helping".
+  memoryLessonsView: LessonsView;
 }
 
 interface UIActions {
@@ -95,6 +100,7 @@ interface UIActions {
   setMemoryFilters: (patch: Partial<MemoryFilters>) => void;
   setMemorySelectedId: (id: string | null) => void;
   setMemoryUndo: (entry: MemoryEntry | null) => void;
+  setMemoryLessonsView: (view: LessonsView) => void;
 }
 
 export const useUIStore = create<UIState & UIActions>((set) => ({
@@ -118,6 +124,7 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   memoryFilters: DEFAULT_MEMORY_FILTERS,
   memorySelectedId: null,
   memoryUndo: null,
+  memoryLessonsView: 'queue',
 
   setDashboardViewMode: (dashboardViewMode) => {
     set({ dashboardViewMode });
@@ -178,5 +185,8 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setMemoryUndo: (memoryUndo) => {
     set({ memoryUndo });
+  },
+  setMemoryLessonsView: (memoryLessonsView) => {
+    set({ memoryLessonsView });
   },
 }));

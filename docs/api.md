@@ -413,6 +413,8 @@ Useful top-level fields include:
   (the reset, or the cooldown end). This is the AGENT backend, unrelated to
   `rateLimits` (tracker API budget) and `outboxEntries[].rateLimitedUntil`
   (tracker writes). Absent on older daemons.
+- `proposedLessons` (#203) — how many proposed lessons wait in the Memory
+  page's review queue (the Memory nav item's count); omitted when none.
 - `autoSwitches` (CORE-055) — issues whose next run uses an automatic
   override: `{ "identifier", "source": "automation" | "backend_fallback" |
   "unknown", "fromBackend"?, "fromProfile"?, "toBackend"?, "toProfile"?,
@@ -1122,18 +1124,25 @@ items of 512 bytes) is refused.
 
 | Method | Path | Request body | Success response | Errors |
 |---|---|---|---|---|
-| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry]}` | — |
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected"}}` | — |
 | `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
 | `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
 | `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
 | `POST` | `/memory/{id}/pin` | `{"pinned":true\|false}` (empty body pins) | the entry | `404 memory_not_found` |
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
+| `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
+| `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
-`source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?)
-plus `path` (the file that holds it) and `runs` (the newest runs in history whose prompt
-carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20). A promote's `diff`
+`source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?,
+`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?}`)
+plus `path` (the file that holds it), `runs` (the newest runs in history whose prompt
+carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20) and, for an approved
+lesson that is not helping (#203), `notHelping`: `"unused"` (none of the last
+`memory.lessons.stale_after_runs` runs used it) or `"failing"` (most runs that used it failed)
+with `notHelpingReason`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
+approve and reject change the snapshot's `proposedLessons`, which is pushed at once. A promote's `diff`
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
 reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.

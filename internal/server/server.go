@@ -905,6 +905,10 @@ type StateSnapshot struct {
 	// sorted by identifier. Describes the NEXT dispatch; the running
 	// session's backend stays on RunningRow.Backend.
 	AutoSwitches []AutoSwitchRow `json:"autoSwitches,omitempty"`
+	// ProposedLessons is how many proposed lessons wait in the Memory
+	// page's review queue (#203): the Memory nav item's count. Omitted when
+	// none.
+	ProposedLessons int `json:"proposedLessons,omitempty"`
 }
 
 // Backend health statuses carried by BackendHealthRow.Status.
@@ -1830,6 +1834,8 @@ func (s *Server) routes() {
 			r.Delete("/memory/{id}", s.handleDeleteMemory)
 			r.Post("/memory/{id}/pin", s.handlePinMemory)
 			r.Post("/memory/{id}/promote", s.handlePromoteMemory)
+			r.Post("/memory/{id}/approve", s.handleApproveLesson) // #203
+			r.Post("/memory/{id}/reject", s.handleRejectLesson)   // #203
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)

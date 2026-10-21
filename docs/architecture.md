@@ -253,6 +253,12 @@ Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
    (`CompletedRun.MemoryIDs`) and the selection is a prompt-digest
    component. The worker's `EventMemoryUsed` makes the event loop hand the
    `lastUsed`/`useCount` rewrite to a goroutine joined by `Run` (`memoryWg`).
+   Lessons (#203) are proposed entries (never in this block until approved):
+   the event loop detects corrections (input replies, steering) and
+   failed-then-succeeded runs, rate-limits per issue in `State`, and a
+   `lessonWg` goroutine drafts them (a budgeted `agent.Runner` call to the
+   lesson profile's backend, or `memory.TemplateDraft`) and writes the
+   proposal, reporting back with `EventLessonDrafted`.
 6. **SOUL.md** — compact identity ("who you are"), appended via
    `renderProfilePromptBlocks`.
 7. **INSTRUCTIONS.md** — operational rules, checklists, including the

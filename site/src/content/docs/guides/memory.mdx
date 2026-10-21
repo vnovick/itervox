@@ -41,7 +41,30 @@ Open **Memory** in the sidebar (after Repo Analysis), with `g m`, from the comma
 - **Share with the project** moves a private entry into `.itervox/memory.json` and shows the file's git diff (or the whole file while it is not committed yet). Commit it to share it with the team.
 - **Open in editor**: the dashboard cannot launch your editor, so it shows the file's path with a copy button; open it in your editor, where the `$schema` gives completion. The daemon rewrites the files to record usage, so comments are not kept.
 
-The **Lessons** tab is the review queue for proposed entries (`status: proposed`), with a count on the tab. A proposed entry is never used by a run until it is approved. In this release it lists them; lessons that Itervox proposes itself, from corrections and from runs that failed and then succeeded, and the approve and reject actions come in a later release.
+The **Lessons** tab is the review queue for the lessons Itervox proposes (below), with a count on the tab and on the Memory item in the sidebar.
+
+## Lessons
+
+Most of what is worth remembering comes out of corrections and failures, and nobody writes memories by hand after every run. So Itervox proposes **lessons** itself, and a human approves them. A proposed lesson is a `lesson` entry with `status: proposed`: **no run uses it until it is approved.**
+
+Itervox proposes a lesson when:
+
+1. **A human corrected an agent**: a reply to an input-required question (from the dashboard or a tracker comment) or a steering message from the Sessions panel that tells the agent to do something differently ("don't add a dependency, use the csv helper instead"). Replies that only answer or agree ("yes, go ahead", "port 8080") propose nothing.
+2. **A failed run was followed by a success**: a worker run on an issue failed or stalled and a later run on the same issue succeeded. The lesson records what changed in between: the steering messages and input replies since the failure, and blocking reviewer feedback. A retry that simply worked the second time, with nothing changed, proposes nothing.
+
+**Drafting.** The daemon notices these on its event loop, but the wording is drafted off it: one short call to the backend of the lesson profile (`memory.lessons.profile`, by default the reviewer profile) with the evidence attached, no tools, an empty temporary directory and a hard budget (`draft_token_budget`, `draft_timeout_ms`). With no profile, or when the call fails or runs over budget, the lesson is filled in from a template: "When *situation*, *what worked*. Instead of: *what went wrong*." Secrets are redacted before anything is saved.
+
+**One lesson, not ten.** A proposal that is a near-duplicate of an existing proposed or approved lesson (by normalized-word similarity of its text, or of the correction it came from) does not add a second entry: it bumps the existing lesson's evidence (its runs and links, the "seen" count and its confidence) and skips the drafting call. Each issue proposes at most `memory.lessons.max_per_issue` lessons (default 3) per `rate_window_hours` (default 24).
+
+**Reviewing.** Each proposal in the Lessons tab shows what triggered it, the situation, what went wrong and what worked, the issue, the runs and links it came from, how confident Itervox is and how often it was seen. Then:
+
+- **Approve** into **Private** or **Project shared** (moving it between the files when needed). From then on runs use it like any other entry.
+- **Edit**, then **Save and approve**, to fix the wording first.
+- **Reject** removes it and remembers it, so the same lesson, or a near-duplicate of it, is not proposed again. Rejections are kept in `.itervox/lessons-rejected.json` (only the normalized words and a fingerprint, never the text; gitignored with the other runtime files under `.itervox/`).
+
+`memory.lessons.auto_approve` (default `false`, per scope) approves proposals as they land.
+
+**Not helping.** The **Not helping** filter lists approved lessons that none of the last `memory.lessons.stale_after_runs` runs (default 20) used, and lessons whose recent runs mostly failed, so you can edit or archive them in Entries.
 
 ## Git and remote daemons
 
@@ -49,4 +72,4 @@ The **Lessons** tab is the review queue for proposed entries (`status: proposed`
 
 ## API
 
-`GET /api/v1/memory`, `POST /api/v1/memory`, `PUT` and `DELETE /api/v1/memory/{id}`, `POST /api/v1/memory/{id}/pin` and `POST /api/v1/memory/{id}/promote`; see the [API reference](/api-reference/#memory).
+`GET /api/v1/memory`, `POST /api/v1/memory`, `PUT` and `DELETE /api/v1/memory/{id}`, `POST /api/v1/memory/{id}/pin`, `POST /api/v1/memory/{id}/promote`, and for lessons `POST /api/v1/memory/{id}/approve` and `POST /api/v1/memory/{id}/reject`; see the [API reference](/api-reference/#memory).

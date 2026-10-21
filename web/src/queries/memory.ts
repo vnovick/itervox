@@ -207,3 +207,61 @@ export function usePromoteMemory() {
     },
   });
 }
+
+/** Approve a proposed lesson (#203): its scope, and its text when edited. */
+export interface ApproveLessonInput {
+  id: string;
+  scope: MemoryScope;
+  text?: string;
+}
+
+export function useApproveLesson() {
+  const opt = useOptimisticMemory();
+  return useMutation({
+    mutationFn: async ({ id, scope, text }: ApproveLessonInput): Promise<MemoryEntry> => {
+      const { data } = await apiRequest(`/api/v1/memory/${encodeURIComponent(id)}/approve`, {
+        op: 'lesson approve',
+        method: 'POST',
+        json: text === undefined ? { scope } : { scope, text },
+      });
+      return MemoryEntrySchema.parse(data);
+    },
+    onMutate: ({ id, scope, text }) =>
+      opt.apply((v) =>
+        patchEntry(v, id, { status: 'active', scope, ...(text === undefined ? {} : { text }) }),
+      ),
+    onSuccess: () => {
+      useToastStore.getState().addToast('Lesson approved: runs use it from now on', 'success');
+    },
+    onError: (err, _vars, ctx) => {
+      opt.rollback(ctx);
+      reportError('Lesson not approved', err);
+    },
+    onSettled: () => {
+      opt.settle();
+    },
+  });
+}
+
+/** Reject a proposed lesson (#203); the daemon remembers it. */
+export function useRejectLesson() {
+  const opt = useOptimisticMemory();
+  return useMutation({
+    mutationFn: async (id: string): Promise<MemoryEntry> => {
+      const { data } = await apiRequest(`/api/v1/memory/${encodeURIComponent(id)}/reject`, {
+        op: 'lesson reject',
+        method: 'POST',
+      });
+      return MemoryEntrySchema.parse(data);
+    },
+    onMutate: (id) =>
+      opt.apply((v) => (v ? { ...v, entries: v.entries.filter((e) => e.id !== id) } : v)),
+    onError: (err, _id, ctx) => {
+      opt.rollback(ctx);
+      reportError('Lesson not rejected', err);
+    },
+    onSettled: () => {
+      opt.settle();
+    },
+  });
+}

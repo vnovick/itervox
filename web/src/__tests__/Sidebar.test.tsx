@@ -115,4 +115,19 @@ describe('Sidebar', () => {
       .map((l) => l.getAttribute('href'));
     expect(names.indexOf('/memory')).toBe(names.indexOf('/repo') + 1);
   });
+
+  // #203 — proposed lessons waiting for review badge the Memory item.
+  it('badges Memory with the proposed lessons from the snapshot', () => {
+    renderShell();
+    expect(screen.getAllByRole('link', { name: 'Memory', hidden: true }).length).toBeGreaterThan(0);
+    act(() => {
+      useItervoxStore.setState({ snapshot: makeSnapshot({ proposedLessons: 2 }) });
+    });
+    const links = screen.getAllByRole('link', {
+      name: 'Memory, 2 lessons to review',
+      hidden: true,
+    });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) expect(within(link).getByTestId('nav-badge')).toHaveTextContent('2');
+  });
 });

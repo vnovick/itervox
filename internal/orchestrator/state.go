@@ -144,6 +144,9 @@ type OrchestratorEvent struct { //nolint:revive
 	// MemoryUse reports the memory a run's prompt carried (EventMemoryUsed,
 	// #202).
 	MemoryUse *MemoryUse
+	// Lesson reports a lesson-drafting goroutine's result
+	// (EventLessonDrafted, #203).
+	Lesson *LessonReport
 	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
@@ -936,6 +939,20 @@ type State struct {
 	// attached and ended sessions dropped by each discovery pass.
 	// Session-scoped, carried across WORKFLOW.md reloads, not persisted.
 	TmuxSessions map[string]*TmuxSession
+
+	// LessonCorrections holds, per issue identifier, the human corrections
+	// (input-required replies, delivered steering messages) seen since the
+	// issue's last successful worker run (#203), redacted and bounded
+	// (maxLessonCorrectionsPerIssue, maxLessonCorrectionIssues). A
+	// failed-then-succeeded lesson reads them as "what changed"; the
+	// success clears them. Event-loop state; session-scoped, not persisted.
+	LessonCorrections map[string][]LessonCorrection
+	// LessonProposals is the per-issue lesson rate-limit ledger (#203): the
+	// times the issue's proposals were started within
+	// memory.lessons.rate_window_hours. A proposal that wrote nothing new
+	// (suppressed, bumped, failed) gives its stamp back. Event-loop state;
+	// session-scoped, not persisted.
+	LessonProposals map[string][]time.Time
 }
 
 // NewState initialises a State from a config snapshot.
@@ -996,5 +1013,7 @@ func NewState(cfg *config.Config) State {
 		ClaimChecks:        make(map[string]ClaimCheckPending),
 		SessionMessages:    make(map[string][]SessionMessage),
 		TmuxSessions:       make(map[string]*TmuxSession),
+		LessonCorrections:  make(map[string][]LessonCorrection),
+		LessonProposals:    make(map[string][]time.Time),
 	}
 }
