@@ -71,7 +71,8 @@ func TestProvideInputSeedsAgentSessionIDNotRunLogSessionID(t *testing.T) {
 	entry, ok := state.Running["id1"]
 	require.True(t, ok)
 	require.NotNil(t, entry)
-	assert.Empty(t, entry.SessionID, "run log session ID should stay empty until the worker publishes its own run log ID")
+	assert.Equal(t, entry.RunID, entry.SessionID, "the run log session ID is the run's own ID (#125), never the recovered agent session")
+	assert.NotEqual(t, "agent-session-1", entry.SessionID)
 	assert.Equal(t, "agent-session-1", entry.AgentSessionID, "the recovered agent session belongs in AgentSessionID, not SessionID")
 }
 
