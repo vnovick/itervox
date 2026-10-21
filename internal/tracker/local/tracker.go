@@ -402,8 +402,12 @@ func (t *Tracker) writeLocked(e *entry, f issueFile) error {
 	if err := os.MkdirAll(t.dir, 0o755); err != nil {
 		return fmt.Errorf("local tracker: %w", err)
 	}
-	if err := atomicfs.WriteFile(e.path, f.render(), 0o644); err != nil {
+	data := f.render()
+	if err := atomicfs.WriteFile(e.path, data, 0o644); err != nil {
 		return fmt.Errorf("local tracker: write %s: %w", e.path, err)
+	}
+	if again, err := parseIssueFile(data); err == nil {
+		f = again // what is on disk now, including the front matter it edits next
 	}
 	e.file, e.good, e.problem = f, true, ""
 	e.readAt = time.Now() // compared with file mtimes, so the wall clock
@@ -467,8 +471,19 @@ func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateNam
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.refreshLocked(); err != nil {
+	ident, err := t.createLocked(issueFile{Title: strings.TrimSpace(title), State: stateName, Body: strings.TrimSpace(body)})
+	if err != nil {
 		return nil, err
+	}
+	is, _ := t.issueLocked(ident)
+	return &is, nil
+}
+
+// createLocked writes f as a new issue with the next free number for the
+// prefix, stamping created and updated. Caller holds mu.
+func (t *Tracker) createLocked(f issueFile) (string, error) {
+	if err := t.refreshLocked(); err != nil {
+		return "", err
 	}
 	next := 1
 	for id := range t.entries {
@@ -478,18 +493,19 @@ func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateNam
 	}
 	ident := fmt.Sprintf("%s-%d", t.prefix, next)
 	now := t.now().UTC().Truncate(time.Second)
-	f := issueFile{Title: strings.TrimSpace(title), State: stateName, Body: strings.TrimSpace(body),
-		Created: &now, Updated: &now, Extra: map[string]any{}}
+	f.Created, f.Updated = &now, &now
+	if f.Extra == nil {
+		f.Extra = map[string]any{}
+	}
 	e := &entry{path: filepath.Join(t.dir, ident+".md")}
 	if _, err := os.Stat(e.path); err == nil {
-		return nil, fmt.Errorf("local tracker: %s already exists", e.path)
+		return "", fmt.Errorf("local tracker: %s already exists", e.path)
 	}
 	if err := t.writeLocked(e, f); err != nil {
-		return nil, err
+		return "", err
 	}
 	t.entries[ident] = e
-	is, _ := t.issueLocked(ident)
-	return &is, nil
+	return ident, nil
 }
 
 // WriteIssue writes a new issue file for identifier (used to seed examples

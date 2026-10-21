@@ -14,8 +14,10 @@ import (
 	"github.com/vnovick/itervox/internal/templates"
 )
 
-// generateWorkflow builds the WORKFLOW.md content from scanned repo info.
-func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath string) string {
+// generateWorkflowWith builds WORKFLOW.md for a starter template and preset
+// (#121, #79); the zero options give the standard scaffold.
+func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPath string, opts initOptions) string {
+	plan := planWorkflow(trackerKind, runner, opts)
 	var b strings.Builder
 
 	// ── frontmatter ───────────────────────────────────────────────────────────
@@ -90,54 +92,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("  turn_timeout_ms: 3600000\n")
 	b.WriteString("  read_timeout_ms: 120000\n")
 	b.WriteString("  stall_timeout_ms: 300000\n")
-	b.WriteString("  profiles:\n")
-	for _, profile := range initAgentProfileNames {
-		command, backend := initProfileCommand(runner)
-		b.WriteString("    " + profile + ":\n")
-		b.WriteString("      command: " + command + "\n")
-		if backend != "" {
-			b.WriteString("      backend: " + backend + "\n")
-		}
-		b.WriteString("      soul_file: .itervox/agents/" + profile + "/SOUL.md\n")
-		b.WriteString("      instructions_file: .itervox/agents/" + profile + "/INSTRUCTIONS.md\n")
-		switch profile {
-		case "reviewer":
-			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
-		case "input-responder":
-			b.WriteString("      allowed_actions: [comment, provide_input]\n")
-		case initDepsAnalyzerProfileName:
-			// Dependency analyzer is read-only with respect to the tracker;
-			// it has no allowed_actions.
-		default:
-			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
-		}
-	}
-
-	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
-	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
-	b.WriteString("  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.\n")
-	b.WriteString("  deps_analyzer_profile: " + initDepsAnalyzerProfileName + "    # Profile used by the dashboard \"Analyze dependencies\" button. Empty disables the button.\n")
-	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.\n")
-	b.WriteString("  # backend_fallback:                 # CORE-054: reroute when a backend hits its usage limit (docs/configuration.md).\n")
-	b.WriteString("  #   chain: [claude, codex]\n")
-	b.WriteString("  #   profile_map:                     # each target must exist, be enabled, and run that backend\n")
-	b.WriteString("  #     implementer: { codex: implementer-codex }\n")
-	b.WriteString("  #   switch_back: at_reset            # at_reset | on_success | manual\n")
-	b.WriteString("  #   min_dwell_minutes: 30\n")
-	b.WriteString("  reviewer_prompt: |\n")
-	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
-	b.WriteString("\n")
-	b.WriteString("    ## Your task\n")
-	b.WriteString("\n")
-	b.WriteString("    Review the change made for this issue. You are a read-only reviewer:\n")
-	b.WriteString("    do not edit files, commit, push or move the issue.\n")
-	b.WriteString("\n")
-	b.WriteString("    1. Read the \"Changes to Review\" block (the diff against the base branch) and the latest handoff\n")
-	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues\n")
-	b.WriteString("    3. Record your verdict as the \"Review Verdict (required)\" block describes: approve, or\n")
-	b.WriteString("       block with the reasons and line comments the implementer must address\n")
-	b.WriteString("\n")
-	b.WriteString("    Be concise. Focus on real bugs, not style preferences.\n")
+	writeAgentProfiles(&b, plan, runner)
 
 	// Write discovered models so the dashboard profile editor has suggestions.
 	if len(info.ClaudeModels) > 0 || len(info.CodexModels) > 0 {
@@ -199,27 +154,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	// startup banner.
 	b.WriteString("\nserver:\n  port: 0\n")
 
-	b.WriteString("\n# ── automations (optional) ────────────────────────────────────────────\n")
-	b.WriteString("# Cron and event-driven helper rules layered on top of your agent profiles.\n")
-	b.WriteString("# Trigger types: cron, input_required, tracker_comment_added, issue_entered_state,\n")
-	b.WriteString("#                issue_moved_to_backlog, run_failed, pr_opened, pr_merged, rate_limited,\n")
-	b.WriteString("#                blockers_resolved, pr_check_completed, pr_synchronized, pr_review_submitted, pr_mergeable_changed.\n")
-	b.WriteString("# Tip: an automation whose final output starts with [SILENT] posts no tracker\n")
-	b.WriteString("# comment (run stays in the dashboard logs) — use it for scan-and-found-nothing crons.\n")
-	b.WriteString("# Full reference: https://itervox.dev/guides/automations/\n")
-	b.WriteString("# automations:\n")
-	b.WriteString("#   - id: input-responder\n")
-	b.WriteString("#     enabled: true\n")
-	b.WriteString("#     profile: input-responder   # must match an entry under agent.profiles\n")
-	b.WriteString("#     trigger:\n")
-	b.WriteString("#       type: input_required\n")
-	b.WriteString("#     filter:\n")
-	b.WriteString("#       input_context_regex: \"continue|branch|which file|test command\"\n")
-	b.WriteString("#     policy:\n")
-	b.WriteString("#       auto_resume: true\n")
-	b.WriteString("#     instructions: |\n")
-	b.WriteString("#       Answer narrow, low-risk unblocker questions.\n")
-	b.WriteString("#       If the request is ambiguous, state the safest bounded assumption.\n")
+	writeAutomations(&b, plan)
 
 	b.WriteString("---\n\n")
 
@@ -367,7 +302,7 @@ func runInit(args []string) {
 	dir := fs.String("dir", ".", "directory to scan for repo metadata")
 	force := fs.Bool("force", false, "overwrite output file if it already exists")
 	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema")
-	templateName := fs.String("template", "minimal", "scaffold preset: minimal | full | rate-limit-fallback | pr-review | daily-qa")
+	templateName := fs.String("template", "", templateFlagUsage())
 	// --server-port is opt-in for --update. When set (>= 0), the migration
 	// rewrites server.port in WORKFLOW.md. The recommended value for the
 	// "two itervox daemons in different repos" workflow is 0 (OS picks a
@@ -391,11 +326,10 @@ func runInit(args []string) {
 		fmt.Fprintf(os.Stderr, "itervox init: invalid --analyze %q (auto|always|never)\n", *analyzeMode)
 		fatalExit(2)
 	}
-	if !IsKnownTemplateName(*templateName) {
+	if *templateName != "" && !IsKnownTemplateName(*templateName) {
 		fmt.Fprintf(os.Stderr, "itervox init: unknown --template %q (valid: %s)\n", *templateName, strings.Join(KnownTemplateNames(), ", "))
 		fatalExit(2)
 	}
-	_ = *templateName // currently scaffolds the same default; future presets emit different blocks.
 
 	if *update {
 		warnIfDaemonRunning(*workflowPath, "`itervox init --update`")
@@ -498,7 +432,7 @@ func runInit(args []string) {
 		*preset = offerCrossReviewPreset(*runner, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
 	}
 
-	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, *preset, os.Stdout); err != nil {
+	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, initOptions{Template: *templateName, Preset: *preset}, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}

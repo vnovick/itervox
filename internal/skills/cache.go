@@ -164,6 +164,9 @@ func trackedInventoryFiles(inv *Inventory, base []string) []string {
 	for _, agent := range inv.Subagents {
 		add(agent.FilePath)
 	}
+	for _, prompt := range inv.Prompts {
+		add(prompt.FilePath)
+	}
 	for _, dir := range inv.WatchDirs {
 		add(dir)
 	}

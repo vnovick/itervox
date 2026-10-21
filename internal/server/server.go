@@ -71,6 +71,9 @@ type RunningRow struct {
 	// CommentCount counts review/comment actions taken during this run
 	// (T-6 surface). Zero for runs that have not commented.
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run was given (#157).
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIds,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -97,6 +100,9 @@ type HistoryRow struct {
 	TriggerType  string `json:"triggerType,omitempty"`
 	// CommentCount: comments posted during this run (T-6 surface).
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run used (#157).
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIds,omitempty"`
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -715,6 +721,10 @@ type StateSnapshot struct {
 	// when none is recorded: a successful poll clears a poll failure, and a
 	// write failure ages out after an hour.
 	LastTrackerError *TrackerErrorRow `json:"lastTrackerError,omitempty"`
+	// SyncStatus is the tracker sync status (#117): last successful pull,
+	// lag, pending tracker writes and the last sync error. Absent on daemons
+	// predating it.
+	SyncStatus *SyncStatusRow `json:"syncStatus,omitempty"`
 	// RecentFailures is the bounded ring of operator-relevant failures
 	// (CORE-046), oldest recorded first. Deliberately NOT omitempty: always an
 	// array (possibly empty) on a current daemon. Messages are redacted.
@@ -866,6 +876,68 @@ type TrackerErrorRow struct {
 	Message             string     `json:"message"`
 	ResetAt             *time.Time `json:"resetAt,omitempty"`
 	ConsecutiveFailures int        `json:"consecutiveFailures,omitempty"`
+}
+
+// Sync modes (SyncStatusRow.Mode).
+const (
+	// SyncModeStore: the local tracker store (#113) pulls in the background
+	// and serves every list read.
+	SyncModeStore = "store"
+	// SyncModeDirect: no store; every poll tick reads the tracker.
+	SyncModeDirect = "direct"
+	// SyncModeLocalSync: the local issue files (tracker.kind: local) synced
+	// both ways with Linear or GitHub (#118, tracker.sync). The pull side
+	// is the sync's last good cycle; the pending writes include the sync's
+	// queued remote writes.
+	SyncModeLocalSync = "local_sync"
+)
+
+// SyncStatusRow is the tracker sync status (#117), on the snapshot for the
+// dashboard and API clients, and summarised in HEARTBEAT.md for
+// `itervox doctor`.
+//
+// Pull side: LastPullAt is the last successful pull (store mode) or
+// candidate poll (direct mode), nil when none has succeeded yet. LagMs is
+// now − LastPullAt at snapshot time. Stale is set when LagMs exceeds
+// LagWarnAfterMs, or when nothing was ever pulled and the last pull failed.
+// LastError is the newest failed pull while the failure run lasts (cleared
+// by a good pull), classified (tracker.ClassifyError) and never the
+// tracker's raw response.
+//
+// Push side (the write-ahead outbox, #115): PendingWrites is every queued
+// tracker write; PendingUrgent, PendingBatched (waiting for the push
+// interval), PendingRetrying (failed at least once), PendingDegraded and
+// PendingRateLimited break it down (they overlap). NextPushAt is when the
+// next queued write is due; at or before GeneratedAt means "now".
+type SyncStatusRow struct {
+	Mode                string        `json:"mode"`
+	LastPullAt          *time.Time    `json:"lastPullAt,omitempty"`
+	LagMs               *int64        `json:"lagMs,omitempty"`
+	LagWarnAfterMs      int64         `json:"lagWarnAfterMs"`
+	Stale               bool          `json:"stale"`
+	SyncIntervalMs      int64         `json:"syncIntervalMs"`
+	CursorAt            *time.Time    `json:"cursorAt,omitempty"`
+	ConsecutiveFailures int           `json:"consecutiveFailures,omitempty"`
+	LastError           *SyncErrorRow `json:"lastError,omitempty"`
+	PendingWrites       int           `json:"pendingWrites"`
+	PendingUrgent       int           `json:"pendingUrgent"`
+	PendingBatched      int           `json:"pendingBatched"`
+	PendingRetrying     int           `json:"pendingRetrying"`
+	PendingDegraded     int           `json:"pendingDegraded"`
+	PendingRateLimited  int           `json:"pendingRateLimited"`
+	OldestPendingAt     *time.Time    `json:"oldestPendingAt,omitempty"`
+	NextPushAt          *time.Time    `json:"nextPushAt,omitempty"`
+	PushIntervalMs      int64         `json:"pushIntervalMs"`
+}
+
+// SyncErrorRow is a classified sync failure (#117): Kind is a
+// tracker.ErrorClass* value (rate_limited, auth, not_found, api_status,
+// graphql, timeout, network, canceled, unknown — clients must tolerate new
+// kinds) and Message a fixed-vocabulary summary, redacted.
+type SyncErrorRow struct {
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`
+	Message string    `json:"message"`
 }
 
 // FailureRow is the wire shape of one orchestrator.FailureRecord (CORE-046).
@@ -1222,6 +1294,11 @@ type Config struct {
 	ActionTokenStore *agentactions.Store
 	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
 	SkillsClient SkillsClient
+	// Rules backs the Rules editor endpoints (#157). Nil → 503.
+	Rules RulesClient
+	// SettingsLayers backs the schema-driven Settings page's layer
+	// endpoints (#158). Nil → 503 (the schema endpoint always answers).
+	SettingsLayers SettingsLayersClient
 	// DepsAnalyzer backs the /api/v1/deps/analyze endpoints (Phase 2.3 of
 	// v0.2.0 todolist6). Nil makes the endpoints return 503.
 	DepsAnalyzer DepsAnalyzer
@@ -1295,7 +1372,10 @@ type Server struct {
 	apiToken     string
 	actionTokens *agentactions.Store
 	skills       SkillsClient
-	depsAnalyzer DepsAnalyzer
+	rules        RulesClient
+	// settingsLayers mirrors Config.SettingsLayers (#158).
+	settingsLayers SettingsLayersClient
+	depsAnalyzer   DepsAnalyzer
 	// mergeStrategy / mergeBlockLabels mirror Config.MergeStrategy /
 	// Config.MergeBlockLabels — startup-fixed merge_pr policy. gaps_11 G-3.
 	mergeStrategy    string
@@ -1346,6 +1426,8 @@ func New(cfg Config) *Server {
 		apiToken:       cfg.APIToken,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
+		rules:          cfg.Rules,
+		settingsLayers: cfg.SettingsLayers,
 		depsAnalyzer:   cfg.DepsAnalyzer,
 
 		mergeStrategy:       cfg.MergeStrategy,
@@ -1518,6 +1600,10 @@ func (s *Server) routes() {
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
 			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+			// Schema-driven Settings page (#158).
+			r.Get("/settings/schema", s.handleSettingsSchema)
+			r.Get("/settings/layers", s.handleGetSettingsLayers)
+			r.Put("/settings/layers/{layer}", s.handleSaveSettingsLayer)
 
 			// Dependency analysis (Phase 2.3 of v0.2.0 todolist6).
 			r.Post("/deps/analyze", s.handleDepsAnalyzeEnqueue)
@@ -1525,12 +1611,19 @@ func (s *Server) routes() {
 			r.Delete("/deps/analyze/{jobId}", s.handleDepsAnalyzeCancel)
 
 			// Skills inventory + analytics (T-87, T-95/T-96, T-102).
+			// Rules editor (#157).
+			r.Get("/rules", s.handleGetRules)
+			r.Get("/rules/preview", s.handlePreviewRules)
+			r.Put("/rules/{layer}", s.handleSaveRules)
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)
 			r.Post("/skills/fix", s.handleSkillsFix)
 			r.Get("/skills/analytics", s.handleSkillsAnalytics)
 			r.Get("/skills/analytics/recommendations", s.handleSkillsAnalyticsRecommendations)
+			// Backend-aware references (#123): editor check + profile backends.
+			r.Post("/skills/check-refs", s.handleSkillsCheckRefs)
+			r.Get("/skills/profile-backends", s.handleSkillsProfileBackends)
 
 			r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
