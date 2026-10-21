@@ -249,6 +249,8 @@ gate the change.
 
 ```
 domain ─────┬── tracker (interface + adapters: linear, github, local, memory)
+            │     └── tracker/store (local tracker store, #113: wraps a Linear
+            │         or GitHub adapter; imports tracker, domain, atomicfs)
             ├── prompt (Liquid template rendering)
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
