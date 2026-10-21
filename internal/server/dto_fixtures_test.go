@@ -239,6 +239,29 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			ResetAt:             &resetAt,
 			ConsecutiveFailures: 2,
 		},
+		// #117 — a stale store sync with a classified error and pending
+		// writes, and a fresh direct-mode one with nothing optional set.
+		"SyncStatusRow.json": SyncStatusRow{
+			Mode:                SyncModeStore,
+			LastPullAt:          tptr(at),
+			LagMs:               func() *int64 { v := int64(12 * 60 * 1000); return &v }(),
+			LagWarnAfterMs:      300000,
+			Stale:               true,
+			SyncIntervalMs:      60000,
+			CursorAt:            tptr(at.Add(-time.Minute)),
+			ConsecutiveFailures: 4,
+			LastError:           &SyncErrorRow{At: lastFailedAt, Kind: "network", Message: "tracker unreachable (network error)"},
+			PendingWrites:       3,
+			PendingUrgent:       1,
+			PendingBatched:      1,
+			PendingRetrying:     1,
+			PendingDegraded:     0,
+			PendingRateLimited:  1,
+			OldestPendingAt:     tptr(at.Add(-2 * time.Minute)),
+			NextPushAt:          tptr(resetAt),
+			PushIntervalMs:      10000,
+		},
+		"SyncStatusRowDirect.json": SyncStatusRow{Mode: SyncModeDirect, LagWarnAfterMs: 300000, SyncIntervalMs: 30000},
 	}
 
 	for name, value := range fixtures {

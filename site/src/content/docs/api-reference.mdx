@@ -277,6 +277,33 @@ Useful top-level fields include:
   `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
+- `syncStatus` (#117) — the tracker sync status, absent on older daemons:
+  `{ "mode": "store" | "direct", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
+  "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,
+  "lastError"?: { "at", "kind", "message" }, "pendingWrites",
+  "pendingUrgent", "pendingBatched", "pendingRetrying", "pendingDegraded",
+  "pendingRateLimited", "oldestPendingAt"?, "nextPushAt"?, "pushIntervalMs" }`.
+  `mode` is `store` when the local tracker store pulls in the background
+  (`tracker.store.enabled`), `direct` when each poll reads the tracker.
+  `lastPullAt` is the last successful pull (store) or candidate poll
+  (direct), absent until one succeeds; `lagMs` is now − `lastPullAt` when the
+  snapshot was built (clients should recompute it on their own clock).
+  `stale` is `lagMs > lagWarnAfterMs`, or "never pulled and the last pull
+  failed". `lagWarnAfterMs` is three pull intervals and at least five
+  minutes (`syncIntervalMs`: `tracker.store.sync_interval_ms`, the webhook
+  safety net with `tracker.webhooks`, or `polling.interval_ms` in direct
+  mode). `cursorAt` is the newest tracker update the store has seen.
+  `lastError` is the newest failed pull while pulls keep failing (a good
+  pull clears it), classified: `kind` is `rate_limited`, `auth`,
+  `not_found`, `api_status`, `graphql`, `timeout`, `network`, `canceled` or
+  `unknown` (treat unknown values as opaque), and `message` is a fixed
+  summary, never the tracker's response. The `pending*` counts describe the
+  write-ahead outbox and overlap: `pendingBatched` waits for
+  `tracker.push_interval_ms` (`pushIntervalMs`, 0 with the outbox off),
+  `pendingRetrying` failed at least once, `pendingDegraded` failed five
+  times or more, `pendingRateLimited` waits for a tracker rate-limit reset.
+  `nextPushAt` is when the next queued write is due (at or before
+  `generatedAt` means now).
 - `outboxEntries[].lastFailedAt` — when that outbox entry last failed to
   deliver (rate-limit deferrals do not count).
 - `backendHealth` (CORE-055) — one row per agent backend, and per SSH host

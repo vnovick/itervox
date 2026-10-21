@@ -10,6 +10,7 @@ import { automationsFiredToday } from './dashboardMetrics';
 import { OpsChip } from './OpsChip';
 import { DispatchPressureChip } from './DispatchPressureChip';
 import { BackendHealthChips } from './BackendHealthChips';
+import { SyncStatusChip } from './SyncStatusChip';
 import { useDashboardHref } from '../../../hooks/useDashboardHref';
 import {
   ACTIVITY_LABEL,
@@ -327,6 +328,7 @@ export function LiveOpsStrip() {
         dispatchPressure: s?.dispatchPressure,
         backendHealth: s?.backendHealth,
         autoSwitches: s?.autoSwitches,
+        syncStatus: s?.syncStatus,
       };
     }),
   );
@@ -493,6 +495,10 @@ export function LiveOpsStrip() {
             warning={model.cycleCount === 0 && model.attentionCount > 0}
           />
         )}
+        {/* #117 — tracker sync: pull lag on the strip's coarse clock plus
+            pending writes; warning past the daemon's lag threshold or while
+            pulls fail, danger when both. Hidden on daemons without it. */}
+        <SyncStatusChip row={branches.syncStatus} now={now} />
         {/* outbox Task 4 — pending/degraded write-ahead-outbox tile, hidden
             at zero (same "compact when healthy" convention as the two
             chips above). Danger once anything is degraded; otherwise a

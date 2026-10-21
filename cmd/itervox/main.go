@@ -1092,6 +1092,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		DashboardURL:  heartbeatDashboardURL,
 		LastCrash:     bootCrash,
 	}, snap, heartbeatMinInterval)
+	heartbeat.syncProbe = newSyncStatusSource(cfg, tr, ob, orch).fingerprint // #117
 	if err := heartbeat.WriteNow(time.Now().UTC()); err != nil {
 		slog.Warn("heartbeat: startup write failed", "path", heartbeat.path, "error", err)
 	}

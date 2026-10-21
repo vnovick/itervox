@@ -715,6 +715,10 @@ type StateSnapshot struct {
 	// when none is recorded: a successful poll clears a poll failure, and a
 	// write failure ages out after an hour.
 	LastTrackerError *TrackerErrorRow `json:"lastTrackerError,omitempty"`
+	// SyncStatus is the tracker sync status (#117): last successful pull,
+	// lag, pending tracker writes and the last sync error. Absent on daemons
+	// predating it.
+	SyncStatus *SyncStatusRow `json:"syncStatus,omitempty"`
 	// RecentFailures is the bounded ring of operator-relevant failures
 	// (CORE-046), oldest recorded first. Deliberately NOT omitempty: always an
 	// array (possibly empty) on a current daemon. Messages are redacted.
@@ -866,6 +870,63 @@ type TrackerErrorRow struct {
 	Message             string     `json:"message"`
 	ResetAt             *time.Time `json:"resetAt,omitempty"`
 	ConsecutiveFailures int        `json:"consecutiveFailures,omitempty"`
+}
+
+// Sync modes (SyncStatusRow.Mode).
+const (
+	// SyncModeStore: the local tracker store (#113) pulls in the background
+	// and serves every list read.
+	SyncModeStore = "store"
+	// SyncModeDirect: no store; every poll tick reads the tracker.
+	SyncModeDirect = "direct"
+)
+
+// SyncStatusRow is the tracker sync status (#117), on the snapshot for the
+// dashboard and API clients, and summarised in HEARTBEAT.md for
+// `itervox doctor`.
+//
+// Pull side: LastPullAt is the last successful pull (store mode) or
+// candidate poll (direct mode), nil when none has succeeded yet. LagMs is
+// now − LastPullAt at snapshot time. Stale is set when LagMs exceeds
+// LagWarnAfterMs, or when nothing was ever pulled and the last pull failed.
+// LastError is the newest failed pull while the failure run lasts (cleared
+// by a good pull), classified (tracker.ClassifyError) and never the
+// tracker's raw response.
+//
+// Push side (the write-ahead outbox, #115): PendingWrites is every queued
+// tracker write; PendingUrgent, PendingBatched (waiting for the push
+// interval), PendingRetrying (failed at least once), PendingDegraded and
+// PendingRateLimited break it down (they overlap). NextPushAt is when the
+// next queued write is due; at or before GeneratedAt means "now".
+type SyncStatusRow struct {
+	Mode                string        `json:"mode"`
+	LastPullAt          *time.Time    `json:"lastPullAt,omitempty"`
+	LagMs               *int64        `json:"lagMs,omitempty"`
+	LagWarnAfterMs      int64         `json:"lagWarnAfterMs"`
+	Stale               bool          `json:"stale"`
+	SyncIntervalMs      int64         `json:"syncIntervalMs"`
+	CursorAt            *time.Time    `json:"cursorAt,omitempty"`
+	ConsecutiveFailures int           `json:"consecutiveFailures,omitempty"`
+	LastError           *SyncErrorRow `json:"lastError,omitempty"`
+	PendingWrites       int           `json:"pendingWrites"`
+	PendingUrgent       int           `json:"pendingUrgent"`
+	PendingBatched      int           `json:"pendingBatched"`
+	PendingRetrying     int           `json:"pendingRetrying"`
+	PendingDegraded     int           `json:"pendingDegraded"`
+	PendingRateLimited  int           `json:"pendingRateLimited"`
+	OldestPendingAt     *time.Time    `json:"oldestPendingAt,omitempty"`
+	NextPushAt          *time.Time    `json:"nextPushAt,omitempty"`
+	PushIntervalMs      int64         `json:"pushIntervalMs"`
+}
+
+// SyncErrorRow is a classified sync failure (#117): Kind is a
+// tracker.ErrorClass* value (rate_limited, auth, not_found, api_status,
+// graphql, timeout, network, canceled, unknown — clients must tolerate new
+// kinds) and Message a fixed-vocabulary summary, redacted.
+type SyncErrorRow struct {
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`
+	Message string    `json:"message"`
 }
 
 // FailureRow is the wire shape of one orchestrator.FailureRecord (CORE-046).
