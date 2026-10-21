@@ -1514,6 +1514,14 @@ type Config struct {
 	// /api/v1/repo/readiness (#200): the same check functions as
 	// `itervox doctor`, injected by cmd/itervox. Nil answers 503.
 	RepoReadiness RepoReadinessFunc
+	// RepoEvals reads the persisted eval reports for GET
+	// /api/v1/repo/evals (#201). Read-only: no eval run is started from the
+	// server. Nil answers 503.
+	RepoEvals RepoEvalsFunc
+	// RepoHotspots returns the latest failure-hotspots result for GET
+	// /api/v1/repo/hotspots (#201), computed by a background job off the
+	// event loop. Nil answers 503.
+	RepoHotspots RepoHotspotsFunc
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1563,6 +1571,9 @@ type Server struct {
 	sessions          SessionsClient
 	// repoReadiness mirrors Config.RepoReadiness (#200).
 	repoReadiness RepoReadinessFunc
+	// repoEvals / repoHotspots mirror Config.RepoEvals / RepoHotspots (#201).
+	repoEvals    RepoEvalsFunc
+	repoHotspots RepoHotspotsFunc
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1608,6 +1619,8 @@ func New(cfg Config) *Server {
 		clientErrors:        cfg.ClientErrorLimiter,
 		sessions:            cfg.Sessions,
 		repoReadiness:       cfg.RepoReadiness,
+		repoEvals:           cfg.RepoEvals,
+		repoHotspots:        cfg.RepoHotspots,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1712,6 +1725,8 @@ func (s *Server) routes() {
 			r.Get("/history", s.handleHistory)                               // #186
 			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
 			r.Get("/repo/readiness", s.handleRepoReadiness)                  // #200
+			r.Get("/repo/evals", s.handleRepoEvals)                          // #201
+			r.Get("/repo/hotspots", s.handleRepoHotspots)                    // #201
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)

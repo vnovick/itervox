@@ -1162,7 +1162,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
 			Sessions:      sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
-			RepoReadiness: repoReadinessProvider(workflowPath), // #200: the doctor checks, off the event loop
+			RepoReadiness: repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
+			RepoEvals:     repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
+			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

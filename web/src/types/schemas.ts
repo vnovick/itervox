@@ -1678,7 +1678,95 @@ export const RepoReadinessResponseSchema = z.object({
   checks: z.array(RepoReadinessCheckSchema).nullable(),
 });
 
+// GET /api/v1/repo/evals — internal/server/repo_evals.go (#201). The latest
+// persisted eval result per profile/scenario, read-only.
+export const RepoEvalCaseSchema = z.object({
+  profile: z.string(),
+  scenario: z.string(),
+  pass: z.boolean(),
+  failures: z.array(z.string()).nullable().optional(),
+  error: z.string().optional(),
+  stale: z.boolean().optional(),
+  promptDigest: z.string().optional(),
+  digestSource: z.string().optional(),
+  ranAt: z.string(),
+  mode: z.string(),
+  file: z.string(),
+  regression: z.boolean().optional(),
+  previousDigest: z.string().optional(),
+  previousAt: z.string().nullable().optional(),
+  results: z.number(),
+});
+
+export const RepoEvalReportSchema = z.object({
+  file: z.string(),
+  mode: z.string(),
+  finishedAt: z.string(),
+  pass: z.number(),
+  total: z.number(),
+});
+
+export const RepoEvalsResponseSchema = z.object({
+  dir: z.string().optional(),
+  reports: z.array(RepoEvalReportSchema).nullable(),
+  cases: z.array(RepoEvalCaseSchema).nullable(),
+  skipped: z.number().optional(),
+  error: z.string().optional(),
+});
+
+// GET /api/v1/repo/hotspots — internal/server/repo_hotspots.go (#201).
+// Unknown signals are dropped, never shown as a known one.
+export const RepoHotspotRunSchema = z.object({
+  runId: z.string().optional(),
+  identifier: z.string(),
+  status: z.string(),
+  kind: z.string().optional(),
+  profile: z.string().optional(),
+  finishedAt: z.string(),
+  prUrl: z.string().optional(),
+  signals: tolerantEnumList('hotspot.signals', [
+    'failed',
+    'stalled',
+    'change_request',
+    'input_request',
+    'reverted',
+  ]),
+});
+
+export const RepoHotspotRowSchema = z.object({
+  path: z.string(),
+  failed: z.number(),
+  stalled: z.number(),
+  changeRequests: z.number(),
+  inputRequests: z.number(),
+  reverted: z.number(),
+  total: z.number(),
+  issues: z.array(z.string()).nullable(),
+  runs: z.array(RepoHotspotRunSchema).nullable(),
+});
+
+export const RepoHotspotsResponseSchema = z.object({
+  generatedAt: z.string().nullable().optional(),
+  refreshing: z.boolean(),
+  repo: z.string().optional(),
+  baseRef: z.string().optional(),
+  runsConsidered: z.number(),
+  runsWithSignals: z.number(),
+  runsAttributed: z.number(),
+  runsUnattributed: z.number(),
+  runsPending: z.number().optional(),
+  files: z.array(RepoHotspotRowSchema).nullable(),
+  directories: z.array(RepoHotspotRowSchema).nullable(),
+  notes: z.array(z.string()).nullable().optional(),
+});
+
 export type PromptVersionRow = z.infer<typeof PromptVersionRowSchema>;
 export type PromptVersionsResponse = z.infer<typeof PromptVersionsResponseSchema>;
 export type RepoReadinessCheck = z.infer<typeof RepoReadinessCheckSchema>;
 export type RepoReadinessResponse = z.infer<typeof RepoReadinessResponseSchema>;
+export type RepoEvalCase = z.infer<typeof RepoEvalCaseSchema>;
+export type RepoEvalReport = z.infer<typeof RepoEvalReportSchema>;
+export type RepoEvalsResponse = z.infer<typeof RepoEvalsResponseSchema>;
+export type RepoHotspotRun = z.infer<typeof RepoHotspotRunSchema>;
+export type RepoHotspotRow = z.infer<typeof RepoHotspotRowSchema>;
+export type RepoHotspotsResponse = z.infer<typeof RepoHotspotsResponseSchema>;

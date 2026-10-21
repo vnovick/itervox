@@ -1,13 +1,16 @@
 // Repo Analysis (#200): repository-level signals in one page — the skills
 // inventory (Capabilities), runtime usage and cost, prompt versions (#186)
-// and the `itervox doctor` readiness checks. Sub-tabs on wide screens, all
-// sections stacked on small ones; the location hash selects the tab
-// (/repo#capabilities, #usage, #prompts, #readiness).
+// the `itervox doctor` readiness checks, and (#201) the latest eval results
+// and the failure hotspots. Sub-tabs on wide screens, all sections stacked
+// on small ones; the location hash selects the tab (/repo#capabilities,
+// #usage, #prompts, #readiness, #evals, #hotspots).
 
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import PageMeta from '../../components/common/PageMeta';
 import { SkillsCard } from './capabilities/SkillsCard';
+import { EvalsSection } from './evals/EvalsSection';
+import { HotspotsSection } from './hotspots/HotspotsSection';
 import { PromptVersionsSection } from './prompts/PromptVersionsSection';
 import { ReadinessSection } from './readiness/ReadinessSection';
 import { REPO_SECTIONS, sectionFromHash, type RepoSectionKey } from './repoSections';
@@ -18,6 +21,8 @@ const SECTION_BODY: Record<RepoSectionKey, () => ReactNode> = {
   usage: () => <UsageSection />,
   prompts: () => <PromptVersionsSection />,
   readiness: () => <ReadinessSection />,
+  evals: () => <EvalsSection />,
+  hotspots: () => <HotspotsSection />,
 };
 
 export default function RepoAnalysis() {
@@ -43,14 +48,14 @@ export default function RepoAnalysis() {
     <>
       <PageMeta
         title="Itervox | Repo Analysis"
-        description="Itervox repo analysis — capabilities, runtime usage and cost, prompt versions and agent readiness"
+        description="Itervox repo analysis — capabilities, runtime usage and cost, prompt versions, agent readiness, evals and failure hotspots"
       />
       <div className="w-full max-w-5xl space-y-6">
         <div>
           <h1 className="text-theme-text text-2xl font-bold tracking-tight">Repo Analysis</h1>
           <p className="text-theme-muted mt-1 text-sm">
-            What your agents load, what it costs, which prompt version ran, and whether the
-            repository is ready for agents.
+            What your agents load, what it costs, which prompt version ran, whether the repository
+            is ready for agents, how the evals score, and where agent work goes wrong.
           </p>
         </div>
         <div

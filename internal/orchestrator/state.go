@@ -398,6 +398,9 @@ type RunEntry struct {
 	totalsInput   int
 	totalsOutput  int
 	totalsCounted bool
+	// reviewVerdict is the verdict a finished reviewer recorded (#201),
+	// copied onto its CompletedRun. Event-loop bookkeeping.
+	reviewVerdict string
 }
 
 // CompletedRun is a snapshot of a finished worker session, kept in the history ring buffer.
@@ -447,6 +450,16 @@ type CompletedRun struct {
 	// and bounded; SteersDropped counts older ones the bound let go.
 	Steers        []RunSteer `json:"steers,omitempty"`
 	SteersDropped int        `json:"steersDropped,omitempty"`
+	// BranchName is the branch the run worked on (#201): the branch its exit
+	// reported, else the issue's worktree branch. PRURL is the PR the run
+	// created or continued; empty when it reported none. Repo Analysis
+	// hotspots diff the branch (or the PR's commit) to attribute the run.
+	BranchName string `json:"branchName,omitempty"`
+	PRURL      string `json:"prURL,omitempty"`
+	// ReviewVerdict is a reviewer run's recorded verdict, "approve" or
+	// "block" (#201); empty for other runs and for a reviewer whose exit
+	// recorded no verdict.
+	ReviewVerdict string `json:"reviewVerdict,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.

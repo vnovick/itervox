@@ -1,4 +1,4 @@
-.PHONY: all build verify evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -40,6 +40,16 @@ verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lin
 evals-fast:
 	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestReviewerEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport|^TestAbsenceCheckFailsWhenPhrasePresent$$' ./internal/evals/...
 
+# evals (#201) judges the same committed recordings through cmd/itervox-evals
+# and saves the report as JSON to $(EVALS_RESULTS_DIR)/<ISO8601>.json (the
+# newest 20 kept), which the dashboard's Repo Analysis -> Evals section
+# reads. evals-live and evals-record save their reports there too. Runtime
+# state: the directory carries its own .gitignore.
+EVALS_RESULTS_DIR ?= .itervox/evals
+
+evals:
+	go run ./cmd/itervox-evals recorded -results-dir '$(EVALS_RESULTS_DIR)'
+
 # Live evals (#189) run every scenario against a REAL agent CLI with the
 # profile's current SOUL.md / INSTRUCTIONS.md and resolved rules, and judge
 # the transcript with the recorded-mode judges. They spend tokens, so they are
@@ -59,7 +69,7 @@ EVALS_MAX_TURNS ?= 12
 EVALS_MAX_TOKENS ?= 400000
 EVALS_MAX_COST_USD ?= 3
 EVALS_TIMEOUT ?= 5m
-EVALS_LIVE_FLAGS = -workflow '$(EVALS_WORKFLOW)' -max-turns $(EVALS_MAX_TURNS) -max-tokens $(EVALS_MAX_TOKENS) \
+EVALS_LIVE_FLAGS = -workflow '$(EVALS_WORKFLOW)' -results-dir '$(EVALS_RESULTS_DIR)' -max-turns $(EVALS_MAX_TURNS) -max-tokens $(EVALS_MAX_TOKENS) \
 	-max-cost-usd $(EVALS_MAX_COST_USD) -timeout $(EVALS_TIMEOUT) \
 	$(if $(EVALS_PROFILE),-profile '$(EVALS_PROFILE)') $(if $(EVALS_SCENARIO),-scenario '$(EVALS_SCENARIO)') \
 	$(if $(EVALS_COMMAND),-command '$(EVALS_COMMAND)') $(if $(EVALS_BACKEND),-backend '$(EVALS_BACKEND)')
