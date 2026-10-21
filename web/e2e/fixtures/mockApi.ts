@@ -162,7 +162,7 @@ export async function installMockApi(page: Page, scenario: Scenario): Promise<Mo
       return jsonRoute(route, current.snapshot.availableModels ?? {});
     }
     // Skills inventory endpoints — default to "empty inventory + no issues"
-    // so any spec that loads /settings (where SkillsCard mounts) doesn't
+    // so any spec that loads /repo (where SkillsCard mounts, #200) doesn't
     // trigger console.error on a 599. Specs that care about skills override
     // these via api.override(...).
     if (/\/api\/v1\/skills\/inventory$/.test(path)) {
@@ -194,6 +194,27 @@ export async function installMockApi(page: Page, scenario: Scenario): Promise<Mo
     }
     if (/\/api\/v1\/skills\/analytics\/recommendations$/.test(path)) {
       return jsonRoute(route, []);
+    }
+    // Repo Analysis (#200): prompt versions and the readiness checks.
+    if (/\/api\/v1\/history\/prompt-versions$/.test(path)) {
+      return jsonRoute(route, { versions: [], unversionedRuns: 0 });
+    }
+    if (/\/api\/v1\/history$/.test(path)) {
+      return jsonRoute(route, { history: current.snapshot.history ?? [] });
+    }
+    if (/\/api\/v1\/repo\/readiness$/.test(path)) {
+      return jsonRoute(route, {
+        workflow: 'WORKFLOW.md',
+        generatedAt: new Date().toISOString(),
+        checks: [
+          {
+            id: 'schema_version',
+            title: 'WORKFLOW.md schema 2 marker',
+            status: 'pass',
+            detail: 'itervox_schema_version: 2',
+          },
+        ],
+      });
     }
 
     // Unhandled — fail loud so the spec author sees a missing route stub.

@@ -217,6 +217,21 @@ WARNING: agent CLI codex not found on PATH — install it, set the command to an
 
 `PATH source: inherited — <reason>` means the PATH it was started with was kept. The `agent CLI` lines cover the default `agent.command` and every enabled profile's command; a missing one is a warning and does not change the exit code (the daemon refuses to start without its default CLI).
 
+Doctor ends its report with a `repo readiness:` section: the repository checks the dashboard's [Repo Analysis → Agent readiness](/guides/repo-analysis/#agent-readiness) shows, one line per check, `[pass]`, `[warn]` or `[fail]`, with the fix for anything that is not a pass:
+
+```
+repo readiness:
+  [pass] schema_version: WORKFLOW.md schema 2 marker — itervox_schema_version: 2
+  [warn] gitignore_carveouts: .gitignore keeps .itervox/agents and .itervox/handoff committable — the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/**, !.itervox/handoff/** — profile SOUL/INSTRUCTIONS files and agent handoffs are not committed
+         fix: run `itervox init --update --workflow WORKFLOW.md` (adds the carve-outs), or add the lines yourself
+  [pass] instruction_docs: CLAUDE.md / AGENTS.md present — found CLAUDE.md
+  [pass] bare_fetch_refspec: Shared bare clone fetch refspec — no shared bare clone (workspace.worktree with clone_url is off)
+  [pass] profile_refs: Skill and subagent references resolve — every profile reference resolves
+  [pass] tracker_reachable: Tracker reachable — linear token valid (viewer: Itervox)
+```
+
+The section summarises; it does not change the exit code on its own (the checks above it that already fail doctor, such as a schema error or a failing bare-clone fetch, still do). The tracker probe is bounded to 8 seconds.
+
 | Flag | Description |
 |---|---|
 | `--workflow` | Path to `WORKFLOW.md` (default `WORKFLOW.md`) |

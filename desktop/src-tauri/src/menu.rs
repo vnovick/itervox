@@ -94,6 +94,16 @@ impl Builder {
     }
 }
 
+/// The dashboard's Repo Analysis page (#200): `{base}repo`. A remote
+/// daemon's link is rebased onto its tunnel when it is opened.
+pub fn repo_analysis_link(base_url: &str) -> String {
+    let mut b = base_url.to_string();
+    if !b.ends_with('/') {
+        b.push('/');
+    }
+    format!("{b}repo")
+}
+
 /// Builds the menu for the current projects and recent alerts.
 pub fn build_menu<'a>(
     views: &[ProjectView],
@@ -135,6 +145,16 @@ pub fn build_menu<'a>(
                 "Open Dashboard",
                 v.running() && !busy,
                 MenuAction::OpenDashboard(v.key.clone()),
+            ),
+            b.item(
+                "Repo Analysis",
+                v.running() && !busy,
+                MenuAction::OpenUrl {
+                    project: v.key.clone(),
+                    url: repo_analysis_link(
+                        &v.record.as_ref().map(|r| r.base_url()).unwrap_or_default(),
+                    ),
+                },
             ),
             MenuEntry::Separator,
             b.item(
@@ -270,6 +290,14 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                 up,
                 MenuAction::OpenDashboard(d.key.clone()),
             ),
+            b.item(
+                "Repo Analysis",
+                up,
+                MenuAction::OpenUrl {
+                    project: d.key.clone(),
+                    url: repo_analysis_link(&d.url().unwrap_or_default()),
+                },
+            ),
             b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
             b.label(d.workflow.clone()),
         ];
@@ -389,12 +417,44 @@ mod tests {
         assert_eq!(spec.actions[id], MenuAction::Stop("/up".into()));
     }
 
+    /// #200: each daemon's submenu opens its dashboard's Repo Analysis
+    /// page, the same way a Recent alert opens an issue: OpenUrl with the
+    /// project key, through the usual token handoff.
+    #[test]
+    fn repo_analysis_item_opens_the_repo_route() {
+        let mut up = view("/up", true);
+        if let Some(r) = up.record.as_mut() {
+            r.url = "http://127.0.0.1:8090/".into();
+        }
+        let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
+        let (id, enabled) = find(&spec, "Repo Analysis", "up").unwrap();
+        assert!(enabled);
+        assert_eq!(
+            spec.actions[id],
+            MenuAction::OpenUrl {
+                project: "/up".into(),
+                url: "http://127.0.0.1:8090/repo".into(),
+            }
+        );
+        assert!(!find(&spec, "Repo Analysis", "down").unwrap().1);
+        assert_eq!(
+            repo_analysis_link("http://127.0.0.1:50001"),
+            "http://127.0.0.1:50001/repo"
+        );
+    }
+
     #[test]
     fn a_pending_operation_disables_the_controls() {
         let mut v = view("/up", true);
         v.pending = Some(PendingOp::Stopping);
         let spec = build_menu(&[v], &[], [].iter(), None);
-        for l in ["Start", "Stop", "Restart", "Open Dashboard"] {
+        for l in [
+            "Start",
+            "Stop",
+            "Restart",
+            "Open Dashboard",
+            "Repo Analysis",
+        ] {
             assert!(!find(&spec, l, "up").unwrap().1, "{l}");
         }
     }
@@ -425,7 +485,7 @@ mod tests {
         let open = spec
             .actions
             .values()
-            .find(|a| matches!(a, MenuAction::OpenUrl { .. }))
+            .find(|a| matches!(a, MenuAction::OpenUrl { url, .. } if url.contains("?issue=")))
             .unwrap();
         assert_eq!(
             open,
@@ -550,6 +610,17 @@ mod tests {
             .filter(|a| matches!(a, MenuAction::OpenDashboard(_)))
             .collect();
         assert_eq!(open.len(), 2);
+        let repo: Vec<_> = spec
+            .actions
+            .values()
+            .filter_map(|a| match a {
+                MenuAction::OpenUrl { project, url } if url.ends_with("/repo") => {
+                    Some(project.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(repo.len(), 2, "a Repo Analysis item per remote daemon");
         assert!(spec
             .actions
             .values()

@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SkillsCard } from '../SkillsCard';
+import { UsageSection } from '../../usage/UsageSection';
 
 const skillMocks = vi.hoisted(() => ({
   useSkillsInventory: vi.fn(),
@@ -11,7 +12,7 @@ const skillMocks = vi.hoisted(() => ({
   useSkillsAnalyticsRecommendations: vi.fn(),
 }));
 
-vi.mock('../../../queries/skills', () => skillMocks);
+vi.mock('../../../../queries/skills', () => skillMocks);
 
 const scanMutate = vi.fn();
 const fixMutate = vi.fn();
@@ -101,7 +102,7 @@ beforeEach(() => {
   skillMocks.useSkillsAnalyticsRecommendations.mockReturnValue({ data: [] });
 });
 
-describe('SkillsCard', () => {
+describe('SkillsCard (Repo Analysis → Capabilities)', () => {
   it('renders loading and error states', () => {
     skillMocks.useSkillsInventory.mockReturnValue({ data: null, isLoading: true, error: null });
     const { rerender } = render(<SkillsCard />);
@@ -309,6 +310,8 @@ describe('SkillsCard', () => {
     });
   });
 
+  // #200: runtime analytics moved from the card to Repo Analysis → Runtime
+  // usage; the same assertions run against that section.
   it('shows runtime analytics when log evidence exists', () => {
     skillMocks.useSkillsAnalytics.mockReturnValue({
       isLoading: false,
@@ -332,7 +335,7 @@ describe('SkillsCard', () => {
       ],
     });
 
-    render(<SkillsCard />);
+    render(<UsageSection />);
 
     expect(screen.getByText(/skills runtime-verified/i)).toBeInTheDocument();
     expect(

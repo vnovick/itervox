@@ -86,6 +86,8 @@ The first notification may ask for permission; you can change it later in **Syst
 
 **Open Dashboard** opens the project's dashboard in its own window (the Dock icon shows while a window is open). The app hands the window the daemon's token through a script that runs before the dashboard loads and only on the daemon's own address, which writes it where the dashboard keeps its token for the session. The token is never part of a URL, so it does not appear in the window's history, the daemon's request log, or a link you copy. The dashboard's `?token=` link form still works in a browser; the app does not need it.
 
+**Repo Analysis** opens the same window at the dashboard's [Repo Analysis](/guides/repo-analysis/) page (`<dashboard>/repo`), with the token handed over the same way.
+
 ## Sessions window
 
 **Sessions…** in the menu opens one window listing every running agent session of every daemon the app can read — local projects and remote daemons through their tunnels — grouped by daemon. A session waiting for input is badged **needs input** and listed first, and the daemon groups with a waiting session come first; the menu item shows how many are waiting, for example **Sessions… (2 waiting)**. Each daemon reports the sessions on its own host: the app reads its `GET /api/v1/sessions` with the same token it uses for the daemon's state, every few seconds while the window is open. A daemon the app cannot read shows why (for example **token required**); a daemon from a release without the Sessions API says so.
@@ -138,6 +140,7 @@ When your Mac wakes from sleep or its network changes (Wi-Fi joined or left, a V
 Each remote shows its state, for example `Prod VM — 2/2 connected · 1 needs input` or `reconnecting… (1/2 connected)`, and lists its daemons with their agents and local port. For each daemon:
 
 - **Open Dashboard** opens its dashboard through the tunnel (`http://127.0.0.1:<local>/`) in a window, with the token handed over exactly as for a local daemon.
+- **Repo Analysis** opens that dashboard's [Repo Analysis](/guides/repo-analysis/) page (`/repo`) through the tunnel, the same way.
 - **Enter Token… / Update Token…** reads the token file again, or asks for the token. Use it after the remote daemon restarted with a new auto-generated token (it then shows **token required**).
 
 and for the remote:

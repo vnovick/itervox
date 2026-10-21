@@ -87,4 +87,18 @@ describe('Sidebar', () => {
       0,
     );
   });
+
+  // #200 — Repo Analysis is a top-level page, listed right after Rules.
+  it('lists Repo Analysis in the main nav after Rules', () => {
+    renderShell();
+    const links = screen.getAllByRole('link', { name: 'Repo Analysis', hidden: true });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) expect(link).toHaveAttribute('href', '/repo');
+    const nav = links[0].closest('nav');
+    if (!nav) throw new Error('Repo Analysis link is outside the nav');
+    const names = within(nav)
+      .getAllByRole('link', { hidden: true })
+      .map((l) => l.getAttribute('href'));
+    expect(names.indexOf('/repo')).toBe(names.indexOf('/rules') + 1);
+  });
 });

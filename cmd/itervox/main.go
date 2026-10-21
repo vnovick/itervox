@@ -1161,7 +1161,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Webhooks:          webhooks,        // #131: signed tracker deliveries
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
-			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			Sessions:      sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			RepoReadiness: repoReadinessProvider(workflowPath), // #200: the doctor checks, off the event loop
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

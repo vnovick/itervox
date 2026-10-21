@@ -1,0 +1,48 @@
+---
+title: Repo Analysis
+description: One dashboard page for repository-level signals — the skills inventory, runtime usage and cost, prompt versions with their outcomes, and the itervox doctor readiness checks.
+sidebar:
+  order: 9
+---
+
+The dashboard's **Repo Analysis** page (`/repo`, in the sidebar after Rules) gathers what Itervox knows about the repository your agents work in: what they load, what it costs, which prompt version produced which runs, and whether the repository is set up for agents. On a wide screen each part is a tab; on a phone they are stacked. Each has a deep link:
+
+| Section | Link | What it shows |
+|---|---|---|
+| [Capabilities](#capabilities) | `/repo#capabilities` | The skills inventory: skills, subagents, plugins, MCP servers, hooks, instruction docs, analyzer recommendations with **Fix**, **Re-scan** |
+| [Runtime usage and cost](#runtime-usage-and-cost) | `/repo#usage` | Runtime analytics and their recommendations, tokens per profile |
+| [Prompt versions](#prompt-versions) | `/repo#prompts` | Per profile, each prompt version with its runs, success rate and duration |
+| [Agent readiness](#agent-readiness) | `/repo#readiness` | The repository checks `itervox doctor` runs, pass / warn / fail with the fix |
+
+In the [Mac app](/guides/mac-app/), each daemon's menu has a **Repo Analysis** item that opens this page in the daemon's dashboard window. The command palette lists it too (`g p`).
+
+## Capabilities
+
+The skills inventory, as it was in Settings before (Settings now links here): the scan status and **Re-scan**, the analyzer's recommendations (expand one for what it means and how to fix it; **Fix** applies a one-click fix, and asks first when it edits configuration), a tile per capability kind with its count and approximate context cost (click one for the list), the skill cost split by provider and the context budget bars. The [Skills Inventory guide](/guides/skills-inventory/) explains the scanners, rules and fixes.
+
+## Runtime usage and cost
+
+What the session logs show agents actually load: how many skills are runtime-verified, how many hooks fired, and the analytics recommendations — `HIGH_COST_LOW_USAGE` (a costly skill not seen loaded lately), `HOOK_STORM` (a hook firing very often), `CONFIGURED_NOT_LOADED` and `LOADED_NOT_CONFIGURED` (inventory and runtime disagree). Without session logs the section says how to collect them (`CLAUDE_CODE_LOG_DIR`).
+
+**Tokens per profile** breaks each agent profile's approximate context cost down into instructions, skills, hooks, MCP tool schemas and the prompt template, so you can see which profile carries the most before it reads the issue.
+
+## Prompt versions
+
+Every run records the version of the prompt it was dispatched with: a digest of the profile's `SOUL.md`, its `INSTRUCTIONS.md`, the resolved rules and the prompt template (see [run history](/api-reference/#run-history)). This section lists, per profile, each version with when it was first and last seen, how many runs used it, their success rate and their average duration, newest first. Select a version to list its runs (the dashboard reads `GET /api/v1/history?prompt=<digest>`); **Clear filter** closes the list.
+
+Use it after you change a profile's SOUL or INSTRUCTIONS or a rule: the new version appears at the top once a run uses it, and its success rate and duration next to the previous version's tell you whether the change helped. Runs recorded before prompt versions existed are counted below the tables but not listed.
+
+## Agent readiness
+
+The repository-level checks of [`itervox doctor`](/cli/#itervox-doctor--check-a-workflow), from `GET /api/v1/repo/readiness`. The page and doctor build their rows from the same check functions, so they agree; doctor prints them in its `repo readiness:` section.
+
+| Check | Passes when | Otherwise |
+|---|---|---|
+| WORKFLOW.md schema 2 marker | the workflow loads and declares `itervox_schema_version: 2` | **fail** — run `itervox init --update --workflow WORKFLOW.md` |
+| `.gitignore` carve-outs | the root `.gitignore` does not ignore `.itervox/`, or keeps `.itervox/agents/**` and `.itervox/handoff/**` committable | **warn** — profile files and agent handoffs are not committed; `itervox init --update` adds the lines |
+| CLAUDE.md / AGENTS.md | each backend in use has its repository instruction file (Claude Code reads `CLAUDE.md`, Codex `AGENTS.md`) | **warn** — add the missing file at the repository root |
+| Shared bare clone fetch refspec | no shared bare clone, or its fetch works on the current refspec | **fail** when the last fetch failed; **warn** on the old refspec (migrated automatically) or a stale fetch |
+| Skill and subagent references | every skill and subagent a profile prompt names exists for its backend | **warn** — fix the name or add the skill / subagent |
+| Tracker reachable | one read of the Linear or GitHub API succeeds (local issues need none) | **fail** when it fails or does not answer within 8 seconds; **warn** for a GitHub token without push access |
+
+The checks run when the section opens and on **Re-run checks**, on the request, never on the daemon's dispatch loop: a slow or unreachable tracker delays only this section, by at most its timeout.

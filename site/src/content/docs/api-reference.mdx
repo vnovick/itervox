@@ -439,6 +439,7 @@ The history grouped by prompt version, most recently used version first:
       "successRate": 0.75,
       "firstSeenAt": "2026-10-01T09:00:00Z",
       "lastSeenAt": "2026-10-18T17:30:00Z",
+      "avgDurationMs": 184000,
       "profiles": ["implementer"]
     }
   ],
@@ -447,7 +448,51 @@ The history grouped by prompt version, most recently used version first:
 ```
 
 `statuses` counts runs per history status, `successRate` is the share that
-succeeded (0–1), and `unversionedRuns` counts rows recorded without a digest.
+succeeded (0–1), `firstSeenAt` / `lastSeenAt` are the earliest and latest run
+start, `avgDurationMs` is the mean run duration (#200), and `unversionedRuns`
+counts rows recorded without a digest. The dashboard's Repo Analysis →
+Prompt versions section reads this endpoint.
+
+---
+
+## Repo readiness
+
+### `GET /api/v1/repo/readiness`
+
+The repository-level `itervox doctor` checks (#200), for the dashboard's
+**Repo Analysis → Agent readiness** section ([Repo Analysis guide](/guides/repo-analysis/)). The endpoint and `itervox doctor`
+build their rows from the same check functions, so they report the same IDs
+and statuses for the same repository (doctor prints them in its
+`repo readiness:` section). The checks run on the request goroutine, never on
+the orchestrator's event loop; the tracker probe has its own 8 s timeout and
+is reported as `fail` when it does not answer in time.
+
+```json
+{
+  "workflow": "/srv/app/WORKFLOW.md",
+  "generatedAt": "2026-10-21T10:00:00Z",
+  "checks": [
+    { "id": "schema_version", "title": "WORKFLOW.md schema 2 marker", "status": "pass", "detail": "itervox_schema_version: 2" },
+    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents and .itervox/handoff committable", "status": "warn",
+      "detail": "the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/** …",
+      "fix": "run `itervox init --update --workflow /srv/app/WORKFLOW.md` (adds the carve-outs), or add the lines yourself" }
+  ]
+}
+```
+
+`status` is `pass`, `warn` or `fail`; `fix` is the text doctor prints, set for
+anything that is not a pass. Check IDs, in order:
+
+| ID | Checks | Not a pass when |
+|---|---|---|
+| `schema_version` | `itervox_schema_version: 2` in WORKFLOW.md, and the workflow loads | `fail`: missing, older or unloadable |
+| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**` and `.itervox/handoff/**` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**` |
+| `instruction_docs` | `CLAUDE.md` (Claude profiles) and `AGENTS.md` (Codex profiles) at the repository root | `warn`: a backend in use has no instruction file |
+| `bare_fetch_refspec` | the shared bare clone's fetch (#195) | `fail`: the last fetch failed; `warn`: still on the pre-#195 refspec, or stale |
+| `profile_refs` | skill and subagent references in profile SOUL.md / INSTRUCTIONS.md (#86) | `warn`: a reference does not resolve |
+| `tracker_reachable` | one read of the tracker API (Linear `{ viewer }`, GitHub repository access) | `fail`: the read failed or timed out; `warn`: GitHub token without push access |
+
+`503 readiness_unavailable` when the daemon was built without the checks.
 
 ---
 
@@ -927,7 +972,7 @@ when no rule applied).
 
 ## Skills Inventory
 
-The skills endpoints expose the Settings -> Skills inventory and recommendation
+The skills endpoints expose the Repo Analysis -> Capabilities inventory and recommendation
 surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 
 | Method | Path | Request body | Success response | Notes |
