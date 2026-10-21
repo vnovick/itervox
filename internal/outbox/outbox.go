@@ -42,6 +42,14 @@ const (
 	KindUpdateState EntryKind = "update_state"
 	// KindCreateComment is a tracker comment post; Body is set.
 	KindCreateComment EntryKind = "create_comment"
+	// KindCreateIssue creates an issue on the remote tracker for the local
+	// issue sync (#118); Payload is the issue draft (JSON) and IssueID names
+	// the local issue it is created for.
+	KindCreateIssue EntryKind = "create_issue"
+	// KindUpdateFields edits an issue's fields (title, description, labels,
+	// priority, blockers) for the local issue sync (#118); Payload is the
+	// patch as a JSON object, one key per field.
+	KindUpdateFields EntryKind = "update_fields"
 )
 
 // outboxDegradedAttempts is the Attempts threshold at which an entry is
@@ -81,11 +89,19 @@ type Entry struct {
 	// KindCreateComment entries: a UUIDv4 sent to the tracker as the
 	// comment's own id (Linear) or embedded as a hidden marker in the body
 	// (GitHub), so a retry can ask "did my earlier attempt land?" instead
-	// of guessing. Empty for KindUpdateState.
+	// of guessing. KindCreateIssue entries (#118) carry one too, used as
+	// the new issue's own id where the tracker accepts one (Linear). Empty
+	// for the other kinds.
 	//
 	// Entry.ID is deliberately NOT reused: it is "<unixnano>-<hex>", which
 	// is not a UUIDv4 and Linear's CommentCreateInput.id rejects it.
 	CommentKey string `json:"comment_key,omitempty"`
+	// Payload is the JSON body of a KindCreateIssue or KindUpdateFields
+	// entry (#118). It is opaque to the outbox, except that waiting
+	// update_fields entries for one issue are merged key by key (see
+	// coalesce.go). A string, not a structured field, so Entry keeps no
+	// pointer or slice fields and a value copy stays a real copy.
+	Payload string `json:"payload,omitempty"`
 
 	EnqueuedAt    time.Time `json:"enqueued_at"`
 	Attempts      int       `json:"attempts"`
@@ -263,7 +279,7 @@ func (o *Outbox) Enqueue(e Entry) error {
 	e.NextAttemptAt = now
 	e.Coalesced = 0
 
-	if e.Kind == KindCreateComment && e.CommentKey == "" {
+	if (e.Kind == KindCreateComment || e.Kind == KindCreateIssue) && e.CommentKey == "" {
 		key, err := NewCommentKey()
 		if err != nil {
 			return err
@@ -300,6 +316,10 @@ func validateEntry(e Entry) error {
 	case KindCreateComment:
 		if e.Body == "" {
 			return fmt.Errorf("outbox: enqueue: %s entry requires non-empty Body", KindCreateComment)
+		}
+	case KindCreateIssue, KindUpdateFields:
+		if !json.Valid([]byte(e.Payload)) {
+			return fmt.Errorf("outbox: enqueue: %s entry requires a JSON Payload", e.Kind)
 		}
 	default:
 		return fmt.Errorf("outbox: enqueue: unknown entry kind %q", e.Kind)

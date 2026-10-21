@@ -67,8 +67,9 @@ The schema is in docs/report.md.
 | `blocked_by` | no | Identifiers of issues that block this one. A blocker that is not terminal keeps this issue from being dispatched; a blocker with no file also keeps it blocked. |
 | `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/configuration/#tracker) builds on a blocker's branch. |
 | `created`, `updated` | no | RFC 3339 times. Itervox sets `updated` on every write. |
+| `remote` | no | The linked Linear or GitHub issue (`ENG-42`, or `"#42"` — quoted, since `#` starts a YAML comment), written by the [sync](#sync-with-linear-or-github). |
 
-Other keys are kept when Itervox rewrites the file, but the front matter is rewritten in a standard layout: YAML comments in it are dropped and spacing may change. Put notes in the description instead.
+When Itervox rewrites a file it edits the front matter in place: key order, YAML comments, other keys and the spelling of every value it does not change are kept. A value it changes is rewritten where it is (its line comment stays), a key it adds goes at the end, and a key whose value it empties (no labels left, say) is removed. A file Itervox creates uses the layout shown above.
 
 Everything after the front matter is the description, up to the last `## Comments` heading that has a comment under it. Each comment starts with `### <RFC 3339 time> — <author>`; text between the heading and the first comment is kept. A `## Comments` heading with no comment after it is part of the description. Code blocks are not special, so a fence never hides the comments. When text Itervox writes (a comment, or a new issue's description) contains a line that would read as that heading or a comment header, the line is written with a leading `\` (Markdown shows it unchanged) and read back without it, so no text can rewrite the file's structure. Two consequences: a backslash you type before such a line yourself is removed the next time Itervox writes the file, and if a description quotes this format (a `## Comments` line followed by a comment header) and you then delete every comment by hand, the quoted example is read as the comments. Comments Itervox writes (the pull request link, the session summary, input-required questions) are signed `Itervox`.
 
@@ -88,6 +89,52 @@ A missing `title` or `state`, front matter that is not closed, a `priority` that
 - Itervox will not write to the file until it parses again, so your edit is never overwritten;
 - `itervox doctor` lists it as a warning.
 
+## Sync with Linear or GitHub
+
+Add `tracker.sync` and the issue files stay in step with a Linear project or a GitHub repository, both ways: work from the files (offline, in a branch, by agents) and the team's tracker reflects it, and what the team does in the tracker comes back to the files.
+
+```yaml
+tracker:
+  kind: local
+  active_states: ["Todo", "In Progress"]
+  terminal_states: ["Done", "Cancelled"]
+  sync:
+    kind: linear                   # or github
+    api_key: $LINEAR_API_KEY       # same key as a linear (or github) tracker; put it in .itervox/.env
+    project_slug: eng-board        # Linear: the project new issues are created in. GitHub: owner/repo.
+    # active_states, terminal_states, backlog_states, completion_state: the remote's own state names
+    # (on GitHub, its state labels), defaulting as they do for a linear or github tracker.
+    state_map:                     # local name: remote name, for states named differently
+      Review: In Review
+    # pull_states: ["Todo", "In Progress", "Backlog"]   # remote issues pulled into new files
+    # interval_ms: 60000
+```
+
+The credential and scope keys are the ones a `linear` or `github` tracker uses, with the same meaning and defaults. Every reference table entry is in [configuration](/configuration/#tracker).
+
+What happens on each sync (every `interval_ms`, and a few seconds after you save an issue file):
+
+- **New local issues are created on the remote.** The file then gets the remote identifier in its front matter, `remote: ENG-42` (Linear) or `remote: "#42"` (GitHub); nothing else in the file changes.
+- **New remote issues become files.** A remote issue in one of `pull_states` that no file names gets the next local number (`ITX-7.md`) with `remote:` set, its fields and its comments.
+- **Title, description, state, labels, priority and blockers sync both ways.** A field changed on one side since the last sync is copied to the other. State names go through `state_map`; a name not in it is the same on both sides. Priority is Linear's 1 (urgent) to 4 (low) in the file; on GitHub it is the `p0`–`p3` label (`p0` is priority 1). On GitHub the state is a label and the blockers are a `Blocked by #3, #4` line Itervox keeps at the end of the body; those are not synced as labels or description text. Blockers sync for issues that are linked on both sides; a `blocked_by` entry for an issue that is only local stays in the file.
+- **Comments sync both ways.** A comment added to the file is posted on the remote, prefixed with its author (`**alex** (local issue file):`), since the remote shows the token's user as the poster. A comment posted on the remote is added to the file under its author and time. A comment is copied once; nothing comes back as a duplicate.
+- **Conflicts: the most recent edit wins, per field.** When a field was changed on both sides since the last sync (a title retyped in the file and in Linear), the side edited more recently is kept on both, and Itervox adds a comment to the file that names the field, the kept value and the replaced one, with their times. The file's edit time is its modification time; the remote's is the issue's last update. The note stays in the file; it is not posted to the remote. Fields changed on only one side, and edits to different fields, never conflict.
+- **Files that do not parse are skipped**, exactly as for dispatch: not created remotely, not written, until they parse again.
+- **Itervox's own writes do not come back as edits.** A value the sync writes on either side becomes the value both sides agreed on, a field with a remote write still queued is not compared until it lands, and the comments it posts are recognised by a key (Linear: the comment's id; GitHub: a hidden marker).
+
+Writes to the remote go through the sync's own write-ahead outbox (`.itervox/sync_outbox.json`) with [coalesced push](/configuration/#tracker): they wait `tracker.push_interval_ms` in a per-issue batch (field edits inside one batch merge, only the last state move is sent), survive a restart, and are retried with backoff if the tracker is down or rate limited. A new remote issue on Linear is created under a client-generated id, so a retry after a lost response cannot create a second one; GitHub has no such id, so a create whose response is lost may be repeated (the same residual as for GitHub comments).
+
+The sync keeps what both sides last agreed on, per issue and per field (a hash of each value and when it was synced), in `.itervox/sync_ledger.json`. It is runtime state and gitignored; deleting it is safe: on the next sync each file with a `remote:` key is linked again (no issue is created twice), comments already on both sides are left as they are, and for a field that differs the more recently edited side wins without a conflict note. That is also what happens when a teammate clones a repository with synced issue files.
+
+The [sync status](/configuration/#tracker-sync-status-in-itervox-doctor) shows the sync: mode `local_sync`, the last good sync, the last sync error and, in the pending writes, the sync's queued remote writes. `itervox doctor` and `HEARTBEAT.md` show the same.
+
+Notes:
+
+- Deleting a linked file leaves the remote issue alone and stops syncing it (it is not pulled back into a new file). Removing the `remote:` key from a linked file puts it back on the next sync; to link a file to another remote issue, change the key.
+- A remote issue that leaves `pull_states` keeps syncing if it is linked (closing it in GitHub moves the file to its terminal state); one deleted on the remote leaves its file as it is.
+- With Linear, labels are matched by name (ignoring case) to the project team's and the workspace's labels; a label the remote does not have is left out there. With GitHub, labels are created by GitHub as needed.
+- Run one synced daemon per issues directory and remote.
+
 ## Commit them or keep them private
 
 Issue files are meant to be committed with the code: `itervox init` adds `!.itervox/issues/` and `!.itervox/issues/**` to a root `.gitignore` that ignores `.itervox/`. To keep them private, add this line after those:
@@ -96,10 +143,10 @@ Issue files are meant to be committed with the code: `itervox init` adds `!.iter
 .itervox/issues/
 ```
 
-Runtime files under `.itervox/` (`.env`, `HEARTBEAT.md`, logs, queue files) stay ignored either way.
+Runtime files under `.itervox/` (`.env`, `HEARTBEAT.md`, logs, queue files, the sync's `sync_ledger.json` and `sync_outbox.json`) stay ignored either way.
 
 ## Limits
 
-- There is no sync with Linear or GitHub; that is planned with the local store design.
+- Sync is with one Linear project or one GitHub repository; see [Sync with Linear or GitHub](#sync-with-linear-or-github) for what it covers.
 - One daemon per issues directory: two daemons writing the same files can overwrite each other's change.
 - Comment commands (`/itervox run`) are GitHub only.
