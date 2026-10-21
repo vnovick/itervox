@@ -18,6 +18,9 @@
 #   CHAOS_HOGS      busy loops           (default: number of CPUs)
 #   CHAOS_TIMEOUT   per-package timeout  (default: 90m)
 #   CHAOS_OUT       log directory        (default: chaos-out)
+#
+# Runs on Bash 3.2 and later (macOS's /bin/bash included). Exits non-zero when
+# go list fails, no package matches, or no matched package has tests.
 set -euo pipefail
 
 packages=${CHAOS_PACKAGES:-./internal/orchestrator/... ./internal/tracker/...}
@@ -50,9 +53,25 @@ stop_hogs() {
 trap stop_hogs EXIT
 
 # Build first, without the hogs: a slow build is not what is being tested.
-# $packages is a space-separated list, split on purpose.
+# $packages is a space-separated list, split on purpose. Bash 3.2 (macOS's
+# /bin/bash) has no mapfile, and a process substitution's exit status is
+# lost, so go list's output is captured and its status checked first: a
+# failed or partial listing must fail the run, not pass it with nothing run.
 read -r -a pkg_args <<<"$packages"
-mapfile -t pkgs < <(go list "${pkg_args[@]}")
+if ! listed=$(go list "${pkg_args[@]}"); then
+  echo "chaos: go list failed for: $packages" >&2
+  exit 1
+fi
+pkgs=()
+while IFS= read -r pkg; do
+  if [[ -n $pkg ]]; then
+    pkgs+=("$pkg")
+  fi
+done <<<"$listed"
+if ((${#pkgs[@]} == 0)); then
+  echo "chaos: no packages match: $packages" >&2
+  exit 1
+fi
 built=()
 for pkg in "${pkgs[@]}"; do
   name=${pkg//\//_}
@@ -62,6 +81,11 @@ for pkg in "${pkgs[@]}"; do
     built+=("$pkg")
   fi
 done
+
+if ((${#built[@]} == 0)); then
+  echo "chaos: none of the packages has tests: $packages" >&2
+  exit 1
+fi
 
 for ((i = 0; i < hogs; i++)); do
   (while :; do :; done) &
