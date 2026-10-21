@@ -44,6 +44,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPendingReviewsFromDisk(state)
+	state = o.loadSpendFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -1083,6 +1084,12 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 				"identifier", identifier)
 			continue
 		}
+		// #136: an issue at its budget is paused instead of resumed; like
+		// any paused issue it then drops the pending resume.
+		if o.refuseOverBudget(&state, entry.IssueID, identifier) {
+			delete(state.PendingInputResumes, identifier)
+			continue
+		}
 		if _, discarding := state.DiscardingIdentifiers[identifier]; discarding {
 			delete(state.PendingInputResumes, identifier)
 			slog.Info("orchestrator: dropping pending input resume for discarding issue",
@@ -1200,6 +1207,9 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 	if state.Draining {        // CORE-057: no new worker while draining
 		slog.Info("orchestrator: dispatch refused, daemon is draining",
 			"issue_identifier", issue.Identifier, "attempt", attempt)
+		return state
+	}
+	if o.refuseOverBudget(&state, issue.ID, issue.Identifier) { // #136
 		return state
 	}
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -1411,6 +1421,9 @@ func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) s
 // using the specified profile. The reviewer enters the regular worker queue with
 // Kind="reviewer" and gets full retry/pause/resume support.
 func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *State, issue domain.Issue, profileName string, now time.Time) {
+	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136
+		return
+	}
 	o.syncDrainRequest(state) // M4-close D2
 	if state.Draining {       // CORE-057
 		// M4-close BH-M4-2: keep the review, not just a log line. The
@@ -1577,7 +1590,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			}
 			// CORE-091: fold the update into the session totals before the
 			// entry takes the new counts.
-			state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			// #136: and into the issue's spend, which agent.budget caps.
+			added := state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			state.Spend.record(entry.Issue.Identifier, time.Now(), added)
+			o.stopOverBudgetRun(&state, entry)
 			if ev.RunEntry.CostUSD != nil {
 				c := *ev.RunEntry.CostUSD
 				entry.CostUSD = &c
@@ -1890,6 +1906,28 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// run's exit closes its record.
 			markRunExited(state, ev.IssueID, ev.RunID)
 		}
+		// #136: a run's spend is final at its exit. The exit carries the
+		// run's final usage, which settles what the progress updates did not
+		// (a failed turn sends none; a dropped update loses its counts) —
+		// before anything below decides on a retry. accountRunUpdate adds
+		// only what the run has not contributed yet, so usage its updates
+		// already counted is not counted again. Without the live entry
+		// (reconcile or stall detection deleted it) the run's baseline is
+		// gone, and settling could double-count: it is skipped.
+		if liveEntry != nil {
+			settled := state.Totals.accountRunUpdate(liveEntry, ev.RunEntry)
+			state.Spend.record(ev.RunEntry.Issue.Identifier, time.Now(), settled)
+			if ev.RunEntry.TotalTokens > liveEntry.TotalTokens { // the run's record shows them
+				liveEntry.TotalTokens = ev.RunEntry.TotalTokens
+				liveEntry.InputTokens = ev.RunEntry.InputTokens
+				liveEntry.OutputTokens = ev.RunEntry.OutputTokens
+			}
+		}
+		budgetStopped := ev.RunID != "" && state.BudgetStops[ev.RunEntry.Issue.Identifier] == ev.RunID
+		if budgetStopped {
+			delete(state.BudgetStops, ev.RunEntry.Issue.Identifier)
+		}
+		o.saveSpendToDisk(&state)
 		// CORE-045: one count per processed worker exit, by terminal reason.
 		metrics.WorkerExit(string(ev.RunEntry.TerminalReason))
 
@@ -1939,6 +1977,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			reason := PauseReasonUserCancelled
 			if o.takeTransitionFailed(issue.Identifier) {
 				reason = PauseReasonTransitionFailed
+			} else if budgetStopped {
+				reason = PauseReasonBudgetExceeded // #136
 			}
 			setPauseReason(&state, issue.Identifier, reason)
 			// Capture session info so resume can continue the same agent session
@@ -2275,6 +2315,14 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 		// distinctly from a clean handoff. No-op if the agent never
 		// wrote a handoff this turn.
 		o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
+		// #136: a failed run that has used the issue's budget is not run
+		// again, by a retry or a fallback: the issue is paused with
+		// budget_exceeded. Its spend was settled from the exit above.
+		if o.refuseOverBudget(&state, ev.IssueID, issue.Identifier) {
+			o.abandonReviewerRun(&state, finished, issue.Identifier) // CORE-157: nothing re-runs it
+			o.recordHistory(liveEntry, issue, now, "failed")
+			return state
+		}
 		errMsg := ""
 		if ev.Error != nil {
 			errMsg = ev.Error.Error()

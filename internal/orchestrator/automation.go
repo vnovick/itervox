@@ -749,6 +749,9 @@ func (o *Orchestrator) startAutomationRunOrHold(
 	if AvailableSlots(*state) <= 0 { // 0 while draining (CORE-057)
 		return false, false
 	}
+	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136: paused, run dropped
+		return false, false
+	}
 
 	o.cfgMu.RLock()
 	profile, ok := o.cfg.Agent.Profiles[automation.ProfileName]

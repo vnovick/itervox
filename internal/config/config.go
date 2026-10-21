@@ -256,6 +256,18 @@ type TrackerWebhooksConfig struct {
 // when unset.
 const DefaultTrackerWebhookSafetyNetMs = 600000
 
+// BudgetConfig is agent.budget (#136). Zero (the default) means no limit.
+type BudgetConfig struct {
+	// Tokens is the most input plus output tokens one issue may use.
+	Tokens int
+	// CostUSD is the most estimated cost one issue may run up (Claude runs
+	// only: Codex reports no cost).
+	CostUSD float64
+}
+
+// Enabled reports whether any limit is set.
+func (b BudgetConfig) Enabled() bool { return b.Tokens > 0 || b.CostUSD > 0 }
+
 // PollingConfig holds polling settings.
 type PollingConfig struct {
 	IntervalMs int
@@ -567,6 +579,9 @@ type AgentConfig struct {
 	// moved to the failed state. 0 means unlimited retries (legacy behavior).
 	// Default: 5.
 	MaxRetries int
+	// Budget is agent.budget (#136): the most one issue may spend, across
+	// all its runs and retries, before it is paused with budget_exceeded.
+	Budget BudgetConfig
 	// BaseBranch is the remote branch used as the base for git diffs when
 	// enriching PR context (e.g. "origin/main", "origin/develop", "origin/master").
 	// When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
@@ -898,6 +913,11 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
+	budget := nestedMap(agent, "budget")
+	cfg.Agent.Budget = BudgetConfig{
+		Tokens:  max(0, intField(budget, "tokens", 0)),
+		CostUSD: max(0, floatField(budget, "cost_usd", 0)),
+	}
 	// Gap E — per-issue switch cap defaults: 2 switches per 6h window.
 	cfg.Agent.MaxSwitchesPerIssuePerWindow = intField(agent, "max_switches_per_issue_per_window", 2)
 	// Gap §6.2 — operator-configurable TTL for auto-switched overrides.

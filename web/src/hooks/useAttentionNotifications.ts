@@ -83,6 +83,9 @@ export const FAILURE_PAUSE_REASONS: ReadonlySet<string> = new Set([
   'transition_failed',
 ]);
 
+/** #136 — an issue stopped at its agent.budget; notifies like a failure. */
+const BUDGET_PAUSE_REASON = 'budget_exceeded';
+
 /**
  * The daemon's pause reason for `identifier`, if it sends one. Accepts the
  * `pauseReasons` map (sibling of `pausedWithPR`) and paused rows carrying
@@ -121,7 +124,8 @@ export function attentionTransitions(prev: StateSnapshot, next: StateSnapshot): 
   for (const id of next.paused) {
     if (wasPaused.has(id) || retrying.has(id)) continue;
     const reason = pauseReasonOf(next, id);
-    if (reason === undefined || !FAILURE_PAUSE_REASONS.has(reason)) continue;
+    const budget = reason === BUDGET_PAUSE_REASON;
+    if (reason === undefined || !(budget || FAILURE_PAUSE_REASONS.has(reason))) continue;
     const finished = (next.history ?? [])
       .filter((h) => h.identifier === id)
       .map((h) => h.finishedAt)
@@ -131,7 +135,9 @@ export function attentionTransitions(prev: StateSnapshot, next: StateSnapshot): 
       key: `paused:${next.currentAppSessionId ?? ''}:${id}:${finished ?? ''}`,
       identifier: id,
       title: `${id} stopped and is paused`,
-      body: 'The agent run failed and will not be retried. Open the dashboard to resume or discard it.',
+      body: budget
+        ? 'It reached its agent.budget. Raise the budget, then resume it from the dashboard.'
+        : 'The agent run failed and will not be retried. Open the dashboard to resume or discard it.',
     });
   }
   return out;

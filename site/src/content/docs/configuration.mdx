@@ -276,10 +276,27 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | `max_retries` | int | `5` | Maximum retry attempts before an issue is moved to `tracker.failed_state` (or paused if `failed_state` is empty). `0` means unlimited retries. When the failed turn carried a vendor limit signal, the retry waits for the vendor's reset time or retry delay (at most 6 hours) if that is longer than the normal back-off. |
 | `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. `0`/negative values fall back to the default; use `max_retries` to control retry count. |
 | `max_turns` | int | `20` | Maximum number of agent turns per session. |
+| `budget.tokens` | int | `0` | The most tokens (input + output) one issue may use, across every run, retry, review and automation run. When an issue reaches it, its running agent is stopped and the issue is paused with reason `budget_exceeded`; nothing starts for it while it is over budget. `0` means no limit. See [Per-issue budgets](#per-issue-budgets). |
+| `budget.cost_usd` | number | `0` | The most estimated cost (USD) one issue may use, as `budget.tokens`. Only Claude runs report a cost, so an issue run only by Codex never reaches it. `0` means no limit. |
 
 These retry and rate-limit settings are also editable from the Settings dashboard:
 
 <Image src="/screenshots/v0.2.0/retries settings.png" alt="Retries settings showing max retries per issue, on-exhausted-retries behavior, and rate-limit switch cap" width={900} height={380} />
+
+### Per-issue budgets
+
+```yaml
+agent:
+  budget:
+    tokens: 2000000   # per issue, across all runs and retries
+    cost_usd: 10      # estimated, from Claude runs
+```
+
+Itervox adds up what every run of an issue uses (the implementer, its retries, reviewers and automation runs) and checks it after each update from the agent. When the issue reaches either limit, its agent is stopped, the issue is paused with reason `budget_exceeded`, and the dashboard notifies (if notifications are on). Retries, automations and an answered question do not start it again while it is over budget: each pauses it instead.
+
+To let it continue, raise the budget in `WORKFLOW.md` (the daemon reloads it) or with `itervox config set agent.budget.tokens N` (applied at the next reload), and resume the issue from the dashboard. Resuming without raising it pauses the issue again at once.
+
+The totals live in `issue_spend.json` in the daemon's logs directory, so a restart does not reset a budget; a run's usage is written when the run ends, so a crash loses only the running turns' usage. `itervox report costs` prints them per issue and per day; see the [CLI reference](/cli/#itervox-report-costs--tokens-and-cost-per-issue-and-per-day).
 
 ### Timeout fields
 

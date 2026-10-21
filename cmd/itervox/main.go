@@ -128,6 +128,9 @@ Commands:
              unset KEY  remove a key from that file
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
 
+  report  costs: tokens and estimated cost per issue and per day
+             --days N   days to list (default 14)  --json  JSON output
+
   --version  Print version information
 
 Run mode (default when no command given):
@@ -392,6 +395,9 @@ func main() {
 			return
 		case "config":
 			runConfig(os.Args[2:])
+			return
+		case "report":
+			runReport(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
@@ -901,7 +907,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath) // M4-close BH-M4-2
+		orch.SetPendingReviewsFile(pendingReviewsPath)               // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json")) // #136
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
