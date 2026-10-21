@@ -94,6 +94,7 @@ func TestSendExitWithBranchThenPROpenedAutomations_QueuesExitBeforeAutomation(t 
 		"https://github.com/x/y/pull/42",
 		"https://github.com/x/y/pull/42",
 		"feature/eng-7",
+		"",
 	)
 
 	first := <-o.events
@@ -132,6 +133,7 @@ func TestSendExitWithBranchThenPROpenedAutomations_FiresOnResumeWithoutOpenedPRU
 		"https://github.com/x/y/pull/42", // detectedPRURL
 		"",                               // openedPRURL — empty (resumed run, comment already posted)
 		"",                               // openedPRBranch
+		"",                               // headSHA
 	)
 	first := <-o.events
 	require.Equal(t, EventWorkerExited, first.Type)

@@ -308,19 +308,28 @@ type RunEntry struct {
 	PendingInputResume bool
 	BranchName         string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
 	PRURL              string // URL of the PR created or continued during this run (empty if none)
-	TerminalReason     TerminalReason
-	LastEventAt        *time.Time // when last EventWorkerUpdate was received
-	LastMessage        string
-	InputTokens        int
-	OutputTokens       int
-	TotalTokens        int
-	TurnCount          int
-	RetryAttempt       *int
-	StartedAt          time.Time
-	WorkerCancel       context.CancelFunc
+	// HeadSHA is the PR branch head on the remote when the run exited (#173),
+	// set on a success exit that carries PRURL; empty when unknown.
+	HeadSHA        string
+	TerminalReason TerminalReason
+	LastEventAt    *time.Time // when last EventWorkerUpdate was received
+	LastMessage    string
+	InputTokens    int
+	OutputTokens   int
+	TotalTokens    int
+	TurnCount      int
+	RetryAttempt   *int
+	StartedAt      time.Time
+	WorkerCancel   context.CancelFunc
 	// CostUSD is the latest session-cumulative estimated cost reported by the
 	// run's result events (Claude total_cost_usd, CORE-091); nil when unknown.
 	CostUSD *float64
+	// RulesHash and RuleIDs name the rule set this run was given (#157):
+	// the hash of the rules' content and their ids in prompt order. Set
+	// once at dispatch (startRun) and never mutated; empty when no rule
+	// applied. RuleIDs is shared with snapshot copies: it is immutable.
+	RulesHash string
+	RuleIDs   []string
 	// totalsInput/totalsOutput/totalsCounted record what this run has
 	// already contributed to State.Totals (CORE-091). Unexported: event-loop
 	// bookkeeping, not part of the snapshot.
@@ -359,6 +368,10 @@ type CompletedRun struct {
 	TriggerType  string `json:"triggerType,omitempty"`
 	// CommentCount captures how many comment actions the run posted.
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run used (#157); empty when
+	// no rule applied.
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIDs,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -630,6 +643,28 @@ type State struct {
 	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
 	PRMergedDispatched map[string]struct{}
 
+	// ManagedPRs (#173) are the pull requests an itervox run recorded (the
+	// run's exit carried the PR URL its worker detected), keyed by PR URL.
+	// Only these PRs dispatch the PR-event triggers; an unmanaged PR never
+	// does. Persisted with PREventDispatched and PREventBaselines to
+	// pr_events.json; pruned when the issue reaches a terminal state.
+	ManagedPRs map[string]ManagedPR
+	// PREventDispatched (#173) dedups PR-event dispatches by
+	// `<automationID>|<event key>` (see prEventKey), value = when it fired.
+	// A re-delivered webhook or a repeated poll never dispatches twice.
+	PREventDispatched map[string]time.Time
+	// PREventBaselines (#173) holds, per `<prURL>|<automationID>|<kind>`,
+	// the last head SHA (pr_synchronized) or mergeable_state
+	// (pr_mergeable_changed) the rule was evaluated against, so only a
+	// change dispatches.
+	PREventBaselines map[string]string
+	// AutomationDispatchesPREventTotal / AutomationDroppedPREventDedupTotal /
+	// AutomationDroppedPREventUnmanagedTotal count PR-event (#173)
+	// dispatches, dedup drops and drops for PRs no itervox run recorded.
+	AutomationDispatchesPREventTotal       uint64
+	AutomationDroppedPREventDedupTotal     uint64
+	AutomationDroppedPREventUnmanagedTotal uint64
+
 	// AutomationDropsSelfReentryTotal is a monotonic counter incremented every
 	// time an `input_required` automation dispatch is suppressed because the
 	// previous worker on this issue was itself an automation-driven run
@@ -783,6 +818,9 @@ func NewState(cfg *config.Config) State {
 		ReviewOutcomes:     make(map[string]ReviewOutcome),
 		PROpenedDispatched: make(map[string]struct{}),
 		PRMergedDispatched: make(map[string]struct{}),
+		ManagedPRs:         make(map[string]ManagedPR),
+		PREventDispatched:  make(map[string]time.Time),
+		PREventBaselines:   make(map[string]string),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
 		StackOnReviewState: stackOnReviewState(cfg),

@@ -57,6 +57,7 @@ type compiledAutomationSet struct {
 	runFailed        []orchestrator.RunFailedAutomation
 	prOpened         []orchestrator.PROpenedAutomation
 	prMerged         []orchestrator.PRMergedAutomation
+	prEvents         []orchestrator.PREventAutomation
 	trackerComments  []orchestrator.TrackerCommentAutomation
 	rateLimited      []orchestrator.RateLimitedAutomation
 	blockersResolved []orchestrator.BlockersResolvedAutomation
@@ -71,6 +72,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 	orch.SetRunFailedAutomations(startupCompiled.runFailed)
 	orch.SetPROpenedAutomations(startupCompiled.prOpened)
 	orch.SetPRMergedAutomations(startupCompiled.prMerged)
+	orch.SetPREventAutomations(startupCompiled.prEvents) // #173
 	orch.SetTrackerCommentAutomations(startupCompiled.trackerComments)
 	orch.SetRateLimitedAutomations(startupCompiled.rateLimited)
 	orch.SetBlockersResolvedAutomations(startupCompiled.blockersResolved)
@@ -125,6 +127,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			orch.SetRunFailedAutomations(compiled.runFailed)
 			orch.SetPROpenedAutomations(compiled.prOpened)
 			orch.SetPRMergedAutomations(compiled.prMerged)
+			orch.SetPREventAutomations(compiled.prEvents)
 			orch.SetTrackerCommentAutomations(compiled.trackerComments)
 			orch.SetRateLimitedAutomations(compiled.rateLimited)
 			orch.SetBlockersResolvedAutomations(compiled.blockersResolved)
@@ -363,6 +366,24 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
 				IdentifierRegex: identifierRe,
+			})
+		case config.AutomationTriggerPRCheckCompleted, config.AutomationTriggerPRSynchronized,
+			config.AutomationTriggerPRReviewSubmitted, config.AutomationTriggerPRMergeableChanged:
+			// #173 — fed by the PR-event watcher (startPREvents).
+			compiled.prEvents = append(compiled.prEvents, orchestrator.PREventAutomation{
+				ID:              entry.ID,
+				TriggerType:     entry.Trigger.Type,
+				ProfileName:     entry.Profile,
+				Instructions:    entry.Instructions,
+				MatchMode:       entry.Filter.MatchMode,
+				States:          entry.Filter.States,
+				LabelsAny:       entry.Filter.LabelsAny,
+				IdentifierRegex: identifierRe,
+				CheckNames:      entry.Filter.CheckNames,
+				Conclusions:     entry.Filter.Conclusions,
+				ReviewStates:    entry.Filter.ReviewStates,
+				ReviewAuthors:   entry.Filter.ReviewAuthors,
+				MergeableStates: entry.Filter.MergeableStates,
 			})
 		case config.AutomationTriggerRateLimited:
 			switchProfile, ok := cfg.Agent.Profiles[entry.Policy.SwitchToProfile]
@@ -896,7 +917,7 @@ func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
 		slog.Info("automations: no automations configured in WORKFLOW.md")
 		return
 	}
-	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened) + len(compiled.rateLimited) + len(compiled.blockersResolved)
+	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened) + len(compiled.prEvents) + len(compiled.rateLimited) + len(compiled.blockersResolved)
 	slog.Info("automations: compiled",
 		"total_configured", total,
 		"registered", registered,
@@ -906,6 +927,7 @@ func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
 		"polled_events", len(compiled.polledEvents),
 		"run_failed", len(compiled.runFailed),
 		"pr_opened", len(compiled.prOpened),
+		"pr_events", len(compiled.prEvents),
 		"rate_limited", len(compiled.rateLimited),
 		"blockers_resolved", len(compiled.blockersResolved),
 	)

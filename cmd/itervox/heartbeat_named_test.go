@@ -71,3 +71,35 @@ func TestHeartbeatRetriesAfterWriteFailure(t *testing.T) {
 		t.Errorf("expected retry to write; got call count %d", calls)
 	}
 }
+
+// TestHeartbeatRewritesWhenSyncStatusChanges (#117): a changed sync status
+// (a new pull, a new pending write) makes the heartbeat dirty, so doctor
+// reads a current last-pull time even when nothing else changes; an
+// unchanged one keeps the quiet-tick no-write behaviour.
+func TestHeartbeatRewritesWhenSyncStatusChanges(t *testing.T) {
+	calls := 0
+	w := newHeartbeatWriter("/tmp/test_sync.md", heartbeatOptions{},
+		func() server.StateSnapshot { return server.StateSnapshot{} },
+		1*time.Millisecond)
+	w.writeFile = func(string, string) error { calls++; return nil }
+	fp := "pull@1"
+	w.syncProbe = func() string { return fp }
+
+	now := time.Now().UTC()
+	if err := w.WriteNow(now); err != nil {
+		t.Fatal(err)
+	}
+	w.noteSyncChange() // first observation
+	_ = w.MaybeWrite(now.Add(10 * time.Millisecond))
+	w.noteSyncChange()
+	_ = w.MaybeWrite(now.Add(20 * time.Millisecond))
+	if calls != 2 {
+		t.Fatalf("first observation writes once, an unchanged probe never; got %d writes", calls)
+	}
+	fp = "pull@2"
+	w.noteSyncChange()
+	_ = w.MaybeWrite(now.Add(30 * time.Millisecond))
+	if calls != 3 {
+		t.Errorf("a changed sync status must rewrite the heartbeat; got %d writes", calls)
+	}
+}

@@ -212,6 +212,15 @@ type TrackerConfig struct {
 	// the orchestrator's completion/failed-state paths. Default true; set
 	// false as a kill switch to restore the old synchronous behavior.
 	Outbox bool
+	// PushIntervalMs is tracker.push_interval_ms (#115): how long a
+	// non-urgent outbox write waits for its issue's batch before it is
+	// pushed. Inside one batch only an issue's last state move is sent;
+	// comments keep their order. Urgent writes (input-required questions and
+	// replies, failure notices, operator comments) skip it. 0 pushes every
+	// write as soon as the flusher sees it; a negative value falls back to
+	// the default. Only used with Outbox on. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	PushIntervalMs int
 	// CommentCommands (#84) lets repository maintainers drive Itervox from
 	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
 	// GitHub only. Read once at startup.
@@ -225,7 +234,16 @@ type TrackerConfig struct {
 	// refresh the store by issue, and the store's periodic pull slows to the
 	// safety-net interval.
 	Webhooks TrackerWebhooksConfig
+	// Sync is tracker.sync (#118): two-way sync of the local issue files
+	// with a Linear project or GitHub repository. kind: local only. Read
+	// once at startup.
+	Sync TrackerSyncConfig
 }
+
+// DefaultTrackerPushIntervalMs is tracker.push_interval_ms when unset (#115):
+// long enough to fold a run's closing moves (completion state, review state)
+// into one write, short enough that the tracker trails the board by seconds.
+const DefaultTrackerPushIntervalMs = 10000
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
@@ -757,16 +775,32 @@ type Config struct {
 	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	Dependencies DependenciesConfig
+	// PREvents is pr_events (#173): how the PR-event automation triggers
+	// (pr_check_completed, pr_synchronized, pr_review_submitted,
+	// pr_mergeable_changed) learn about GitHub activity. Read once at
+	// startup.
+	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+}
+
+// PREventsConfig is pr_events (#173).
+type PREventsConfig struct {
+	// WebhookSecret, when set, serves POST /api/v1/webhooks/pr-events for
+	// signed GitHub check_run, status, pull_request and pull_request_review
+	// deliveries ($VAR resolves from the environment). Checks and reviews
+	// then arrive by webhook and the poll only reads each managed PR (head
+	// SHA and mergeable_state, which GitHub sends no event for). Empty: the
+	// poll also reads check runs, commit statuses and reviews.
+	WebhookSecret string
 }
 
 // Load reads a WORKFLOW.md file, parses front matter, applies defaults, and resolves env vars.
@@ -822,28 +856,28 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Tracker
 	tracker := nestedMap(raw, "tracker")
-	cfg.Tracker.Kind = strField(tracker, "kind", "")
-	// Apply the Linear default endpoint only when tracker.kind is "linear" so
-	// that GitHub users who omit endpoint: get an empty string, triggering the
-	// GitHub client's own default (https://api.github.com).
-	defaultEndpoint := ""
-	if cfg.Tracker.Kind == "linear" {
-		defaultEndpoint = "https://api.linear.app/graphql"
-	}
-	cfg.Tracker.Endpoint = strField(tracker, "endpoint", defaultEndpoint)
-	cfg.Tracker.APIKey = resolveSecret(strField(tracker, "api_key", ""))
-	cfg.Tracker.ProjectSlug = strField(tracker, "project_slug", "")
-	cfg.Tracker.ActiveStates = strSliceField(tracker, "active_states", []string{"Todo", "In Progress"})
-	cfg.Tracker.TerminalStates = strSliceField(tracker, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
+	// The connection keys (kind, endpoint, api_key, project_slug and the
+	// state lists) are parsed by the helper tracker.sync shares (#118). The
+	// Linear default endpoint applies only to kind linear, so GitHub users
+	// who omit endpoint: get the GitHub client's own default.
+	conn := parseTrackerConnection(tracker)
+	cfg.Tracker.Kind = conn.Kind
+	cfg.Tracker.Endpoint = conn.Endpoint
+	cfg.Tracker.APIKey = conn.APIKey
+	cfg.Tracker.ProjectSlug = conn.ProjectSlug
+	cfg.Tracker.ActiveStates = conn.ActiveStates
+	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
-	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
-	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" || cfg.Tracker.Kind == "local" {
-		defaultBacklog = []string{"Backlog"}
-	}
-	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
+	cfg.Tracker.CompletionState = conn.CompletionState
+	cfg.Tracker.BacklogStates = conn.BacklogStates
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	// #115: intField, not positiveIntField — an explicit 0 (no batching) is
+	// meaningful; only a negative value falls back to the default.
+	cfg.Tracker.PushIntervalMs = intField(tracker, "push_interval_ms", DefaultTrackerPushIntervalMs)
+	if cfg.Tracker.PushIntervalMs < 0 {
+		cfg.Tracker.PushIntervalMs = DefaultTrackerPushIntervalMs
+	}
 	store := nestedMap(tracker, "store")
 	cfg.Tracker.Store = TrackerStoreConfig{
 		Enabled:            boolField(store, "enabled", true), // #132: on by default
@@ -858,6 +892,16 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	if err := validateTrackerWebhooks(cfg.Tracker); err != nil {
 		return nil, err
+	}
+	cfg.Tracker.Sync = parseTrackerSync(tracker) // #118
+	if err := validateTrackerSync(cfg.Tracker); err != nil {
+		return nil, err
+	}
+	cfg.PREvents = PREventsConfig{
+		WebhookSecret: resolveSecret(strField(nestedMap(raw, "pr_events"), "webhook_secret", "")),
+	}
+	if s := cfg.PREvents.WebhookSecret; s != "" && len(s) < MinWebhookSecretLength {
+		return nil, fmt.Errorf("config: pr_events.webhook_secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
 	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{

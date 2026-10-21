@@ -158,6 +158,9 @@ type Orchestrator struct {
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string
+	// prEventsFile persists State.ManagedPRs, PREventDispatched and
+	// PREventBaselines (#173).
+	prEventsFile string
 	// daemonInstanceID stamps the queue persistence envelope so a reader can
 	// distinguish state written by this daemon from state inherited from
 	// another (todolist4 A.2). Set once at construction; reads are lock-free.
@@ -188,6 +191,9 @@ type Orchestrator struct {
 	loopIdleNano    atomic.Int64
 	tickStartedNano atomic.Int64
 	lastPollOK      atomic.Bool
+	// lastPollOKNano is when a candidate poll last succeeded (#117): the
+	// sync status's last pull when no tracker store is in front.
+	lastPollOKNano  atomic.Int64
 	pollRateLimited atomic.Bool
 	pollShedding    atomic.Bool
 	// draining mirrors State.Draining for off-loop readers (CORE-057).
@@ -275,6 +281,9 @@ type Orchestrator struct {
 	// prMergedAutomations (P1) mirrors prOpenedAutomations for the merge-side
 	// trigger. Compiled rules are installed via SetPRMergedAutomations.
 	prMergedAutomations []PRMergedAutomation
+	// prEventAutomations holds the compiled PR-event rules (#173),
+	// installed via SetPREventAutomations under automationsMu.
+	prEventAutomations []PREventAutomation
 
 	// trackerCommentAutomations (P0-B) holds compiled tracker_comment_added
 	// rules so the body-filter dispatch helper can short-circuit comments
