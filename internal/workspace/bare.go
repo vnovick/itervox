@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/vnovick/itervox/internal/gitexec"
 )
@@ -31,6 +32,9 @@ func dirExists(path string) bool {
 // Returns the absolute path to the bare clone.
 func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error) {
 	barePath := BarePath(root)
+	// Two first dispatches must not clone into the same directory at once.
+	unlock := lockRepo(barePath)
+	defer unlock()
 
 	// Already exists — reuse, but ONLY if it is the repository we were asked
 	// for.
@@ -89,8 +93,27 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 	return barePath, nil
 }
 
-// FetchBare runs git fetch --all --prune in the bare clone to update all remote refs.
+// repoLocks serializes git operations that write one shared repository's
+// refs (#193): parallel dispatches each fetched into the shared bare clone at
+// once, and git's ref locking made all but one fail with "cannot lock ref
+// ... is at <sha> but expected <sha>". Keyed by the repository's canonical
+// path; entries are never removed (one per repository the daemon uses). The
+// lock is taken on worker goroutines, never on the orchestrator event loop.
+var repoLocks sync.Map // canonical path → *sync.Mutex
+
+// lockRepo locks the repository at path and returns its unlock function.
+func lockRepo(path string) func() {
+	mu, _ := repoLocks.LoadOrStore(canonicalPath(path), &sync.Mutex{})
+	m := mu.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
+}
+
+// FetchBare runs git fetch --all --prune in the bare clone to update all
+// remote refs. Concurrent calls for one bare clone run one at a time.
 func FetchBare(ctx context.Context, barePath string) error {
+	unlock := lockRepo(barePath)
+	defer unlock()
 	cmd := gitexec.Command(ctx, ".", "-C", barePath, "fetch", "--all", "--prune")
 	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {

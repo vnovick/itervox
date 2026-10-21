@@ -273,6 +273,14 @@ func (o *Orchestrator) recordWorkerFailure(state *State, ev OrchestratorEvent, a
 			Message:    fmt.Sprintf("worker stalled on attempt %d (no agent output within the stall timeout)", attempt+1),
 			OccurredAt: now,
 		}, now)
+	case TerminalBranchInUse:
+		// #193: a deterministic setup refusal, recorded once per hold.
+		appendRecentFailure(state, FailureRecord{
+			Kind:       FailureKindWorkerFailed,
+			Identifier: issue.Identifier,
+			Message:    "workspace setup: the worktree branch is checked out in another worktree; holding the issue (branch_in_use) until it is freed",
+			OccurredAt: now,
+		}, now)
 	case TerminalRateLimited:
 		// CORE-051: classified by the typed limit signal, never its text.
 		appendRecentFailure(state, FailureRecord{

@@ -179,6 +179,12 @@ const (
 	// agent ran; the event loop records the miss in State.StackUnavailable
 	// so the issue waits for the blocker like any other.
 	TerminalStackUnavailable TerminalReason = "stack_unavailable"
+	// TerminalBranchInUse is used when the issue's worktree could not be
+	// created because its branch is checked out in another worktree (#193).
+	// Deterministic: no agent ran and a retry would fail the same way, so the
+	// event loop records State.BranchInUseHolds (ineligible reason
+	// branch_in_use) instead of scheduling a retry.
+	TerminalBranchInUse TerminalReason = "branch_in_use"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).
@@ -787,6 +793,13 @@ type State struct {
 	// unchanged the dependent waits for it as before; a new blocker or state
 	// gives stacking another try. Event-loop state, not persisted.
 	StackUnavailable map[string]string
+	// BranchInUseHolds holds issues whose worktree branch is checked out in
+	// another worktree (#193), keyed by identifier: the branch_in_use
+	// ineligible reason. Set from a TerminalBranchInUse exit and released by
+	// releaseBranchInUseHolds once that worktree frees the branch. Event-loop
+	// state, not persisted: after a restart the first dispatch finds the
+	// branch still taken and holds the issue again without spending a retry.
+	BranchInUseHolds map[string]BranchInUseHold
 
 	// PendingReviews holds reviewer dispatches refused while draining
 	// (M4-close BH-M4-2), keyed by issue identifier. Persisted to
@@ -923,6 +936,7 @@ func NewState(cfg *config.Config) State {
 		DepsOverrides:      make(map[string]time.Time),
 		StackOnReviewState: stackOnReviewState(cfg),
 		StackUnavailable:   make(map[string]string),
+		BranchInUseHolds:   make(map[string]BranchInUseHold),
 		PendingReviews:     make(map[string]PendingReview),
 		DeferredStateMoves: make(map[string]DeferredStateMove),
 		OutboxSyncing:      make(map[string]struct{}),
