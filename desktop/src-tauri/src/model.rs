@@ -10,6 +10,7 @@ use crate::client::FetchError;
 use crate::daemon_state::StateSummary;
 use crate::events::{Alert, EventDetector};
 use crate::projects::SavedProjects;
+use crate::sessions::SessionsJob;
 use crate::status::{
     DaemonRecord, SOURCE_PROCESS_SCAN, TOKEN_SOURCE_GENERATED, TOKEN_SOURCE_SUPERVISOR,
 };
@@ -297,6 +298,29 @@ impl Core {
                     url,
                     token,
                 })
+            })
+            .collect()
+    }
+
+    /// The Sessions window's reads of the local daemons (#178): the same
+    /// reads as [`Core::fetch_jobs`], named as the menu names them.
+    pub fn session_jobs(
+        &self,
+        records: &[DaemonRecord],
+        tokens: &dyn TokenStore,
+        read_file: &dyn Fn(&str) -> Option<String>,
+    ) -> Vec<SessionsJob> {
+        self.fetch_jobs(records, tokens, read_file)
+            .into_iter()
+            .map(|j| SessionsJob {
+                name: self
+                    .view(&j.key)
+                    .map(|v| v.name.clone())
+                    .unwrap_or_else(|| display_name(&j.key, None)),
+                remote: None,
+                key: j.key,
+                url: j.url,
+                token: j.token,
             })
             .collect()
     }

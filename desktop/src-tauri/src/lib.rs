@@ -15,6 +15,7 @@ pub mod prompt;
 pub mod remote;
 pub mod remote_model;
 pub mod remote_ops;
+pub mod sessions;
 pub mod shellpath;
 pub mod status;
 pub mod supervisor;

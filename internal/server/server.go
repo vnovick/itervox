@@ -1270,6 +1270,9 @@ type Config struct {
 	// the process-wide default, which survives the Server rebuild every
 	// WORKFLOW.md reload performs.
 	ClientErrorLimiter *ClientErrorLimiter
+	// Sessions backs GET /api/v1/sessions and
+	// POST /api/v1/sessions/{id}/message (#178). Nil answers 503.
+	Sessions SessionsClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1311,6 +1314,7 @@ type Server struct {
 	reportClientError func(ClientErrorReport) bool
 	webhooks          WebhookHandler
 	clientErrors      *ClientErrorLimiter
+	sessions          SessionsClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1350,6 +1354,7 @@ func New(cfg Config) *Server {
 		reportClientError:   cfg.ReportClientError,
 		webhooks:            cfg.Webhooks,
 		clientErrors:        cfg.ClientErrorLimiter,
+		sessions:            cfg.Sessions,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1452,6 +1457,8 @@ func (s *Server) routes() {
 
 			r.Get("/state", s.handleState)
 			r.Get("/events", s.handleEvents)
+			r.Get("/sessions", s.handleListSessions)
+			r.Post("/sessions/{id}/message", s.handleSessionMessage)
 			r.Get("/issues", s.handleIssues)
 			r.Get("/issues/{identifier}", s.handleIssueDetail)
 			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)

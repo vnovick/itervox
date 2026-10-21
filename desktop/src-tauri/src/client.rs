@@ -1,8 +1,10 @@
-//! Reading a daemon's `/api/v1/state` over loopback.
+//! Reading a daemon's `/api/v1/state` and `/api/v1/sessions` over loopback
+//! (or a tunnel's local end).
 
 use std::time::Duration;
 
 use crate::daemon_state::{parse_state, StateSummary};
+use crate::sessions::{parse_sessions, Session};
 
 /// Per-request bound; a hung daemon must not stall the refresh loop.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -45,7 +47,19 @@ fn agent() -> ureq::Agent {
 /// GET `{base_url}api/v1/state`, with `Authorization: Bearer` when a token
 /// is given.
 pub fn fetch_state(base_url: &str, token: Option<&str>) -> Result<StateSummary, FetchError> {
-    let url = format!("{}api/v1/state", ensure_slash(base_url));
+    let body = get(base_url, "api/v1/state", token)?;
+    parse_state(&body).map_err(FetchError::Parse)
+}
+
+/// GET `{base_url}api/v1/sessions` (#178): the daemon's agent sessions.
+pub fn fetch_sessions(base_url: &str, token: Option<&str>) -> Result<Vec<Session>, FetchError> {
+    let body = get(base_url, "api/v1/sessions", token)?;
+    parse_sessions(&body).map_err(FetchError::Parse)
+}
+
+/// A bounded loopback GET of `path` under `base_url`.
+fn get(base_url: &str, path: &str, token: Option<&str>) -> Result<Vec<u8>, FetchError> {
+    let url = format!("{}{path}", ensure_slash(base_url));
     let mut req = agent().get(&url);
     if let Some(t) = token {
         req = req.header("Authorization", &format!("Bearer {t}"));
@@ -58,13 +72,11 @@ pub fn fetch_state(base_url: &str, token: Option<&str>) -> Result<StateSummary, 
         401 => return Err(FetchError::Unauthorized),
         other => return Err(FetchError::Status(other)),
     }
-    let body = resp
-        .body_mut()
+    resp.body_mut()
         .with_config()
         .limit(32 << 20)
         .read_to_vec()
-        .map_err(|e| FetchError::Transport(e.to_string()))?;
-    parse_state(&body).map_err(FetchError::Parse)
+        .map_err(|e| FetchError::Transport(e.to_string()))
 }
 
 fn ensure_slash(u: &str) -> String {
