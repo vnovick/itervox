@@ -561,54 +561,22 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 
-		// #157: the rules block, ahead of SOUL.md and INSTRUCTIONS.md, unless
-		// one of the run's templates places the rules itself.
-		ruleTemplates := []string{promptTemplate}
-		if p, ok := profilesSnap[profileName]; ok && profileName != "" {
-			ruleTemplates = append(ruleTemplates, p.Soul, p.Instructions, p.Prompt)
-		}
-		if automation != nil {
-			ruleTemplates = append(ruleTemplates, automation.Instructions)
-		}
-		if block := rulesPromptBlock(ruleSet, ruleTemplates...); block != "" {
-			renderedPrompt += "\n\n" + block
-		}
-
-		// Append the active profile's prompt (role context) whenever a named
-		// profile is selected. The pre-removal `agent_mode == "teams"` gate
-		// has been deleted (agent_mode is gone — see CHANGELOG); the
-		// subagent roster context below also injects unconditionally so
-		// multi-profile setups always tell the agent who its peers are.
-		if profileName != "" {
-			if profile, ok := profilesSnap[profileName]; ok {
-				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, runVars) {
-					if block != "" {
-						renderedPrompt += "\n\n" + block
-					}
-				}
-			}
-		}
-		if automation != nil && automation.Instructions != "" {
-			bindings := automationTriggerBindings(automation)
-			maps.Copy(bindings, runVars)
-			renderedPrompt += "\n\n" + prompt.RenderPromptOverlay(
-				automation.Instructions,
-				issue,
-				attemptPtr,
-				bindings,
-			)
-		}
-		if actionContext != "" {
-			renderedPrompt += "\n\n" + actionContext
-		}
-		// Append sub-agent roster context whenever the inventory has more than
-		// one profile — gives the active backend the names + descriptions of
-		// peer agents it can spawn via its delegation tool. `buildSubAgentContext`
-		// returns "" when there's nothing to say, so single-profile setups
-		// see no change.
-		if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
-			renderedPrompt += "\n\n" + subCtx
-		}
+		// #157 rules, the profile's SOUL/INSTRUCTIONS, the automation's
+		// instructions, the daemon action notice and the sub-agent roster.
+		// Shared with ComposeEvalPrompt (#189) so a live eval renders exactly
+		// the profile sections a dispatched worker sees.
+		renderedPrompt += profilePromptTail(profileTailInput{
+			Rules:         ruleSet,
+			Template:      promptTemplate,
+			ProfileName:   profileName,
+			Profiles:      profilesSnap,
+			Automation:    automation,
+			Issue:         issue,
+			Attempt:       attemptPtr,
+			RunVars:       runVars,
+			ActionContext: actionContext,
+			Backend:       backend,
+		})
 
 		// On the first turn, inject open PR context if detected.
 		if turn == 1 {

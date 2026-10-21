@@ -1,4 +1,4 @@
-.PHONY: all build verify chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -38,7 +38,41 @@ verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lin
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
 # breaks recorded scenarios fails the build (P1.a).
 evals-fast:
-	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestReviewerEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport' ./internal/evals/...
+	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestReviewerEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport|^TestAbsenceCheckFailsWhenPhrasePresent$$' ./internal/evals/...
+
+# Live evals (#189) run every scenario against a REAL agent CLI with the
+# profile's current SOUL.md / INSTRUCTIONS.md and resolved rules, and judge
+# the transcript with the recorded-mode judges. They spend tokens, so they are
+# NOT part of verify and refuse to start without ITERVOX_EVALS_LIVE=1:
+#
+#   ITERVOX_EVALS_LIVE=1 make evals-live                 # judge a live run (transcripts in a temp dir)
+#   ITERVOX_EVALS_LIVE=1 make evals-record               # re-record: writes recording.candidate.jsonl per fixture
+#   make evals-promote SCENARIO=reviewer/approves-with-marker   # after review; SCENARIO=all for every candidate
+#
+# Knobs: EVALS_PROFILE, EVALS_SCENARIO, EVALS_COMMAND (agent CLI to run),
+# EVALS_BACKEND (claude|codex), EVALS_WORKFLOW (eval your own project),
+# EVALS_MAX_TURNS, EVALS_MAX_TOKENS (per scenario), EVALS_MAX_COST_USD
+# (suite), EVALS_TIMEOUT (per scenario, e.g. 5m), FORCE=1 (promote a
+# candidate that fails its judges). See docs/evals.md.
+EVALS_WORKFLOW ?= internal/evals/project/WORKFLOW.md
+EVALS_MAX_TURNS ?= 12
+EVALS_MAX_TOKENS ?= 400000
+EVALS_MAX_COST_USD ?= 3
+EVALS_TIMEOUT ?= 5m
+EVALS_LIVE_FLAGS = -workflow '$(EVALS_WORKFLOW)' -max-turns $(EVALS_MAX_TURNS) -max-tokens $(EVALS_MAX_TOKENS) \
+	-max-cost-usd $(EVALS_MAX_COST_USD) -timeout $(EVALS_TIMEOUT) \
+	$(if $(EVALS_PROFILE),-profile '$(EVALS_PROFILE)') $(if $(EVALS_SCENARIO),-scenario '$(EVALS_SCENARIO)') \
+	$(if $(EVALS_COMMAND),-command '$(EVALS_COMMAND)') $(if $(EVALS_BACKEND),-backend '$(EVALS_BACKEND)')
+
+evals-live:
+	go run ./cmd/itervox-evals live $(EVALS_LIVE_FLAGS) $(if $(EVALS_OUT),-out '$(EVALS_OUT)')
+
+evals-record:
+	go run ./cmd/itervox-evals record $(EVALS_LIVE_FLAGS)
+
+evals-promote:
+	@if [ -z "$(SCENARIO)" ]; then echo "usage: make evals-promote SCENARIO=<profile>/<scenario>|all [FORCE=1]"; exit 2; fi
+	go run ./cmd/itervox-evals promote $(if $(FORCE),-force) $(if $(filter all,$(SCENARIO)),-all,$(SCENARIO))
 
 # Release preflight mirrors tag-time checks. Keep `verify` as the normal PR/local
 # edit gate; this target additionally requires release tooling and a clean tree.
