@@ -75,6 +75,7 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", msg))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			prevAttempt := 0
@@ -82,6 +83,9 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				prevAttempt = re.Attempt
 			}
 			state = ScheduleRetry(state, id, prevAttempt+1, entry.Issue.Identifier, "stall_timeout", now, BackoffMs(prevAttempt+1, cfg.Agent.MaxRetryBackoffMs))
+			if entry.Kind == "reviewer" {
+				retryAs(state, id, entry.ProfileName) // #127: the retry is the reviewer
+			}
 			// Include the RunEntry so handleEvent can record stall history.
 			// Claim and retry management have already been performed inline above;
 			// the event loop will see TerminalStalled and only call recordHistory.
@@ -159,6 +163,7 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", "worker: ⚠ issue no longer found in tracker — worker stopped"))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			select {
@@ -199,6 +204,7 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				buf.Add(entry.Issue.Identifier, makeBufLine("INFO", fmt.Sprintf("worker: issue moved to terminal state %q — worker stopped", refreshedState)))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			select {
@@ -209,16 +215,10 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				RunEntry: &RunEntry{
 					Issue: entry.Issue,
 					RunID: entry.RunID,
-					// Kind MUST be carried through. The exit handler routes on
-					// it via runEligibleForAutoReview, which treats an empty
-					// Kind as "a plain worker finished" and queues an
-					// auto-review. Dropping it here meant a REVIEWER stopped
-					// by this very branch looked like a fresh worker success,
-					// so the handler dispatched another reviewer, which this
-					// branch stopped again — an unbounded re-dispatch loop
-					// that spawns agents (and burns tracker/API budget) for as
-					// long as the issue sits in a terminal state. Reproduced
-					// at 23-30 RunTurn calls per 1.5s against an expected 2.
+					// Kind is carried for the event's own consumers (history,
+					// automations). The exit handler identifies the run by
+					// its record (#127), which markRunStopped above flags so
+					// a stopped run's late success never starts a review.
 					Kind:           entry.Kind,
 					ProfileName:    entry.ProfileName,
 					BranchName:     entry.BranchName,
@@ -238,6 +238,7 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", fmt.Sprintf("worker: ⚠ issue state changed to %q (not in active_states) — worker stopped", refreshedState)))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			select {

@@ -84,14 +84,26 @@ worker's context. Every `EventWorkerUpdate`/`EventWorkerExited` the worker sends
 and every synthetic exit reconcile or stall detection sends, carries that
 `RunID`. The loop applies an event only to the run it names: an exit or update
 from a superseded run (stopped, then the issue dispatched again) changes nothing.
-`State.LatestRunID` keeps each issue's most recently dispatched run after its
-Running entry is gone, so a late exit is still recognised as superseded once its
-replacement has itself exited (and left a retry behind).
+`State.LatestRun` keeps a `RunRecord` of each issue's most recently dispatched
+run after its Running entry is gone, so a late exit is still recognised as
+superseded once its replacement has itself exited (and left a retry behind).
 `RunEntry.Phase` (`dispatched → running → finishing → exited`) is event-loop
 state. The worker reports `finishing` through its run handle (`markFinishing`)
 before it moves the issue to `completion_state` and before it sends its exit;
 reconcile and stall detection fold that in with `observeFinishing` and leave a
 finishing run to its own exit. Do not key new run bookkeeping by issue ID alone.
+
+The exit handler identifies the finishing run with `finishedRun`: the live
+entry, else the run's record (#127). The record carries its kind, profile (a
+reviewer's chain step), whether reconcile or stall detection stopped it
+(`markRunStopped`; a stopped run's late success starts no review), and whether
+its own exit was handled. A run that continues a reviewer carries the reviewer
+itself: `RetryEntry.ReviewerProfile`, `PausedSessionInfo.Reviewer`, and
+`Reviewer` on the input-required entries (persisted), which `dispatchRun` and
+the input resume turn back into a reviewer `RunEntry`. A reviewer never writes
+the operator's per-issue profile override (`issueProfiles`). Do not add a
+per-issue side map to recover what a run was; put it on the run or on the
+entry that continues it.
 
 ### `orchestrator.State` is a value type
 
@@ -379,16 +391,19 @@ The two lifecycle defects that justified the gate are fixed and pinned:
 1. **The chain never advanced.** The `TerminalSucceeded` handler identified a
    reviewer only via `state.Running`, which `ReconcileTrackerStates` deletes
    first when `tracker.completion_state` moves the issue terminal. It now
-   recovers the reviewer identity from `reviewerInjectedProfiles`, which
-   reconciliation does not touch.
+   reads the finishing run's own record (`State.LatestRun`, #127), which
+   reconciliation does not delete.
 2. **The workspace was cleared mid-chain.** The auto-clear decision keyed off
-   `runEligibleForAutoReview` ("would a FRESH review start?"), which is false
+   `runStartsAReview` ("would a FRESH review start?"), which is false
    for a reviewer's own exit. It now also consults `reviewChainInFlight`, so the
    worktree survives until the quorum closes.
 
 Both are covered by `TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping`,
 which runs the exact configuration that reproduced them and asserts one worker
 plus both reviewers (no re-dispatch loop) and exactly one workspace clear.
+`TestReplacedReviewerAdvancesTheChainOnce` pins the record-based identity: a
+reviewer whose Running entry reconcile deleted still advances the chain, and a
+late copy of its exit after the next reviewer replaced it does not.
 
 ---
 
