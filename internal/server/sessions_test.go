@@ -20,6 +20,15 @@ type fakeSessions struct {
 	sendErr error
 	sentID  string
 	sentMsg string
+	// #178 step 3
+	page     server.TranscriptResponse
+	pageErr  error
+	pageArgs []any
+}
+
+func (f *fakeSessions) SessionTranscript(id string, before int64, limit int) (server.TranscriptResponse, error) {
+	f.pageArgs = []any{id, before, limit}
+	return f.page, f.pageErr
 }
 
 func (f *fakeSessions) ListSessions() []server.SessionRow { return f.rows }

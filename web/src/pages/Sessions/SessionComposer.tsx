@@ -25,9 +25,19 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
 
   if (session.owner !== 'itervox') {
     return (
-      <p data-testid="session-readonly" className="text-theme-text-secondary text-sm">
-        Itervox did not start this session, so it is read-only.
-      </p>
+      <div className="space-y-1" data-testid="session-readonly">
+        <p className="text-theme-text-secondary text-sm">
+          Started outside itervox — read-only.{' '}
+          {session.status === 'running'
+            ? 'Its CLI is still running.'
+            : 'Its CLI is no longer running.'}
+        </p>
+        {session.status === 'running' && session.inUseReason && (
+          <p data-testid="session-running-reason" className="text-theme-muted text-xs">
+            {session.inUseReason}
+          </p>
+        )}
+      </div>
     );
   }
 
@@ -61,6 +71,7 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
   }
 
   const live = session.steering === 'live';
+  const label = session.identifier || 'this session';
   return (
     <div className="space-y-2" data-testid="session-composer">
       <SessionMessages messages={session.messages} />
@@ -70,7 +81,7 @@ export function SessionComposer({ session, inlineInput }: SessionComposerProps) 
           setDraft(e.target.value);
         }}
         rows={3}
-        aria-label={`Message to the agent on ${session.identifier}`}
+        aria-label={`Message to the agent on ${label}`}
         placeholder="Message the running agent…"
         className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
       />

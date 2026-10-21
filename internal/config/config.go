@@ -766,14 +766,17 @@ type Config struct {
 	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	Dependencies DependenciesConfig
+	// Sessions configures the Sessions panel's discovery of agent sessions
+	// started by hand (#178). Read-only after startup.
+	Sessions       SessionsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
 }
@@ -1045,6 +1048,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
 	}
+
+	// Sessions (#178)
+	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

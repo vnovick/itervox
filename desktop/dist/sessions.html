@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- The Sessions window (#178): every daemon's agent sessions, grouped by
-     daemon, sessions waiting for input first. The app pushes the data
+     daemon, sessions waiting for input first and sessions started by hand
+     (outside itervox, read-only) last. The app pushes the data
      (src-tauri/src/sessions.rs push_script); choosing a session navigates to
      /__itervox/open-session, which the window intercepts and opens in that
      daemon's dashboard at /sessions?id=… . No network access of its own. -->
@@ -36,6 +37,9 @@
   .meta { color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .badge { border-radius:999px; padding:1px 8px; font-size:11px; font-weight:600; background:var(--warn-bg); color:var(--warn); }
   .status { color:var(--muted); font-size:11px; }
+  button.session.external { border-style:dashed; opacity:.75; }
+  button.session.external .id { font-weight:500; color:var(--muted); }
+  .origin { color:var(--muted); font-size:11px; font-style:italic; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -73,7 +77,8 @@
     summaryEl.textContent = view.total === 0
       ? 'No agent sessions are running.'
       : view.total + ' session' + (view.total === 1 ? '' : 's') +
-        (view.waiting > 0 ? ' · ' + view.waiting + ' waiting for input' : '');
+        (view.waiting > 0 ? ' · ' + view.waiting + ' waiting for input' : '') +
+        (view.external > 0 ? ' · ' + view.external + ' started outside itervox' : '');
     groupsEl.textContent = '';
     view.groups.forEach(function (g) {
       var sec = el('section');
@@ -83,15 +88,21 @@
       if (g.error) sec.appendChild(el('p', 'error', g.error));
       else if (g.sessions.length === 0) sec.appendChild(el('p', 'empty', 'No sessions.'));
       g.sessions.forEach(function (s) {
-        var b = el('button', 'session');
+        var external = s.owner === 'external';
+        var b = el('button', external ? 'session external' : 'session');
         b.type = 'button';
         b.dataset.ref = g.daemon + '\n' + s.key;
-        b.appendChild(el('span', 'id', s.identifier));
-        var meta = [s.title, s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ');
+        b.appendChild(el('span', 'id', s.label));
+        var meta = external
+          ? [s.cwd, s.backend].filter(Boolean).join(' · ')
+          : [s.title, s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ');
         b.appendChild(el('span', 'meta', meta || s.key));
+        if (external) b.appendChild(el('span', 'origin', 'started outside itervox'));
         if (s.status === 'input_required') b.appendChild(el('span', 'badge', 'needs input'));
         else b.appendChild(el('span', 'status', s.status.replace(/_/g, ' ')));
-        b.title = s.status === 'input_required' && s.inputContext ? s.inputContext : 'Open ' + s.identifier;
+        b.title = s.status === 'input_required' && s.inputContext ? s.inputContext
+          : external && s.inUseReason ? 'Still running outside itervox: ' + s.inUseReason
+          : 'Open ' + s.label;
         b.addEventListener('click', function () { open(g.daemon, s.key); });
         sec.appendChild(b);
       });

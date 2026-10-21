@@ -369,6 +369,13 @@ type Orchestrator struct {
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup
 
+	// #178 step 3: discovery of sessions started by hand
+	// (sessions_external.go). Set before Run; the discovery goroutine is
+	// joined through extSessionsWg.
+	extSessions         ExternalSessionSource
+	extSessionsInterval time.Duration
+	extSessionsWg       sync.WaitGroup
+
 	// workersWg joins every runWorker goroutine before Run returns, bounded
 	// by workerJoinGrace (CORE-026, worker_join.go). Added on the event loop
 	// at each `go o.runWorker` site; Done is runWorker's outermost defer.

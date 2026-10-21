@@ -2,8 +2,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/extsessions"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 )
@@ -56,7 +61,8 @@ func sessionRows(sessions []orchestrator.AgentSession) []server.SessionRow {
 			Profile: s.Profile, Backend: s.Backend, WorkerHost: s.WorkerHost, Kind: s.Kind,
 			Status: s.Status, StartedAt: timePtr(s.StartedAt), QueuedAt: timePtr(s.QueuedAt),
 			TurnCount: s.TurnCount, LastEvent: s.LastEvent, InputContext: s.InputContext,
-			Steering: s.Steering,
+			Steering: s.Steering, Cwd: s.Cwd, UpdatedAt: timePtr(s.UpdatedAt),
+			InUseReason: s.InUseReason,
 		}
 		for _, m := range s.Messages {
 			row.Messages = append(row.Messages, sessionMessageRow(m))
@@ -80,4 +86,75 @@ func timePtr(t time.Time) *time.Time {
 	}
 	u := t.UTC()
 	return &u
+}
+
+// SessionTranscript reads a page of a hand-started session's transcript (#178 step 3). Only a session the orchestrator lists can be
+// read: the path comes from discovery, never from the client.
+func (c sessionsClient) SessionTranscript(id string, before int64, limit int) (server.TranscriptResponse, error) {
+	s, ok := c.orch.TranscriptSession(id)
+	if !ok {
+		return server.TranscriptResponse{}, server.ErrSessionNotFound
+	}
+	page, err := extsessions.ReadTranscript(s, before, limit)
+	if err != nil {
+		return server.TranscriptResponse{}, fmt.Errorf("cmd/itervox: read transcript: %w", err)
+	}
+	resp := server.TranscriptResponse{ID: s.ID, Backend: s.Backend, HasMore: page.HasMore, Size: page.Size,
+		Entries: make([]server.TranscriptEntryRow, 0, len(page.Entries))}
+	if page.HasMore {
+		b := page.Before
+		resp.Before = &b
+	}
+	for _, e := range page.Entries {
+		resp.Entries = append(resp.Entries, server.TranscriptEntryRow{
+			Role: e.Role, Kind: e.Kind, Text: e.Text, At: timePtr(e.At), Truncated: e.Truncated,
+		})
+	}
+	return resp, nil
+}
+
+// wireExternalSessions enables discovery of sessions started by hand on
+// this host (sessions.external). Off in demo mode.
+func wireExternalSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowPath string, demo bool) {
+	if demo || !cfg.Sessions.External {
+		return
+	}
+	orch.SetExternalSessionSource(extsessions.Scanner{Options: externalSessionOptions(cfg, workflowPath)}, 0)
+}
+
+// externalSessionOptions scopes discovery: by default to the WORKFLOW.md
+// directory plus sessions.external_roots (relative ones resolved against
+// it), and never the itervox workspace root — itervox's own worktrees —
+// unless that root contains the project itself.
+func externalSessionOptions(cfg *config.Config, workflowPath string) extsessions.Options {
+	project := filepath.Dir(workflowPath)
+	if abs, err := filepath.Abs(project); err == nil {
+		project = abs
+	}
+	roots := []string{project}
+	for _, r := range cfg.Sessions.ExternalRoots {
+		if !filepath.IsAbs(r) {
+			r = filepath.Join(project, r)
+		}
+		roots = append(roots, r)
+	}
+	var exclude []string
+	if ws := cfg.Workspace.Root; ws != "" && !isWithin(project, ws) {
+		exclude = append(exclude, ws)
+	}
+	return extsessions.Options{
+		ClaudeProjectsDir: extsessions.DefaultClaudeProjectsDir(),
+		CodexSessionsDir:  extsessions.DefaultCodexSessionsDir(),
+		Window:            time.Duration(cfg.Sessions.ExternalWindowHours) * time.Hour,
+		Scope:             cfg.Sessions.ExternalScope,
+		Roots:             roots,
+		Exclude:           exclude,
+	}
+}
+
+// isWithin reports whether dir is root or inside it (a workspace root that
+// contains the project must not hide the project's own sessions).
+func isWithin(dir, root string) bool {
+	rel, err := filepath.Rel(root, dir)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

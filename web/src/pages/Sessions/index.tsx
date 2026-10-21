@@ -4,21 +4,31 @@ import PageMeta from '../../components/common/PageMeta';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Terminal } from '../../components/ui/Terminal/Terminal';
 import { useIssueLogs } from '../../queries/logs';
-import { sessionKey, useSessions } from '../../queries/sessions';
+import { sessionKey, sessionLabel, useSessions } from '../../queries/sessions';
 import { useItervoxStore } from '../../store/itervoxStore';
 import type { SessionRow } from '../../types/schemas';
 import { issueLogToTerminal } from '../../utils/logFormatting';
 import { SessionComposer } from './SessionComposer';
 import { SessionTabs } from './SessionTabs';
+import { SessionTranscriptView } from './SessionTranscript';
 
 // Sessions panel (#178): one tab per agent session of this daemon, sessions
-// waiting for input first. `?id=` selects a tab (the Mac app's Sessions
+// waiting for input first, sessions started outside itervox last (greyed,
+// read-only). `?id=` selects a tab (the Mac app's Sessions
 // window opens this route with it).
+
+// Issue runs show the issue's live log; sessions started by hand show the
+// CLI's own transcript instead.
+function IssueLogTranscript({ session }: { session: SessionRow }) {
+  const { data: entries } = useIssueLogs(session.identifier, session.status === 'running');
+  const lines = useMemo(() => entries.map(issueLogToTerminal), [entries]);
+  if (lines.length === 0) return <EmptyState title="No transcript yet" />;
+  return <Terminal entries={lines} follow showTime={false} resetKey={sessionKey(session)} />;
+}
 
 function SessionView({ session }: { session: SessionRow }) {
   const inlineInput = useItervoxStore((s) => s.snapshot?.inlineInput ?? false);
-  const { data: entries } = useIssueLogs(session.identifier, session.status === 'running');
-  const lines = useMemo(() => entries.map(issueLogToTerminal), [entries]);
+  const fromTranscript = session.owner === 'external';
   return (
     <section
       id="session-panel"
@@ -27,19 +37,24 @@ function SessionView({ session }: { session: SessionRow }) {
       className="bg-theme-panel border-theme-line flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border p-3"
     >
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="text-theme-text font-mono text-sm font-semibold">{session.identifier}</h2>
-        {session.title && (
+        <h2 className="text-theme-text font-mono text-sm font-semibold">{sessionLabel(session)}</h2>
+        {session.title && session.identifier && (
           <span className="text-theme-text-secondary text-sm">{session.title}</span>
+        )}
+        {session.cwd && (
+          <span data-testid="session-cwd" className="text-theme-muted font-mono text-xs">
+            {session.cwd}
+          </span>
         )}
         <span className="text-theme-muted font-mono text-xs" data-testid="session-id">
           {session.id ? `session ${session.id}` : 'session starting…'}
         </span>
       </header>
       <div className="flex min-h-[240px] flex-1 flex-col overflow-hidden">
-        {lines.length === 0 ? (
-          <EmptyState title="No transcript yet" />
+        {fromTranscript ? (
+          <SessionTranscriptView id={session.id} />
         ) : (
-          <Terminal entries={lines} follow showTime={false} resetKey={sessionKey(session)} />
+          <IssueLogTranscript session={session} />
         )}
       </div>
       <SessionComposer key={sessionKey(session)} session={session} inlineInput={inlineInput} />
