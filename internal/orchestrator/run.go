@@ -162,6 +162,9 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	entry.SessionID = h.id
 	entry.Phase = RunDispatched
 	entry.run = h
+	if state != nil { // #213
+		o.emitFeed(state, FeedRunStarted, entry.Issue.Identifier, feedRunPayload(entry))
+	}
 	return context.WithValue(ctx, runHandleKey{}, h)
 }
 

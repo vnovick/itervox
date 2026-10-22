@@ -114,7 +114,54 @@ func TestSummaryEndpointETag304(t *testing.T) {
 	src.update(func(s *server.StateSnapshot) { s.RecentFailures[0].Message = "exit 2" })
 	w := getSummary(h, etag4, true)
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.NotEqual(t, etag4, w.Header().Get("ETag"))
+	etag5 := w.Header().Get("ETag")
+	assert.NotEqual(t, etag4, etag5)
+
+	// #213: pausing all dispatch changes the tag, and so do a new reason
+	// and a new until while it stays paused.
+	src.update(func(s *server.StateSnapshot) {
+		s.DispatchPaused = &server.DispatchPauseRow{Reason: "deploy", PausedAt: t0}
+	})
+	paused := getSummary(h, etag5, true)
+	require.Equal(t, http.StatusOK, paused.Code)
+	etag6 := paused.Header().Get("ETag")
+	assert.NotEqual(t, etag5, etag6)
+	src.update(func(s *server.StateSnapshot) { s.DispatchPaused.Reason = "incident" })
+	etag7 := getSummary(h, etag6, true).Header().Get("ETag")
+	assert.NotEqual(t, etag6, etag7)
+	until := t0.Add(2 * time.Hour)
+	src.update(func(s *server.StateSnapshot) { s.DispatchPaused.Until = &until })
+	etag8 := getSummary(h, etag7, true).Header().Get("ETag")
+	assert.NotEqual(t, etag7, etag8)
+	assert.Equal(t, http.StatusNotModified, getSummary(h, etag8, true).Code)
+	src.update(func(s *server.StateSnapshot) { s.DispatchPaused = nil })
+	assert.Equal(t, etag5, getSummary(h, etag8, true).Header().Get("ETag"), "resuming restores the unpaused tag")
+}
+
+// TestSummaryReportsDispatchPause pins the summary's paused fields to the
+// snapshot's dispatchPaused (#213).
+func TestSummaryReportsDispatchPause(t *testing.T) {
+	t0 := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	until := t0.Add(time.Hour)
+	src := &mutableSnap{snap: server.StateSnapshot{GeneratedAt: t0}}
+	h := summaryServer(t, src)
+
+	var sum server.Summary
+	require.NoError(t, json.Unmarshal(getSummary(h, "", true).Body.Bytes(), &sum))
+	assert.False(t, sum.Paused)
+	assert.Empty(t, sum.PauseReason)
+	assert.Nil(t, sum.PausedUntil)
+
+	src.update(func(s *server.StateSnapshot) {
+		s.DispatchPaused = &server.DispatchPauseRow{Reason: "deploy freeze", Until: &until, PausedAt: t0}
+	})
+	w := getSummary(h, "", true)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &sum))
+	assert.True(t, sum.Paused)
+	assert.Equal(t, "deploy freeze", sum.PauseReason)
+	require.NotNil(t, sum.PausedUntil)
+	assert.True(t, sum.PausedUntil.Equal(until))
+	assert.Contains(t, w.Body.String(), `"paused":true`)
 }
 
 // TestSummaryCountsMatchSnapshot checks every summary count against the
@@ -167,7 +214,7 @@ func TestSummaryCountsMatchSnapshot(t *testing.T) {
 	assert.Equal(t, server.SummaryCounts{Running: 2, Retrying: 1, Paused: 3, InputRequired: 2, PendingInputResume: 1, RecentFailures: 2}, sum.Counts)
 	assert.Equal(t, "1.2.3", sum.Version)
 	assert.Equal(t, "web-app", sum.ProjectName)
-	assert.False(t, sum.Paused, "no daemon-wide pause until #213")
+	assert.False(t, sum.Paused, "dispatchPaused is null in this snapshot")
 	assert.True(t, sum.GeneratedAt.Equal(gen))
 	assert.Less(t, w.Body.Len(), 512, "the summary stays small")
 	assert.True(t, strings.Contains(w.Body.String(), `"paused":false`), "paused is always present")

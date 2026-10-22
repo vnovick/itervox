@@ -44,10 +44,12 @@ type Summary struct {
 	Version     string        `json:"version"`
 	ProjectName string        `json:"projectName,omitempty"`
 	Counts      SummaryCounts `json:"counts"`
-	// Paused is a daemon-wide dispatch pause. Always false until the daemon
-	// can be paused (#213); the field is part of the contract already.
-	Paused      bool      `json:"paused"`
-	GeneratedAt time.Time `json:"generatedAt"`
+	// Paused is the daemon-wide dispatch pause (#213): true while nothing
+	// new starts. PauseReason and PausedUntil describe it.
+	Paused      bool       `json:"paused"`
+	PauseReason string     `json:"pauseReason,omitempty"`
+	PausedUntil *time.Time `json:"pausedUntil,omitempty"`
+	GeneratedAt time.Time  `json:"generatedAt"`
 }
 
 // summaryDigestInput is what the ETag is computed over. It never holds
@@ -58,6 +60,8 @@ type summaryDigestInput struct {
 	ProjectName string
 	Counts      SummaryCounts
 	Paused      bool
+	PauseReason string
+	PausedUntil *time.Time
 	Input       []summaryDigestInputRow
 	Failures    []summaryDigestFailure
 }
@@ -85,6 +89,9 @@ func buildSummary(snap StateSnapshot, version string) Summary {
 		},
 		GeneratedAt: snap.GeneratedAt,
 	}
+	if p := snap.DispatchPaused; p != nil { // #213
+		sum.Paused, sum.PauseReason, sum.PausedUntil = true, p.Reason, p.Until
+	}
 	in := summaryDigestInput{Version: version, ProjectName: snap.ProjectName}
 	for _, r := range snap.InputRequired {
 		if r.State == inputStateWaiting {
@@ -97,7 +104,7 @@ func buildSummary(snap StateSnapshot, version string) Summary {
 	for _, f := range snap.RecentFailures {
 		in.Failures = append(in.Failures, summaryDigestFailure{f.Kind, f.Identifier, f.Source, f.Message, f.OccurredAt, f.Count})
 	}
-	in.Counts, in.Paused = sum.Counts, sum.Paused
+	in.Counts, in.Paused, in.PauseReason, in.PausedUntil = sum.Counts, sum.Paused, sum.PauseReason, sum.PausedUntil
 	raw, _ := json.Marshal(in) // plain strings, ints and times: cannot fail
 	digest := sha256.Sum256(raw)
 	sum.ETag = hex.EncodeToString(digest[:16])

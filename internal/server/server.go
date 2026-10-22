@@ -866,8 +866,14 @@ type StateSnapshot struct {
 	// acknowledged. Omitted when empty.
 	FailureAcks []FailureAckRow `json:"failureAcks,omitempty"`
 	// Capabilities lists optional daemon features the dashboard may use
-	// (CORE-175: "failure_ack"). Omitted when empty.
+	// (CORE-175: "failure_ack"; #213: "dispatch_pause"). Omitted when empty.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// DispatchPaused is the daemon-wide dispatch pause (#213): null when
+	// dispatch runs, else its reason, until and start.
+	DispatchPaused *DispatchPauseRow `json:"dispatchPaused"`
+	// FeedSeq is the newest event feed seq (#213); GET /api/v1/feed?since=
+	// reads what came after a client's cursor.
+	FeedSeq int64 `json:"feedSeq"`
 	// Totals is the daemon-session token and estimated-cost accounting
 	// (CORE-091). Omitted only by daemons predating it.
 	Totals *TotalsRow `json:"totals,omitempty"`
@@ -1488,6 +1494,9 @@ type Config struct {
 	// Version is the daemon's build version, reported by GET
 	// /api/v1/summary (#212). Read-only after startup.
 	Version string
+	// Dispatch backs GET /api/v1/feed and POST /api/v1/dispatch/pause|resume
+	// (#213). Nil answers 503.
+	Dispatch DispatchClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1547,6 +1556,8 @@ type Server struct {
 	repoHotspots RepoHotspotsFunc
 	// version mirrors Config.Version (#212).
 	version string
+	// dispatch mirrors Config.Dispatch (#213).
+	dispatch DispatchClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1597,6 +1608,7 @@ func New(cfg Config) *Server {
 		repoEvals:           cfg.RepoEvals,
 		repoHotspots:        cfg.RepoHotspots,
 		version:             cfg.Version,
+		dispatch:            cfg.Dispatch,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1703,6 +1715,9 @@ func (s *Server) routes() {
 
 			r.Get("/state", s.handleState)
 			r.Get("/summary", s.handleSummary)                               // #212: ETag'd poll target for supervisors
+			r.Get("/feed", s.handleFeed)                                     // #213: the event feed, by cursor
+			r.Post("/dispatch/pause", s.handlePauseDispatch)                 // #213
+			r.Post("/dispatch/resume", s.handleResumeDispatch)               // #213
 			r.Get("/history", s.handleHistory)                               // #186
 			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
 			r.Get("/repo/readiness", s.handleRepoReadiness)                  // #200

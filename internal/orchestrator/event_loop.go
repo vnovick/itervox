@@ -50,6 +50,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
 	state = o.loadDeferredStateMovesFromDisk(state) // #177
+	state = o.loadFeedFromDisk(state)               // #213
+	state = o.loadDispatchPauseFromDisk(state)      // #213
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -181,6 +183,8 @@ func (o *Orchestrator) tickPrelude(ctx context.Context, state State, now time.Ti
 	// Snapshot runtime-mutable cfg fields into the event-loop State so that
 	// AvailableSlots and dispatch helpers read a stable, lock-free copy for
 	// the entire tick (no need to hold cfgMu inside the hot dispatch path).
+	o.expireDispatchPause(ctx, &state, now) // #213: a pause ends at its until
+
 	o.cfgMu.RLock()
 	state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	state.ActiveStates = append([]string{}, o.cfg.Tracker.ActiveStates...)
@@ -511,7 +515,7 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 	// dispatch loop so issues started above count as running rather than as
 	// waiting on capacity. Pure function; the only mutation is this
 	// assignment, on the event-loop goroutine.
-	if !state.Draining { // CORE-057: a drain is neither slot- nor dependency-bound
+	if !state.Draining && !state.DispatchPaused.Active { // CORE-057 / #213: neither is slot- nor dependency-bound
 		state.DispatchPressure = observeDispatchPressure(state.DispatchPressure, state, issues, o.cfg)
 	}
 	// Gap §1.1 + §1.2 — opportunistic janitor for the rate-limit
@@ -646,8 +650,9 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		}
 
 		// #187: while the tracker breaker is open the retry stays due and
-		// spends no read (and no attempt); a later tick fires it.
-		if trackerReadsBlocked(state, now) {
+		// spends no read (and no attempt); a later tick fires it. #213: so
+		// does a retry while all dispatch is paused.
+		if trackerReadsBlocked(state, now) || state.DispatchPaused.Active {
 			continue
 		}
 		rctx, cancel := loopReadCtx(ctx)
@@ -1124,7 +1129,8 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		}
 		delete(state.InputRequiredIssues, identifier)
 		state.PendingInputResumes[identifier] = buildPendingInputResumeEntry(entry, replyComment.Body)
-		o.observeInputReply(&state, entry, replyComment.Body) // #203
+		o.emitFeed(&state, FeedInputAnswered, identifier, FeedPayload{Via: "tracker"}) // #213
+		o.observeInputReply(&state, entry, replyComment.Body)                          // #203
 	}
 	return state
 }
@@ -1317,6 +1323,13 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 	if state.Draining {        // CORE-057: no new worker while draining
 		slog.Info("orchestrator: dispatch refused, daemon is draining",
 			"issue_identifier", issue.Identifier, "attempt", attempt)
+		return state
+	}
+	if state.DispatchPaused.Active { // #213: held as a retry, due once the pause ends
+		slog.Info("orchestrator: dispatch deferred, all dispatch is paused",
+			"issue_identifier", issue.Identifier, "attempt", attempt)
+		state = ScheduleRetry(state, issue.ID, attempt, issue.Identifier, "dispatch paused", time.Now(), 0)
+		retryAs(state, issue.ID, reviewerProfile)
 		return state
 	}
 	if o.refuseOverBudget(&state, issue.ID, issue.Identifier) { // #136
@@ -1546,8 +1559,14 @@ func (o *Orchestrator) dispatchReviewer(ctx context.Context, state *State, issue
 		// M4-close BH-M4-2: keep the review, not just a log line. The
 		// marker is persisted and resumePendingReviews dispatches it once
 		// admission reopens (after the restart); the worktree is kept for it.
-		o.recordPendingReview(state, issue, profileName, now)
+		o.recordPendingReview(state, issue, profileName, "", now)
 		slog.Warn("orchestrator: reviewer not started, daemon is draining; recorded as a pending review for the restart",
+			"issue_identifier", issue.Identifier, "profile", profileName)
+		return
+	}
+	if state.DispatchPaused.Active { // #213: the review waits for the resume
+		o.recordPendingReview(state, issue, profileName, IneligibleDispatchPaused, now)
+		slog.Info("orchestrator: reviewer deferred, all dispatch is paused; recorded as a pending review",
 			"issue_identifier", issue.Identifier, "profile", profileName)
 		return
 	}
@@ -1714,6 +1733,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.drainAutomationQueue(ctx, &ret, time.Now())
 		}
 	}()
+	if o.expireDispatchPause(ctx, &state, time.Now()) { // #213
+		// The pause ended: store and announce this turn's snapshot even when
+		// the event itself changed nothing (#210's skip).
+		defer func() { o.eventLeftStateUnchanged = false }()
+	}
 	switch ev.Type {
 	case EventWorkerUpdate:
 		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil && !entry.isStaleFor(ev.RunID) {
@@ -1871,6 +1895,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
+		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: map[bool]string{true: "agent", false: "dashboard"}[ev.FromAgent]})
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
 		o.observeInputReply(&state, entry, ev.Message) // #203
@@ -1901,6 +1926,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
 		setPauseReason(&state, ev.Identifier, PauseReasonUserDismissedInput)
+		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: "dismiss", Outcome: "dismissed"}) // #213
 		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 		o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 		slog.Info("orchestrator: input-required issue dismissed and paused", "identifier", ev.Identifier)
@@ -2032,7 +2058,16 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// CORE-046: an off-loop producer's failure (RecordFailure).
 		if ev.Failure != nil {
 			appendRecentFailure(&state, *ev.Failure, time.Now())
+			if ev.Failure.Kind == FailureKindGuardrail { // #213: a shim or hook refused
+				o.emitFeed(&state, FeedGuardrailBlocked, ev.Failure.Identifier, FeedPayload{Kind: ev.Failure.Source})
+			}
 		}
+
+	case EventFeedRecorded: // #213
+		o.applyFeedRecorded(&state, ev)
+
+	case EventSetDispatchPause: // #213
+		o.applySetDispatchPause(ctx, &state, ev.dispatchPause, time.Now())
 
 	case EventClearBackendBreaker:
 		o.applyClearBackendBreaker(&state, ev.Identifier)
@@ -2144,7 +2179,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 		now := time.Now()
 		// #173: the PR this run created or continued is managed from now on.
-		recordManagedPR(&state, liveEntry, ev.RunEntry, now)
+		if recordManagedPR(&state, liveEntry, ev.RunEntry, now) { // #213: a PR new to itervox
+			o.emitFeed(&state, FeedPROpened, ev.RunEntry.Issue.Identifier, FeedPayload{PRURL: ev.RunEntry.PRURL, RunID: ev.RunID})
+		}
 		issue := ev.RunEntry.Issue
 		attempt := 0
 		if ev.RunEntry.RetryAttempt != nil {
@@ -2170,6 +2207,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			delete(o.userTerminatedIDs, issue.Identifier)
 		}
 		o.userTerminatedMu.Unlock()
+		// #213: the run's exit, from its identity and terminal reason only.
+		o.emitRunExitFeed(&state, liveEntry, ev.RunEntry, wasCancelledByUser || wasTerminatedByUser)
 
 		if wasCancelledByUser {
 			state.PausedIdentifiers[issue.Identifier] = issue.ID

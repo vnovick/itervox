@@ -1,0 +1,72 @@
+---
+title: Pause all dispatch and catch up with the feed
+description: Stop every new agent run with one control, and find out what happened while a client was away.
+---
+
+Two daemon-wide controls added in v0.2.8 (#213): a **dispatch pause** that
+stops everything new from starting, and an **event feed** with a cursor that
+lets a client which was offline — a closed Mac app window, a phone, a relay —
+catch up on what happened.
+
+## Pause all dispatch
+
+Pause when you need the daemon to stop starting work without stopping it:
+a deploy freeze, a broken main branch, a tracker cleanup, an incident.
+
+- **Dashboard:** the status strip's **Pause dispatch** button (with a
+  confirm). While paused the strip shows a red *Dispatch paused* chip with
+  the reason and the end time, and the button reads **Resume dispatch**.
+- **Mac app:** the tray's **Pause all agents** pauses every running local
+  daemon; once all of them are paused it reads **Resume all agents**. Each
+  project's line shows *dispatch paused*.
+- **Terminal:** `itervox pause [--reason r] [--for 2h]` and `itervox resume`
+  (see the [CLI reference](/cli/#pause-and-resume-all-dispatch)).
+- **API:** `POST /api/v1/dispatch/pause` and `/resume`
+  (see the [API reference](/api-reference/#dispatch-pause)).
+
+What a pause does:
+
+- **Running agents continue.** Their turns finish, their results are
+  recorded, their PRs are opened exactly as without a pause.
+- **Nothing new starts:** no dispatch of a waiting issue, no retry, no
+  reviewer, no automation and no resume of an answered question.
+- **Nothing is dropped.** Retries stay due (without spending an attempt),
+  reviews wait as pending reviews, automations wait in the queue with the
+  reason `dispatch_paused`, answered questions wait to resume, and idle
+  issues show *Dispatch paused* as the reason they are not running. On
+  resume they start as slots allow.
+- **It survives a restart** and a `WORKFLOW.md` reload. With `--for` (or an
+  `until` in the API) it ends by itself; a pause whose end passed while the
+  daemon was down ends on its first tick.
+
+The pause does not stop operator actions that do not start an agent, the
+tracker poll, reconciliation or the dependency audit. An on-demand
+dependency analysis you start yourself still runs.
+
+## Catch up with the event feed
+
+`GET /api/v1/feed?since=<seq>` returns the notable events after a cursor:
+runs started, finished and failed, questions asked and answered, review
+verdicts, PRs opened and merged, guardrail blocks and approvals, lessons
+proposed, and pauses and resumes. Each event has a `seq` that only grows,
+a time, a kind, the issue and a small payload — never agent output or
+prompt text.
+
+A client keeps the last `seq` it has seen and, when it comes back, reads
+from it:
+
+```bash
+curl -s -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
+  "http://127.0.0.1:8090/api/v1/feed?since=1287" | jq '.events[] | [.seq, .kind, .identifier] | @tsv'
+```
+
+- Read again from `nextSeq` while `hasMore` is true.
+- `truncated: true` means the client was away longer than the window (the
+  newest 5000 events, none older than 7 days): reload `GET /api/v1/state`
+  and continue from `headSeq`.
+- A live dashboard connection receives `event: feed` with the newest seq on
+  the `/api/v1/events` stream, so it reads the feed only when it moved.
+
+The feed is stored in `feed.jsonl` and the pause in `dispatch_paused.json`,
+both in the daemon log directory (`~/.itervox/logs/<project>/`). They are
+runtime state: never commit them.

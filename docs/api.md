@@ -310,6 +310,11 @@ Full `StateSnapshot` SSE stream.
   client of one change receives the same encoded snapshot.
 - Named keepalive event `event: keepalive` with `data: {}` after 25 seconds
   of stream inactivity.
+- Named event `event: feed` with `data: {"seq":N}` (#213) on connect and
+  after every snapshot whose `feedSeq` is new: the newest
+  [event feed](#event-feed) seq. A client that keeps a cursor reads
+  `GET /api/v1/feed?since=<cursor>` when it moves. It rides the same
+  coalesced delivery as the snapshot.
 
 ### `GET /issues/{identifier}/log-stream`
 
@@ -457,7 +462,11 @@ Useful top-level fields include:
   identifier: the operator's acknowledgements of worker failures (see
   `POST /issues/{identifier}/failures/ack`). Omitted when empty.
 - `capabilities` — optional daemon features the dashboard may use; currently
-  `["failure_ack"]`. Treat unknown entries as opaque.
+  `["failure_ack", "dispatch_pause"]`. Treat unknown entries as opaque.
+- `dispatchPaused` (#213) — `null` while dispatch runs; while all dispatch is
+  paused, `{ "reason"?, "until"?, "pausedAt" }` (see
+  [Dispatch pause](#dispatch-pause)).
+- `feedSeq` (#213) — the newest [event feed](#event-feed) seq.
 - `totals` (CORE-091) — daemon-session cumulative, reset on restart:
   `{ "inputTokens", "outputTokens", "costUsdEstimated", "costCoverage":
   { "claudeRuns", "codexRuns" } }`. `costUsdEstimated` is the sum of Claude's
@@ -512,7 +521,9 @@ token like `/state`, and built from the same snapshot.
     "pendingInputResume": 0,
     "recentFailures": 3
   },
-  "paused": false,
+  "paused": true,
+  "pauseReason": "deploy freeze",
+  "pausedUntil": "2026-10-22T12:00:00Z",
   "generatedAt": "2026-10-22T10:00:00Z"
 }
 ```
@@ -521,8 +532,10 @@ token like `/state`, and built from the same snapshot.
   `GET /state` (`paused` counts paused issues); `counts.inputRequired` and
   `counts.pendingInputResume` split `inputRequired[]` by `state`;
   `counts.recentFailures` is the length of `recentFailures[]`.
-- `paused` is a daemon-wide dispatch pause; it is `false` until the daemon
-  can be paused (#213).
+- `paused` is the daemon-wide [dispatch pause](#dispatch-pause) (#213):
+  `true` while nothing new starts. `pauseReason` and `pausedUntil` describe
+  it and are omitted when unset; the pause, its reason and its until are
+  part of the ETag digest.
 - `version` is the daemon's build version (`dev` for a local build).
 - The `ETag` header is `"<etag>"`. The tag is a digest of every field except
   `generatedAt`, plus each input-required entry (identifier, session, state,
@@ -536,6 +549,106 @@ header and no body. The Mac app reads `GET /state` only after a `200` from
 this endpoint, or every time from a daemon older than it (`404`).
 
 ---
+
+## Event feed
+
+### `GET /api/v1/feed`
+
+A bounded, append-only feed of notable events with a cursor (#213), for a
+client that was away — a closed Mac app window, a phone, a relay — to find
+out what happened. The path is `/feed` so it does not clash with the
+`/events` SSE stream; a document that says `/api/v1/events?since=` means this
+endpoint.
+
+**Query:** `since` (default `0`): return the events after this seq.
+`limit` (1–1000, default 200). Anything else is `400`.
+
+**Response** `200` (`Cache-Control: no-store`):
+
+```json
+{
+  "events": [
+    {"seq": 41, "ts": "2026-10-22T10:00:00Z", "kind": "run_started", "identifier": "ENG-12",
+     "payload": {"runId": "r-8f2c", "runKind": "worker", "profile": "coder", "backend": "claude"}},
+    {"seq": 42, "ts": "2026-10-22T10:07:13Z", "kind": "run_finished", "identifier": "ENG-12",
+     "payload": {"runId": "r-8f2c", "runKind": "worker", "profile": "coder", "backend": "claude", "outcome": "succeeded"}},
+    {"seq": 43, "ts": "2026-10-22T10:07:14Z", "kind": "pr_opened", "identifier": "ENG-12",
+     "payload": {"prUrl": "https://github.com/acme/web/pull/88", "runId": "r-8f2c"}}
+  ],
+  "nextSeq": 43,
+  "headSeq": 43,
+  "oldestSeq": 1,
+  "truncated": false,
+  "hasMore": false
+}
+```
+
+- `seq` increases by one per event and never repeats, also across restarts.
+  Only the daemon's event loop assigns it.
+- `nextSeq` is the cursor for the next read: the last event returned, or
+  your `since` when nothing was newer. `hasMore` means `limit` cut the page.
+- `truncated: true` means events after your cursor have left the window
+  (or your cursor is ahead of `headSeq`, e.g. the feed file was removed):
+  resynchronize from `GET /state`, then continue from `headSeq`.
+- The window is the newest 5000 events, none older than 7 days. It persists
+  to `feed.jsonl` in the daemon log directory, so a restart keeps it.
+
+| `kind` | When | Payload |
+|---|---|---|
+| `run_started` | A worker, reviewer or automation run starts | `runId`, `runKind`, `profile`, `backend` |
+| `run_finished` | A run succeeded, was cancelled (`outcome: "cancelled"`) or stopped by reconciliation | run fields, `outcome` |
+| `run_failed` | A run failed, stalled, was rate limited, … | run fields, `outcome` (the terminal reason) |
+| `input_required` | An agent asked a question, or a guardrail approval waits (`kind: "guardrail_approval"`) | run fields |
+| `input_answered` | A question was answered (`via`: `dashboard`, `tracker`, `agent`) or dismissed (`via: "dismiss"`) | `via`, `outcome` |
+| `review_verdict` | A reviewer finished | `profile`, `verdict`, `outcome` (`passed` / `blocked`, once the review is complete) |
+| `pr_opened` | A run recorded a PR itervox did not manage yet | `prUrl`, `runId` |
+| `pr_merged` | The `merge_pr` action merged a PR | `prUrl` |
+| `guardrail_blocked` | A shim or hook refused an operation, or an approval was rejected | `kind`, `via` |
+| `guardrail_approved` | A guardrail approval was granted | `via` |
+| `lesson_proposed` | A lesson was proposed (or auto-approved) | `outcome`, `memoryId` |
+| `dispatch_paused` | All dispatch was paused | `reason`, `until` |
+| `dispatch_resumed` | Dispatch resumed (`via`: `operator` or `expired`) | `via` |
+
+Payloads are small and structured. They never contain agent output, prompt
+text, a question or reply, failure text or a guardrail command line; the
+pause reason is redacted before it is stored.
+
+---
+
+## Dispatch pause
+
+### `POST /api/v1/dispatch/pause`
+
+Pauses ALL dispatch (#213). Running agents continue; nothing new starts:
+tick dispatch, retries, reviewers, automations and pending-input resumes
+are held — never dropped — until the pause ends. Retries stay due without
+spending an attempt, reviews wait as pending reviews, automations queue
+with reason `dispatch_paused`, answered questions wait to resume. Idle
+issues show the ineligible reason `dispatch_paused`.
+
+**Body** (optional): `{"reason": "deploy freeze", "until": "2026-10-22T12:00:00Z"}`.
+`reason` is at most 500 bytes; `until` is RFC 3339 and must be in the
+future (`400` otherwise). Without `until` the pause lasts until resumed. A
+second pause while paused updates the reason and until.
+
+**Response** `200`: the pause the event loop applied —
+`{"dispatchPaused": {"reason": "deploy freeze", "until": "2026-10-22T12:00:00Z", "pausedAt": "2026-10-22T10:00:00Z"}}`.
+`503` when the event loop did not answer.
+
+The pause persists to `dispatch_paused.json` in the daemon log directory,
+so a restart or a `WORKFLOW.md` reload stays paused; a pause whose `until`
+passed while the daemon was down ends on its first tick. `GET /state`
+shows it as `dispatchPaused` (`null` while dispatch runs) and advertises
+the `dispatch_pause` capability.
+
+### `POST /api/v1/dispatch/resume`
+
+Ends the pause (a no-op when none is active). **Response** `200`:
+`{"dispatchPaused": null}`. Held automations start at once, and the next
+tick dispatches the rest as slots allow.
+
+---
+
 
 ## Run history
 

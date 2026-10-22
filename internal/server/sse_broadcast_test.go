@@ -68,16 +68,16 @@ func TestSSEFrameCacheExpiresForLateJoiners(t *testing.T) {
 		Snapshot:    func() StateSnapshot { builds.Add(1); return StateSnapshot{} },
 		RefreshChan: make(chan struct{}, 1),
 	})
-	_, err := s.sseFrame()
+	_, _, err := s.sseFrame()
 	require.NoError(t, err)
-	_, err = s.sseFrame()
+	_, _, err = s.sseFrame()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), builds.Load(), "same version, fresh frame: reused")
 
 	s.frames.mu.Lock()
 	s.frames.builtAt = time.Now().Add(-2 * frameMaxAge)
 	s.frames.mu.Unlock()
-	_, err = s.sseFrame()
+	_, _, err = s.sseFrame()
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), builds.Load(), "an old frame is rebuilt")
 }
@@ -147,4 +147,31 @@ func TestNotifyCoalescesToFourHzWithTrailingEdge(t *testing.T) {
 	b.unsubscribe(ch)
 	close(ch)
 	<-done
+}
+
+// TestSSEFeedEventAnnouncesNewSeq (#213): the dashboard stream announces
+// the feed head with an `event: feed` frame on connect and whenever a
+// delivered snapshot carries a new feed seq — never for an unchanged one.
+func TestSSEFeedEventAnnouncesNewSeq(t *testing.T) {
+	var seq atomic.Int64
+	seq.Store(3)
+	s := New(Config{
+		Snapshot:    func() StateSnapshot { return StateSnapshot{FeedSeq: seq.Load()} },
+		RefreshChan: make(chan struct{}, 1),
+	})
+	disableNotifyCoalescing(s)
+	writers, flushed, stop := startFanoutClients(t, s, 1)
+	defer stop()
+	w := writers[0]
+	assert.Equal(t, []string{"event: feed\ndata: {\"seq\":3}\n\n"}, w.feedFrames(), "connect announces the head")
+
+	s.Notify()
+	<-flushed
+	assert.Len(t, w.feedFrames(), 1, "an unchanged seq is not announced again")
+
+	seq.Store(7)
+	s.Notify()
+	<-flushed
+	assert.Equal(t, "event: feed\ndata: {\"seq\":7}\n\n", w.feedFrames()[1])
+	assert.Contains(t, string(w.frame()), `"feedSeq":7`, "the snapshot carries the same seq")
 }

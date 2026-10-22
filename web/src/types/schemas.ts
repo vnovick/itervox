@@ -804,6 +804,14 @@ export const AutoSwitchRowSchema = z.object({
   switchedAt: optionalTimeString,
 });
 
+// #213 — StateSnapshot.dispatchPaused: why and until when nothing new starts.
+export const DispatchPauseRowSchema = z.object({
+  reason: z.string().optional(),
+  until: z.string().optional(),
+  pausedAt: z.string(),
+});
+export type DispatchPauseRow = z.infer<typeof DispatchPauseRowSchema>;
+
 export const StateSnapshotSchema = z.object({
   generatedAt: z.string(),
   pollIntervalMs: z.number().optional(), // omitempty — matches Go StateSnapshot.PollIntervalMs
@@ -949,6 +957,11 @@ export const StateSnapshotSchema = z.object({
   // CORE-175 — optional daemon features the dashboard may use; an absent
   // entry hides the matching UI (older daemons omit the whole field).
   capabilities: z.array(z.string()).optional(),
+  // #213 — the daemon-wide dispatch pause: null while dispatch runs, absent
+  // on daemons predating it. feedSeq is the newest event-feed seq
+  // (GET /api/v1/feed?since=).
+  dispatchPaused: DispatchPauseRowSchema.nullable().optional(),
+  feedSeq: z.number().optional(),
   // CORE-175 — per-issue failure acknowledgements (event-loop state): the
   // attention inbox hides worker_failed/stalled entries with occurredAt <= upTo.
   failureAcks: z.array(z.object({ identifier: z.string(), upTo: z.string() })).optional(),

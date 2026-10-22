@@ -852,6 +852,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                       // #136
 		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                      // #173
 		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json")) // #177
+		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                              // #213
+		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))           // #213
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
@@ -1170,6 +1172,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			RepoEvals:     repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
 			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
 			Version:       version,                                       // #212: GET /api/v1/summary
+			Dispatch:      dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

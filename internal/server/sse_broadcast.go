@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -135,28 +136,39 @@ type sseFrameCache struct {
 	version uint64
 	builtAt time.Time
 	frame   []byte
+	// feedSeq is the snapshot's FeedSeq (#213): the version's `feed` event.
+	feedSeq int64
 	// encodes counts snapshot encodings (TestSSEClientsShareOneEncodingPerVersion).
 	encodes uint64
 }
 
-// sseFrame returns the current version's encoded snapshot frame, building
-// it when this version has none yet or the cached one is older than
-// frameMaxAge. Concurrent callers of a new version wait for the one encode.
-func (s *Server) sseFrame() ([]byte, error) {
+// sseFrame returns the current version's encoded snapshot frame and that
+// snapshot's feed seq (#213), building the frame when this version has none
+// yet or the cached one is older than frameMaxAge. Concurrent callers of a
+// new version wait for the one encode.
+func (s *Server) sseFrame() ([]byte, int64, error) {
 	version := s.bc.currentVersion()
 	c := &s.frames
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.frame != nil && c.version == version && time.Since(c.builtAt) < frameMaxAge {
-		return c.frame, nil
+		return c.frame, c.feedSeq, nil
 	}
-	frame, err := encodeSSEFrame(s.snapshot())
+	snap := s.snapshot()
+	frame, err := encodeSSEFrame(snap)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	c.version, c.builtAt, c.frame = version, time.Now(), frame
+	c.version, c.builtAt, c.frame, c.feedSeq = version, time.Now(), frame, snap.FeedSeq
 	c.encodes++
-	return frame, nil
+	return frame, c.feedSeq, nil
+}
+
+// feedFrame is the SSE `feed` event announcing the newest feed seq (#213):
+// `event: feed` with data {"seq":N}. It rides the snapshot's coalesced
+// delivery, so it adds no wakeups of its own.
+func feedFrame(seq int64) []byte {
+	return []byte("event: feed\ndata: {\"seq\":" + strconv.FormatInt(seq, 10) + "}\n\n")
 }
 
 // encodeSSEFrame renders snap as one SSE data frame. json.Encoder escapes

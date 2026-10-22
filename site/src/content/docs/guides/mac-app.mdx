@@ -73,6 +73,16 @@ Daemons started by the app are detached: they keep running when you quit the app
 
 Two projects whose `WORKFLOW.md` names the same `server.port` cannot run at once; leave `server.port` unset (`0`) to let each daemon pick a free port.
 
+## Pause all agents
+
+**Pause all agents** pauses dispatch on every running local daemon whose
+state the app can read (#213): running agents continue, and nothing new
+starts — no dispatch, retries, reviewers, automations or input resumes —
+until you resume. Each paused project's line shows *dispatch paused*; once
+every daemon is paused the item reads **Resume all agents**. The pause
+survives a daemon restart. See
+[Pause dispatch & event feed](/guides/pause-and-feed/).
+
 ## Notifications
 
 The app raises a notification when, in a project whose state it can read:

@@ -102,6 +102,27 @@ describe('useItervoxSSE', () => {
     expect(useItervoxStore.getState().schemaDriftCount).toBe(0);
   });
 
+  // #213 — a `feed` event announces a new event-feed seq; it is not a
+  // snapshot and must neither replace the snapshot nor count as drift.
+  it('ignores feed events', async () => {
+    render(<Harness />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const h = handles[0];
+    act(() => {
+      h.onOpen?.();
+      h.onMessage({ data: JSON.stringify({ ...VALID, feedSeq: 4, dispatchPaused: null }) });
+    });
+    expect(useItervoxStore.getState().snapshot?.feedSeq).toBe(4);
+    act(() => {
+      h.onMessage({ event: 'feed', data: '{"seq":5}' });
+    });
+    expect(useItervoxStore.getState().schemaDriftCount).toBe(0);
+    expect(useItervoxStore.getState().snapshot?.feedSeq).toBe(4);
+    expect(useItervoxStore.getState().snapshot?.maxConcurrentAgents).toBe(3);
+  });
+
   it('counts poll-path parse failures into the same counter', async () => {
     authedFetch.mockImplementation(() => Promise.resolve(new Response(DRIFTED, { status: 200 })));
     render(<Harness />);

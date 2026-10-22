@@ -276,6 +276,21 @@ only the event loop mutates them.
   iteration). `TrackerBreaker` opens after 3 polls in a row with a transport
   failure and skips tracker reads for a cooldown. Session-scoped, not
   persisted.
+- `Feed` / `FeedSeq` (#213) are the event feed: a bounded (5000 events,
+  7 days) append-only ring persisted to `feed.jsonl` via the ledger writer.
+  Only the loop assigns `seq` (`appendFeed`); in-loop handlers that already
+  observe a transition call `emitFeed`, off-loop producers call
+  `Orchestrator.RecordFeedEvent`, a NON-blocking send of `EventFeedRecorded`.
+  Payloads are structured and redacted — never agent output or prompt text.
+  The ring is trimmed only by re-slicing from the front, so `State.Clone`
+  shares it (allowlisted); never write through an index or reslice to `[:0]`.
+- `DispatchPaused` (#213) is the daemon-wide dispatch pause, set only by
+  `EventSetDispatchPause` (`PauseDispatch` / `ResumeDispatch`, a loop
+  round-trip) and cleared at its `Until` by `expireDispatchPause` (tick and
+  event). While active `AvailableSlots` is 0, `fireRetries` keeps retries
+  due, `dispatchRun` holds the issue as a retry and `dispatchReviewer` records
+  a `PendingReview` (reason `dispatch_paused`); running agents continue.
+  Persisted to `dispatch_paused.json` via the ledger writer.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
