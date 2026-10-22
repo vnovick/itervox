@@ -74,6 +74,15 @@ Commands:
              rotate [ID]  (no ID: the only stored admin token)
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
 
+  mcp     Serve the board and memory of this project's running daemon to
+          an MCP client over stdio (claude mcp add itervox -- itervox mcp).
+          Uses a stored "mcp" token created on first use (viewer; remembered
+          in .itervox/mcp-token.json), or --token / ITERVOX_TOKEN
+             --token-scope operator  also offer dispatch, pause, replies,
+                        steering and remember
+             --project  the project directory (default: the --workflow dir)
+             --url      the daemon's address (default: discovered)
+
   config  Show the effective settings and the layer each came from
           (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
           .itervox/settings.local.jsonc, WORKFLOW.md), or edit a

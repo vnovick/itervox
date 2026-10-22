@@ -1834,6 +1834,7 @@ func (s *Server) routes() {
 			r.Put("/rules/{layer}", s.handleSaveRules)
 			// Memory page (#202).
 			r.Get("/memory", s.handleListMemory)
+			r.Get("/memory/recall", s.handleRecallMemory) // #216
 			r.Post("/memory", s.handleCreateMemory)
 			r.Put("/memory/{id}", s.handleUpdateMemory)
 			r.Delete("/memory/{id}", s.handleDeleteMemory)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/gitexec"
+	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/memory"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
@@ -107,6 +109,29 @@ func (a *memoryAdapter) CreateMemory(e memory.Entry) (server.MemoryEntryView, er
 	}
 	slog.Info("memory: entry added from the dashboard", "id", out.ID, "scope", out.Scope, "type", out.Type)
 	return a.view(out, a.runRefs()), nil
+}
+
+// RecallMemory implements server.MemoryClient (#216): memory.Resolve, the
+// selection a dispatched run makes, for an issue titled query. budget 0 is
+// the run-time memory budget before rules (memory.token_budget capped by
+// memory.prompt_share_tokens). Text is redacted again on the way out.
+func (a *memoryAdapter) RecallMemory(query, profile string, budget int) server.MemoryRecallView {
+	if budget <= 0 {
+		budget = cmp.Or(a.cfg.Memory.MemoryBudget(0), config.DefaultMemoryTokenBudget)
+	}
+	profile = cmp.Or(profile, memory.DefaultProfile)
+	sel, errs := memory.Resolve(a.cfg.WorkflowPath, memory.Target{Profile: profile, Title: query}, budget)
+	out := server.MemoryRecallView{
+		Enabled: a.cfg.Memory.Enabled, Profile: profile, Budget: budget,
+		Tokens: sel.Tokens, Dropped: sel.Dropped, OverBudget: sel.OverBudget, UnreadableFiles: len(errs),
+		Entries: make([]server.MemoryRecallEntry, 0, len(sel.Entries)),
+	}
+	for _, e := range sel.Entries {
+		out.Entries = append(out.Entries, server.MemoryRecallEntry{
+			ID: e.ID, Type: e.Type, Text: logging.RedactString(e.Text), Scope: e.Scope, Tags: e.Tags, Pinned: e.Pinned,
+		})
+	}
+	return out
 }
 
 // UpdateMemory implements server.MemoryClient.

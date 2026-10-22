@@ -1,0 +1,139 @@
+---
+title: MCP server for Claude Code, Claude Desktop and Codex
+description: Ask your editor's agent what is blocked, dispatch an issue or recall what the team knows, through `itervox mcp`.
+---
+
+`itervox mcp` (v0.2.8, #216) is a local [Model Context Protocol](https://modelcontextprotocol.io)
+server. It runs on your machine, talks to the running Itervox daemon of the
+project over its API, and gives an MCP client — Claude Code, Claude Desktop,
+Codex or any other — tools to read the board and memory and, if you allow it,
+to run the fleet. Ask your editor's agent *"what is blocked?"*,
+*"dispatch ENG-12"* or *"what do we know about the staging DB?"*.
+
+It speaks MCP over stdio only. A remote (HTTP) MCP endpoint is not part of
+`itervox mcp`.
+
+## Before you start
+
+- A daemon is running for the project (`itervox` in the project directory;
+  `itervox status` lists it).
+- `itervox` is on the `PATH` the MCP client uses. Claude Desktop does not
+  read your shell profile: give it the absolute path (`which itervox`).
+
+## Set it up
+
+### Claude Code
+
+In the project directory:
+
+```bash
+claude mcp add itervox -- itervox mcp
+```
+
+Claude Code starts the server in the project directory, so it finds that
+project's daemon. To share the setup with your team, add it to the
+project's `.mcp.json` instead:
+
+```bash
+claude mcp add --scope project itervox -- itervox mcp
+```
+
+To let the agent dispatch, pause, reply and steer (see [Scopes](#scopes)):
+
+```bash
+claude mcp add itervox -- itervox mcp --token-scope operator
+```
+
+### Claude Desktop
+
+Edit `claude_desktop_config.json` (**Settings → Developer → Edit Config**;
+on macOS `~/Library/Application Support/Claude/claude_desktop_config.json`)
+and restart Claude Desktop. Desktop does not start servers in your project,
+so name it with `--project`:
+
+```json
+{
+  "mcpServers": {
+    "itervox": {
+      "command": "/usr/local/bin/itervox",
+      "args": ["mcp", "--project", "/Users/you/code/my-repo"]
+    }
+  }
+}
+```
+
+Add one entry per project (`itervox-api`, `itervox-web`, …) to use several.
+
+### Codex
+
+Add the server to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.itervox]
+command = "itervox"
+args = ["mcp", "--project", "/Users/you/code/my-repo"]
+```
+
+For operator tools add `"--token-scope", "operator"` to `args`.
+
+## Tools
+
+Results are compact JSON. Secrets are redacted, and agent output (the
+transcript, tool output, the last message of a run) is never returned —
+only what the dashboard summarises.
+
+### Read tools (viewer)
+
+| Tool | What it returns |
+|---|---|
+| `board_summary` | Running agents (turns, tokens, start), retries, paused issues, issues waiting for input, capacity, the dispatch pause, the number of recent failures and blocked issues, and the feed cursor. |
+| `list_issues` | Issues the daemon sees, filtered by tracker `state`, Itervox `orchestratorState` (`idle`, `running`, `retrying`, `paused`, `input_required`, `pending_input_resume`), `label` or `query` text; `limit` (default 50). |
+| `get_issue` | One issue (description cut to 4 KB) with its run context: current step, last tool call, turns and tokens, the pending question or guardrail approval, changed files and handoffs ([Now & Changes](/guides/now-and-changes/)). |
+| `explain_blockers` | Tracker blockers from the dependency audit, inferred dependencies (confidence, whether they gate dispatch, stale, overridden), cycles and stale blockers; for one issue with `identifier`. |
+| `recent_failures` | The daemon's recent classified failures, newest first. |
+| `feed_since` | Events after a cursor from the [event feed](/guides/pause-and-feed/); pass the returned `nextSeq` as `since` next time. |
+| `recall` | Memory for a `query`, ranked exactly like run-time retrieval: pinned entries first, then by relevance, active entries in the profile's scope, within a token `budget` (default the run-time memory budget). See [Memory](/guides/memory/). |
+
+### Write tools (operator)
+
+Each keeps the dashboard's rules.
+
+| Tool | What it does |
+|---|---|
+| `dispatch` | Moves the issue to the first active state, like **Dispatch** on the board. While all dispatch is [paused](/guides/pause-and-feed/) it refuses and changes nothing; it never resumes dispatch by itself. |
+| `pause_dispatch` / `resume_dispatch` | Pause all dispatch (optional `reason` and `minutes`) and resume it. Running agents continue. |
+| `reply_input` | Answers an agent waiting for input. **Guardrail approvals are refused**: they stay human-only on the dashboard ([Guardrails](/guides/guardrails/)). The reply is sent as an agent reply, so the daemon also refuses it if an approval appears meanwhile. |
+| `steer` | Sends a steering message to the issue's running agent ([Sessions](/guides/sessions/)). An agent waiting for input takes `reply_input` instead. |
+| `remember` | Proposes a memory (`text`, optional `type`, `scope`, `tags`, `issue`). It is created as **proposed** and waits in **Memory → Lessons** until a human approves it; it never reaches a run before that. |
+
+## Scopes
+
+`itervox mcp` uses a [scoped token](/guides/security/#scoped-tokens):
+
+- By default it creates, on first use, a stored **viewer** token named `mcp`
+  and remembers its secret in `.itervox/mcp-token.json` (mode 0600,
+  gitignored). Viewer clients see the read tools only — the write tools are
+  not even listed.
+- `--token-scope operator` creates an operator token instead (replacing and
+  revoking the viewer one) and lists the write tools.
+- `--token TOKEN` or `ITERVOX_TOKEN` uses a token you created with
+  `itervox token create`, with that token's scope.
+
+`itervox token list` shows the `mcp` token; `itervox token revoke ID` cuts
+the MCP server off at once, and its next start creates a new token. The
+secret is never printed or logged; stdout carries MCP messages only and
+diagnostics go to stderr.
+
+A daemon running with `server.allow_unauthenticated: true` takes no token;
+`--token-scope` still decides which tools are offered.
+
+## Troubleshooting
+
+- **"no running itervox daemon for …"**: start `itervox` in that project,
+  or pass `--project` (or `--url http://127.0.0.1:8090`).
+- **"the daemon refused the token (401)"**: the `mcp` token was revoked or
+  rotated; restart the MCP server (in Claude Code: `/mcp` → reconnect).
+- **A write tool says it needs an operator token**: re-add the server with
+  `--token-scope operator`.
+
+See also the [CLI reference](/cli/#itervox-mcp--a-local-mcp-server-for-the-board-and-memory).

@@ -319,6 +319,9 @@ func main() {
 		case "token": // #214
 			runToken(os.Args[2:])
 			return
+		case "mcp": // #216
+			runMCP(os.Args[2:])
+			return
 		case "config":
 			runConfig(os.Args[2:])
 			return

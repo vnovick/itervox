@@ -91,8 +91,10 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	// the committed project-shared memory (#202), carved out like rules.json.
 	// tokens.json (#214) holds API token hashes; /*.json already ignores
 	// it, and the explicit line keeps it ignored should a broader negation
-	// ever be added. Its flock sidecar is tokens.json.lock.
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "!/memory.json", "/tokens.json", "/tokens.json.lock", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db", "evals/"}
+	// ever be added. Its flock sidecar is tokens.json.lock. mcp-token.json
+	// (#216) holds the secret of `itervox mcp`'s stored token, kept ignored
+	// the same way.
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "!/memory.json", "/tokens.json", "/tokens.json.lock", "/mcp-token.json", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db", "evals/"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)

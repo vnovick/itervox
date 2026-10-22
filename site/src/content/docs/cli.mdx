@@ -407,6 +407,22 @@ Without an issue, `pause` and `resume` act on the whole daemon (#213): running a
 
 ---
 
+## `itervox mcp` — A local MCP server for the board and memory
+
+```bash
+itervox mcp [--project DIR | --workflow WORKFLOW.md] [--url URL] [--token-scope viewer|operator] [--token TOKEN]
+```
+
+Serves the [Model Context Protocol](https://modelcontextprotocol.io) over stdin/stdout for the running daemon of this project, so Claude Code, Claude Desktop, Codex and other MCP clients can read the board and memory (#216). Register it once, e.g. `claude mcp add itervox -- itervox mcp`; the [MCP guide](/guides/mcp/) has the setup for each client and the tool list.
+
+- **Daemon.** `--url`, else the daemon whose project directory is `--project` (default: the `--workflow` directory, i.e. the current directory) in the host registry `itervox status --json` reads, else `.itervox/dashboard_url`. When several daemons serve the project it uses the newest. If the daemon restarts on a new port the server finds it again.
+- **Token.** `--token`, else `ITERVOX_TOKEN`, used as given. Otherwise, on first use, it creates a stored token named `mcp` (scope `viewer`, or `operator` with `--token-scope operator`) through the token store and remembers the secret in `.itervox/mcp-token.json` (mode 0600, gitignored); later starts reuse it, and one that was revoked, rotated, expired or has another scope is replaced (the old one revoked). The secret is never printed or logged. A daemon running with `server.allow_unauthenticated` needs no token; `--token-scope` still decides which tools are offered.
+- **Tools.** A viewer token gets the read tools only; write tools (`dispatch`, `pause_dispatch`, `resume_dispatch`, `reply_input`, `steer`, `remember`) are listed for an operator token. `--token-scope admin` is refused.
+
+Stdout carries protocol messages only; diagnostics go to stderr. It exits `0` when the client closes stdin, `1` when no daemon is found or the token cannot be created, `2` on a usage error.
+
+---
+
 ## `itervox clear` — Remove workspace directories
 
 Removes git worktree workspace directories that Itervox created under the workspace root configured in `WORKFLOW.md`.

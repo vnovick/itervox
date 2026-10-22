@@ -86,6 +86,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/rules":                             accessViewer,
 	"GET /api/v1/rules/preview":                     accessViewer,
 	"GET /api/v1/memory":                            accessViewer,
+	"GET /api/v1/memory/recall":                     accessViewer, // #216: run-time ranking, redacted
 	"GET /api/v1/skills/inventory":                  accessViewer,
 	"GET /api/v1/skills/issues":                     accessViewer,
 	"GET /api/v1/skills/analytics":                  accessViewer,

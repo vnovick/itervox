@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -37,6 +39,43 @@ type MemoryClient interface {
 	// RejectLesson removes a proposed lesson and remembers it so the same
 	// lesson is not proposed again (#203).
 	RejectLesson(id string) (MemoryEntryView, error)
+	// RecallMemory selects the memory a run of profile on an issue titled
+	// query would get, with the run-time ranking (memory.Select), within
+	// budget tokens; budget 0 is the configured memory budget (#216).
+	RecallMemory(query, profile string, budget int) MemoryRecallView
+}
+
+// MemoryRecallMaxBudget caps the budget GET /api/v1/memory/recall accepts.
+const MemoryRecallMaxBudget = 8000
+
+// memoryRecallMaxQueryBytes caps the recall query.
+const memoryRecallMaxQueryBytes = 2000
+
+// MemoryRecallView is GET /api/v1/memory/recall (#216): the entries in
+// rank order (pinned first), redacted, and what the budget left out.
+type MemoryRecallView struct {
+	// Enabled mirrors memory.enabled: off, runs get no memory block, but
+	// recall still ranks the files.
+	Enabled bool                `json:"enabled"`
+	Profile string              `json:"profile"`
+	Budget  int                 `json:"budget"`
+	Tokens  int                 `json:"tokens"`
+	Dropped int                 `json:"dropped"`
+	Entries []MemoryRecallEntry `json:"entries"`
+	// OverBudget: the pinned entries alone exceed the budget.
+	OverBudget bool `json:"overBudget,omitempty"`
+	// UnreadableFiles counts memory files that could not be read.
+	UnreadableFiles int `json:"unreadableFiles,omitempty"`
+}
+
+// MemoryRecallEntry is one recalled entry.
+type MemoryRecallEntry struct {
+	ID     string       `json:"id"`
+	Type   memory.Type  `json:"type"`
+	Text   string       `json:"text"`
+	Scope  memory.Scope `json:"scope"`
+	Tags   []string     `json:"tags,omitempty"`
+	Pinned bool         `json:"pinned,omitempty"`
 }
 
 // MemoryView is GET /api/v1/memory.
@@ -152,6 +191,34 @@ func (s *Server) handleListMemory(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.memory.ListMemory())
+}
+
+// handleRecallMemory is GET /api/v1/memory/recall?q=&profile=&budget=
+// (#216): memory search ranked exactly like run-time retrieval.
+func (s *Server) handleRecallMemory(w http.ResponseWriter, r *http.Request) {
+	if !s.memoryReady(w) {
+		return
+	}
+	q := r.URL.Query()
+	query := strings.TrimSpace(q.Get("q"))
+	if query == "" || len(query) > memoryRecallMaxQueryBytes {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "q is required (at most 2000 bytes)", "q")
+		return
+	}
+	budget := 0
+	if v := q.Get("budget"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > MemoryRecallMaxBudget {
+			writeErrorWithField(w, http.StatusBadRequest, "bad_request", "budget must be between 1 and 8000", "budget")
+			return
+		}
+		budget = n
+	}
+	out := s.memory.RecallMemory(query, strings.TrimSpace(q.Get("profile")), budget)
+	if out.Entries == nil {
+		out.Entries = []MemoryRecallEntry{}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {

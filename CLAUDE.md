@@ -570,6 +570,9 @@ server (HTTP API — imports domain, config, apitokens, guardrails, logging, mem
 
 statusui (Bubbletea TUI — imports domain)
 
+mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
+           API; imports apitokens and logging only, never orchestrator)
+
 templates (WORKFLOW.md scaffolding)
 
 cmd/itervox (wires everything)

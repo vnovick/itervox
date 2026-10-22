@@ -657,6 +657,10 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		Message string `json:"message"`
+		// FromAgent marks a reply relayed for an agent (`itervox mcp`,
+		// #216): like the agent-actions route it never answers a guardrail
+		// approval, decided atomically in the event loop.
+		FromAgent bool `json:"fromAgent"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
@@ -666,11 +670,15 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
 		return
 	}
+	provide := s.client.ProvideInput
+	if body.FromAgent && s.guardrails != nil {
+		provide = s.guardrails.ProvideAgentInput
+	}
 	// ProvideInput performs no lookup of its own (CORE-005): the only error
 	// it can return is ErrBusy (event channel full). There is no "not found"
 	// branch here any more — whether the issue is actually waiting for input
 	// is the event loop's decision, so success means "queued", not "applied".
-	if err := s.client.ProvideInput(identifier, body.Message); err != nil {
+	if err := provide(identifier, body.Message); err != nil {
 		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}
