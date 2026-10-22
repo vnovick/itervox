@@ -820,6 +820,8 @@ type Config struct {
 	Agent        AgentConfig
 	Hooks        HooksConfig
 	Server       ServerConfig
+	// Hub is the `hub` section (#228). Read-only after startup.
+	Hub          HubConfig
 	Dependencies DependenciesConfig
 	// Sessions configures the Sessions panel's discovery of agent sessions
 	// started by hand (#178). Read-only after startup.
@@ -1141,6 +1143,11 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		if _, isList := v.([]any); !isList {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
+	}
+
+	// Hub (#228)
+	if cfg.Hub, err = parseHubConfig(nestedMap(raw, "hub")); err != nil {
+		return nil, err
 	}
 
 	// Sessions (#178)

@@ -33,6 +33,7 @@ import { inputRequiredRowState } from './utils/inputRequired';
 import { PageLoader } from './components/common/PageLoader';
 import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
 import { AttentionNotifier } from './components/itervox/AttentionNotifier';
+import { getApiContext, routerBasename } from './auth/apiBase';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Sessions = lazy(() => import('./pages/Sessions'));
@@ -44,6 +45,7 @@ const RepoAnalysis = lazy(() => import('./pages/Repo'));
 const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
+const HubPage = lazy(() => import('./pages/Hub'));
 
 /** Tailwind's `md` breakpoint (the drawer is `md:hidden`). */
 const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
@@ -347,8 +349,18 @@ function AppWithSSE() {
 }
 
 export default function App() {
+  // #228 — /hub/ is the hub's project switcher; /hub/p/{project}/ is that
+  // project's unchanged dashboard over the hub's proxied API.
+  if (getApiContext().mode === 'hub') {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <HubPage />
+        <Toast />
+      </Suspense>
+    );
+  }
   return (
-    <Router>
+    <Router basename={routerBasename() || undefined}>
       <AppWithSSE />
     </Router>
   );

@@ -11,7 +11,7 @@ Itervox is configured entirely through a single `WORKFLOW.md` file in your proje
 
 Run `itervox init` in your project directory to generate a starter file for Linear or GitHub.
 
-`agent`, `polling`, `workspace` and `server` settings can also come from [settings files](#settings-files-jsonc-layers) shared by every project or kept per project; `WORKFLOW.md` still wins over them.
+`agent`, `hub`, `polling`, `workspace` and `server` settings can also come from [settings files](#settings-files-jsonc-layers) shared by every project or kept per project; `WORKFLOW.md` still wins over them.
 
 ---
 
@@ -1190,6 +1190,30 @@ memory:
 
 ---
 
+## hub
+
+The machine's itervox hub (#228): the first daemon started on a machine serves
+one URL, a scoped API proxy and a merged event feed for every project on it.
+Guide: [The itervox hub](/guides/hub/). All three keys are read at startup (a
+`WORKFLOW.md` reload does not move the hub). The hub is machine-wide, so the
+natural home for them is the user settings file, `~/.itervox/settings.jsonc`;
+the daemon that wins the hub election uses its own values.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Take part in the hub: become it (the first daemon) or join it as a member. `false` is the same as `itervox --no-hub`. |
+| `port` | int | `8089` | The hub's port when this daemon serves it. A busy port moves to the next free one (up to 10 tried), recorded in `~/.itervox/daemons/hub.lock`. `0` lets the OS pick. |
+| `bind` | string | `"127.0.0.1"` | The hub's listen address: an IP address or `localhost`. Every hub route except the health probe needs a hub token (`itervox token create --hub`), so `0.0.0.0` or a Tailscale address is safe with tokens only; the hub serves plain HTTP, so put TLS in front of it on a network you do not control. |
+
+```jsonc
+// ~/.itervox/settings.jsonc
+{
+  "hub": { "enabled": true, "port": 8089, "bind": "127.0.0.1" }
+}
+```
+
+---
+
 ## server
 
 Controls the built-in HTTP server that serves the web dashboard and REST API.
@@ -1423,7 +1447,7 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 ## Settings files (JSONC layers)
 
-Settings in the `agent`, `polling`, `workspace` and `server` sections can also live in three JSONC files, so a default you use everywhere is set once:
+Settings in the `agent`, `hub`, `polling`, `workspace` and `server` sections can also live in three JSONC files, so a default you use everywhere is set once:
 
 | Layer | File | Wins over |
 |-------|------|-----------|

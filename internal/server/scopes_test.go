@@ -394,3 +394,22 @@ func TestSettingsLayersRedactedBelowAdmin(t *testing.T) {
 	assert.Equal(t, view, settingsLayersForScope(view, apitokens.ScopeAdmin))
 	assert.Contains(t, view.Layers[0].Raw, "ghp_", "the shared view is not modified")
 }
+
+// TestRouteScopesRouteServesTheTable (#228): GET /api/v1/route-scopes is a
+// viewer route that serves this daemon's whole route scope table, which the
+// hub's proxy checks a hub token against.
+func TestRouteScopesRouteServesTheTable(t *testing.T) {
+	ss := newScopedServer(t)
+	assert.Equal(t, http.StatusUnauthorized, doReq(t, ss.srv, http.MethodGet, "/api/v1/route-scopes", "").Code)
+	rec := doReq(t, ss.srv, http.MethodGet, "/api/v1/route-scopes", ss.secrets[apitokens.ScopeViewer])
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Routes map[string]string `json:"routes"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Len(t, body.Routes, len(routeScopes))
+	assert.Equal(t, "viewer", body.Routes["GET /api/v1/route-scopes"])
+	assert.Equal(t, "operator", body.Routes["POST /api/v1/dispatch/pause"])
+	assert.Equal(t, "admin", body.Routes["GET /api/v1/tokens"])
+	assert.Equal(t, "agent_grant", body.Routes["POST /api/v1/agent-actions/{identifier}/comment"])
+}

@@ -110,6 +110,21 @@ the operator's per-issue profile override (`issueProfiles`). Do not add a
 per-issue side map to recover what a run was; put it on the run or on the
 entry that continues it.
 
+### The hub runs outside the event loop
+
+The itervox hub (`internal/hub`, #228) runs inside a daemon process on its own
+goroutines and listener, never inside the orchestrator event loop, and never
+reads or mutates the hosting project's `State` or `cfg`. It reaches its own
+project only over that project's HTTP API, exactly like any other member
+(`cmd/itervox/hub_wiring.go` starts it once, after the first config load;
+`hub.*` settings are load-time and NOT in the cfgMu allowlist). Its proxy
+checks a hub token against the member's own route scope table
+(`GET /api/v1/route-scopes`), so a new daemon route needs nothing in the hub —
+but an access class other than the four scopes, `public` and `agent_grant`
+is refused by the proxy (fail closed). Hub goroutines defer
+`recoverHubGoroutine` (`make no-bare-go` accepts it): a hub panic ends that
+goroutine, never the daemon.
+
 ### `orchestrator.State` is a value type
 
 `State` is a plain struct passed by value into reconcile/dispatch functions.
@@ -555,7 +570,7 @@ logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator, server and cmd/itervox)
 
 apitokens (stored API tokens + scopes, #214 — imports atomicfs only;
-           used by server and cmd/itervox)
+           used by server, hub and cmd/itervox)
 
 memory (managed memory files, selection and the `## Memory` block — imports
         atomicfs, config, logging; imported by orchestrator, server and
@@ -594,6 +609,11 @@ statusui (Bubbletea TUI — imports domain)
 
 mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
            API; imports apitokens and logging only, never orchestrator)
+
+hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
+     Notifier; imports apitokens, atomicfs, metrics, chi and fsnotify only,
+     never orchestrator, server or config: it reaches every member, its own
+     project included, over HTTP. Its tests import server for real members)
 
 templates (WORKFLOW.md scaffolding)
 

@@ -316,6 +316,9 @@ func main() {
 		case "secret":
 			runSecret(os.Args[2:])
 			return
+		case "hub": // #228
+			runHub(os.Args[2:])
+			return
 		case "token": // #214
 			runToken(os.Args[2:])
 			return
@@ -354,6 +357,7 @@ func main() {
 	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file and stderr; with --tui on a terminal logs go to the file only (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
 	flag.BoolVar(&noPrintToken, "no-print-token", false, "never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal; ITERVOX_PRINT_TOKEN=1 forces it; an auto-generated token is always written to <logs-dir>/api-token, mode 0600)")
 	flag.BoolVar(&tuiFlag, "tui", false, "start the terminal UI (deprecated, removed in v0.3); without it itervox runs headless and prints the dashboard URL")
+	flag.BoolVar(&noHubFlag, "no-hub", false, "do not become or join the machine's itervox hub (#228; same as hub.enabled: false)")
 	flag.BoolVar(&headlessFlag, "headless", false, "headless even with --tui, and the tokenised dashboard URL never printed, even on a terminal (watch with: itervox watch)")
 	flag.Parse()
 
@@ -513,6 +517,7 @@ func main() {
 		defer removeDashboardURLFile(*workflowPath)
 		defer removeHeartbeatFile(*workflowPath)
 		defer removeDaemonRegistryEntry() // runs first: never outlive daemon.pid
+		defer stopHub()                   // #228: hand the hub over before the record goes
 		// os.Exit skips the defers above, so every fatalExit path — a failed
 		// rebind, an invalid config on the first iteration — used to leave
 		// these files behind and make doctor report a daemon that had died.
@@ -578,6 +583,7 @@ func main() {
 			continue
 		}
 		cfg := loaded
+		maybeStartHub(ctx, cfg, *workflowPath, noHubFlag) // #228: once, outside the event loop
 		firstIter = false
 		reloadAttempt = 0         // reset on every successful load
 		publishConfigInvalid(nil) // clear the banner

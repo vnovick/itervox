@@ -491,6 +491,36 @@
       "title": "Agent",
       "type": "object"
     },
+    "hub": {
+      "additionalProperties": false,
+      "description": "The machine's itervox hub: one URL for every project (#228). Read at startup.",
+      "properties": {
+        "bind": {
+          "default": "127.0.0.1",
+          "description": "Address the hub listens on when this daemon serves it. Loopback by default; every hub route needs a hub token, so 0.0.0.0 or a Tailscale address is safe with tokens. Read at startup.",
+          "title": "Hub listen address",
+          "type": "string",
+          "x-itervox-group": "Hub"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Become the machine's hub (the first daemon) or join it as a member. Off: the same as --no-hub. Read at startup.",
+          "title": "Take part in the hub",
+          "type": "boolean",
+          "x-itervox-group": "Hub"
+        },
+        "port": {
+          "default": 8089,
+          "description": "Port of the hub when this daemon serves it; a busy port moves to the next free one, recorded in the hub lock. 0 lets the OS pick. Read at startup.",
+          "minimum": 0,
+          "title": "Hub port",
+          "type": "integer",
+          "x-itervox-group": "Hub"
+        }
+      },
+      "title": "Hub",
+      "type": "object"
+    },
     "polling": {
       "additionalProperties": false,
       "description": "How often the tracker is polled.",

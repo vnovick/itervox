@@ -434,6 +434,7 @@ token like `/state`, and built from the same snapshot.
   "etag": "5d41402abc4b2a76b9719d911017c592",
   "version": "0.2.8",
   "projectName": "web-app",
+  "capabilities": ["dispatch_pause", "failure_ack"],
   "counts": {
     "running": 2,
     "retrying": 0,
@@ -458,6 +459,8 @@ token like `/state`, and built from the same snapshot.
   it and are omitted when unset; the pause, its reason and its until are
   part of the ETag digest.
 - `version` is the daemon's build version (`dev` for a local build).
+- `capabilities` (#228) are the optional features the daemon serves, as in
+  `GET /state`; omitted when there are none. The hub lists them per project.
 - The `ETag` header is `"<etag>"`. The tag is a digest of every field except
   `generatedAt`, plus each input-required entry (identifier, session, state,
   question, queued time) and each recent failure (kind, identifier, source,
@@ -534,6 +537,161 @@ endpoint.
 Payloads are small and structured. They never contain agent output, prompt
 text, a question or reply, failure text or a guardrail command line; the
 pause reason is redacted before it is stored.
+
+---
+
+## Hub
+
+The machine's hub (#228; guide: [The itervox hub](/guides/hub/)) serves these routes on its
+own listener, `hub.bind:hub.port` (`http://127.0.0.1:8089` by default; the
+bound address is in `~/.itervox/daemons/hub.lock`). Every route except
+`GET /hub/api/v1/health` and the dashboard's static files needs a **hub
+token** (`Authorization: Bearer <token>`) from the hub's own store,
+`~/.itervox/hub/tokens.json` (`itervox token create --hub`). Project tokens
+are not hub tokens. There is no unauthenticated mode. Errors use the
+daemons' envelope, `{"error":{"code","message"}}`.
+
+| Route | Scope | |
+|---|---|---|
+| `GET /hub/api/v1/health` | none | `{"status":"ok","hub":true}` |
+| `GET /hub/api/v1/whoami` | viewer | `{"principal":{"scope","tokenId","name"},"hub":true}` |
+| `GET /hub/api/v1/projects` | viewer | the members |
+| `GET /hub/api/v1/feed?since=&limit=` | viewer | the merged event feed |
+| `GET /hub/api/v1/events` | viewer | SSE: `feed` and `projects` announcements |
+| `* /hub/p/{project}/api/v1/...` | the member route's | the member's API through the proxy |
+| `GET /hub/`, `/hub/p/{project}/...`, `/assets/...` | none | the dashboard |
+
+### `GET /hub/api/v1/projects`
+
+```json
+{
+  "hub": { "version": "0.2.9", "pid": 4182, "url": "http://127.0.0.1:8089/hub/", "startedAt": "2026-10-22T09:00:00Z", "headSeq": 1204 },
+  "projects": [
+    {
+      "name": "web",
+      "workflow": "/Users/you/code/web/WORKFLOW.md",
+      "projectDir": "/Users/you/code/web",
+      "pid": 4190,
+      "url": "http://127.0.0.1:8091/",
+      "version": "0.2.9",
+      "startedAt": "2026-10-22T09:01:00Z",
+      "health": "ok",
+      "proxied": true,
+      "capabilities": ["dispatch_pause", "failure_ack", "run_context"],
+      "summary": { "etag": "…", "version": "0.2.9", "counts": { "running": 2, "inputRequired": 1 }, "paused": false },
+      "checkedAt": "2026-10-22T10:00:00Z"
+    }
+  ]
+}
+```
+
+- `name` is unique: the project directory's name, lowercased, with a short
+  hash of the `WORKFLOW.md` path appended when two members share it. It is
+  the `{project}` of the proxy and the dashboard path.
+- `health` is `ok`, `unreachable`, `unauthorized` (the member refused the
+  hub's token) or `error`, with `error` saying why.
+- `proxied` is false (with `proxyError`) for a member running with
+  `server.allow_unauthenticated` (never proxied: the hub could not cap a
+  caller's scope on it) or one whose route scope table the hub could not
+  read (an itervox older than v0.2.9).
+- `summary` is the member's own `GET /api/v1/summary`, passed through;
+  `capabilities` comes from it.
+
+Members are the live daemon registry records with `hub_member: true` (see
+the Supervisor contract), refreshed on every registry change and every 10 s.
+
+### `GET /hub/api/v1/feed`
+
+The same shape and cursor rules as a member's [`GET /api/v1/feed`](#get-apiv1feed),
+over every member's feed merged into one sequence:
+
+```json
+{
+  "events": [
+    { "seq": 1203, "project": "web", "workflow": "/Users/you/code/web/WORKFLOW.md", "memberSeq": 88,
+      "ts": "2026-10-22T10:00:00Z", "kind": "input_required", "identifier": "ENG-12", "payload": { "runId": "…" } }
+  ],
+  "nextSeq": 1203, "headSeq": 1204, "oldestSeq": 205, "truncated": false, "hasMore": true
+}
+```
+
+`seq` is the hub's sequence number: it orders the merged feed and keeps
+growing across hub restarts and hand-overs. `memberSeq` is the event's
+`seq` in its project's own feed, and `payload` is the member's redacted
+payload as is. The hub keeps the newest 5000 events in memory and a cursor
+per member in `~/.itervox/hub/hub_feed_cursors.json` (`0600`), from which
+the next hub catches up: nothing is missed or repeated. A project the hub
+has never seen starts with the events of its current daemon process.
+`limit` is 1–1000 (default 100); `since` must be a non-negative integer.
+
+### `GET /hub/api/v1/events`
+
+Server-sent events. On connect and on every change: `event: projects`
+(`{"count":N}`, the member count) and `event: feed` (`{"headSeq":N}`, the
+merged feed's newest `seq`); `: ping` comments every 25 s. Read the events
+themselves with `GET /hub/api/v1/feed?since=`.
+
+### The proxy: `/hub/p/{project}/api/v1/...`
+
+Every method. The hub, in order:
+
+1. answers 404 `project_not_found` for an unknown project, and 400
+   `bad_path` for a path that is not a plain `/api/v1/...` path (encoded
+   slashes, empty, `.` or `..` segments);
+2. answers 503 `member_unavailable` while it has no route scope table for
+   the member, and 403 `member_unauthenticated` for a member running with
+   `server.allow_unauthenticated`;
+3. looks the method and path up in the member's
+   [`GET /api/v1/route-scopes`](#get-apiv1route-scopes) table (a path
+   several patterns match takes the most restrictive scope): 404
+   `route_not_found` when the member declares none; 403 `not_proxied` for an
+   agent-action or guardrail grant route, a tracker webhook, or an unknown
+   access class; public `GET` probes need viewer;
+4. answers 403 `insufficient_scope` (with `X-Itervox-Required-Scope`) when
+   the hub token's scope is below the route's, and 403
+   `admin_route_not_proxied` for a member admin route (the hub never holds
+   an admin token on a member);
+5. drops the caller's `Authorization`, `Cookie`, `Origin` and `Referer`,
+   sets `Authorization: Bearer <the hub's member token>` (the `hub-viewer`
+   token for a viewer hub token, `hub-operator` otherwise, in the member's
+   own store), and forwards the request with its query.
+
+Responses stream through unbuffered, so SSE routes (`/events`,
+`/issues/{identifier}/log-stream`, …) work. A member `401` (it refused the
+hub's token) becomes `502` with `X-Itervox-Hub-Error: member_auth_failed`,
+never a `401` that would sign the dashboard out; the hub then obtains a new
+member token. An unreachable member is `502 member_unreachable`.
+
+### `GET /api/v1/route-scopes`
+
+On every daemon (viewer, #228): the daemon's whole route scope table, which
+the hub's proxy checks a hub token against.
+
+```json
+{ "routes": { "GET /api/v1/state": "viewer", "POST /api/v1/dispatch/pause": "operator",
+              "GET /api/v1/tokens": "admin", "GET /api/v1/health": "public",
+              "POST /api/v1/agent-actions/{identifier}/comment": "agent_grant" } }
+```
+
+Keys are `METHOD pattern` with the full route pattern (`{name}` matches one
+path segment; `*` is a route registered for every method). Values are
+`viewer`, `operator`, `admin`, `public` or `agent_grant`.
+
+### `hub.lock`
+
+`~/.itervox/daemons/hub.lock` is the hub election's lock (a kernel `flock`,
+released when the hub's process ends) and, while a hub holds it, its
+address as JSON (never a token):
+
+```json
+{ "schema_version": 1, "pid": 4182, "url": "http://127.0.0.1:8089/hub/", "host": "127.0.0.1", "port": 8089,
+  "version": "0.2.9", "workflow": "/Users/you/code/api/WORKFLOW.md", "started_at": "2026-10-22T09:00:00Z" }
+```
+
+The file is never deleted; a hub that stops empties it. A reader must check
+that the lock is held (a shared non-blocking `flock` that fails), or ask the
+`url`'s `/hub/api/v1/health`, before trusting the content. `itervox hub
+--json` prints `{"hub": <this object or null>, "members": [...]}`.
 
 ---
 

@@ -33,7 +33,7 @@ describe('flattenSettingsSchema (#158)', () => {
   it('turns the published schema into one field per layered setting', () => {
     const fields = publishedFields();
     expect(new Set(fields.map((f) => f.section))).toEqual(
-      new Set(['agent', 'polling', 'server', 'workspace']),
+      new Set(['agent', 'hub', 'polling', 'server', 'workspace']),
     );
     const workers = byKey(fields, 'agent.max_concurrent_agents');
     expect(workers).toMatchObject({ kind: 'integer', live: true, minimum: 1, default: 10 });

@@ -686,6 +686,28 @@ hosts are not guarded in v1.
 
 ---
 
+## `hub`
+
+The machine's itervox hub (#228): the first daemon started on a machine serves
+one URL, a scoped API proxy and a merged event feed for every project on it.
+Guide: [The itervox hub](../site/src/content/docs/guides/hub.mdx). All three keys are read at startup (a
+`WORKFLOW.md` reload does not move the hub). The hub is machine-wide, so the
+natural home for them is the user settings file, `~/.itervox/settings.jsonc`;
+the daemon that wins the hub election uses its own values.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Take part in the hub: become it (the first daemon) or join it as a member. `false` is the same as `itervox --no-hub`. |
+| `port` | int | `8089` | The hub's port when this daemon serves it. A busy port moves to the next free one (up to 10 tried), recorded in `~/.itervox/daemons/hub.lock`. `0` lets the OS pick. |
+| `bind` | string | `"127.0.0.1"` | The hub's listen address: an IP address or `localhost`. Every hub route except the health probe needs a hub token (`itervox token create --hub`), so `0.0.0.0` or a Tailscale address is safe with tokens only; the hub serves plain HTTP, so put TLS in front of it on a network you do not control. |
+
+```jsonc
+// ~/.itervox/settings.jsonc
+{
+  "hub": { "enabled": true, "port": 8089, "bind": "127.0.0.1" }
+}
+```
+
 ## `server`
 
 | Field | Type | Default | Description |

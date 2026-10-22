@@ -73,6 +73,12 @@ Commands:
              revoke ID
              rotate [ID]  (no ID: the only stored admin token)
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --hub      the hub's own token store (~/.itervox/hub/tokens.json)
+
+  hub     Print the machine's hub URL and its member projects (--json).
+          The first daemon started becomes the hub: one URL for every
+          project (hub.port, default 8089, loopback), opened with a hub
+          token (itervox token create --hub). --no-hub opts a daemon out.
 
   mcp     Serve the board and memory of this project's running daemon to
           an MCP client over stdio (claude mcp add itervox -- itervox mcp).

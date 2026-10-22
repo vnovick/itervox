@@ -2,6 +2,7 @@ import { getToken, useTokenStore } from './tokenStore';
 import { useAuthStore } from './authStore';
 import { UnauthorizedError } from './UnauthorizedError';
 import { REQUIRED_SCOPE_HEADER } from './scope';
+import { apiUrl } from './apiBase';
 import { useToastStore } from '../store/toastStore';
 
 /**
@@ -23,6 +24,10 @@ import { useToastStore } from '../store/toastStore';
  *
  * Non-401 non-ok responses are returned unchanged — callers already check
  * `res.ok` and handle them.
+ *
+ * #228: a string URL written as `/api/v1/...` is mapped onto the configured
+ * API base (`apiBase.ts`), so the same call works on a daemon and through
+ * the hub's per-project proxy.
  */
 export async function authedFetch(
   input: RequestInfo | URL,
@@ -34,7 +39,7 @@ export async function authedFetch(
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const res = await fetch(input, { ...init, headers });
+  const res = await fetch(typeof input === 'string' ? apiUrl(input) : input, { ...init, headers });
 
   if (res.status === 401) {
     // Clear synchronously so subsequent requests in the same tick don't

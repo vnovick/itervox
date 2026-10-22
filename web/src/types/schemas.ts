@@ -2147,3 +2147,54 @@ export const VerifySkillIssueResultSchema = z.object({
   url: z.string().optional(),
 });
 export type VerifySkillIssueResult = z.infer<typeof VerifySkillIssueResultSchema>;
+
+// #228 — GET /hub/api/v1/projects (internal/hub api.go ProjectsResponse).
+// `summary` is the member's own GET /api/v1/summary, passed through.
+export const HubMemberSummarySchema = z.object({
+  projectName: z.string().optional(),
+  paused: z.boolean().optional(),
+  counts: z
+    .object({
+      running: z.number().optional(),
+      retrying: z.number().optional(),
+      paused: z.number().optional(),
+      inputRequired: z.number().optional(),
+    })
+    .optional(),
+});
+export type HubMemberSummary = z.infer<typeof HubMemberSummarySchema>;
+
+export const HubProjectSchema = z.object({
+  name: z.string(),
+  workflow: z.string(),
+  projectDir: z.string(),
+  pid: z.number(),
+  url: z.string(),
+  version: z.string(),
+  startedAt: z.string(),
+  health: z.string(),
+  error: z.string().optional(),
+  proxied: z.boolean(),
+  proxyError: z.string().optional(),
+  capabilities: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  summary: HubMemberSummarySchema.nullish(),
+});
+export type HubProject = z.infer<typeof HubProjectSchema>;
+
+export const HubProjectsResponseSchema = z.object({
+  hub: z.object({
+    version: z.string(),
+    pid: z.number(),
+    url: z.string(),
+    startedAt: z.string(),
+    headSeq: z.number(),
+  }),
+  projects: z
+    .array(HubProjectSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type HubProjectsResponse = z.infer<typeof HubProjectsResponseSchema>;

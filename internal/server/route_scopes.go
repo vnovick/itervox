@@ -1,6 +1,10 @@
 package server
 
-import "github.com/vnovick/itervox/internal/apitokens"
+import (
+	"net/http"
+
+	"github.com/vnovick/itervox/internal/apitokens"
+)
 
 // routeAccess is what a route requires: one of the token scopes, or one of
 // the two access classes that never pass through scopeMiddleware.
@@ -52,6 +56,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/whoami":                            accessViewer,
 	"GET /api/v1/state":                             accessViewer,
 	"GET /api/v1/summary":                           accessViewer,
+	"GET /api/v1/route-scopes":                      accessViewer, // #228: this table, for the hub's proxy
 	"GET /api/v1/feed":                              accessViewer,
 	"GET /api/v1/events":                            accessViewer,
 	"GET /api/v1/history":                           accessViewer,
@@ -191,4 +196,22 @@ func scopedRouteScope(method, pattern string) (apitokens.Scope, bool) {
 		return "", false
 	}
 	return scope, true
+}
+
+// RouteScopes returns the route scope table as "METHOD pattern" → access
+// ("viewer", "operator", "admin", "public" or "agent_grant"), the body of
+// GET /api/v1/route-scopes. The hub (#228) checks a hub token against it
+// before proxying a request to this daemon. A copy: callers cannot change
+// the table.
+func RouteScopes() map[string]string {
+	out := make(map[string]string, len(routeScopes))
+	for k, v := range routeScopes {
+		out[k] = string(v)
+	}
+	return out
+}
+
+// handleRouteScopes serves GET /api/v1/route-scopes (viewer, #228).
+func (s *Server) handleRouteScopes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"routes": RouteScopes()})
 }

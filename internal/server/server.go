@@ -1693,6 +1693,13 @@ func (s *Server) Notify() {
 	s.bc.notify()
 }
 
+// DashboardHandler serves the embedded dashboard (static files, index.html
+// fallback) behind the daemon's hardening headers, for the hub (#228),
+// which serves the same bundle on its own listener.
+func DashboardHandler() http.Handler {
+	return securityHeadersMiddleware(spaHandler())
+}
+
 func spaHandler() http.Handler {
 	fs := spaFS()
 	fileServer := http.FileServer(fs)
@@ -1758,6 +1765,7 @@ func (s *Server) routes() {
 			r.Post("/tokens/{id}/rotate", s.handleRotateToken)
 			r.Get("/state", s.handleState)
 			r.Get("/summary", s.handleSummary)                                     // #212: ETag'd poll target for supervisors
+			r.Get("/route-scopes", s.handleRouteScopes)                            // #228: the hub's proxy reads it
 			r.Get("/feed", s.handleFeed)                                           // #213: the event feed, by cursor
 			r.Post("/dispatch/pause", s.handlePauseDispatch)                       // #213
 			r.Post("/dispatch/resume", s.handleResumeDispatch)                     // #213
