@@ -18,9 +18,16 @@ const VIEWS: readonly { id: HubView; label: string }[] = [
   { id: 'phones', label: 'Phones' },
 ];
 
+// #232 — the Mac app's tray opens a view directly: /hub/?view=phones
+// ("Phone…", the pairing QR code) and /hub/?view=notifications.
+function initialView(): HubView {
+  const wanted = new URLSearchParams(window.location.search).get('view');
+  return VIEWS.find((v) => v.id === wanted)?.id ?? 'projects';
+}
+
 export default function HubPage() {
   const { data, isLoading, error } = useHubProjects();
-  const [view, setView] = useState<HubView>('projects');
+  const [view, setView] = useState<HubView>(initialView);
   const projects = data?.projects ?? [];
   return (
     <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-4 p-4 md:p-8">

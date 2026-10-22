@@ -9,6 +9,7 @@ pub mod daemon_state;
 pub mod dashboard;
 pub mod events;
 pub mod hub_notify;
+pub mod hub_source;
 pub mod menu;
 pub mod model;
 pub mod projects;

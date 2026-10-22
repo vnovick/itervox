@@ -19,7 +19,10 @@ use crate::app_remote::RemoteShared;
 use crate::app_update;
 use crate::client;
 use crate::dashboard::{origin_of, token_init_script, window_label};
-use crate::menu::{append_app_section, build_menu, MenuAction, MenuEntry, MenuSpec};
+use crate::hub_source::{hub_page_url, read_local, HubPage, HubReader, HubStatus};
+use crate::menu::{
+    append_app_section, append_hub_section, build_menu, MenuAction, MenuEntry, MenuSpec,
+};
 use crate::model::{refresh_interval, token_for, Core, NotificationTargets, PendingOp};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
 use crate::registry::{registry_dir, DaemonLister};
@@ -57,8 +60,15 @@ struct Shared {
     lister: Mutex<DaemonLister>,
     /// The next refresh runs the sidecar's full listing (menu opened).
     sweep: std::sync::atomic::AtomicBool,
-    /// The hub's notification stream (#229).
+    /// The hub's events stream (#229, #232).
     hub: Arc<app_hub::HubNotify>,
+    /// Reads the hub's members in one request (#232).
+    hub_reader: HubReader,
+    /// The hub as the tray shows it, from the last refresh (#232).
+    hub_status: Mutex<HubStatus>,
+    /// The local daemons the hub covered in the last refresh: not polled,
+    /// and left out of the busy check (#232).
+    hub_covered: Mutex<std::collections::HashSet<String>>,
 }
 
 /// A dashboard window: label, token, origin.
@@ -175,6 +185,9 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         lister: Mutex::default(),
         sweep: std::sync::atomic::AtomicBool::new(false),
         hub: Arc::default(),
+        hub_reader: HubReader::default(),
+        hub_status: Mutex::default(),
+        hub_covered: Mutex::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -246,8 +259,9 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
 
-    // #229: native notifications from the local hub, when one serves.
+    // #229/#232: one events stream to the local hub, when one serves.
     let register_shared = Arc::clone(&shared);
+    let wake_shared = Arc::clone(&shared);
     app_hub::spawn(
         app,
         Arc::clone(&shared.hub),
@@ -256,6 +270,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(move |project: &str, url: &str| {
             lock(&register_shared.targets).register(project, url)
         }),
+        Arc::new(move || wake(&wake_shared)),
     )?;
 
     let poll_app = app.clone();
@@ -269,7 +284,12 @@ fn refresh_loop(app: &AppHandle, shared: &Arc<Shared>, wake: &Receiver<()>) {
     loop {
         refresh(app, shared);
         // 3 s while agents run or wait for input, 15 s when all is idle.
-        let busy = lock(&shared.core).busy() || shared.remote.busy();
+        // Daemons the hub covers do not count: the hub stream wakes the
+        // loop when their state changes (#232).
+        let busy = {
+            let covered = lock(&shared.hub_covered).clone();
+            lock(&shared.core).busy_outside(&covered)
+        } || shared.remote.busy();
         match wake.recv_timeout(refresh_interval(busy)) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {
                 // Coalesce a burst of wake-ups into one refresh.
@@ -310,10 +330,31 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
             &read_token_file,
         )
     };
-    // Read every daemon in parallel over its kept-alive connection: a
-    // summary first, the full state only when it changed.
-    let states = client::fetch_all(&shared.clients, &jobs);
-    let mut outcome = lock(&shared.core).apply(records, states, Instant::now());
+    // #232: with the hub's stream up, its members come from one projects
+    // read; every other daemon is read in parallel over its kept-alive
+    // connection (#212: a summary first, the full state only when it
+    // changed). Without the hub, every daemon is.
+    let session = shared.hub.live_session();
+    let lock_present = session.is_some()
+        || registry_dir()
+            .and_then(|d| crate::hub_notify::read_hub_lock(&d))
+            .is_some();
+    let read = read_local(
+        &shared.clients,
+        &shared.hub_reader,
+        session.as_ref().map(|(o, t)| (o.as_str(), t.as_str())),
+        lock_present,
+        records.as_deref().unwrap_or(&[]),
+        &jobs,
+    );
+    let hub_changed = {
+        let mut cur = lock(&shared.hub_status);
+        let changed = *cur != read.hub;
+        *cur = read.hub;
+        changed
+    };
+    *lock(&shared.hub_covered) = read.via_hub;
+    let mut outcome = lock(&shared.core).apply(records, read.states, Instant::now());
     if shared.hub.active.load(std::sync::atomic::Ordering::Relaxed) {
         // #229: the hub notifies for its members, per its settings.
         let core = lock(&shared.core);
@@ -344,7 +385,12 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
             eprintln!("itervox desktop: alert {} -> {}", a.title(), a.url);
         }
     }
-    if !outcome.diff.is_empty() || !outcome.alerts.is_empty() || status_changed || remote_changed {
+    if !outcome.diff.is_empty()
+        || !outcome.alerts.is_empty()
+        || status_changed
+        || remote_changed
+        || hub_changed
+    {
         update_menu(app, shared);
     }
     push_sessions(app, shared);
@@ -373,6 +419,7 @@ fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
             status_error.as_deref(),
         )
     };
+    append_hub_section(&mut spec, &lock(&shared.hub_status));
     append_app_section(
         &mut spec,
         app_update::menu_items(app, shared.sidecar.as_deref().ok()),
@@ -507,6 +554,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             wake(shared)
         }
+        MenuAction::OpenHub(page) => open_hub_page(app, shared, page),
         MenuAction::CheckForUpdates => app_update::check_now(app),
         MenuAction::InstallUpdate => {
             let (app2, shared2) = (app.clone(), Arc::clone(shared));
@@ -774,25 +822,47 @@ fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<
     open_window(app, shared, key, parsed, origin_of(&base), token, title);
 }
 
-/// Opens a hub dashboard link (#229) with the app's hub token.
+/// Opens a hub link (#229 notifications, #232 tray items) in the hub
+/// window, with the app's admin hub token (the hub's Phones and
+/// Notifications views are admin routes), created on first use off the
+/// main thread; the stream's viewer token when that fails.
 fn open_hub(app: &AppHandle, shared: &Arc<Shared>, url: &str) {
     let session = lock(&shared.hub.session).clone();
-    let Some((origin, token)) = session else {
+    let Some((origin, viewer)) = session else {
+        error_dialog(app, "The hub is not running.");
         return;
     };
     if !url.starts_with(&format!("{origin}/hub/")) {
         return;
     }
-    if let Ok(parsed) = tauri::Url::parse(url) {
-        open_window(
-            app,
-            shared,
-            "hub",
-            parsed,
-            Some(origin),
-            Some(token),
-            "Itervox hub".into(),
-        );
+    let Ok(parsed) = tauri::Url::parse(url) else {
+        return;
+    };
+    let (app2, shared2) = (app.clone(), Arc::clone(shared));
+    let _ = std::thread::Builder::new()
+        .name("itervox-hub-window".into())
+        .spawn(move || {
+            let token = app_hub::admin_token(shared2.tokens.as_ref(), &shared2.sidecar, &origin)
+                .unwrap_or(viewer);
+            open_window(
+                &app2,
+                &shared2,
+                "hub",
+                parsed,
+                Some(origin),
+                Some(token),
+                "Itervox hub".into(),
+            );
+        });
+}
+
+/// Tray (#232): Open Hub Dashboard, Phone… (the Phones view's pairing QR
+/// code, #231) and Notification Settings… (#229).
+fn open_hub_page(app: &AppHandle, shared: &Arc<Shared>, page: HubPage) {
+    let origin = lock(&shared.hub.session).as_ref().map(|(o, _)| o.clone());
+    match origin {
+        Some(o) => open_hub(app, shared, &hub_page_url(&o, page)),
+        None => error_dialog(app, "The hub is not running."),
     }
 }
 
