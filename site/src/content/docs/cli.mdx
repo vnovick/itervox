@@ -287,6 +287,17 @@ itervox secret list [--workflow WORKFLOW.md]
 
 ---
 
+## `itervox token` — Scoped API tokens
+
+```bash
+itervox token create --name NAME --scope viewer|operator|admin [--expires 90d]
+itervox token list [--json]
+itervox token revoke ID
+itervox token rotate [ID]
+```
+
+Manages the stored API tokens in `.itervox/tokens.json` next to `--workflow` (default `WORKFLOW.md`): named tokens with a `viewer`, `operator` or `admin` scope, kept as SHA-256 hashes only (mode 0600, gitignored). It writes the file directly, so it works with or without a running daemon; a running daemon picks up the change within a second, without a restart. `create` and `rotate` print the new secret (`itx_…`) once, alone on stdout, with the details on stderr — store it right away. `--expires` takes `90d`, `12h`, a date or an RFC 3339 time (default: never). `rotate` keeps the token's id, name, scope and expiry; with no `ID` it rotates the one stored admin token. `ITERVOX_API_TOKEN` (or the auto-generated token) is always admin and not in the store. A stored token also works as `ITERVOX_API_TOKEN` for `itervox watch` and the quick actions, within its scope. See [Security & access tokens](/guides/security/).
+
 ## `itervox config` — Settings and where they come from
 
 ```bash

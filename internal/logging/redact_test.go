@@ -23,6 +23,12 @@ func TestRedactString_Patterns(t *testing.T) {
 			leaked: "sk-ant-api03-XXXXXXXX",
 		},
 		{
+			name:   "itervox stored API token (#214)",
+			in:     "token itx_Q2hhbmdlTWVQbGVhc2VUaGlzSXNOb3RBUmVhbFRva2Vu leaked",
+			wanted: secretMask,
+			leaked: "itx_Q2hhbmdl",
+		},
+		{
 			name:   "linear api key",
 			in:     "header X-Auth: lin_api_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa rest of msg",
 			wanted: secretMask,

@@ -48,6 +48,28 @@ describe('DispatchPauseToggle', () => {
     expect(screen.queryByTestId('dispatch-pause-toggle')).toBeNull();
   });
 
+  // #214 — pause/resume needs operator scope; a viewer sees the state only.
+  it('hides the toggle from a viewer but keeps the paused chip', () => {
+    setSnapshot({
+      capabilities: ['dispatch_pause'],
+      dispatchPaused: { pausedAt: '2026-10-22T10:00:00Z', reason: 'deploy' },
+      callerScope: 'viewer',
+    });
+    render(<DispatchPauseToggle />);
+    expect(screen.queryByTestId('dispatch-pause-toggle')).toBeNull();
+    expect(screen.getByTestId('dispatch-paused-chip')).toHaveTextContent('deploy');
+  });
+
+  it('shows the toggle to an operator', () => {
+    setSnapshot({
+      capabilities: ['dispatch_pause'],
+      dispatchPaused: null,
+      callerScope: 'operator',
+    });
+    render(<DispatchPauseToggle />);
+    expect(screen.getByTestId('dispatch-pause-toggle')).toHaveTextContent('Pause dispatch');
+  });
+
   it('renders inside the LiveOps strip', () => {
     setSnapshot({ capabilities: ['dispatch_pause'], dispatchPaused: null });
     render(<LiveOpsStrip />);

@@ -65,6 +65,15 @@ Commands:
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --replace  (set) replace a value that is already set
 
+  token   Manage stored API tokens (.itervox/tokens.json, hashes only):
+          viewer, operator or admin scope. A running daemon picks up a
+          change within a second; no restart. New tokens print once.
+             create --name NAME --scope viewer|operator|admin [--expires 90d]
+             list   [--json]
+             revoke ID
+             rotate [ID]  (no ID: the only stored admin token)
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+
   config  Show the effective settings and the layer each came from
           (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
           .itervox/settings.local.jsonc, WORKFLOW.md), or edit a

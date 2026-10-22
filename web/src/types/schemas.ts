@@ -962,6 +962,11 @@ export const StateSnapshotSchema = z.object({
   // (GET /api/v1/feed?since=).
   dispatchPaused: DispatchPauseRowSchema.nullable().optional(),
   feedSeq: z.number().optional(),
+  // #214 — the requesting token's scope (viewer | operator | admin), set per
+  // caller by GET /state and /events. Absent on daemons predating scopes,
+  // which treat every caller as admin. A string, not an enum, so a future
+  // scope never fails the whole snapshot parse (auth/scope.ts normalises).
+  callerScope: z.string().optional(),
   // CORE-175 — per-issue failure acknowledgements (event-loop state): the
   // attention inbox hides worker_failed/stalled entries with occurredAt <= upTo.
   failureAcks: z.array(z.object({ identifier: z.string(), upTo: z.string() })).optional(),
@@ -1907,3 +1912,21 @@ export type RepoEvalsResponse = z.infer<typeof RepoEvalsResponseSchema>;
 export type RepoHotspotRun = z.infer<typeof RepoHotspotRunSchema>;
 export type RepoHotspotRow = z.infer<typeof RepoHotspotRowSchema>;
 export type RepoHotspotsResponse = z.infer<typeof RepoHotspotsResponseSchema>;
+
+// #214 — stored API tokens (Settings → Access). The API never returns a
+// hash; a secret appears only in the create and rotate answers.
+export const ApiTokenSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  scope: z.string(),
+  created: z.string(),
+  lastUsed: z.string().optional(),
+  expires: z.string().optional(),
+  expired: z.boolean().optional(),
+});
+export type ApiToken = z.infer<typeof ApiTokenSchema>;
+
+export const ApiTokenListSchema = z.object({ tokens: z.array(ApiTokenSchema) });
+
+export const ApiTokenSecretSchema = z.object({ token: ApiTokenSchema, secret: z.string() });
+export type ApiTokenSecret = z.infer<typeof ApiTokenSecretSchema>;
