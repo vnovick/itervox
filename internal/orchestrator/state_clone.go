@@ -78,6 +78,7 @@ func (s State) Clone() State {
 	c.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
 	c.OutboxSyncing = maps.Clone(s.OutboxSyncing)
 	c.ClaimChecks = maps.Clone(s.ClaimChecks) // value type, no reference fields
+	c.RunContexts = maps.Clone(s.RunContexts) // value type, no reference fields (#215)
 	c.TrackerPoll.EndedDuringPoll = maps.Clone(s.TrackerPoll.EndedDuringPoll)
 	c.RecentFailures = cloneSlice(s.RecentFailures)
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)

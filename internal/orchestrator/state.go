@@ -164,6 +164,8 @@ type OrchestratorEvent struct { //nolint:revive
 	deferReply chan bool
 	// feed is the payload of EventFeedRecorded (#213).
 	feed *FeedEvent
+	// runContext is the payload of EventRunContext (#215).
+	runContext *runContextUpdate
 	// dispatchPause is the payload of EventSetDispatchPause (#213).
 	dispatchPause *dispatchPauseRequest
 	// deferFromState is the tracker state a deferred-move apply observed.
@@ -980,6 +982,15 @@ type State struct {
 	// (suppressed, bumped, failed) gives its stamp back. Event-loop state;
 	// session-scoped, not persisted.
 	LessonProposals map[string][]time.Time
+
+	// RunContexts holds, per run ID, what the run is doing (#215): its last
+	// assistant step and tool call (redacted, bounded, never tool output),
+	// its tool-call and guardrail-block counts, and the exit summary of a
+	// finished run. Event-loop state (run_context.go): updated by the
+	// debounced EventRunContext, guardrail failures and worker exits;
+	// bounded to the running runs plus runContextFinishedCap finished ones.
+	// Not in the SSE frame; session-scoped, not persisted.
+	RunContexts map[string]RunContext
 }
 
 // NewState initialises a State from a config snapshot.
@@ -1042,5 +1053,6 @@ func NewState(cfg *config.Config) State {
 		TmuxSessions:       make(map[string]*TmuxSession),
 		LessonCorrections:  make(map[string][]LessonCorrection),
 		LessonProposals:    make(map[string][]time.Time),
+		RunContexts:        make(map[string]RunContext),
 	}
 }

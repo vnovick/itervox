@@ -291,6 +291,14 @@ only the event loop mutates them.
   due, `dispatchRun` holds the issue as a retry and `dispatchReviewer` records
   a `PendingReview` (reason `dispatch_paused`); running agents continue.
   Persisted to `dispatch_paused.json` via the ledger writer.
+- `RunContexts` (#215) is event-loop state keyed by run ID: what a run is
+  doing (last step, last tool call — never tool output — counts). Workers
+  send the debounced `EventRunContext` (at most 1/s per run plus one per
+  turn, non-blocking); the loop publishes it into `lastSnap` without a full
+  store/announce, so it is not in the SSE frame. Bounded to running runs
+  plus 32 finished; session-scoped. The worktree diff
+  (`Orchestrator.WorktreeDiff`) runs git on the caller's goroutine, never the
+  loop.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is

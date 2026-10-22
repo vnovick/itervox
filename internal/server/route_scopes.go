@@ -67,6 +67,8 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/issues/{identifier}/log-stream":    accessViewer,
 	"GET /api/v1/issues/{identifier}/sublogs":       accessViewer,
 	"GET /api/v1/issues/{identifier}/sublog-stream": accessViewer,
+	"GET /api/v1/issues/{identifier}/context":       accessViewer, // #215: redacted, never tool output
+	"GET /api/v1/issues/{identifier}/diff":          accessViewer, // #215: ?file= hunks need operator (handleIssueDiff)
 	"GET /api/v1/logs/identifiers":                  accessViewer,
 	"GET /api/v1/logs":                              accessViewer,
 	"GET /api/v1/projects":                          accessViewer,

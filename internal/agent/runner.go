@@ -37,6 +37,14 @@ type TurnResult struct {
 	// CostUSD is the session-cumulative estimated cost from the turn's
 	// result event (Claude's total_cost_usd, CORE-091); nil when unknown.
 	CostUSD *float64
+	// LastToolName / LastToolTarget describe the turn's most recent tool
+	// call (#215): its name and its target (a file path, a command, a
+	// pattern) from ToolTarget, which never reads the tool's output. Set for
+	// a call that is still running (Codex item.started) too.
+	LastToolName   string
+	LastToolTarget string
+	// ToolCalls counts the turn's completed tool calls (#215).
+	ToolCalls int
 }
 
 // Logger is a minimal structured logging interface, satisfied by *slog.Logger.
@@ -101,6 +109,16 @@ func ApplyEvent(r TurnResult, ev StreamEvent) TurnResult {
 	// api_retry, result, Codex error / turn.failed). It never sets Failed by
 	// itself — only a result event does.
 	r.LastLimit = mergeLimit(r.LastLimit, ev.Limit)
+	// #215: the latest tool call, started or completed. Its target comes
+	// from the call's input with every output field dropped (ToolTarget).
+	if ev.Type == EventAssistant && len(ev.ToolCalls) > 0 {
+		tc := ev.ToolCalls[len(ev.ToolCalls)-1]
+		r.LastToolName = tc.Name
+		r.LastToolTarget = ToolTarget(tc.Name, tc.Input)
+		if !ev.InProgress {
+			r.ToolCalls += len(ev.ToolCalls)
+		}
+	}
 	switch ev.Type {
 	case EventSystem:
 		if r.SessionID == "" {

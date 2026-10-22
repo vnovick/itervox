@@ -479,6 +479,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		evidenceBlock = buildEvidenceBlock(required, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
+	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(stackedOn)) // #215
 	// #157: the rule set this run was dispatched with. `{{ rules }}` places
 	// it in any template; otherwise a `## Rules` block goes ahead of the
 	// profile's SOUL.md and INSTRUCTIONS.md.
@@ -683,6 +684,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// delivered only after the non-blocking send below succeeded.
 		var forwarder limitForwarder
 		onProgress := func(partial agent.TurnResult) {
+			rcReport.observe(partial, false) // #215: debounced, never blocks
 			var limit *agent.LimitSignal
 			fresh := forwarder.candidate(partial.LastLimit)
 			if fresh != nil {
@@ -742,6 +744,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		result, runErr := o.runner.RunTurn(steerCtx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
 			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
+		rcReport.endTurn(result) // #215
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.
 		recordRunUsage(ctx, cumulativeInput+result.InputTokens, cumulativeCached+result.CachedInputTokens,

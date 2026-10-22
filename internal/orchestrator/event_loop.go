@@ -2060,11 +2060,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			appendRecentFailure(&state, *ev.Failure, time.Now())
 			if ev.Failure.Kind == FailureKindGuardrail { // #213: a shim or hook refused
 				o.emitFeed(&state, FeedGuardrailBlocked, ev.Failure.Identifier, FeedPayload{Kind: ev.Failure.Source})
+				noteRunContextGuardrail(&state, ev.Failure.Identifier, ev.Failure.Source, time.Now()) // #215
 			}
 		}
 
 	case EventFeedRecorded: // #213
 		o.applyFeedRecorded(&state, ev)
+
+	case EventRunContext: // #215
+		o.applyRunContext(&state, ev.runContext)
 
 	case EventSetDispatchPause: // #213
 		o.applySetDispatchPause(ctx, &state, ev.dispatchPause, time.Now())
@@ -2209,6 +2213,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.userTerminatedMu.Unlock()
 		// #213: the run's exit, from its identity and terminal reason only.
 		o.emitRunExitFeed(&state, liveEntry, ev.RunEntry, wasCancelledByUser || wasTerminatedByUser)
+		finishRunContext(&state, liveEntry, ev.RunEntry, ev.RunID, now) // #215
 
 		if wasCancelledByUser {
 			state.PausedIdentifiers[issue.Identifier] = issue.ID

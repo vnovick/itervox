@@ -1177,6 +1177,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
 			Version:       version,                                       // #212: GET /api/v1/summary
 			Dispatch:      dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
+			Changes:       changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

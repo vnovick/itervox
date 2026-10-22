@@ -1,0 +1,60 @@
+---
+title: Watch a run — Now and Changes
+description: See what a running agent is doing and review what it has changed, from the issue detail view or the API.
+---
+
+Two views on the issue detail panel, added in v0.2.8 (#215), answer the
+questions you otherwise dig through the log stream for: *what is the agent
+doing right now?* and *what has it changed?*
+
+## Now
+
+The **Now** panel sits at the top of an issue's **Details** tab while the
+issue has a run (it reads **Last run** once the run has finished):
+
+- the profile, backend, turn and tokens so far;
+- the **current step** — the agent's last message, shortened;
+- the **last tool call** — its name and what it acted on (a file, a
+  command, a pattern), with the number of tool calls so far. The output of
+  a tool is never shown here, or sent by the daemon at all;
+- what is waiting on you: an input question or a guardrail approval,
+  queued steering messages, and how many operations guardrails blocked in
+  this run;
+- the files changed so far and the run's prior handoffs.
+
+It refreshes every few seconds while the run is live. The daemon updates a
+run's context at most once a second, from the stream it already parses for
+the log; text is redacted with the same rules as the logs (API keys, bearer
+tokens, `NAME_TOKEN=…` assignments, URL credentials) before it leaves the
+worker.
+
+## Changes
+
+The **Changes** tab lists every file the issue's worktree changes against
+the **merge base** with its base branch — commits, uncommitted edits and
+untracked files — with additions and deletions. Select a file to see its
+unified diff. The diff viewer loads only when you open the tab.
+
+- The base is the branch the run's pull request targets: the blocker's
+  branch for a stacked dependent, otherwise `workspace.base_branch`.
+- It works while the issue runs and after it finished, as long as its
+  worktree exists (not after **auto-clear** or a manual clear).
+- A diff is cut at 256 KiB; binary files are listed but not shown.
+- **File diffs need an operator token.** An agent can commit a secret, so a
+  viewer token sees the file list only. Below admin, diffs are passed
+  through the log redaction; an admin sees them as written. See
+  [Security & access tokens](/guides/security/).
+
+Diffs are computed by `git` on request, never on the orchestrator's event
+loop, under a 15-second timeout, so a large worktree cannot slow dispatch.
+
+## From the API
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8090/api/v1/issues/ENG-12/context
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8090/api/v1/issues/ENG-12/diff
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8090/api/v1/issues/ENG-12/diff?file=web/src/App.tsx"
+```
+
+Both endpoints and their fields are in the
+[API reference](/api-reference/#run-context-and-changes-215).
