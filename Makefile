@@ -1,4 +1,4 @@
-.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -32,7 +32,7 @@ build: web-deps web-build
 # internal/server/web/dist (gitignored), so on a fresh checkout every Go
 # compile step fails with "pattern web/dist: no matching files found" until
 # the frontend is built. Order is load-bearing — verify runs serially.
-verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test
+verify: web-deps web-build web-bundle-budget fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
@@ -217,6 +217,12 @@ web-format:
 
 web-build:
 	cd web && pnpm build
+
+# #211 — caps on total / initial / per-chunk JS and forbidden dependencies in
+# the embedded dashboard build. Reads internal/server/web/dist, so it runs
+# after web-build (verify orders it that way).
+web-bundle-budget:
+	cd web && pnpm bundle:budget
 
 web-test:
 	cd web && pnpm test

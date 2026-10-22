@@ -20,14 +20,18 @@ export function ReviewQueueSection() {
   // statements left over from an earlier refactor. `classifyReviewSource`
   // reads the session id from the snapshot it already receives, so the
   // destructured field was dead weight.
-  const { reviewerProfile, completionState, running, history } = useItervoxStore(
-    useShallow((s) => ({
-      reviewerProfile: s.snapshot?.reviewerProfile ?? '',
-      completionState: s.snapshot?.completionState ?? '',
-      running: s.snapshot?.running ?? EMPTY_RUNNING,
-      history: s.snapshot?.history ?? EMPTY_HISTORY,
-    })),
-  );
+  const { reviewerProfile, completionState, running, history, currentAppSessionId } =
+    useItervoxStore(
+      useShallow((s) => ({
+        reviewerProfile: s.snapshot?.reviewerProfile ?? '',
+        completionState: s.snapshot?.completionState ?? '',
+        running: s.snapshot?.running ?? EMPTY_RUNNING,
+        history: s.snapshot?.history ?? EMPTY_HISTORY,
+        // #211 — classifyReviewSource reads only these two branches; select
+        // them instead of the whole snapshot, whose root changes every frame.
+        currentAppSessionId: s.snapshot?.currentAppSessionId,
+      })),
+    );
 
   const { data: issues = [] } = useIssues();
   const triggerReview = useTriggerAIReview();
@@ -59,15 +63,16 @@ export function ReviewQueueSection() {
   // Per-identifier review-source classification, delegated to the shared
   // helper in lib/operatorQueue so this surface and NotificationsView use
   // identical logic. Gap §10.1.
-  const snapshot = useItervoxStore((s) => s.snapshot);
   const reviewSourceByIdentifier = useMemo(() => {
     const map: Record<string, 'session' | 'tracker'> = {};
-    if (!snapshot) return map;
     for (const issue of awaitingReview) {
-      map[issue.identifier] = classifyReviewSource(snapshot, issue.identifier);
+      map[issue.identifier] = classifyReviewSource(
+        { currentAppSessionId, history },
+        issue.identifier,
+      );
     }
     return map;
-  }, [awaitingReview, snapshot]);
+  }, [awaitingReview, currentAppSessionId, history]);
   const totalItems = awaitingReview.length + reviewing.length + recentReviews.length;
   const q = search.trim().toLowerCase();
   const filteredAwaiting = useMemo(

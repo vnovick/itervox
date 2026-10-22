@@ -341,3 +341,31 @@ describe('automation filter groups (#198)', () => {
     expect(automationDefFromValues({ ...values, groups: [] }).filter?.groups).toBeUndefined();
   });
 });
+
+describe('cron validation (#211)', () => {
+  const valid = emptyAutomationValues('default', []);
+
+  it('accepts an expression the daemon parser accepts', () => {
+    expect(automationFormSchema.safeParse({ ...valid, cron: '*/15 9-17 * * 1-5' }).success).toBe(
+      true,
+    );
+  });
+
+  it('blocks saving an expression the daemon parser rejects, naming the field', () => {
+    const result = automationFormSchema.safeParse({ ...valid, cron: '0 9 * * MON' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['cron'],
+        message: 'Invalid cron: day-of-week: invalid integer "MON"',
+      }),
+    ]);
+  });
+
+  it('does not validate the cron field of a non-cron trigger', () => {
+    expect(
+      automationFormSchema.safeParse({ ...valid, triggerType: 'input_required', cron: 'nonsense' })
+        .success,
+    ).toBe(true);
+  });
+});
