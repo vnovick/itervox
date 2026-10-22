@@ -46,7 +46,12 @@ var hubRouteScopes = map[string]string{
 	"GET /hub/api/v1/projects": string(apitokens.ScopeViewer),
 	"GET /hub/api/v1/feed":     string(apitokens.ScopeViewer),
 	"GET /hub/api/v1/events":   string(apitokens.ScopeViewer),
-	"* /hub/p/{project}/api/*": hubMemberRoute,
+	// #229 notification settings: reading and changing them is admin (the
+	// routes say where a project's events go); a test is operator.
+	"GET /hub/api/v1/notifications":       string(apitokens.ScopeAdmin),
+	"PUT /hub/api/v1/notifications":       string(apitokens.ScopeAdmin),
+	"POST /hub/api/v1/notifications/test": string(apitokens.ScopeOperator),
+	"* /hub/p/{project}/api/*":            hubMemberRoute,
 }
 
 // Principal is an authenticated hub caller.

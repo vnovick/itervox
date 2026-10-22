@@ -30,6 +30,9 @@ pub struct DaemonRecord {
     pub executable: String,
     pub path_source: String,
     pub source: String,
+    /// The daemon takes part in the machine's hub (#228); false for
+    /// `--no-hub` and daemons older than the hub.
+    pub hub_member: bool,
 }
 
 /// Token sources (`token_source`).

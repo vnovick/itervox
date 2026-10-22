@@ -843,7 +843,10 @@ daemons' envelope, `{"error":{"code","message"}}`.
 | `GET /hub/api/v1/whoami` | viewer | `{"principal":{"scope","tokenId","name"},"hub":true}` |
 | `GET /hub/api/v1/projects` | viewer | the members |
 | `GET /hub/api/v1/feed?since=&limit=` | viewer | the merged event feed |
-| `GET /hub/api/v1/events` | viewer | SSE: `feed` and `projects` announcements |
+| `GET /hub/api/v1/events` | viewer | SSE: `feed` and `projects` announcements, desktop `notification` frames |
+| `GET /hub/api/v1/notifications` | admin | the notification settings, kinds, channels and projects |
+| `PUT /hub/api/v1/notifications` | admin | replace the notification settings |
+| `POST /hub/api/v1/notifications/test` | operator | send a test notification through one channel |
 | `* /hub/p/{project}/api/v1/...` | the member route's | the member's API through the proxy |
 | `GET /hub/`, `/hub/p/{project}/...`, `/assets/...` | none | the dashboard |
 
@@ -916,6 +919,63 @@ Server-sent events. On connect and on every change: `event: projects`
 (`{"count":N}`, the member count) and `event: feed` (`{"headSeq":N}`, the
 merged feed's newest `seq`); `: ping` comments every 25 s. Read the events
 themselves with `GET /hub/api/v1/feed?since=`.
+
+#229: every notification the settings route to the desktop channel is sent
+as `event: notification` with `id: <n>` and the notification as data:
+
+```
+event: notification
+id: 12
+data: {"id":12,"channel":"desktop","kind":"guardrail_approval","urgent":true,"project":"web","identifier":"ENG-12","title":"ENG-12 needs approval","body":"web","url":"/hub/p/web/?issue=ENG-12","seq":1203,"ts":"2026-10-22T10:00:00Z"}
+```
+
+`kind` is a notification kind, `digest` (with `items`, the batched
+notifications) or `test`. Titles are built from the kind, identifier and
+enum payload fields only, never agent output. The stream starts after
+`?notify_since=<id>` or the `Last-Event-ID` header, else at the newest
+notification (nothing old is replayed); an id above the hub's newest (the
+hub restarted) replays the up to 100 it kept. In `GET /hub/api/v1/feed`,
+each event that notifies carries `notifyKind` and `channels`, the channels
+the settings route it to at read time.
+
+### `GET` / `PUT /hub/api/v1/notifications`
+
+Admin. The hub's notification settings
+(`~/.itervox/hub/notifications.json`, `0600`, schema
+[`notifications.schema.json`](https://itervox.dev/schema/notifications.schema.json);
+guide: [Notifications](../site/src/content/docs/guides/hub.mdx#notifications)):
+
+```json
+{
+  "settings": {
+    "$schema": "https://itervox.dev/schema/notifications.schema.json",
+    "version": 1,
+    "digest_interval_minutes": 15,
+    "channels": { "push": { "enabled": true }, "slack": { "enabled": true }, "desktop": { "enabled": true } },
+    "defaults": { "input_required": ["push", "slack", "desktop"], "guardrail_approval": ["push", "slack", "desktop"],
+                  "run_failed": ["push", "slack", "desktop"], "review_verdict": [], "pr_merged": [],
+                  "lesson_proposed": [], "dispatch_paused": [] },
+    "projects": { "web": { "routes": { "pr_merged": ["desktop"] }, "snooze_until": "2026-10-23T08:00:00Z" } }
+  },
+  "kinds": [ { "name": "input_required", "urgent": true }, { "name": "run_failed", "urgent": false } ],
+  "channels": [ { "name": "push", "available": false }, { "name": "slack", "available": false }, { "name": "desktop", "available": true } ],
+  "projects": ["api", "web"]
+}
+```
+
+`PUT` takes the `settings` document (unknown fields, kinds and channels are
+400 `invalid_settings`; `digest_interval_minutes` is 1–1440), saves it and
+applies it at once; it answers like `GET`. A project's `routes` override
+`defaults` per kind (an empty list turns a kind off); `snooze_until`
+suppresses the project's notifications until then. `available` is false for
+a channel not set up on this hub.
+
+### `POST /hub/api/v1/notifications/test`
+
+Operator. Body `{"channel": "push" | "slack" | "desktop"}`: sends one test
+notification through that channel, whatever the routes and snoozes say.
+`200 {"sent":true,"channel":"desktop"}`; 400 `unknown_channel`; 409
+`channel_unavailable` when the channel is not set up; 502 `send_failed`.
 
 ### The proxy: `/hub/p/{project}/api/v1/...`
 

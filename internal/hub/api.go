@@ -110,7 +110,9 @@ func (h *Hub) handleFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	writeJSON(w, http.StatusOK, h.feed.page(since, limit))
+	page := h.feed.page(since, limit)
+	h.annotateChannels(page.Events)
+	writeJSON(w, http.StatusOK, page)
 }
 
 // sseKeepAlive is the comment interval that keeps idle streams open
@@ -122,6 +124,12 @@ const sseKeepAlive = 25 * time.Second
 // moves and the member count (`event: projects`, data {"count":N}) whenever
 // the member set changes, each sent once on connect. A client reads the
 // feed itself with GET /hub/api/v1/feed?since=.
+//
+// #229: every notification the settings route to the desktop channel is
+// sent as `event: notification` with `id: <stream id>` and the
+// Notification as data — the Mac app shows each one natively and routes
+// nothing itself. The stream starts after notify_since (query) or
+// Last-Event-ID, else at the newest notification.
 func (h *Hub) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -147,10 +155,31 @@ func (h *Hub) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !send("projects", map[string]int{"count": len(h.members.list())}) || !send("feed", map[string]int64{"headSeq": h.feed.headSeq()}) {
 		return
 	}
+	notifyPos := h.notifySince(r)
+	sendNotifications := func() (<-chan struct{}, bool) {
+		notes, wait := h.desktop.after(notifyPos)
+		for _, n := range notes {
+			raw, _ := json.Marshal(n)
+			if _, err := fmt.Fprintf(w, "event: notification\nid: %d\ndata: %s\n\n", n.ID, raw); err != nil {
+				return nil, false
+			}
+			notifyPos = n.ID
+		}
+		flusher.Flush()
+		return wait, true
+	}
+	notifyWait, ok := sendNotifications()
+	if !ok {
+		return
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-notifyWait:
+			if notifyWait, ok = sendNotifications(); !ok {
+				return
+			}
 		case <-feedWait:
 			_, _, feedWait = h.feed.after(h.feed.headSeq())
 			if !send("feed", map[string]int64{"headSeq": h.feed.headSeq()}) {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import HubPage from '../index';
 import { configureApiContext } from '../../../auth/apiBase';
@@ -85,5 +85,30 @@ describe('HubPage', () => {
       ) as unknown as typeof fetch;
     renderPage();
     expect(await screen.findByText('No projects yet')).toBeTruthy();
+  });
+
+  it('opens the Notifications settings view (#229)', async () => {
+    const fetchMock = vi.fn((url: string) =>
+      Promise.resolve(
+        url.endsWith('/notifications')
+          ? new Response(
+              JSON.stringify({ error: { code: 'insufficient_scope', message: 'admin' } }),
+              {
+                status: 403,
+              },
+            )
+          : new Response(JSON.stringify(PROJECTS), { status: 200 }),
+      ),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    renderPage();
+    await screen.findByRole('list', { name: 'Projects' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.queryByRole('list', { name: 'Projects' })).toBeNull();
+    expect((await screen.findByRole('alert')).textContent).toContain('admin hub token');
+    expect(fetchMock.mock.calls.some(([url]) => url === '/hub/api/v1/notifications')).toBe(true);
   });
 });

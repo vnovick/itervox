@@ -172,7 +172,78 @@ Delivery is at least once: a failed `Notify` is retried with backoff (from 1
 s, doubling to a minute) until it succeeds, and each notifier's cursor is
 persisted only after a success, so an event in flight when the hub stops is
 delivered by the next one. v0.2.9 ships the `log` notifier, which logs each
-event at debug level (`itervox --verbose`).
+event at debug level (`itervox --verbose`), and one notifier per
+notification channel (below).
+
+## Notifications
+
+The hub turns the merged feed into notifications you control, per project.
+Open **Hub → Notifications** in the dashboard (an admin hub token), or edit
+`~/.itervox/hub/notifications.json` (`0600`, schema
+[`notifications.schema.json`](https://itervox.dev/schema/notifications.schema.json))
+and restart the hub.
+
+**Kinds.** Each kind comes from a feed event:
+
+| Kind | Feed event | Default | Batched |
+|---|---|---|---|
+| `input_required` | `input_required` | every channel | never |
+| `guardrail_approval` | `input_required` with payload `kind: guardrail_approval` | every channel | never |
+| `run_failed` | `run_failed` | every channel | yes |
+| `review_verdict` | `review_verdict` | off | yes |
+| `pr_merged` | `pr_merged` | off | yes |
+| `lesson_proposed` | `lesson_proposed` | off | yes |
+| `dispatch_paused` | `dispatch_paused` | off | yes |
+
+There is no budget kind yet: an issue paused by its budget emits no feed
+event.
+
+**Channels.** `push` (Web Push, #231), `slack` (#230) and `desktop` (the Mac
+app). A channel that is not set up yet shows as unavailable and receives
+nothing; `channels.<name>.enabled: false` switches one off for every project.
+
+**Routing.** For each project and kind the matrix picks the channels; a
+project without its own route for a kind uses `defaults`. Every channel
+calls the same decision (`NotificationSettings.Route` in `internal/hub`), so
+Slack, push and desktop always agree.
+
+**Snooze.** A project can be snoozed until a time (1 hour, 4 hours, a day, a
+week from the dashboard): its notifications are dropped, not delayed, until
+then.
+
+**Digests.** Urgent kinds (input required, guardrail approval) are sent at
+once. The others wait: the first one opens a window of
+`digest_interval_minutes` (default 15), and when it closes everything that
+arrived goes out as one digest per channel ("3 updates across 2 projects"),
+or as itself when it was alone. Digests are hub memory: a hub that stops
+drops the pending one.
+
+```json
+{
+  "$schema": "https://itervox.dev/schema/notifications.schema.json",
+  "version": 1,
+  "digest_interval_minutes": 15,
+  "channels": { "push": { "enabled": true }, "slack": { "enabled": true }, "desktop": { "enabled": true } },
+  "defaults": { "input_required": ["push", "slack", "desktop"], "pr_merged": [] },
+  "projects": {
+    "web": { "routes": { "pr_merged": ["desktop"], "run_failed": ["slack"] }, "snooze_until": "2026-10-23T08:00:00Z" }
+  }
+}
+```
+
+**Test.** Each channel has a **Send test** button
+(`POST /hub/api/v1/notifications/test`, operator).
+
+**Desktop.** The Mac app holds one `GET /hub/api/v1/events` stream to the
+local hub, with a viewer hub token it creates for itself
+(`itervox token create --hub --name itervox-desktop --scope viewer`, kept in
+the Keychain), and shows every `event: notification` frame as a native
+notification; clicking one opens the hub dashboard at that issue. The hub
+has already applied the routes, snoozes and digests, so the app routes
+nothing itself, and while the stream is up it stops raising its own
+per-daemon alerts for local projects. Without a hub it falls back to them.
+
+Quiet hours, escalation and role-based routing are not part of the hub.
 
 ## Reaching the hub from another device
 
