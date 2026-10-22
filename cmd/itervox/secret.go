@@ -24,8 +24,8 @@ import (
 // what the deploy skill uses for tracker keys, agent credentials and the
 // dashboard token.
 //
-//	itervox secret set KEY [--workflow WORKFLOW.md] [--replace]
-//	itervox secret list [--workflow WORKFLOW.md]
+//	itervox secret set KEY [--workflow WORKFLOW.md | --hub] [--replace]
+//	itervox secret list [--workflow WORKFLOW.md | --hub]
 
 // secretKeyRe is a valid environment variable name.
 var secretKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -43,13 +43,14 @@ func runSecret(args []string) {
 // secret runs `itervox secret` and returns the exit code.
 func secret(args []string, in io.Reader, out, errOut io.Writer) int {
 	if len(args) == 0 || (args[0] != "set" && args[0] != "list") {
-		_, _ = fmt.Fprintln(errOut, "usage: itervox secret set KEY [--workflow WORKFLOW.md] [--replace]\n       itervox secret list [--workflow WORKFLOW.md]")
+		_, _ = fmt.Fprintln(errOut, "usage: itervox secret set KEY [--workflow WORKFLOW.md | --hub] [--replace]\n       itervox secret list [--workflow WORKFLOW.md | --hub]")
 		return 2
 	}
 	fs := flag.NewFlagSet("secret "+args[0], flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	workflow := fs.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md (the file is .itervox/.env next to it)")
 	replace := fs.Bool("replace", false, "replace a value that is already set (rotation)")
+	hubFile := fs.Bool("hub", false, "the hub's own secrets file, ~/.itervox/hub/.env (Slack tokens, #230)")
 	// Flags may come before or after KEY.
 	var positional []string
 	rest := args[1:]
@@ -64,6 +65,18 @@ func secret(args []string, in io.Reader, out, errOut io.Writer) int {
 		rest = fs.Args()[1:]
 	}
 	envPath := filepath.Join(filepath.Dir(*workflow), ".itervox", ".env")
+	if *hubFile {
+		p, err := hubEnvPath()
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "itervox secret: %v\n", err)
+			return 1
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			_, _ = fmt.Fprintf(errOut, "itervox secret: %v\n", err)
+			return 1
+		}
+		envPath = p
+	}
 
 	if args[0] == "list" {
 		if len(positional) > 0 {

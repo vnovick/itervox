@@ -810,7 +810,7 @@ endpoint.
 | `run_finished` | A run succeeded, was cancelled (`outcome: "cancelled"`) or stopped by reconciliation | run fields, `outcome` |
 | `run_failed` | A run failed, stalled, was rate limited, … | run fields, `outcome` (the terminal reason) |
 | `input_required` | An agent asked a question, or a guardrail approval waits (`kind: "guardrail_approval"`) | run fields |
-| `input_answered` | A question was answered (`via`: `dashboard`, `tracker`, `agent`) or dismissed (`via: "dismiss"`) | `via`, `outcome` |
+| `input_answered` | A question was answered (`via`: `dashboard`, `slack`, `tracker`, `agent`) or dismissed (`via: "dismiss"`) | `via`, `outcome` |
 | `review_verdict` | A reviewer finished | `profile`, `verdict`, `outcome` (`passed` / `blocked`, once the review is complete) |
 | `pr_opened` | A run recorded a PR itervox did not manage yet | `prUrl`, `runId` |
 | `pr_merged` | The `merge_pr` action merged a PR | `prUrl` |
@@ -1579,7 +1579,7 @@ message) when the tracker refuses.
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
-| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true,"via"?:"slack"}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
 | `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
@@ -1615,6 +1615,13 @@ it answers an ordinary input request but never a guardrail approval (the
 event loop ignores it for an approval entry, so the refusal holds even when
 an approval appears after the caller's check), and the feed records it with
 `via: "agent"`. Guardrail approvals stay human-only.
+
+`via: "slack"` (#230) marks a human reply the hub's Slack app relays for an
+allow-listed Slack user: it answers input requests and guardrail approvals
+like a dashboard reply, is mirrored to the tracker the same way, and the
+`input_answered`, `guardrail_approved` and `guardrail_blocked` feed events
+record `via: "slack"`. `via` is optional and a closed enum: any other value,
+or `via` together with `fromAgent`, is `400 bad_request` (`field: "via"`).
 
 Operator comments are plain comments (no managed marker): they can fire
 `tracker_comment_added` automations and are delivered through the write-ahead

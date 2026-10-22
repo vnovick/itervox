@@ -128,6 +128,16 @@ goroutine, never the daemon. Notification routing (#229) is hub state too:
 `push`/`slack`/`desktop` channels; a channel implements `hub.Channel`
 (delivery only) and is registered through `hub.Config.Channels` — it never
 re-implements routing, snooze or digests (`NotificationSettings.Route`).
+Slack (#230, `internal/hub/slack`) is a channel that is also a
+`hub.InteractiveChannel`: the hub runs it only while serving (it holds the
+workspace's single Socket Mode connection) and hands it `hub.MemberActions`,
+which call a member's own API with the hub's member token behind the member's
+route table (viewer/operator routes only — fail closed). Every Slack action
+needs an allow-listed Slack user (`hub.slack.allowed_users`, empty = nobody),
+a value the hub signed (HMAC binding project, member, issue, run, kind), a
+still-pending request and a first use; a reply is provide-input with
+`via: "slack"`, never `fromAgent`. Slack tokens live in `~/.itervox/hub/.env`,
+never in settings or logs.
 
 ### `orchestrator.State` is a value type
 
@@ -619,6 +629,9 @@ hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
      snooze, all hub-side state; imports apitokens, atomicfs, metrics, chi and fsnotify only,
      never orchestrator, server or config: it reaches every member, its own
      project included, over HTTP. Its tests import server for real members)
+     └── hub/slack (#230 Slack channel over Socket Mode — imports hub,
+         atomicfs, metrics, golang.org/x/net/websocket and yaml.v3; used by
+         cmd/itervox only)
 
 templates (WORKFLOW.md scaffolding)
 

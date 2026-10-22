@@ -516,6 +516,46 @@
           "title": "Hub port",
           "type": "integer",
           "x-itervox-group": "Hub"
+        },
+        "slack": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_users": {
+              "default": [],
+              "description": "Slack user IDs (U…) that may reply, approve, reject and steer from Slack. Empty: nobody; Slack messages are alerts only. Read at startup.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Slack: who may act",
+              "type": "array",
+              "x-itervox-group": "Hub"
+            },
+            "channels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "description": "Hub project name to Slack channel ID (C…, G…) or user ID (U…, a DM from the app). Read at startup.",
+              "title": "Slack: channel per project",
+              "type": "object",
+              "x-itervox-group": "Hub"
+            },
+            "default_channel": {
+              "default": "",
+              "description": "Slack channel or user ID for projects without their own. Empty: those projects are not posted. Read at startup.",
+              "title": "Slack: default channel",
+              "type": "string",
+              "x-itervox-group": "Hub"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Post hub notifications to your own Slack app over Socket Mode and take replies, approvals and steering back (itervox hub slack setup). Needs the app and bot tokens. Read at startup.",
+              "title": "Slack",
+              "type": "boolean",
+              "x-itervox-group": "Hub"
+            }
+          },
+          "type": "object"
         }
       },
       "title": "Hub",

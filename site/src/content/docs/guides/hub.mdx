@@ -198,8 +198,8 @@ and restart the hub.
 There is no budget kind yet: an issue paused by its budget emits no feed
 event.
 
-**Channels.** `push` (Web Push, #231), `slack` (#230) and `desktop` (the Mac
-app). A channel that is not set up yet shows as unavailable and receives
+**Channels.** `push` (Web Push, #231), `slack` (your own Slack app, #230:
+see [Slack](/guides/slack/)) and `desktop` (the Mac app). A channel that is not set up yet shows as unavailable and receives
 nothing; `channels.<name>.enabled: false` switches one off for every project.
 
 **Routing.** For each project and kind the matrix picks the channels; a
@@ -271,5 +271,6 @@ project's HTTP API, exactly like every other member.
 ## Reference
 
 - `itervox hub [--json]`, `itervox --no-hub`, `itervox token --hub`: [CLI](/cli/#itervox-hub--the-machines-hub-and-its-members)
-- `hub.enabled`, `hub.port`, `hub.bind`: [Configuration](/configuration/#hub)
+- `hub.enabled`, `hub.port`, `hub.bind`, `hub.slack.*`: [Configuration](/configuration/#hub)
+- Slack alerts, replies, approvals and steering: [Slack](/guides/slack/)
 - `/hub/api/v1/*`, `/hub/p/{project}/api/v1/*`, `GET /api/v1/route-scopes`: [API reference](/api-reference/#hub)

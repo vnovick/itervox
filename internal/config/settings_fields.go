@@ -193,6 +193,18 @@ var SettingFields = []SettingField{
 	{Key: "hub.port", Type: TypeInteger, Group: "Hub", Default: DefaultHubPort, Minimum: ptr(0),
 		Label:       "Hub port",
 		Description: "Port of the hub when this daemon serves it; a busy port moves to the next free one, recorded in the hub lock. 0 lets the OS pick. Read at startup."},
+	{Key: "hub.slack.allowed_users", Type: TypeArray, Items: TypeString, Group: "Hub", Default: []any{},
+		Label:       "Slack: who may act",
+		Description: "Slack user IDs (U…) that may reply, approve, reject and steer from Slack. Empty: nobody; Slack messages are alerts only. Read at startup."},
+	{Key: "hub.slack.channels", Type: TypeObject, Items: TypeString, Group: "Hub", Default: map[string]any{},
+		Label:       "Slack: channel per project",
+		Description: "Hub project name to Slack channel ID (C…, G…) or user ID (U…, a DM from the app). Read at startup."},
+	{Key: "hub.slack.default_channel", Type: TypeString, Group: "Hub", Default: "",
+		Label:       "Slack: default channel",
+		Description: "Slack channel or user ID for projects without their own. Empty: those projects are not posted. Read at startup."},
+	{Key: "hub.slack.enabled", Type: TypeBoolean, Group: "Hub", Default: false,
+		Label:       "Slack",
+		Description: "Post hub notifications to your own Slack app over Socket Mode and take replies, approvals and steering back (itervox hub slack setup). Needs the app and bot tokens. Read at startup."},
 
 	// ── server ─────────────────────────────────────────────────────────────
 	{Key: "server.allow_unauthenticated", Type: TypeBoolean, Group: "Server", Default: false,

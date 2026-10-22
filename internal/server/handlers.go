@@ -661,6 +661,10 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 		// #216): like the agent-actions route it never answers a guardrail
 		// approval, decided atomically in the event loop.
 		FromAgent bool `json:"fromAgent"`
+		// Via (#230, optional) names the human channel a reply arrived
+		// through when it is not the dashboard: only "slack" (the hub's
+		// Slack app, for an allow-listed Slack user). Recorded on the feed.
+		Via string `json:"via"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
@@ -673,6 +677,19 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	provide := s.client.ProvideInput
 	if body.FromAgent && s.guardrails != nil {
 		provide = s.guardrails.ProvideAgentInput
+	}
+	if body.Via != "" {
+		// A closed enum, and a human channel only: an agent relay never
+		// names one (it would let an agent reply pass as a person's).
+		viaClient, ok := s.client.(InputViaProvider)
+		if body.Via != InputViaSlack || body.FromAgent || !ok {
+			writeErrorWithField(w, http.StatusBadRequest, "bad_request",
+				`via must be "slack" (or left out), and never with fromAgent`, "via")
+			return
+		}
+		provide = func(identifier, message string) error {
+			return viaClient.ProvideInputVia(identifier, message, body.Via)
+		}
 	}
 	// ProvideInput performs no lookup of its own (CORE-005): the only error
 	// it can return is ErrBusy (event channel full). There is no "not found"
