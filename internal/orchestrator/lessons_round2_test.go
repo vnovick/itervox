@@ -53,7 +53,7 @@ func TestLessonProposedFromRepeatedReviewerAsk(t *testing.T) {
 	t.Setenv(rules.UserRulesEnv, filepath.Join(root, "home", "rules.json"))
 	eng1 := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "Add the export button", State: "In Progress"}
 	eng2 := domain.Issue{ID: "id2", Identifier: "ENG-2", Title: "Fix the date filter", State: "In Progress"}
-	o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{}, eng1, eng2)
+	o, rr := breakerOrchestrator(t, config.BackendFallbackConfig{}, eng1, eng2)
 	o.cfg.WorkflowPath = filepath.Join(root, "repo", "WORKFLOW.md")
 	o.cfg.Memory = lessonsOnCfg()
 	o.cfg.Memory.Lessons.Profile = config.LessonProfileTemplate
@@ -63,12 +63,15 @@ func TestLessonProposedFromRepeatedReviewerAsk(t *testing.T) {
 	o.cfg.Agent.ReviewQuorum = config.ReviewQuorumAnyBlock
 	state := NewState(o.cfg)
 
+	reviews := 0
 	review := func(issue domain.Issue, v ReviewVerdict) string {
 		t.Helper()
-		writeVerdictFile(t, ws, issue.Identifier, "reviewer", v)
 		o.dispatchReviewerForIssue(ctx, &state, issue, "reviewer", time.Now())
 		run := state.Running[issue.ID]
 		require.NotNil(t, run)
+		reviews++
+		awaitRunnerCalls(t, rr, reviews)
+		writeVerdictFile(t, ws, issue.Identifier, "reviewer", v)
 		state = o.handleEvent(ctx, state, OrchestratorEvent{Type: EventWorkerExited, IssueID: issue.ID, RunID: run.RunID,
 			RunEntry: &RunEntry{Issue: issue, TerminalReason: TerminalSucceeded}})
 		return run.RunID
