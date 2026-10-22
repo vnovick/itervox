@@ -40,6 +40,7 @@ export default defineConfig({
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },
             { label: 'Pause dispatch & event feed', slug: 'guides/pause-and-feed' },
             { label: 'Now & Changes', slug: 'guides/now-and-changes' },
+            { label: 'MCP server (Claude Code, Codex)', slug: 'guides/mcp' },
             { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
             { label: 'Guardrails', slug: 'guides/guardrails' },
             { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },

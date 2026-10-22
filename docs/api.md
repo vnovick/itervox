@@ -161,6 +161,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/logs` | viewer |
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
+| `GET` | `/api/v1/memory/recall` | viewer |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
 | `GET` | `/api/v1/repo/evals` | viewer |
@@ -1285,7 +1286,7 @@ a limited backend chip.
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
-| `POST` | `/issues/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
 | `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
@@ -1314,6 +1315,13 @@ when `agent.inline_input: true` — the tracker is the only reply channel in tha
 mode. The `409` is checked first: in inline mode the route refuses regardless
 of the request body or the issue's state. The agent-action `provide-input` route
 (`POST /agent-actions/{identifier}/provide-input`) is unaffected.
+
+`fromAgent: true` (#216) marks a reply relayed for an agent — `itervox mcp`
+sends it for its `reply_input` tool. Such a reply takes the agent-action path:
+it answers an ordinary input request but never a guardrail approval (the
+event loop ignores it for an approval entry, so the refusal holds even when
+an approval appears after the caller's check), and the feed records it with
+`via: "agent"`. Guardrail approvals stay human-only.
 
 Operator comments are plain comments (no managed marker): they can fire
 `tracker_comment_added` automations and are delivered through the write-ahead
@@ -1622,6 +1630,7 @@ items of 512 bytes) is refused.
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
 | `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
 | `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
+| `GET` | `/memory/recall?q=&profile=&budget=` | — | `{"enabled","profile","budget","tokens","dropped","entries":[{"id","type","text","scope","tags"?,"pinned"?}],"overBudget"?,"unreadableFiles"?}` | `400 bad_request` (`q` missing or over 2000 bytes, `budget` outside 1–8000) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
@@ -1636,6 +1645,15 @@ approve and reject change the snapshot's `proposedLessons`, which is pushed at o
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
 reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.
+
+`recall` (#216, viewer) is memory search for `itervox mcp`, ranked exactly like
+run-time retrieval: it runs the dispatch selection (`memory.Resolve`) for a run of
+`profile` (default `default`) on an issue titled `q` — the active entries in that
+profile's scope, pinned first, then by lexical overlap (ties: more used, more
+recently updated, id), added while they fit in `budget` tokens (default the
+run-time memory budget before rules, `min(token_budget, prompt_share_tokens)`).
+`dropped` counts the in-scope entries the budget left out; proposed and archived
+entries are never returned. Text is redacted again on the way out.
 
 ---
 

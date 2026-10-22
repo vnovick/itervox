@@ -1015,7 +1015,7 @@ a limited backend chip.
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
-| `POST` | `/issues/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
 | `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
@@ -1028,6 +1028,12 @@ and `409 backend_pin_refused` (with the resolver's reason in `message`,
 example a `codex` pin over a `claude ...` profile, which the dispatcher would
 refuse. A refused pin is not stored. A pin applies from the next run and wins
 over `agent.backend_fallback`.
+
+`provide-input` with `fromAgent: true` (#216) is a reply relayed for an agent,
+such as `itervox mcp`'s `reply_input` tool: it answers an ordinary input
+request but never a guardrail approval — the event loop ignores it for an
+approval, so approvals stay human-only even when one appears after the
+caller checked.
 
 `failures/ack` (CORE-175) acknowledges the issue's `worker_failed` /
 `worker_stalled` rows in `recentFailures` that occurred at or before `upTo`
@@ -1416,6 +1422,7 @@ items of 512 bytes) is refused.
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
 | `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
 | `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
+| `GET` | `/memory/recall?q=&profile=&budget=` | — | `{"enabled","profile","budget","tokens","dropped","entries":[{"id","type","text","scope","tags"?,"pinned"?}],"overBudget"?,"unreadableFiles"?}` | `400 bad_request` (`q` missing or over 2000 bytes, `budget` outside 1–8000) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
@@ -1430,6 +1437,13 @@ approve and reject change the snapshot's `proposedLessons`, which is pushed at o
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
 reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.
+
+`recall` (#216, viewer scope) is the memory search behind `itervox mcp`'s
+`recall` tool, ranked exactly like run-time retrieval: the selection a run of
+`profile` (default `default`) on an issue titled `q` would get — active entries
+in that profile's scope, pinned first, then by relevance — within `budget`
+tokens (default the run-time memory budget). `dropped` counts what the budget
+left out; proposed and archived entries are never returned.
 
 ---
 

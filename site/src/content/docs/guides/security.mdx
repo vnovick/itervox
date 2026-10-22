@@ -98,6 +98,10 @@ stored admin token and use that instead.
 - If the file is unreadable or invalid, the daemon refuses **every** stored
   token (the bootstrap token keeps working so you can fix it) and never
   overwrites it.
+- [`itervox mcp`](/guides/mcp/) creates its own stored token named `mcp`
+  (viewer unless started with `--token-scope operator`) and remembers its
+  secret in `.itervox/mcp-token.json` (mode `0600`, gitignored). Revoke it
+  like any other token; the next `itervox mcp` start creates a new one.
 
 ### What the dashboard shows each scope
 
@@ -154,6 +158,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/logs` | viewer |
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
+| `GET` | `/api/v1/memory/recall` | viewer |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
 | `GET` | `/api/v1/repo/evals` | viewer |
