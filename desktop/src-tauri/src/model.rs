@@ -16,9 +16,24 @@ use crate::status::{
 };
 use crate::token::TokenStore;
 
-/// How often the app polls `status --all --json` and the daemons. The
-/// acceptance bar is "at least every 5 s".
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+/// How often the app reads the daemon registry and the daemons while any
+/// of them has an agent running, retrying or waiting for input, or an
+/// operation the app started is pending. The acceptance bar is "at least
+/// every 5 s" (#128).
+pub const BUSY_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// The interval while everything is idle (#212): the V3 target is near-zero CPU with no
+/// agents running. Opening the menu or focusing a window refreshes at once.
+pub const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+
+/// The wait before the next refresh.
+pub fn refresh_interval(busy: bool) -> Duration {
+    if busy {
+        BUSY_REFRESH_INTERVAL
+    } else {
+        IDLE_REFRESH_INTERVAL
+    }
+}
 
 /// A pending operation shows in the menu until the next poll confirms it,
 /// or this long at most.
@@ -63,6 +78,17 @@ pub struct ProjectView {
     pub pending: Option<PendingOp>,
     /// The last start/stop error, shown until the next operation.
     pub error: Option<String>,
+}
+
+impl Health {
+    /// Whether the daemon has agent work in flight: running or retrying
+    /// agents, or a question waiting for (or resuming after) an answer.
+    pub fn busy(&self) -> bool {
+        match self {
+            Health::Ok(s) => s.running > 0 || s.retrying > 0 || !s.input_required.is_empty(),
+            _ => false,
+        }
+    }
 }
 
 impl ProjectView {
@@ -275,6 +301,12 @@ impl Core {
     /// Most recent first.
     pub fn recent_alerts(&self) -> impl Iterator<Item = &Alert> {
         self.recent.iter()
+    }
+
+    /// Whether the next refresh should come soon: a daemon is busy or an
+    /// operation the app started is pending.
+    pub fn busy(&self) -> bool {
+        !self.pending.is_empty() || self.views.iter().any(|v| v.health.busy())
     }
 
     pub fn last_records(&self) -> &[DaemonRecord] {
@@ -577,8 +609,57 @@ mod tests {
     }
 
     #[test]
-    fn refresh_interval_is_at_most_five_seconds() {
-        assert!(REFRESH_INTERVAL <= Duration::from_secs(5));
+    fn refresh_interval_is_long_when_idle_and_short_when_busy() {
+        assert!(BUSY_REFRESH_INTERVAL <= Duration::from_secs(5));
+        assert!(IDLE_REFRESH_INTERVAL >= Duration::from_secs(15));
+        let mut core = Core::new(SavedProjects::default());
+        assert!(!core.busy(), "nothing running");
+        assert_eq!(refresh_interval(core.busy()), IDLE_REFRESH_INTERVAL);
+
+        let r = rec("/a/WORKFLOW.md", 1, "supervisor");
+        let poll = |core: &mut Core, s: StateSummary| {
+            let mut m = HashMap::new();
+            m.insert("/a/WORKFLOW.md".to_string(), Ok(s));
+            core.apply(Ok(vec![r.clone()]), m, Instant::now());
+            refresh_interval(core.busy())
+        };
+        assert_eq!(
+            poll(&mut core, StateSummary::default()),
+            IDLE_REFRESH_INTERVAL,
+            "a running daemon with no agents is idle"
+        );
+        let running = StateSummary {
+            running: 1,
+            ..Default::default()
+        };
+        assert_eq!(poll(&mut core, running), BUSY_REFRESH_INTERVAL);
+        let retrying = StateSummary {
+            retrying: 1,
+            ..Default::default()
+        };
+        assert_eq!(poll(&mut core, retrying), BUSY_REFRESH_INTERVAL);
+        let mut waiting = StateSummary::default();
+        waiting.input_required.push(InputRequired {
+            identifier: "ENG-1".into(),
+            state: "input_required".into(),
+            queued_at: String::new(),
+            context: String::new(),
+        });
+        assert_eq!(poll(&mut core, waiting), BUSY_REFRESH_INTERVAL);
+        assert_eq!(
+            poll(&mut core, StateSummary::default()),
+            IDLE_REFRESH_INTERVAL
+        );
+
+        // A pending start or stop polls fast until it settles.
+        core.begin("/b/WORKFLOW.md", PendingOp::Starting, Instant::now());
+        assert_eq!(refresh_interval(core.busy()), BUSY_REFRESH_INTERVAL);
+        // A daemon whose state cannot be read is not busy.
+        let mut m = HashMap::new();
+        m.insert("/a/WORKFLOW.md".to_string(), Err(FetchError::Unauthorized));
+        core.fail("/b/WORKFLOW.md", "x".into());
+        core.apply(Ok(vec![r.clone()]), m, Instant::now());
+        assert!(!core.busy());
     }
 
     #[test]

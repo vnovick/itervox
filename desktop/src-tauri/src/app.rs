@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::tray::{MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, Wry};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
@@ -19,8 +19,9 @@ use crate::app_update;
 use crate::client;
 use crate::dashboard::{origin_of, token_init_script, window_label};
 use crate::menu::{append_app_section, build_menu, MenuAction, MenuEntry, MenuSpec};
-use crate::model::{token_for, Core, NotificationTargets, PendingOp, REFRESH_INTERVAL};
+use crate::model::{refresh_interval, token_for, Core, NotificationTargets, PendingOp};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
+use crate::registry::{registry_dir, DaemonLister};
 use crate::remote::is_remote_key;
 use crate::sessions::{
     new_session_link, page_action, push_script, read_all, session_link, PageAction,
@@ -49,6 +50,12 @@ struct Shared {
     wake: Mutex<Sender<()>>,
     /// Remote connections and their tunnels (#156).
     remote: Arc<RemoteShared>,
+    /// Keep-alive connections to the local daemons (#212).
+    clients: client::ClientPool,
+    /// The in-process registry reader with its sidecar fallback (#212).
+    lister: Mutex<DaemonLister>,
+    /// The next refresh runs the sidecar's full listing (menu opened).
+    sweep: std::sync::atomic::AtomicBool,
 }
 
 /// A dashboard window: label, token, origin.
@@ -86,6 +93,16 @@ pub fn run() {
         // Closing the last dashboard window must not quit a menu-bar app;
         // only the Quit item (an explicit exit code) does.
         RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
+        // A focused window shows fresh state at once, whatever the
+        // (adaptive) refresh interval (#212).
+        RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Focused(true),
+            ..
+        } => {
+            if let Some(shared) = app.try_state::<Arc<Shared>>() {
+                wake(&shared);
+            }
+        }
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,
@@ -151,6 +168,9 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         status_error: Mutex::new(None),
         wake: Mutex::new(wake_tx),
         remote,
+        clients: client::ClientPool::default(),
+        lister: Mutex::default(),
+        sweep: std::sync::atomic::AtomicBool::new(false),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -168,12 +188,31 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     let tray_shared = Arc::clone(&shared);
+    let hover_shared = Arc::clone(&shared);
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .icon_as_template(true)
         .tooltip("Itervox")
         .show_menu_on_left_click(true)
         .menu(&Menu::new(app)?)
+        // The pointer reaching the icon, or a press on it, is the menu
+        // about to open: refresh at once (#212), with the sidecar's full
+        // listing so daemons of older binaries show too.
+        .on_tray_icon_event(move |_tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Enter { .. }
+                    | TrayIconEvent::Click {
+                        button_state: MouseButtonState::Down,
+                        ..
+                    }
+            ) {
+                hover_shared
+                    .sweep
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                wake(&hover_shared);
+            }
+        })
         .on_menu_event(move |app, event| {
             let action = lock(&tray_shared.menu_actions)
                 .get(event.id().as_ref())
@@ -207,7 +246,9 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 fn refresh_loop(app: &AppHandle, shared: &Arc<Shared>, wake: &Receiver<()>) {
     loop {
         refresh(app, shared);
-        match wake.recv_timeout(REFRESH_INTERVAL) {
+        // 3 s while agents run or wait for input, 15 s when all is idle.
+        let busy = lock(&shared.core).busy() || shared.remote.busy();
+        match wake.recv_timeout(refresh_interval(busy)) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {
                 // Coalesce a burst of wake-ups into one refresh.
                 while wake.try_recv().is_ok() {}
@@ -221,15 +262,24 @@ fn wake(shared: &Shared) {
     let _ = lock(&shared.wake).send(());
 }
 
-fn list_daemons(shared: &Shared) -> Result<Vec<crate::status::DaemonRecord>, String> {
-    match &shared.sidecar {
-        Ok(p) => supervisor::list_daemons(p),
-        Err(e) => Err(e.clone()),
-    }
+/// Lists the daemons: the registry read in-process, the bundled daemon's
+/// `status --all --json` at start, when `sweep` asks (at most every 30 s)
+/// and when the registry holds a format this app does not know (#212).
+fn list_daemons(shared: &Shared, sweep: bool) -> Result<Vec<crate::status::DaemonRecord>, String> {
+    let dir = registry_dir();
+    lock(&shared.lister).list(dir.as_deref(), sweep, Instant::now(), || {
+        match &shared.sidecar {
+            Ok(p) => supervisor::list_daemons(p),
+            Err(e) => Err(e.clone()),
+        }
+    })
 }
 
 fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
-    let records = list_daemons(shared);
+    let sweep = shared
+        .sweep
+        .swap(false, std::sync::atomic::Ordering::Relaxed);
+    let records = list_daemons(shared, sweep);
     let jobs = {
         let core = lock(&shared.core);
         core.fetch_jobs(
@@ -238,21 +288,9 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
             &read_token_file,
         )
     };
-    // Read every daemon in parallel; each read is bounded by its timeout.
-    let states: HashMap<_, _> = std::thread::scope(|s| {
-        let handles: Vec<_> = jobs
-            .iter()
-            .map(|j| {
-                s.spawn(move || {
-                    (
-                        j.key.clone(),
-                        client::fetch_state(&j.url, j.token.as_deref()),
-                    )
-                })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
-    });
+    // Read every daemon in parallel over its kept-alive connection: a
+    // summary first, the full state only when it changed.
+    let states = client::fetch_all(&shared.clients, &jobs);
     let mut outcome = lock(&shared.core).apply(records, states, Instant::now());
     let (remote_alerts, remote_changed) = shared.remote.refresh();
     outcome.alerts.extend(remote_alerts);
@@ -434,7 +472,12 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
             wake(shared);
         }
         MenuAction::OpenSessions => open_sessions(app, shared),
-        MenuAction::RefreshNow => wake(shared),
+        MenuAction::RefreshNow => {
+            shared
+                .sweep
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            wake(shared)
+        }
         MenuAction::CheckForUpdates => app_update::check_now(app),
         MenuAction::InstallUpdate => {
             let (app2, shared2) = (app.clone(), Arc::clone(shared));
@@ -575,7 +618,7 @@ fn start_daemon(
     let sidecar = shared.sidecar.clone()?;
     let workflow = Path::new(key);
     validate_workflow_file(workflow)?;
-    if record_for(&list_daemons(shared)?, key).is_some() {
+    if record_for(&list_daemons(shared, false)?, key).is_some() {
         return Err("already running".into());
     }
     let token = generate_token()?;
@@ -615,7 +658,7 @@ fn start_daemon(
 }
 
 fn stop_daemon(shared: &Shared, key: &str) -> Result<(), String> {
-    let records = list_daemons(shared)?;
+    let records = list_daemons(shared, false)?;
     let rec = record_for(&records, key).ok_or("not running")?;
     let pid = rec.pid;
     supervisor::send_sigterm(pid)?;

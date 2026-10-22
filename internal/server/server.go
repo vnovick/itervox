@@ -1485,6 +1485,9 @@ type Config struct {
 	// /api/v1/repo/hotspots (#201), computed by a background job off the
 	// event loop. Nil answers 503.
 	RepoHotspots RepoHotspotsFunc
+	// Version is the daemon's build version, reported by GET
+	// /api/v1/summary (#212). Read-only after startup.
+	Version string
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1542,6 +1545,8 @@ type Server struct {
 	// repoEvals / repoHotspots mirror Config.RepoEvals / RepoHotspots (#201).
 	repoEvals    RepoEvalsFunc
 	repoHotspots RepoHotspotsFunc
+	// version mirrors Config.Version (#212).
+	version string
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1591,6 +1596,7 @@ func New(cfg Config) *Server {
 		repoReadiness:       cfg.RepoReadiness,
 		repoEvals:           cfg.RepoEvals,
 		repoHotspots:        cfg.RepoHotspots,
+		version:             cfg.Version,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1696,6 +1702,7 @@ func (s *Server) routes() {
 			}
 
 			r.Get("/state", s.handleState)
+			r.Get("/summary", s.handleSummary)                               // #212: ETag'd poll target for supervisors
 			r.Get("/history", s.handleHistory)                               // #186
 			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
 			r.Get("/repo/readiness", s.handleRepoReadiness)                  // #200

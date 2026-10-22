@@ -158,7 +158,18 @@ naming it (and, for a lock-marked pid file, whose lock is held); for those `vers
 `token_source` is `unknown` and `token_required` is `true`.
 
 **Talk.** `GET {url}api/v1/health` needs no token; everything else under
-`{url}api/v1/` takes `Authorization: Bearer <token>`.
+`{url}api/v1/` takes `Authorization: Bearer <token>`. A supervisor that
+polls should send `GET {url}api/v1/summary` with `If-None-Match` and read
+`/api/v1/state` only when it answers `200` (see [`GET /summary`](#get-summary)).
+
+**Reading the registry directly.** A supervisor may read
+`~/.itervox/daemons/*.json` itself instead of running `status --json`, as
+the Mac app does since #212, by applying the same liveness rule (and may
+delete the records that fail it). It must fall back to `status --json` for a
+record whose `schema_version` it does not know, and it still needs the
+command now and then for daemons found by process scan. The shared fixture
+`cmd/itervox/testdata/daemon_registry_parity.json` pins the rows both
+produce.
 
 ## Error format
 
@@ -478,6 +489,51 @@ with a lower- or mixed-case name (`password=`, `api_key=`, `"apiKey":`,
 user), and long random-looking tokens (also inside a path) appear as `***`.
 Vendor request ids (`req_…`, `msg_…`), SRI hashes, git SHAs, UUIDs and
 ordinary paths stay readable.
+
+### `GET /summary`
+
+A few hundred bytes for a supervisor that polls (the Mac app, #212): the
+counts the menu bar shows, with an `ETag`, so an unchanged daemon answers a
+conditional request with `304 Not Modified` and no body. Behind the bearer
+token like `/state`, and built from the same snapshot.
+
+**Response** `200`:
+
+```json
+{
+  "etag": "5d41402abc4b2a76b9719d911017c592",
+  "version": "0.2.8",
+  "projectName": "web-app",
+  "counts": {
+    "running": 2,
+    "retrying": 0,
+    "paused": 1,
+    "inputRequired": 1,
+    "pendingInputResume": 0,
+    "recentFailures": 3
+  },
+  "paused": false,
+  "generatedAt": "2026-10-22T10:00:00Z"
+}
+```
+
+- `counts.running`, `counts.retrying` and `counts.paused` are `counts` of
+  `GET /state` (`paused` counts paused issues); `counts.inputRequired` and
+  `counts.pendingInputResume` split `inputRequired[]` by `state`;
+  `counts.recentFailures` is the length of `recentFailures[]`.
+- `paused` is a daemon-wide dispatch pause; it is `false` until the daemon
+  can be paused (#213).
+- `version` is the daemon's build version (`dev` for a local build).
+- The `ETag` header is `"<etag>"`. The tag is a digest of every field except
+  `generatedAt`, plus each input-required entry (identifier, session, state,
+  question, queued time) and each recent failure (kind, identifier, source,
+  message, time, count), so a new question or failure changes it even when
+  the counts do not. Responses carry `Cache-Control: no-cache`.
+
+Send the tag back as `If-None-Match: "<etag>"` (a list, `W/` tags and `*`
+are accepted): while it is current the answer is `304` with the `ETag`
+header and no body. The Mac app reads `GET /state` only after a `200` from
+this endpoint, or every time from a daemon older than it (`404`).
 
 ---
 
