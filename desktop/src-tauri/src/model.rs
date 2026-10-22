@@ -323,6 +323,17 @@ impl Core {
         !self.pending.is_empty() || self.views.iter().any(|v| v.health.busy())
     }
 
+    /// [`Core::busy`] leaving out the daemons the hub covers (#232): their
+    /// changes arrive as events on the hub stream, which wakes the refresh,
+    /// so they need no fast polling.
+    pub fn busy_outside(&self, covered: &std::collections::HashSet<String>) -> bool {
+        !self.pending.is_empty()
+            || self
+                .views
+                .iter()
+                .any(|v| !covered.contains(&v.key) && v.health.busy())
+    }
+
     pub fn last_records(&self) -> &[DaemonRecord] {
         &self.last_records
     }
