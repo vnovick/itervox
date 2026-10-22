@@ -396,9 +396,21 @@ func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow,
 			})
 		}
 	}
-	nodeRows := make([]server.DependencyGraphNodeRow, 0, len(nodes))
-	for _, node := range nodes {
-		nodeRows = append(nodeRows, node)
+	// Only nodes an edge touches go on the wire (#210). Every audited issue
+	// gets a node above (so its state, title and flags merge in when it is
+	// a blocker of another), but one with no blocker and no dependent is
+	// ~140 bytes per issue of every dashboard frame that the Deps graph
+	// never draws.
+	linked := make(map[string]bool, 2*len(edges))
+	for _, e := range edges {
+		linked[e.SourceIdentifier] = true
+		linked[e.TargetIdentifier] = true
+	}
+	nodeRows := make([]server.DependencyGraphNodeRow, 0, len(linked))
+	for id, node := range nodes {
+		if linked[id] {
+			nodeRows = append(nodeRows, node)
+		}
 	}
 	sort.Slice(nodeRows, func(i, j int) bool { return nodeRows[i].Identifier < nodeRows[j].Identifier })
 	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })

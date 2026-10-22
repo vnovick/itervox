@@ -105,9 +105,12 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			began := o.markLoopBusy()
 			// #187: every tracker read this event makes shares one deadline.
 			ictx, end := o.beginLoopIteration(ctx)
+			o.eventLeftStateUnchanged = false
 			state = o.handleEvent(ictx, state, ev)
 			end()
-			o.storeSnap(state)
+			if !o.eventLeftStateUnchanged { // else nothing to store or announce (#210)
+				o.storeSnap(state)
+			}
 			o.noteSlowLoopIteration(string(ev.Type), began)
 		}
 		// CORE-057: a drain ends once no worker is left running.
@@ -2038,9 +2041,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.applySessionMessage(&state, ev)
 
 	case EventExternalSessionsDiscovered: // #178 step 3
-		if ev.ExternalScan != nil {
-			applyTmuxPanes(&state, *ev.ExternalScan)
-			applyExternalSessions(&state, ev.ExternalScan.Sessions)
+		// #210: a pass that found what the last one did changes nothing,
+		// so it neither re-stores the snapshot nor wakes the dashboards.
+		if ev.ExternalScan == nil || !applyDiscoveryScan(&state, *ev.ExternalScan) {
+			o.eventLeftStateUnchanged = true
 		}
 
 	case EventTmuxSessionReserve, EventTmuxSessionStarted, EventTmuxSessionEnded: // #178 tmux

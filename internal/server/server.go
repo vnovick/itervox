@@ -807,9 +807,12 @@ type StateSnapshot struct {
 	// refresh batch.
 	DepsRefreshLastDurationMs int64 `json:"depsRefreshLastDurationMs,omitempty"`
 	// DepsRefreshDegradedCount is how many rows are past the failure threshold.
-	DepsRefreshDegradedCount int                      `json:"depsRefreshDegradedCount,omitempty"`
-	DependencyGraphNodes     []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
-	DependencyGraphEdges     []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
+	DepsRefreshDegradedCount int `json:"depsRefreshDegradedCount,omitempty"`
+	// DependencyGraphNodes lists only issues that are an endpoint of at
+	// least one DependencyGraphEdges row (#210): an audited issue with no
+	// blocker and no dependent is not sent.
+	DependencyGraphNodes []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
+	DependencyGraphEdges []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
 	// DependencyCycles surfaces this tick's cycle-detection output (Task 4)
 	// so the dashboard and heartbeat can flag issues stuck in a dependency
 	// cycle that no amount of waiting will resolve. critical-path-ordering
@@ -870,14 +873,14 @@ type StateSnapshot struct {
 	Totals *TotalsRow `json:"totals,omitempty"`
 	// CandidateSeen is this tick's "what tracker polling saw" backlog rows —
 	// one per candidate-issue identifier, carrying the tracker's UpdatedAt
-	// when known. Additive, internal-tooling field: no dashboard consumer
-	// today (the web Zod schema ignores unknown keys, so no web change is
-	// needed). Read by cmd/itervox's deps auto-analyze scheduler as its
-	// change-signal source — DependencyGraphNodes/DependencyAudit are NOT a
-	// substitute because both stay empty until a dependency relation already
-	// exists, which is exactly wrong for detecting a fresh backlog with zero
-	// relations yet. analyzer-autonomy Task 4 fix round.
-	CandidateSeen []CandidateSeenRow `json:"candidateSeen,omitempty"`
+	// when known. In-process only: read by cmd/itervox's deps auto-analyze
+	// scheduler as its change-signal source — DependencyGraphNodes/
+	// DependencyAudit are NOT a substitute because both stay empty until a
+	// dependency relation already exists, which is exactly wrong for
+	// detecting a fresh backlog with zero relations yet. analyzer-autonomy
+	// Task 4 fix round. Not serialized (#210): no API consumer reads it and
+	// it was ~19 KB of every dashboard frame.
+	CandidateSeen []CandidateSeenRow `json:"-"`
 	// OutboxEntries is this tick's write-ahead-outbox contents, in global
 	// enqueue order (write-ahead-outbox design, "Surfaces"). Empty/absent
 	// when the outbox is empty or the kill switch (tracker.outbox: false)
@@ -1343,59 +1346,6 @@ type IssueLogEntry struct {
 	SessionID string `json:"sessionId,omitempty"`
 }
 
-// broadcaster fans out state-change notifications to multiple SSE clients.
-type broadcaster struct {
-	mu      sync.Mutex
-	clients map[chan struct{}]struct{}
-}
-
-func newBroadcaster() *broadcaster {
-	return &broadcaster{clients: make(map[chan struct{}]struct{})}
-}
-
-func (b *broadcaster) subscribe() chan struct{} {
-	ch := make(chan struct{}, 1)
-	b.mu.Lock()
-	b.clients[ch] = struct{}{}
-	b.mu.Unlock()
-	return ch
-}
-
-func (b *broadcaster) unsubscribe(ch chan struct{}) {
-	b.mu.Lock()
-	delete(b.clients, ch)
-	b.mu.Unlock()
-}
-
-func (b *broadcaster) notify() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// close wakes up every subscribed SSE handler so they can exit promptly on
-// graceful shutdown. Each subscriber's channel is removed from the clients
-// map so a duplicate notify() doesn't double-send. Safe to call multiple
-// times. G-03 (gaps_280426_2).
-func (b *broadcaster) close() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		// Send before delete so any already-blocked receiver wakes; the
-		// `default` branch covers handlers that have already drained.
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-		delete(b.clients, ch)
-	}
-}
-
 // Shutdown ends every streaming (SSE) handler of this Server — /events,
 // /logs, /issues/{id}/log-stream and /issues/{id}/sublog-stream return, which
 // ends their responses cleanly — and wakes broadcaster subscribers. Ordinary
@@ -1548,6 +1498,9 @@ type Server struct {
 	projectManager ProjectManager
 	scopeManager   ScopeManager
 	bc             *broadcaster
+	// frames caches the encoded snapshot frame of the broadcaster's
+	// current version for every /events client (#210).
+	frames sseFrameCache
 	// streamsDone is closed by Shutdown; every streaming handler returns
 	// when it closes (CORE-025). A Server built without New has a nil
 	// channel, which never fires.

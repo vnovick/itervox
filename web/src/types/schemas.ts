@@ -899,6 +899,10 @@ export const StateSnapshotSchema = z.object({
   // depsRefreshDegradedCount is how many dependency-audit rows are past the
   // orchestrator's consecutive-failure threshold.
   depsRefreshDegradedCount: optionalSafeInt,
+  // #210 — only nodes that are an endpoint of at least one edge are sent
+  // (Go: cmd/itervox dependencyGraphRows); an edgeless audited issue lives in
+  // dependencyAudit only. The daemon no longer serializes candidateSeen,
+  // which this schema never declared.
   dependencyGraphNodes: z.array(DependencyGraphNodeSchema).optional(),
   dependencyGraphEdges: z.array(DependencyGraphEdgeSchema).optional(),
   // v0.2.0 todolist6 — gates the dashboard "Analyze dependencies" button.

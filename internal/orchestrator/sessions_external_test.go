@@ -7,6 +7,7 @@ package orchestrator_test
 import (
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,4 +88,51 @@ func TestExternalSessionsListedReadOnly(t *testing.T) {
 
 	_, err := o.SendSessionMessage("ext-exited", "hello")
 	assert.ErrorIs(t, err, orchestrator.ErrSessionNotOwned)
+}
+
+// countingExternalSource counts discovery passes over a fakeExternalSource.
+type countingExternalSource struct {
+	*fakeExternalSource
+	passes atomic.Int64
+}
+
+func (c *countingExternalSource) Discover(now time.Time) (orchestrator.ExternalScan, error) {
+	defer c.passes.Add(1)
+	return c.fakeExternalSource.Discover(now)
+}
+
+// TestDiscoveryNotifiesOnlyWhenChanged (#210): a discovery pass that finds
+// what the previous one found does not store a snapshot or wake the
+// dashboards; one that finds a new session does.
+func TestDiscoveryNotifiesOnlyWhenChanged(t *testing.T) {
+	src := &countingExternalSource{fakeExternalSource: &fakeExternalSource{
+		sessions: []extsessions.Session{extSession("ext-1", "claude", "/work/app")},
+	}}
+	cfg := sessionsConfig()
+	cfg.Agent.Command = "claude"
+	cfg.Polling.IntervalMs = int((time.Hour).Milliseconds()) // only the startup tick
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	o := orchestrator.New(cfg, mt, nil, nil)
+	var notifies atomic.Int64
+	o.OnStateChange = func() { notifies.Add(1) }
+	o.SetExternalSessionSource(src, 10*time.Millisecond)
+	startLoop(t, o)
+
+	waitFor(t, "first discovery", 2*time.Second, func() bool {
+		_, ok := sessionByID(o, "ext-1")
+		return ok
+	})
+	time.Sleep(50 * time.Millisecond) // let the startup tick settle
+	n0, p0 := notifies.Load(), src.passes.Load()
+	waitFor(t, "unchanged passes", 3*time.Second, func() bool { return src.passes.Load() >= p0+10 })
+	assert.Equal(t, n0, notifies.Load(), "unchanged discovery passes must not notify")
+
+	src.mu.Lock()
+	src.sessions = append(src.sessions, extSession("ext-2", "codex", "/work/app"))
+	src.mu.Unlock()
+	waitFor(t, "changed pass", 2*time.Second, func() bool {
+		_, ok := sessionByID(o, "ext-2")
+		return ok
+	})
+	assert.Greater(t, notifies.Load(), n0, "a pass that found a new session notifies")
 }

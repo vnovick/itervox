@@ -37,6 +37,18 @@ func writeSSEFrame(w http.ResponseWriter, format string, args ...any) error {
 	return err
 }
 
+// sseKeepaliveFrame is the /events keepalive, a named event the client's
+// silence watchdog sees (see handleEvents).
+var sseKeepaliveFrame = []byte("event: keepalive\ndata: {}\n\n")
+
+// writeSSEBytes writes an already-formatted frame with a plain Write — no
+// format parsing or copy on the hot /events path (#210).
+func writeSSEBytes(w http.ResponseWriter, frame []byte) error {
+	setSSEWriteDeadline(w)
+	_, err := w.Write(frame)
+	return err
+}
+
 func flushSSE(w http.ResponseWriter, flusher http.Flusher) {
 	setSSEWriteDeadline(w)
 	flusher.Flush()
@@ -70,14 +82,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Subscribe to state-change signals before the initial snapshot, so a
+	// change delivered while the first frame is being written still wakes
+	// this client (subscribing after it could miss that delivery).
+	sub := s.bc.subscribe()
+	defer s.bc.unsubscribe(sub)
+
 	// Send initial snapshot immediately.
 	if err := s.writeSSEEvent(w, flusher); err != nil {
 		return
 	}
-
-	// Subscribe to state-change signals.
-	sub := s.bc.subscribe()
-	defer s.bc.unsubscribe(sub)
 
 	// Keep-alive ticker (every 25s) to prevent proxy timeouts. Reset on
 	// every real event sent so a busy stream (one snapshot per second)
@@ -108,7 +122,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// "Reconnecting…" banner kept appearing on quiet systems. The
 			// payload is intentionally tiny; the client checks event type
 			// and short-circuits without re-parsing the snapshot.
-			if err := writeSSEFrame(w, "event: keepalive\ndata: {}\n\n"); err != nil {
+			if err := writeSSEBytes(w, sseKeepaliveFrame); err != nil {
 				return
 			}
 			flushSSE(w, flusher)
@@ -116,13 +130,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeSSEEvent writes the current snapshot frame. The frame is encoded
+// once per broadcaster version and shared by every client (#210).
 func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) error {
-	snap := s.snapshot()
-	b, err := json.Marshal(snap)
+	frame, err := s.sseFrame()
 	if err != nil {
 		return err
 	}
-	if err := writeSSEFrame(w, "data: %s\n\n", b); err != nil {
+	if err := writeSSEBytes(w, frame); err != nil {
 		return err
 	}
 	flushSSE(w, flusher)
