@@ -305,7 +305,7 @@ When multiple profiles run on the same issue — for example a research profile 
 
 **How it works:**
 
-1. The orchestrator stamps each worker run with an ISO8601 timestamp and computes a canonical handoff path: `.itervox/handoff/<timestamp>_<profile-name>.md`. These two values are appended to the worker's prompt as a `## Run Context` block (fields `run.timestamp` and `run.handoff_path`).
+1. The orchestrator stamps each worker run with an ISO8601 timestamp and computes a canonical handoff path: `.itervox/handoff/<timestamp>_<profile-name>.md`. These values are appended to the worker's prompt as a `## Run Context` block (fields `run.timestamp`, `run.handoff_path` and `run.decisions_path` — the run's [decision log](/guides/playbooks/#decision-log), `<timestamp>_<profile-name>.decisions.tsv` next to the handoff).
 2. Before dispatching any worker, the orchestrator reads every existing `.md` file in that directory (including `.partial.md` files), sorts them by filename (chronological because of the ISO8601 prefix), and inlines them into the prompt as a `## Prior Agent Handoffs` block. A 30 KB token budget caps the section; if exceeded, the oldest files are dropped with a `[earlier handoffs truncated]` marker.
 3. The agent's INSTRUCTIONS.md "Handoff Protocol" section tells it to read the prerendered prior-handoffs block and write its own deliverable to `run.handoff_path` before exiting. The orchestrator does not call out to the agent — it relies on the agent following INSTRUCTIONS.md.
 4. If the worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the most recent matching `<timestamp>_<profile>.md` to `<timestamp>_<profile>.partial.md`. Subsequent agents see partials in their handoff context and can distinguish them from clean deliverables. `TerminalInputRequired` does not mark partial — the agent intentionally paused and may resume.
@@ -653,6 +653,29 @@ agent:
 Without the evidence, the issue is **not moved**: the run ends **input required** with a "Needs evidence before moving to …" reason listing each missing check, shown in the dashboard and posted on the issue. Reply (for example "run the tests and record them", or once CI is green) to resume the agent; the resumed run is checked again and moves the issue once the evidence is in place.
 
 Reviewer and automation runs are not gated, since they do not move the issue. Without `require_evidence` nothing changes. The value must be a list: a single value such as `require_evidence: true` is a config error, not a silent "off".
+
+A [playbook](#playbooks) can also declare `require_evidence` in its frontmatter. Its checks are added to the profile's for runs that get that playbook: one list, one `## Evidence (required)` block, one gate.
+
+### Playbooks
+
+`agent.playbooks` attaches a task-type playbook (`.itervox/playbooks/<name>.md`) to each worker run's prompt, right after `INSTRUCTIONS.md`. The playbook is chosen per issue: the operator's choice in the issue detail view, else the first label mapped by `labels`, else a confident keyword match over the title and description, else none. See the [Playbooks guide](/guides/playbooks/) for the file format, the classifier and the scaffolded playbooks. Read at load time; the playbook files are read again for every run.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Attach playbooks. With no playbook files nothing is attached either way. |
+| `dir` | string | `.itervox/playbooks` | Playbooks directory, relative to `WORKFLOW.md` when not absolute. |
+| `classify` | bool | `true` | When no label matches, score the title and description against each playbook's `keywords` and attach a confident winner. |
+| `labels` | map | see below | Issue label (case-insensitive) → playbook name. A set map replaces the defaults. |
+
+Default `labels`: `bug`, `bugfix`, `bug-fix`, `regression` → `bug-fix`; `feature`, `enhancement` → `feature`; `refactor`, `refactoring`, `tech-debt` → `refactor`; `perf`, `performance` → `perf`; `investigation`, `spike`, `research` → `investigation`; `docs`, `documentation` → `docs`.
+
+```yaml
+agent:
+  playbooks:
+    labels:
+      bug: bug-fix
+      defect: bug-fix
+```
 
 ```yaml
 agent:
@@ -1077,6 +1100,7 @@ Which Claude Code and Codex sessions **started by hand** on the daemon's host th
 | `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
 | `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `steering_phrases` | list | six defaults | One-click steering chips in the Sessions composer and the issue steer box (#218). Each entry is `{label, message}`, or a bare string (a default's label keeps that default's message). `[]` shows none. Labels up to 40 bytes, messages up to 1 KiB, at most 20 entries. See [Steering phrases](/guides/playbooks/#steering-phrases). |
 | `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
 
 ```yaml
@@ -1581,7 +1605,7 @@ What earlier runs and the people you work with want remembered. Treat each item 
 
 ## `.itervox` project files
 
-`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter profile files. Commit `.itervox/agents/**`: those files are project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
+`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter profile files and the task-type playbooks in `.itervox/playbooks/` (#218). Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are project agent definitions. `.itervox/playbook_overrides.json` (the per-issue playbook choices) is runtime state and stays ignored. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
 
 On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next push, last sync error), capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
 

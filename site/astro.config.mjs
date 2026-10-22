@@ -34,6 +34,7 @@ export default defineConfig({
             { label: 'Skills Inventory', slug: 'guides/skills-inventory' },
             { label: 'Repo Analysis', slug: 'guides/repo-analysis' },
             { label: 'Memory', slug: 'guides/memory' },
+            { label: 'Playbooks, decisions & steering', slug: 'guides/playbooks' },
             { label: 'Security & access tokens', slug: 'guides/security' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
             { label: 'Sessions panel', slug: 'guides/sessions' },

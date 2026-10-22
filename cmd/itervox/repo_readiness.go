@@ -48,8 +48,8 @@ const repoReadinessTrackerTimeout = 8 * time.Second
 const repoReadinessBareFetchTimeout = 10 * time.Second
 
 // agentsGitignoreCarveOuts are the root .gitignore lines that keep
-// .itervox/agents/**, .itervox/handoff/** and the project-shared memory
-// file (#202) committable under a broad .itervox ignore. `itervox init
+// .itervox/agents/**, .itervox/handoff/**, .itervox/playbooks/** (#218) and
+// the project-shared memory file (#202) committable under a broad .itervox ignore. `itervox init
 // --update` adds them; readiness checks them.
 var agentsGitignoreCarveOuts = []string{
 	"!.itervox/",
@@ -57,6 +57,8 @@ var agentsGitignoreCarveOuts = []string{
 	"!.itervox/agents/**",
 	"!.itervox/handoff/",
 	"!.itervox/handoff/**",
+	"!.itervox/playbooks/", // #218
+	"!.itervox/playbooks/**",
 	memoryGitignoreCarveOut,
 }
 
@@ -129,6 +131,7 @@ func buildRepoReadiness(ctx context.Context, workflowPath string, in repoReadine
 		schemaReadiness(workflowPath, in),
 		gitignoreReadiness(workflowPath),
 		instructionsReadiness(workflowPath, in.cfg),
+		verifySkillReadiness(workflowPath), // #218
 		bareFetchReadiness(in.cfg, in.bareFetch),
 		profileRefsReadiness(in.cfg, in.refIssues),
 		trackerReadiness(ctx, in.cfg, env),
@@ -157,7 +160,7 @@ func schemaReadiness(workflowPath string, in repoReadinessInputs) server.RepoRea
 }
 
 func gitignoreReadiness(workflowPath string) server.RepoReadinessCheck {
-	const title = ".gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable"
+	const title = ".gitignore keeps .itervox/agents, .itervox/handoff, .itervox/playbooks and .itervox/memory.json committable"
 	path := filepath.Join(filepath.Dir(workflowPath), ".gitignore")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -178,11 +181,11 @@ func gitignoreReadiness(workflowPath string) server.RepoReadinessCheck {
 	}
 	if len(missing) == 0 {
 		return readinessRow(readinessGitignore, title, server.RepoReadinessPass,
-			"carve-outs present for .itervox/agents/**, .itervox/handoff/** and .itervox/memory.json", "")
+			"carve-outs present for .itervox/agents/**, .itervox/handoff/**, .itervox/playbooks/** and .itervox/memory.json", "")
 	}
 	return readinessRow(readinessGitignore, title, server.RepoReadinessWarn,
 		"the root .gitignore ignores .itervox/ without the carve-outs: "+strings.Join(missing, ", ")+
-			" — profile SOUL/INSTRUCTIONS files, agent handoffs or the shared memory are not committed",
+			" — profile SOUL/INSTRUCTIONS files, agent handoffs, playbooks or the shared memory are not committed",
 		"run `itervox init --update --workflow "+workflowPath+"` (adds the carve-outs), or add the lines yourself")
 }
 

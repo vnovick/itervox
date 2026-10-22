@@ -303,6 +303,17 @@ export default memo(function IssueCard({
             </span>
           )}
 
+          {/* #218 — the task-type playbook the issue's run gets. */}
+          {issue.playbook && (
+            <span
+              data-testid="issue-card-playbook-badge"
+              title={`Playbook: ${issue.playbook}${issue.playbookSource ? ` (${issue.playbookSource})` : ''}`}
+              className="bg-theme-bg-soft text-theme-text-secondary flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+            >
+              {issue.playbook}
+            </span>
+          )}
+
           {/* CORE-080 — why this idle issue is not dispatching. */}
           <WhyIdleChip reason={issue.ineligibleReason} />
 

@@ -415,6 +415,11 @@ type RunEntry struct {
 	// once at dispatch (startRun) and never mutated. Hashes only.
 	PromptDigest string
 	PromptParts  PromptParts
+	// Playbook / PlaybookSource name the task-type playbook the run was
+	// dispatched with (#218) and how it was chosen ("override", "label",
+	// "keyword"); empty when it had none. Set once at dispatch (startRun).
+	Playbook       string
+	PlaybookSource string
 	// Steers are the operator messages delivered to this run (#186), redacted
 	// and bounded (maxRunSteers, maxRunSteerBytes); SteersDropped counts the
 	// older ones the bound let go. Appended by the event loop on
@@ -479,6 +484,9 @@ type CompletedRun struct {
 	// digests. Hashes only: history never stores prompt text.
 	PromptDigest string      `json:"promptDigest,omitempty"`
 	PromptParts  PromptParts `json:"promptParts,omitzero"`
+	// Playbook is the task-type playbook the run was given (#218); empty
+	// when it had none.
+	Playbook string `json:"playbook,omitempty"`
 	// Steers are the operator messages delivered to the run (#186), redacted
 	// and bounded; SteersDropped counts older ones the bound let go.
 	Steers        []RunSteer `json:"steers,omitempty"`
@@ -865,6 +873,14 @@ type State struct {
 	// EventSetDepsOverride case in the event loop; SetDepsOverride (any
 	// goroutine) only sends the event. unified-dependency-graph Task 6.
 	DepsOverrides map[string]time.Time
+
+	// PlaybookOverrides holds operator-chosen playbooks per issue identifier
+	// (#218): a playbook name, or playbook.None for "no playbook". Absent
+	// means automatic (label, then keyword classifier). Mutated only by the
+	// EventSetPlaybookOverride case in the event loop and persisted to
+	// .itervox/playbook_overrides.json; SetPlaybookOverride (any goroutine)
+	// only sends the event.
+	PlaybookOverrides map[string]string
 
 	// StackOnReviewState is tracker.completion_state, lower-cased, when
 	// dependencies.stacked_prs is on, and "" otherwise. Snapshotted each tick

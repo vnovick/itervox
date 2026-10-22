@@ -88,6 +88,8 @@ type RunContextRow struct {
 	Steers            []RunSteerRow `json:"steers"`
 	GuardrailBlocks   int           `json:"guardrailBlocks"`
 	LastGuardrailKind string        `json:"lastGuardrailKind,omitempty"`
+	// Playbook is the live run's task-type playbook (#218).
+	Playbook string `json:"playbook,omitempty"`
 }
 
 // DiffFileRow is one changed file.

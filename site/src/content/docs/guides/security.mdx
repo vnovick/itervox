@@ -150,6 +150,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/issues` | viewer |
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
 | `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/logs` | viewer |
@@ -159,6 +160,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
 | `GET` | `/api/v1/memory/recall` | viewer |
+| `GET` | `/api/v1/playbooks` | viewer (#218) |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
 | `GET` | `/api/v1/repo/evals` | viewer |
@@ -179,6 +181,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/skills/issues` | viewer |
 | `GET` | `/api/v1/skills/profile-backends` | viewer (Operator: run the fleet.) |
 | `GET` | `/api/v1/state` | viewer |
+| `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
@@ -202,6 +205,7 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/issues/{identifier}/dismiss-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/failures/ack` | operator |
 | `DELETE` | `/api/v1/issues/{identifier}/logs` | operator |
+| `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
@@ -221,6 +225,7 @@ fails when a new route has no declaration.
 | `DELETE` | `/api/v1/outbox/{id}` | operator |
 | `POST` | `/api/v1/outbox/{id}/retry` | operator |
 | `POST` | `/api/v1/refresh` | operator |
+| `POST` | `/api/v1/repo/readiness/verify-skill-issue` | operator (creates a tracker issue, #218) |
 | `POST` | `/api/v1/sessions/{id}/message` | operator (steering) |
 | `GET` | `/api/v1/sessions/{id}/screen` | operator (a live terminal pane) |
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |

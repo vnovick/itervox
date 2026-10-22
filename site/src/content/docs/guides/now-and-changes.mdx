@@ -22,6 +22,8 @@ issue has a run (it reads **Last run** once the run has finished):
   this run;
 - the files changed so far and the run's prior handoffs.
 
+Under the panel, while the issue runs, **Steer the run** sends a message or a one-click [steering phrase](/guides/playbooks/#steering-phrases) to the run. The Details tab also shows the issue's **Playbook** and a **Decisions** timeline: every run's [decision log](/guides/playbooks/#decision-log), oldest run first.
+
 It refreshes every few seconds while the run is live. The daemon updates a
 run's context at most once a second, from the stream it already parses for
 the log; text is redacted with the same rules as the logs (API keys, bearer

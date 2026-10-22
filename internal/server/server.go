@@ -13,6 +13,7 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationdef"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
 
@@ -121,6 +122,8 @@ type HistoryRow struct {
 	// digests. Hashes only, never prompt text.
 	PromptDigest string              `json:"promptDigest,omitempty"`
 	PromptParts  *HistoryPromptParts `json:"promptParts,omitempty"`
+	// Playbook is the task-type playbook the run was given (#218).
+	Playbook string `json:"playbook,omitempty"`
 	// Steers are the operator messages delivered to the run (#186), redacted
 	// and bounded; SteersDropped counts the older ones not kept.
 	Steers        []HistorySteer `json:"steers,omitempty"`
@@ -134,7 +137,9 @@ type HistoryPromptParts struct {
 	Instructions string `json:"instructions,omitempty"`
 	Rules        string `json:"rules,omitempty"`
 	// Memory is the digest of the run's memory block (#202).
-	Memory   string `json:"memory,omitempty"`
+	Memory string `json:"memory,omitempty"`
+	// Playbook is the digest of the run's playbook block (#218).
+	Playbook string `json:"playbook,omitempty"`
 	Template string `json:"template,omitempty"`
 }
 
@@ -1342,6 +1347,13 @@ type TrackerIssue struct {
 	// AutoSwitch is set when AgentProfile/AgentBackend come from an
 	// automatic switch rather than an operator pin (CORE-055).
 	AutoSwitch *AutoSwitchRow `json:"autoSwitch,omitempty"`
+	// Playbook is the task-type playbook the issue's next run gets (#218),
+	// empty for none; PlaybookSource says how it was chosen ("override",
+	// "label", "keyword"); PlaybookOverride is the operator's choice (a
+	// name or "none"), empty for automatic.
+	Playbook         string `json:"playbook,omitempty"`
+	PlaybookSource   string `json:"playbookSource,omitempty"`
+	PlaybookOverride string `json:"playbookOverride,omitempty"`
 }
 
 // IssueLogEntry is one parsed log event for /api/v1/issues/{id}/logs.
@@ -1510,6 +1522,12 @@ type Config struct {
 	// Changes backs GET /api/v1/issues/{identifier}/context and /diff
 	// (#215). Nil answers 503.
 	Changes ChangesClient
+	// Playbooks backs the playbook, decision-log and verify-skill-issue
+	// endpoints (#218). Nil answers 503.
+	Playbooks PlaybooksClient
+	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
+	// serves (#218, sessions.steering_phrases). Read-only after startup.
+	SteeringPhrases []config.SteeringPhrase
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1576,6 +1594,10 @@ type Server struct {
 	dispatch DispatchClient
 	// changes mirrors Config.Changes (#215).
 	changes ChangesClient
+	// playbooks / steeringPhrases mirror Config.Playbooks /
+	// Config.SteeringPhrases (#218).
+	playbooks       PlaybooksClient
+	steeringPhrases []config.SteeringPhrase
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1629,6 +1651,8 @@ func New(cfg Config) *Server {
 		version:             cfg.Version,
 		dispatch:            cfg.Dispatch,
 		changes:             cfg.Changes,
+		playbooks:           cfg.Playbooks,
+		steeringPhrases:     cfg.SteeringPhrases,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1733,15 +1757,18 @@ func (s *Server) routes() {
 			r.Delete("/tokens/{id}", s.handleRevokeToken)
 			r.Post("/tokens/{id}/rotate", s.handleRotateToken)
 			r.Get("/state", s.handleState)
-			r.Get("/summary", s.handleSummary)                               // #212: ETag'd poll target for supervisors
-			r.Get("/feed", s.handleFeed)                                     // #213: the event feed, by cursor
-			r.Post("/dispatch/pause", s.handlePauseDispatch)                 // #213
-			r.Post("/dispatch/resume", s.handleResumeDispatch)               // #213
-			r.Get("/history", s.handleHistory)                               // #186
-			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
-			r.Get("/repo/readiness", s.handleRepoReadiness)                  // #200
-			r.Get("/repo/evals", s.handleRepoEvals)                          // #201
-			r.Get("/repo/hotspots", s.handleRepoHotspots)                    // #201
+			r.Get("/summary", s.handleSummary)                                     // #212: ETag'd poll target for supervisors
+			r.Get("/feed", s.handleFeed)                                           // #213: the event feed, by cursor
+			r.Post("/dispatch/pause", s.handlePauseDispatch)                       // #213
+			r.Post("/dispatch/resume", s.handleResumeDispatch)                     // #213
+			r.Get("/history", s.handleHistory)                                     // #186
+			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions)       // #186
+			r.Get("/repo/readiness", s.handleRepoReadiness)                        // #200
+			r.Get("/repo/evals", s.handleRepoEvals)                                // #201
+			r.Get("/repo/hotspots", s.handleRepoHotspots)                          // #201
+			r.Post("/repo/readiness/verify-skill-issue", s.handleVerifySkillIssue) // #218
+			r.Get("/playbooks", s.handleListPlaybooks)                             // #218
+			r.Get("/steering/phrases", s.handleSteeringPhrases)                    // #218
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)
@@ -1756,8 +1783,10 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
-			r.Get("/issues/{identifier}/context", s.handleIssueContext) // #215
-			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)       // #215: hunks need operator
+			r.Get("/issues/{identifier}/context", s.handleIssueContext)       // #215
+			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)             // #215: hunks need operator
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)

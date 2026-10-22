@@ -3,19 +3,23 @@
 // (#201) the persisted eval results and the failure hotspots.
 // Read-only; every request goes through apiRequest → authedFetch.
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '../auth/apiRequest';
+import { UnauthorizedError } from '../auth/UnauthorizedError';
+import { useToastStore } from '../store/toastStore';
 import {
   HistoryResponseSchema,
   PromptVersionsResponseSchema,
   RepoEvalsResponseSchema,
   RepoHotspotsResponseSchema,
   RepoReadinessResponseSchema,
+  VerifySkillIssueResultSchema,
   type HistoryRow,
   type PromptVersionRow,
   type RepoEvalsResponse,
   type RepoHotspotsResponse,
   type RepoReadinessCheck,
+  type VerifySkillIssueResult,
 } from '../types/schemas';
 
 export const PROMPT_VERSIONS_KEY = ['repo', 'promptVersions'] as const;
@@ -98,5 +102,34 @@ export function useRepoHotspots() {
     staleTime: HOTSPOTS_STALE_MS,
     refetchInterval: (query) =>
       query.state.data?.refreshing ? HOTSPOTS_REFRESHING_POLL_MS : false,
+  });
+}
+
+/**
+ * #218 — "Generate verify skill": creates a tracker issue asking an agent
+ * to write the project's verification skill (operator scope).
+ */
+export function useCreateVerifySkillIssue() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<VerifySkillIssueResult> => {
+      const { data } = await apiRequest('/api/v1/repo/readiness/verify-skill-issue', {
+        op: 'verify skill issue',
+        method: 'POST',
+        json: {},
+      });
+      return VerifySkillIssueResultSchema.parse(data);
+    },
+    onSuccess: (out) => {
+      useToastStore
+        .getState()
+        .addToast(`Created ${out.identifier ?? 'an issue'} to write the verify skill`, 'success');
+      void queryClient.invalidateQueries({ queryKey: REPO_READINESS_KEY });
+    },
+    onError: (err: unknown) => {
+      if (err instanceof UnauthorizedError) return; // AuthGate handles the UI
+      const message = err instanceof Error ? err.message : 'unknown error';
+      useToastStore.getState().addToast(`Issue not created: ${message}`, 'error');
+    },
   });
 }

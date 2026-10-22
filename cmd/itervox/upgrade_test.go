@@ -170,10 +170,11 @@ func TestUpgradeFromV021(t *testing.T) {
 	// local tracker's issues carve-out (v0.2.2) and the rules layers' lines
 	// (v0.2.5: the project layer committed, the local one ignored), the
 	// project-local settings layer's ignore line (#158), the project-shared
-	// memory's carve-out (v0.2.7, #202), and changes nothing else.
+	// memory's carve-out (v0.2.7, #202), the playbooks' carve-outs (v0.2.8,
+	// #218), and changes nothing else.
 	gitignore, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	require.NoError(t, err)
-	assert.Equal(t, string(originalIgnore)+"!.itervox/memory.json\n!.itervox/issues/\n!.itervox/issues/**\n"+
+	assert.Equal(t, string(originalIgnore)+"!.itervox/playbooks/\n!.itervox/playbooks/**\n!.itervox/memory.json\n!.itervox/issues/\n!.itervox/issues/**\n"+
 		"!.itervox/rules.json\n.itervox/rules.local.json\n.itervox/settings.local.jsonc\n", string(gitignore))
 
 	// 2. The migrated config loads, profiles and all.

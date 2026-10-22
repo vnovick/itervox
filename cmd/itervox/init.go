@@ -382,6 +382,7 @@ func runInit(args []string) {
 		if err := finalizeItervoxGitignore(updateDir); err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 		}
+		scaffoldPlaybooks(updateDir, "itervox init --update", os.Stdout) // #218: only the missing ones
 		return
 	}
 
@@ -460,6 +461,7 @@ func runInit(args []string) {
 	if err := finalizeItervoxGitignore(envDir); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
 	}
+	scaffoldPlaybooks(envDir, "itervox init", os.Stdout) // #218
 
 	// #83 — after every file init needs is written, so an interrupted
 	// prompt never leaves a half-initialised project. Asked only on a
