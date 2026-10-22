@@ -162,6 +162,10 @@ type OrchestratorEvent struct { //nolint:revive
 	guardrail *guardrailApprovalEvent
 	// deferReply receives the loop's decision on an EventDeferStateMove.
 	deferReply chan bool
+	// feed is the payload of EventFeedRecorded (#213).
+	feed *FeedEvent
+	// dispatchPause is the payload of EventSetDispatchPause (#213).
+	dispatchPause *dispatchPauseRequest
 	// deferFromState is the tracker state a deferred-move apply observed.
 	deferFromState string
 }
@@ -732,6 +736,18 @@ type State struct {
 	// producers send EventFailureRecorded via RecordFailure. Not persisted;
 	// carried across WORKFLOW.md reloads by cmd/itervox (SeedRecentFailures).
 	RecentFailures []FailureRecord
+	// Feed is the #213 event feed (feed.go), oldest first, bounded by
+	// FeedCap / FeedMaxAge; FeedSeq is the last seq assigned. Appended only
+	// by the event loop (appendFeed); off-loop producers send
+	// EventFeedRecorded. Trimmed only by re-slicing from the front, so
+	// Clone shares it safely. Persisted to feed.jsonl.
+	Feed    []FeedEvent
+	FeedSeq int64
+	// DispatchPaused is the operator's daemon-wide dispatch pause (#213,
+	// global_pause.go). While Active, AvailableSlots is 0 and dispatchRun /
+	// dispatchReviewer defer instead of starting; running agents continue.
+	// Event-loop state, persisted to dispatch_paused.json.
+	DispatchPaused DispatchPause
 	// DependencyAudit tracks normalized blocker state by issue identifier.
 	DependencyAudit map[string]*DependencyAuditEntry
 	// DependencyTransitionSeq increments when dependency audit emits a transition.

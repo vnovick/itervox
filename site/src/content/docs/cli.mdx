@@ -384,6 +384,16 @@ itervox reply <issue> <text>   # answer an agent's question; queued, applied if 
 
 The same actions as the dashboard and the (deprecated) terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
+### Pause and resume all dispatch
+
+```bash
+itervox pause                              # pause ALL dispatch until itervox resume
+itervox pause --reason "deploy" --for 2h   # with a reason; resumes by itself after 2h
+itervox resume                             # resume all dispatch
+```
+
+Without an issue, `pause` and `resume` act on the whole daemon (#213): running agents continue, and nothing new starts — no dispatch, retries, reviewers, automations or input resumes — until you resume or the `--for` window ends. The work is held, not dropped, and starts again as slots allow. The pause survives a restart. `itervox watch` shows `ALL DISPATCH PAUSED` while it lasts; the dashboard's status strip and the Mac app's "Pause all agents" tray item do the same through `POST /api/v1/dispatch/pause` and `/resume`.
+
 ---
 
 ## `itervox clear` — Remove workspace directories

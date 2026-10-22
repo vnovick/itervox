@@ -171,6 +171,11 @@ type Orchestrator struct {
 	pendingReviewsFile string
 	// deferredStateMovesFile persists State.DeferredStateMoves (#177).
 	deferredStateMovesFile string
+	// feedFile persists State.Feed / FeedSeq (feed.jsonl) and
+	// dispatchPauseFile persists State.DispatchPaused (dispatch_paused.json)
+	// (#213). Set before Run; read-only afterwards.
+	feedFile          string
+	dispatchPauseFile string
 	// prEventsFile persists State.ManagedPRs, PREventDispatched and
 	// PREventBaselines (#173).
 	prEventsFile string

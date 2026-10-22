@@ -227,6 +227,9 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 		o.postQuestionKeyless(entry.IssueID, ev.Identifier, entry.QuestionCommentKey, body, err)
 	}
 	state.InputRequiredIssues[ev.Identifier] = entry
+	p := feedRunPayload(live) // #213: the command stays out of the feed
+	p.Kind = "guardrail_approval"
+	o.emitFeed(state, FeedInputRequired, ev.Identifier, p)
 	slog.Info("guardrails: approval requested", "issue_identifier", ev.Identifier, "command", g.Command)
 	if o.logBuf != nil {
 		o.logBuf.Add(ev.Identifier, makeBufLineWithSession("INFO", "guardrails: waiting for approval: "+g.Command, g.RunID))
@@ -250,6 +253,7 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	o.guardApprovals.Decide(entry.GuardrailApprovalID, approved, reply)
 	delete(state.InputRequiredIssues, entry.Identifier)
 	if approved {
+		o.emitFeed(state, FeedGuardrailApproved, entry.Identifier, FeedPayload{Via: via}) // #213
 		slog.Info("guardrails: approved", "issue_identifier", entry.Identifier, "via", via, "command", command)
 		if o.logBuf != nil {
 			o.logBuf.Add(entry.Identifier, makeBufLine("INFO", "guardrails: approved via "+via+": "+command))
@@ -257,6 +261,7 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	} else {
 		slog.Warn("guardrails: refused", "issue_identifier", entry.Identifier, "kind", guardrails.KindApprovalRejected, "via", via, "command", command)
 		metrics.GuardrailBlock(guardrails.KindApprovalRejected)
+		o.emitFeed(state, FeedGuardrailBlocked, entry.Identifier, FeedPayload{Kind: guardrails.KindApprovalRejected, Via: via}) // #213
 		appendRecentFailure(state, FailureRecord{Kind: FailureKindGuardrail, Identifier: entry.Identifier,
 			Source: guardrails.KindApprovalRejected, Message: "rejected via " + via + ": " + command, OccurredAt: time.Now()}, time.Now())
 		if o.logBuf != nil {

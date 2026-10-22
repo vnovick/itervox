@@ -333,6 +333,9 @@ func (o *Orchestrator) applyLessonDrafted(state *State, ev OrchestratorEvent) {
 		}, time.Now())
 		return
 	}
+	if rep.Outcome == memory.LessonProposed || rep.Outcome == memory.LessonApproved { // #213
+		o.emitFeed(state, FeedLessonProposed, rep.Identifier, FeedPayload{Outcome: string(rep.Outcome), MemoryID: rep.EntryID})
+	}
 	slog.Info("orchestrator: lesson drafted", "issue_identifier", rep.Identifier,
 		"outcome", rep.Outcome, "memory_id", rep.EntryID, "drafted_by", rep.DraftedBy)
 	if o.OnStateChange != nil {

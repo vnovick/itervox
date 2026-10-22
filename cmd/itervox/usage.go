@@ -104,6 +104,10 @@ Commands:
              itervox logs [-f] <issue>
   pause    <issue>         stop the issue's agent and pause the issue
   resume   <issue>         resume a paused issue
+  pause    [--reason r] [--for 2h]
+                           pause ALL dispatch: running agents continue,
+                           nothing new starts (until resume, or --for)
+  resume                   resume all dispatch
   dispatch <issue>         move the issue to the first active state
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question

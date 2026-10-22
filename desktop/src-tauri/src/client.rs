@@ -72,6 +72,35 @@ pub fn fetch_sessions(base_url: &str, token: Option<&str>) -> Result<SessionsRea
     parse_read(&body).map_err(FetchError::Parse)
 }
 
+/// POST `{base_url}api/v1/dispatch/pause` (or `/resume`) (#213): pause or
+/// resume ALL dispatch of one daemon. Running agents continue either way.
+pub fn set_dispatch_paused(
+    base_url: &str,
+    token: Option<&str>,
+    paused: bool,
+) -> Result<(), FetchError> {
+    let path = if paused {
+        "api/v1/dispatch/pause"
+    } else {
+        "api/v1/dispatch/resume"
+    };
+    let url = format!("{}{path}", ensure_slash(base_url));
+    let mut req = shared_agent().post(&url);
+    if let Some(t) = token {
+        req = req.header("Authorization", &format!("Bearer {t}"));
+    }
+    let mut resp = req
+        .send_empty()
+        .map_err(|e| FetchError::Transport(e.to_string()))?;
+    let status = resp.status().as_u16();
+    let _ = resp.body_mut().with_config().limit(1 << 20).read_to_vec();
+    match status {
+        200 => Ok(()),
+        401 => Err(FetchError::Unauthorized),
+        other => Err(FetchError::Status(other)),
+    }
+}
+
 /// One answer: status, ETag header and body (empty for a 304).
 struct Answer {
     status: u16,
@@ -466,5 +495,31 @@ mod tests {
             fetch_state("http://127.0.0.1:1/", None),
             Err(FetchError::Transport(_))
         ));
+    }
+
+    /// #213: the tray's "Pause all agents" / "Resume all agents" POST the
+    /// daemon's dispatch endpoints with its token.
+    #[test]
+    fn pause_and_resume_post_the_dispatch_endpoints() {
+        let (url, seen) = serve_once("200 OK", r#"{"dispatchPaused":{"pausedAt":"t"}}"#);
+        assert_eq!(
+            set_dispatch_paused(&url, Some("secret-token-123456"), true),
+            Ok(())
+        );
+        assert_eq!(
+            seen.recv().unwrap(),
+            "POST /api/v1/dispatch/pause HTTP/1.1 Bearer secret-token-123456"
+        );
+        let (url, seen) = serve_once("200 OK", r#"{"dispatchPaused":null}"#);
+        assert_eq!(set_dispatch_paused(&url, None, false), Ok(()));
+        assert_eq!(
+            seen.recv().unwrap(),
+            "POST /api/v1/dispatch/resume HTTP/1.1 "
+        );
+        let (url, _seen) = serve_once("503 Service Unavailable", "{}");
+        assert_eq!(
+            set_dispatch_paused(&url, None, true),
+            Err(FetchError::Status(503))
+        );
     }
 }

@@ -88,8 +88,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	sub := s.bc.subscribe()
 	defer s.bc.unsubscribe(sub)
 
-	// Send initial snapshot immediately.
-	if err := s.writeSSEEvent(w, flusher); err != nil {
+	// Send initial snapshot immediately. lastFeed is the feed seq this
+	// client was last told (#213); -1 so the first frame announces it.
+	lastFeed := int64(-1)
+	if err := s.writeSSEEvent(w, flusher, &lastFeed); err != nil {
 		return
 	}
 
@@ -109,7 +111,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-s.streamsDone: // generation shut down (CORE-025); the client reconnects
 			return
 		case <-sub:
-			if err := s.writeSSEEvent(w, flusher); err != nil {
+			if err := s.writeSSEEvent(w, flusher, &lastFeed); err != nil {
 				return
 			}
 			ticker.Reset(keepaliveInterval) // §7.2 — defer keepalive after activity
@@ -131,14 +133,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeSSEEvent writes the current snapshot frame. The frame is encoded
-// once per broadcaster version and shared by every client (#210).
-func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) error {
-	frame, err := s.sseFrame()
+// once per broadcaster version and shared by every client (#210). When the
+// snapshot's feed seq differs from *lastFeed, a `feed` event with the new
+// seq follows it in the same flush (#213).
+func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, lastFeed *int64) error {
+	frame, feedSeq, err := s.sseFrame()
 	if err != nil {
 		return err
 	}
 	if err := writeSSEBytes(w, frame); err != nil {
 		return err
+	}
+	if feedSeq != *lastFeed {
+		if err := writeSSEBytes(w, feedFrame(feedSeq)); err != nil {
+			return err
+		}
+		*lastFeed = feedSeq
 	}
 	flushSSE(w, flusher)
 	return nil

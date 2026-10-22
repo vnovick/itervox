@@ -288,7 +288,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// CORE-175 — operator acks of worker failures + the capability
 			// that makes the dashboard offer the action.
 			FailureAcks:  failureAckRows(s),
-			Capabilities: []string{server.CapabilityFailureAck},
+			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause},
+			// #213 — the daemon-wide dispatch pause and the feed head.
+			DispatchPaused: dispatchPauseRow(s.DispatchPaused),
+			FeedSeq:        s.FeedSeq,
 			// CORE-091 — daemon-session token / estimated-cost totals.
 			Totals: totalsRow(s),
 			// CORE-055 — agent backend breakers and auto-switch provenance.

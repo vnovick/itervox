@@ -352,10 +352,10 @@ func evictOldestPREvents(m map[string]time.Time, limit int) {
 // is the run's Running entry (nil when reconcile already removed it). A run
 // that a pr_synchronized rule dispatched advances that rule's baseline to the
 // head it left on the remote, so its own push does not fire it again. Event
-// loop only.
-func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) {
+// loop only. Reports whether the PR was not managed before (#213 pr_opened).
+func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) (isNew bool) {
 	if exit == nil || exit.PRURL == "" {
-		return
+		return false
 	}
 	if state.ManagedPRs == nil {
 		state.ManagedPRs = make(map[string]ManagedPR)
@@ -365,6 +365,7 @@ func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) {
 		since = live.StartedAt
 	}
 	pr, known := state.ManagedPRs[exit.PRURL]
+	isNew = !known
 	if !known || since.Before(pr.Since) {
 		pr.Since = since
 	}
@@ -394,6 +395,7 @@ func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) {
 			}
 		}
 	}
+	return isNew
 }
 
 // pruneManagedPRs drops the managed PRs of issues keep rejects, with their
