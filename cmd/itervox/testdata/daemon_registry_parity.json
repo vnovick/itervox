@@ -1,0 +1,78 @@
+{
+  "about": "Shared by cmd/itervox (TestDaemonRegistryParityFixture) and the Mac app (desktop/src-tauri registry.rs registry_read_in_process_matches_status_json, #212): both lay out this registry and these projects under a temp dir, list the daemons, and must produce `expected` exactly — the rows `itervox status --all --json` prints. Before parsing, each harness replaces __ROOT__ with the temp dir, __LIVE_PID__ with its own pid and __DEAD_PID__ with the pid of a child it has already reaped. A project with hold_lock has its pid lock (.itervox/runtime/daemon.pid.lock) held by the harness; one with runtime_dir has the runtime directory but a free lock.",
+  "projects": [
+    {"dir": "alpha", "pid_file": "__LIVE_PID__\t__ROOT__/alpha/WORKFLOW.md\n"},
+    {"dir": "beta", "pid_file": "__LIVE_PID__\t__ROOT__/beta/WORKFLOW.md\tflock\n", "hold_lock": true},
+    {"dir": "gamma", "pid_file": "__LIVE_PID__\t__ROOT__/gamma/WORKFLOW.md\tflock\n", "runtime_dir": true},
+    {"dir": "delta", "pid_file": "__DEAD_PID__\t__ROOT__/delta/WORKFLOW.md\n"},
+    {"dir": "epsilon", "pid_file": "1\t__ROOT__/epsilon/WORKFLOW.md\n"},
+    {"dir": "zeta"}
+  ],
+  "registry": {
+    "100.json": {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/beta/WORKFLOW.md", "project_dir": "__ROOT__/beta",
+      "url": "http://127.0.0.1:8091/", "host": "127.0.0.1", "port": 8091,
+      "version": "0.2.8", "commit": "abc1234", "started_at": "2026-10-22T10:00:00Z",
+      "token_required": true, "token_source": "supervisor", "token_file": "",
+      "logs_dir": "__ROOT__/logs/beta", "heartbeat": "__ROOT__/beta/.itervox/HEARTBEAT.md",
+      "executable": "/Applications/Itervox.app/Contents/MacOS/itervox", "path_source": "login_shell",
+      "source": ""
+    },
+    "101.json": {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/alpha/WORKFLOW.md", "project_dir": "__ROOT__/alpha",
+      "url": "http://0.0.0.0:8090/", "host": "0.0.0.0", "port": 8090,
+      "version": "0.2.7", "commit": "def5678", "started_at": "2026-10-21T09:00:00Z",
+      "token_required": true, "token_source": "generated", "token_file": "__ROOT__/logs/alpha/api-token",
+      "logs_dir": "__ROOT__/logs/alpha", "heartbeat": "__ROOT__/alpha/.itervox/HEARTBEAT.md",
+      "executable": "/usr/local/bin/itervox", "path_source": "inherited",
+      "source": ""
+    },
+    "102.json": {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/gamma/WORKFLOW.md", "project_dir": "__ROOT__/gamma",
+      "url": "http://127.0.0.1:8092/", "host": "127.0.0.1", "port": 8092,
+      "token_required": false, "token_source": "none", "source": ""
+    },
+    "103.json": {
+      "schema_version": 1, "pid": __DEAD_PID__,
+      "workflow": "__ROOT__/delta/WORKFLOW.md", "project_dir": "__ROOT__/delta",
+      "url": "http://127.0.0.1:8093/", "host": "127.0.0.1", "port": 8093, "source": ""
+    },
+    "104.json": {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/epsilon/WORKFLOW.md", "project_dir": "__ROOT__/epsilon", "source": ""
+    },
+    "105.json": {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/zeta/WORKFLOW.md", "project_dir": "__ROOT__/zeta", "source": ""
+    },
+    "106.json": {"schema_version": 1, "pid": 0, "workflow": "__ROOT__/alpha/WORKFLOW.md"},
+    "107.json": "{ this is not json",
+    "notes.txt": "not a record"
+  },
+  "remaining": ["100.json", "101.json", "notes.txt"],
+  "expected": [
+    {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/alpha/WORKFLOW.md", "project_dir": "__ROOT__/alpha",
+      "url": "http://0.0.0.0:8090/", "host": "0.0.0.0", "port": 8090,
+      "version": "0.2.7", "commit": "def5678", "started_at": "2026-10-21T09:00:00Z",
+      "token_required": true, "token_source": "generated", "token_file": "__ROOT__/logs/alpha/api-token",
+      "logs_dir": "__ROOT__/logs/alpha", "heartbeat": "__ROOT__/alpha/.itervox/HEARTBEAT.md",
+      "executable": "/usr/local/bin/itervox", "path_source": "inherited",
+      "source": "registry"
+    },
+    {
+      "schema_version": 1, "pid": __LIVE_PID__,
+      "workflow": "__ROOT__/beta/WORKFLOW.md", "project_dir": "__ROOT__/beta",
+      "url": "http://127.0.0.1:8091/", "host": "127.0.0.1", "port": 8091,
+      "version": "0.2.8", "commit": "abc1234", "started_at": "2026-10-22T10:00:00Z",
+      "token_required": true, "token_source": "supervisor", "token_file": "",
+      "logs_dir": "__ROOT__/logs/beta", "heartbeat": "__ROOT__/beta/.itervox/HEARTBEAT.md",
+      "executable": "/Applications/Itervox.app/Contents/MacOS/itervox", "path_source": "login_shell",
+      "source": "registry"
+    }
+  ]
+}

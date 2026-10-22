@@ -55,7 +55,9 @@ The menu lists, sorted by name:
 - every daemon `itervox status --all --json` reports — started by the app, from a terminal, or by launchd;
 - every project you added with **Add Project…** (choose its `WORKFLOW.md`), also while its daemon is stopped.
 
-Each project shows its state and running agents, for example `running · 2 agents · 1 needs input`. The list refreshes every 3 seconds. The number next to the menu-bar icon counts the issues waiting for your input across projects.
+Each project shows its state and running agents, for example `running · 2 agents · 1 needs input`. The list refreshes every 3 seconds while any daemon has an agent running or retrying, a question waiting, or a start or stop in progress, and every 15 seconds when everything is idle; pointing at or clicking the menu-bar icon, and focusing an app window, refresh it at once. The number next to the menu-bar icon counts the issues waiting for your input across projects.
+
+To do as little as possible while idle, the app reads the daemon registry (`~/.itervox/daemons/`) itself instead of running `itervox status --all --json` on every refresh. It still runs that command at start, when you open the menu (at most every 30 seconds) or choose **Refresh Now**, and whenever the registry holds a format it does not know, so daemons started by an itervox older than the registry still show. Each daemon is read over one kept-alive connection: a small `GET /api/v1/summary` with the last `ETag`, and the full state only when the daemon answers that something changed ([`GET /summary`](/api-reference/#get-summary)).
 
 For a daemon the app started, the app reads the state with that daemon's token. For a daemon started from a terminal, it uses the auto-generated token in the daemon's `token_file` when there is one (same user, mode `0600`). A daemon with a pinned `ITERVOX_API_TOKEN` shows **token required**: the app cannot read its state, and its dashboard asks for the token.
 

@@ -84,6 +84,11 @@ pub struct ConnectionView {
 }
 
 impl ConnectionView {
+    /// Whether any of its daemons has agent work in flight (#212).
+    pub fn busy(&self) -> bool {
+        self.daemons.iter().any(|d| d.health.busy())
+    }
+
     /// e.g. "2/2 connected · 1 needs input" or "reconnecting…".
     pub fn status_line(&self) -> String {
         if self.daemons.is_empty() {

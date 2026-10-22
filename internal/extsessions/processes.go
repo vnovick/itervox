@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -110,40 +112,141 @@ func sameUID(st os.FileInfo, uid int) bool {
 	return int(sys.Uid) == uid
 }
 
+// lsofCacheTTL bounds how long one lsof result of a process is reused
+// (#212). Within it, a transcript the process opened since is not seen in
+// Files, which only lowers a "has the transcript open" answer to the
+// "running in the session's directory" one; it never rules a session out.
+const lsofCacheTTL = 2 * time.Minute
+
+// startTolerance is how far two scans' start-time estimates (scan time
+// minus ps's whole-second etime) may differ for the same process.
+const startTolerance = 2 * time.Second
+
+// lsofCache remembers the lsof result of each agent process, keyed by pid
+// and start time, so the 15-second scan runs lsof only for processes it has
+// not inspected yet, or not within lsofCacheTTL (#212). A pid reused by a
+// new process has a different start time and is inspected afresh.
+type lsofCache struct {
+	mu      sync.Mutex
+	entries map[int]lsofEntry
+}
+
+type lsofEntry struct {
+	started time.Time
+	checked time.Time
+	cwd     string
+	files   []string
+}
+
+// lookup returns the cached result for pid started at started, if fresh.
+func (c *lsofCache) lookup(pid int, started, now time.Time) (lsofEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[pid]
+	if !ok || now.Sub(e.checked) >= lsofCacheTTL {
+		return lsofEntry{}, false
+	}
+	if d := e.started.Sub(started); d > startTolerance || d < -startTolerance {
+		return lsofEntry{}, false
+	}
+	return e, true
+}
+
+// store records the result for pid.
+func (c *lsofCache) store(pid int, e lsofEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[int]lsofEntry{}
+	}
+	c.entries[pid] = e
+}
+
+// prune forgets the processes no longer listed.
+func (c *lsofCache) prune(live map[int]bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for pid := range c.entries {
+		if !live[pid] {
+			delete(c.entries, pid)
+		}
+	}
+}
+
+// systemLsofCache is the cache of SystemProcesses.
+var systemLsofCache lsofCache
+
 // psProcesses lists this user's processes with ps, then reads the cwd and
-// open files of each agent CLI with lsof.
+// open files of each agent CLI with lsof (cached per process).
 func psProcesses() ([]Process, error) {
+	var lsof func(int) (string, []string)
+	if path := lsofPath(); path != "" {
+		lsof = func(pid int) (string, []string) { return lsofFiles(path, pid) }
+	}
+	return inspectPS(runPS, lsof, &systemLsofCache, time.Now())
+}
+
+// runPS lists this user's processes: pid, ppid, elapsed time and arguments.
+// LC_ALL=C keeps the columns' format independent of the user's locale.
+func runPS() ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), inspectTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ps", "-x", "-ww", "-o", "pid=,ppid=,args=", "-U", strconv.Itoa(os.Getuid()))
-	raw, err := cmd.Output()
+	cmd := exec.CommandContext(ctx, "ps", "-x", "-ww", "-o", "pid=,ppid=,etime=,args=", "-U", strconv.Itoa(os.Getuid()))
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd.Output()
+}
+
+// inspectPS is psProcesses with its process lister, lsof runner (nil: no
+// lsof on this host), cache and clock injected.
+func inspectPS(ps func() ([]byte, error), lsof func(int) (string, []string), cache *lsofCache, now time.Time) ([]Process, error) {
+	raw, err := ps()
 	if err != nil {
 		return nil, fmt.Errorf("extsessions: ps: %w", err)
 	}
-	procs := parsePS(raw, os.Getpid())
-	lsof := lsofPath()
-	for i := range procs {
-		if ProcessBackend(procs[i]) == "" {
-			continue
-		}
-		if lsof == "" {
-			continue // cwd unknown: CheckLiveness treats the process as possibly this session
-		}
-		procs[i].Cwd, procs[i].Files = lsofFiles(lsof, procs[i].PID)
+	rows := parsePS(raw, os.Getpid())
+	live := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		live[r.PID] = true
 	}
+	procs := make([]Process, len(rows))
+	for i, r := range rows {
+		procs[i] = r.Process
+		if ProcessBackend(r.Process) == "" || lsof == nil {
+			continue // no lsof: cwd unknown, CheckLiveness treats the process as possibly this session
+		}
+		started := now.Add(-r.elapsed)
+		if r.elapsed >= 0 {
+			if e, ok := cache.lookup(r.PID, started, now); ok {
+				procs[i].Cwd, procs[i].Files = e.cwd, slices.Clone(e.files)
+				continue
+			}
+		}
+		procs[i].Cwd, procs[i].Files = lsof(r.PID)
+		if r.elapsed >= 0 && procs[i].Cwd != "" {
+			cache.store(r.PID, lsofEntry{started: started, checked: now, cwd: procs[i].Cwd, files: slices.Clone(procs[i].Files)})
+		}
+	}
+	cache.prune(live)
 	return procs, nil
 }
 
-// parsePS parses `ps -o pid=,ppid=,args=` output, skipping self.
+// psRow is one parsed ps line: the process and how long it has run
+// (negative when the etime column could not be read).
+type psRow struct {
+	Process
+	elapsed time.Duration
+}
+
+// parsePS parses `ps -o pid=,ppid=,etime=,args=` output, skipping self.
 // Arguments are split on spaces (ps does not quote them), which is enough
 // to recognise the executable and a session ID argument.
-func parsePS(raw []byte, self int) []Process {
-	var out []Process
+func parsePS(raw []byte, self int) []psRow {
+	var out []psRow
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		all := strings.Fields(sc.Text())
-		if len(all) < 3 {
+		if len(all) < 4 {
 			continue
 		}
 		pid, isNum := atoiOK(all[0])
@@ -151,10 +254,38 @@ func parsePS(raw []byte, self int) []Process {
 		if !isNum || !ppidNum || pid == self {
 			continue
 		}
-		fields := all[2:]
-		out = append(out, Process{PID: pid, PPID: ppid, Name: filepath.Base(fields[0]), Args: fields})
+		fields := all[3:]
+		out = append(out, psRow{
+			Process: Process{PID: pid, PPID: ppid, Name: filepath.Base(fields[0]), Args: fields},
+			elapsed: parseEtime(all[2]),
+		})
 	}
 	return out
+}
+
+// parseEtime reads ps's etime, [[dd-]hh:]mm:ss; -1 when malformed.
+func parseEtime(s string) time.Duration {
+	var days int
+	if d, rest, ok := strings.Cut(s, "-"); ok {
+		n, isNum := atoiOK(d)
+		if !isNum {
+			return -1
+		}
+		days, s = n, rest
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return -1
+	}
+	secs := 0
+	for _, p := range parts {
+		n, isNum := atoiOK(p)
+		if !isNum {
+			return -1
+		}
+		secs = secs*60 + n
+	}
+	return time.Duration(days)*24*time.Hour + time.Duration(secs)*time.Second
 }
 
 func lsofPath() string {

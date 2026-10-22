@@ -1169,6 +1169,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			RepoReadiness: repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
 			RepoEvals:     repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
 			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
+			Version:       version,                                       // #212: GET /api/v1/summary
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

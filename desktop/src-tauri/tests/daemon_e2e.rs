@@ -1,6 +1,8 @@
 //! End-to-end checks against a real `itervox` binary, driving the same code
-//! the app's refresh loop runs (`Core::fetch_jobs` → `fetch_state` →
-//! `Core::apply`) with the same start/stop commands the menu uses:
+//! the app's refresh loop runs (`read_registry` → `Core::fetch_jobs` →
+//! `fetch_all` (summary, then state) → `Core::apply`) with the same
+//! start/stop commands the menu uses; every refresh also checks that the
+//! in-process registry read equals `status --all --json` (#212):
 //!
 //! - start a daemon detached with a supervisor token, see it listed by
 //!   `status --all --json` and its state read with the token; restart it
@@ -17,15 +19,15 @@
 //! still appear through the process scan; the tests ignore them). The agent
 //! is a shell script standing in for the `claude` CLI.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use itervox_desktop::client::{fetch_sessions, fetch_state, FetchError};
+use itervox_desktop::client::{fetch_all, fetch_sessions, fetch_state, ClientPool, FetchError};
 use itervox_desktop::events::AlertKind;
 use itervox_desktop::model::{Core, Health, PendingOp, RefreshOutcome};
 use itervox_desktop::projects::SavedProjects;
+use itervox_desktop::registry::read_registry;
 use itervox_desktop::sessions::{read_all, session_link};
 use itervox_desktop::status::{parse_status, DaemonRecord};
 use itervox_desktop::supervisor::{
@@ -86,6 +88,7 @@ struct Fixture {
     key: String,
     tokens: MemoryTokenStore,
     core: Core,
+    pool: ClientPool,
 }
 
 fn run(cmd: &mut Command) {
@@ -172,6 +175,7 @@ impl Fixture {
             key,
             tokens: MemoryTokenStore::default(),
             core: Core::new(saved),
+            pool: ClientPool::default(),
             _tmp: tmp,
         }
     }
@@ -189,16 +193,29 @@ impl Fixture {
         parse_status(&out.stdout).expect("parse status")
     }
 
-    /// One refresh, as the app's refresh loop does it.
+    /// One refresh, as the app's refresh loop does it: the registry read
+    /// in-process (checked against `status --all --json`, #212), then each
+    /// daemon through its pooled client (summary first).
     fn refresh(&mut self) -> RefreshOutcome {
-        let records = self.status();
+        let registry = self.home.join(".itervox").join("daemons");
+        let mut records = Vec::new();
+        for attempt in 0..3 {
+            records = read_registry(&registry).expect("read the registry");
+            // The process scan (left to the sidecar) also finds the other
+            // tests' daemons, which this HOME's registry does not list.
+            let mut status = self.status();
+            status.retain(|r| r.source == "registry");
+            if records == status {
+                break;
+            }
+            // A daemon starting or stopping between the two reads.
+            assert!(attempt < 2, "in-process {records:?} != status {status:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let jobs = self
             .core
             .fetch_jobs(&records, &self.tokens, &|p| std::fs::read_to_string(p).ok());
-        let states: HashMap<String, Result<_, FetchError>> = jobs
-            .iter()
-            .map(|j| (j.key.clone(), fetch_state(&j.url, j.token.as_deref())))
-            .collect();
+        let states = fetch_all(&self.pool, &jobs);
         self.core.apply(Ok(records), states, Instant::now())
     }
 
@@ -320,6 +337,28 @@ fn start_stop_restart_are_reflected_within_one_refresh() {
         !f.log().contains(&token),
         "token leaked into the daemon output"
     );
+    // #212: the summary answers a request naming its ETag with 304.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .proxy(None)
+        .build()
+        .into();
+    let summary = format!("{}api/v1/summary", rec.base_url());
+    let bearer = format!("Bearer {token}");
+    let first = agent
+        .get(&summary)
+        .header("Authorization", &bearer)
+        .call()
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 200);
+    let tag = first.headers()["etag"].to_str().unwrap().to_string();
+    let again = agent
+        .get(&summary)
+        .header("Authorization", &bearer)
+        .header("If-None-Match", &tag)
+        .call()
+        .unwrap();
+    assert_eq!(again.status().as_u16(), 304);
 
     // Restart: stop, start again; the next refresh shows the new pid.
     f.core.begin(&f.key, PendingOp::Restarting, Instant::now());
