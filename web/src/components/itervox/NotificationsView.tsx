@@ -11,28 +11,17 @@
 // - Click on a select-issue row dispatches onSelect(identifier). Click on a
 //   navigate row uses react-router useNavigate.
 
-import { useMemo } from 'react';
 import { useNavigate } from 'react-router';
-import { useItervoxStore } from '../../store/itervoxStore';
-import { useIssues } from '../../queries/issues';
-import { buildOperatorQueueItems, type OperatorQueueItem } from '../../lib/operatorQueue';
+import { useOperatorQueue } from '../../hooks/useOperatorQueue';
+import type { OperatorQueueItem } from '../../lib/operatorQueue';
 import { ReviewSourcePill } from './ReviewSourcePill';
-
-const EMPTY_ISSUES: never[] = [];
 
 interface NotificationsViewProps {
   onSelect: (identifier: string) => void;
 }
 
 export function NotificationsView({ onSelect }: NotificationsViewProps) {
-  const snapshot = useItervoxStore((s) => s.snapshot);
-  const issuesQuery = useIssues();
-  const issues = issuesQuery.data ?? EMPTY_ISSUES;
-
-  const queue = useMemo(() => {
-    if (!snapshot) return { groups: [], total: 0 };
-    return buildOperatorQueueItems(snapshot, issues);
-  }, [snapshot, issues]);
+  const queue = useOperatorQueue();
 
   const navigate = useNavigate();
 

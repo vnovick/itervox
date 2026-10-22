@@ -81,7 +81,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-bundle-budget` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
 | `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
 | `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
@@ -95,6 +95,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make vet` | `go vet ./cmd/... ./internal/...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
 | `make web-build` | `pnpm build` in `web/` |
+| `make web-bundle-budget` | `pnpm bundle:budget` in `web/`: fails when total, initial-load or per-chunk JavaScript in `internal/server/web/dist` passes its cap in `web/scripts/checkBundleBudget.mjs`, when the Dashboard chunk contains `@xyflow/react`, or when any chunk contains antd or `react-js-cron` (#211). Run after `web-build` |
 | `make web-test` | `pnpm test` in `web/` |
 | `make web-coverage` | `pnpm test:coverage` in `web/` |
 | `make web-spelling` | Guard against the legacy `Symphony` brand name leaking into user-visible TS/TSX strings |
@@ -322,7 +323,7 @@ These are skipped (not silently passed) in CI without credentials.
 
 ```bash
 cd web
-pnpm lint          # ESLint
+pnpm lint          # ESLint + outline guard + no-whole-snapshot-selector guard (#211)
 pnpm format:check  # Prettier (check only)
 pnpm format        # Prettier (write)
 ```

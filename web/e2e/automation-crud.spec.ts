@@ -41,9 +41,8 @@ test('create + delete an automation round-trip', async ({ page }) => {
   // Fill in a minimal cron automation. The id input is autoFocused.
   await page.getByLabel(/automation id/i).fill('e2e-smoke');
 
-  // The cron picker default emits `0 9 * * 1-5` (Mon-Fri at 9am) when
-  // humanizeValue=false is set in CronPicker — that's valid Unix cron.
-  // No need to override the cron field here.
+  // A new cron automation starts at `0 9 * * 1-5` (Mon-Fri at 9am), which
+  // the cron input and the daemon both accept. No need to override it here.
 
   // Submit — the form's submit button is labelled "Create Automation".
   await page.getByRole('button', { name: /create automation/i }).click();

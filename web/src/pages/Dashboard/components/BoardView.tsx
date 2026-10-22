@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { memo, useState, useMemo, useCallback } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -35,7 +35,11 @@ interface BoardViewProps {
   onProfileChange: (identifier: string, profile: string) => void;
 }
 
-export function BoardView({
+// #211 — memoised: the Dashboard page re-renders whenever any of the many
+// snapshot branches it selects changes (automation queue, failures, outbox…).
+// With stable props the board only re-renders for its own inputs: the issue
+// list, its callbacks, and the snapshot branches it selects below.
+export const BoardView = memo(function BoardView({
   issues,
   onSelect,
   onStateChange,
@@ -257,4 +261,4 @@ export function BoardView({
       </DragOverlay>
     </DndContext>
   );
-}
+});

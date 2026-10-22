@@ -8,6 +8,7 @@ import {
 } from './prEventFilters';
 import type { SuggestedAutomation } from './suggestedAutomations';
 import type { AutomationUnknownFields } from '../../../types/configRoundTrip';
+import { parseCron } from '../../../lib/cron';
 
 function isValidRegex(value: string): boolean {
   if (value.trim() === '') return true;
@@ -74,6 +75,12 @@ export const automationFormSchema = z
         path: ['cron'],
         message: 'Cron automations require a cron expression.',
       });
+    } else if (triggerKnown && values.triggerType === 'cron') {
+      // #211 — the same rules as the daemon's parser (internal/schedule).
+      const parsed = parseCron(values.cron);
+      if (!parsed.ok) {
+        ctx.addIssue({ code: 'custom', path: ['cron'], message: `Invalid cron: ${parsed.error}` });
+      }
     }
     if (
       triggerKnown &&

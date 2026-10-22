@@ -42,6 +42,11 @@ import {
   EMPTY_OUTBOX_ENTRIES,
   EMPTY_RECENT_FAILURES,
 } from '../../utils/constants';
+import type { TrackerIssue } from '../../types/schemas';
+
+// #211 — stable fallback so the memoised board keeps its props while the
+// issue list is still loading.
+const EMPTY_ISSUES: TrackerIssue[] = [];
 
 export default function Dashboard() {
   // CORE-079 — ?view= / ?q= / ?state= <-> the dashboard view and filters.
@@ -60,7 +65,7 @@ export default function Dashboard() {
     ].join('|');
   });
   useHashScroll(sectionRowsKey);
-  const { data: issues = [] } = useIssues();
+  const { data: issues = EMPTY_ISSUES } = useIssues();
   const {
     availableProfiles,
     backlogStates,
@@ -133,7 +138,10 @@ export default function Dashboard() {
 
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
   const { mutateAsync: updateIssueState } = useUpdateIssueState();
-  const setIssueProfileMutation = useSetIssueProfile();
+  // #211 — depend on the stable `mutate`, not the mutation result object
+  // (a fresh object every render), so handleProfileChange keeps its identity
+  // and the memoised BoardView skips renders for unrelated snapshot fields.
+  const { mutate: setIssueProfile } = useSetIssueProfile();
 
   // v0.2.0 audit P2-10 — connection-state timing is centralised in
   // useConnectionState (8s timeout, single source of truth shared with
@@ -181,9 +189,9 @@ export default function Dashboard() {
 
   const handleProfileChange = useCallback(
     (identifier: string, profile: string) => {
-      setIssueProfileMutation.mutate({ identifier, profile });
+      setIssueProfile({ identifier, profile });
     },
-    [setIssueProfileMutation],
+    [setIssueProfile],
   );
 
   return (
