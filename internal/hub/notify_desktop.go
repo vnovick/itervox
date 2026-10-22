@@ -70,11 +70,12 @@ func (d *desktopChannel) headID() int64 {
 }
 
 // setupChannels loads the notification settings and registers the
-// channels: desktop (built in) and cfg.Channels, each with its notifier.
+// channels: desktop and push (built in) and cfg.Channels, each with its
+// notifier.
 func (h *Hub) setupChannels(cfg Config) {
 	h.notify = loadNotifySettings(filepath.Join(cfg.StateDir, NotificationsFileName))
 	h.desktop = newDesktopChannel()
-	h.channels = map[string]Channel{ChannelDesktop: h.desktop}
+	h.channels = map[string]Channel{ChannelDesktop: h.desktop, ChannelPush: h.push}
 	for _, ch := range cfg.Channels {
 		if ch == nil || !slices.Contains(ChannelNames, ch.Name()) || h.channels[ch.Name()] != nil {
 			slog.Warn("hub: notification channel skipped (unknown or duplicate name)")

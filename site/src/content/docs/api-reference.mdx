@@ -561,8 +561,16 @@ daemons' envelope, `{"error":{"code","message"}}`.
 | `GET /hub/api/v1/notifications` | admin | the notification settings, kinds, channels and projects |
 | `PUT /hub/api/v1/notifications` | admin | replace the notification settings |
 | `POST /hub/api/v1/notifications/test` | operator | send a test notification through one channel |
+| `GET /hub/api/v1/push/vapid-public-key` | viewer | `{"publicKey"}`: the hub's VAPID application server key (#231) |
+| `POST /hub/api/v1/push/subscribe` | operator | subscribe this browser to Web Push under a device name |
+| `GET /hub/api/v1/push/devices` | operator | the push devices (name and push service only) |
+| `DELETE /hub/api/v1/push/devices/{id}` | operator | stop pushing to a device |
+| `POST /hub/api/v1/pairing` | admin | a one-time phone pairing code (10 minutes) |
+| `POST /hub/api/v1/pairing/exchange` | none (the code) | trade a pairing code for the device's operator token |
+| `GET /hub/api/v1/devices` | admin | the paired devices |
+| `DELETE /hub/api/v1/devices/{id}` | admin | revoke a paired device's token and its pushes |
 | `* /hub/p/{project}/api/v1/...` | the member route's | the member's API through the proxy |
-| `GET /hub/`, `/hub/p/{project}/...`, `/assets/...` | none | the dashboard |
+| `GET /hub/`, `/hub/m`, `/hub/pair`, `/hub/p/{project}/...`, `/assets/...`, `/manifest.webmanifest`, `/sw.js`, `/icons/...` | none | the dashboard, its phone layout and the installable web app |
 
 ### `GET /hub/api/v1/projects`
 
@@ -657,6 +665,53 @@ hub), and the member names. `PUT` takes the settings document, validates it
 Operator. `{"channel": "push" | "slack" | "desktop"}` sends one test
 notification through that channel: 200 `{"sent":true}`, 400
 `unknown_channel`, 409 `channel_unavailable`, 502 `send_failed`.
+
+### Phones: Web Push and pairing (#231)
+
+Guide: [Your phone](/guides/phone/).
+
+**`POST /hub/api/v1/push/subscribe`** (operator) takes a device name and the
+browser's `PushSubscription.toJSON()`:
+
+```json
+{ "name": "Pixel", "subscription": { "endpoint": "https://fcm.googleapis.com/fcm/send/…",
+  "keys": { "p256dh": "<base64url P-256 key>", "auth": "<base64url 16 bytes>" } } }
+```
+
+201 `{"device":{"id","name","service","tokenId","created"}}`. The endpoint
+must be https on a known push service (Google, Mozilla, Apple, Microsoft;
+400 `invalid_subscription` otherwise); re-subscribing the same endpoint
+updates that device. The device is bound to the caller's hub token: revoking
+the token removes it. At most 50 devices (409 `too_many_devices`). The list
+(`GET /hub/api/v1/push/devices`) never returns an endpoint or key.
+
+Every notification the [notification settings](/guides/hub/#notifications)
+route to the `push` channel is sent to every device, encrypted per RFC 8291
+(`Content-Encoding: aes128gcm`) and signed with the hub's VAPID key
+(`~/.itervox/hub/push_vapid.pem`, `0600`, created on first use). The
+decrypted payload is exactly
+`{"kind","project","issue","title","url"}`: a notification kind (or
+`digest`, `test`), a redacted title of at most 80 characters and a
+hub-relative link (`/hub/p/{project}/m/{issue}`, else `/hub/m`). A device the
+push service answers 404 or 410 for is removed.
+
+**`POST /hub/api/v1/pairing`** (admin) answers 201
+`{"code","expiresAt","path"}`: a 160-bit one-time code, valid for 10
+minutes, and the link path `/hub/pair#code=<code>`. At most 20 codes are
+pending (429 `too_many_pairings`). **`POST /hub/api/v1/pairing/exchange`**
+takes `{"code","name"}` without a token and answers 201
+`{"token","device":{"id","name","created"}}`: a new operator hub token named
+`device: <name>`, shown once. A wrong, used or expired code is 400
+`invalid_code`; after 10 wrong codes in a minute the exchange answers 429
+`too_many_attempts` until the minute is over. **`GET /hub/api/v1/devices`**
+(admin) lists the paired devices (`id`, `name`, `created`, `lastUsed`,
+`pushDevices`); **`DELETE /hub/api/v1/devices/{id}`** revokes one (204; 404
+for a token that is not a paired device).
+
+**CORS.** `server.allowed_origins` of the hosting daemon applies to every
+hub route (and to that daemon's own API): a listed origin gets
+`Access-Control-Allow-Origin` for itself and its preflights answered; any
+other cross-origin preflight is refused with 403 `origin_not_allowed`.
 
 ### The proxy: `/hub/p/{project}/api/v1/...`
 

@@ -308,7 +308,7 @@ func TestNotificationSettingsAPI(t *testing.T) {
 	var got NotificationsResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	assert.Equal(t, DefaultDigestIntervalMinutes, got.Settings.DigestIntervalMinutes)
-	assert.Equal(t, []NotificationChannelInfo{{ChannelPush, false}, {ChannelSlack, false}, {ChannelDesktop, true}}, got.Channels)
+	assert.Equal(t, []NotificationChannelInfo{{ChannelPush, true}, {ChannelSlack, false}, {ChannelDesktop, true}}, got.Channels, "push (#231) and desktop are built in")
 	assert.Len(t, got.Kinds, len(NotificationKinds))
 
 	body := `{"digest_interval_minutes": 30, "projects": {"alpha": {"routes": {"pr_merged": ["desktop"]}, "snooze_until": "2030-01-01T00:00:00Z"}}}`

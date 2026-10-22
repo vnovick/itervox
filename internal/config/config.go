@@ -726,6 +726,13 @@ type ServerConfig struct {
 	// MagicDNS hostnames belong here. Ignored in token mode. Read-only after
 	// startup.
 	AllowedHosts []string
+	// AllowedOrigins (YAML `server.allowed_origins`, #231) is the CORS
+	// allow-list: origins (scheme://host[:port], normalized as a browser
+	// sends them) whose pages may call this daemon's API, and the hub when
+	// this daemon serves it, cross-origin with a bearer token — a dashboard
+	// hosted elsewhere, for example. Empty (the default) is same-origin
+	// only. Read-only after startup.
+	AllowedOrigins []string
 	// Metrics (YAML `server.metrics`) controls the Prometheus text endpoint
 	// GET /metrics (CORE-045). Read-only after startup.
 	Metrics MetricsConfig
@@ -1138,6 +1145,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Server.AllowedHosts = allowedHosts
+	if cfg.Server.AllowedOrigins, err = normalizeAllowedOrigins(strSliceField(srv, "allowed_origins", nil)); err != nil {
+		return nil, err
+	}
 	cfg.Server.Metrics.Enabled = boolField(nestedMap(srv, "metrics"), "enabled", false)
 	if v, ok := srv["allowed_hosts"]; ok && v != nil {
 		if _, isList := v.([]any); !isList {

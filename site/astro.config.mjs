@@ -41,6 +41,7 @@ export default defineConfig({
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },
             { label: 'The hub (one URL)', slug: 'guides/hub' },
             { label: 'Slack (through the hub)', slug: 'guides/slack' },
+            { label: 'Your phone (web app & push)', slug: 'guides/phone' },
             { label: 'Pause dispatch & event feed', slug: 'guides/pause-and-feed' },
             { label: 'Now & Changes', slug: 'guides/now-and-changes' },
             { label: 'MCP server (Claude Code, Codex)', slug: 'guides/mcp' },

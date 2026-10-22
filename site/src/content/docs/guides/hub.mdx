@@ -198,8 +198,10 @@ and restart the hub.
 There is no budget kind yet: an issue paused by its budget emits no feed
 event.
 
-**Channels.** `push` (Web Push, #231), `slack` (your own Slack app, #230:
-see [Slack](/guides/slack/)) and `desktop` (the Mac app). A channel that is not set up yet shows as unavailable and receives
+**Channels.** `push` (Web Push to your phones, #231: see
+[Your phone](/guides/phone/)), `slack` (your own Slack app, #230:
+see [Slack](/guides/slack/)) and `desktop` (the Mac app). `push` and
+`desktop` are built in. A channel that is not set up yet shows as unavailable and receives
 nothing; `channels.<name>.enabled: false` switches one off for every project.
 
 **Routing.** For each project and kind the matrix picks the channels; a
@@ -247,6 +249,9 @@ Quiet hours, escalation and role-based routing are not part of the hub.
 
 ## Reaching the hub from another device
 
+For a phone — the installable web app, QR pairing and push notifications —
+follow [Your phone](/guides/phone/). For anything else:
+
 The hub binds to loopback by default. Every route needs a hub token, so
 exposing it is safe with tokens only:
 
@@ -273,4 +278,5 @@ project's HTTP API, exactly like every other member.
 - `itervox hub [--json]`, `itervox --no-hub`, `itervox token --hub`: [CLI](/cli/#itervox-hub--the-machines-hub-and-its-members)
 - `hub.enabled`, `hub.port`, `hub.bind`, `hub.slack.*`: [Configuration](/configuration/#hub)
 - Slack alerts, replies, approvals and steering: [Slack](/guides/slack/)
+- The phone web app, pairing and Web Push: [Your phone](/guides/phone/)
 - `/hub/api/v1/*`, `/hub/p/{project}/api/v1/*`, `GET /api/v1/route-scopes`: [API reference](/api-reference/#hub)
