@@ -525,7 +525,10 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
          View is injected by cmd/itervox from Snapshot(), never cfgMu)
 
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
-         orchestrator and cmd/itervox)
+         orchestrator, server and cmd/itervox)
+
+apitokens (stored API tokens + scopes, #214 — imports atomicfs only;
+           used by server and cmd/itervox)
 
 memory (managed memory files, selection and the `## Memory` block — imports
         atomicfs, config, logging; imported by orchestrator, server and
@@ -555,7 +558,7 @@ prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
 
 app (EnrichIssue business logic — imports domain, tracker)
 
-server (HTTP API — imports domain, config, guardrails, memory, rules)
+server (HTTP API — imports domain, config, apitokens, guardrails, logging, memory, rules)
 
 statusui (Bubbletea TUI — imports domain)
 
@@ -573,6 +576,7 @@ cmd/itervox (wires everything)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
 - **Real-time**: SSE via `@microsoft/fetch-event-source` (NOT native `EventSource`) — needed so the connection can carry an `Authorization: Bearer` header. Single seam is `web/src/auth/authedEventStream.ts`, consumed by `useItervoxSSE`, `useLogStream`, and the per-issue log-stream in `queries/logs.ts`.
 - **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
+- **Auth model — scopes (#214)**: every authenticated request becomes a `Principal` (`internal/server/auth.go`) with a scope `viewer` < `operator` < `admin`. The bootstrap token (`ITERVOX_API_TOKEN`, the auto-generated token, `ITERVOX_SUPERVISOR_TOKEN`) is always admin; stored tokens in `.itervox/tokens.json` (`internal/apitokens`: SHA-256 hashes only, 0600, gitignored, flock-serialized atomic writes, in-memory index refreshed on own writes and by an mtime/inode check every 200 ms for `itervox token` writes from another process) carry their own scope; `server.allow_unauthenticated` makes every caller admin and ignores the store. `scopeMiddleware` enforces **one** table, `internal/server/route_scopes.go::routeScopes` (method + full chi pattern → scope, plus `public` / `agent_grant` entries for routes outside the bearer group); an undeclared route is refused (fail closed) and `TestEveryRouteDeclaresAScope` walks the chi router, so **every new route needs a line there**. Viewer is GET/SSE only; below admin, `snapshotForScope` / `profileDefsForScope` / `settingsLayersForScope` redact secrets (SSE frames are cached per scope). Agent-action/guardrail grants are a separate mechanism and unchanged. The dashboard reads `callerScope` from the snapshot (`useCallerScope`, `RequireScope`) only to hide controls; `authedFetch` toasts a `403 insufficient_scope` (header `X-Itervox-Required-Scope`).
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results
@@ -603,6 +607,8 @@ cmd/itervox (wires everything)
 | `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |
 | `web/src/auth/tokenStore.ts` | Token storage (sessionStorage default, localStorage opt-in via "Remember"), cross-tab `storage` event sync |
 | `web/src/auth/authStore.ts` | Auth state machine: `unknown` / `serverDown` / `needsToken` / `authorized` |
+| `web/src/auth/scope.ts` | Token scopes (#214): `Scope`, `scopeAllows`, `normalizeScope`; `hooks/useCallerScope.ts` + `components/itervox/RequireScope.tsx` hide controls by scope |
+| `web/src/pages/Settings/AccessCard.tsx` | Settings → Access (admin): stored API tokens — list, create, rotate, revoke via `queries/tokens.ts` |
 | `web/src/auth/AuthGate.tsx` | Root wrapper — captures `?token=` from URL once, probes `/api/v1/health` then `/api/v1/state`, routes to app / login / error screen |
 | `web/src/auth/UnauthorizedError.ts` | Typed error used by TanStack Query retry guards to skip retrying auth failures |
 

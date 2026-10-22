@@ -94,6 +94,19 @@ function currentRoute(): string {
 }
 
 /**
+ * #214 — POST /api/v1/client-errors needs the operator scope, so a viewer's
+ * dashboard must not send reports (each would be refused with a 403 and an
+ * "insufficient scope" toast). itervoxStore installs the gate, which reads
+ * the caller's scope from the snapshot; this module cannot import the store
+ * (the store imports it).
+ */
+let reportGate: () => boolean = () => true;
+
+export function setClientErrorReportGate(gate: () => boolean): void {
+  reportGate = gate;
+}
+
+/**
  * Sends one report, subject to auth state, dedupe and throttling. Fire and
  * forget: never throws, never rejects.
  */
@@ -101,6 +114,7 @@ export function reportClientError(report: ClientErrorReport): void {
   try {
     const status = useAuthStore.getState().status;
     if (status === 'needsToken' || status === 'serverDown') return;
+    if (!reportGate()) return;
 
     const message = truncateUtf8(report.message || 'unknown error', CLIENT_ERROR_MESSAGE_MAX);
     const route = truncateUtf8(currentRoute(), CLIENT_ERROR_ROUTE_MAX);

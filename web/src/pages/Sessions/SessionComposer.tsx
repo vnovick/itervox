@@ -6,6 +6,7 @@ import { sessionKey, useSendSessionMessage } from '../../queries/sessions';
 import type { SessionRow, TmuxStatus } from '../../types/schemas';
 import { SessionMessages } from './SessionMessages';
 import { TmuxMissingComposer } from './TmuxNotice';
+import { RequireScope } from '../../components/itervox/RequireScope';
 
 export interface SessionComposerProps {
   session: SessionRow;
@@ -65,19 +66,24 @@ export function SessionComposer({ session, inlineInput, tmux }: SessionComposerP
         {session.inputContext && (
           <p className="text-theme-text text-sm whitespace-pre-wrap">{session.inputContext}</p>
         )}
-        <InputReplyBox
-          identifier={session.identifier}
-          inlineInput={inlineInput}
-          draft={draft}
-          onDraftChange={setDraft}
-          provideInputMutation={provideInput}
-          dismissInputMutation={dismissInput}
-          sending={provideInput.isPending}
-          dismissing={dismissInput.isPending}
-          onSent={() => {
-            setDraft('');
-          }}
-        />
+        <RequireScope
+          scope="operator"
+          fallback={<p className="text-theme-muted text-xs">Replying needs an operator token.</p>}
+        >
+          <InputReplyBox
+            identifier={session.identifier}
+            inlineInput={inlineInput}
+            draft={draft}
+            onDraftChange={setDraft}
+            provideInputMutation={provideInput}
+            dismissInputMutation={dismissInput}
+            sending={provideInput.isPending}
+            dismissing={dismissInput.isPending}
+            onSent={() => {
+              setDraft('');
+            }}
+          />
+        </RequireScope>
       </div>
     );
   }

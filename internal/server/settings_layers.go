@@ -48,6 +48,9 @@ type SettingsLayerView struct {
 	Unknown []string `json:"unknown"`
 	// Error is why the file could not be read or parsed.
 	Error string `json:"error,omitempty"`
+	// Redacted is set when Raw was withheld and secret-shaped values were
+	// masked because the caller is below admin scope (#214).
+	Redacted bool `json:"redacted,omitempty"`
 }
 
 // SettingsEffective is one layered setting's value in effect and the layer
@@ -96,7 +99,7 @@ func (s *Server) handleSettingsSchema(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, config.SettingsSchema())
 }
 
-func (s *Server) handleGetSettingsLayers(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetSettingsLayers(w http.ResponseWriter, r *http.Request) {
 	if s.settingsLayers == nil {
 		writeError(w, http.StatusServiceUnavailable, "settings_unavailable", "settings layers are not configured")
 		return
@@ -106,7 +109,7 @@ func (s *Server) handleGetSettingsLayers(w http.ResponseWriter, _ *http.Request)
 		writeError(w, http.StatusInternalServerError, "settings_read_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, view)
+	writeJSON(w, http.StatusOK, settingsLayersForScope(view, callerScope(r)))
 }
 
 func (s *Server) handleSaveSettingsLayer(w http.ResponseWriter, r *http.Request) {

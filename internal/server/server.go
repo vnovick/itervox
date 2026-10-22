@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationdef"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
@@ -874,6 +874,11 @@ type StateSnapshot struct {
 	// FeedSeq is the newest event feed seq (#213); GET /api/v1/feed?since=
 	// reads what came after a client's cursor.
 	FeedSeq int64 `json:"feedSeq"`
+	// CallerScope is the requesting token's scope (#214): viewer, operator
+	// or admin. Set per caller by GET /api/v1/state and the /events stream,
+	// never by the orchestrator's snapshot builder; the dashboard hides the
+	// controls the scope cannot use.
+	CallerScope string `json:"callerScope,omitempty"`
 	// Totals is the daemon-session token and estimated-cost accounting
 	// (CORE-091). Omitted only by daemons predating it.
 	Totals *TotalsRow `json:"totals,omitempty"`
@@ -1408,6 +1413,11 @@ type Config struct {
 	// /api/ routes except /api/v1/health. Requests must include the header
 	// "Authorization: Bearer <token>".
 	APIToken string
+	// Tokens is the stored-token index (.itervox/tokens.json, #214): named
+	// viewer / operator / admin tokens accepted alongside APIToken, which
+	// stays admin. Consulted only in token mode (APIToken set); nil means
+	// no stored tokens and answers 503 on the token-management routes.
+	Tokens *apitokens.Store
 	// ActionTokenStore validates short-lived per-run grants for agent action routes.
 	ActionTokenStore *agentactions.Store
 	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
@@ -1511,14 +1521,17 @@ type Server struct {
 	scopeManager   ScopeManager
 	bc             *broadcaster
 	// frames caches the encoded snapshot frame of the broadcaster's
-	// current version for every /events client (#210).
-	frames sseFrameCache
+	// current version for every /events client (#210), one cache per
+	// caller scope (#214): the frame carries callerScope, and below admin
+	// it is the redacted snapshot.
+	frames [len(frameScopes)]sseFrameCache
 	// streamsDone is closed by Shutdown; every streaming handler returns
 	// when it closes (CORE-025). A Server built without New has a nil
 	// channel, which never fires.
 	streamsDone  chan struct{}
 	streamsOnce  sync.Once
 	apiToken     string
+	tokens       *apitokens.Store
 	actionTokens *agentactions.Store
 	skills       SkillsClient
 	rules        RulesClient
@@ -1586,6 +1599,7 @@ func New(cfg Config) *Server {
 		bc:             newBroadcaster(),
 		streamsDone:    make(chan struct{}),
 		apiToken:       cfg.APIToken,
+		tokens:         cfg.Tokens,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
 		rules:          cfg.Rules,
@@ -1705,14 +1719,13 @@ func (s *Server) routes() {
 		// Use r.Group to create a sub-router so middleware is applied only to
 		// authenticated routes without violating chi's "middleware before routes" rule.
 		r.Group(func(r chi.Router) {
-			if s.apiToken != "" {
-				r.Use(s.bearerAuthMiddleware)
-			} else {
-				// server.allow_unauthenticated: no bearer check, so refuse
-				// cross-site state-changing requests instead (CORE-041).
-				r.Use(crossOriginGuardMiddleware)
-			}
+			s.useAuth(r)
 
+			r.Get("/whoami", s.handleWhoami) // #214
+			r.Get("/tokens", s.handleListTokens)
+			r.Post("/tokens", s.handleCreateToken)
+			r.Delete("/tokens/{id}", s.handleRevokeToken)
+			r.Post("/tokens/{id}/rotate", s.handleRotateToken)
 			r.Get("/state", s.handleState)
 			r.Get("/summary", s.handleSummary)                               // #212: ETag'd poll target for supervisors
 			r.Get("/feed", s.handleFeed)                                     // #213: the event feed, by cursor
@@ -1841,17 +1854,30 @@ func (s *Server) routes() {
 	// bearer token in token mode, and the CSRF guard (plus the root Host
 	// guard) in unauthenticated mode — never in the unauthenticated set.
 	s.router.Group(func(r chi.Router) {
-		if s.apiToken != "" {
-			r.Use(s.bearerAuthMiddleware)
-		} else {
-			r.Use(crossOriginGuardMiddleware)
-		}
+		s.useAuth(r)
 		r.Get("/metrics", s.handleMetrics)
 	})
 
 	// React SPA: serves all non-API paths from the embedded web/dist.
 	// Falls back to index.html so React Router client-side routing works.
 	s.router.Handle("/*", spaHandler())
+}
+
+// useAuth installs the authentication and scope middlewares of an
+// authenticated group (#214): the bearer check in token mode; in
+// server.allow_unauthenticated mode the CSRF guard (CORE-041) and an admin
+// principal for every caller. scopeMiddleware then enforces routeScopes in
+// both modes.
+func (s *Server) useAuth(r chi.Router) {
+	if s.apiToken != "" {
+		r.Use(s.bearerAuthMiddleware)
+	} else {
+		// server.allow_unauthenticated: no bearer check, so refuse
+		// cross-site state-changing requests instead (CORE-041).
+		r.Use(crossOriginGuardMiddleware)
+		r.Use(unauthenticatedAdminMiddleware)
+	}
+	r.Use(scopeMiddleware)
 }
 
 // handleMetrics serves the injected Prometheus handler, or 404 when
@@ -1867,24 +1893,4 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 // handleHealth returns a lightweight 200 OK for load balancer probes.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// bearerAuthMiddleware rejects requests that do not carry a valid
-// "Authorization: Bearer <token>" header matching s.apiToken.
-func (s *Server) bearerAuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		auth := r.Header.Get("Authorization")
-		presented := strings.TrimPrefix(auth, prefix)
-		// subtle.ConstantTimeCompare requires equal-length inputs to run in
-		// constant time and returns 0 (not a panic) for a length mismatch, so
-		// it is safe to call directly on the raw byte slices without a
-		// length pre-check that would itself leak length via early return.
-		match := subtle.ConstantTimeCompare([]byte(presented), []byte(s.apiToken)) == 1
-		if !strings.HasPrefix(auth, prefix) || !match {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

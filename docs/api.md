@@ -80,6 +80,197 @@ requires it as the bearer token exactly as it would a pinned
   and an error that does not quote the value. `openssl rand -hex 32` is a
   good source.
 
+### Token scopes (#214)
+
+Every authenticated route requires a **scope**. Scopes are ordered — each
+includes everything below it:
+
+| Scope | Allows |
+|---|---|
+| `viewer` | `GET` routes and the SSE streams only. Secret values are redacted: profile and agent commands have inline env-assignment values, URL credentials and known key shapes masked (`snapshot.profileDefs`, `GET /settings/profiles`), and `GET /settings/layers` withholds each layer's raw file text (`raw: ""`, `redacted: true`). |
+| `operator` | adds dispatch and issue control (cancel, resume, terminate, state, profile/backend overrides), steering messages, input replies, approvals, `POST /dispatch/pause` and `/resume`, memory edits, log clearing, outbox retries. Redaction as for viewer. |
+| `admin` | adds settings, token management, tmux control (start, keys, kill), workspace deletion, the automations configuration and the rules editor. Sees secrets as written. |
+
+Where a token comes from decides its scope:
+
+- The **bootstrap token** — `ITERVOX_API_TOKEN`, the auto-generated
+  ephemeral token, or `ITERVOX_SUPERVISOR_TOKEN` (the Mac app) — is always
+  `admin`. Nothing about it changed.
+- **Stored tokens** live in `.itervox/tokens.json` next to `WORKFLOW.md`
+  (gitignored, mode 0600) as SHA-256 hashes only, each with an `id`,
+  `name`, `scope`, `created`, `lastUsed` and optional `expires`. Their
+  secrets start with `itx_`. Manage them with `itervox token
+  create|list|revoke|rotate` (works with or without a running daemon) or
+  Settings → Access. A running daemon notices a change made by the CLI
+  within one second (it checks the file's identity and mtime at most every
+  200 ms) and one made through the API at once — no restart. Expired tokens
+  are refused. An unreadable or invalid `tokens.json` makes the daemon
+  refuse every stored token (the bootstrap token keeps working) and is never
+  overwritten.
+- With `server.allow_unauthenticated: true` (and no supervisor token) every
+  caller is `admin`, as before; stored tokens are not consulted and the
+  token-management routes answer `503 tokens_unavailable`. The startup
+  warning says so.
+
+A request below the route's scope gets `403` with the scope it needed in
+both the body and the `X-Itervox-Required-Scope` header:
+
+```json
+{"error":{"code":"insufficient_scope","message":"this action needs the admin scope; your token has operator","required_scope":"admin","scope":"operator"}}
+```
+
+The route table below is the one declaration the middleware enforces
+(`internal/server/route_scopes.go`); a route missing from it is refused
+(`403 route_scope_undeclared`), and `TestEveryRouteDeclaresAScope` walks the
+router so a new route without a declaration fails CI. Every token create,
+revoke and rotate is logged (`apitokens: token created|revoked|rotated`,
+with id, name, scope and actor — never the secret).
+
+#### `GET /api/v1/whoami` (viewer)
+
+The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…","name":"ci"}`.
+`source` is `bootstrap`, `token` or `unauthenticated`. `GET /state` and every
+`/events` frame also carry it as `callerScope`.
+
+#### Token management (admin)
+
+| Route | Body / answer |
+|---|---|
+| `GET /api/v1/tokens` | `{"tokens":[{"id","name","scope","created","lastUsed?","expires?","expired?"}]}` — never a hash or secret |
+| `POST /api/v1/tokens` | body `{"name":"ci","scope":"viewer","expires":"90d"}` (`expires`: empty for never, `90d`, `12h`, `2027-01-31` or RFC 3339) → `201 {"token":{…},"secret":"itx_…"}`, `Cache-Control: no-store`. The secret is shown once. |
+| `DELETE /api/v1/tokens/{id}` | `{"revoked":{…}}`; `404` for an unknown id |
+| `POST /api/v1/tokens/{id}/rotate` | `{"token":{…},"secret":"itx_…"}` — same id, name, scope and expiry; the old secret stops working at once |
+
+#### Route scopes
+
+| Method | Route | Scope |
+|---|---|---|
+| `GET` | `/api/v1/deps/analyze/{jobId}` | viewer |
+| `GET` | `/api/v1/events` | viewer |
+| `GET` | `/api/v1/feed` | viewer |
+| `GET` | `/api/v1/history` | viewer |
+| `GET` | `/api/v1/history/prompt-versions` | viewer |
+| `GET` | `/api/v1/issues` | viewer |
+| `GET` | `/api/v1/issues/{identifier}` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/logs` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/sublog-stream` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/sublogs` | viewer |
+| `GET` | `/api/v1/logs` | viewer |
+| `GET` | `/api/v1/logs/identifiers` | viewer |
+| `GET` | `/api/v1/memory` | viewer |
+| `GET` | `/api/v1/projects` | viewer |
+| `GET` | `/api/v1/projects/filter` | viewer |
+| `GET` | `/api/v1/repo/evals` | viewer |
+| `GET` | `/api/v1/repo/hotspots` | viewer |
+| `GET` | `/api/v1/repo/readiness` | viewer |
+| `GET` | `/api/v1/rules` | viewer |
+| `GET` | `/api/v1/rules/preview` | viewer |
+| `GET` | `/api/v1/sessions` | viewer |
+| `GET` | `/api/v1/sessions/{id}/transcript` | viewer |
+| `GET` | `/api/v1/settings/layers` | viewer (raw files and secrets redacted below admin) |
+| `GET` | `/api/v1/settings/models` | viewer |
+| `GET` | `/api/v1/settings/profiles` | viewer (commands redacted below admin) |
+| `GET` | `/api/v1/settings/reviewer` | viewer |
+| `GET` | `/api/v1/settings/schema` | viewer |
+| `GET` | `/api/v1/skills/analytics` | viewer |
+| `GET` | `/api/v1/skills/analytics/recommendations` | viewer |
+| `GET` | `/api/v1/skills/inventory` | viewer |
+| `GET` | `/api/v1/skills/issues` | viewer |
+| `GET` | `/api/v1/skills/profile-backends` | viewer (Operator: run the fleet.) |
+| `GET` | `/api/v1/state` | viewer |
+| `GET` | `/api/v1/summary` | viewer |
+| `GET` | `/api/v1/tracker/labels` | viewer |
+| `GET` | `/api/v1/tracker/scope` | viewer |
+| `GET` | `/api/v1/tracker/teams` | viewer |
+| `GET` | `/api/v1/tracker/users` | viewer |
+| `GET` | `/api/v1/whoami` | viewer |
+| `GET` | `/metrics` | viewer |
+| `POST` | `/api/v1/backend-health/clear` | operator |
+| `POST` | `/api/v1/client-errors` | operator |
+| `POST` | `/api/v1/deps/analyze` | operator |
+| `DELETE` | `/api/v1/deps/analyze/{jobId}` | operator |
+| `POST` | `/api/v1/dispatch/pause` | operator |
+| `POST` | `/api/v1/dispatch/resume` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}` | operator |
+| `POST` | `/api/v1/issues/{identifier}/ai-review` | operator |
+| `POST` | `/api/v1/issues/{identifier}/backend` | operator |
+| `POST` | `/api/v1/issues/{identifier}/cancel` | operator |
+| `POST` | `/api/v1/issues/{identifier}/comment` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/deps-override` | operator |
+| `POST` | `/api/v1/issues/{identifier}/deps-override` | operator |
+| `POST` | `/api/v1/issues/{identifier}/dismiss-input` | operator |
+| `POST` | `/api/v1/issues/{identifier}/failures/ack` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/logs` | operator |
+| `POST` | `/api/v1/issues/{identifier}/profile` | operator |
+| `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
+| `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
+| `POST` | `/api/v1/issues/{identifier}/resume` | operator |
+| `PATCH` | `/api/v1/issues/{identifier}/state` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/sublogs` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/sublogs/{sessionId}` | operator |
+| `POST` | `/api/v1/issues/{identifier}/terminate` | operator |
+| `DELETE` | `/api/v1/logs` | operator |
+| `POST` | `/api/v1/memory` | operator |
+| `DELETE` | `/api/v1/memory/{id}` | operator |
+| `PUT` | `/api/v1/memory/{id}` | operator |
+| `POST` | `/api/v1/memory/{id}/approve` | operator |
+| `POST` | `/api/v1/memory/{id}/pin` | operator |
+| `POST` | `/api/v1/memory/{id}/promote` | operator |
+| `POST` | `/api/v1/memory/{id}/reject` | operator |
+| `DELETE` | `/api/v1/outbox/{id}` | operator |
+| `POST` | `/api/v1/outbox/{id}/retry` | operator |
+| `POST` | `/api/v1/refresh` | operator |
+| `POST` | `/api/v1/sessions/{id}/message` | operator (steering) |
+| `GET` | `/api/v1/sessions/{id}/screen` | operator (a live terminal pane) |
+| `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/skills/scan` | operator |
+| `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/automations/{id}/test` | admin |
+| `PUT` | `/api/v1/projects/filter` | admin |
+| `PUT` | `/api/v1/rules/{layer}` | admin |
+| `POST` | `/api/v1/sessions` | admin (starts a tmux session) |
+| `DELETE` | `/api/v1/sessions/{id}` | admin |
+| `POST` | `/api/v1/sessions/{id}/keys` | admin |
+| `PUT` | `/api/v1/settings/agent/max-retries` | admin |
+| `PUT` | `/api/v1/settings/agent/max-switches-per-issue-per-window` | admin |
+| `PUT` | `/api/v1/settings/agent/switch-window-hours` | admin |
+| `PUT` | `/api/v1/settings/automations` | admin |
+| `POST` | `/api/v1/settings/deps-analysis-mode` | admin |
+| `PUT` | `/api/v1/settings/dispatch-strategy` | admin |
+| `POST` | `/api/v1/settings/inline-input` | admin |
+| `PUT` | `/api/v1/settings/layers/{layer}` | admin |
+| `POST` | `/api/v1/settings/models/refresh` | admin |
+| `DELETE` | `/api/v1/settings/profiles/{name}` | admin |
+| `PUT` | `/api/v1/settings/profiles/{name}` | admin |
+| `PUT` | `/api/v1/settings/reviewer` | admin |
+| `POST` | `/api/v1/settings/ssh-hosts` | admin |
+| `DELETE` | `/api/v1/settings/ssh-hosts/{host}` | admin |
+| `PUT` | `/api/v1/settings/tracker/failed-state` | admin |
+| `PUT` | `/api/v1/settings/tracker/states` | admin |
+| `POST` | `/api/v1/settings/workers` | admin |
+| `POST` | `/api/v1/settings/workspace/auto-clear` | admin |
+| `POST` | `/api/v1/skills/fix` | admin (writes skill files) |
+| `GET` | `/api/v1/tokens` | admin |
+| `POST` | `/api/v1/tokens` | admin |
+| `DELETE` | `/api/v1/tokens/{id}` | admin |
+| `POST` | `/api/v1/tokens/{id}/rotate` | admin |
+| `PUT` | `/api/v1/tracker/scope` | admin |
+| `DELETE` | `/api/v1/workspaces` | admin |
+| `*` | `/*` | none (public) (the embedded SPA shell and its assets) |
+| `GET` | `/api/v1/health` | none (public) |
+| `GET` | `/api/v1/ready` | none (public) |
+| `POST` | `/api/v1/webhooks/{tracker}` | none (public) |
+| `POST` | `/api/v1/agent-actions/{identifier}/comment` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/comment_pr` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/create-issue` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/guardrail/approvals` | per-run agent grant |
+| `GET` | `/api/v1/agent-actions/{identifier}/guardrail/approvals/{id}` | per-run agent grant (Viewer: reads and streams.) |
+| `POST` | `/api/v1/agent-actions/{identifier}/guardrail/events` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/merge_pr` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/move-state` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/provide-input` | per-run agent grant |
+
 ### Agent-action bearer auth
 
 The daemon-backed agent-action routes use a **separate** bearer token model.

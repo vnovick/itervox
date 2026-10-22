@@ -316,6 +316,9 @@ func main() {
 		case "secret":
 			runSecret(os.Args[2:])
 			return
+		case "token": // #214
+			runToken(os.Args[2:])
+			return
 		case "config":
 			runConfig(os.Args[2:])
 			return
@@ -924,7 +927,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				"host", cfg.Server.Host,
 				"hint", "set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated: true to opt out")
 		} else if cfg.Server.AllowUnauthenticatedLAN && os.Getenv("ITERVOX_API_TOKEN") == "" {
-			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access",
+			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access as admin; stored viewer/operator tokens (.itervox/tokens.json) are not consulted",
 				"host", cfg.Server.Host)
 		}
 		// When a token is set (user-provided OR auto-generated above), tell the
@@ -1137,6 +1140,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			ProjectManager:   pm,
 			ScopeManager:     newScopeManager(tr, workflowPath, settingsGen), // #182
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
+			Tokens:           openTokenStore(ctx, workflowPath), // #214: viewer/operator/admin tokens
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
 			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157

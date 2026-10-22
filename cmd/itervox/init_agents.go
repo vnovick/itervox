@@ -89,7 +89,10 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	// does the project-local settings layer (#158). evals/ holds the eval
 	// reports `make evals` saves for Repo Analysis (#201). memory.json is
 	// the committed project-shared memory (#202), carved out like rules.json.
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "!/memory.json", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db", "evals/"}
+	// tokens.json (#214) holds API token hashes; /*.json already ignores
+	// it, and the explicit line keeps it ignored should a broader negation
+	// ever be added. Its flock sidecar is tokens.json.lock.
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "!/memory.json", "/tokens.json", "/tokens.json.lock", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db", "evals/"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)

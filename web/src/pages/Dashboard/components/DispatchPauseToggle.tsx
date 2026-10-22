@@ -4,6 +4,7 @@ import { ConfirmModal } from '../../../components/ui/modal/ConfirmModal';
 import { useSetDispatchPause } from '../../../queries/dispatch';
 import { OpsChip } from './OpsChip';
 import { DISPATCH_PAUSE_CAPABILITY, dispatchPausedLabel } from './dispatchPauseModel';
+import { useScopeAllows } from '../../../hooks/useCallerScope';
 
 // #213 — the daemon-wide dispatch pause on the LiveOps strip: a "Pause
 // dispatch" button while dispatch runs, a danger chip plus "Resume" while it
@@ -17,7 +18,22 @@ export function DispatchPauseToggle() {
   const supported = useItervoxStore(
     (s) => s.snapshot?.capabilities?.includes(DISPATCH_PAUSE_CAPABILITY) ?? false,
   );
-  return supported ? <DispatchPauseControl /> : null;
+  // #214 — pause/resume is operator scope; a viewer sees only the chip.
+  const canOperate = useScopeAllows('operator');
+  if (!supported) return null;
+  return canOperate ? <DispatchPauseControl /> : <DispatchPausedChip />;
+}
+
+function DispatchPausedChip() {
+  const paused = useItervoxStore((s) => s.snapshot?.dispatchPaused ?? null);
+  return paused ? (
+    <OpsChip
+      danger
+      testId="dispatch-paused-chip"
+      label={dispatchPausedLabel(paused)}
+      title="All dispatch is paused: running agents continue, nothing new starts."
+    />
+  ) : null;
 }
 
 function DispatchPauseControl() {

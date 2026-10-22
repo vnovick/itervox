@@ -62,6 +62,21 @@ The dashboard captures `?token=<token>` on first load, stores it in
 `sessionStorage` (or `localStorage` when **Remember on this device** is
 enabled), and sends `Authorization: Bearer` on both `fetch` and SSE requests.
 
+### Token scopes
+
+Every authenticated route requires a scope — `viewer` (GET and SSE, secrets
+redacted), `operator` (adds dispatch, steering, input replies, approvals,
+pause/resume, memory edits) or `admin` (adds settings, tokens, tmux control,
+workspace reset, automations). `ITERVOX_API_TOKEN`, the auto-generated token
+and the supervisor token are always admin; stored tokens in
+`.itervox/tokens.json` carry their own scope. A request below the route's
+scope gets `403` with code `insufficient_scope`, `required_scope` in the body
+and the `X-Itervox-Required-Scope` header. `GET /api/v1/whoami` returns the
+caller's scope (also `callerScope` on `GET /state` and `/events`);
+`GET|POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}` and
+`POST /api/v1/tokens/{id}/rotate` manage stored tokens (admin). The full
+per-route table is in the [Security guide](/guides/security/#api-scope-table).
+
 ### Agent-action bearer auth
 
 The daemon-backed agent-action routes use a **separate** bearer token model.
