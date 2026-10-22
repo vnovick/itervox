@@ -74,7 +74,7 @@ func TestWatchRescanRepairsAMissedEvent(t *testing.T) {
 	_, err := tr.FetchCandidateIssues(t.Context())
 	require.NoError(t, err)
 	changes := startWatch(t, func(ctx context.Context, changed func()) {
-		tr.watch(ctx, nil, nil, 50*time.Millisecond, changed, nil) // every event missed
+		tr.watch(ctx, nil, nil, 50*time.Millisecond, 0, changed, nil) // every event missed
 	})
 	noChange(t, changes, 200*time.Millisecond, "nothing changed yet")
 	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
@@ -105,7 +105,7 @@ func TestWatchReportsAChangeACallFoundFirst(t *testing.T) {
 	_, err := tr.FetchCandidateIssues(t.Context())
 	require.NoError(t, err)
 	changes := startWatch(t, func(ctx context.Context, changed func()) {
-		tr.watch(ctx, nil, nil, 100*time.Millisecond, changed, nil)
+		tr.watch(ctx, nil, nil, 100*time.Millisecond, 0, changed, nil)
 	})
 	time.Sleep(20 * time.Millisecond) // the watcher has taken its starting count
 	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")

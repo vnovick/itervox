@@ -150,6 +150,16 @@ type Orchestrator struct {
 	// owned by the single event-loop State.
 	automationQueueMu   sync.RWMutex
 	automationQueueFile string // optional path for persisting AutomationQueue across restarts
+	// lastAutomationQueueSave is the queue state last handed to the ledger
+	// (a private deep copy) and automationQueueEncodes counts the encodes;
+	// storeSnap skips an unchanged queue by it (#210). Event loop only.
+	lastAutomationQueueSave *automationQueueSave
+	automationQueueEncodes  int
+	// eventLeftStateUnchanged is set by handleEvent for an event that did
+	// not change State (a discovery pass that found nothing new); Run then
+	// skips that turn's storeSnap and its dashboard notify (#210). Event
+	// loop only.
+	eventLeftStateUnchanged bool
 
 	// depsOverridesMu guards depsOverridesFile only. State.DepsOverrides
 	// itself remains owned by the single event-loop State.

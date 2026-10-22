@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +173,36 @@ func TestListPanesWithoutTmuxIsEmpty(t *testing.T) {
 	}
 	if _, err := (Client{}).Version(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Version = %v", err)
+	}
+}
+
+// TestServerSocketResolvesLikeTmux (#210): the socket a client talks to,
+// and ServerMayRun's no-fork answer from it.
+func TestServerSocketResolvesLikeTmux(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", dir)
+	def := filepath.Join(dir, "tmux-"+strconv.Itoa(os.Getuid()), "default")
+	if got := (Client{}).ServerSocket(); got != def {
+		t.Fatalf("default socket = %q, want %q", got, def)
+	}
+	if (Client{}).ServerMayRun() {
+		t.Fatal("no socket: ServerMayRun must be false")
+	}
+	if err := os.MkdirAll(filepath.Dir(def), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(def, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !(Client{}).ServerMayRun() {
+		t.Fatal("socket present: ServerMayRun must be true")
+	}
+	t.Setenv("TMUX", "/run/other.sock,123,0")
+	if got := (Client{}).ServerSocket(); got != "/run/other.sock" {
+		t.Fatalf("inside tmux: socket = %q", got)
+	}
+	if got := (Client{Socket: "/x/s"}).ServerSocket(); got != "/x/s" {
+		t.Fatalf("explicit socket = %q", got)
 	}
 }

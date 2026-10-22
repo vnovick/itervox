@@ -213,6 +213,11 @@ Full `StateSnapshot` SSE stream.
 
 - Event shape: `data: <JSON StateSnapshot>\n\n`
 - Initial snapshot is sent immediately.
+- State changes are coalesced to at most four snapshots per second (#210):
+  the first change after a quiet period is sent at once, and changes inside
+  the 250 ms window are folded into one snapshot sent when it ends, so the
+  latest state always arrives and no change waits longer than 250 ms. Every
+  client of one change receives the same encoded snapshot.
 - Named keepalive event `event: keepalive` with `data: {}` after 25 seconds
   of stream inactivity.
 
@@ -269,7 +274,10 @@ Useful top-level fields include:
 - `availableProfiles`, `profileDefs`
 - `automations`
 - `automationQueue`, `automationQueueBackpressure`
-- `dependencyAudit`, `dependencyGraphNodes`, `dependencyGraphEdges`
+- `dependencyAudit`, `dependencyGraphNodes`, `dependencyGraphEdges` —
+  `dependencyGraphNodes` lists only issues that are the source or target of
+  at least one edge (#210); an audited issue with no blocker and no
+  dependent is in `dependencyAudit` only
 - `sshHosts`, `dispatchStrategy`
 - `autoClearWorkspace`, `inlineInput`
 - `configInvalid`

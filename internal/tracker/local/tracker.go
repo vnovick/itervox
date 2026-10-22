@@ -262,11 +262,13 @@ func (t *Tracker) issueLocked(ident string) (domain.Issue, bool) {
 	return is, true
 }
 
-// sortedIdentifiersLocked orders issues by prefix, then number.
-func (t *Tracker) sortedIdentifiersLocked() []string {
+// sortedIdentifiersLocked orders the parsed issues keep accepts by prefix,
+// then number. keep sees the identifier and the file's state, so callers
+// filter before the issues are sorted and converted (#210).
+func (t *Tracker) sortedIdentifiersLocked(keep func(ident, state string) bool) []string {
 	ids := make([]string, 0, len(t.entries))
 	for id, e := range t.entries {
-		if e.good {
+		if e.good && keep(id, e.file.State) {
 			ids = append(ids, id)
 		}
 	}
@@ -296,15 +298,19 @@ func matchesState(state string, states []string) bool {
 	return false
 }
 
-func (t *Tracker) issuesWhere(keep func(domain.Issue) bool) ([]domain.Issue, error) {
+// issuesWhere returns the issues keep accepts, in identifier order. keep
+// is asked about each file's identifier (the issue's ID) and state before
+// anything is converted, so a poll for a few active issues no longer builds
+// and sorts every issue on the board (#210).
+func (t *Tracker) issuesWhere(keep func(ident, state string) bool) ([]domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.syncLocked(); err != nil {
 		return nil, err
 	}
-	var out []domain.Issue
-	for _, id := range t.sortedIdentifiersLocked() {
-		if is, ok := t.issueLocked(id); ok && keep(is) {
+	var out []domain.Issue // nil when nothing matches, as before
+	for _, id := range t.sortedIdentifiersLocked(keep) {
+		if is, ok := t.issueLocked(id); ok {
 			out = append(out, is)
 		}
 	}
@@ -316,7 +322,7 @@ func (t *Tracker) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error
 	t.mu.Lock()
 	active := append([]string{}, t.active...)
 	t.mu.Unlock()
-	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, active) })
+	return t.issuesWhere(func(_, state string) bool { return matchesState(state, active) })
 }
 
 // FetchIssuesByStates returns the issues in any of stateNames.
@@ -324,7 +330,7 @@ func (t *Tracker) FetchIssuesByStates(_ context.Context, stateNames []string) ([
 	if len(stateNames) == 0 {
 		return []domain.Issue{}, nil
 	}
-	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, stateNames) })
+	return t.issuesWhere(func(_, state string) bool { return matchesState(state, stateNames) })
 }
 
 // FetchIssueStatesByIDs returns the issues with the given IDs; unknown IDs
@@ -337,7 +343,7 @@ func (t *Tracker) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) ([
 	for _, id := range issueIDs {
 		want[id] = true
 	}
-	return t.issuesWhere(func(is domain.Issue) bool { return want[is.ID] })
+	return t.issuesWhere(func(ident, _ string) bool { return want[ident] }) // a local issue's ID is its identifier
 }
 
 // FetchIssueDetailsByIDs is FetchIssueStatesByIDs: comments are always
