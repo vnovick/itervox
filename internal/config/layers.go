@@ -1,6 +1,6 @@
 package config
 
-// Settings layers (#129, #158). Agent, polling, workspace and server settings
+// Settings layers (#129, #158). Agent, hub, polling, workspace and server settings
 // can come from three JSONC files as well as from WORKFLOW.md:
 //
 //	built-in defaults → user (~/.itervox/settings.jsonc)
@@ -42,7 +42,7 @@ const (
 var SettingsLayerNames = []string{LayerUser, LayerProject, LayerLocal}
 
 // LayeredSections are the WORKFLOW.md sections a settings file may set.
-var LayeredSections = []string{"agent", "polling", "server", "workspace"}
+var LayeredSections = []string{"agent", "hub", "polling", "server", "workspace"}
 
 // UserSettingsEnv overrides the user settings file path; "off" disables the
 // user layer.

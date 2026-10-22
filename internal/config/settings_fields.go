@@ -183,6 +183,17 @@ var SettingFields = []SettingField{
 		Label:       "Rate-limit reserve (%)",
 		Description: "Share of the tracker's request budget held back for writes. 0: off."},
 
+	// ── hub ────────────────────────────────────────────────────────────────
+	{Key: "hub.bind", Type: TypeString, Group: "Hub", Default: DefaultHubBind,
+		Label:       "Hub listen address",
+		Description: "Address the hub listens on when this daemon serves it. Loopback by default; every hub route needs a hub token, so 0.0.0.0 or a Tailscale address is safe with tokens. Read at startup."},
+	{Key: "hub.enabled", Type: TypeBoolean, Group: "Hub", Default: true,
+		Label:       "Take part in the hub",
+		Description: "Become the machine's hub (the first daemon) or join it as a member. Off: the same as --no-hub. Read at startup."},
+	{Key: "hub.port", Type: TypeInteger, Group: "Hub", Default: DefaultHubPort, Minimum: ptr(0),
+		Label:       "Hub port",
+		Description: "Port of the hub when this daemon serves it; a busy port moves to the next free one, recorded in the hub lock. 0 lets the OS pick. Read at startup."},
+
 	// ── server ─────────────────────────────────────────────────────────────
 	{Key: "server.allow_unauthenticated", Type: TypeBoolean, Group: "Server", Default: false,
 		Label:       "Allow unauthenticated access",

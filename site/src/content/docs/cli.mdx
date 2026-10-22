@@ -31,6 +31,7 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
 | `-tui` | bool | `false` | Start the terminal UI (on a terminal; without one it warns and runs headless). **Deprecated**: the terminal UI will be removed in v0.3. Without `--tui`, Itervox runs headless (since v0.2.4): no terminal UI, logs on stderr (text, or JSON with `--log-format json`), and the dashboard URL printed there, with its token only when stderr is a terminal. Watch and act from another shell with [`itervox watch`](#itervox-watch--a-terminal-view-of-a-running-daemon) and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply) |
+| `-no-hub` | bool | `false` | Do not become or join the machine's [hub](/guides/hub/) (#228): no hub lock, `hub_member: false` in the registry, not listed or proxied by the hub. Same as `hub.enabled: false` |
 | `-headless` | bool | `false` | Headless even with `--tui`, and the tokenised dashboard URL is never printed, even on a terminal (an auto-generated token is still in `<logs-dir>/api-token`) |
 
 > To try Itervox without a tracker account, API keys or an agent CLI, run
@@ -294,9 +295,12 @@ itervox token create --name NAME --scope viewer|operator|admin [--expires 90d]
 itervox token list [--json]
 itervox token revoke ID
 itervox token rotate [ID]
+itervox token ... --hub        # the hub's own token store
 ```
 
 Manages the stored API tokens in `.itervox/tokens.json` next to `--workflow` (default `WORKFLOW.md`): named tokens with a `viewer`, `operator` or `admin` scope, kept as SHA-256 hashes only (mode 0600, gitignored). It writes the file directly, so it works with or without a running daemon; a running daemon picks up the change within a second, without a restart. `create` and `rotate` print the new secret (`itx_…`) once, alone on stdout, with the details on stderr — store it right away. `--expires` takes `90d`, `12h`, a date or an RFC 3339 time (default: never). `rotate` keeps the token's id, name, scope and expiry; with no `ID` it rotates the one stored admin token. `ITERVOX_API_TOKEN` (or the auto-generated token) is always admin and not in the store. A stored token also works as `ITERVOX_API_TOKEN` for `itervox watch` and the quick actions, within its scope. See [Security & access tokens](/guides/security/).
+
+`--hub` (#228) points every subcommand at the [hub](/guides/hub/)'s own store, `~/.itervox/hub/tokens.json`, instead of the project's: hub tokens open the hub URL, and their scope caps what the hub may do on every member (`itervox token create --hub --name phone --scope viewer`).
 
 ## `itervox config` — Settings and where they come from
 
@@ -319,7 +323,7 @@ itervox import [--force] WORKFLOW.md
 
 Converts the workflow in place into the current layout:
 
-- the agent, polling, server and workspace settings move to `.itervox/settings.jsonc` (written with the comment-preserving settings writer) and out of `WORKFLOW.md`;
+- the agent, hub, polling, server and workspace settings move to `.itervox/settings.jsonc` (written with the comment-preserving settings writer) and out of `WORKFLOW.md`;
 - for an **Itervox v0.x** workflow, inline profile prompts move to prompt files (`.itervox/agents/<name>/SOUL.md` and `INSTRUCTIONS.md`), exactly as `itervox init --update` does; the profiles themselves and `agent.available_models` stay in `WORKFLOW.md`, where the Agents page and `itervox models refresh` write them;
 - for a **Symphony** workflow, `codex.command`, `codex.turn_timeout_ms`, `codex.read_timeout_ms` and `codex.stall_timeout_ms` become `agent.command` (Symphony's `codex app-server` becomes `codex`, since Itervox runs `codex exec`), `agent.backend: codex` and the agent timeouts; `itervox_schema_version: 2` is stamped;
 - the tracker, hooks and the worker prompt (the body) stay in `WORKFLOW.md`, comments included.
@@ -407,6 +411,14 @@ Without an issue, `pause` and `resume` act on the whole daemon (#213): running a
 
 ---
 
+## `itervox hub` — The machine's hub and its members
+
+```bash
+itervox hub [--json]
+```
+
+Prints the URL of the machine's [hub](/guides/hub/) (#228) — the first daemon started on the machine, serving one dashboard, a scoped API proxy and a merged event feed for every project — and its member projects with the names the hub gives them (`/hub/p/<name>/`). It reads `~/.itervox/daemons/hub.lock` and the daemon registry directly, so it needs no token and prints none. `--json` prints `{"hub": <the hub.lock record, or null when no hub runs>, "members": [{"name","workflow","url","pid","version"}]}`. Exit code `0`, or `2` on a usage error. Open the hub with a hub token: `itervox token create --hub --name NAME --scope viewer|operator|admin`.
+
 ## `itervox mcp` — A local MCP server for the board and memory
 
 ```bash
@@ -484,12 +496,13 @@ Lists the daemons of this project (the directory of `--workflow`, default `WORKF
     "heartbeat": "/Users/me/src/app/.itervox/HEARTBEAT.md",
     "executable": "/Applications/Itervox.app/Contents/MacOS/itervox",
     "path_source": "login_shell",
+    "hub_member": true,
     "source": "registry"
   }
 ]
 ```
 
-Every object carries every key. `token_source` is `supervisor`, `env` (`ITERVOX_API_TOKEN`), `generated` (the token is in `token_file`), `none` (`server.allow_unauthenticated: true`) or `unknown`; no token value is ever printed. The data comes from the host registry: each daemon writes `~/.itervox/daemons/<pid>.json` (mode `0600`) once its port is bound and removes it on shutdown; a record whose daemon is gone (killed with `SIGKILL`) is skipped and deleted, even when its pid now belongs to another process: the daemon's pid lock must still be held. Paths in the output (`logs_dir`, `token_file`, …) are absolute, a relative `--logs-dir` resolved against the daemon's working directory. Daemons started by an older binary, which write no record, are found by process scan (`source: "process_scan"`, with `version`, `commit` and `started_at` empty). The format is versioned by `schema_version`: keys may be added, never renamed or removed within a version. Full reference: the supervisor contract in [`docs/api.md`](https://github.com/vnovick/itervox/blob/main/docs/api.md#supervisor-contract).
+Every object carries every key. `token_source` is `supervisor`, `env` (`ITERVOX_API_TOKEN`), `generated` (the token is in `token_file`), `none` (`server.allow_unauthenticated: true`) or `unknown`; no token value is ever printed. `hub_member` (#228) is `true` for a daemon that takes part in the machine's [hub](/guides/hub/) (`false` with `--no-hub`, and for older daemons). The data comes from the host registry: each daemon writes `~/.itervox/daemons/<pid>.json` (mode `0600`) once its port is bound and removes it on shutdown; a record whose daemon is gone (killed with `SIGKILL`) is skipped and deleted, even when its pid now belongs to another process: the daemon's pid lock must still be held. Paths in the output (`logs_dir`, `token_file`, …) are absolute, a relative `--logs-dir` resolved against the daemon's working directory. Daemons started by an older binary, which write no record, are found by process scan (`source: "process_scan"`, with `version`, `commit` and `started_at` empty). The format is versioned by `schema_version`: keys may be added, never renamed or removed within a version. Full reference: the supervisor contract in [`docs/api.md`](https://github.com/vnovick/itervox/blob/main/docs/api.md#supervisor-contract).
 
 ### Running under a supervisor
 

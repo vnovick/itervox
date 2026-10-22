@@ -39,6 +39,7 @@ export default defineConfig({
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
             { label: 'Sessions panel', slug: 'guides/sessions' },
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },
+            { label: 'The hub (one URL)', slug: 'guides/hub' },
             { label: 'Pause dispatch & event feed', slug: 'guides/pause-and-feed' },
             { label: 'Now & Changes', slug: 'guides/now-and-changes' },
             { label: 'MCP server (Claude Code, Codex)', slug: 'guides/mcp' },

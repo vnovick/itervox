@@ -9,6 +9,8 @@
 #       terminal, re-panic — cmd/itervox/gosafe.go), or
 #       recoverServerGoroutine(...) (internal/server's one-shot sibling of
 #       RecoverGoroutine; server must not import orchestrator), or
+#       recoverHubGoroutine(...) (internal/hub: logs and counts the panic and
+#       ends only that hub goroutine, never the hosting daemon), or
 #   (b) appear on the reasoned ALLOWLIST below, with the exact number of
 #       occurrences expected in that file.
 # goSafe(&o.<wg>, ...) launches are not `go` statements at their call sites;
@@ -71,7 +73,7 @@ function report(file, line, text) { printf "%s:%d: %s\n", file, line, text }
   line = $0
   t = trim(line)
   if (pending) {
-    if (t ~ /^defer[ \t]+(orchestrator\.)?(RecoverGoroutine|failFastOnPanic|recoverServerGoroutine)\(/) {
+    if (t ~ /^defer[ \t]+(orchestrator\.)?(RecoverGoroutine|failFastOnPanic|recoverServerGoroutine|recoverHubGoroutine)\(/) {
       pending = 0
     } else if (t == "" || t ~ /^\/\// || t ~ /^defer[ \t]/) {
       # keep scanning the leading defers / comments

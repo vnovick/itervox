@@ -4,6 +4,7 @@ import { getToken, useTokenStore } from './tokenStore';
 import { TokenEntryScreen } from './TokenEntryScreen';
 import { ServerDownScreen } from './ServerDownScreen';
 import { AUTH_PROBE_TIMEOUT_MS } from '../utils/timings';
+import { authProbeUrl, healthUrl } from './apiBase';
 
 /**
  * Top-level wrapper that gates the app on successful authentication.
@@ -105,7 +106,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Re
 async function probeOnce(): Promise<void> {
   // Health probe — unauthenticated.
   try {
-    const health = await fetchWithTimeout('/api/v1/health');
+    const health = await fetchWithTimeout(healthUrl());
     if (!health.ok) {
       useAuthStore.getState().setStatus('serverDown');
       return;
@@ -120,7 +121,7 @@ async function probeOnce(): Promise<void> {
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   try {
-    const res = await fetchWithTimeout('/api/v1/state', { headers });
+    const res = await fetchWithTimeout(authProbeUrl(), { headers });
     if (res.status === 401) {
       useTokenStore.getState().clearToken();
       useAuthStore

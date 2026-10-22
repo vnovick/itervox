@@ -1,0 +1,204 @@
+---
+title: The itervox hub (one URL for every project)
+description: The first daemon on a machine serves one dashboard, one scoped API proxy and one merged event feed for every project on it.
+---
+
+Every project runs its own daemon, with its own port and token. The **hub**
+(v0.2.9, #228) gives you one place for all of them: one URL for your browser
+or phone, one token, one merged event feed. It is free and open source and
+runs on your own machine; nothing in it phones home.
+
+There is nothing to install. **The first daemon started on a machine becomes
+the hub**; every daemon started after it registers with it. When the hub's
+daemon stops, the next live daemon takes over within a few seconds.
+
+## Quick start
+
+```bash
+# Start your projects as usual, in each project directory:
+itervox
+
+# See the hub and its members:
+itervox hub
+# hub: http://127.0.0.1:8089/hub/ (pid 4182, itervox v0.2.9)
+# members (2):
+#   api   http://127.0.0.1:8090/  /Users/you/code/api/WORKFLOW.md
+#   web   http://127.0.0.1:8091/  /Users/you/code/web/WORKFLOW.md
+
+# Create a hub token (shown once):
+itervox token create --hub --name laptop --scope operator
+```
+
+Open `http://127.0.0.1:8089/hub/`, paste the hub token, and pick a project.
+Each project opens its usual dashboard at `/hub/p/<project>/`; a selector in
+the header switches projects or returns to the list.
+
+## Who is the hub
+
+- Each daemon that takes part tries to take an exclusive lock on
+  `~/.itervox/daemons/hub.lock`, the directory `itervox status --all --json`
+  reads. The one that holds it is the hub.
+- The lock is a kernel `flock`: it is released the moment the hub's process
+  ends, `SIGKILL` included. The other daemons watch the lock file (fsnotify)
+  and retry it every second, so one of them takes over within about a second
+  of a crash and at once after a clean stop.
+- While it serves, the hub writes its address into `hub.lock` as JSON
+  (`pid`, `url`, `host`, `port`, `version`, `workflow`, `started_at`), which
+  is how `itervox hub` and the Mac app find it. It never holds a token.
+- The hub listens on `hub.bind:hub.port` (`127.0.0.1:8089`). If the port is
+  busy it takes the next free one and records it in `hub.lock`.
+
+**Members** are the live records in the daemon registry from daemons that
+take part. The hub refreshes them on every registry change and every 10 s.
+For each member it reads `GET /api/v1/summary` (health, version, counts,
+capabilities) and `GET /api/v1/route-scopes` (the member's route scope
+table).
+
+Project names are the project directory's name, lowercased (`My App` →
+`my-app`). Two projects with the same directory name both get a short suffix
+from their `WORKFLOW.md` path (`web-3fa1c2`), which never changes when other
+projects come and go.
+
+### Opting out
+
+- `itervox --no-hub` keeps a daemon out of the hub: it never becomes the hub
+  and is not listed. `hub.enabled: false` does the same from settings.
+- A daemon older than v0.2.9 does not register (its registry record has no
+  `hub_member`).
+- `itervox demo` never takes part.
+
+Hub settings are read at startup. Because the hub is machine-wide, put them
+in your user settings file, `~/.itervox/settings.jsonc`:
+
+```jsonc
+{
+  "hub": { "port": 8089, "bind": "127.0.0.1" }
+}
+```
+
+The daemon that wins the election uses its own values.
+
+## Tokens and scopes
+
+The hub has **its own token store**, `~/.itervox/hub/tokens.json` (hashes
+only), separate from every project's. Manage it with `itervox token ... --hub`:
+
+```bash
+itervox token create --hub --name phone --scope viewer
+itervox token list --hub
+itervox token revoke --hub tok_1a2b3c4d5e6f
+```
+
+A hub token's scope caps what it can do on **every** member:
+
+| Hub token | Through the hub it may |
+|---|---|
+| `viewer` | read every project (state, issues, logs, streams), with each project's viewer redaction |
+| `operator` | also dispatch, pause and resume, reply to agents, approve, steer, edit memory |
+| `admin` | the same as operator on members (see below) |
+
+To reach a member, the hub uses a token of its own **in that member's token
+store**: a `hub-viewer` token for viewer callers and a `hub-operator` token
+for everyone else, created on first use the same way `itervox mcp` creates
+its token. The secret is kept in the member's
+`.itervox/hub-<scope>-token.json` (mode `0600`, gitignored) and is never
+printed or logged. `itervox token list` in the project shows them; revoking
+one is safe: the request that hits the revoked token answers 502 and the hub
+creates a new one for the next.
+
+The hub never holds an admin token on a member, so **project
+administration** (settings, tokens, tmux control, workspace deletion) is not
+reachable through the hub: open the project's own dashboard for that.
+
+There is no bootstrap token and no unauthenticated mode: every hub route
+except `/hub/api/v1/health` and the dashboard's static files needs a hub
+token.
+
+## The proxy
+
+`/hub/p/<project>/api/v1/...` is that project's API. For every request the
+hub:
+
+1. authenticates the hub token (401 otherwise);
+2. looks the method and path up in the member's own route scope table;
+   a route the member does not declare is 404, and a path with encoded
+   slashes or dot segments is 400;
+3. refuses what is never proxied: agent-action and guardrail grant routes,
+   tracker webhooks (403 `not_proxied`), and member admin routes (403
+   `admin_route_not_proxied`);
+4. checks the hub token's scope against the route's (403
+   `insufficient_scope`, naming the scope in `X-Itervox-Required-Scope`);
+5. removes the caller's `Authorization`, `Cookie`, `Origin` and `Referer`
+   headers and adds its member token.
+
+Server-sent event streams (`/events`, log streams) pass through as they
+happen. If a member refuses the hub's token, the hub answers 502 (never 401,
+which would sign your dashboard out) and gets a new token.
+
+A member running with `server.allow_unauthenticated: true` is listed and its
+events are merged, but it is not proxied: the hub could not cap a caller's
+scope on it. Open its own dashboard.
+
+## Merged feed
+
+`GET /hub/api/v1/feed?since=<seq>` merges every member's event feed
+([Pause dispatch & event feed](/guides/pause-and-feed/)) into one sequence.
+Each event carries `project`, the member's `workflow` and its own
+`memberSeq`; `seq` is the hub's sequence number, which keeps growing across
+restarts and hand-overs. `GET /hub/api/v1/events` is an SSE stream that
+announces each new head (`event: feed`) and member-count change
+(`event: projects`).
+
+The hub keeps a cursor per member in `~/.itervox/hub/hub_feed_cursors.json`.
+After a restart, or when another daemon becomes the hub, it catches up from
+those cursors: nothing is missed or repeated. A project the hub has never
+seen starts with the events of its current daemon process; older history is
+not replayed.
+
+## Notifiers
+
+Merged events go to every enabled **notifier**, the seam that desktop, Slack
+and Web Push notifications plug into. A notifier is a Go interface:
+
+```go
+type Notifier interface {
+	Name() string
+	Enabled(project, kind string) bool
+	Notify(ctx context.Context, ev hub.Event) error
+}
+```
+
+Delivery is at least once: a failed `Notify` is retried with backoff (from 1
+s, doubling to a minute) until it succeeds, and each notifier's cursor is
+persisted only after a success, so an event in flight when the hub stops is
+delivered by the next one. v0.2.9 ships the `log` notifier, which logs each
+event at debug level (`itervox --verbose`).
+
+## Reaching the hub from another device
+
+The hub binds to loopback by default. Every route needs a hub token, so
+exposing it is safe with tokens only:
+
+- **Tailscale:** set `"hub": {"bind": "100.x.y.z"}` (your machine's Tailscale
+  address) in `~/.itervox/settings.jsonc`, restart the daemons, and open
+  `http://100.x.y.z:8089/hub/` with a viewer or operator hub token.
+- **LAN:** `"bind": "0.0.0.0"` listens on every interface. Use it only on a
+  network you trust, and prefer short-lived tokens
+  (`itervox token create --hub --name phone --scope viewer --expires 30d`).
+- **SSH tunnel:** `ssh -L 8089:127.0.0.1:8089 you@host`, then open
+  `http://127.0.0.1:8089/hub/` locally. Nothing changes on the host.
+
+The hub serves plain HTTP; put TLS in front of it (Tailscale, a reverse proxy)
+when the network is not yours.
+
+## Event-loop rule
+
+The hub runs inside a daemon process but outside its orchestrator event
+loop. It never touches the hosting project's state except through that
+project's HTTP API, exactly like every other member.
+
+## Reference
+
+- `itervox hub [--json]`, `itervox --no-hub`, `itervox token --hub`: [CLI](/cli/#itervox-hub--the-machines-hub-and-its-members)
+- `hub.enabled`, `hub.port`, `hub.bind`: [Configuration](/configuration/#hub)
+- `/hub/api/v1/*`, `/hub/p/{project}/api/v1/*`, `GET /api/v1/route-scopes`: [API reference](/api-reference/#hub)
