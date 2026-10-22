@@ -288,7 +288,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// CORE-175 — operator acks of worker failures + the capability
 			// that makes the dashboard offer the action.
 			FailureAcks:  failureAckRows(s),
-			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause},
+			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause, server.CapabilityRunContext},
 			// #213 — the daemon-wide dispatch pause and the feed head.
 			DispatchPaused: dispatchPauseRow(s.DispatchPaused),
 			FeedSeq:        s.FeedSeq,

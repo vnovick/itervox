@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import MarkdownPanel from './MarkdownPanel';
 import IssueDetailHeader from './IssueDetailHeader';
@@ -26,6 +26,12 @@ import {
   ISSUE_KEY,
 } from '../../queries/issues';
 import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants';
+import { RUN_CONTEXT_CAPABILITY } from '../../queries/changes';
+import { IssueNowPanel } from './changes/IssueNowPanel';
+import { IssueDetailTabs, type IssueDetailTab } from './changes/IssueDetailTabs';
+
+// #215 — the diff viewer is only loaded when the Changes tab opens.
+const IssueChangesTab = lazy(() => import('./changes/IssueChangesTab'));
 
 // CORE-070 — tracker.working_state default (internal/config/config.go), used
 // only when the snapshot does not publish workingState (older daemons).
@@ -65,6 +71,22 @@ export default function IssueDetailSlide() {
   const outboxSyncing = useItervoxStore((s) => s.snapshot?.outboxSyncing ?? EMPTY_STATES);
   const inlineInput = useItervoxStore((s) => s.snapshot?.inlineInput ?? false);
   const workingState = useItervoxStore((s) => s.snapshot?.workingState || DEFAULT_WORKING_STATE);
+  const runContextSupported = useItervoxStore(
+    (s) => s.snapshot?.capabilities?.includes(RUN_CONTEXT_CAPABILITY) ?? false,
+  );
+  // Every issue opens on its details: the chosen tab is remembered per
+  // identifier, not carried over to the next issue.
+  const [tabFor, setTabFor] = useState<{ id: string | null; tab: IssueDetailTab }>({
+    id: null,
+    tab: 'details',
+  });
+  const tab = tabFor.id === selectedIdentifier ? tabFor.tab : 'details';
+  const setTab = useCallback(
+    (next: IssueDetailTab) => {
+      setTabFor({ id: selectedIdentifier, tab: next });
+    },
+    [selectedIdentifier],
+  );
 
   const close = useCallback(() => {
     setSelectedIdentifier(null);
@@ -107,210 +129,230 @@ export default function IssueDetailSlide() {
         syncing={outboxSyncing.includes(issue.identifier)}
       />
 
-      {/* Scrollable body */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        <div className="flex items-center gap-3">
-          {issue.url && (
-            <a
-              href={issue.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-theme-accent-text text-sm hover:underline"
-            >
-              View in tracker →
-            </a>
-          )}
-          {reviewerProfile && issue.orchestratorState !== 'running' && (
-            <button
-              onClick={() => {
-                triggerAIReviewMutation.mutate(issue.identifier);
-              }}
-              disabled={triggerAIReviewMutation.isPending}
-              className="rounded-[var(--radius-sm)] px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80"
-              style={{
-                background: 'rgba(168,85,247,0.12)',
-                borderColor: 'rgba(168,85,247,0.2)',
-                color: 'rgb(168,85,247)',
-              }}
-              title={`Dispatch reviewer (${reviewerProfile} profile)`}
-            >
-              {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
-            </button>
-          )}
+      {runContextSupported && <IssueDetailTabs tab={tab} onChange={setTab} />}
+
+      {runContextSupported && tab === 'changes' ? (
+        <div
+          className="flex-1 overflow-y-auto px-5 py-4"
+          role="tabpanel"
+          aria-labelledby="issue-tab-changes"
+        >
+          <Suspense fallback={<p className="text-theme-muted text-sm">Loading changes…</p>}>
+            <IssueChangesTab identifier={issue.identifier} />
+          </Suspense>
         </div>
-
-        <IssueStatusChanges changes={issue.statusChanges} />
-
-        <IssueReviews
-          review={issue.review}
-          rerunPending={triggerAIReviewMutation.isPending}
-          onRerun={
-            reviewerProfile && issue.orchestratorState !== 'running'
-              ? () => {
-                  triggerAIReviewMutation.mutate(issue.identifier);
-                }
-              : undefined
-          }
-        />
-
-        {/* Priority + Labels */}
-        {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
-          <div className="flex flex-wrap items-center gap-2">
-            {issue.priority != null && (
-              <span className="bg-theme-warning-soft text-theme-warning-text inline-flex items-center rounded px-2 py-0.5 text-xs font-medium">
-                P{issue.priority}
-              </span>
-            )}
-            {issue.labels?.map((label) => (
-              <span
-                key={label}
-                className="bg-theme-bg-soft text-theme-text-secondary inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
+      ) : (
+        /* Scrollable body */
+        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+          {runContextSupported && (
+            <IssueNowPanel
+              identifier={issue.identifier}
+              live={issue.orchestratorState === 'running'}
+            />
+          )}
+          <div className="flex items-center gap-3">
+            {issue.url && (
+              <a
+                href={issue.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-theme-accent-text text-sm hover:underline"
               >
-                {label}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Agent Profile (backend-aware, #123) */}
-        <IssueProfilePicker issue={issue} locked={isProfileLocked} />
-
-        {/* Agent Backend (CORE-056) */}
-        <IssueBackendControl
-          key={issue.identifier} // BH-M3-10: no error/pending state across issues
-          issue={issue}
-          defaultBackend={defaultBackend}
-        />
-
-        {/* Branch */}
-        {issue.branchName && (
-          <div>
-            <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Branch</h4>
-            <div className="flex items-center gap-2">
-              <code className="bg-theme-bg-soft text-theme-text rounded px-2 py-1 font-mono text-xs">
-                {issue.branchName}
-              </code>
+                View in tracker →
+              </a>
+            )}
+            {reviewerProfile && issue.orchestratorState !== 'running' && (
               <button
                 onClick={() => {
-                  void navigator.clipboard.writeText(issue.branchName ?? '').catch(() => {});
+                  triggerAIReviewMutation.mutate(issue.identifier);
                 }}
-                className="text-xs"
-                title="Copy branch name"
+                disabled={triggerAIReviewMutation.isPending}
+                className="rounded-[var(--radius-sm)] px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80"
+                style={{
+                  background: 'rgba(168,85,247,0.12)',
+                  borderColor: 'rgba(168,85,247,0.2)',
+                  color: 'rgb(168,85,247)',
+                }}
+                title={`Dispatch reviewer (${reviewerProfile} profile)`}
               >
-                Copy
+                {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
               </button>
-            </div>
+            )}
           </div>
-        )}
 
-        <IssueBlockerDetails issue={issue} attention={issueAttention} />
+          <IssueStatusChanges changes={issue.statusChanges} />
 
-        {/* Description */}
-        <div>
-          <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">Description</h4>
-          {issue.description ? (
-            <MarkdownPanel>{issue.description}</MarkdownPanel>
-          ) : (
-            <p className="text-theme-muted text-sm italic">No description</p>
+          <IssueReviews
+            review={issue.review}
+            rerunPending={triggerAIReviewMutation.isPending}
+            onRerun={
+              reviewerProfile && issue.orchestratorState !== 'running'
+                ? () => {
+                    triggerAIReviewMutation.mutate(issue.identifier);
+                  }
+                : undefined
+            }
+          />
+
+          {/* Priority + Labels */}
+          {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {issue.priority != null && (
+                <span className="bg-theme-warning-soft text-theme-warning-text inline-flex items-center rounded px-2 py-0.5 text-xs font-medium">
+                  P{issue.priority}
+                </span>
+              )}
+              {issue.labels?.map((label) => (
+                <span
+                  key={label}
+                  className="bg-theme-bg-soft text-theme-text-secondary inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
           )}
-        </div>
 
-        {/* Review thread (T-7) — agent-marked thread sits between description
+          {/* Agent Profile (backend-aware, #123) */}
+          <IssueProfilePicker issue={issue} locked={isProfileLocked} />
+
+          {/* Agent Backend (CORE-056) */}
+          <IssueBackendControl
+            key={issue.identifier} // BH-M3-10: no error/pending state across issues
+            issue={issue}
+            defaultBackend={defaultBackend}
+          />
+
+          {/* Branch */}
+          {issue.branchName && (
+            <div>
+              <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Branch</h4>
+              <div className="flex items-center gap-2">
+                <code className="bg-theme-bg-soft text-theme-text rounded px-2 py-1 font-mono text-xs">
+                  {issue.branchName}
+                </code>
+                <button
+                  onClick={() => {
+                    void navigator.clipboard.writeText(issue.branchName ?? '').catch(() => {});
+                  }}
+                  className="text-xs"
+                  title="Copy branch name"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+          )}
+
+          <IssueBlockerDetails issue={issue} attention={issueAttention} />
+
+          {/* Description */}
+          <div>
+            <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">Description</h4>
+            {issue.description ? (
+              <MarkdownPanel>{issue.description}</MarkdownPanel>
+            ) : (
+              <p className="text-theme-muted text-sm italic">No description</p>
+            )}
+          </div>
+
+          {/* Review thread (T-7) — agent-marked thread sits between description
             and the heavier "Comments" block so an operator can scan agent
             review activity without scrolling through every human comment. */}
-        {issue.comments && issue.comments.length > 0 && (
-          <IssueReviewThread comments={issue.comments} />
-        )}
+          {issue.comments && issue.comments.length > 0 && (
+            <IssueReviewThread comments={issue.comments} />
+          )}
 
-        {/* Comments — always rendered oldest-first so the thread reads in
+          {/* Comments — always rendered oldest-first so the thread reads in
             chronological order and matching tracker UI conventions. The
             backend contract (domain.Issue.Comments) guarantees ascending
             CreatedAt but tracker adapters occasionally disagree; sort
             defensively in the UI so the UX is stable regardless. */}
-        {issue.comments &&
-          issue.comments.length > 0 &&
-          (() => {
-            const sortedComments = [...issue.comments].sort((a, b) => {
-              const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-              const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-              return at - bt;
-            });
-            // Identify the Itervox bot's latest question comment so the UI
-            // can mark it inline with a small "agent question" pill when the
-            // issue is in input_required or pending_input_resume state —
-            // answering the "which comment triggered the banner?" question.
-            const isBotAuthor = (author?: string) =>
-              !!author && author.trim().toLowerCase() === 'itervox';
-            const latestBotCommentIdx = (() => {
-              for (let i = sortedComments.length - 1; i >= 0; i--) {
-                if (isBotAuthor(sortedComments[i].author)) return i;
-              }
-              return -1;
-            })();
-            const showQuestionMarker =
-              issue.orchestratorState === 'input_required' ||
-              issue.orchestratorState === 'pending_input_resume';
-            return (
-              <div>
-                <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">
-                  Comments ({sortedComments.length})
-                </h4>
-                <div className="space-y-4">
-                  {sortedComments.map((c, i) => (
-                    <div
-                      key={`${c.author}-${c.createdAt ?? String(i)}`}
-                      className="border-theme-line bg-theme-bg-soft space-y-2 rounded-lg border p-3"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                          style={{ background: 'var(--gradient-accent)' }}
-                        >
-                          {(c.author || '?').charAt(0).toUpperCase()}
-                        </span>
-                        <span className="text-theme-text text-sm font-medium">
-                          {c.author || 'Unknown'}
-                        </span>
-                        {showQuestionMarker && i === latestBotCommentIdx && (
-                          <span className="rounded-full bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
-                            {issue.orchestratorState === 'input_required'
-                              ? 'agent question'
-                              : 'reply received'}
+          {issue.comments &&
+            issue.comments.length > 0 &&
+            (() => {
+              const sortedComments = [...issue.comments].sort((a, b) => {
+                const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                return at - bt;
+              });
+              // Identify the Itervox bot's latest question comment so the UI
+              // can mark it inline with a small "agent question" pill when the
+              // issue is in input_required or pending_input_resume state —
+              // answering the "which comment triggered the banner?" question.
+              const isBotAuthor = (author?: string) =>
+                !!author && author.trim().toLowerCase() === 'itervox';
+              const latestBotCommentIdx = (() => {
+                for (let i = sortedComments.length - 1; i >= 0; i--) {
+                  if (isBotAuthor(sortedComments[i].author)) return i;
+                }
+                return -1;
+              })();
+              const showQuestionMarker =
+                issue.orchestratorState === 'input_required' ||
+                issue.orchestratorState === 'pending_input_resume';
+              return (
+                <div>
+                  <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">
+                    Comments ({sortedComments.length})
+                  </h4>
+                  <div className="space-y-4">
+                    {sortedComments.map((c, i) => (
+                      <div
+                        key={`${c.author}-${c.createdAt ?? String(i)}`}
+                        className="border-theme-line bg-theme-bg-soft space-y-2 rounded-lg border p-3"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                            style={{ background: 'var(--gradient-accent)' }}
+                          >
+                            {(c.author || '?').charAt(0).toUpperCase()}
                           </span>
-                        )}
-                        {c.createdAt && (
-                          <span className="text-theme-muted ml-auto text-xs">
-                            {new Date(c.createdAt).toLocaleDateString(undefined, {
-                              month: 'short',
-                              day: 'numeric',
-                              year: 'numeric',
-                            })}
+                          <span className="text-theme-text text-sm font-medium">
+                            {c.author || 'Unknown'}
                           </span>
-                        )}
+                          {showQuestionMarker && i === latestBotCommentIdx && (
+                            <span className="rounded-full bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
+                              {issue.orchestratorState === 'input_required'
+                                ? 'agent question'
+                                : 'reply received'}
+                            </span>
+                          )}
+                          {c.createdAt && (
+                            <span className="text-theme-muted ml-auto text-xs">
+                              {new Date(c.createdAt).toLocaleDateString(undefined, {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric',
+                              })}
+                            </span>
+                          )}
+                        </div>
+                        <MarkdownPanel>{c.body}</MarkdownPanel>
                       </div>
-                      <MarkdownPanel>{c.body}</MarkdownPanel>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
 
-        {/* Operator comment composer — always available except while the
+          {/* Operator comment composer — always available except while the
             issue is input_required, where the reply box below is the
             answer channel for the agent's question instead. */}
-        {issue.orchestratorState !== 'input_required' && (
-          <IssueCommentComposer identifier={issue.identifier} />
-        )}
+          {issue.orchestratorState !== 'input_required' && (
+            <IssueCommentComposer identifier={issue.identifier} />
+          )}
 
-        {/* Input Required — reply UI (extracted, Task 5 size-budget) */}
-        <InputRequiredPanel
-          issue={issue}
-          inlineInput={inlineInput}
-          provideInputMutation={provideInputMutation}
-          dismissInputMutation={dismissInputMutation}
-        />
-      </div>
+          {/* Input Required — reply UI (extracted, Task 5 size-budget) */}
+          <InputRequiredPanel
+            issue={issue}
+            inlineInput={inlineInput}
+            provideInputMutation={provideInputMutation}
+            dismissInputMutation={dismissInputMutation}
+          />
+        </div>
+      )}
 
       {/* Sticky action footer — run controls (CORE-073 verbs) */}
       {hasFooterActions && (

@@ -858,6 +858,121 @@ apply).
 | `GET` | `/issues` | `TrackerIssue[]` |
 | `GET` | `/issues/{identifier}` | `TrackerIssue` |
 
+### Run context and changes (#215)
+
+What an issue's agent is doing right now, and what it has changed. Both
+routes are `viewer` reads; a file's hunks need `operator` (see below).
+The daemon advertises them with `"run_context"` in `capabilities` on the
+snapshot.
+
+#### `GET /issues/{identifier}/context`
+
+The context of the issue's running run (`live: true`), or of its most
+recent finished run while the daemon still keeps it (the 32 newest finished
+runs, this session only), plus the worktree's changed files and handoffs.
+
+```json
+{
+  "identifier": "ENG-12",
+  "run": {
+    "runId": "r-8f2c", "live": true, "kind": "worker", "profile": "coder", "backend": "claude",
+    "startedAt": "2026-10-22T10:00:00Z", "updatedAt": "2026-10-22T10:04:31Z", "baseBranch": "main",
+    "currentStep": "Wiring the diff endpoint into the router.",
+    "lastToolCall": {"name": "Edit", "target": "internal/server/server.go", "at": "2026-10-22T10:04:31Z"},
+    "toolCalls": 41, "turnCount": 2, "inputTokens": 120400, "outputTokens": 8200, "totalTokens": 128600,
+    "pendingInput": "", "queuedSteers": 0,
+    "steers": [{"text": "use gitexec", "at": "2026-10-22T10:02:00Z", "delivery": "live"}],
+    "guardrailBlocks": 1, "lastGuardrailKind": "push_protected"
+  },
+  "changedFiles": [{"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0}],
+  "handoffs": [{"title": "Plan the endpoints", "path": ".itervox/handoff/2026-10-22T09-58-00Z_planner.md"}]
+}
+```
+
+- `currentStep` is the run's last assistant message, redacted (the log
+  redaction: known key shapes, bearer tokens, `NAME_TOKEN=…` assignments,
+  URL credentials), whitespace-collapsed and cut to 500 bytes.
+- `lastToolCall` is the latest tool call — started or finished — by name
+  and target (a file path, a command, a pattern, a URL), redacted and cut to
+  300 bytes. **Tool output is never included**: the target is computed from
+  the call's input with every output-bearing field (`output`, `stdout`,
+  `stderr`, `result`, `content`, …) removed, and tool results are not read.
+  `toolCalls` counts finished calls.
+- `turnCount` and the token counts are the run's so far; `pendingInput` is
+  the question the issue waits on (`pendingApproval: true` for a guardrail
+  approval); `steers` are the newest delivered steering messages and
+  `queuedSteers` those not yet delivered; `guardrailBlocks` counts the
+  operations a guardrail refused in this run.
+- `changedFiles` is the file list of the diff below (omitted with
+  `changedFilesError` — `no_worktree`, `base_not_found`, `diff_timeout`,
+  `diff_failed` — when it cannot be computed); `handoffs` lists the
+  `.itervox/handoff/` files, oldest first, titled by their first heading.
+- `run` is `null` when the issue has a worktree but no kept run. `404
+  no_run_context` when it has neither.
+
+The run context is updated by each worker at most once a second (plus once
+at the end of every turn) through the event loop, and is not part of the
+`/state` snapshot or the SSE frames: read it here.
+
+#### `GET /issues/{identifier}/diff`
+
+The worktree against the **merge base** of its `HEAD` with the base branch:
+committed changes, uncommitted edits and untracked files. Works while the
+issue runs and after it finished, as long as its worktree exists.
+
+**Query:** `base` (optional): the branch to diff against (`main`,
+`origin/develop`); a name only — no options, ranges or revision
+expressions (`400 invalid_base`). Default: the run's pull-request base (the
+blocker branch of a stacked worktree),
+then `workspace.base_branch`, `agent.base_branch`, `origin/HEAD`,
+`origin/main` and `main`, each tried as `origin/<name>` first. `file`
+(optional): return that file's hunks instead of the list.
+
+Without `file`:
+
+```json
+{
+  "identifier": "ENG-12", "base": "origin/main", "mergeBase": "3f9c2e1d…",
+  "files": [
+    {"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0},
+    {"path": "web/public/logo.png", "status": "modified", "additions": 0, "deletions": 0, "binary": true}
+  ],
+  "truncated": false,
+  "hunksAllowed": true
+}
+```
+
+`status` is `added`, `modified`, `deleted`, `typechange`, `unmerged` or
+`untracked`; renames show as a deletion and an addition. At most 2000 files
+(`truncated: true` beyond). `hunksAllowed` tells the client whether its
+token may ask for `?file=`.
+
+With `file=<path>` (**operator**; a viewer gets `403 insufficient_scope`):
+
+```json
+{
+  "identifier": "ENG-12", "base": "origin/main",
+  "file": {"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0},
+  "patch": "diff --git a/internal/server/changes.go b/internal/server/changes.go\n…",
+  "truncated": false, "bytes": 4810, "maxBytes": 262144
+}
+```
+
+- `file` must be one of the listed paths (`404 file_not_changed`
+  otherwise); no other path reaches git.
+- The unified diff is cut at 256 KiB on a line boundary (`truncated: true`,
+  `bytes` is the full size). A binary file has `binary: true` and an empty
+  `patch`.
+- Below `admin` the patch passes through the log redaction (whitespace and
+  lines are kept); an admin sees it as written. An agent can commit a
+  secret, which is why hunks are not a viewer read.
+
+Errors: `404 no_worktree` (never dispatched, or the worktree was cleared),
+`404 base_not_found`, `400 invalid_base`, `504 diff_timeout`, `503
+not_supported` (a daemon built without the endpoint). Every git call runs
+through `internal/gitexec` on the request's goroutine — never on the
+orchestrator's event loop — under a 15-second timeout.
+
 ### Lifecycle and control
 
 | Method | Path | Request body | Success response | Notes |

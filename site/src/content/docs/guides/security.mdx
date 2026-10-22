@@ -145,6 +145,8 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/history/prompt-versions` | viewer |
 | `GET` | `/api/v1/issues` | viewer |
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/logs` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/sublog-stream` | viewer |

@@ -1930,3 +1930,83 @@ export const ApiTokenListSchema = z.object({ tokens: z.array(ApiTokenSchema) });
 
 export const ApiTokenSecretSchema = z.object({ token: ApiTokenSchema, secret: z.string() });
 export type ApiTokenSecret = z.infer<typeof ApiTokenSecretSchema>;
+
+// #215 — the run context (GET /api/v1/issues/{identifier}/context) and the
+// worktree diff (GET /api/v1/issues/{identifier}/diff). Every text field is
+// redacted server-side; the run context never carries tool output.
+export const DiffFileSchema = z.object({
+  path: z.string(),
+  status: z.string(),
+  additions: z.number(),
+  deletions: z.number(),
+  binary: z.boolean().optional(),
+});
+export type DiffFile = z.infer<typeof DiffFileSchema>;
+
+export const RunContextRunSchema = z.object({
+  runId: z.string(),
+  live: z.boolean(),
+  kind: z.string().optional(),
+  profile: z.string().optional(),
+  backend: z.string().optional(),
+  startedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+  outcome: z.string().optional(),
+  updatedAt: z.string().optional(),
+  baseBranch: z.string().optional(),
+  currentStep: z.string().optional(),
+  lastToolCall: z
+    .object({ name: z.string(), target: z.string().optional(), at: z.string().optional() })
+    .optional(),
+  toolCalls: z.number().default(0),
+  turnCount: z.number().default(0),
+  inputTokens: z.number().default(0),
+  outputTokens: z.number().default(0),
+  totalTokens: z.number().default(0),
+  pendingInput: z.string().optional(),
+  pendingApproval: z.boolean().optional(),
+  queuedSteers: z.number().default(0),
+  steers: z
+    .array(z.object({ text: z.string(), at: z.string(), delivery: z.string().optional() }))
+    .nullish()
+    .transform((v) => v ?? []),
+  guardrailBlocks: z.number().default(0),
+  lastGuardrailKind: z.string().optional(),
+});
+export type RunContextRun = z.infer<typeof RunContextRunSchema>;
+
+export const RunContextResponseSchema = z.object({
+  identifier: z.string(),
+  run: RunContextRunSchema.nullable(),
+  changedFiles: z
+    .array(DiffFileSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  changedFilesError: z.string().optional(),
+  handoffs: z
+    .array(z.object({ title: z.string(), path: z.string(), partial: z.boolean().optional() }))
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type RunContextResponse = z.infer<typeof RunContextResponseSchema>;
+
+export const DiffResponseSchema = z.object({
+  identifier: z.string(),
+  base: z.string(),
+  mergeBase: z.string(),
+  files: z.array(DiffFileSchema),
+  truncated: z.boolean().optional(),
+  hunksAllowed: z.boolean(),
+});
+export type DiffResponse = z.infer<typeof DiffResponseSchema>;
+
+export const FileDiffResponseSchema = z.object({
+  identifier: z.string(),
+  base: z.string(),
+  file: DiffFileSchema,
+  patch: z.string(),
+  truncated: z.boolean().optional(),
+  bytes: z.number(),
+  maxBytes: z.number(),
+});
+export type FileDiffResponse = z.infer<typeof FileDiffResponseSchema>;

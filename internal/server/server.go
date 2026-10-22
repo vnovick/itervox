@@ -1507,6 +1507,9 @@ type Config struct {
 	// Dispatch backs GET /api/v1/feed and POST /api/v1/dispatch/pause|resume
 	// (#213). Nil answers 503.
 	Dispatch DispatchClient
+	// Changes backs GET /api/v1/issues/{identifier}/context and /diff
+	// (#215). Nil answers 503.
+	Changes ChangesClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1571,6 +1574,8 @@ type Server struct {
 	version string
 	// dispatch mirrors Config.Dispatch (#213).
 	dispatch DispatchClient
+	// changes mirrors Config.Changes (#215).
+	changes ChangesClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1623,6 +1628,7 @@ func New(cfg Config) *Server {
 		repoHotspots:        cfg.RepoHotspots,
 		version:             cfg.Version,
 		dispatch:            cfg.Dispatch,
+		changes:             cfg.Changes,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1750,6 +1756,8 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
+			r.Get("/issues/{identifier}/context", s.handleIssueContext) // #215
+			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)       // #215: hunks need operator
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
