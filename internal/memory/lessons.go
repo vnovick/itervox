@@ -34,6 +34,16 @@ const (
 	// TriggerFailedThenSucceeded: a run failed or stalled and a later run on
 	// the same issue succeeded after a change.
 	TriggerFailedThenSucceeded LessonTrigger = "failed_then_succeeded"
+	// TriggerReviewerAsk: a reviewer requested the same kind of change at
+	// least twice, across runs or issues (#217).
+	TriggerReviewerAsk LessonTrigger = "reviewer_ask"
+	// TriggerRevertedPR: a merged agent PR was reverted on the base branch
+	// (#217).
+	TriggerRevertedPR LessonTrigger = "reverted_pr"
+	// TriggerRecipe: a run succeeded after a non-obvious fix (at least two
+	// failed attempts, a steer, or a long turn count); the lesson is a
+	// recipe: what worked and the verification that proved it (#217).
+	TriggerRecipe LessonTrigger = "recipe"
 )
 
 // Lesson is the review record of a lesson entry.
@@ -59,19 +69,32 @@ type Lesson struct {
 	DraftedBy string `json:"draftedBy,omitempty"`
 	// ApprovedAt is when a human approved it (or it was auto-approved).
 	ApprovedAt *time.Time `json:"approvedAt,omitempty"`
+	// Verification is, for a recipe lesson, the check that proved the fix
+	// worked (#217).
+	Verification string `json:"verification,omitempty"`
+	// Rule points at the rule the lesson was promoted to (#217); the lesson
+	// is archived when it is set.
+	Rule *RuleLink `json:"rule,omitempty"`
+	// Enforcement is the enforcement Itervox suggested once the lesson was
+	// seen memory.lessons.enforce_threshold times, and what the reviewer
+	// decided (#217).
+	Enforcement *Enforcement `json:"enforcement,omitempty"`
 }
 
-var lessonKeys = []string{"trigger", "situation", "wentWrong", "worked", "correction", "confidence", "evidence", "draftedBy", "approvedAt"}
+var lessonKeys = []string{"trigger", "situation", "wentWrong", "worked", "correction", "confidence", "evidence", "draftedBy", "approvedAt", "verification", "rule", "enforcement"}
 
 // LessonTriggers lists the triggers.
-var LessonTriggers = []LessonTrigger{TriggerInputReply, TriggerSteering, TriggerFailedThenSucceeded}
+var LessonTriggers = []LessonTrigger{
+	TriggerInputReply, TriggerSteering, TriggerFailedThenSucceeded,
+	TriggerReviewerAsk, TriggerRevertedPR, TriggerRecipe,
+}
 
 func validateLesson(l *Lesson) error {
 	if l == nil {
 		return nil
 	}
 	if !slices.Contains(LessonTriggers, l.Trigger) {
-		return fieldError{"lesson.trigger", fmt.Sprintf(`must be "input_reply", "steering" or "failed_then_succeeded", not %q`, l.Trigger), false}
+		return fieldError{"lesson.trigger", fmt.Sprintf("must be one of %s, not %q", quotedList(LessonTriggers), l.Trigger), false}
 	}
 	if l.Confidence < 0 || l.Confidence > 1 {
 		return fieldError{"lesson.confidence", "must be between 0 and 1", false}
@@ -82,6 +105,7 @@ func validateLesson(l *Lesson) error {
 	for name, s := range map[string]string{
 		"lesson.situation": l.Situation, "lesson.wentWrong": l.WentWrong,
 		"lesson.worked": l.Worked, "lesson.correction": l.Correction,
+		"lesson.verification": l.Verification,
 	} {
 		if len(s) > MaxTextBytes {
 			return fieldError{name, fmt.Sprintf("is %d bytes, at most %d", len(s), MaxTextBytes), true}
@@ -90,7 +114,22 @@ func validateLesson(l *Lesson) error {
 	if len(l.DraftedBy) > MaxItemBytes {
 		return fieldError{"lesson.draftedBy", fmt.Sprintf("is %d bytes, at most %d", len(l.DraftedBy), MaxItemBytes), true}
 	}
-	return nil
+	if err := validateRuleLink(l.Rule); err != nil {
+		return err
+	}
+	return validateEnforcement(l.Enforcement)
+}
+
+// quotedList renders values as `"a", "b" or "c"`.
+func quotedList[T ~string](values []T) string {
+	q := make([]string, len(values))
+	for i, v := range values {
+		q[i] = fmt.Sprintf("%q", v)
+	}
+	if len(q) < 2 {
+		return strings.Join(q, "")
+	}
+	return strings.Join(q[:len(q)-1], ", ") + " or " + q[len(q)-1]
 }
 
 func scrubLesson(l *Lesson) *Lesson {
@@ -98,8 +137,19 @@ func scrubLesson(l *Lesson) *Lesson {
 		return nil
 	}
 	c := *l
-	for _, s := range []*string{&c.Situation, &c.WentWrong, &c.Worked, &c.Correction, &c.DraftedBy} {
+	for _, s := range []*string{&c.Situation, &c.WentWrong, &c.Worked, &c.Correction, &c.DraftedBy, &c.Verification} {
 		*s = strings.TrimSpace(logging.RedactString(*s))
+	}
+	if c.Enforcement != nil {
+		enf := *c.Enforcement
+		for _, s := range []*string{&enf.Title, &enf.Draft, &enf.DraftedBy, &enf.Issue, &enf.IssueURL} {
+			*s = strings.TrimSpace(logging.RedactString(*s))
+		}
+		c.Enforcement = &enf
+	}
+	if c.Rule != nil {
+		r := *c.Rule
+		c.Rule = &r
 	}
 	return &c
 }
@@ -123,6 +173,8 @@ type Candidate struct {
 	// RunIDs / Links are the evidence.
 	RunIDs []string
 	Links  []string
+	// Verification is, for a recipe, the check that proved the fix (#217).
+	Verification string
 }
 
 // CorrectionText is the candidate's corrections as one bounded text: the
@@ -146,6 +198,9 @@ var triggerConfidence = map[LessonTrigger]float64{
 	TriggerInputReply:          0.6,
 	TriggerSteering:            0.5,
 	TriggerFailedThenSucceeded: 0.7,
+	TriggerReviewerAsk:         0.6,
+	TriggerRevertedPR:          0.7,
+	TriggerRecipe:              0.6,
 }
 
 // confidenceStep is how much each repeat sighting raises confidence, up to
@@ -169,6 +224,9 @@ func TemplateDraft(c Candidate) Draft {
 	}
 	worked := boundText(oneLine(strings.Join(c.Corrections, "; ")), 1000)
 	wentWrong := boundText(oneLine(c.WentWrong), 300)
+	if c.Trigger == TriggerRecipe {
+		return recipeDraft(situation, worked, wentWrong, boundText(oneLine(c.Verification), 400))
+	}
 	var b strings.Builder
 	b.WriteString("When ")
 	b.WriteString(strings.TrimRight(situation, ".!?:; "))
@@ -184,18 +242,40 @@ func TemplateDraft(c Candidate) Draft {
 	}
 }
 
+// recipeDraft is the template of a recipe lesson (#217): "Recipe: when …,
+// … Verify with: …".
+func recipeDraft(situation, worked, wentWrong, verification string) Draft {
+	var b strings.Builder
+	b.WriteString("Recipe: when ")
+	b.WriteString(strings.TrimRight(situation, ".!?:; "))
+	b.WriteString(", ")
+	b.WriteString(sentence(lowerFirst(worked)))
+	if verification != "" {
+		b.WriteString(" Verify with: ")
+		b.WriteString(sentence(verification))
+	}
+	return Draft{
+		Text: boundText(b.String(), MaxTextBytes), Situation: situation,
+		WentWrong: wentWrong, Worked: worked, DraftedBy: "template",
+	}
+}
+
 // NewLessonEntry is the proposed entry for a candidate and its draft.
 func NewLessonEntry(c Candidate, d Draft) Entry {
+	tags := []string{"lesson"}
+	if c.Trigger == TriggerRecipe {
+		tags = append(tags, "recipe")
+	}
 	e := Entry{
 		Type:   TypeLesson,
 		Text:   d.Text,
 		Status: StatusProposed,
-		Tags:   []string{"lesson"},
+		Tags:   tags,
 		Source: Source{Kind: "lesson", Issue: c.Issue, RunIDs: boundList(c.RunIDs), Links: boundList(c.Links)},
 		Lesson: &Lesson{
 			Trigger: c.Trigger, Situation: d.Situation, WentWrong: d.WentWrong, Worked: d.Worked,
 			Correction: c.CorrectionText(), Confidence: triggerConfidence[c.Trigger], Evidence: 1,
-			DraftedBy: d.DraftedBy,
+			DraftedBy: d.DraftedBy, Verification: boundText(oneLine(c.Verification), 1000),
 		},
 	}
 	if c.Profile != "" {

@@ -221,6 +221,8 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/memory/{id}/pin` | operator |
 | `POST` | `/api/v1/memory/{id}/promote` | operator |
 | `POST` | `/api/v1/memory/{id}/reject` | operator |
+| `POST` | `/api/v1/memory/{id}/enforcement/accept` | operator (creates an Enforce: issue, #217) |
+| `POST` | `/api/v1/memory/{id}/enforcement/dismiss` | operator |
 | `DELETE` | `/api/v1/outbox/{id}` | operator |
 | `POST` | `/api/v1/outbox/{id}/retry` | operator |
 | `POST` | `/api/v1/refresh` | operator |
@@ -231,6 +233,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/automations/{id}/test` | admin |
 | `PUT` | `/api/v1/projects/filter` | admin |
+| `POST` | `/api/v1/memory/{id}/promote-to-rule` | admin (writes a rules layer, #217) |
 | `PUT` | `/api/v1/rules/{layer}` | admin |
 | `POST` | `/api/v1/sessions` | admin (starts a tmux session) |
 | `DELETE` | `/api/v1/sessions/{id}` | admin |
@@ -1622,7 +1625,7 @@ items of 512 bytes) is refused.
 
 | Method | Path | Request body | Success response | Errors |
 |---|---|---|---|---|
-| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected"}}` | — |
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected","enforceThreshold"}}` | — |
 | `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
 | `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
 | `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
@@ -1630,17 +1633,24 @@ items of 512 bytes) is refused.
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
 | `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
 | `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
+| `POST` | `/memory/{id}/promote-to-rule` | `{"layer":"user"\|"project","severity"?:"must"\|"should","text"?}` (admin, #217; `severity` defaults to `should`, `text` to the lesson's) | `{"entry":Entry,"layer","path","rule":{"id":"lesson-<entry id>","severity","text","description","scope"?}}`; the lesson is now `archived` with `lesson.rule` pointing at the rule | `400 rules_invalid` (bad severity, empty text, or the layer file does not parse), `404 memory_not_found`, `404 unknown_layer` (not `user` or `project`, or the layer is off), `409 memory_conflict` (not an approved lesson, or a different rule already has that id), `409 rules_stale` |
+| `POST` | `/memory/{id}/enforcement/accept` | — | `{"entry":Entry,"issue":{"identifier","title","url"?}}`: the `Enforce: <lesson>` issue created in the tracker (in `memory.lessons.enforce_issue_state`), carrying the suggestion's draft and the lesson's evidence; `lesson.enforcement.status` is now `accepted` (#217) | `404 memory_not_found`, `409 memory_conflict` (no pending suggestion), `502 enforcement_issue_failed` (the tracker refused) |
+| `POST` | `/memory/{id}/enforcement/dismiss` | — | the entry, `lesson.enforcement.status: "dismissed"` (never suggested again for it) | `404 memory_not_found`, `409 memory_conflict` (no pending suggestion) |
 | `GET` | `/memory/recall?q=&profile=&budget=` | — | `{"enabled","profile","budget","tokens","dropped","entries":[{"id","type","text","scope","tags"?,"pinned"?}],"overBudget"?,"unreadableFiles"?}` | `400 bad_request` (`q` missing or over 2000 bytes, `budget` outside 1–8000) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
 `source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?,
-`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?}`)
+`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?,"verification"?,"rule"?:{"layer","id","at"},"enforcement"?:{"kind":"lint"|"type"|"test"|"docs"|"rule","status":"suggested"|"accepted"|"dismissed","title"?,"draft","draftedBy"?,"suggestedAt","decidedAt"?,"issue"?,"issueUrl"?}}`)
 plus `path` (the file that holds it), `runs` (the newest runs in history whose prompt
 carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20) and, for an approved
 lesson that is not helping (#203), `notHelping`: `"unused"` (none of the last
-`memory.lessons.stale_after_runs` runs used it) or `"failing"` (most runs that used it failed)
-with `notHelpingReason`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
+`memory.lessons.stale_after_runs` runs used it), `"failing"` (most runs that used it failed)
+or `"enforced"` (its enforcement suggestion was accepted, #217) with `notHelpingReason`, and for every
+lesson `analytics`: `{"applied","runs","succeeded","failed"}` (how many runs had it in their prompt,
+and the runs in history that used it by outcome; #217). `lessons` also carries `enforceThreshold`.
+`lesson.trigger` is `input_reply`, `steering`, `failed_then_succeeded`, or since #217
+`reviewer_ask`, `reverted_pr` or `recipe`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
 approve and reject change the snapshot's `proposedLessons`, which is pushed at once. A promote's `diff`
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is

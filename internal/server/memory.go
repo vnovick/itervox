@@ -43,6 +43,14 @@ type MemoryClient interface {
 	// query would get, with the run-time ranking (memory.Select), within
 	// budget tokens; budget 0 is the configured memory budget (#216).
 	RecallMemory(query, profile string, budget int) MemoryRecallView
+	// PromoteLessonToRule adds an approved lesson as a rule in the chosen
+	// rules layer and archives the lesson with a pointer to the rule (#217).
+	PromoteLessonToRule(id string, req LessonRuleRequest) (LessonRuleResult, error)
+	// AcceptLessonEnforcement accepts the lesson's enforcement suggestion:
+	// it creates the "Enforce: <lesson>" issue in the tracker (#217).
+	AcceptLessonEnforcement(ctx context.Context, id string) (LessonEnforceResult, error)
+	// DismissLessonEnforcement turns the suggestion down (#217).
+	DismissLessonEnforcement(id string) (MemoryEntryView, error)
 }
 
 // MemoryRecallMaxBudget caps the budget GET /api/v1/memory/recall accepts.
@@ -110,6 +118,9 @@ type MemoryLessonsView struct {
 	StaleAfterRuns     int          `json:"staleAfterRuns"`
 	// Rejected is how many rejections are remembered.
 	Rejected int `json:"rejected"`
+	// EnforceThreshold is memory.lessons.enforce_threshold: how many times
+	// a lesson is seen before enforcement is suggested (#217).
+	EnforceThreshold int `json:"enforceThreshold"`
 }
 
 // MemoryFileView is one memory file.
@@ -132,10 +143,14 @@ type MemoryEntryView struct {
 	Runs []MemoryRunRef `json:"runs"`
 	// NotHelping flags an approved lesson that is not helping (#203):
 	// "unused" (none of the last memory.lessons.stale_after_runs runs used
-	// it) or "failing" (most runs that used it failed); NotHelpingReason
+	// it), "failing" (most runs that used it failed) or "enforced" (its
+	// enforcement suggestion was accepted, #217); NotHelpingReason
 	// says it in words. Empty otherwise.
 	NotHelping       memory.LessonHealth `json:"notHelping,omitempty"`
 	NotHelpingReason string              `json:"notHelpingReason,omitempty"`
+	// Analytics is, for a lesson, how often runs used it and how those runs
+	// ended (#217).
+	Analytics *memory.LessonAnalytics `json:"analytics,omitempty"`
 }
 
 // MemoryRunRef is a run that used an entry.

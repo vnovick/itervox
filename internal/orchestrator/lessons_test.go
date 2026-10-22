@@ -28,6 +28,8 @@ func lessonsOnCfg() config.MemoryConfig {
 		Enabled: true, Scope: "private", MaxPerIssue: config.DefaultLessonMaxPerIssue,
 		RateWindowHours: config.DefaultLessonRateWindowHours, DraftTokenBudget: config.DefaultLessonDraftTokenBudget,
 		DraftTimeoutMs: config.DefaultLessonDraftTimeoutMs, StaleAfterRuns: config.DefaultLessonStaleAfterRuns,
+		EnforceThreshold: config.DefaultLessonEnforceThreshold, RecipeMinFailedRuns: config.DefaultLessonRecipeMinFailedRuns,
+		RecipeMinTurns: config.DefaultLessonRecipeMinTurns,
 	}
 	return m
 }

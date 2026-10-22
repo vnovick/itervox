@@ -13,6 +13,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/prdetector"
 	"github.com/vnovick/itervox/internal/server"
 )
 
@@ -32,9 +33,6 @@ func gitexecHotspotGit(ctx context.Context, dir string, args ...string) ([]byte,
 }
 
 var (
-	// prNumberInURL reads the number off a GitHub pull or GitLab merge
-	// request URL.
-	prNumberInURL = regexp.MustCompile(`/(?:pull|pulls|merge_requests)/(\d+)(?:[/?#]|$)`)
 	// revertedTitle is a `git revert` subject: Revert "<title>".
 	revertedTitle = regexp.MustCompile(`^Revert "(.*)"`)
 	// revertBranch is GitHub's revert-PR branch name: revert-<N>-<branch>.
@@ -49,14 +47,7 @@ var (
 )
 
 // prNumber is the PR number in a PR URL; 0 when there is none.
-func prNumber(url string) int {
-	m := prNumberInURL.FindStringSubmatch(url)
-	if m == nil {
-		return 0
-	}
-	n, _ := strconv.Atoi(m[1])
-	return n
-}
+func prNumber(url string) int { return prdetector.PRNumber(url) }
 
 // safeRefPart rejects branch names that could be read as an option or a
 // revision range.
@@ -93,21 +84,25 @@ func resolveBaseRef(ctx context.Context, git hotspotGit, src hotspotSource) stri
 // for reverts and returns the PR numbers they undid: numbers in a reverted
 // title (Revert "Add x (#12)"), GitHub revert-PR branches (revert-12-...),
 // and the PR numbers in the subjects of the commits a revert names
-// ("This reverts commit <sha>"). Two git calls per refresh.
-func revertedPRs(ctx context.Context, git hotspotGit, repo, baseRef string) map[int]bool {
+// ("This reverts commit <sha>"). Two git calls per refresh. Each number
+// maps to the subject of the revert that undid it (reverted-PR lessons,
+// #217, quote it).
+func revertedPRs(ctx context.Context, git hotspotGit, repo, baseRef string) map[int]string {
 	out, err := git(ctx, repo, "log", "-n", strconv.Itoa(hotspotsRevertScanDepth), "--format=%H%x1f%s%x1f%b%x1e", baseRef, "--")
 	if err != nil {
 		return nil
 	}
-	reverted := map[int]bool{}
-	addRefs := func(s string, re *regexp.Regexp) {
+	reverted := map[int]string{}
+	addRefs := func(s string, re *regexp.Regexp, revert string) {
 		for _, m := range re.FindAllStringSubmatch(s, -1) {
 			if n, err := strconv.Atoi(m[1]); err == nil {
-				reverted[n] = true
+				if _, seen := reverted[n]; !seen {
+					reverted[n] = revert
+				}
 			}
 		}
 	}
-	var shas []string
+	var shas, shaSubjects []string
 	for _, rec := range strings.Split(string(out), "\x1e") {
 		parts := strings.SplitN(strings.TrimLeft(rec, "\n"), "\x1f", 3)
 		if len(parts) < 3 {
@@ -120,26 +115,44 @@ func revertedPRs(ctx context.Context, git hotspotGit, repo, baseRef string) map[
 			continue
 		}
 		if m := revertedTitle.FindStringSubmatch(subject); m != nil {
-			addRefs(m[1], prRef)
+			addRefs(m[1], prRef, subject)
 		}
-		addRefs(subject, revertBranch)
+		addRefs(subject, revertBranch, subject)
 		for _, m := range revertsCommit.FindAllStringSubmatch(body, -1) {
 			if len(shas) < hotspotsMaxRevertedLookups {
 				shas = append(shas, m[1])
+				shaSubjects = append(shaSubjects, subject)
 			}
 		}
 	}
 	if len(shas) > 0 {
-		args := append([]string{"log", "--no-walk", "--ignore-missing", "--format=%s"}, shas...)
+		// %H first so each reverted commit's subject maps back to the revert
+		// that named it (--no-walk prints them in its own order).
+		args := append([]string{"log", "--no-walk", "--ignore-missing", "--format=%H%x1f%s"}, shas...)
 		if subjects, err := git(ctx, repo, args...); err == nil {
-			for _, s := range strings.Split(string(subjects), "\n") {
+			for _, line := range strings.Split(string(subjects), "\n") {
+				sha, s, ok := strings.Cut(line, "\x1f")
+				if !ok {
+					continue
+				}
 				if m := prSubject.FindStringSubmatch(s); m != nil {
-					addRefs("#"+cmp.Or(m[1], m[2]), prRef)
+					addRefs("#"+cmp.Or(m[1], m[2]), prRef, revertSubjectFor(sha, shas, shaSubjects))
 				}
 			}
 		}
 	}
 	return reverted
+}
+
+// revertSubjectFor is the subject of the revert that named the commit sha
+// (by full or abbreviated id).
+func revertSubjectFor(sha string, shas, subjects []string) string {
+	for i, short := range shas {
+		if strings.HasPrefix(sha, short) {
+			return subjects[i]
+		}
+	}
+	return ""
 }
 
 // lookupRunFiles finds the files a run's work changed: the diff of its
@@ -245,7 +258,7 @@ func computeHotspots(ctx context.Context, git hotspotGit, src hotspotSource, run
 	resp := server.RepoHotspotsResponse{Repo: src.repo, RunsConsidered: len(runs)}
 	baseRef := resolveBaseRef(ctx, git, src)
 	resp.BaseRef = baseRef
-	var reverted map[int]bool
+	var reverted map[int]string
 	if baseRef == "" {
 		resp.Notes = append(resp.Notes, fmt.Sprintf("Base branch %q was not found in %s, so runs not attributed earlier cannot be attributed to files.", src.base, src.repo))
 	} else {
@@ -256,7 +269,8 @@ func computeHotspots(ctx context.Context, git hotspotGit, src hotspotSource, run
 	// reverted PR, so one revert counts once.
 	revertedRun := map[int]int{} // PR number -> index in runs
 	for i, r := range runs {
-		if n := prNumber(r.PRURL); n > 0 && reverted[n] && r.Kind != "reviewer" {
+		n := prNumber(r.PRURL)
+		if _, ok := reverted[n]; ok && n > 0 && r.Kind != "reviewer" {
 			revertedRun[n] = i
 		}
 	}

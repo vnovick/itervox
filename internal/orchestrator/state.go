@@ -147,6 +147,8 @@ type OrchestratorEvent struct { //nolint:revive
 	// Lesson reports a lesson-drafting goroutine's result
 	// (EventLessonDrafted, #203).
 	Lesson *LessonReport
+	// Reverts reports a reverted-PR scan (EventRevertsScanned, #217).
+	Reverts *RevertScanReport
 	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
@@ -982,6 +984,20 @@ type State struct {
 	// (suppressed, bumped, failed) gives its stamp back. Event-loop state;
 	// session-scoped, not persisted.
 	LessonProposals map[string][]time.Time
+	// ReviewerAsks are the recent changes reviewers' blocking verdicts asked
+	// for (#217), redacted and bounded (maxReviewerAsks): a new ask similar
+	// to one from another run or issue proposes a reviewer_ask lesson.
+	// Event-loop state; session-scoped, not persisted.
+	ReviewerAsks []ReviewerAsk
+	// LessonRevertsSeen holds the reverted agent PRs (by URL) a
+	// reverted_pr lesson was already proposed for this session (#217),
+	// bounded (maxRevertsSeen). RevertScanAt / RevertScanInFlight pace the
+	// off-loop revert scan. Event-loop state; session-scoped, not persisted
+	// (a re-proposal after a restart only matches the existing lesson,
+	// whose evidence already names the run).
+	LessonRevertsSeen  map[string]time.Time
+	RevertScanAt       time.Time
+	RevertScanInFlight bool
 
 	// RunContexts holds, per run ID, what the run is doing (#215): its last
 	// assistant step and tool call (redacted, bounded, never tool output),
