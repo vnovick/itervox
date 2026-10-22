@@ -107,6 +107,10 @@ func TestFeedNeverContainsAgentOutput(t *testing.T) {
 	paused, err := orch.PauseDispatch(ctx, "deploy with token "+markerSecret, time.Time{})
 	require.NoError(t, err)
 	assert.NotContains(t, paused.Reason, markerSecret, "the pause reason is redacted")
+	// The loop answers the pause before it publishes the snapshot the feed
+	// is read from: wait for the publish before reading the page.
+	require.Eventually(t, func() bool { return kinds()["dispatch_paused/"] > 0 }, 5*time.Second, 10*time.Millisecond,
+		"the pause reaches the feed")
 
 	const token = "feed-test-token-0123456789abcdef"
 	srv := server.New(server.Config{
