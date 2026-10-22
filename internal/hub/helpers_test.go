@@ -75,7 +75,10 @@ type fakeMember struct {
 	disp     *fakeDispatch
 	lastAuth atomic.Value
 	requests atomic.Int64 // every request the member received
-	rec      MemberRecord
+	writes   atomic.Int64 // every non-GET request (#230 member actions)
+	// writeAuth is the Authorization of the last non-GET request.
+	writeAuth atomic.Value
+	rec       MemberRecord
 }
 
 func newFakeMember(t *testing.T, name string, startedAt time.Time) *fakeMember {
@@ -97,6 +100,10 @@ func newFakeMember(t *testing.T, name string, startedAt time.Time) *fakeMember {
 	})
 	m.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.requests.Add(1)
+		if r.Method != http.MethodGet {
+			m.writes.Add(1)
+			m.writeAuth.Store(r.Header.Get("Authorization"))
+		}
 		m.lastAuth.Store(r.Header.Get("Authorization"))
 		m.srv.ServeHTTP(w, r)
 	}))

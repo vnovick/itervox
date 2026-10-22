@@ -30,6 +30,18 @@ type GuardrailsClient interface {
 	ProvideAgentInput(identifier, message string) error
 }
 
+// InputViaSlack is the only value of provide-input's optional "via" field
+// (#230): a human reply the hub's Slack app relays for an allow-listed
+// Slack user.
+const InputViaSlack = "slack"
+
+// InputViaProvider is implemented by a Client that records which human
+// channel a reply arrived through (#230). Same error contract as
+// ProvideInput; it is a human reply, so it may answer a guardrail approval.
+type InputViaProvider interface {
+	ProvideInputVia(identifier, message, via string) error
+}
+
 func (s *Server) guardrailGrant(w http.ResponseWriter, r *http.Request) (runID string, ok bool) {
 	if s.guardrails == nil {
 		writeError(w, http.StatusNotImplemented, "not_supported", "guardrails are not configured")

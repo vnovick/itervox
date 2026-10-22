@@ -153,6 +153,13 @@ func (h *Hub) start(ctx context.Context) {
 	run("hub-discovery", h.discover)
 	run("hub-feed", h.pollFeeds)
 	run("hub-cursor-saver", h.saveCursors)
+	// #230: interactive channels (Slack's Socket Mode) hold their own
+	// connection only while this daemon serves the hub.
+	for _, name := range ChannelNames {
+		if ic, ok := h.channels[name].(InteractiveChannel); ok {
+			run("hub-channel-"+name, func(ctx context.Context) { ic.Run(ctx, hubActions{h: h}) })
+		}
+	}
 	for _, n := range h.notifiers {
 		run("hub-notifier-"+n.Name(), func(ctx context.Context) { h.runNotifier(ctx, n) })
 	}

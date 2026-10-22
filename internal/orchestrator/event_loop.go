@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1892,12 +1893,16 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					"identifier", ev.Identifier)
 				return state
 			}
-			o.resolveGuardrailApproval(&state, entry, ev.Message, "dashboard")
+			o.resolveGuardrailApproval(&state, entry, ev.Message, cmp.Or(ev.Via, "dashboard"))
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
-		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: map[bool]string{true: "agent", false: "dashboard"}[ev.FromAgent]})
+		via := cmp.Or(ev.Via, "dashboard") // #230: "slack" for the hub's Slack app
+		if ev.FromAgent {
+			via = "agent"
+		}
+		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: via})
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
 		o.observeInputReply(&state, entry, ev.Message) // #203

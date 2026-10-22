@@ -47,7 +47,9 @@ func hubParticipates(cfg *config.Config, noHub bool) bool {
 	return cfg != nil && cfg.Hub.Enabled && !noHub && demoSession == nil
 }
 
-// hubStateDir is ~/.itervox/hub: the hub token store and feed cursors.
+// hubStateDir is ~/.itervox/hub: the hub token store, feed cursors,
+// notification settings, the hub's own .env (Slack tokens, #230) and the
+// Slack action signing key.
 func hubStateDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -122,6 +124,7 @@ func hubConfigFor(cfg *config.Config, workflowPath string) (hub.Config, error) {
 		MemberToken: hubMemberToken,
 		SPA:         server.DashboardHandler(),
 		Notifiers:   []hub.Notifier{hub.LogNotifier{}},
+		Channels:    hubChannels(cfg, stateDir), // #230: Slack
 	}, nil
 }
 

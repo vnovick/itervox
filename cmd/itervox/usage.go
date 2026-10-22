@@ -64,6 +64,7 @@ Commands:
              list       show each key as set / placeholder / empty
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --replace  (set) replace a value that is already set
+             --hub      the hub's own ~/.itervox/hub/.env (Slack tokens)
 
   token   Manage stored API tokens (.itervox/tokens.json, hashes only):
           viewer, operator or admin scope. A running daemon picks up a
@@ -79,6 +80,11 @@ Commands:
           The first daemon started becomes the hub: one URL for every
           project (hub.port, default 8089, loopback), opened with a hub
           token (itervox token create --hub). --no-hub opts a daemon out.
+             slack setup   print the Slack app manifest, store the app and
+                           bot tokens (echo off) and pick a channel per
+                           project (--json: JSON manifest; --manifest-only)
+             slack status  tokens set or missing, hub.slack settings and
+                           each project's channel (--json)
 
   mcp     Serve the board and memory of this project's running daemon to
           an MCP client over stdio (claude mcp add itervox -- itervox mcp).

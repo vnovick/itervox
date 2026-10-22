@@ -690,7 +690,7 @@ hosts are not guarded in v1.
 
 The machine's itervox hub (#228): the first daemon started on a machine serves
 one URL, a scoped API proxy and a merged event feed for every project on it.
-Guide: [The itervox hub](../site/src/content/docs/guides/hub.mdx). All three keys are read at startup (a
+Guide: [The itervox hub](../site/src/content/docs/guides/hub.mdx). Every key is read at startup (a
 `WORKFLOW.md` reload does not move the hub). The hub is machine-wide, so the
 natural home for them is the user settings file, `~/.itervox/settings.jsonc`;
 the daemon that wins the hub election uses its own values.
@@ -700,6 +700,7 @@ the daemon that wins the hub election uses its own values.
 | `enabled` | bool | `true` | Take part in the hub: become it (the first daemon) or join it as a member. `false` is the same as `itervox --no-hub`. |
 | `port` | int | `8089` | The hub's port when this daemon serves it. A busy port moves to the next free one (up to 10 tried), recorded in `~/.itervox/daemons/hub.lock`. `0` lets the OS pick. |
 | `bind` | string | `"127.0.0.1"` | The hub's listen address: an IP address or `localhost`. Every hub route except the health probe needs a hub token (`itervox token create --hub`), so `0.0.0.0` or a Tailscale address is safe with tokens only; the hub serves plain HTTP, so put TLS in front of it on a network you do not control. |
+| `slack` | object | — | The hub's Slack channel (#230), through your own Slack app over Socket Mode: `enabled` (default `false`), `allowed_users` (Slack user IDs that may reply, approve, reject and steer; **empty: nobody**, alerts only), `channels` (hub project name → channel ID, or a user ID for a DM) and `default_channel`. IDs are checked at load. The app and bot tokens are not settings: `itervox hub slack setup` stores them in `~/.itervox/hub/.env`. Guide: [Slack](../site/src/content/docs/guides/slack.mdx). |
 
 ```jsonc
 // ~/.itervox/settings.jsonc

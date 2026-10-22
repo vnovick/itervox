@@ -1,0 +1,214 @@
+---
+title: Slack (your own app, through the hub)
+description: Get agent questions, guardrail approvals and failures in Slack, and answer, approve and steer from there, through a Slack app you create yourself over Socket Mode.
+---
+
+The [hub](/guides/hub/) (v0.2.9, #230) can post to Slack and take your answers
+back: an agent's question with a reply box, a guardrail approval with
+**Approve** and **Reject**, a failed run or a review verdict with a dashboard
+link, and `/itervox steer` for a running agent. It uses **a Slack app you
+create yourself** in your own workspace, connected over **Socket Mode**: the
+hub opens one outgoing WebSocket to Slack, so no inbound port, public URL or
+tunnel is needed, and nothing goes through a service of ours.
+
+Socket Mode spreads a workspace's events across every open connection, so only
+one process may hold it: the daemon that serves the hub holds the single
+connection for all your projects. When another daemon takes the hub over, the
+connection moves with it.
+
+## Set up
+
+```bash
+itervox hub slack setup
+```
+
+It prints the app manifest below and the steps, then asks for the two tokens
+(echo off on a terminal), the Slack user IDs that may act, a default channel
+and a channel for each hub project. `--manifest-only` prints just the
+manifest; `--json` prints it as JSON.
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps), choose **Create New
+   App > From a manifest**, pick your workspace and paste the manifest.
+2. **Basic Information > App-Level Tokens > Generate Token and Scopes**: add
+   the `connections:write` scope and copy the token (`xapp-...`).
+3. **Install App > Install to Workspace** and copy the **Bot User OAuth
+   Token** (`xoxb-...`).
+4. Invite the app to every channel it should post in (`/invite @Itervox`).
+   A user ID as the channel (`U...`) posts in the app's DM with that person.
+5. Restart the daemon that serves the hub (`itervox hub` names it). Its log
+   says `hub: slack: Socket Mode connected`.
+
+This is the exact manifest (`itervox hub slack setup --manifest-only`):
+
+```yaml
+display_information:
+  name: Itervox
+  description: 'Itervox hub: agent questions, approvals and steering'
+  long_description: Your own Itervox hub's Slack app. It posts when an agent needs input, a guardrail needs approval, a run fails or a review lands, takes your reply or decision back to the project, and steers a running agent with /itervox steer. It connects over Socket Mode from the machine that runs the hub, so no inbound port or public URL is needed.
+  background_color: '#1f2937'
+features:
+  bot_user:
+    display_name: Itervox
+    always_online: false
+  slash_commands:
+    - command: /itervox
+      description: Steer a running Itervox agent
+      usage_hint: steer [project/]ISSUE text
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - commands
+      - im:write
+settings:
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+```
+
+Socket Mode on, interactivity on (no request URL: interactions arrive over the
+socket), the `/itervox` command, and the bot scopes `chat:write` (post and
+update messages), `commands` (`/itervox`) and `im:write` (DMs).
+
+### Tokens
+
+The tokens are secrets, not settings. Setup stores them with the same code as
+`itervox secret`, in the hub's own secrets file `~/.itervox/hub/.env` (`0600`):
+
+| Key | Token |
+|---|---|
+| `ITERVOX_SLACK_APP_TOKEN` | the app-level token, `xapp-...` (opens the Socket Mode connection) |
+| `ITERVOX_SLACK_BOT_TOKEN` | the bot token, `xoxb-...` (posts and updates messages) |
+
+To rotate one: `itervox secret set ITERVOX_SLACK_BOT_TOKEN --hub --replace`,
+then restart the hub's daemon. The daemon's environment is used when the file
+does not set a key. The tokens are registered for log redaction when they are
+read, only ever go into an `Authorization` header, and are never printed or
+logged (`itervox hub slack status` says `set` or `missing`).
+
+### Settings
+
+`hub.slack.*` are load-time settings of the daemon that serves the hub, so
+they belong in the user settings file, `~/.itervox/settings.jsonc` (setup
+writes them there):
+
+```jsonc
+{
+  "hub": {
+    "slack": {
+      "enabled": true,
+      "allowed_users": ["U012ABCDEF"],
+      "default_channel": "C0123OPS",
+      "channels": { "api": "C0456API", "web": "U012ABCDEF" }
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Register the Slack channel when this daemon serves the hub (it also needs both tokens). |
+| `allowed_users` | `[]` | Slack user IDs (`U...`) that may reply, approve, reject and steer. **Empty means nobody**: messages are alerts only, with no buttons or reply box. |
+| `channels` | `{}` | Hub project name (the `/hub/p/{project}` segment) to a channel ID (`C...`, `G...`) or a user ID for a DM. |
+| `default_channel` | `""` | Channel for projects without their own; empty: such projects are not posted. |
+
+A value that is not a Slack ID is refused when the daemon starts. Find a
+channel's ID in its details pane, and your user ID under **Profile > ... >
+Copy member ID**.
+
+## What arrives
+
+Slack is the `slack` channel of the hub's [notification
+settings](/guides/hub/#notifications): the same routing, snooze and digests
+as every channel decide what is sent; Slack never routes on its own.
+
+| Notification | Message |
+|---|---|
+| Input required | The agent's question and a reply box. Type the answer and press Enter. |
+| Guardrail approval | The command the agent wants to run, with **Approve** and **Reject**. |
+| Run failed, review verdict, PR merged, ... | A one-line summary with an **Open in dashboard** link. |
+| Digest | One message listing every batched update. |
+
+The question (and, for an approval, the command) is posted to your Slack
+workspace: it is the text the dashboard and the tracker comment already show.
+It is fetched from the project's run context when the message is sent, and a
+request that is no longer pending is posted as a plain alert.
+
+After an answer, the message is updated to say who answered ("Approved by
+@you in Slack") and the controls are removed.
+
+## Steering
+
+```
+/itervox steer ENG-12 use the v2 endpoint instead
+/itervox steer web/ENG-12 stop after the migration
+```
+
+The text goes to the issue's running agent through the project's steering
+endpoint (`POST /api/v1/sessions/{runId}/message`), like the dashboard's
+**Steer the run** box. Without a project, the hub uses the project whose
+channel the command came from, else the one project with a live run of that
+issue; when several projects run it, name one (`project/ISSUE`).
+
+## Safety
+
+- **Who may act.** Only `hub.slack.allowed_users`. Anyone else gets an
+  ephemeral "not allowed", and nothing reaches a project. An empty list allows
+  nobody.
+- **Signed actions.** A button or reply box carries a value the hub signs
+  (HMAC-SHA256 with a key in `~/.itervox/hub/slack_actions.key`, created
+  `0600` on first use) that binds the project, the member daemon, the issue,
+  the run and the kind of request, and expires after 7 days. A changed or
+  forged value is refused, so a payload cannot be pointed at another project
+  or issue.
+- **Current member, still pending, once.** The hub checks that the project
+  name still names the member the action was signed for, that the request is
+  still waiting, and that the action was not used already. A second click
+  gets an ephemeral "already handled".
+- **A human reply.** Answers go to the member's
+  `POST /api/v1/issues/{identifier}/provide-input` with `via: "slack"`, never
+  `fromAgent`, through the hub's [scoped proxy](/guides/hub/#the-proxy) rules
+  with the member's operator token: the member's own route table, refusals and
+  redaction apply. A guardrail approval needs `approve`; Reject sends a
+  refusal.
+- **Audit.** Every action is logged by the hub with the Slack user ID,
+  project, issue, action and outcome (never the message text), and the
+  project's feed records `input_answered`, `guardrail_approved` or
+  `guardrail_blocked` with `via: "slack"`. A Slack answer is mirrored to the
+  tracker like a dashboard answer. Steering adds no feed event (it has none
+  from the dashboard either); its audit is the hub log line.
+
+## Connection
+
+The hub calls `apps.connections.open` with the app token, connects the
+WebSocket, acknowledges every envelope within Slack's three seconds and
+handles it after. On a `disconnect` message (Slack refreshes connections every
+few hours) it reconnects at once; on a lost connection it retries with
+doubling backoff from 1 second to 2 minutes, and it also reconnects after 10
+minutes without a frame. A revoked token or Socket Mode turned off waits the
+longest delay between tries. A Web API error a retry cannot fix (a missing
+channel, `not_in_channel`, a revoked token) drops that notification with a
+warning instead of holding every later one.
+
+Web API calls honour `HTTPS_PROXY`; the Socket Mode WebSocket connects
+directly to Slack.
+
+## Check it
+
+```bash
+itervox hub slack status          # tokens set/missing, settings, each project's channel
+itervox hub slack status --json
+```
+
+**Hub > Notifications > Send test** on the `slack` row posts a test message to
+`hub.slack.default_channel` (a test belongs to no project, so without a default
+channel nothing is posted).
+
+## Reference
+
+- `itervox hub slack setup|status`, `itervox secret --hub`: [CLI](/cli/#itervox-hub--the-machines-hub-and-its-members)
+- `hub.slack.*`: [Configuration](/configuration/#hub)
+- `provide-input`'s `via`: [API reference](/api-reference/)

@@ -335,6 +335,12 @@ func (a *orchestratorAdapter) ProvideInput(identifier, message string) error {
 	return mapIssueControlErr(a.orch.ProvideInput(identifier, message))
 }
 
+// ProvideInputVia implements server.InputViaProvider (#230): a human reply
+// that arrived through Slack.
+func (a *orchestratorAdapter) ProvideInputVia(identifier, message, via string) error {
+	return mapIssueControlErr(a.orch.ProvideInputVia(identifier, message, via))
+}
+
 func (a *orchestratorAdapter) DismissInput(identifier string) error {
 	return mapIssueControlErr(a.orch.DismissInput(identifier))
 }
