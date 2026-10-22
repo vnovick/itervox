@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -28,6 +29,12 @@ type Hub struct {
 	feed      *feed
 	cursors   *cursors
 	notifiers []Notifier
+	// notify is the notification settings (#229); channels the registered
+	// channels by name (desktop always); chanNotifiers their notifiers.
+	notify        *notifySettingsStore
+	desktop       *desktopChannel
+	channels      map[string]Channel
+	chanNotifiers []*channelNotifier
 	// self is what this hub published in hub.lock (zero in unit tests).
 	self   LockInfo
 	router chi.Router
@@ -50,8 +57,13 @@ func newHub(cfg Config) (*Hub, error) {
 		cursors: loadCursors(filepath.Join(cfg.StateDir, CursorFileName)),
 	}
 	h.feed = newFeed(h.cursors.headSeq())
+	h.setupChannels(cfg)
+	notifiers := slices.Clone(cfg.Notifiers)
+	for _, cn := range h.chanNotifiers {
+		notifiers = append(notifiers, cn)
+	}
 	seen := map[string]bool{}
-	for _, n := range cfg.Notifiers {
+	for _, n := range notifiers {
 		if n == nil || n.Name() == "" || seen[n.Name()] {
 			slog.Warn("hub: notifier skipped (missing or duplicate name)")
 			continue
@@ -104,6 +116,9 @@ func (h *Hub) routes() chi.Router {
 		r.Get("/hub/api/v1/projects", h.handleProjects)
 		r.Get("/hub/api/v1/feed", h.handleFeed)
 		r.Get("/hub/api/v1/events", h.handleEvents)
+		r.Get("/hub/api/v1/notifications", h.handleGetNotifications)
+		r.Put("/hub/api/v1/notifications", h.handlePutNotifications)
+		r.Post("/hub/api/v1/notifications/test", h.handleTestNotification)
 		r.Handle("/hub/p/{project}/api/*", http.HandlerFunc(h.handleProxy))
 	})
 	r.Handle("/hub/api/*", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -140,6 +155,9 @@ func (h *Hub) start(ctx context.Context) {
 	run("hub-cursor-saver", h.saveCursors)
 	for _, n := range h.notifiers {
 		run("hub-notifier-"+n.Name(), func(ctx context.Context) { h.runNotifier(ctx, n) })
+	}
+	for _, cn := range h.chanNotifiers {
+		run("hub-digest-"+cn.ch.Name(), cn.runDigest)
 	}
 }
 

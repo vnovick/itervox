@@ -26,6 +26,15 @@
 // Merged events go to every enabled Notifier, at least once, with a
 // per-notifier cursor and backoff.
 //
+// Notifications (#229). StateDir/notifications.json routes each
+// notification kind per project to the channels push, slack and desktop,
+// with a per-project snooze and a digest interval (NotificationSettings,
+// GET/PUT /hub/api/v1/notifications). Every registered Channel (desktop
+// built in, Config.Channels for the rest) gets a channel notifier that
+// sends urgent kinds at once and batches the others into digests; the
+// desktop channel publishes on GET /hub/api/v1/events for the Mac app.
+// Snooze and digests are hub state, never a member's.
+//
 // Event-loop rule: the hub runs in a daemon process but outside its
 // orchestrator event loop. It never touches the hosting project's state
 // except through that project's HTTP API, exactly like any other member.
@@ -105,6 +114,11 @@ type Config struct {
 	SPA http.Handler
 	// Notifiers receive the merged feed.
 	Notifiers []Notifier
+	// Channels are the notification channels set up besides the built-in
+	// desktop one (#229; Slack #230, Web Push #231). Each is routed by the
+	// notification settings in StateDir/notifications.json. A channel name
+	// outside ChannelNames, or a repeat, is skipped.
+	Channels []Channel
 
 	// Tunables; zero means the default in parentheses.
 	ElectionPoll    time.Duration // how often a follower retries the lock (1s)

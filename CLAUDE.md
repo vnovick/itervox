@@ -123,7 +123,11 @@ checks a hub token against the member's own route scope table
 but an access class other than the four scopes, `public` and `agent_grant`
 is refused by the proxy (fail closed). Hub goroutines defer
 `recoverHubGoroutine` (`make no-bare-go` accepts it): a hub panic ends that
-goroutine, never the daemon.
+goroutine, never the daemon. Notification routing (#229) is hub state too:
+`~/.itervox/hub/notifications.json` routes each kind per project to the
+`push`/`slack`/`desktop` channels; a channel implements `hub.Channel`
+(delivery only) and is registered through `hub.Config.Channels` — it never
+re-implements routing, snooze or digests (`NotificationSettings.Route`).
 
 ### `orchestrator.State` is a value type
 
@@ -611,7 +615,8 @@ mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
            API; imports apitokens and logging only, never orchestrator)
 
 hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
-     Notifier; imports apitokens, atomicfs, metrics, chi and fsnotify only,
+     Notifier; #229 notification settings, channel registry, digests and
+     snooze, all hub-side state; imports apitokens, atomicfs, metrics, chi and fsnotify only,
      never orchestrator, server or config: it reaches every member, its own
      project included, over HTTP. Its tests import server for real members)
 

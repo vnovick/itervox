@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuil
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::app_hub;
 use crate::app_remote::RemoteShared;
 use crate::app_update;
 use crate::client;
@@ -36,7 +37,7 @@ const SESSIONS_LABEL: &str = "sessions";
 /// State shared by the tray, the refresh thread and the action threads.
 struct Shared {
     core: Mutex<Core>,
-    tokens: Box<dyn TokenStore>,
+    tokens: Arc<dyn TokenStore>,
     sidecar: Result<PathBuf, String>,
     projects_file: PathBuf,
     output_dir: PathBuf,
@@ -56,6 +57,8 @@ struct Shared {
     lister: Mutex<DaemonLister>,
     /// The next refresh runs the sidecar's full listing (menu opened).
     sweep: std::sync::atomic::AtomicBool,
+    /// The hub's notification stream (#229).
+    hub: Arc<app_hub::HubNotify>,
 }
 
 /// A dashboard window: label, token, origin.
@@ -157,7 +160,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     }
     let shared = Arc::new(Shared {
         core: Mutex::new(Core::with_since(saved, since)),
-        tokens: platform_store(),
+        tokens: platform_store().into(),
         sidecar,
         projects_file,
         output_dir: log_dir.join("daemons"),
@@ -171,6 +174,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         clients: client::ClientPool::default(),
         lister: Mutex::default(),
         sweep: std::sync::atomic::AtomicBool::new(false),
+        hub: Arc::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -231,10 +235,28 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             return;
         };
         let target = lock(&notify_shared.targets).get(n.id()).cloned();
-        if let Some((project, url)) = target {
-            open_dashboard(&notify_app, &notify_shared, &project, Some(url));
+        match target {
+            Some((project, url)) if project == app_hub::HUB_TARGET => {
+                open_hub(&notify_app, &notify_shared, &url)
+            }
+            Some((project, url)) => {
+                open_dashboard(&notify_app, &notify_shared, &project, Some(url))
+            }
+            None => {}
         }
     })?;
+
+    // #229: native notifications from the local hub, when one serves.
+    let register_shared = Arc::clone(&shared);
+    app_hub::spawn(
+        app,
+        Arc::clone(&shared.hub),
+        Arc::clone(&shared.tokens),
+        shared.sidecar.clone(),
+        Arc::new(move |project: &str, url: &str| {
+            lock(&register_shared.targets).register(project, url)
+        }),
+    )?;
 
     let poll_app = app.clone();
     std::thread::Builder::new()
@@ -292,6 +314,11 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
     // summary first, the full state only when it changed.
     let states = client::fetch_all(&shared.clients, &jobs);
     let mut outcome = lock(&shared.core).apply(records, states, Instant::now());
+    if shared.hub.active.load(std::sync::atomic::Ordering::Relaxed) {
+        // #229: the hub notifies for its members, per its settings.
+        let core = lock(&shared.core);
+        crate::hub_notify::leave_to_hub(&mut outcome.alerts, core.last_records());
+    }
     let (remote_alerts, remote_changed) = shared.remote.refresh();
     outcome.alerts.extend(remote_alerts);
     let status_changed = {
@@ -745,6 +772,28 @@ fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<
         .map(|v| format!("{} — Itervox", v.name))
         .unwrap_or_else(|| "Itervox".into());
     open_window(app, shared, key, parsed, origin_of(&base), token, title);
+}
+
+/// Opens a hub dashboard link (#229) with the app's hub token.
+fn open_hub(app: &AppHandle, shared: &Arc<Shared>, url: &str) {
+    let session = lock(&shared.hub.session).clone();
+    let Some((origin, token)) = session else {
+        return;
+    };
+    if !url.starts_with(&format!("{origin}/hub/")) {
+        return;
+    }
+    if let Ok(parsed) = tauri::Url::parse(url) {
+        open_window(
+            app,
+            shared,
+            "hub",
+            parsed,
+            Some(origin),
+            Some(token),
+            "Itervox hub".into(),
+        );
+    }
 }
 
 /// Shows a dashboard window for `key` at `url`, handing it `token` on

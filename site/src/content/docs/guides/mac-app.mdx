@@ -94,6 +94,8 @@ Clicking the notification opens that issue in the project's dashboard (`<dashboa
 
 The first notification may ask for permission; you can change it later in **System Settings → Notifications → Itervox**.
 
+**With a hub (v0.2.9).** When an [itervox hub](/guides/hub/#notifications) runs on your Mac, the app takes its notifications from the hub instead: one connection to the hub's event stream for every local project, following the hub's notification settings (per project and kind, snooze, digests of low-priority events). The app creates a viewer hub token for this on first use (`itervox-desktop`, kept in the Keychain; revoke it with `itervox token revoke <id> --hub` and the app makes a new one). Clicking a hub notification opens the hub dashboard at that issue. While the hub's stream is up, the per-project alerts above are not raised for local projects; remote daemons notify as before. If the hub stops, the app goes back to its own alerts.
+
 ## Dashboard windows
 
 **Open Dashboard** opens the project's dashboard in its own window (the Dock icon shows while a window is open). The app hands the window the daemon's token through a script that runs before the dashboard loads and only on the daemon's own address, which writes it where the dashboard keeps its token for the session. The token is never part of a URL, so it does not appear in the window's history, the daemon's request log, or a link you copy. The dashboard's `?token=` link form still works in a browser; the app does not need it.
