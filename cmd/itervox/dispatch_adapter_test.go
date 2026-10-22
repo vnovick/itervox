@@ -125,7 +125,15 @@ func TestFeedNeverContainsAgentOutput(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
 	require.NotEmpty(t, page.Events)
 	assert.Equal(t, page.Events[len(page.Events)-1].Seq, page.NextSeq)
-	assert.Equal(t, "dispatch_paused", page.Events[len(page.Events)-1].Kind)
+	// Running agents continue while paused, so ENG-2's resumed run may
+	// finish after the pause: the pause is in the page, not necessarily last.
+	var pausedSeen bool
+	for _, e := range page.Events {
+		if e.Kind == "dispatch_paused" {
+			pausedSeen = true
+		}
+	}
+	assert.True(t, pausedSeen, "the pause reaches the feed")
 
 	cancel()
 	<-done
