@@ -12,6 +12,9 @@ import {
   apiUrl,
   authProbeUrl,
   configureApiContext,
+  configureApiOrigin,
+  hubProjectApiUrl,
+  validOrigin,
   DEFAULT_API_BASE,
   getApiContext,
   healthUrl,
@@ -23,6 +26,7 @@ import { openAuthedEventStream } from '../authedEventStream';
 
 afterEach(() => {
   configureApiContext('/');
+  configureApiOrigin(null);
   vi.restoreAllMocks();
   mockFetchEventSource.mockClear();
 });
@@ -103,5 +107,45 @@ describe('the transport uses the base', () => {
     const close = openAuthedEventStream('/api/v1/events', { onMessage: () => undefined });
     expect(mockFetchEventSource).toHaveBeenCalledWith('/hub/p/alpha/api/v1/events');
     close();
+  });
+});
+
+// #231 — the phone pages and a configurable API origin (build or runtime).
+describe('hub phone pages and the API origin', () => {
+  it('resolves /hub/m and /hub/pair as hub pages', () => {
+    expect(resolveApiContext('/hub/m')).toMatchObject({ mode: 'hub', view: 'mobile' });
+    expect(resolveApiContext('/hub/pair')).toMatchObject({ mode: 'hub', view: 'pair' });
+    expect(resolveApiContext('/hub/')).toMatchObject({ mode: 'hub', view: 'switcher' });
+    expect(resolveApiContext('/hub/p/alpha/m/ENG-1')).toMatchObject({
+      mode: 'hubProject',
+      project: 'alpha',
+    });
+  });
+
+  it('accepts only a bare http(s) origin', () => {
+    expect(validOrigin('https://hub.example.ts.net')).toBe('https://hub.example.ts.net');
+    expect(validOrigin('https://hub.example.ts.net/')).toBe('https://hub.example.ts.net');
+    expect(validOrigin('https://hub.example/hub/api/v1')).toBeNull();
+    expect(validOrigin('javascript:alert(1)')).toBeNull();
+    expect(validOrigin('https://user:pw@hub.example')).toBeNull();
+    expect(validOrigin('https://hub.example?x=1')).toBeNull();
+    expect(validOrigin('')).toBeNull();
+  });
+
+  it('prefixes every API URL with a configured origin, and only API URLs', () => {
+    configureApiOrigin('https://hub.example.ts.net');
+    configureApiContext('/hub/p/alpha/m/ENG-1');
+    expect(apiUrl('/api/v1/state')).toBe('https://hub.example.ts.net/hub/p/alpha/api/v1/state');
+    expect(apiUrl('/hub/api/v1/projects')).toBe('https://hub.example.ts.net/hub/api/v1/projects');
+    expect(apiUrl('/hub/p/beta/api/v1/state')).toBe(
+      'https://hub.example.ts.net/hub/p/beta/api/v1/state',
+    );
+    expect(apiUrl('/hub/m')).toBe('/hub/m');
+    expect(healthUrl()).toBe('https://hub.example.ts.net/hub/api/v1/health');
+    expect(hubProjectApiUrl('beta', '/api/v1/issues/X/context')).toBe(
+      'https://hub.example.ts.net/hub/p/beta/api/v1/issues/X/context',
+    );
+    configureApiOrigin('not a url');
+    expect(apiUrl('/api/v1/state')).toBe('/hub/p/alpha/api/v1/state');
   });
 });

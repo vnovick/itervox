@@ -583,6 +583,9 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator, server and cmd/itervox)
 
+cors (stdlib only — the server.allowed_origins CORS allow-list, #231;
+      imported by server, hub and config)
+
 apitokens (stored API tokens + scopes, #214 — imports atomicfs only;
            used by server, hub and cmd/itervox)
 

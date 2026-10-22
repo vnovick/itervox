@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationdef"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
 
@@ -1468,6 +1469,10 @@ type Config struct {
 	// tunnel, MagicDNS, container service name) the Host guard accepts in
 	// server.allow_unauthenticated mode. Ignored in token mode.
 	AllowedHosts []string
+	// AllowedOrigins is server.allowed_origins (#231), normalized: origins
+	// whose pages may call the API cross-origin (internal/cors). Empty:
+	// same-origin only.
+	AllowedOrigins []string
 	// Readiness supplies the /api/v1/ready probe's inputs (CORE-043). It must
 	// be cheap and lock-light — atomics published by the event loop plus the
 	// tracker rate-limit gate — and must never take cfgMu or build a
@@ -1662,6 +1667,9 @@ func New(cfg Config) *Server {
 	// wraps the authenticated sub-router. Must be registered before routes()
 	// per chi's "middleware before routes" rule.
 	s.router.Use(securityHeadersMiddleware)
+	// #231: the CORS allow-list, ahead of auth so a listed origin's
+	// preflight (which carries no token) is answered.
+	s.router.Use(cors.Middleware(cfg.AllowedOrigins))
 	// CORE-162: DNS-rebinding guard, ahead of every route (SPA, static files,
 	// /api, SSE). Unauthenticated mode only — see hostGuard for why token
 	// mode does not need it.
@@ -1708,6 +1716,16 @@ func spaHandler() http.Handler {
 		// and a stale copy would load old bundles after a binary rebuild.
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		// #231: the web app manifest and the service worker are not hashed,
+		// so they must be revalidated too; the manifest's type is not in
+		// every system's MIME table.
+		switch r.URL.Path {
+		case "/manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-cache")
+		case "/sw.js":
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		f, err := fs.Open(r.URL.Path)
 		if err != nil {

@@ -17,7 +17,8 @@ type NotificationKindInfo struct {
 }
 
 // NotificationChannelInfo describes one channel: Available is false until
-// the channel is set up (a registered Channel; desktop always is).
+// the channel is set up (a registered Channel; desktop and push, #231,
+// always are: push reaches whichever devices are subscribed).
 type NotificationChannelInfo struct {
 	Name      string `json:"name"`
 	Available bool   `json:"available"`

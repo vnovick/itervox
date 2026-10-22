@@ -46,6 +46,10 @@ const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 const HubPage = lazy(() => import('./pages/Hub'));
+// #231 — the phone layout: the hub's /hub/m and one issue at
+// /hub/p/{project}/m/{issue}.
+const HubMobilePage = lazy(() => import('./pages/HubMobile'));
+const MobileIssuePage = lazy(() => import('./pages/MobileIssue'));
 
 /** Tailwind's `md` breakpoint (the drawer is `md:hidden`). */
 const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
@@ -208,6 +212,16 @@ export { buildSnapshotInvalidationFingerprint };
 export function AppRouteTable() {
   return (
     <Routes>
+      <Route
+        path="/m/:identifier"
+        element={
+          <Suspense fallback={<PageLoader />}>
+            <PageErrorBoundary>
+              <MobileIssuePage />
+            </PageErrorBoundary>
+          </Suspense>
+        }
+      />
       <Route element={<AppShell />}>
         <Route
           index
@@ -351,10 +365,12 @@ function AppWithSSE() {
 export default function App() {
   // #228 — /hub/ is the hub's project switcher; /hub/p/{project}/ is that
   // project's unchanged dashboard over the hub's proxied API.
-  if (getApiContext().mode === 'hub') {
+  // #231 — /hub/m is the phone layout (the installed web app's start page).
+  const ctx = getApiContext();
+  if (ctx.mode === 'hub') {
     return (
       <Suspense fallback={<PageLoader />}>
-        <HubPage />
+        {ctx.view === 'mobile' ? <HubMobilePage /> : <HubPage />}
         <Toast />
       </Suspense>
     );
