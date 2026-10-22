@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/playbook"
 	"github.com/vnovick/itervox/internal/profiles"
 )
 
@@ -362,5 +364,46 @@ the dashboard miss an inferred relation over showing a false one.
 - Default generated runner: %s.
 
 %s`, runner, handoffProtocolSection)
+	}
+}
+
+// writePlaybookFilesIfMissing scaffolds the task-type playbooks (#218) into
+// <itervoxDir>/playbooks/<name>.md, one per playbook.TemplateNames entry.
+// Existing files are never overwritten, so `itervox init --update` adds
+// only the missing ones. The directory is committable (the root .gitignore
+// carve-outs in agentsGitignoreCarveOuts). Returns the files it wrote.
+func writePlaybookFilesIfMissing(itervoxDir string) ([]string, error) {
+	dir := filepath.Join(itervoxDir, "playbooks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("itervox init: create %s: %w", dir, err)
+	}
+	var written []string
+	for _, name := range playbook.TemplateNames {
+		content, ok := playbook.Template(name)
+		if !ok {
+			continue
+		}
+		path := filepath.Join(dir, name+".md")
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if err := writeFileIfMissing(path, content); err != nil {
+			return written, err
+		}
+		written = append(written, path)
+	}
+	return written, nil
+}
+
+// scaffoldPlaybooks runs writePlaybookFilesIfMissing for init and
+// init --update and reports what it wrote; a failure is a warning, never
+// fatal (playbooks are optional).
+func scaffoldPlaybooks(itervoxDir, cmd string, out io.Writer) {
+	written, err := writePlaybookFilesIfMissing(itervoxDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "%s: warning: %v\n", cmd, err)
+	}
+	if len(written) > 0 {
+		_, _ = fmt.Fprintf(out, "%s: wrote %d playbook(s) to %s\n", cmd, len(written), filepath.Join(itervoxDir, "playbooks"))
 	}
 }

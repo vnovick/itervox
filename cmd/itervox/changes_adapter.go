@@ -34,6 +34,7 @@ func runContextRow(v orchestrator.RunContextView) server.RunContextRow {
 		PendingInput: v.PendingInput, PendingApproval: v.PendingApproval, QueuedSteers: v.QueuedSteers,
 		Steers:          make([]server.RunSteerRow, 0, len(v.Steers)),
 		GuardrailBlocks: v.GuardrailBlocks, LastGuardrailKind: v.LastGuardrailKind,
+		Playbook: v.Playbook, // #218
 	}
 	if v.LastToolName != "" {
 		row.LastToolCall = &server.RunToolCall{Name: v.LastToolName, Target: v.LastToolTarget, At: v.LastToolAt}

@@ -472,11 +472,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
 	// CORE-101: the Liquid `run` object for the WORKFLOW.md body, profile
 	// SOUL/INSTRUCTIONS and automation instructions.
+	// #218: the task-type playbook this run was dispatched with; its
+	// require_evidence joins the profile's in the one #80 evidence gate.
+	pb := runPlaybook(ctx)
+	requiredEvidence := runEvidenceChecks(profilesSnap[profileName].RequireEvidence, pb)
 	runEvidenceRelPath := ""
 	evidenceBlock := ""
-	if required := profilesSnap[profileName].RequireEvidence; len(required) > 0 {
+	if len(requiredEvidence) > 0 {
 		runEvidenceRelPath = evidenceRelPathFor(profileName)
-		evidenceBlock = buildEvidenceBlock(required, runEvidenceRelPath)
+		evidenceBlock = buildEvidenceBlock(requiredEvidence, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
 	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(stackedOn)) // #215
@@ -614,6 +618,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		renderedPrompt += profilePromptTail(profileTailInput{
 			Rules:         ruleSet,
 			Memory:        memSel,
+			Playbook:      pb.Playbook.Block(),
 			Template:      promptTemplate,
 			ProfileName:   profileName,
 			Profiles:      profilesSnap,
@@ -1276,7 +1281,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// issue on only with proof. Without it the run ends input-required with
 	// the reason and the issue stays where it is. Reviewer and automation
 	// runs do not move the issue for themselves, so they are not gated.
-	if required := profilesSnap[profileName].RequireEvidence; len(required) > 0 &&
+	// #218: a playbook's require_evidence is part of the same list.
+	if required := requiredEvidence; len(required) > 0 &&
 		completionState != "" && ctx.Err() == nil && !automationRun && !isReviewerRun {
 		evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, detectedPRURL, o.prChecksReader())

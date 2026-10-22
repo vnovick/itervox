@@ -8,6 +8,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/memory"
+	"github.com/vnovick/itervox/internal/playbook"
 	"github.com/vnovick/itervox/internal/rules"
 )
 
@@ -46,6 +47,10 @@ type runHandle struct {
 	// startRun from the memory files on disk. Set before the worker starts
 	// and never changed.
 	memory memory.Selection
+	// playbook is the task-type playbook the run was dispatched with
+	// (#218), chosen by startRun. Set before the worker starts and never
+	// changed.
+	playbook playbook.Choice
 	// usage is the run's latest cumulative usage, recorded by its worker
 	// after every turn whatever the turn's outcome (#136). The worker's exit
 	// carries it, so the event loop settles a run's final usage even when
@@ -147,8 +152,11 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	// #202: so are the memory files; the selection depends on the issue.
 	h.memory = o.resolveRunMemory(entry, h.rules)
 	entry.MemoryIDs = h.memory.IDs()
+	// #218: the task-type playbook, chosen before the digest it is part of.
+	h.playbook = o.resolveRunPlaybook(state, entry)
+	entry.Playbook, entry.PlaybookSource = h.playbook.Name(), playbookSource(h.playbook)
 	// #186: the prompt version this run is dispatched with.
-	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory).digest()
+	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory, h.playbook.Playbook.Block()).digest()
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}

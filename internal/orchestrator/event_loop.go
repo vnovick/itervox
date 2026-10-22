@@ -46,6 +46,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadInputRequiredFromDisk(state)
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
+	state = o.loadPlaybookOverridesFromDisk(state) // #218
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
@@ -2052,6 +2053,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventSetDepsOverride:
 		state = o.applyDepsOverrideEvent(state, ev)
 
+	case EventSetPlaybookOverride: // #218
+		o.applyPlaybookOverrideEvent(&state, ev)
+
 	case EventDrain:
 		o.applyDrain(&state)
 
@@ -3056,6 +3060,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.RunID = liveEntry.RunID                 // #186
 		run.PromptDigest = liveEntry.PromptDigest   // #186
 		run.PromptParts = liveEntry.PromptParts     // #186
+		run.Playbook = liveEntry.Playbook           // #218
 		run.Steers = slices.Clone(liveEntry.Steers) // #186
 		run.SteersDropped = liveEntry.SteersDropped
 		run.PRURL = liveEntry.PRURL                 // #201

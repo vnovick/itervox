@@ -10,6 +10,9 @@ import { InputRequiredPanel } from './InputRequiredPanel';
 import { IssueCommentComposer } from './IssueCommentComposer';
 import { IssueBackendControl } from './IssueBackendControl';
 import { IssueProfilePicker } from './IssueProfilePicker';
+import { IssuePlaybookPicker } from './IssuePlaybookPicker';
+import { IssueSteerBox } from './IssueSteerBox';
+import { DecisionsTimeline } from './DecisionsTimeline';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import { ConfirmButton } from '../ui/button/ConfirmButton';
@@ -150,6 +153,9 @@ export default function IssueDetailSlide() {
               live={issue.orchestratorState === 'running'}
             />
           )}
+          {runContextSupported && issue.orchestratorState === 'running' && (
+            <IssueSteerBox identifier={issue.identifier} /> // #218
+          )}
           <div className="flex items-center gap-3">
             {issue.url && (
               <a
@@ -179,9 +185,11 @@ export default function IssueDetailSlide() {
               </button>
             )}
           </div>
-
           <IssueStatusChanges changes={issue.statusChanges} />
-
+          <DecisionsTimeline
+            identifier={issue.identifier}
+            live={issue.orchestratorState === 'running'}
+          />
           <IssueReviews
             review={issue.review}
             rerunPending={triggerAIReviewMutation.isPending}
@@ -193,7 +201,6 @@ export default function IssueDetailSlide() {
                 : undefined
             }
           />
-
           {/* Priority + Labels */}
           {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
             <div className="flex flex-wrap items-center gap-2">
@@ -212,17 +219,15 @@ export default function IssueDetailSlide() {
               ))}
             </div>
           )}
-
           {/* Agent Profile (backend-aware, #123) */}
           <IssueProfilePicker issue={issue} locked={isProfileLocked} />
-
+          <IssuePlaybookPicker issue={issue} /> {/* #218 */}
           {/* Agent Backend (CORE-056) */}
           <IssueBackendControl
             key={issue.identifier} // BH-M3-10: no error/pending state across issues
             issue={issue}
             defaultBackend={defaultBackend}
           />
-
           {/* Branch */}
           {issue.branchName && (
             <div>
@@ -243,9 +248,7 @@ export default function IssueDetailSlide() {
               </div>
             </div>
           )}
-
           <IssueBlockerDetails issue={issue} attention={issueAttention} />
-
           {/* Description */}
           <div>
             <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">Description</h4>
@@ -255,14 +258,12 @@ export default function IssueDetailSlide() {
               <p className="text-theme-muted text-sm italic">No description</p>
             )}
           </div>
-
           {/* Review thread (T-7) — agent-marked thread sits between description
             and the heavier "Comments" block so an operator can scan agent
             review activity without scrolling through every human comment. */}
           {issue.comments && issue.comments.length > 0 && (
             <IssueReviewThread comments={issue.comments} />
           )}
-
           {/* Comments — always rendered oldest-first so the thread reads in
             chronological order and matching tracker UI conventions. The
             backend contract (domain.Issue.Comments) guarantees ascending
@@ -336,14 +337,12 @@ export default function IssueDetailSlide() {
                 </div>
               );
             })()}
-
           {/* Operator comment composer — always available except while the
             issue is input_required, where the reply box below is the
             answer channel for the agent's question instead. */}
           {issue.orchestratorState !== 'input_required' && (
             <IssueCommentComposer identifier={issue.identifier} />
           )}
-
           {/* Input Required — reply UI (extracted, Task 5 size-budget) */}
           <InputRequiredPanel
             issue={issue}

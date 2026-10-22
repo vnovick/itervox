@@ -243,6 +243,23 @@ input for `itervox init --update`; schema `2` rejects it at daemon startup.
 The dashboard profile editor edits `SOUL.md` and `INSTRUCTIONS.md` separately
 and writes those files before refreshing the snapshot.
 
+### `agent.playbooks` (#218)
+
+Task-type playbooks (`.itervox/playbooks/<name>.md`) inserted into a worker
+run's prompt right after `INSTRUCTIONS.md`. Chosen per issue: the operator's
+choice in the issue detail view, else the first label `labels` maps, else a
+confident keyword match over the title and description, else none. A
+playbook's frontmatter `require_evidence` joins the profile's. Read at load
+time; the files are read again for every run. See the site's
+[Playbooks guide](https://itervox.dev/guides/playbooks/).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Attach playbooks. |
+| `dir` | string | `.itervox/playbooks` | Directory, relative to `WORKFLOW.md` when not absolute. |
+| `classify` | bool | `true` | Keyword classifier when no label matches. |
+| `labels` | map | `bug`/`bugfix`/`bug-fix`/`regression` → `bug-fix`, `feature`/`enhancement` → `feature`, `refactor`/`refactoring`/`tech-debt` → `refactor`, `perf`/`performance` → `perf`, `investigation`/`spike`/`research` → `investigation`, `docs`/`documentation` → `docs` | Label (case-insensitive) → playbook; a set map replaces the defaults. |
+
 `allowed_actions` do not grant shell or tracker access by themselves. They only
 allow the daemon to mint short-lived per-run bearer grants for the corresponding
 `/api/v1/agent-actions/*` routes.
@@ -637,6 +654,7 @@ startup.
 | `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
 | `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `steering_phrases` | list | six defaults | One-click steering chips in the Sessions composer and the issue steer box (#218): `{label, message}` entries or bare default labels; `[]` shows none. See the site's [Steering phrases](https://itervox.dev/guides/playbooks/#steering-phrases). |
 | `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
 
 ```yaml
@@ -957,9 +975,10 @@ workspace:
 
 ## `.itervox` project files
 
-`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter
-profile files. Commit `.itervox/agents/**`: those files are project agent
-definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs,
+`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter
+profile files and the task-type playbooks in `.itervox/playbooks/` (#218).
+Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are
+project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs,
 runtime queue files, or other generated daemon state.
 
 When a daemon starts, it writes `.itervox/HEARTBEAT.md` atomically with the

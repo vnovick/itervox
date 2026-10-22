@@ -26,7 +26,7 @@ At every dispatch the daemon reads both files again (no restart after an edit) a
 2. **Pinned** entries are always included.
 3. The rest are ranked by how many of their words and tags also appear in the issue's title, description and labels and the profile name, and added best first while they fit `memory.token_budget` (default 2000 tokens). Rules and memory together stay within `memory.prompt_share_tokens` (default 8000): memory gets what the rules leave, so the lowest-ranked memories are dropped first and rules never are.
 
-The prompt is assembled as: the `WORKFLOW.md` template and the daemon's blocks (reply envelope, handoffs, run context), then the profile tail — **rules → memory → SOUL.md → INSTRUCTIONS.md** — and the automation instructions and sub-agent roster after them.
+The prompt is assembled as: the `WORKFLOW.md` template and the daemon's blocks (reply envelope, handoffs, run context), then the profile tail — **rules → memory → SOUL.md → INSTRUCTIONS.md → [playbook](/guides/playbooks/)** — and the automation instructions and sub-agent roster after them.
 
 Each finished run lists the memory it was given (`memoryIds` in run history), and the memory is part of its [prompt version](/guides/repo-analysis/#prompt-versions). Once the block reaches the agent, each entry's **last used** time and **use count** are updated.
 

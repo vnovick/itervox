@@ -1,0 +1,138 @@
+---
+title: Playbooks, decisions and steering
+description: Task-type playbooks that tell each run how to approach its kind of work, the per-run decision log, one-click steering phrases, and the verification readiness check.
+sidebar:
+  order: 11
+---
+
+Every dispatched run gets its profile's `SOUL.md` and `INSTRUCTIONS.md`, whatever the issue is. A bug fix, a performance task and a refactor need different habits, though: a bug fix should reproduce the problem first, perf work should measure a baseline first, and a refactor must keep behaviour the same. **Playbooks** add that per-task-type guidance to the run's prompt. Three related features make agent work easier to audit and steer: the **decision log**, **steering phrases**, and the **verification readiness** check.
+
+## Playbooks
+
+A playbook is a Markdown file in `.itervox/playbooks/<name>.md`, committed with the code. `itervox init` writes six, and `itervox init --update` adds any that are missing without changing the ones you edited:
+
+| Playbook | What it asks for |
+|---|---|
+| `bug-fix` | Reproduce first, fix the root cause, prove the fix with a test. |
+| `feature` | Restate the behaviour, build in small steps, one test per acceptance criterion. |
+| `refactor` | Tests green before and after every step; no behaviour change. |
+| `perf` | Measure a baseline, change one thing at a time, explain the number. |
+| `investigation` | Answer the question with evidence; no production code changes. |
+| `docs` | Write for the reader; run every command you document. |
+
+### File format
+
+Optional YAML frontmatter, then the Markdown the run gets:
+
+```markdown
+---
+description: Reproduce first, fix the root cause, prove the fix with a test.
+keywords: [bug, crash, error, broken, regression, fails]
+require_evidence: [test]
+---
+This issue is a bug fix. Work in this order:
+
+1. **Reproduce first.** Write a failing test ...
+```
+
+| Field | Description |
+|---|---|
+| `description` | One line shown in the dashboard's playbook picker. |
+| `keywords` | Words or short phrases the keyword classifier looks for (see below). |
+| `require_evidence` | Evidence checks a run with this playbook must prove before its issue moves on, in addition to the profile's own. See [Done needs evidence](/configuration/#done-needs-evidence). |
+
+The file name (without `.md`) is the playbook's name: lower-case letters, digits, `-` and `_`. Files over 32 KiB, with malformed frontmatter or a bad name are skipped and logged; a directory holds at most 50 playbooks.
+
+### How a playbook is chosen
+
+At every dispatch the daemon reads the directory again (no restart after an edit) and picks one playbook for the issue, in this order:
+
+1. **The operator's choice.** In the issue detail view, the **Playbook** picker sets *Automatic*, *None*, or a named playbook for that issue. The choice is kept across restarts in `.itervox/playbook_overrides.json` (runtime state, not committed).
+2. **A label.** The first of the issue's labels that `agent.playbooks.labels` maps to an existing playbook, matched case-insensitively.
+3. **The keyword classifier.** Each playbook scores 2 for each of its keywords in the issue title and 1 for each keyword found only in the description (whole words and phrases, case-insensitive). The best playbook is chosen when it scores at least 2 **and** beats every other playbook.
+4. **None.** With no confident match, no playbook is attached.
+
+The issue card shows the chosen playbook, and the detail view says why ("from a label", "from the title and description", "chosen here"). A running issue shows the playbook its run actually has.
+
+Only worker runs get a playbook. Reviewer runs, runs of a reviewer profile, and automation runs keep the prompt they had.
+
+### Where it goes in the prompt
+
+The prompt is the `WORKFLOW.md` template and the daemon's blocks (reply envelope, handoffs, run context, evidence), then the profile tail: **rules → memory → `SOUL.md` → `INSTRUCTIONS.md` → playbook**, then the automation instructions and the sub-agent roster. The playbook is a `## Playbook: <name>` block.
+
+The playbook block is part of the run's [prompt version](/guides/repo-analysis/) digest as its own component. A run without a playbook has exactly the digest it had before playbooks existed, so prompt-version history is not split by this feature.
+
+### Configuration
+
+```yaml
+agent:
+  playbooks:
+    enabled: true              # default true
+    dir: .itervox/playbooks    # relative to WORKFLOW.md
+    classify: true             # keyword classifier; default true
+    labels:                    # replaces the defaults when set
+      bug: bug-fix
+      defect: bug-fix
+      enhancement: feature
+```
+
+Default label map: `bug`, `bugfix`, `bug-fix`, `regression` → `bug-fix`; `feature`, `enhancement` → `feature`; `refactor`, `refactoring`, `tech-debt` → `refactor`; `perf`, `performance` → `perf`; `investigation`, `spike`, `research` → `investigation`; `docs`, `documentation` → `docs`. These settings are read when the workflow loads.
+
+## Decision log
+
+Each run can log its significant decisions as it makes them. The prompt's `## Run Context` block names the file, also available to templates as `{{ run.decisions_path }}`:
+
+```text
+.itervox/handoff/<run timestamp>_<profile>.decisions.tsv
+```
+
+One line per decision, four tab-separated fields:
+
+```text
+2026-05-02T10:01:00Z	Diff against the merge base	main moves on after the branch is cut	diff against main's tip
+```
+
+| Field | Content |
+|---|---|
+| time | RFC 3339 time (anything else is shown as written) |
+| decision | What was decided (required; a line without one is skipped) |
+| why | The reason |
+| alternative | The alternative considered |
+
+The file sits next to the run's handoff, so it is committed with the handoffs. The issue detail view shows the decisions of every run as a timeline, oldest run first. The daemon reads at most 64 KiB and 200 rows per run and 50 runs, cuts each field to 500 bytes and redacts known secret shapes. The timeline comes from `GET /api/v1/issues/{identifier}/decisions` (viewer scope); it is not on the dashboard's live event stream.
+
+## Steering phrases
+
+The [Sessions panel](/guides/sessions/) composer and the issue detail's **Steer the run** box (shown while the issue runs) have one-click chips. Each chip sends a short steering message through the same endpoint as a typed message (`POST /api/v1/sessions/{id}/message`, operator scope):
+
+| Chip | Message sent |
+|---|---|
+| Prove it works | Prove it works: run the tests or the command that exercises this change and show me the output before you call it done. |
+| Fix the root cause | Fix the root cause, not the symptom: explain why it fails, then change the code that causes it. |
+| Smallest change | Make the smallest change that solves the problem. Drop anything the issue does not need. |
+| Reproduce first | Reproduce the problem first: write a failing test or a command that shows it, then fix it. |
+| Explain the number | Explain the number: say where each figure you report comes from and how you measured it. |
+| Subtract before you add | Subtract before you add: look for code, config or steps you can remove before adding new ones. |
+
+Change the list with `sessions.steering_phrases`:
+
+```yaml
+sessions:
+  steering_phrases:
+    - Reproduce first            # a default's label keeps its message
+    - label: Ship it
+      message: Open the pull request now and link it in your handoff.
+```
+
+An empty list (`steering_phrases: []`) shows no chips. A label is at most 40 bytes, a message at most 1 KiB, and the list at most 20 entries; anything else is dropped with a warning.
+
+## Verification readiness
+
+[Repo Analysis](/guides/repo-analysis/) readiness and `itervox doctor` check that the repository tells agents how to prove a change works. The `verify_skill` check passes when the repository root (the `WORKFLOW.md` directory) has any of:
+
+- a project skill whose directory name contains `verif`: `.claude/skills/<…verif…>/SKILL.md`;
+- a `scripts/verify*` file;
+- a `verify` target in `Makefile`, `makefile` or `GNUmakefile`;
+- a `verify` script in `package.json`.
+
+Otherwise it warns "no project verification skill or script". On the Repo Analysis page the row then offers **Generate verify skill** (operator scope), which creates a tracker issue asking an agent to write `.claude/skills/verify/SKILL.md` (and a script when the commands are long). The issue is created the same way as an accepted [enforcement suggestion](/guides/memory/): in `memory.lessons.enforce_issue_state`, else the first backlog state, else the first active state.

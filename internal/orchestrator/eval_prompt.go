@@ -9,6 +9,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/memory"
+	"github.com/vnovick/itervox/internal/playbook"
 	"github.com/vnovick/itervox/internal/prompt"
 	"github.com/vnovick/itervox/internal/rules"
 )
@@ -16,8 +17,10 @@ import (
 // profileTailInput is what profilePromptTail needs, already snapshotted by
 // the caller (runWorker reads cfg under cfgMu before the turn loop).
 type profileTailInput struct {
-	Rules         rules.Set
-	Memory        memory.Selection
+	Rules  rules.Set
+	Memory memory.Selection
+	// Playbook is the run's `## Playbook` block (#218), "" for none.
+	Playbook      string
 	Template      string // the run's base template (WORKFLOW.md body or reviewer_prompt)
 	ProfileName   string
 	Profiles      map[string]config.AgentProfile
@@ -33,8 +36,8 @@ type profileTailInput struct {
 // each block preceded by a blank line: the #157 `## Rules` block (unless one
 // of the run's templates places the rules itself), the #202 `## Memory`
 // block, the profile's SOUL.md and
-// INSTRUCTIONS.md, the automation's instructions, the daemon action notice
-// and the sub-agent roster. runWorker and ComposeEvalPrompt (#189) share it,
+// INSTRUCTIONS.md, the #218 `## Playbook` block, the automation's
+// instructions, the daemon action notice and the sub-agent roster. runWorker and ComposeEvalPrompt (#189) share it,
 // so a live eval judges the prompt a dispatched worker actually receives.
 func profilePromptTail(in profileTailInput) string {
 	var b strings.Builder
@@ -69,6 +72,8 @@ func profilePromptTail(in profileTailInput) string {
 			}
 		}
 	}
+	// #218: the task-type playbook, right after INSTRUCTIONS.md.
+	add(in.Playbook)
 	if in.Automation != nil && in.Automation.Instructions != "" {
 		bindings := automationTriggerBindings(in.Automation)
 		maps.Copy(bindings, in.RunVars)
@@ -144,10 +149,16 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 	}
 	runTimestamp := handoffRunTimestamp(started)
 	runHandoffRelPath := handoffPathFor(runTimestamp, in.ProfileName)
+	// #218: the playbook a dispatched worker run of this profile would get
+	// (no operator override: an eval has no issue history).
+	var pb playbook.Choice
+	if playbookApplies("", isReviewerProfile(cfg, in.ProfileName), in.Automation != nil) {
+		pb, _ = resolvePlaybookFor(cfg, in.Issue, "")
+	}
 	evidencePath, evidenceBlock := "", ""
-	if len(profile.RequireEvidence) > 0 {
+	if required := runEvidenceChecks(profile.RequireEvidence, pb); len(required) > 0 {
 		evidencePath = evidenceRelPathFor(in.ProfileName)
-		evidenceBlock = buildEvidenceBlock(profile.RequireEvidence, evidencePath)
+		evidenceBlock = buildEvidenceBlock(required, evidencePath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, cfg.Workspace.BaseBranch, evidencePath, nil)
 	ruleSet := resolveRulesFor(cfg, in.ProfileName, backend)
@@ -171,6 +182,7 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 	rendered += profilePromptTail(profileTailInput{
 		Rules:         ruleSet,
 		Memory:        memSel,
+		Playbook:      pb.Playbook.Block(),
 		Template:      cfg.PromptTemplate,
 		ProfileName:   in.ProfileName,
 		Profiles:      profiles,
@@ -180,6 +192,6 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 		ActionContext: buildAgentActionContext(actions, strings.TrimSpace(profile.CreateIssueState), moveState, false),
 		Backend:       backend,
 	})
-	digest, _ := profilePromptComponents(cfg, in.ProfileName, false, ruleSet, memSel).digest()
+	digest, _ := profilePromptComponents(cfg, in.ProfileName, false, ruleSet, memSel, pb.Playbook.Block()).digest()
 	return EvalPrompt{Text: rendered, Rules: ruleSet, Memory: memSel, Digest: digest}, nil
 }

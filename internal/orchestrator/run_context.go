@@ -332,6 +332,9 @@ type RunContextView struct {
 	// the newest delivered ones (already redacted and bounded, #186).
 	QueuedSteers int
 	Steers       []RunSteer
+	// Playbook is the live run's task-type playbook (#218); empty when it
+	// has none or the run has finished.
+	Playbook string
 }
 
 // RunContext returns identifier's run context from the published snapshot.
@@ -348,6 +351,7 @@ func (o *Orchestrator) RunContext(identifier string) (RunContextView, bool) {
 		v.RunID, v.Identifier = e.RunID, identifier
 		v.ProfileName, v.Backend, v.Kind = e.ProfileName, e.Backend, cmp.Or(e.Kind, "worker")
 		v.StartedAt, v.TurnCount = e.StartedAt, e.TurnCount
+		v.Playbook = e.Playbook // #218
 		v.InputTokens, v.OutputTokens, v.TotalTokens = e.InputTokens, e.OutputTokens, e.TotalTokens
 		if n := len(e.Steers); n > 0 {
 			v.Steers = append([]RunSteer(nil), e.Steers[max(0, n-runContextSteersShown):]...)
