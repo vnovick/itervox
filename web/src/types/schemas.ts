@@ -1589,8 +1589,46 @@ export const MemoryRunRefSchema = z.object({
   finishedAt: z.string(),
 });
 
-// #203 — a lesson's review record (memory.Lesson).
-export const LESSON_TRIGGERS = ['input_reply', 'steering', 'failed_then_succeeded'] as const;
+// #203 — a lesson's review record (memory.Lesson); #217 adds three triggers.
+export const LESSON_TRIGGERS = [
+  'input_reply',
+  'steering',
+  'failed_then_succeeded',
+  'reviewer_ask',
+  'reverted_pr',
+  'recipe',
+] as const;
+
+// #217 — the enforcement Itervox suggests for a lesson seen enough times.
+export const ENFORCEMENT_KINDS = ['lint', 'type', 'test', 'docs', 'rule'] as const;
+export const ENFORCEMENT_STATUSES = ['suggested', 'accepted', 'dismissed'] as const;
+
+export const LessonEnforcementSchema = z.object({
+  kind: tolerantEnum('memory.lesson.enforcement.kind', ENFORCEMENT_KINDS, 'rule'),
+  status: tolerantEnum('memory.lesson.enforcement.status', ENFORCEMENT_STATUSES, 'dismissed'),
+  title: z.string().optional(),
+  draft: z.string(),
+  draftedBy: z.string().optional(),
+  suggestedAt: z.string().optional(),
+  decidedAt: z.string().optional(),
+  issue: z.string().optional(),
+  issueUrl: z.string().optional(),
+});
+
+// #217 — where a lesson promoted to a rule went.
+export const LessonRuleLinkSchema = z.object({
+  layer: z.string(),
+  id: z.string(),
+  at: z.string().optional(),
+});
+
+// #217 — how runs used a lesson.
+export const LessonAnalyticsSchema = z.object({
+  applied: z.number(),
+  runs: z.number(),
+  succeeded: z.number(),
+  failed: z.number(),
+});
 
 export const MemoryLessonSchema = z.object({
   trigger: tolerantEnum('memory.lesson.trigger', LESSON_TRIGGERS, 'input_reply'),
@@ -1602,6 +1640,9 @@ export const MemoryLessonSchema = z.object({
   evidence: z.number().optional(),
   draftedBy: z.string().optional(),
   approvedAt: z.string().optional(),
+  verification: z.string().optional(),
+  rule: LessonRuleLinkSchema.optional(),
+  enforcement: LessonEnforcementSchema.optional(),
 });
 
 export const MemoryEntrySchema = z.object({
@@ -1625,8 +1666,10 @@ export const MemoryEntrySchema = z.object({
     .transform((v) => v ?? []),
   // #203 — lessons: the review record and the "not helping" flag.
   lesson: MemoryLessonSchema.optional(),
-  notHelping: z.enum(['unused', 'failing']).optional(),
+  notHelping: z.enum(['unused', 'failing', 'enforced']).optional(),
   notHelpingReason: z.string().optional(),
+  // #217 — lessons: how runs used it.
+  analytics: LessonAnalyticsSchema.optional(),
 });
 
 export const MemoryFileSchema = z.object({
@@ -1648,6 +1691,7 @@ export const MemoryLessonsViewSchema = z.object({
   rateWindowHours: z.number(),
   staleAfterRuns: z.number(),
   rejected: z.number(),
+  enforceThreshold: z.number().optional(), // #217
 });
 
 export const MemoryViewSchema = z.object({
@@ -1667,6 +1711,20 @@ export const MemoryPromoteResultSchema = z.object({
   diffNote: z.string().optional(),
 });
 
+// #217 — POST /api/v1/memory/{id}/promote-to-rule.
+export const LessonRuleResultSchema = z.object({
+  entry: MemoryEntrySchema,
+  layer: z.string(),
+  path: z.string(),
+  rule: z.object({ id: z.string(), severity: z.string(), text: z.string() }),
+});
+
+// #217 — POST /api/v1/memory/{id}/enforcement/accept.
+export const LessonEnforceResultSchema = z.object({
+  entry: MemoryEntrySchema,
+  issue: z.object({ identifier: z.string(), title: z.string(), url: z.string().optional() }),
+});
+
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 export type MemoryScope = (typeof MEMORY_SCOPES)[number];
@@ -1674,6 +1732,10 @@ export type MemoryEntry = z.infer<typeof MemoryEntrySchema>;
 export type MemoryView = z.infer<typeof MemoryViewSchema>;
 export type MemoryPromoteResult = z.infer<typeof MemoryPromoteResultSchema>;
 export type MemoryLessonsView = z.infer<typeof MemoryLessonsViewSchema>;
+export type LessonEnforcement = z.infer<typeof LessonEnforcementSchema>;
+export type LessonAnalytics = z.infer<typeof LessonAnalyticsSchema>;
+export type LessonRuleResult = z.infer<typeof LessonRuleResultSchema>;
+export type LessonEnforceResult = z.infer<typeof LessonEnforceResultSchema>;
 
 // ─── Settings layers and schema (#158) ───────────────────────────────────────
 // Mirrors internal/server/settings_layers.go and the JSON Schema published at

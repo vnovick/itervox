@@ -1136,7 +1136,7 @@ memory:
 
 ### memory.lessons
 
-Lessons Itervox proposes itself (see the [Memory guide](/guides/memory/#lessons)): from a human's correction in an input-required reply or a steering message, and from a run that failed or stalled followed by a successful run on the same issue after a change. A proposal is a `lesson` entry with `status: proposed`; no run uses it until someone approves it. Read at startup. Lessons need `memory.enabled`.
+Lessons Itervox proposes itself (see the [Memory guide](/guides/memory/#lessons)): from a human's correction in an input-required reply or a steering message, from a run that failed or stalled followed by a successful run on the same issue after a change, from a change reviewers asked for at least twice, from a merged agent PR that was reverted, and from a hard-won success (a recipe). A proposal is a `lesson` entry with `status: proposed`; no run uses it until someone approves it. Read at startup. Lessons need `memory.enabled`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -1149,6 +1149,10 @@ Lessons Itervox proposes itself (see the [Memory guide](/guides/memory/#lessons)
 | `draft_token_budget` | int | `6000` | The most tokens (input plus output, as the agent reports them) the drafting call may use; past it the call is stopped and the template is used. |
 | `draft_timeout_ms` | int | `60000` | The drafting call's time limit; past it the template is used. |
 | `stale_after_runs` | int | `20` | An approved lesson that none of the last this-many runs (since its approval) used is listed under **Not helping**, as is one whose recent runs mostly failed. |
+| `enforce_threshold` | int | `3` | Once a lesson has been seen this many times (its evidence count), Itervox suggests the strongest enforcement it can draft: a lint rule, a type, a test, a CLAUDE.md or AGENTS.md rule, or an Itervox rule. Drafted by the same budgeted call as the lesson (template fallback). |
+| `enforce_issue_state` | string | first backlog state, else first active state | The tracker state an accepted enforcement suggestion's "Enforce: …" issue is created in. |
+| `recipe_min_failed_runs` | int | `2` | A worker run that succeeds after at least this many failed or stalled runs is a hard-won success and proposes a recipe lesson (what worked and how it was verified), unless a failed-then-succeeded lesson already explains it. |
+| `recipe_min_turns` | int | `40` | A successful run with at least this many turns is also hard-won, as is one that got a steering message. |
 
 Zero or negative limits fall back to their defaults.
 
@@ -1551,7 +1555,7 @@ Memory is what Itervox carries from one run to the next: a correction you made o
 | `source` | no | Provenance: `kind` (`manual`, `lesson`, …), `issue`, `runIds`, `links` (PRs, comments). |
 | `created`, `updated` | no | Set by the daemon. |
 | `lastUsed`, `useCount` | no | Maintained by the daemon: each run whose prompt carried the entry bumps them. |
-| `lesson` | no | A lesson's review record, written when Itervox proposes it (#203): `trigger` (`input_reply`, `steering` or `failed_then_succeeded`), `situation`, `wentWrong`, `worked`, `correction` (the human's words, redacted), `confidence` (0 to 1), `evidence` (times seen), `draftedBy` (`template` or `profile:<name>`) and `approvedAt`. |
+| `lesson` | no | A lesson's review record, written when Itervox proposes it (#203): `trigger` (`input_reply`, `steering`, `failed_then_succeeded`, `reviewer_ask`, `reverted_pr` or `recipe`), `situation`, `wentWrong`, `worked`, `correction` (the human's words, redacted), `confidence` (0 to 1), `evidence` (times seen), `draftedBy` (`template` or `profile:<name>`) and `approvedAt`; since #217 also `verification` (a recipe's check), `rule` (`layer`, `id`, `at`: the rule it was promoted to) and `enforcement` (`kind`, `status`, `title`, `draft`, `draftedBy`, `suggestedAt`, `decidedAt`, `issue`, `issueUrl`). |
 
 Lists hold at most 32 items of at most 512 bytes; a file holds at most 1000 entries. The JSON Schema is published at [`https://itervox.dev/schema/memory.schema.json`](https://itervox.dev/schema/memory.schema.json) (`site/public/schema/memory.schema.json`).
 

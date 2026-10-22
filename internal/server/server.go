@@ -1842,6 +1842,10 @@ func (s *Server) routes() {
 			r.Post("/memory/{id}/promote", s.handlePromoteMemory)
 			r.Post("/memory/{id}/approve", s.handleApproveLesson) // #203
 			r.Post("/memory/{id}/reject", s.handleRejectLesson)   // #203
+			// #217: lesson to rule, enforcement suggestions.
+			r.Post("/memory/{id}/promote-to-rule", s.handlePromoteLessonToRule)
+			r.Post("/memory/{id}/enforcement/accept", s.handleAcceptLessonEnforcement)
+			r.Post("/memory/{id}/enforcement/dismiss", s.handleDismissLessonEnforcement)
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)

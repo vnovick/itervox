@@ -68,6 +68,15 @@ const (
 	// LessonProfileTemplate as memory.lessons.profile drafts every lesson
 	// from the template, never calling an agent.
 	LessonProfileTemplate = "template"
+	// DefaultLessonEnforceThreshold is how many times a lesson must be seen
+	// before Itervox suggests enforcing it (#217).
+	DefaultLessonEnforceThreshold = 3
+	// DefaultLessonRecipeMinFailedRuns is how many failed or stalled runs
+	// before a success make it a hard-won success worth a recipe (#217).
+	DefaultLessonRecipeMinFailedRuns = 2
+	// DefaultLessonRecipeMinTurns is the turn count that makes a successful
+	// run a hard-won success worth a recipe (#217).
+	DefaultLessonRecipeMinTurns = 40
 )
 
 // LessonsConfig is the memory.lessons: block (#203): lessons Itervox
@@ -100,6 +109,20 @@ type LessonsConfig struct {
 	// StaleAfterRuns is how many later runs an approved lesson may go
 	// unused before it is listed as not helping.
 	StaleAfterRuns int
+	// EnforceThreshold is how many times a lesson must be seen (its
+	// evidence count) before Itervox suggests the strongest enforcement it
+	// can draft (#217). Default 3.
+	EnforceThreshold int
+	// EnforceIssueState is the tracker state an accepted enforcement
+	// suggestion's "Enforce:" issue is created in (#217). Empty: the first
+	// backlog state, else the first active state.
+	EnforceIssueState string
+	// RecipeMinFailedRuns / RecipeMinTurns make a successful run hard-won
+	// (#217): at least this many failed or stalled runs before it, or at
+	// least this many turns (a steer delivered to it also counts). A
+	// hard-won success proposes a recipe lesson. Defaults 2 and 40.
+	RecipeMinFailedRuns int
+	RecipeMinTurns      int
 }
 
 // AutoApprove reports whether a proposal written to scope ("private" or
@@ -124,6 +147,11 @@ func parseLessonsConfig(m map[string]any) LessonsConfig {
 		DraftTokenBudget: positiveIntField(m, "draft_token_budget", DefaultLessonDraftTokenBudget),
 		DraftTimeoutMs:   positiveIntField(m, "draft_timeout_ms", DefaultLessonDraftTimeoutMs),
 		StaleAfterRuns:   positiveIntField(m, "stale_after_runs", DefaultLessonStaleAfterRuns),
+		// #217
+		EnforceThreshold:    positiveIntField(m, "enforce_threshold", DefaultLessonEnforceThreshold),
+		EnforceIssueState:   strField(m, "enforce_issue_state", ""),
+		RecipeMinFailedRuns: positiveIntField(m, "recipe_min_failed_runs", DefaultLessonRecipeMinFailedRuns),
+		RecipeMinTurns:      positiveIntField(m, "recipe_min_turns", DefaultLessonRecipeMinTurns),
 	}
 	if l.Scope != "private" && l.Scope != "project" {
 		l.Scope = "private"

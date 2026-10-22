@@ -51,6 +51,9 @@ Itervox proposes a lesson when:
 
 1. **A human corrected an agent**: a reply to an input-required question (from the dashboard or a tracker comment) or a steering message from the Sessions panel that tells the agent to do something differently ("don't add a dependency, use the csv helper instead"). Replies that only answer or agree ("yes, go ahead", "port 8080") propose nothing.
 2. **A failed run was followed by a success**: a worker run on an issue failed or stalled and a later run on the same issue succeeded. The lesson records what changed in between: the steering messages and input replies since the failure, and blocking reviewer feedback. A retry that simply worked the second time, with nothing changed, proposes nothing.
+3. **Reviewers asked for the same kind of change twice**: a reviewer's blocking verdict asks for a change (its reasons and line comments) that a reviewer already asked for on another run or issue, by the same normalized-word similarity that deduplicates lessons. The daemon's own verdict notes ("no parseable verdict recorded", "reviewer changed the branch") never count.
+4. **A merged agent PR was reverted**: every 30 minutes, off the event loop, the daemon scans the base branch for reverts the same way Repo Analysis hotspots do (`Revert "… (#N)"` subjects, `revert-N-…` branches, "This reverts commit …" bodies, read-only through git) and proposes a lesson on the issue of the agent run that opened the reverted PR, naming the PR and the revert.
+5. **A hard-won success (a recipe)**: a worker run succeeded after at least `recipe_min_failed_runs` failed attempts (default 2), after a steering message, or after at least `recipe_min_turns` turns (default 40), and no failed-then-succeeded lesson already explains it. The recipe is what worked and the verification that proved it, read from the run's handoff (its "What changed" / "Summary" and "Verification" / "Tests" sections), else the steering messages. It is drafted as "Recipe: when *situation*, *what worked*. Verify with: *the check*."
 
 **Drafting.** The daemon notices these on its event loop, but the wording is drafted off it: one short call to the backend of the lesson profile (`memory.lessons.profile`, by default the reviewer profile) with the evidence attached, no tools, an empty temporary directory and a hard budget (`draft_token_budget`, `draft_timeout_ms`). With no profile, or when the call fails or runs over budget, the lesson is filled in from a template: "When *situation*, *what worked*. Instead of: *what went wrong*." Secrets are redacted before anything is saved.
 
@@ -64,7 +67,13 @@ Itervox proposes a lesson when:
 
 `memory.lessons.auto_approve` (default `false`, per scope) approves proposals as they land.
 
-**Not helping.** The **Not helping** filter lists approved lessons that none of the last `memory.lessons.stale_after_runs` runs (default 20) used, and lessons whose recent runs mostly failed, so you can edit or archive them in Entries.
+A sighting whose runs are all already part of a lesson's evidence (the same revert scanned again after a restart, say) does not raise its count.
+
+**Approved lessons.** The **Approved** view lists the approved lessons with their analytics: how many runs had the lesson in their prompt, and the runs in history that used it with how they ended (succeeded, failed). From there you can **promote a lesson to a rule**: choose the **Project** (`.itervox/rules.json`, committed) or **User** (`~/.itervox/rules.json`) layer and a severity, and the lesson becomes rule `lesson-<entry id>`, scoped to the lesson's profiles, with a description naming the lesson. The lesson is archived with a pointer to the rule (`lesson.rule`), so runs get it as a rule from then on. Promoting writes a rules layer, so it needs an admin token, like the Rules editor.
+
+**Enforcement suggestions.** A lesson that keeps coming back should be enforced, not just remembered. Once a lesson has been seen `memory.lessons.enforce_threshold` times (default 3), the drafting call that bumped it also drafts the strongest enforcement it can, preferring in order a lint rule, a type, a test, a CLAUDE.md or AGENTS.md rule, and only then an Itervox rule (template fallback: an Itervox rule with that ladder spelled out). The suggestion appears on the lesson's card. **Create Enforce issue** creates an "Enforce: *lesson*" issue in the tracker (in `enforce_issue_state`, by default the first backlog state) carrying the draft and the evidence, so an agent implements it like any other issue: Itervox never writes or commits the code itself. **Dismiss** turns it down for good.
+
+**Not helping.** The **Not helping** filter lists approved lessons that none of the last `memory.lessons.stale_after_runs` runs (default 20) used, lessons whose recent runs mostly failed, and lessons now **enforced** by an accepted enforcement issue (archive them once it lands), so you can edit or archive them in Entries.
 
 ## Git and remote daemons
 
@@ -72,4 +81,4 @@ Itervox proposes a lesson when:
 
 ## API
 
-`GET /api/v1/memory`, `POST /api/v1/memory`, `PUT` and `DELETE /api/v1/memory/{id}`, `POST /api/v1/memory/{id}/pin`, `POST /api/v1/memory/{id}/promote`, and for lessons `POST /api/v1/memory/{id}/approve` and `POST /api/v1/memory/{id}/reject`, and `GET /api/v1/memory/recall` (search ranked like run-time retrieval, used by [`itervox mcp`](/guides/mcp/)); see the [API reference](/api-reference/#memory).
+`GET /api/v1/memory`, `POST /api/v1/memory`, `PUT` and `DELETE /api/v1/memory/{id}`, `POST /api/v1/memory/{id}/pin`, `POST /api/v1/memory/{id}/promote`, and for lessons `POST /api/v1/memory/{id}/approve`, `POST /api/v1/memory/{id}/reject`, `POST /api/v1/memory/{id}/promote-to-rule` and `POST /api/v1/memory/{id}/enforcement/accept` / `dismiss`, and `GET /api/v1/memory/recall` (search ranked like run-time retrieval, used by [`itervox mcp`](/guides/mcp/)); see the [API reference](/api-reference/#memory).

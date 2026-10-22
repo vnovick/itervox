@@ -88,6 +88,8 @@ func (s State) Clone() State {
 	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
 	c.LessonCorrections = copySliceMap(s.LessonCorrections) // #203
 	c.LessonProposals = copySliceMap(s.LessonProposals)     // #203
+	c.ReviewerAsks = cloneSlice(s.ReviewerAsks)             // #217
+	c.LessonRevertsSeen = maps.Clone(s.LessonRevertsSeen)   // #217
 	return c
 }
 
