@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os/exec"
 	"runtime"
 	"sort"
 	"sync"
@@ -63,20 +64,31 @@ func (d *tmuxDetector) refresh() tmuxStatus {
 	return st
 }
 
-// found returns the cached detection when it found tmux.
+// found returns the cached detection when it found tmux and the binary is
+// still on PATH. The PATH lookup is a stat, not a process, so the lifetime
+// cache keeps its saving while still noticing tmux being uninstalled or
+// dropped from PATH (that answer is then re-detected like any miss).
 func (d *tmuxDetector) found() (tmuxStatus, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.st.Available {
+		if _, err := exec.LookPath("tmux"); err != nil {
+			d.st, d.at = tmuxStatus{}, time.Time{}
+		}
+	}
 	return d.st, d.st.Available
 }
 
 // current returns the last detection, re-detecting a "not installed"
 // answer once it is stale.
 func (d *tmuxDetector) current() tmuxStatus {
+	if st, ok := d.found(); ok {
+		return st
+	}
 	d.mu.Lock()
 	st, at := d.st, d.at
 	d.mu.Unlock()
-	if !st.Available && (at.IsZero() || time.Since(at) > tmuxStatusTTL) {
+	if at.IsZero() || time.Since(at) > tmuxStatusTTL {
 		return d.refresh()
 	}
 	return st
