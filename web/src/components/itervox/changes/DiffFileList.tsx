@@ -7,6 +7,8 @@ const STATUS_LABEL: Record<string, string> = {
   typechange: 'T',
   unmerged: 'U',
   untracked: '?',
+  renamed: 'R', // #238: PR files
+  copied: 'C',
 };
 
 const STATUS_TONE: Record<string, string> = {

@@ -533,6 +533,8 @@ endpoint.
 | `lesson_proposed` | A lesson was proposed (or auto-approved) | `outcome`, `memoryId` |
 | `dispatch_paused` | All dispatch was paused | `reason`, `until` |
 | `dispatch_resumed` | Dispatch resumed (`via`: `operator` or `expired`) | `via` |
+| `review_comment_posted` | An operator's line comment went to the running agent (`via: "agent"`) or the PR (`via: "github"`) (#238) | `via`, `runId` or `prUrl` |
+| `pr_review_submitted_by_operator` | An operator submitted a PR review from the dashboard (#238) | `prUrl`, `verdict` (`approve`, `request_changes`, `comment`), `count` |
 
 Payloads are small and structured. They never contain agent output, prompt
 text, a question or reply, failure text or a guardrail command line; the
@@ -1213,6 +1215,137 @@ Errors: `404 no_worktree` (never dispatched, or the worktree was cleared),
 not_supported` (a daemon built without the endpoint). Every git call runs
 through `internal/gitexec` on the request's goroutine — never on the
 orchestrator's event loop — under a 15-second timeout.
+
+### Change review (#238)
+
+Act on the diff above without leaving Itervox: comment on a line or range
+for the running agent or for the pull request, and review the pull request.
+Both routes are **operator**; reading the diff stays `viewer`. The daemon
+advertises them with `"change_review"` in `capabilities` on the snapshot.
+
+GitHub is reached with the credentials the PR-event watcher already uses
+(`tracker.api_key` for a GitHub tracker on github.com, else `GH_TOKEN` /
+`GITHUB_TOKEN` — `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN` for
+another host — else `gh auth token`). An issue's pull request is the one its
+runs recorded most recently. **Nothing here merges**: a review does not
+record a reviewer verdict, change `agent.review_quorum`'s outcome or touch
+the `merge_pr` gate (required checks, `agent.merge_block_labels`, the
+strategy).
+
+#### The PR source of `GET /issues/{identifier}/diff`
+
+Once the issue has a GitHub pull request, the diff defaults to the PR's
+files as GitHub compares them (`base...head`) — what a merge would apply.
+`?source=worktree` keeps the live worktree diff (it can be ahead of the
+pushed head while a run is live); `?source=pr` asks for the PR explicitly
+(`404 no_pr` without one). Both lists and `?file=` hunks follow the same
+scope and redaction rules as the worktree diff.
+
+```json
+{
+  "identifier": "ENG-12", "base": "main", "mergeBase": "9a1c…", "headSha": "4be0…",
+  "files": [{"path": "internal/server/changes.go", "status": "modified", "additions": 12, "deletions": 3}],
+  "hunksAllowed": true,
+  "source": "pr", "sources": ["pr", "worktree"],
+  "prUrl": "https://github.com/acme/app/pull/7",
+  "worktreePath": "/Users/me/itervox-workspaces/ENG-12"
+}
+```
+
+- `source` is what was diffed; `sources` what `?source=` may ask for:
+  `pr` once the issue has a PR, `worktree` while a run is live or when there
+  is no PR.
+- A PR file's `status` is `added`, `modified`, `deleted`, `renamed` or
+  `copied`; GitHub lists at most 3000 files.
+- When GitHub cannot be read and you did not ask for `?source=pr`, the diff
+  falls back to the worktree with `prError` (`github_failed`,
+  `pr_not_found`); an explicit `?source=pr` answers `502 github_failed`,
+  `404 pr_not_found` or `504 github_timeout` instead.
+- `worktreePath` is the worktree's directory on the daemon's host, for the
+  dashboard's open-in-editor links.
+
+#### `POST /issues/{identifier}/review-comments`
+
+One line or range comment, sent to the running agent or posted on the PR.
+
+```json
+{
+  "destination": "agent",
+  "path": "internal/server/changes.go",
+  "startLine": 12, "line": 14, "side": "RIGHT",
+  "body": "This should return 404, not 500.",
+  "quote": "+\twriteError(w, 500, …)"
+}
+```
+
+- `line` is the last line of the range and `startLine` its first (omit it
+  for one line). `side` / `startSide` are `RIGHT` (the new file, default) or
+  `LEFT` (the base file, for deleted lines) — GitHub's review-comment model.
+  `body` is at most 8 KiB.
+- `destination: "agent"` queues a steering message for the issue's live run
+  (the [Sessions](#sessions) steering path, #178) and answers `202 {"destination":
+  "agent","runId":"…","message":{…}}`. The message names the file and lines,
+  quotes `quote` (the selected diff lines, cut to fit the 10 KiB message
+  limit) in a fenced block, then the comment:
+  ````
+  Review comment on internal/server/changes.go, lines 12-14:
+
+  ```diff
+  +	writeError(w, 500, …)
+  ```
+
+  This should return 404, not 500.
+  ````
+  `409 no_live_run` when the issue has no running agent; `409
+  input_required` while it waits for an answer.
+- `destination: "pr"` posts one review comment on the PR's head commit and
+  answers `201 {"destination":"pr","prUrl":"…","id":101,"url":"…"}`. Line
+  numbers must come from the PR's diff (GitHub refuses a line outside it:
+  `422 github_rejected`, with GitHub's message). `409 no_pr`, `409
+  pr_closed` (closed or merged), `404 pr_not_found` (the credentials cannot
+  read the PR), `502 github_failed`.
+
+#### `POST /issues/{identifier}/pr-review`
+
+One GitHub review: an event and the batched line comments, submitted
+together.
+
+```json
+{
+  "event": "approve",
+  "body": "Looks good; two nits.",
+  "comments": [
+    {"path": "a.go", "line": 6, "body": "nit: name"},
+    {"path": "b.go", "startLine": 2, "line": 3, "side": "LEFT", "body": "why removed?"}
+  ]
+}
+```
+
+`event` is `approve`, `request_changes` or `comment`; the last two need a
+`body` or at least one comment. At most 50 comments. `201`:
+
+```json
+{
+  "prUrl": "https://github.com/acme/app/pull/7", "id": 202, "url": "https://github.com/acme/app/pull/7#pullrequestreview-202",
+  "event": "approve", "comments": 2, "merged": false,
+  "mergePolicy": {
+    "mergesFromHere": false,
+    "blockLabels": ["needs-human"],
+    "quorum": {"blocked": true, "approvals": 1, "blocks": 1, "quorum": "any_block"}
+  }
+}
+```
+
+`mergePolicy` reports what still governs a merge: `blockLabels` are the
+PR's labels that make `merge_pr` refuse, and `quorum` the agent reviewers'
+outcome (`null` when none ran), which an operator review does not change.
+GitHub refuses an approval from the account that opened the PR (`422
+github_rejected`); errors are otherwise those of `review-comments`.
+
+Every post records a feed event — `review_comment_posted` (`via`: `agent`
+or `github`) or `pr_review_submitted_by_operator` (`verdict`, `count`) —
+with the issue and PR only. Comment text is never logged or put on the
+feed.
 
 ### Lifecycle and control
 
