@@ -1133,6 +1133,17 @@ mod tests {
             !script.contains("tok-a"),
             "the old token is not carried over"
         );
+        // Another origin with the same token (one stored token reused on
+        // two daemons): replaced, since the held script only hands the
+        // token to its own origin.
+        let same_token_elsewhere = DashTarget {
+            token: a.token.clone(),
+            ..b.clone()
+        };
+        assert!(matches!(
+            switch_plan(Some((&a.origin, &a.token)), &same_token_elsewhere),
+            SwitchPlan::Replace { .. }
+        ));
         // Same origin but a new token (the daemon restarted): replaced.
         let restarted = DashTarget {
             token: Some("tok-a2".into()),
