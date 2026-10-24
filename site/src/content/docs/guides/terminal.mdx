@@ -1,0 +1,156 @@
+---
+title: Working from the terminal
+description: Watch your agents live with itervox watch, answer them with reply and approve, and script the event stream — over SSH, in tmux or without a terminal.
+---
+
+The daemon always runs headless: it logs to stderr and serves the dashboard.
+To see what your agents are doing from a terminal, run **`itervox watch`** in
+another shell, a tmux pane or over SSH. To act, use the
+[quick actions](/cli/#quick-actions-pause-resume-dispatch-workers-reply-approve)
+(`pause`, `resume`, `dispatch`, `workers`, `reply`, `approve`).
+
+`itervox watch` is read-only. It never takes keystrokes, never reads stdin and
+never changes the terminal's mode, so it behaves the same in a local terminal,
+in tmux, over SSH and in a pipe, and Ctrl-C always stops it cleanly.
+
+## The live panel
+
+```bash
+itervox watch
+```
+
+```text
+14:02:11  itervox watch · Ctrl-C to quit · feed #1842
+itervox · 2/2 running · 0 queued · 0 retrying · 2 waiting for you · 1 waiting for a slot · 0 blocked by dependencies · 0 paused
+slot-bound: every slot is busy and work is waiting (itervox workers N adds slots)
+
+● ENG-142    Fix the login race in the session s… coder · claude             1m05s  turn 3   12.0k tok  $0.42
+    › [Bash] go test ./internal/auth/... — Running the auth tests
+● ENG-139    Add a response cache                 codex reviewer                5s  turn 1     900 tok
+
+NEEDS YOU
+  ! ENG-140    approval: Agent wants to run: `vercel --prod`
+      → itervox approve ENG-140
+      to refuse it: itervox reply ENG-140 "<why not>"
+  ? ENG-137    question: Which database should the migration target?
+      → itervox reply ENG-137 "<your answer>"
+
+EVENTS
+  14:01:58 #1840 ENG-131    finished: succeeded (coder · claude)
+  14:02:03 #1841 ENG-140    wants approval to run a held command  → itervox approve ENG-140
+  14:02:09 #1842 ENG-139    started (codex · reviewer)
+```
+
+- **The header** counts running agents against slots, queued automation
+  runs, retries, requests waiting for you, issues waiting for a slot and
+  issues blocked by dependencies. A `slot-bound` line means more slots would
+  help; `dependency-bound` means slots are free but the waiting work is
+  blocked by its dependencies. `ALL DISPATCH PAUSED` appears while
+  [all dispatch is paused](/guides/pause-and-feed/), and a `hub:` line when
+  this daemon serves the [hub](/guides/hub/).
+- **Each lane** is one running issue: title, profile and backend, elapsed
+  time, turn, tokens, estimated cost, and the latest activity — the last tool
+  call (its name and target, never its output) and the agent's current step.
+  The activity is redacted like every other log surface.
+- **NEEDS YOU** lists the input requests and the
+  [guardrail approvals](/guides/guardrails/) waiting for a human, each with
+  the command that answers it. Copy it; watch never answers by itself.
+- **EVENTS** are the latest entries of the [event feed](/guides/pause-and-feed/).
+
+Colours follow the state (running green, reviewers cyan, what needs you bold
+yellow, failures red). Set `NO_COLOR=1` (or `TERM=dumb`) for plain text.
+
+## Answering an agent
+
+```bash
+itervox reply ENG-137 "Postgres, the same instance as the app"
+itervox approve ENG-140          # the held command runs once
+itervox reply ENG-140 "not today, the release is frozen"   # refuses it, with a reason
+```
+
+`approve` only answers an approval: when the issue is waiting for an ordinary
+answer it refuses and sends nothing. GitHub identifiers start with `#`, which
+a shell treats as a comment; the commands watch prints are already quoted
+(`itervox reply '#12' "…"`).
+
+## Following one issue
+
+```bash
+itervox watch --issue ENG-142
+```
+
+Prints the issue's lane, then its full run log as it grows (redacted, like
+`itervox logs -f`), interleaved with its feed events. With `--once` it prints
+the log so far and exits.
+
+## Pipes, scripts and resuming
+
+Without a terminal, watch prints plain text: the status block again (with a
+time stamp) only when something other than the ticking times, tokens and
+costs changed, and each event exactly once.
+
+```bash
+# Just the events, one per line:
+itervox watch --events-only | grep --line-buffered failed
+
+# One JSON object per line, for jq or another program:
+itervox watch --json | jq -c 'select(.type == "event" and .kind == "input_required") | .command'
+```
+
+Events come from the feed by cursor. When watch stops it prints where it
+was, and `--since` continues from there — nothing missed, nothing twice:
+
+```text
+itervox watch: stopped at feed cursor 1842; resume with: itervox watch --since 1842
+```
+
+```bash
+itervox watch --events-only --since 1842            # replay what happened since, then follow
+itervox watch --events-only --since 1842 --once     # replay and exit
+```
+
+A dropped connection or a restarted daemon is handled the same way: watch
+retries and continues after the last event it printed. If events left the
+daemon's feed window before watch read them, it says so
+(`… events 1843–1900 left the daemon's feed before they were read`).
+
+## Over SSH and in tmux
+
+```bash
+ssh build-box 'cd ~/src/app && itervox watch'        # the panel, redrawn in place
+ssh build-box 'cd ~/src/app && itervox watch --once' # one snapshot
+tmux split-window -h 'itervox watch'                 # a pane beside your editor
+```
+
+Watch finds the daemon from `.itervox/dashboard_url` in the project and its
+token from `ITERVOX_API_TOKEN`, `.itervox/.env` or `<logs-dir>/api-token`;
+`--workflow` and `--url` point it elsewhere.
+
+## Every project, through the hub
+
+When several projects run on one machine, the [hub](/guides/hub/) reaches
+each of them. Watch one by its hub name with a hub token:
+
+```bash
+itervox hub                                   # the hub URL and the project names
+export ITERVOX_HUB_TOKEN=…                    # from: itervox token create --hub --name me --scope operator
+itervox watch --project api
+itervox reply --project api ENG-7 "yes"       # the commands watch prints carry --project too
+```
+
+A viewer hub token can watch; replying and approving need an operator one.
+
+## Coming from the terminal UI
+
+The full-screen terminal UI (`itervox --tui`) was deprecated in v0.2.4 and
+removed in v0.3; `--tui` now prints a pointer to `itervox watch` and exits.
+
+| Terminal UI | Instead |
+|---|---|
+| The running list and log pane | `itervox watch`, `itervox watch --issue ID` |
+| `x` (stop an agent) | `itervox pause ID` |
+| `r` (resume) | `itervox resume ID` |
+| `d` (dispatch from the backlog) | `itervox dispatch ID` |
+| `+` / `-` (workers) | `itervox workers N` |
+| Answering an agent | `itervox reply ID "…"`, `itervox approve ID` |
+| `p` (project picker), `w` (dashboard URL) | the dashboard |

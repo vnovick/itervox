@@ -5,7 +5,7 @@
 | Surface | Detail |
 |---|---|
 | Rotating log file | `~/.itervox/logs/<kind>/<project>/itervox.log` — 10MB, 5 backups, gzipped (lumberjack) |
-| stderr | With a terminal: human-readable charm text until the TUI takes the screen. Headless (systemd, containers): every record for the whole run, as charm text or — with `--log-format json` / `ITERVOX_LOG_FORMAT=json` — JSON lines, redacted (CORE-059) |
+| stderr | Every record for the whole run, as charm text or — with `--log-format json` / `ITERVOX_LOG_FORMAT=json` — JSON lines, redacted (CORE-059) |
 | Secret redaction | A `RedactingHandler` wraps both sinks and scrubs bearer tokens, Anthropic/OpenAI/Linear/GitHub/Slack/AWS key shapes, `UPPER_CASE_SECRET=value` assignments, URL passwords and long random-looking tokens before write (error attributes included). Agent failure text is redacted the same way before it reaches the dashboard or a tracker comment |
 | `GET /api/v1/health` | Auth-exempt liveness probe (static: proves the HTTP server is up, nothing more) |
 | `GET /api/v1/ready` | Auth-exempt readiness probe: 200/503 from the event loop's own liveness, the tracker poll failure run and the rate-limit gate. Body: `ready`, `loop_fresh`, `last_poll_ok`, `config_invalid`, `degraded`, `tracker_rate_limited_until`, `draining`. **503 with `"draining":true` for the whole shutdown or reload drain** (CORE-057) — use it for load-balancer readiness only, never for restarts |
@@ -29,10 +29,9 @@ file. Alerting on staleness pages you for a quiet Sunday. Use it for *content*
 
 ## journald under systemd
 
-Headless (no controlling terminal), the daemon fans logs out to **both stderr and the
-rotating file sink** for the whole run, so `journalctl -u itervox` keeps working past
-the startup banner rather than going quiet — see `deploy/README.md`'s "Terminal UI
-under systemd" section. Point your cloud logging agent at the **log file** as well,
+The daemon fans logs out to **both stderr and the rotating file sink** for the whole
+run, so `journalctl -u itervox` keeps working past the startup banner rather than going
+quiet — see `deploy/README.md`'s "Logs under systemd" section. Point your cloud logging agent at the **log file** as well,
 since journald retention is typically shorter-lived than the rotating file sink:
 
 ```yaml
@@ -62,8 +61,7 @@ Azure: add a custom-text-log data collection rule pointed at the same glob.
 Pass `--log-format=json` (or `ITERVOX_LOG_FORMAT=json`) to switch **both** headless sinks
 to structured JSON (CORE-059, `cmd/itervox/logformat.go`): the rotating file
 (`itervox.log`) and stderr — so under systemd `journalctl -u itervox -o cat` and any
-journald or container log shipper receive one redacted JSON object per line. Only with
-`--tui` on a controlling terminal (the deprecated terminal UI) do logs go to the file alone. The
+journald or container log shipper receive one redacted JSON object per line. The
 official container image sets `ITERVOX_LOG_FORMAT=json`; the systemd unit leaves the
 default (logfmt file, charm stderr) — add `--log-format json` to its `ExecStart` to opt in.
 

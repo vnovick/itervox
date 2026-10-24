@@ -186,48 +186,25 @@ The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunne
 
 ## Or stay in the terminal
 
-`itervox watch` shows the running, retrying, waiting and paused issues of the daemon in any terminal, over SSH or in a pipe; `itervox logs -f <issue>` follows an issue's run log, and `itervox pause|resume|dispatch|workers|reply` act on it. See the [CLI reference](https://itervox.dev/cli/).
+`itervox watch` is a read-only live panel for any terminal, over SSH, in tmux or in a pipe: a status header, one lane per running issue with its latest (redacted) activity, tokens and cost, the feed's events as they happen, and every question or guardrail approval waiting for you with the exact command that answers it.
 
-The Bubbletea terminal UI below is **deprecated** and will be removed in v0.3. Since v0.2.4 Itervox runs headless by default; `itervox --tui` still starts it.
+```text
+itervox · 2/2 running · 0 queued · 0 retrying · 2 waiting for you · 1 waiting for a slot · 0 blocked by dependencies · 0 paused
 
-<table>
-  <tr>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-issues-logs-timeline.png" width="440" alt="TUI issues + logs + timeline" /><br/>
-      <sub><b>Issues · Logs · Timeline</b> — the default three-panel view</sub>
-    </td>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-session-details.png" width="440" alt="TUI session details" /><br/>
-      <sub><b>Session details</b> — press <code>d</code> for tools and metadata</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-gantt-timeline.png" width="440" alt="TUI Gantt timeline" /><br/>
-      <sub><b>Gantt timeline</b> — parallel runs at a glance</sub>
-    </td>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-history.png" width="440" alt="TUI history tab" /><br/>
-      <sub><b>History</b> — press <code>h</code> for previous runs</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-backlog.png" width="440" alt="TUI backlog" /><br/>
-      <sub><b>Backlog</b> — press <code>b</code>, <code>enter</code> to dispatch</sub>
-    </td>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-backlog-issue-details.png" width="440" alt="TUI backlog issue details" /><br/>
-      <sub><b>Backlog issue details</b></sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-project-picker.png" width="440" alt="TUI project picker" /><br/>
-      <sub><b>Project picker</b> — press <code>p</code> to switch projects</sub>
-    </td>
-  </tr>
-</table>
+● ENG-142    Fix the login race in the session s… coder · claude    1m05s  turn 3   12.0k tok  $0.42
+    › [Bash] go test ./internal/auth/... — Running the auth tests
+
+NEEDS YOU
+  ! ENG-140    approval: Agent wants to run: `vercel --prod`
+      → itervox approve ENG-140
+  ? ENG-137    question: Which database should the migration target?
+      → itervox reply ENG-137 "<your answer>"
+
+EVENTS
+  14:02:09 #1842 ENG-139    started (codex · reviewer)
+```
+
+`--issue ENG-142` follows one issue's full log, `--events-only` and `--json` are for scripts, and `--since` resumes the event stream where it stopped. `itervox logs -f <issue>` follows a run log, and `itervox pause|resume|dispatch|workers|reply|approve` act. Watch never reads stdin or changes the terminal mode. The full-screen terminal UI was removed in v0.3 (`--tui` now points here). See the [terminal guide](https://itervox.dev/guides/terminal/) and the [CLI reference](https://itervox.dev/cli/).
 
 ---
 
@@ -488,7 +465,7 @@ Itervox is designed for **high-trust local environments**:
 | Surface | macOS | Linux | Windows |
 |---|---|---|---|
 | Orchestrator + web dashboard | Supported | Supported | Unsupported (use WSL2) |
-| TUI | Supported | Supported | Unsupported (use WSL2) |
+| Terminal commands (`itervox watch`, quick actions) | Supported | Supported | Unsupported (use WSL2) |
 | Local agent execution | Supported | Supported | Unsupported (use WSL2) |
 | SSH worker hosts | Supported | Supported | Unsupported (use WSL2) |
 

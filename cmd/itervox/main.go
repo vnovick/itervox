@@ -37,7 +37,6 @@ import (
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/prwatch"
 	"github.com/vnovick/itervox/internal/server"
-	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
@@ -236,27 +235,9 @@ var noPrintToken bool
 
 func main() {
 	runGuardrailEntrypoint(os.Args) // #204: shims and hooks, before any daemon start-up work
-	// TTY recovery safety net (T-12) for panics on the MAIN goroutine only.
-	// recover() cannot see a panic on any other goroutine: those are handled
-	// where they start — orchestrator.RecoverGoroutine for one-shot tasks and
-	// failFastOnPanic (which restores the terminal before re-panicking) for
-	// long-lived loops, enforced by `make no-bare-go` (CORE-008) — and every
-	// unrecovered crash dump is also written to <logs-dir>/crash.log by
-	// debug.SetCrashOutput (armCrashOutput, CORE-007). See
-	// internal/statusui/statusui.go for the cooked-mode restoration the TUI
-	// does on its own clean exit.
-	defer func() {
-		if r := recover(); r != nil {
-			if term.IsTerminal(os.Stdin.Fd()) {
-				_ = exec.Command("stty", "sane").Run()
-			}
-			panic(r) // re-raise so the stack trace surfaces.
-		}
-	}()
-
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
-	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !argsTerminalUI(os.Args))))
+	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"))))
 	loadDotEnv()             // must run before config.LoadConfig / os.Getenv calls
 	installSupervisorToken() // #119: before anything reads ITERVOX_API_TOKEN
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
@@ -338,7 +319,7 @@ func main() {
 		case "report":
 			runReport(os.Args[2:])
 			return
-		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply": // #120
+		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply", "approve": // #120, #240
 			runClientCommand(os.Args[1], os.Args[2:])
 			return
 		case "--version", "-version":
@@ -355,12 +336,13 @@ func main() {
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: a per-project dir under ~/.itervox/logs)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "how long a drain waits for in-flight agent turns on SIGINT/SIGTERM (or before applying an operator edit to WORKFLOW.md) before cancelling them; a second signal stops at once")
-	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file and stderr; with --tui on a terminal logs go to the file only (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
+	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file and stderr (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
 	flag.BoolVar(&noPrintToken, "no-print-token", false, "never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal; ITERVOX_PRINT_TOKEN=1 forces it; an auto-generated token is always written to <logs-dir>/api-token, mode 0600)")
-	flag.BoolVar(&tuiFlag, "tui", false, "start the terminal UI (deprecated, removed in v0.3); without it itervox runs headless and prints the dashboard URL")
+	flag.BoolVar(&tuiFlag, "tui", false, "removed in v0.3: the terminal UI is gone; watch a running daemon with itervox watch")
 	flag.BoolVar(&noHubFlag, "no-hub", false, "do not become or join the machine's itervox hub (#228; same as hub.enabled: false)")
-	flag.BoolVar(&headlessFlag, "headless", false, "headless even with --tui, and the tokenised dashboard URL never printed, even on a terminal (watch with: itervox watch)")
+	flag.BoolVar(&headlessFlag, "headless", false, "never print the tokenised dashboard URL, even on a terminal (watch with: itervox watch)")
 	flag.Parse()
+	exitIfTUIRequested() // #240: --tui is gone; point to itervox watch
 
 	logLevel := slog.LevelInfo
 	if *verbose {
@@ -447,13 +429,12 @@ func main() {
 		MaxAge:     logRetention.MaxAgeDays,
 		Compress:   true,
 	}
-	// CORE-059: with no terminal attached (systemd, containers) stderr uses
-	// the resolved --log-format, so `json` yields one JSON object per slog
-	// record on stderr too; with a terminal it stays human (charmlog) text.
+	// CORE-059: stderr uses the resolved --log-format, so `json` yields one
+	// JSON object per slog record on stderr too; text is human (charmlog).
 	// Both sinks sit behind the RedactingHandler (T-29 / F-NEW-A): any
 	// string attr or msg matching a known secret pattern (Bearer tokens,
 	// lin_api_*, ghp_*, …) is rewritten to "***" before reaching either.
-	bootHandler, stderrHandler := bootLogHandlers(os.Stderr, rotatingFile, logLevel, logFormat, !terminalUI())
+	bootHandler, stderrHandler := bootLogHandlers(os.Stderr, rotatingFile, logLevel, logFormat)
 	slog.SetDefault(slog.New(bootHandler))
 	// stderrOnly bypasses the rotating-file sink. Use it for any record that
 	// must NEVER hit disk — e.g. the dashboard URL that intentionally carries
@@ -676,7 +657,7 @@ func main() {
 		runDone := make(chan error, 1)
 		go func() {
 			defer failFastOnPanic("run-generation")
-			runDone <- run(runCtx, cancel, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, logFormat, stderrOnly, srvPersist.generation(), srvAddr, dc)
+			runDone <- run(runCtx, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, logFormat, stderrOnly, srvPersist.generation(), srvAddr, dc)
 		}()
 
 		var runErr error
@@ -736,7 +717,7 @@ func main() {
 // the socket outlives it, so reloads keep the port. run() must not return
 // while its HTTP server could still accept — the next run() serves on the
 // same socket.
-func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrOnly *slog.Logger, srvListener net.Listener, actualAddr string, dc *drainControl) error {
+func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrOnly *slog.Logger, srvListener net.Listener, actualAddr string, dc *drainControl) error {
 	// The settings generation this run's config was loaded under (the main
 	// loop's loadSettingsGeneration bumped it just before calling run, and
 	// nothing bumps it again until run has returned). Saves made by this
@@ -998,40 +979,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		}()
 	}
 
-	// Redirect slog to file-only before the TUI takes the alt-screen — but
-	// only when the TUI is actually about to start. Without this redirect,
-	// concurrent slog writes to stderr corrupt the bubbletea display; the TUI
-	// log pane reads directly from logBuf instead of stderr, so nothing is
-	// lost by going file-only. But statusui.Run refuses to start the TUI at
-	// all when there is no controlling terminal (systemd, container, CI,
-	// detached stdio — issue #49-2), and an unconditional redirect paid the
-	// cost (stderr goes dark) for none of the benefit in that case. TTY
-	// availability is decided here, before the redirect, via the same
-	// TTY-ownership check statusui.Run performs internally (TerminalAvailable
-	// wraps checkForegroundTTYOwnership with no retry/sleep so the two checks
-	// cannot drift). Headless keeps the pre-TUI stderr+file fanout so
-	// journalctl et al. keep working.
-	// Wrapped in RedactingHandler (both branches, via postStartupHandler) so
-	// secrets-in-msg/attrs are scrubbed before hitting ~/.itervox/logs/ and,
-	// in headless mode, stderr too (T-29 / F-NEW-A).
-	// newFileLogHandler keeps this in sync with the pre-TUI file handler above
-	// so --log-format=json survives the redirect instead of silently reverting
-	// to text once the TUI starts.
-	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler(), terminalUI())))
-	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath, quitApp)
-	if actualAddr != "" {
-		if tok := dashboardURLToken(); tok != "" {
-			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/?token=%s", actualAddr, tok)
-		} else {
-			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
-		}
-	}
-	tuiCfg.RetirementNotice = tuiDeprecationNotice
-	tuiDone := startTUI(ctx, snap, logBuf, tuiCfg, tuiCancel)
-	// Wait for the TUI to fully restore the terminal (stty sane) before run()
-	// returns. Without this, the process can exit while the terminal is still
-	// in raw mode, leaving the user's shell broken (no Ctrl-C, no echo).
-	defer func() { <-tuiDone }()
+	// Post-startup logging: stderr + the log file, both behind the
+	// RedactingHandler (T-29 / F-NEW-A). The terminal UI that used to take
+	// stderr over is gone (#240), so stderr never goes dark.
+	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler())))
 
 	if err := ensureItervoxGitignore(filepath.Join(filepath.Dir(workflowPath), ".itervox")); err != nil {
 		slog.Warn("heartbeat: gitignore update failed", "error", err)
@@ -1283,187 +1234,6 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 // buildSnapFunc (the StateSnapshot wiring that used to live here) moved to
 // snapshot_build.go — outbox Task 4 size-budget extraction.
-
-// buildTUIConfig wires the terminal status-UI config and returns the cancel
-// function (used as the 'x' key handler in statusui.Run). Extracted from run().
-func buildTUIConfig(
-	orch *orchestrator.Orchestrator,
-	tr tracker.Tracker,
-	cfg *config.Config,
-	workflowPath string,
-	quitApp func(),
-) (statusui.Config, func(string) bool) {
-	// Built once per run generation, so this is that generation's settings
-	// generation (see run's settingsGen).
-	settingsGen := currentSettingsGeneration(workflowPath)
-	tuiCfg := statusui.Config{
-		MaxAgents:     cfg.Agent.MaxConcurrentAgents,
-		TodoStates:    cfg.Tracker.ActiveStates,
-		BacklogStates: cfg.Tracker.BacklogStates,
-		QuitApp:       quitApp,
-	}
-	if cfg.Server.Port != nil {
-		if tok := dashboardURLToken(); tok != "" {
-			tuiCfg.DashboardURL = dashboardBaseURL(cfg.Server.Host, *cfg.Server.Port) + "?token=" + tok
-		} else {
-			tuiCfg.DashboardURL = dashboardBaseURL(cfg.Server.Host, *cfg.Server.Port)
-		}
-	}
-	if tpm, ok := tr.(tracker.ProjectManager); ok {
-		tuiCfg.FetchProjects = func() ([]statusui.ProjectItem, error) {
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			projects, err := tpm.FetchProjects(fetchCtx)
-			if err != nil {
-				return nil, err
-			}
-			items := make([]statusui.ProjectItem, len(projects))
-			for i, p := range projects {
-				items[i] = statusui.ProjectItem{ID: p.ID, Name: p.Name, Slug: p.Slug}
-			}
-			return items, nil
-		}
-		tuiCfg.SetProjectFilter = tuiProjectFilterSaver(tpm, cfg, workflowPath, settingsGen) // #182
-	}
-	tuiCfg.AdjustWorkers = func(delta int) {
-		// V4: same serialized write-then-apply as the dashboard's
-		// SetWorkers/BumpWorkers, so a TUI bump racing a dashboard save
-		// cannot leave WORKFLOW.md and memory on different values.
-		unlock, lockErr := beginSettingsSave(workflowPath, settingsGen)
-		if lockErr != nil {
-			slog.Warn("tui: worker change not saved; WORKFLOW.md is reloading — retry", "error", lockErr)
-			return
-		}
-		defer unlock()
-		next := max(1, min(orch.MaxWorkers()+delta, 50))
-		if err := persistMaxWorkers(workflowPath, next); err != nil {
-			slog.Warn("failed to persist agent.max_concurrent_agents; worker count unchanged", "error", err)
-			return
-		}
-		orch.SetMaxWorkers(next)
-	}
-	{
-		backlogAndActive := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
-		tuiCfg.FetchBacklog = func() ([]statusui.BacklogIssueItem, error) {
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			issues, err := tr.FetchIssuesByStates(fetchCtx, backlogAndActive)
-			if err != nil {
-				return nil, err
-			}
-			items := make([]statusui.BacklogIssueItem, len(issues))
-			for i, iss := range issues {
-				pri := 0
-				if iss.Priority != nil {
-					pri = *iss.Priority
-				}
-				var desc string
-				if iss.Description != nil {
-					desc = *iss.Description
-				}
-				var comments []statusui.CommentItem
-				for _, c := range iss.Comments {
-					comments = append(comments, statusui.CommentItem{Author: c.AuthorName, Body: c.Body})
-				}
-				items[i] = statusui.BacklogIssueItem{
-					Identifier:  iss.Identifier,
-					Title:       iss.Title,
-					State:       iss.State,
-					Priority:    pri,
-					Description: desc,
-					Comments:    comments,
-				}
-			}
-			return items, nil
-		}
-		if len(cfg.Tracker.ActiveStates) > 0 {
-			tuiCfg.DispatchIssue = func(identifier string) error {
-				dispCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				// cfg.Tracker.ActiveStates is cfgMu-guarded (runtime setter:
-				// SetTrackerStatesCfg via PUT /settings/tracker/states) and this
-				// closure runs at TUI keypress time, well after the HTTP server
-				// starts serving — read via the getter at invocation time rather
-				// than closing over a value captured at startup. BacklogStates
-				// has no runtime setter, so the direct cfg read stays legal.
-				active, _, _ := orch.TrackerStatesCfg()
-				if len(active) == 0 {
-					return fmt.Errorf("no tracker.active_states configured")
-				}
-				allStates := append(append([]string{}, cfg.Tracker.BacklogStates...), active...)
-				issues, err := tr.FetchIssuesByStates(dispCtx, allStates)
-				if err != nil {
-					return err
-				}
-				for _, iss := range issues {
-					if iss.Identifier == identifier {
-						return tr.UpdateIssueState(dispCtx, iss.ID, active[0])
-					}
-				}
-				return fmt.Errorf("issue %s not found", identifier)
-			}
-		}
-	}
-	tuiCfg.ResumeIssue = func(identifier string) bool {
-		ok := orch.ResumeIssue(identifier) == nil
-		if ok {
-			orch.Refresh()
-		}
-		return ok
-	}
-	tuiCfg.TerminateIssue = func(identifier string) bool {
-		ok := orch.TerminateIssue(identifier) == nil
-		if ok {
-			orch.Refresh()
-		}
-		return ok
-	}
-	tuiCfg.SetIssueProfile = func(identifier, profile string) {
-		orch.SetIssueProfile(identifier, profile)
-	}
-	tuiCfg.IssueProfiles = func() map[string]string {
-		s := orch.Snapshot()
-		return s.IssueProfiles
-	}
-	tuiCfg.TriggerPoll = orch.Refresh
-	tuiCfg.FetchIssueDetail = func(identifier string) (*statusui.BacklogIssueItem, error) {
-		fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		issue, err := tr.FetchIssueByIdentifier(fetchCtx, identifier)
-		if err != nil {
-			return nil, err
-		}
-		pri := 0
-		if issue.Priority != nil {
-			pri = *issue.Priority
-		}
-		var desc string
-		if issue.Description != nil {
-			desc = *issue.Description
-		}
-		var comments []statusui.CommentItem
-		for _, c := range issue.Comments {
-			comments = append(comments, statusui.CommentItem{Author: c.AuthorName, Body: c.Body})
-		}
-		return &statusui.BacklogIssueItem{
-			Identifier:  issue.Identifier,
-			Title:       issue.Title,
-			State:       issue.State,
-			Priority:    pri,
-			Description: desc,
-			Comments:    comments,
-		}, nil
-	}
-
-	tuiCancel := func(identifier string) bool {
-		issue := orch.GetRunningIssue(identifier)
-		if issue == nil {
-			return false
-		}
-		return orch.CancelIssue(identifier) == nil
-	}
-	return tuiCfg, tuiCancel
-}
 
 // deduplicateStates concatenates backlog, active, terminal states and the
 // completion state (if non-empty), removing duplicates while preserving order.

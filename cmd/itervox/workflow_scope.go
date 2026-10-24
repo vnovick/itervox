@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -130,8 +128,8 @@ func normalizeScope(sc tracker.Scope) tracker.Scope {
 	return tracker.Scope{Projects: clean(sc.Projects, false), Assignee: strings.TrimSpace(sc.Assignee), Labels: clean(sc.Labels, true)}
 }
 
-// saveTrackerScope is the one save path for the combined scope (dashboard
-// and TUI), with saveProjectFilter's discipline: the assignee is resolved
+// saveTrackerScope is the one save path for the combined scope (the
+// dashboard), with saveProjectFilter's discipline: the assignee is resolved
 // first (an unknown user is refused, nothing changes), then the settings file is
 // written as a fenced self-write (no reload), and only then is the scope
 // applied in memory, so memory never disagrees with the file.
@@ -174,47 +172,6 @@ func newScopeManager(tr tracker.Tracker, workflowPath string, gen uint64) server
 	}
 	sm, _ := tr.(tracker.ScopeManager)
 	return &trackerScopeManager{sm: sm, fm: fm, workflowPath: workflowPath, settingsGen: gen}
-}
-
-// tuiProjectFilterSaver is the TUI picker's save: with a combinable scope
-// its "assigned to" row ANDs with the projects (labels kept as they are);
-// otherwise the plain project filter save.
-func tuiProjectFilterSaver(tpm tracker.ProjectManager, cfg *config.Config, path string, gen uint64) func([]string) {
-	return func(slugs []string) {
-		// #198: the picker edits projects; with tracker.filter in effect
-		// the filter is edited in the dashboard or WORKFLOW.md instead.
-		if fm, ok := tpm.(tracker.FilterManager); ok && fm.FilterMode() {
-			slog.Warn("tui: project filter not saved; tracker.filter is in effect — edit it in Settings → Tracker Scope or WORKFLOW.md")
-			return
-		}
-		if sm, ok := tpm.(tracker.ScopeManager); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), assigneeResolveTimeout)
-			defer cancel()
-			_ = saveTrackerScope(ctx, sm, path, gen, tuiPickerScope(sm, cfg, slugs), "tui") // logged inside
-			return
-		}
-		_ = saveProjectFilter(tpm, path, gen, slugs, "tui") // logged inside
-	}
-}
-
-// tuiPickerScope turns the TUI picker's selection into a scope: the project
-// slugs, plus "assigned to" when its row is selected (the current assignee,
-// else the configured one, else "me"), keeping the current labels.
-func tuiPickerScope(sm tracker.ScopeManager, cfg *config.Config, slugs []string) tracker.Scope {
-	cur := sm.Scope()
-	sc := tracker.Scope{Projects: []string{}, Labels: cur.Labels}
-	assigned := false
-	for _, s := range slugs {
-		if s == "__assignee__" {
-			assigned = true
-			continue
-		}
-		sc.Projects = append(sc.Projects, s)
-	}
-	if assigned {
-		sc.Assignee = cmp.Or(cur.Assignee, strings.TrimSpace(cfg.Tracker.Assignee), "me")
-	}
-	return sc
 }
 
 // updateWorkflowScope saves the combined scope (#182) to the settings file

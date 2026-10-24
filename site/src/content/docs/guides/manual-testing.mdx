@@ -55,7 +55,7 @@ git init -q
 
 **Expect:**
 
-- No terminal UI starts (headless is the default since v0.2.4); the logs stream on stderr
+- No terminal UI starts (the daemon is always headless); the logs stream on stderr
 - The dashboard URL is printed (`http://localhost:8090`)
 - `itervox watch --once` in another shell shows capacity `0/3` (or whatever `max_concurrent_agents` defaults to)
 - `.itervox/HEARTBEAT.md` exists and refreshes every ~15s
@@ -610,36 +610,42 @@ Walk through each dashboard view and confirm visual coverage.
 
 ---
 
-## TUI surfaces (memory + LLM)
+## Terminal panel (`itervox watch`)
 
-The terminal UI is deprecated and will be removed in v0.3; it starts only with `--tui`, and its header shows the deprecation notice.
+The terminal UI was removed in v0.3: `./itervox --tui` prints one line pointing
+to `itervox watch` and exits with code 2. Watch the daemon from a second shell:
 
 ```bash
-./itervox --tui
+./itervox watch
 ```
 
-**Header:**
-- `● LIVE` / `○ OFFLINE` status
-- Capacity counter
-- Schema version
-- No `◈ SUB-AGENTS` / `◈ TEAMS` badge (removed in v0.2.0)
-- `⚠ CONFIG INVALID` line appears if WORKFLOW.md fails reload
+**Panel:**
+- Header: running/slots, queued, retrying, waiting for you, waiting for a slot,
+  blocked by dependencies, paused; `ALL DISPATCH PAUSED` after `itervox pause`
+- One lane per running issue: title, profile · backend, elapsed, turn, tokens,
+  cost, and a `›` activity line (last tool call and step)
+- `NEEDS YOU` lists input requests (`itervox reply …`) and guardrail approvals
+  (`itervox approve …`); run the printed command and the entry disappears
+- `EVENTS` shows runs starting and finishing as they happen
+- Ctrl-C quits; the shell prompt is unaffected (watch never touches the terminal mode)
 
-**Body:**
-- Issue list with current state, profile, backend, last log preview
-- Press `enter` to drill into an issue; live log stream renders
-- Press `q` to quit; terminal restored to cooked mode (no garbled prompt)
+**Other modes:**
+- `./itervox watch | cat` prints plain text, the status only when it changes
+- `./itervox watch --events-only --json` prints one JSON object per event
+- Stop watch, note the `--since N` it prints, trigger a run, then
+  `./itervox watch --events-only --since N --once` shows exactly what was missed
+- `./itervox watch --issue ENG-1` streams that issue's full log
 
 **Hot reload:**
 - Edit WORKFLOW.md while daemon is running (change an automation's instructions)
 - Save the file
-- TUI/dashboard reflects the change on the next automation tick without restart
+- The dashboard reflects the change on the next automation tick without restart
 - With an agent running, change **Max workers** (or any other setting) from the dashboard: the agent keeps running — a settings save does not reload the daemon. A hand edit of WORKFLOW.md still does.
 
 **Config-invalid backoff:**
 - Introduce a YAML syntax error in WORKFLOW.md
 - Save; daemon continues on the previously-valid config
-- TUI header shows `⚠ CONFIG INVALID`
+- The dashboard shows the config-invalid banner
 - Fix the YAML; banner clears within ~30s
 
 ---
@@ -680,7 +686,7 @@ export GITHUB_TOKEN=ghp_...
 | Symptom | Most likely cause | Where to look |
 |---|---|---|
 | Daemon panics with "no embedded web/dist" | Built with `go build` instead of `make build` | Re-run `make build` |
-| TUI looks garbled after exit | Code path skipped `fatalExit` | `cmd/itervox/exit.go` — ensure `os.Exit` is not called directly |
+| Stale `daemon.pid` / `dashboard_url` after a failed start | Code path skipped `fatalExit` | `cmd/itervox/exit.go` — ensure `os.Exit` is not called directly |
 | Dashboard 401 on every request | Auth token missing or wrong | Restart with `?token=<token>` URL; `ITERVOX_API_TOKEN` env |
 | Issue stays in "Todo" forever | Automation filter does not match | Check `automation: registered count=N matched=0` log lines |
 | Handoff file not visible to next agent | Branch checkout cleared untracked files | Commit handoff files to git so they survive branch switches |

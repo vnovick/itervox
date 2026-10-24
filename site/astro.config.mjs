@@ -42,6 +42,7 @@ export default defineConfig({
             { label: 'The hub (one URL)', slug: 'guides/hub' },
             { label: 'Slack (through the hub)', slug: 'guides/slack' },
             { label: 'Your phone (web app & push)', slug: 'guides/phone' },
+            { label: 'Working from the terminal', slug: 'guides/terminal' },
             { label: 'Pause dispatch & event feed', slug: 'guides/pause-and-feed' },
             { label: 'Now & Changes', slug: 'guides/now-and-changes' },
             { label: 'Review changes', slug: 'guides/change-review' },
