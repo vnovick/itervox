@@ -73,9 +73,7 @@ func TestTrackerStatesSaveIsLiveWithoutReload(t *testing.T) {
 	require.Len(t, got, 1, "the tracker client sees the new active_states without a reload")
 	active, _, _ := a.orch.TrackerStatesCfg()
 	assert.Equal(t, []string{"Todo", "Doing"}, active)
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "Doing", "persisted to WORKFLOW.md")
+	assert.Contains(t, readString(t, config.ProjectSettingsPath(path)), "Doing", "persisted to the settings file (#239)")
 	assert.Zero(t, reloads(), "a tracker-states save must not reload WORKFLOW.md")
 }
 
@@ -109,7 +107,7 @@ func (f *fakeProjectManager) GetProjectFilter() []string {
 
 // TestProjectFilterSaveIsLiveWithoutReload: the Linear project filter save is
 // applied to the tracker client in memory and does not reload. A reset
-// (nil) comments project_slug out on disk, so memory is set to the explicit
+// (nil) removes project_slug (#239: from the settings file), so memory is set to the explicit
 // "all issues" filter the file now describes, not to the stale load-time
 // slug.
 func TestProjectFilterSaveIsLiveWithoutReload(t *testing.T) {
@@ -123,15 +121,16 @@ func TestProjectFilterSaveIsLiveWithoutReload(t *testing.T) {
 
 	require.NoError(t, m.SetProjectFilter([]string{"alpha", "beta"}))
 	assert.Equal(t, []string{"alpha", "beta"}, fpm.GetProjectFilter())
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "project_slug: alpha, beta")
+	// #239: the filter is saved to the settings file and leaves WORKFLOW.md.
+	assert.Regexp(t, `"project_slug":\s+"alpha, beta"`, readString(t, config.ProjectSettingsPath(path)))
+	assert.NotContains(t, readString(t, path), "project_slug:")
 
 	require.NoError(t, m.SetProjectFilter(nil))
-	assert.Equal(t, []string{}, fpm.GetProjectFilter(), "reset = all issues, matching the commented-out project_slug")
-	data, err = os.ReadFile(path)
+	assert.Equal(t, []string{}, fpm.GetProjectFilter(), "reset = all issues, matching the removed project_slug")
+	assert.NotContains(t, readString(t, config.ProjectSettingsPath(path)), "project_slug")
+	cfg, err := config.Load(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "# project_slug:")
+	assert.Empty(t, cfg.Tracker.ProjectSlug)
 
 	assert.Zero(t, reloads(), "a project-filter save must not reload WORKFLOW.md")
 }
@@ -207,6 +206,6 @@ func TestSettingsSavesDuringTurnDoNotReload(t *testing.T) {
 	assert.NotContains(t, stderr, "reload: WORKFLOW.md changed", "a settings save must not reload")
 	data, err := os.ReadFile(p.Workflow)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "Doing")
+	assert.Contains(t, readString(t, config.ProjectSettingsPath(p.Workflow)), "Doing", "#239: the states are saved to the settings file")
 	assert.Contains(t, string(data), "available_models")
 }

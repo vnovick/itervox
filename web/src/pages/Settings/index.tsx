@@ -233,9 +233,10 @@ export default function Settings() {
                 All settings
               </h2>
               <p className="text-theme-muted mb-3 text-xs">
-                Every agent, polling, server and workspace setting, from the settings schema. Pick
-                the layer a save writes: your user file, the project file (committed) or the
-                project-local file (gitignored). WORKFLOW.md still wins over all three.
+                Every agent, automations, dependencies, hooks, hub, polling, server, tracker and
+                workspace setting, from the settings schema. Pick the layer a save writes: your user
+                file, the project file (committed) or the project-local file (gitignored). Each wins
+                over the same key in WORKFLOW.md, whose front matter is deprecated for them.
               </p>
               <SchemaSettingsCard />
             </section>

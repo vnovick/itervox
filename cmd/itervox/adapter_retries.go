@@ -34,7 +34,7 @@ func (a *orchestratorAdapter) MaxRetries() int {
 }
 
 // SetFailedState validates that stateName is a known tracker state (or empty,
-// meaning "pause"), persists tracker.failed_state to WORKFLOW.md, then applies
+// meaning "pause"), persists tracker.failed_state to the settings file (#239), then applies
 // the change to the orchestrator.
 func (a *orchestratorAdapter) SetFailedState(stateName string) error {
 	unlock, lockErr := a.beginSettingsSave()

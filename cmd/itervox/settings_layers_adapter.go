@@ -15,6 +15,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // settings_layers_adapter.go backs the schema-driven Settings page (#158):
@@ -67,6 +68,13 @@ func readSettingsLayerView(workflowPath, name string) server.SettingsLayerView {
 		return v
 	}
 	v.Values, v.Unknown = flattenSettings(data)
+	for key, value := range v.Values {
+		// #239: a secret is a $VAR reference in a settings file; one
+		// written inline by hand is not shown on the form.
+		if s, ok := value.(string); ok && s != "" && config.IsSecretKey(key) && !config.IsEnvReference(s) {
+			v.Values[key] = "(set, hidden)"
+		}
+	}
 	return v
 }
 
@@ -163,8 +171,9 @@ func (a *orchestratorAdapter) SaveSettingsLayer(layer string, req server.Setting
 		}
 		return nil
 	}
-	// A project or local save also moves the keys it sets out of WORKFLOW.md,
-	// which wins over every file; a user save never edits the project.
+	// A project or local save also moves the keys it sets out of WORKFLOW.md
+	// (a copy left there would be reported as a conflict: every settings
+	// file wins over it, #239); a user save never edits the project.
 	var remove []string
 	if layer != config.LayerUser {
 		remove = set
@@ -300,7 +309,16 @@ func validateLiveSettings(cfg *config.Config, profiles map[string]config.AgentPr
 		}
 	}
 	if slices.Contains(touched, "agent.deps_analyzer_profile") {
-		return config.ValidateDepsAnalyzerProfile(profiles, cfg.Agent.DepsAnalyzerProfile)
+		if err := config.ValidateDepsAnalyzerProfile(profiles, cfg.Agent.DepsAnalyzerProfile); err != nil {
+			return err
+		}
+	}
+	if state := strings.TrimSpace(cfg.Tracker.FailedState); state != "" && slices.Contains(touched, "tracker.failed_state") {
+		// As SetFailedState refuses it: the state must be one Itervox knows.
+		known := slices.Concat(cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.BacklogStates)
+		if !slices.Contains(known, state) {
+			return fmt.Errorf("failed_state %q is not in tracker.active_states / terminal_states / backlog_states", state)
+		}
 	}
 	return nil
 }
@@ -347,6 +365,30 @@ var liveSettingAppliers = map[string]func(a *orchestratorAdapter, c *config.Conf
 	"workspace.auto_clear": func(a *orchestratorAdapter, c *config.Config) error {
 		return a.orch.SetAutoClearWorkspaceCfg(c.Workspace.AutoClearWorkspace)
 	},
+	// #239: the tracker state lists and dependencies.analysis_mode are
+	// layered now; they apply through the same cfgMu setters the dedicated
+	// endpoints use.
+	"tracker.active_states":    applyTrackerStates,
+	"tracker.terminal_states":  applyTrackerStates,
+	"tracker.completion_state": applyTrackerStates,
+	"tracker.failed_state": func(a *orchestratorAdapter, c *config.Config) error {
+		a.orch.SetFailedStateCfg(c.Tracker.FailedState)
+		return nil
+	},
+	"dependencies.analysis_mode": func(a *orchestratorAdapter, c *config.Config) error {
+		return a.orch.SetDepsAnalysisModeCfg(c.Dependencies.AnalysisMode)
+	},
+}
+
+// applyTrackerStates applies the three state settings together, to the
+// orchestrator and to the tracker client's own copies (CORE-160), as
+// UpdateTrackerStates does.
+func applyTrackerStates(a *orchestratorAdapter, c *config.Config) error {
+	a.orch.SetTrackerStatesCfg(c.Tracker.ActiveStates, c.Tracker.TerminalStates, c.Tracker.CompletionState)
+	if setter, ok := a.tr.(tracker.StateListSetter); ok {
+		setter.SetStateLists(c.Tracker.ActiveStates, c.Tracker.TerminalStates)
+	}
+	return nil
 }
 
 func applyReviewer(a *orchestratorAdapter, c *config.Config) error {
@@ -373,6 +415,8 @@ func applySSHHosts(a *orchestratorAdapter, c *config.Config) error {
 var sharedApplier = map[string]string{
 	"agent.auto_review":           "agent.reviewer_profile",
 	"agent.ssh_host_descriptions": "agent.ssh_hosts",
+	"tracker.terminal_states":     "tracker.active_states",
+	"tracker.completion_state":    "tracker.active_states",
 }
 
 // applyLiveSettings runs each key's applier once.

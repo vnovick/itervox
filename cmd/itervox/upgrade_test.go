@@ -156,16 +156,31 @@ func TestUpgradeFromV021(t *testing.T) {
 	assert.Contains(t, string(out), "added the guardrails: block (#204)")
 	migrated, err := os.ReadFile(p.Workflow)
 	require.NoError(t, err)
-	// A v0.2.1 workflow needs no rewrite: the only change is the guardrails:
-	// block (#204) appended to the front matter, every other byte as it was.
-	front, body, ok := splitWorkflowFrontMatter(string(original))
+	// A v0.2.1 workflow needs no schema rewrite: the guardrails: block (#204)
+	// is appended to the front matter. Then (#239) its layered settings move
+	// to .itervox/settings.jsonc: WORKFLOW.md keeps the prompt (the body,
+	// byte for byte), the schema marker, config.FrontMatterKeptKeys (the
+	// profiles, the models list, the legacy reviewer_prompt),
+	// and the guardrails block. The original is in WORKFLOW.md.bak.
+	_, body, ok := splitWorkflowFrontMatter(string(original))
 	require.True(t, ok)
-	if !strings.HasSuffix(front, "\n") {
-		front += "\n"
-	}
+	newFront, newBody, ok := splitWorkflowFrontMatter(string(migrated))
+	require.True(t, ok)
+	assert.Equal(t, body, newBody, "the prompt is unchanged")
 	var block strings.Builder
 	writeGuardrailsBlock(&block)
-	assert.Equal(t, "---\n"+front+block.String()+"---\n"+body, string(migrated))
+	assert.Contains(t, newFront, strings.TrimSpace(block.String()))
+	frontKeys, _ := splitWorkflowText(t, string(migrated))
+	assert.ElementsMatch(t, []string{"itervox_schema_version", "agent", "guardrails"}, keysOf(frontKeys))
+	assert.ElementsMatch(t, []string{"profiles", "available_models", "reviewer_prompt"}, keysOf(frontKeys["agent"].(map[string]any)), "the keys WORKFLOW.md keeps (config.FrontMatterKeptKeys)")
+	bak, err := os.ReadFile(p.Workflow + ".bak")
+	require.NoError(t, err)
+	assert.Equal(t, string(original), string(bak))
+	assert.Contains(t, string(out), "moved")
+	settingsText, err := os.ReadFile(config.ProjectSettingsPath(p.Workflow))
+	require.NoError(t, err)
+	assert.Contains(t, string(settingsText), `"$GITHUB_TOKEN"`, "the key moves as its $VAR reference")
+	assert.Contains(t, string(settingsText), "// GitHub uses labels to map states.", "the comments move with the keys")
 	// v0.2.1 wrote the agents and handoff carve-outs; the update adds the
 	// local tracker's issues carve-out (v0.2.2) and the rules layers' lines
 	// (v0.2.5: the project layer committed, the local one ignored), the
@@ -193,8 +208,7 @@ func TestUpgradeFromV021(t *testing.T) {
 	gh := &fakeGitHub{reads: map[string]bool{}}
 	srv := httptest.NewServer(gh)
 	t.Cleanup(srv.Close)
-	require.NoError(t, os.WriteFile(p.Workflow, []byte(strings.Replace(string(migrated),
-		"  kind: github\n", "  kind: github\n  endpoint: "+srv.URL+"\n", 1)), 0o644))
+	require.NoError(t, config.SetSetting(config.ProjectSettingsPath(p.Workflow), "tracker.endpoint", srv.URL))
 	p.env = append(p.env, "GITHUB_TOKEN=fixture-token")
 	p.startHeadless(t, nil)
 	tokenFile := filepath.Join(p.LogsDir, apiTokenFileName)
@@ -261,4 +275,12 @@ func TestUpgradeFromV021(t *testing.T) {
 			assert.Equal(t, "in-progress", e.FromState)
 		}
 	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

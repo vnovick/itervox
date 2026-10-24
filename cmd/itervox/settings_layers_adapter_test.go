@@ -97,7 +97,9 @@ func TestSettingsPageSaveWritesChosenLayerAndKeepsComments(t *testing.T) {
 			wfText := readString(t, wf)
 			if layer == config.LayerUser {
 				assert.Contains(t, wfText, "max_turns: 12", "a user save never edits the project's WORKFLOW.md")
-				assert.Equal(t, config.LayerWorkflow, res.Shadowed["agent.max_turns"])
+				// #239: the user file wins over WORKFLOW.md's copy now.
+				assert.NotContains(t, res.Shadowed, "agent.max_turns")
+				assert.Equal(t, 7, explainKey(t, wf, "agent.max_turns").Value)
 				assert.Equal(t, config.LayerLocal, res.Shadowed["agent.max_retries"])
 			} else {
 				assert.NotContains(t, wfText, "max_turns:")
@@ -156,14 +158,15 @@ func TestSettingsLayerSaveRefusesStaleOrInvalid(t *testing.T) {
 		body map[string]any
 		code int
 	}{
-		"stale":             {map[string]any{"baseVersion": "nope", "values": map[string]any{"agent.max_turns": 2}}, http.StatusConflict},
-		"wrong type":        {map[string]any{"baseVersion": version, "values": map[string]any{"agent.max_turns": "lots"}}, http.StatusBadRequest},
-		"unknown key":       {map[string]any{"baseVersion": version, "values": map[string]any{"agent.max_turnz": 2}}, http.StatusBadRequest},
-		"enum":              {map[string]any{"baseVersion": version, "values": map[string]any{"agent.dispatch_strategy": "fastest"}}, http.StatusBadRequest},
-		"missing reviewer":  {map[string]any{"baseVersion": version, "values": map[string]any{"agent.reviewer_profile": "ghost"}}, http.StatusBadRequest},
-		"profiles page":     {map[string]any{"baseVersion": version, "values": map[string]any{"agent.profiles": map[string]any{}}}, http.StatusBadRequest},
-		"raw not jsonc":     {map[string]any{"baseVersion": version, "raw": "{ nope"}, http.StatusBadRequest},
-		"raw wrong section": {map[string]any{"baseVersion": version, "raw": `{"tracker": {"kind": "github"}}`}, http.StatusBadRequest},
+		"stale":            {map[string]any{"baseVersion": "nope", "values": map[string]any{"agent.max_turns": 2}}, http.StatusConflict},
+		"wrong type":       {map[string]any{"baseVersion": version, "values": map[string]any{"agent.max_turns": "lots"}}, http.StatusBadRequest},
+		"unknown key":      {map[string]any{"baseVersion": version, "values": map[string]any{"agent.max_turnz": 2}}, http.StatusBadRequest},
+		"enum":             {map[string]any{"baseVersion": version, "values": map[string]any{"agent.dispatch_strategy": "fastest"}}, http.StatusBadRequest},
+		"missing reviewer": {map[string]any{"baseVersion": version, "values": map[string]any{"agent.reviewer_profile": "ghost"}}, http.StatusBadRequest},
+		"profiles page":    {map[string]any{"baseVersion": version, "values": map[string]any{"agent.profiles": map[string]any{}}}, http.StatusBadRequest},
+		"raw not jsonc":    {map[string]any{"baseVersion": version, "raw": "{ nope"}, http.StatusBadRequest},
+		// #239: tracker is a settings section now; guardrails is not.
+		"raw wrong section": {map[string]any{"baseVersion": version, "raw": `{"guardrails": {"enabled": false}}`}, http.StatusBadRequest},
 		"both":              {map[string]any{"baseVersion": version, "raw": "{}", "values": map[string]any{}}, http.StatusBadRequest},
 		"unknown layer":     {map[string]any{"baseVersion": "", "values": map[string]any{"agent.max_turns": 2}}, http.StatusNotFound},
 	} {

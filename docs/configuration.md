@@ -29,6 +29,44 @@ The prompt template is re-rendered on every agent turn. It has access to
 `issue.*` (identifier, title, description, state, priority, labels,
 blocked_by, branch_name, …) and the `attempt` counter on retries.
 
+## Settings files and WORKFLOW.md (#239)
+
+The runtime sections — `agent`, `automations`, `dependencies`, `hooks`, `hub`,
+`polling`, `server`, `tracker` and `workspace` — are layered settings. Each can
+live in three JSONC files with one published schema
+(`https://itervox.dev/schema/settings.schema.json`, `itervox config schema`):
+
+| Layer | File | Wins over |
+|-------|------|-----------|
+| `workflow` | `WORKFLOW.md` front matter (deprecated for these sections) | defaults |
+| `user` | `~/.itervox/settings.jsonc` (`ITERVOX_USER_SETTINGS`; `off` disables it) | workflow |
+| `project` | `.itervox/settings.jsonc` (committed) | user |
+| `local` | `.itervox/settings.local.jsonc` (gitignored) | project |
+
+- `WORKFLOW.md` holds the prompt: its body is the Liquid template, and it stays
+  the import/export format (`itervox import`, `itervox export --symphony`). Its
+  front matter keeps the schema marker, the non-layered sections (`guardrails`,
+  `memory`, `sessions`, `pr_events`), `agent.profiles`, `agent.available_models`
+  and the legacy `agent.reviewer_prompt`.
+- Front-matter keys still apply. `itervox doctor` lists each as `deprecated:`
+  with where it moves (`.itervox/settings.jsonc`); the startup log names them
+  once. A key also set in a settings file is a conflict: the settings file wins,
+  and the conflict is reported once.
+- Secrets are `$VAR` references in settings files (`"api_key": "$LINEAR_API_KEY"`);
+  values stay in the environment or `.itervox/.env`. Writers refuse an inline
+  secret.
+- `itervox init --update` moves the keys (with `WORKFLOW.md.bak` first,
+  comments kept, `--dry-run` to preview). Dashboard saves of tracker states,
+  the failed state, the project filter and scope, `dependencies.analysis_mode`
+  and automations write the project settings file (or the local one when it
+  already sets the key) and remove the key from `WORKFLOW.md`.
+- The `cfgMu` runtime fields and reload behaviour are unchanged: the daemon
+  reloads when `WORKFLOW.md` changes; a hand edit of a settings file applies at
+  the next restart or reload.
+
+See the site guide "Moving settings out of WORKFLOW.md"
+(`site/src/content/docs/guides/settings-migration.mdx`).
+
 Any string value of the form `$VAR_NAME` is substituted with the corresponding
 environment variable at load time. Unset variables resolve to an empty string.
 

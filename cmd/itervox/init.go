@@ -302,7 +302,8 @@ func runInit(args []string) {
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
 	dir := fs.String("dir", ".", "directory to scan for repo metadata")
 	force := fs.Bool("force", false, "overwrite output file if it already exists")
-	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema")
+	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema and move its layered settings to .itervox/settings.jsonc")
+	dryRun := fs.Bool("dry-run", false, "for --update: print what would change (the new .itervox/settings.jsonc and the keys leaving WORKFLOW.md) and write nothing")
 	templateName := fs.String("template", "", templateFlagUsage())
 	// --server-port is opt-in for --update. When set (>= 0), the migration
 	// rewrites server.port in WORKFLOW.md. The recommended value for the
@@ -334,55 +335,10 @@ func runInit(args []string) {
 
 	if *update {
 		warnIfDaemonRunning(*workflowPath, "`itervox init --update`")
-		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
-		if err != nil {
+		if err := initUpdate(*workflowPath, *force, *dryRun, *serverPort, time.Now().UTC(), os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 			fatalExit(1)
 		}
-		if result.Changed {
-			fmt.Printf("itervox init --update: migrated %s to schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-			// gaps_11 G-19 — tell the operator the .bak is disposable once
-			// the migration is confirmed, so stale backups don't linger.
-			fmt.Printf("itervox init --update: backup written to %s — review the migrated workflow, then remove the backup once the migration is confirmed\n", result.BackupPath)
-			if len(result.Profiles) > 0 {
-				fmt.Printf("itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
-			}
-
-		} else {
-			fmt.Printf("itervox init --update: %s already uses schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-		}
-		if result.AddedGuardrails {
-			fmt.Printf("itervox init --update: added the guardrails: block (#204) with its defaults to %s\n", *workflowPath)
-		}
-		if *serverPort >= 0 {
-			if err := rewriteServerPort(*workflowPath, *serverPort); err != nil {
-				fmt.Fprintf(os.Stderr, "itervox init --update: rewrite server.port: %v\n", err)
-				fatalExit(1)
-			}
-			fmt.Printf("itervox init --update: server.port set to %d in %s\n", *serverPort, *workflowPath)
-		}
-		for _, warning := range result.Warnings {
-			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
-		}
-		// --update returns here, so anything an EXISTING project still needs
-		// must be done before this point. The .env stub is one of them: the
-		// fresh-init path below creates it, but a project migrating an old
-		// WORKFLOW.md never reaches that code, so `init --update` left the
-		// operator with `api_key: $LINEAR_API_KEY` and no file to define it
-		// in — the daemon then hard-failed startup with "missing
-		// tracker.api_key" and no indication of where to put it.
-		//
-		// The tracker kind comes from the migrated workflow, not --tracker,
-		// which is not required for --update.
-		updateDir := filepath.Join(filepath.Dir(*workflowPath), ".itervox")
-		ensureEnvStub(updateDir, trackerKindFromWorkflow(*workflowPath))
-		// The nested .itervox/.gitignore is self-healed on daemon startup,
-		// but write it now so the .env just created is covered before the
-		// operator's next `git add`.
-		if err := finalizeItervoxGitignore(updateDir); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
-		}
-		scaffoldPlaybooks(updateDir, "itervox init --update", os.Stdout) // #218: only the missing ones
 		return
 	}
 

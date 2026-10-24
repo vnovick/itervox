@@ -1,0 +1,147 @@
+---
+title: Moving settings out of WORKFLOW.md
+description: One config format — move the tracker, hooks, dependencies, automations and the other layered sections from WORKFLOW.md's front matter into .itervox/settings.jsonc with itervox init --update.
+sidebar:
+  order: 3
+---
+
+Itervox reads its settings from layered JSONC files — your user file
+(`~/.itervox/settings.jsonc`), the project file (`.itervox/settings.jsonc`,
+committed) and the project-local file (`.itervox/settings.local.jsonc`,
+gitignored) — all described by [one published schema](https://itervox.dev/schema/settings.schema.json).
+Since #239 that covers every runtime section: `agent`, `automations`,
+`dependencies`, `hooks`, `hub`, `polling`, `server`, `tracker` and `workspace`.
+`WORKFLOW.md` holds the prompt: its body is the Liquid prompt template, and it
+stays the import and export format.
+
+**Nothing breaks.** A workflow that keeps these sections in its front matter
+loads and behaves exactly as before, with `itervox_schema_version: 2` (no schema
+bump). The one change in precedence: when a settings file and the front matter
+set the same key, the settings file wins.
+
+## What you see before migrating
+
+- `itervox doctor` prints one `deprecated:` line per front-matter key, naming
+  `.itervox/settings.jsonc` as where it moves.
+- The daemon's startup log names the deprecated keys once.
+- A key set both in the front matter and in a settings file is reported once
+  as a conflict (a `WARNING:` line in `itervox doctor`, one startup-log line),
+  naming the file whose value is in effect.
+
+## Migrate
+
+Preview first; `--dry-run` writes nothing:
+
+```bash
+itervox init --update --workflow WORKFLOW.md --dry-run
+```
+
+It prints the keys that would move and the full `.itervox/settings.jsonc` it
+would write. Then run it:
+
+```bash
+itervox init --update --workflow WORKFLOW.md
+```
+
+What it does:
+
+1. Writes `WORKFLOW.md.bak` with the workflow as it was, before anything else
+   (an existing backup is not overwritten without `--force`).
+2. Runs the schema-2 steps it always ran (profile prompts to files, the
+   guardrails block).
+3. Moves every layered front-matter key into `.itervox/settings.jsonc`. YAML
+   comments above, beside and below a moved key become `//` comments in the
+   same place; a settings file that already exists keeps its own comments and
+   keys. A key the settings file already sets keeps the file's value — it was
+   already the one in effect — and the front-matter copy is dropped.
+4. Checks that the merged configuration is the same before and after, and
+   refuses the move (writing nothing) if it is not.
+
+Before:
+
+```yaml
+---
+itervox_schema_version: 2
+# How Itervox reaches the team's issues.
+tracker:
+  kind: linear # the team's tracker
+  api_key: $LINEAR_API_KEY
+  project_slug: core
+hooks:
+  timeout_ms: 90000
+---
+Work on {{ issue.identifier }}: {{ issue.title }}.
+```
+
+After, `.itervox/settings.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://itervox.dev/schema/settings.schema.json",
+  // How Itervox reaches the team's issues.
+  "tracker": {
+    "kind": "linear", // the team's tracker
+    "api_key": "$LINEAR_API_KEY",
+    "project_slug": "core",
+  },
+  "hooks": {
+    "timeout_ms": 90000,
+  },
+}
+```
+
+and `WORKFLOW.md` keeps the marker and the prompt:
+
+```yaml
+---
+itervox_schema_version: 2
+---
+Work on {{ issue.identifier }}: {{ issue.title }}.
+```
+
+## What stays in WORKFLOW.md
+
+- The body (the prompt template) and `itervox_schema_version`.
+- The sections that are not layered: `guardrails`, `memory`, `sessions`,
+  `pr_events`.
+- `agent.profiles` (the profile editor writes them there),
+  `agent.available_models` (`itervox models refresh` writes it there unless a
+  settings file sets it) and the legacy `agent.reviewer_prompt` (which
+  `itervox init --update --force` moves into the reviewer's INSTRUCTIONS.md).
+- A key holding an inline secret — see below.
+
+## Secrets
+
+Settings files never hold a secret, only a `$VAR` reference to one:
+`"api_key": "$LINEAR_API_KEY"`, with the value in the environment or
+`.itervox/.env`. The move copies a `$VAR` reference as written (it is never
+resolved). A key holding the secret itself (`api_key: lin_…`, or a URL with a
+password) stays in `WORKFLOW.md`, and the migration names it without printing
+the value: put the value in `.itervox/.env`, set the key to `$VAR`, and run
+`itervox init --update` again. The Settings page and `itervox config set`
+refuse to write an inline secret.
+
+## After migrating
+
+- **Saves.** Dashboard and TUI saves of the moved sections (tracker states,
+  the failed state, the project filter and tracker scope, the dependency
+  analysis mode, automations) write the settings file — the project file, or
+  the project-local file when it already sets the key — through the same
+  comment-preserving writer as every other setting. The Settings page's
+  **All settings** section lists the new sections, and its layer tab picks the
+  file a save writes.
+- **Reloads.** As before, the daemon reloads when `WORKFLOW.md` changes. A
+  hand edit of a settings file applies at the next restart or `WORKFLOW.md`
+  reload (`itervox config set` says so), exactly as for the sections that
+  were layered before.
+- **Commit** `.itervox/settings.jsonc` with `WORKFLOW.md`. Keep
+  `.itervox/settings.local.jsonc` and `.itervox/.env` out of git (`itervox init
+  --update` makes sure they are ignored).
+- **Remove** `WORKFLOW.md.bak` once you have reviewed the result.
+
+## Moving back
+
+The front matter still works, so moving a key back is a hand edit: set it in
+the front matter and delete it from the settings files (a settings file would
+win). `itervox export --symphony` writes a Symphony `WORKFLOW.md` from the
+merged configuration wherever the keys live.

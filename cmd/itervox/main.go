@@ -583,7 +583,8 @@ func main() {
 			continue
 		}
 		cfg := loaded
-		maybeStartHub(ctx, cfg, *workflowPath, noHubFlag) // #228: once, outside the event loop
+		logFrontMatterReport(*workflowPath, cfg.FrontMatter) // #239: once per notice
+		maybeStartHub(ctx, cfg, *workflowPath, noHubFlag)    // #228: once, outside the event loop
 		firstIter = false
 		reloadAttempt = 0         // reset on every successful load
 		publishConfigInvalid(nil) // clear the banner
