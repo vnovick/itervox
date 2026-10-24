@@ -85,9 +85,12 @@ func TestDeploySkillReferencesExist(t *testing.T) {
 
 // TestDeployDocsPinTheLatestRelease (#88): every `--version vX.Y.Z` example
 // in the deploy docs names the newest release in CHANGELOG.md, so the
-// examples cannot fall behind a release again.
+// examples cannot fall behind a release again. The newest release is the
+// first dated section: since #246, versions not yet tagged have their own
+// `## [X.Y.Z] — Unreleased` section above it, and an example cannot pin a
+// version that cannot be downloaded yet.
 func TestDeployDocsPinTheLatestRelease(t *testing.T) {
-	m := regexp.MustCompile(`(?m)^## \[(\d+\.\d+\.\d+)\]`).FindStringSubmatch(repoFile(t, "CHANGELOG.md"))
+	m := regexp.MustCompile(`(?m)^## \[(\d+\.\d+\.\d+)\] — \d{4}-\d{2}-\d{2}`).FindStringSubmatch(repoFile(t, "CHANGELOG.md"))
 	require.NotNil(t, m)
 	latest := "v" + m[1]
 	versionRe := regexp.MustCompile(`--version (v\d+\.\d+\.\d+)`)
