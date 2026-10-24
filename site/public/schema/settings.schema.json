@@ -2,7 +2,7 @@
   "$id": "https://itervox.dev/schema/settings.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A settings layer: ~/.itervox/settings.jsonc (user), .itervox/settings.jsonc (project, committed) or .itervox/settings.local.jsonc (project local, gitignored). Later layers win, and every layer wins over the same key in WORKFLOW.md's front matter (deprecated there). Secrets are $VAR references only. The files are JSONC: comments and trailing commas are allowed. Generated from the Itervox config registry; do not edit by hand.",
+  "description": "A settings layer: ~/.itervox/settings.jsonc (user), .itervox/settings.jsonc (project, committed) or .itervox/settings.local.jsonc (project local, gitignored). Later layers win; the project and local files also win over the same key in WORKFLOW.md's front matter (deprecated there), which in turn wins over the user file. Secrets are $VAR references only. The files are JSONC: comments and trailing commas are allowed. Generated from the Itervox config registry; do not edit by hand.",
   "properties": {
     "$schema": {
       "description": "The schema URL, for editor support.",

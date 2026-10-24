@@ -15,7 +15,7 @@ import (
 
 // newSettingsFile is what SetSetting starts a missing settings file from.
 const newSettingsFile = `// Itervox settings (JSONC: comments and trailing commas are fine).
-// Layers: built-in defaults < WORKFLOW.md front matter < ~/.itervox/settings.jsonc
+// Layers: built-in defaults < ~/.itervox/settings.jsonc < WORKFLOW.md front matter
 // < .itervox/settings.jsonc < .itervox/settings.local.jsonc (gitignored).
 // Sections: agent, automations, dependencies, hooks, hub, polling, server,
 // tracker, workspace. Secrets are $VAR references only. See the configuration docs.

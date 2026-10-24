@@ -11,8 +11,10 @@ import (
 // in the front matter keeps working, and is reported:
 //
 //   - as deprecated, naming where it moves (`itervox doctor`, the startup log);
-//   - as a conflict, when a settings file sets the same key: the settings file
-//     wins (SettingsLayerRank), and the conflict is reported once.
+//   - as a conflict, when the project or local settings file sets the same
+//     key: that file wins (SettingsLayerRank), and the conflict is reported
+//     once. A user-file value under the front matter is a personal default
+//     the project overrides, not a conflict.
 
 // FrontMatterMovesTo is where `itervox init --update` moves the layered
 // front-matter keys: the project settings file, relative to the directory of
@@ -34,8 +36,8 @@ type FrontMatterReport struct {
 	// applies unless a settings file sets it too), sorted. A key that is a
 	// map of settings is listed by its leaves.
 	Deprecated []string
-	// Conflicts are the front-matter keys a settings file also sets. The
-	// settings file's value is the one in effect.
+	// Conflicts are the front-matter keys the project or local settings file
+	// also sets. That file's value is the one in effect.
 	Conflicts []SettingsConflict
 }
 
@@ -69,6 +71,9 @@ func frontMatterReport(front map[string]any, layers []settingsLayer) FrontMatter
 			r.Deprecated = append(r.Deprecated, key)
 		}
 		for i := len(layers) - 1; i >= 0; i-- {
+			if SettingsLayerRank(layers[i].name) <= SettingsLayerRank(LayerWorkflow) {
+				break // the user file is below the front matter
+			}
 			if layerSets(layers[i].data, key) {
 				r.Conflicts = append(r.Conflicts, SettingsConflict{Key: key, Layer: layers[i].name, Path: layers[i].path})
 				break
@@ -150,14 +155,15 @@ func IsEnvReference(s string) bool { return envVarRe.MatchString(s) }
 // value at one of its parents.
 func SettingsDataSets(data map[string]any, key string) bool { return layerSets(data, key) }
 
-// MergeFrontMatterAndSettings merges settings data (lowest first) over a
-// front matter exactly as Load does, without parsing the result. `itervox
-// init --update` compares it before and after a move to prove the move
-// changes no effective value.
+// MergeFrontMatterAndSettings merges project-level settings data (lowest
+// first: the project file, then the local one) over a front matter exactly
+// as Load does, without parsing the result. `itervox init --update` compares
+// it before and after a move to prove the move changes no effective value.
 func MergeFrontMatterAndSettings(front map[string]any, settings ...map[string]any) map[string]any {
+	names := []string{LayerProject, LayerLocal}
 	layers := make([]settingsLayer, 0, len(settings))
 	for i, d := range settings {
-		layers = append(layers, settingsLayer{name: fmt.Sprintf("layer%d", i), data: d})
+		layers = append(layers, settingsLayer{name: names[min(i, len(names)-1)], data: d})
 	}
 	merged, _ := mergeLayers(front, layers)
 	return merged

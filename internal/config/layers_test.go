@@ -12,7 +12,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 )
 
-// #129 — settings layers; #239 — defaults < WORKFLOW.md < user < project < local.
+// #129 — settings layers; #239 — defaults < user < WORKFLOW.md < project < local.
 
 func writeSettings(t *testing.T, path, content string) {
 	t.Helper()
@@ -290,11 +290,10 @@ func TestAuthAliasPrecedenceIsPerLayer(t *testing.T) {
 		name, workflow, user, project string
 		want                          bool
 	}{
-		// #239: WORKFLOW.md is now the lowest layer.
-		{"user new true over workflow legacy false", "server:\n  allow_unauthenticated_lan: false\n",
-			`{"server": {"allow_unauthenticated": true}}`, "", true},
-		{"user legacy true over workflow new false", "server:\n  allow_unauthenticated: false\n",
-			`{"server": {"allow_unauthenticated_lan": true}}`, "", true},
+		{"workflow legacy false over user new true", "server:\n  allow_unauthenticated_lan: false\n",
+			`{"server": {"allow_unauthenticated": true}}`, "", false},
+		{"workflow new false over user legacy true", "server:\n  allow_unauthenticated: false\n",
+			`{"server": {"allow_unauthenticated_lan": true}}`, "", false},
 		{"project legacy false over user new true", "",
 			`{"server": {"allow_unauthenticated": true}}`, `{"server": {"allow_unauthenticated_lan": false}}`, false},
 		{"project new false over workflow legacy true", "server:\n  allow_unauthenticated_lan: true\n",

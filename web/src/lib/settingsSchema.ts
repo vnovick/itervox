@@ -274,7 +274,7 @@ export const SETTINGS_LAYER_INFO: Partial<Record<string, { label: string; git: s
   local: { label: 'Project local', git: 'Yours, for this project only. Gitignored.' },
   workflow: {
     label: 'WORKFLOW.md',
-    git: 'The workflow’s front matter (deprecated for these settings): every layer wins over it.',
+    git: 'The workflow’s front matter (deprecated for these settings): wins over your user file; the project and local files win over it.',
   },
   default: { label: 'Default', git: 'Built in.' },
   environment: { label: 'Environment', git: 'An environment variable.' },

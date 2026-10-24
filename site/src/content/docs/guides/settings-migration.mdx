@@ -16,17 +16,25 @@ stays the import and export format.
 
 **Nothing breaks.** A workflow that keeps these sections in its front matter
 loads and behaves exactly as before, with `itervox_schema_version: 2` (no schema
-bump). The one change in precedence: when a settings file and the front matter
-set the same key, the settings file wins.
+bump). The order is: defaults < your user file (`~/.itervox/settings.jsonc`) <
+`WORKFLOW.md` front matter < the project file < the project-local file. The
+one change in precedence: when the project or local file and the front matter
+set the same key, the file wins. Your user file holds personal defaults for
+every project, so a project's own front matter still wins over it.
+
+**New projects start migrated.** `itervox init` (every template) and
+`itervox quickstart` write the layered sections to `.itervox/settings.jsonc`;
+this guide is for projects created before that.
 
 ## What you see before migrating
 
 - `itervox doctor` prints one `deprecated:` line per front-matter key, naming
   `.itervox/settings.jsonc` as where it moves.
 - The daemon's startup log names the deprecated keys once.
-- A key set both in the front matter and in a settings file is reported once
-  as a conflict (a `WARNING:` line in `itervox doctor`, one startup-log line),
-  naming the file whose value is in effect.
+- A key set both in the front matter and in the project or local settings
+  file is reported once as a conflict (a `WARNING:` line in `itervox doctor`,
+  one startup-log line), naming the file whose value is in effect. A user-file
+  value under the front matter is not a conflict.
 
 ## Migrate
 
@@ -142,6 +150,6 @@ refuse to write an inline secret.
 ## Moving back
 
 The front matter still works, so moving a key back is a hand edit: set it in
-the front matter and delete it from the settings files (a settings file would
-win). `itervox export --symphony` writes a Symphony `WORKFLOW.md` from the
+the front matter and delete it from the project and local settings files
+(they would win). `itervox export --symphony` writes a Symphony `WORKFLOW.md` from the
 merged configuration wherever the keys live.

@@ -4,13 +4,15 @@ package config
 // automations, dependencies, hooks, hub, polling, server, tracker, workspace)
 // can come from three JSONC files as well as from WORKFLOW.md:
 //
-//	built-in defaults → WORKFLOW.md front matter (deprecated for these sections)
-//	                  → user (~/.itervox/settings.jsonc)
+//	built-in defaults → user (~/.itervox/settings.jsonc: personal defaults)
+//	                  → WORKFLOW.md front matter (deprecated for these sections)
 //	                  → project (.itervox/settings.jsonc next to WORKFLOW.md, committed)
 //	                  → local (.itervox/settings.local.jsonc, gitignored)
 //
-// The last layer that sets a key wins, so a settings file wins over the front
-// matter (#239); a key set in both is reported once as a conflict
+// The last layer that sets a key wins. The user file holds personal defaults
+// for every project, so a project's own front matter keeps winning over it;
+// the project and local files win over the front matter (#239), and a key the
+// front matter and one of them both set is reported once as a conflict
 // (FrontMatterReport). Maps merge key by key; any other value (a list
 // included) is replaced whole. WORKFLOW.md keeps the prompt template (its
 // body), the schema marker, the sections that are not layered, and the agent
@@ -106,14 +108,14 @@ func SettingsLayerPath(workflowPath, layer string) string {
 }
 
 // SettingsLayerRank orders the settings layers, lowest first: a layer of a
-// higher rank wins over one of a lower rank. WORKFLOW.md's front matter is
-// the lowest layer above the defaults (#239): every settings file wins over
-// it.
+// higher rank wins over one of a lower rank. WORKFLOW.md's front matter sits
+// between the user file (personal defaults, which it overrides) and the
+// project and local files (which override it, #239).
 func SettingsLayerRank(layer string) int {
 	switch layer {
-	case LayerWorkflow:
-		return 1
 	case LayerUser:
+		return 1
+	case LayerWorkflow:
 		return 2
 	case LayerProject:
 		return 3
@@ -255,15 +257,23 @@ func normalizeJSON(v any) any {
 	return v
 }
 
-// mergeLayers merges the settings layers over the WORKFLOW.md front matter
-// (#239: a settings file wins) and records, for every leaf key path
-// ("agent.max_turns"), the layer that set it.
+// mergeLayers merges the layers in SettingsLayerRank order — the user file,
+// then the WORKFLOW.md front matter, then the project and local files (#239)
+// — and records, for every leaf key path ("agent.max_turns"), the layer that
+// set it.
 func mergeLayers(front map[string]any, layers []settingsLayer) (map[string]any, map[string]settingsSource) {
 	merged := map[string]any{}
 	sources := map[string]settingsSource{}
-	mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+	frontDone := false
 	for _, l := range layers {
+		if !frontDone && SettingsLayerRank(l.name) > SettingsLayerRank(LayerWorkflow) {
+			mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+			frontDone = true
+		}
 		mergeInto(merged, l.data, "", settingsSource{layer: l.name, path: l.path}, sources)
+	}
+	if !frontDone {
+		mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
 	}
 	return merged, sources
 }

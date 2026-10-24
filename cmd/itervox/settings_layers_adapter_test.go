@@ -97,9 +97,7 @@ func TestSettingsPageSaveWritesChosenLayerAndKeepsComments(t *testing.T) {
 			wfText := readString(t, wf)
 			if layer == config.LayerUser {
 				assert.Contains(t, wfText, "max_turns: 12", "a user save never edits the project's WORKFLOW.md")
-				// #239: the user file wins over WORKFLOW.md's copy now.
-				assert.NotContains(t, res.Shadowed, "agent.max_turns")
-				assert.Equal(t, 7, explainKey(t, wf, "agent.max_turns").Value)
+				assert.Equal(t, config.LayerWorkflow, res.Shadowed["agent.max_turns"])
 				assert.Equal(t, config.LayerLocal, res.Shadowed["agent.max_retries"])
 			} else {
 				assert.NotContains(t, wfText, "max_turns:")

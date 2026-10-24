@@ -97,11 +97,12 @@ func TestFrontMatterStillLoadsWithDeprecationNotice(t *testing.T) {
 }
 
 // TestSettingsFileWinsOverFrontMatterAndConflictIsReported (#239): when a key
-// is set both in WORKFLOW.md's front matter and in a settings file, the
-// settings file's value is the one in effect (the highest file that sets
-// it), and the conflict is reported once: one entry per key in the load
+// is set both in WORKFLOW.md's front matter and in the project or local
+// settings file, that file's value is the one in effect (local over
+// project), and the conflict is reported once: one entry per key in the load
 // report, one doctor warning, one startup log line however often the
-// workflow reloads. A front-matter key no file sets still applies.
+// workflow reloads. A user-file value under the front matter is a personal
+// default, not a conflict, and a front-matter key no file sets still applies.
 func TestSettingsFileWinsOverFrontMatterAndConflictIsReported(t *testing.T) {
 	user := filepath.Join(t.TempDir(), "settings.jsonc")
 	t.Setenv(config.UserSettingsEnv, user)
@@ -111,27 +112,30 @@ func TestSettingsFileWinsOverFrontMatterAndConflictIsReported(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, []byte(text), 0o644))
 	}
-	writeLayer(user, `{"hooks": {"timeout_ms": 1000}}`)
+	writeLayer(user, `{"hooks": {"timeout_ms": 1000, "after_create": "echo user"}, "tracker": {"failed_state": "Done"}}`)
 	writeLayer(config.ProjectSettingsPath(path), `{"tracker": {"active_states": ["Ready"]}, "hooks": {"timeout_ms": 2000}, "automations": []}`)
 	writeLayer(config.LocalSettingsPath(path), `{"hooks": {"timeout_ms": 3000}}`)
 
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Ready"}, cfg.Tracker.ActiveStates, "the project file wins over the front matter")
-	assert.Equal(t, 3000, cfg.Hooks.TimeoutMs, "the highest file wins")
+	assert.Equal(t, 3000, cfg.Hooks.TimeoutMs, "the local file wins over the project file")
 	assert.Empty(t, cfg.Automations, "an empty list in a file replaces the front matter's")
 	assert.Equal(t, []string{"Done"}, cfg.Tracker.TerminalStates, "a key no file sets still applies")
-	assert.Equal(t, "echo hi", cfg.Hooks.AfterCreate)
+	assert.Equal(t, "echo hi", cfg.Hooks.AfterCreate, "the front matter wins over the user file")
+	assert.Equal(t, "Todo", cfg.Tracker.FailedState, "the front matter wins over the user file")
 
 	assert.Equal(t, []config.SettingsConflict{
 		{Key: "automations", Layer: config.LayerProject, Path: config.ProjectSettingsPath(path)},
 		{Key: "hooks.timeout_ms", Layer: config.LayerLocal, Path: config.LocalSettingsPath(path)},
 		{Key: "tracker.active_states", Layer: config.LayerProject, Path: config.ProjectSettingsPath(path)},
-	}, cfg.FrontMatter.Conflicts, "one entry per key, naming the layer in effect")
+	}, cfg.FrontMatter.Conflicts, "one entry per key, naming the layer in effect; the user file never conflicts")
 
 	text := renderDoctorReport(DoctorReport{Workflow: path, FrontMatter: cfg.FrontMatter})
 	assert.Equal(t, 1, strings.Count(text, "WARNING: hooks.timeout_ms is set both in WORKFLOW.md front matter and in the local settings file"), text)
 	assert.Contains(t, text, "the settings file wins")
+	assert.NotContains(t, text, "hooks.after_create is set both")
+	assert.NotContains(t, text, "user settings file")
 
 	logs := captureSlog(t)
 	for range 3 { // the first load and two reloads
@@ -148,4 +152,46 @@ func TestSettingsFileWinsOverFrontMatterAndConflictIsReported(t *testing.T) {
 	// Explain names the winning file, never the front matter.
 	s := explainKey(t, path, "hooks.timeout_ms")
 	assert.Equal(t, config.LayerLocal, s.Layer)
+}
+
+// TestUserSettingsDoNotOverrideProjectFrontMatter (#239): the user settings
+// file holds personal defaults for every project. It fills in keys a
+// project does not set, but a project's own WORKFLOW.md front matter keeps
+// winning over it (as before #239) — while the project and local files win
+// over the front matter. A user-file value under the front matter is not a
+// conflict, and Explain names the front matter as the layer in effect.
+func TestUserSettingsDoNotOverrideProjectFrontMatter(t *testing.T) {
+	user := filepath.Join(t.TempDir(), "settings.jsonc")
+	t.Setenv(config.UserSettingsEnv, user)
+	require.NoError(t, os.WriteFile(user, []byte(`// my defaults everywhere
+{
+  "tracker": {"active_states": ["Mine"], "working_state": "Busy"},
+  "hooks": {"timeout_ms": 1111, "before_run": "echo user"},
+  "dependencies": {"analysis_mode": "auto"},
+  "automations": [],
+  "agent": {"max_turns": 99},
+}`), 0o644))
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, []byte(frontMatterFixture), 0o644))
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Todo", "Doing"}, cfg.Tracker.ActiveStates, "the project's front matter wins over the user file")
+	assert.Equal(t, 4321, cfg.Hooks.TimeoutMs)
+	assert.Equal(t, "manual", cfg.Dependencies.AnalysisMode)
+	require.Len(t, cfg.Automations, 1, "the front matter's list wins over the user file's")
+	assert.Equal(t, "Busy", cfg.Tracker.WorkingState, "a user default fills a key the project does not set")
+	assert.Equal(t, "echo user", cfg.Hooks.BeforeRun)
+	assert.Equal(t, 99, cfg.Agent.MaxTurns)
+	assert.Empty(t, cfg.FrontMatter.Conflicts, "a user default under the front matter is not a conflict")
+	assert.Equal(t, config.LayerWorkflow, explainKey(t, path, "tracker.active_states").Layer)
+	assert.Equal(t, config.LayerUser, explainKey(t, path, "tracker.working_state").Layer)
+
+	// The project file still wins over the front matter.
+	require.NoError(t, os.MkdirAll(filepath.Dir(config.ProjectSettingsPath(path)), 0o755))
+	require.NoError(t, os.WriteFile(config.ProjectSettingsPath(path), []byte(`{"tracker": {"active_states": ["Project"]}}`), 0o644))
+	cfg, err = config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Project"}, cfg.Tracker.ActiveStates)
+	assert.Equal(t, []config.SettingsConflict{{Key: "tracker.active_states", Layer: config.LayerProject, Path: config.ProjectSettingsPath(path)}}, cfg.FrontMatter.Conflicts)
 }

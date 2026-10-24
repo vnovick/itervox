@@ -38,9 +38,9 @@ live in three JSONC files with one published schema
 
 | Layer | File | Wins over |
 |-------|------|-----------|
-| `workflow` | `WORKFLOW.md` front matter (deprecated for these sections) | defaults |
-| `user` | `~/.itervox/settings.jsonc` (`ITERVOX_USER_SETTINGS`; `off` disables it) | workflow |
-| `project` | `.itervox/settings.jsonc` (committed) | user |
+| `user` | `~/.itervox/settings.jsonc` (`ITERVOX_USER_SETTINGS`; `off` disables it): personal defaults | defaults |
+| `workflow` | `WORKFLOW.md` front matter (deprecated for these sections) | user |
+| `project` | `.itervox/settings.jsonc` (committed) | workflow |
 | `local` | `.itervox/settings.local.jsonc` (gitignored) | project |
 
 - `WORKFLOW.md` holds the prompt: its body is the Liquid template, and it stays
@@ -50,8 +50,12 @@ live in three JSONC files with one published schema
   and the legacy `agent.reviewer_prompt`.
 - Front-matter keys still apply. `itervox doctor` lists each as `deprecated:`
   with where it moves (`.itervox/settings.jsonc`); the startup log names them
-  once. A key also set in a settings file is a conflict: the settings file wins,
-  and the conflict is reported once.
+  once. A key also set in the project or local file is a conflict: that file
+  wins, and the conflict is reported once. A user-file value under the front
+  matter is a default the project overrides, not a conflict.
+- `itervox init` (every template, and `itervox quickstart`) writes the layered
+  sections to `.itervox/settings.jsonc`, so a new project has nothing
+  deprecated.
 - Secrets are `$VAR` references in settings files (`"api_key": "$LINEAR_API_KEY"`);
   values stay in the environment or `.itervox/.env`. Writers refuse an inline
   secret.

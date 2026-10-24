@@ -192,9 +192,10 @@ func TestDashboardSaveOfTrackerAndDependenciesKeysMovesThemToSettings(t *testing
 // page by its layer tab (user, project or local), and through the dedicated
 // tracker endpoints the layer that already holds the keys (local when it
 // sets them, else project) — through the one comment-preserving writer. The
-// keys leave WORKFLOW.md (never for a user-layer save), the chosen file's
-// value is the one in effect, and the Live state lists reach the running
-// daemon through their cfgMu setters with no reload.
+// keys leave WORKFLOW.md (never for a user-layer save), the chosen project or
+// local file's value is the one in effect (a user-file value stays under the
+// project's front matter), and the Live state lists reach the running daemon
+// through their cfgMu setters with no reload.
 func TestSettingsSaveForTrackerWritesChosenLayer(t *testing.T) {
 	for _, layer := range config.SettingsLayerNames {
 		t.Run("settings page "+layer, func(t *testing.T) {
@@ -219,9 +220,16 @@ func TestSettingsSaveForTrackerWritesChosenLayer(t *testing.T) {
 			var res server.SettingsLayerSaveResult
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
 			assert.Equal(t, layer, res.Layer)
-			assert.ElementsMatch(t, []string{"tracker.active_states", "tracker.completion_state"}, res.Applied, "Live keys apply at once")
+			if layer == config.LayerUser {
+				// The user file holds personal defaults: the project's own
+				// front matter (active_states) still wins over it.
+				assert.Equal(t, map[string]string{"tracker.active_states": config.LayerWorkflow}, res.Shadowed)
+				assert.Equal(t, []string{"tracker.completion_state"}, res.Applied, "only the key no higher layer sets changes")
+			} else {
+				assert.ElementsMatch(t, []string{"tracker.active_states", "tracker.completion_state"}, res.Applied, "Live keys apply at once")
+				assert.Empty(t, res.Shadowed, "no layer wins over the chosen one")
+			}
 			assert.Equal(t, []string{"tracker.push_interval_ms"}, res.RestartRequired)
-			assert.Empty(t, res.Shadowed, "no layer wins over the chosen one")
 
 			text := readString(t, chosen)
 			assert.Contains(t, text, "// my "+layer+" notes", "the file keeps its comments")
@@ -240,11 +248,16 @@ func TestSettingsSaveForTrackerWritesChosenLayer(t *testing.T) {
 				assert.NotContains(t, readString(t, wf), "active_states:", "a project or local save moves the key out of WORKFLOW.md")
 			}
 
-			s := explainKey(t, wf, "tracker.active_states")
-			assert.Equal(t, layer, s.Layer, "the chosen layer is in effect")
 			active, _, completion := a.orch.TrackerStatesCfg()
-			assert.Equal(t, []string{"Todo", "Doing"}, active, "applied through the cfgMu setter")
-			assert.Equal(t, "Review", completion)
+			assert.Equal(t, "Review", completion, "applied through the cfgMu setter")
+			assert.Equal(t, layer, explainKey(t, wf, "tracker.completion_state").Layer, "the chosen layer is in effect")
+			if layer == config.LayerUser {
+				assert.Equal(t, config.LayerWorkflow, explainKey(t, wf, "tracker.active_states").Layer)
+				assert.Equal(t, []string{"Todo", "In Progress"}, active, "the front matter's list stays in effect")
+				return
+			}
+			assert.Equal(t, layer, explainKey(t, wf, "tracker.active_states").Layer)
+			assert.Equal(t, []string{"Todo", "Doing"}, active)
 			got, err := mt.FetchCandidateIssues(t.Context())
 			require.NoError(t, err)
 			assert.Len(t, got, 1, "the tracker client sees the new active_states without a reload")

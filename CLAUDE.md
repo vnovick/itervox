@@ -428,10 +428,12 @@ keep this section in sync with that test. All **other** `cfg` fields are read-on
 ### Settings layers — one config format (#239)
 
 Config comes from layered JSONC files plus `WORKFLOW.md`, merged in
-`internal/config/layers.go`: defaults < `WORKFLOW.md` front matter < user
-(`~/.itervox/settings.jsonc`) < project (`.itervox/settings.jsonc`, committed)
-< local (`.itervox/settings.local.jsonc`, gitignored). A settings file wins over
-the front matter.
+`internal/config/layers.go`: defaults < user (`~/.itervox/settings.jsonc`,
+personal defaults) < `WORKFLOW.md` front matter < project
+(`.itervox/settings.jsonc`, committed) < local (`.itervox/settings.local.jsonc`,
+gitignored). The project and local files win over the front matter; the front
+matter wins over the user file, and only a project/local value over a
+front-matter key is reported as a conflict.
 
 - **Layered sections** (`config.LayeredSections`): `agent`, `automations`
   (a list section, `config.ListSections`: a file sets the whole list),
@@ -454,6 +456,9 @@ the front matter.
   `config.ValidateSettingValue` refuses an inline secret, and
   `itervox init --update` (`cmd/itervox/init_settings_move.go`) leaves a key
   holding one in WORKFLOW.md. Never resolve a `$VAR` into a settings file.
+- **Fresh projects**: `itervox init` / `quickstart` (`scaffoldWorkflow` →
+  `moveScaffoldSettings`) write the layered sections to
+  `.itervox/settings.jsonc`, so a new project has nothing deprecated.
 - **Migration**: `itervox init --update` moves the layered front-matter keys
   to `.itervox/settings.jsonc` (WORKFLOW.md.bak first, YAML comments carried as
   `//` comments, refused if the merged config would change; `--dry-run`).
