@@ -13,7 +13,13 @@ It is a thin [Tauri](https://tauri.app/) shell: the app bundle contains the same
 
 ## Install
 
-Download `Itervox_<version>_universal.dmg` from the [latest release](https://github.com/vnovick/itervox/releases/latest), open it and drag **Itervox** to **Applications**. The app is signed with a Developer ID and notarized by Apple, so it opens without a Gatekeeper warning, on Apple silicon and Intel Macs (macOS 11 or later). Open it from **Applications**: an app opened from the disk image or the Downloads folder runs from a read-only copy and cannot update itself or install the command-line tool.
+There are three ways to install the app. None of them needs an Apple ID or an Apple developer account: only the maintainer's release build is signed and notarized, once, for everyone.
+
+- **Disk image.** Download `Itervox_<version>_universal.dmg` from the [latest release](https://github.com/vnovick/itervox/releases/latest), open it and drag **Itervox** to **Applications**. The app is signed with a Developer ID and notarized by Apple, so it opens without a Gatekeeper warning, on Apple silicon and Intel Macs (macOS 11 or later).
+- **Homebrew.** `brew install --cask vnovick/tap/itervox` installs the same signed, notarized disk image from the release (the cask is updated by the release workflow after notarization succeeds). The cask is marked `auto_updates`: the app [updates itself](#updates), so a plain `brew upgrade` leaves it alone and `brew upgrade --cask --greedy itervox` upgrades it through Homebrew. `vnovick/tap/itervox` without `--cask` is the command-line formula.
+- **From source.** `make desktop` in a checkout of the repository ([Build it from source](#build-it-from-source)). A build made on your own Mac is not quarantined, so Gatekeeper opens it without signing or notarization.
+
+Open the app from **Applications**: an app opened from the disk image or the Downloads folder runs from a read-only copy and cannot update itself or install the command-line tool.
 
 The app has no Dock icon: look for the **I//** mark in the menu bar.
 
@@ -24,6 +30,7 @@ The app checks for a new release 10 seconds after it starts and every 6 hours; *
 - The daemon bundled in the app is updated with it.
 - Daemons that are running keep running through the update — no agent is interrupted — on the version they were started with. **Restart** a project to move its daemon to the new version.
 - Pre-releases are never offered.
+- Installed with Homebrew, the app updates itself the same way; Homebrew picks up the new version at your next `brew upgrade --greedy`.
 
 ## Command-line tool
 
@@ -46,7 +53,7 @@ make desktop
 open desktop/src-tauri/target/release/bundle/macos/Itervox.app
 ```
 
-`make desktop` builds the dashboard, the daemon for both Mac architectures (placed as the app's sidecar), installs the Tauri CLI on first use, and bundles `Itervox.app` and a `.dmg` for your Mac's architecture under `desktop/src-tauri/target/release/bundle/`. Copy the app to `/Applications` if you like. A build from source is unsigned. It checks for updates like a release when `desktop/src-tauri/tauri.conf.json` carries the release update key (`plugins.updater.pubkey`), and offers the newer signed release; without the key its menu shows **Updates off** and it never checks. How releases are signed, notarized and published: [docs/release-mac.md](https://github.com/vnovick/itervox/blob/main/docs/release-mac.md).
+`make desktop` builds the dashboard, the daemon for both Mac architectures (placed as the app's sidecar), installs the Tauri CLI on first use, and bundles `Itervox.app` and a `.dmg` for your Mac's architecture under `desktop/src-tauri/target/release/bundle/`. Copy the app to `/Applications` if you like. A build from source is unsigned, and needs no Apple ID: macOS only checks signatures of apps that carry the quarantine flag a download gets, and an app you built on your own Mac has none, so it opens like any other. (Copied to another Mac it is quarantined there; see [Troubleshooting](#troubleshooting).) It checks for updates like a release when `desktop/src-tauri/tauri.conf.json` carries the release update key (`plugins.updater.pubkey`), and offers the newer signed release; without the key its menu shows **Updates off** and it never checks. How releases are signed, notarized and published: [docs/release-mac.md](https://github.com/vnovick/itervox/blob/main/docs/release-mac.md).
 
 ## Projects
 
@@ -115,11 +122,35 @@ The first notification may ask for permission; you can change it later in **Syst
 
 ## Dashboard windows
 
-**Open Dashboard** opens the project's dashboard in its own window (the Dock icon shows while a window is open). The app hands the window the daemon's token through a script that runs before the dashboard loads and only on the daemon's own address, which writes it where the dashboard keeps its token for the session. The token is never part of a URL, so it does not appear in the window's history, the daemon's request log, or a link you copy. The dashboard's `?token=` link form still works in a browser; the app does not need it.
+**Open Dashboard** opens the project's dashboard in a window (the Dock icon shows while a window is open), or brings forward the window already showing it. The app hands the window the daemon's token through a script that runs before the dashboard loads and only on the daemon's own address, which writes it where the dashboard keeps its token for the session. The token is never part of a URL, so it does not appear in the window's history, the daemon's request log, or a link you copy. The dashboard's `?token=` link form still works in a browser; the app does not need it.
 
 **Repo Analysis** opens the same window at the dashboard's [Repo Analysis](/guides/repo-analysis/) page (`<dashboard>/repo`), with the token handed over the same way.
 
 **Memory** opens it at the dashboard's [Memory](/guides/memory/) page (`<dashboard>/memory`) the same way.
+
+### Project rail
+
+Every dashboard window has a project rail on its left: every project the app knows, so you can switch projects without the menu bar.
+
+- **Groups.** Pinned projects first, then **Hub** (the members of this Mac's [hub](/guides/hub/)), **This Mac** (daemons outside the hub, and added projects that are stopped), and one group per remote, named after it.
+- **Each row** shows the project's name, a health dot (green running, grey stopped, red unreachable, amber token required, blue starting or stopping), the number of running agents, and a badge counting the questions and guardrail approvals waiting for you. Hover a row for its full status line.
+- **No extra polling.** The rail shows what the menu-bar refresh already read — from the hub's one projects request while a hub serves, per daemon otherwise, and through the tunnels for remotes — and updates after each refresh.
+- **Switching.** Click a row to show that project's dashboard in the same window, with its token handed over exactly as when the window opened (never in a URL). A stopped project, or a remote whose tunnel is down, has no dashboard to show.
+- **Open in New Window.** Right-click a row (or press <kbd>Shift</kbd>+<kbd>F10</kbd>) for **Open in New Window**, **Pin to Top** / **Unpin**, **Move Up** and **Move Down**. **Open Dashboard** in the menu bar and a notification open a project in the window already showing it, else in a new one.
+- **Arranging.** Drag rows to reorder them within their group, or pin the ones you use most. The order, the pins and whether the rail is collapsed are saved with the project list (`projects.json`) and survive a restart.
+- **Collapsing.** The button at the top of the rail (or <kbd>⌥⌘S</kbd>) shrinks it to initials, dots and badges.
+
+| Shortcut | Does |
+|---|---|
+| <kbd>⌘1</kbd> … <kbd>⌘9</kbd> | Show the first nine projects of the rail, top to bottom |
+| <kbd>⌘⇧]</kbd> / <kbd>⌘⇧[</kbd> | Next / previous project (skipping ones without a dashboard) |
+| <kbd>⌥⌘S</kbd> | Show or hide project names |
+
+The shortcuts are in the **Projects** menu of the menu bar while a window is open, and act on the window in front.
+
+The rail is keyboard and screen-reader accessible: <kbd>Tab</kbd> reaches it, the arrow keys (and <kbd>Home</kbd>/<kbd>End</kbd>) move between projects, <kbd>Return</kbd> switches, <kbd>Option</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> moves a row, and every dot and badge has a spoken label (for example "alpha, running, 2 agents running, 1 waiting for you"). The current project is announced as current.
+
+The rail is a page of the app itself, shown beside the dashboard in the same window but kept apart from it: it has no access to the network or to the app's internals, it never sees a token, and the dashboard gets no new permissions from it.
 
 ## Sessions window
 
@@ -199,7 +230,7 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 
 | Path | What |
 |---|---|
-| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added |
+| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added, and the project rail's order, pins and collapsed state |
 | `~/Library/Logs/dev.itervox.desktop/daemons/` | Output of daemons the app started (the daemons' own logs stay under `~/.itervox/logs/`) |
 | Login Keychain, `dev.itervox.desktop.supervisor-token` | One supervisor token per project |
 | `~/Library/Application Support/dev.itervox.desktop/remotes.json` | The remotes you added: transport, host, their daemons and the local port each last used (no tokens) |
@@ -219,10 +250,10 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 
 ## Development
 
-The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on Linux too; `app.rs` is the Tauri glue.
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project rail of the dashboard windows (`rail.rs`, its page `desktop/dist/rail.html`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on Linux too; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue.
 
 ```bash
-make desktop-test   # fmt, clippy -D warnings, unit tests, end-to-end tests against a real daemon, and dry runs of the release scripts (needs jq)
+make desktop-test   # fmt, clippy -D warnings, unit tests, end-to-end tests against a real daemon, and dry runs of the release scripts, the Homebrew cask's included (needs jq)
 ```
 
 The end-to-end tests start a real daemon the way the app does, list it, read its state with the supervisor token, restart and stop it, make a stand-in agent ask a question and check the notification link and that the Sessions window lists the waiting session (keyed by the agent CLI's session ID) and opens its `/sessions?id=` page, and start a daemon with launchd's environment to check the login-shell `PATH`. The remote tests (`tests/remote_e2e.rs`) put a stand-in `ssh` and `gcloud` on `PATH` that relay to this machine: they add an SSH and an IAP remote against real daemons, list their daemons, read their tokens and open their dashboards through the tunnels, kill tunnel processes and check they come back, simulate a wake and a network change, and check two remotes never share a port or a token. To run the app against a daemon binary of your choice, set `ITERVOX_DESKTOP_DAEMON` to its absolute path.

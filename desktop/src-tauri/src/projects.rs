@@ -1,7 +1,8 @@
 //! The projects the user added in the app, persisted as JSON in the app's
 //! config directory (`projects.json`). Daemons found by `status --all --json`
 //! are listed whether or not they were added; an added project is listed
-//! also while its daemon is stopped, so it can be started.
+//! also while its daemon is stopped, so it can be started. The project
+//! rail's order, pins and collapsed state (#244) are kept in the same file.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,16 +21,63 @@ pub struct SavedProject {
     pub workflow: String,
 }
 
+/// How the user arranged the project rail of the dashboard windows (#244).
+/// Keys are project keys: a WORKFLOW.md path, or a remote daemon's key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RailPrefs {
+    /// The rows' order inside their groups, as the user dragged them; a
+    /// project not listed keeps its default place after the listed ones.
+    pub order: Vec<String>,
+    /// Pinned projects, top of the rail, in this order.
+    pub pinned: Vec<String>,
+    /// The rail shows icons only.
+    pub collapsed: bool,
+}
+
+impl RailPrefs {
+    pub fn is_pinned(&self, key: &str) -> bool {
+        self.pinned.iter().any(|k| k == key)
+    }
+
+    /// Pins (or unpins) a project; false when nothing changed.
+    pub fn set_pinned(&mut self, key: &str, pinned: bool) -> bool {
+        if pinned == self.is_pinned(key) {
+            return false;
+        }
+        if pinned {
+            self.pinned.push(key.to_string());
+        } else {
+            self.pinned.retain(|k| k != key);
+        }
+        true
+    }
+
+    /// Forgets a project.
+    pub fn forget(&mut self, key: &str) {
+        self.pinned.retain(|k| k != key);
+        self.order.retain(|k| k != key);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FileShape {
     version: u32,
     projects: Vec<SavedProject>,
+    /// Absent in files written before #244; ignored by older apps.
+    #[serde(default, skip_serializing_if = "is_default_rail")]
+    rail: RailPrefs,
 }
 
-/// The added projects, in the order they were added.
+fn is_default_rail(r: &RailPrefs) -> bool {
+    *r == RailPrefs::default()
+}
+
+/// The added projects, in the order they were added, and the rail layout.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SavedProjects {
     pub projects: Vec<SavedProject>,
+    pub rail: RailPrefs,
 }
 
 /// The project key for a WORKFLOW.md path: absolute, `.` and `..` resolved
@@ -71,6 +119,7 @@ impl SavedProjects {
                 }
                 Ok(Self {
                     projects: shape.projects,
+                    rail: shape.rail,
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -87,6 +136,7 @@ impl SavedProjects {
         let data = serde_json::to_vec_pretty(&FileShape {
             version: FILE_VERSION,
             projects: self.projects.clone(),
+            rail: self.rail.clone(),
         })
         .map_err(|e| e.to_string())?;
         let tmp = path.with_extension("json.tmp");
@@ -116,10 +166,12 @@ impl SavedProjects {
         true
     }
 
-    /// Removes a project; false when it was not there.
+    /// Removes a project (and its place in the rail); false when it was
+    /// not there.
     pub fn remove(&mut self, key: &str) -> bool {
         let before = self.projects.len();
         self.projects.retain(|p| p.workflow != key);
+        self.rail.forget(key);
         before != self.projects.len()
     }
 }

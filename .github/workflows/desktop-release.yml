@@ -2,7 +2,8 @@ name: Desktop release
 
 # The signed, notarized macOS release (#130): a universal Itervox.app (with
 # the itervox daemon as its sidecar) in a .dmg, the universal `itervox` CLI
-# in a .zip, and the updater archive + latest.json the app updates from.
+# in a .zip, the updater archive + latest.json the app updates from, and
+# then the Homebrew cask in the tap (#244, notarized releases only).
 #
 # Called by release.yml after GoReleaser has created the GitHub release for
 # the tag, and runnable by hand (Actions → Desktop release) to build and
@@ -333,3 +334,26 @@ jobs:
           if [ -f "$OUT/latest.json" ]; then
             gh release upload "$TAG" "$OUT/latest.json" --clobber --repo "$GITHUB_REPOSITORY"
           fi
+
+      # --- the Homebrew cask -------------------------------------------------
+
+      # Casks/itervox.rb in the tap that holds the CLI formula (#244), with
+      # this version and the DMG's SHA-256. It runs only for a notarized
+      # build (a failed notarization fails the job before this step) and
+      # after the DMG is on the release, so `brew install --cask` never
+      # points at a missing or unsigned file. Without the signing secrets
+      # the step is skipped, and the script skips again without the tap
+      # token or for a pre-release.
+      - name: Update the Homebrew cask
+        if: inputs.tag != '' && steps.mode.outputs.notarize == 'true'
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          NOTARIZED: ${{ steps.mode.outputs.notarize }}
+          DMG: ${{ steps.dmg.outputs.dmg }}
+          REPO: ${{ github.repository }}
+        run: |
+          bash desktop/scripts/homebrew-cask.sh render \
+            --version "$VERSION" --dmg "$DMG" --repo "$REPO" --out "$OUT/itervox.rb"
+          bash desktop/scripts/homebrew-cask.sh publish \
+            --cask "$OUT/itervox.rb" --version "$VERSION" --notarized "$NOTARIZED"

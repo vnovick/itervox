@@ -14,6 +14,10 @@ described in the [Mac app guide](../site/src/content/docs/guides/mac-app.mdx).
 | `Itervox_<version>_universal.app.tar.gz` (+ `.sig`) | The archive installed apps update from, and its updater signature |
 | `latest.json` | The updater manifest installed apps read |
 
+After those are uploaded, a notarized release also updates the Homebrew cask
+`Casks/itervox.rb` in `vnovick/homebrew-tap` (#244), so that
+`brew install --cask vnovick/tap/itervox` installs the `.dmg` above.
+
 GoReleaser's `itervox_darwin_amd64.tar.gz` / `_arm64.tar.gz` (and the
 Homebrew formula built from them) stay as they were: built on Linux and not
 signed. Homebrew does not quarantine what it installs, so Gatekeeper does not
@@ -41,6 +45,7 @@ scripts never print them.
 | `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | **instead of the API key**: an Apple ID, an [app-specific password](https://support.apple.com/102654) for it, and the team ID | — |
 | `TAURI_SIGNING_PRIVATE_KEY` | the updater private key (below) | — |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password | — |
+| `HOMEBREW_TAP_GITHUB_TOKEN` | a token that can write to `vnovick/homebrew-tap` (the same secret GoReleaser uses for the CLI formula) | a fine-grained token with **Contents: read and write** on the tap |
 
 The job fails, instead of shipping something half-signed, when only some of
 the three certificate secrets are set, when the certificate is set but
@@ -102,7 +107,15 @@ key that carries the new public key, then switch the secrets.
    (`desktop/scripts/gen-latest-json.sh`, with the CHANGELOG section as the
    notes);
 9. uploads everything to the release, `latest.json` last, so a manifest is
-   never published before the archive it points at.
+   never published before the archive it points at;
+10. for a notarized build only, renders `Casks/itervox.rb` with the version,
+    the `.dmg`'s SHA-256, `depends_on macos:` from
+    `bundle.macOS.minimumSystemVersion` and `auto_updates true`
+    (`desktop/scripts/homebrew-cask.sh render`), and commits it to the tap
+    through the GitHub API (`… publish`). The step does not run without the
+    signing secrets, and the script skips (with a notice) without
+    `HOMEBREW_TAP_GITHUB_TOKEN` or for a pre-release, so an unsigned or
+    pre-release app never reaches the tap.
 
 Re-run it on its own (Actions → **Desktop release** → Run workflow) to build
 and verify without publishing: the files are kept as a workflow artifact for
