@@ -11,6 +11,7 @@ import { RetriesCard } from './RetriesCard';
 import { CapacityCard } from './CapacityCard';
 import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
 import { BrowserNotificationsCard } from './BrowserNotificationsCard';
+import { EditorCard } from './EditorCard';
 import { SchemaSettingsCard } from './schema/SchemaSettingsCard';
 import { useSettingsPageData } from './useSettingsPageData';
 import { RequireScope } from '../../components/itervox/RequireScope';
@@ -104,6 +105,13 @@ export default function Settings() {
             Browser notifications
           </h2>
           <BrowserNotificationsCard />
+        </section>
+
+        <section aria-labelledby="section-editor">
+          <h2 id="section-editor" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+            Editor
+          </h2>
+          <EditorCard />
         </section>
 
         {isAdmin && (

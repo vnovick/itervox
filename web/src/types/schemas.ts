@@ -2068,6 +2068,18 @@ export const DiffResponseSchema = z.object({
   files: z.array(DiffFileSchema),
   truncated: z.boolean().optional(),
   hunksAllowed: z.boolean(),
+  // #238 — what was diffed ("worktree" | "pr"), what ?source= may ask for,
+  // the PR, why the PR's files could not be read, and the worktree's path
+  // on the daemon's host (open-in-editor links).
+  source: z.string().optional(),
+  sources: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  prUrl: z.string().optional(),
+  headSha: z.string().optional(),
+  prError: z.string().optional(),
+  worktreePath: z.string().optional(),
 });
 export type DiffResponse = z.infer<typeof DiffResponseSchema>;
 
@@ -2079,8 +2091,37 @@ export const FileDiffResponseSchema = z.object({
   truncated: z.boolean().optional(),
   bytes: z.number(),
   maxBytes: z.number(),
+  source: z.string().optional(), // #238
 });
 export type FileDiffResponse = z.infer<typeof FileDiffResponseSchema>;
+
+// #238 — change review: a line comment sent to the running agent or posted
+// on the PR, and an operator's PR review (one GitHub review, never a merge).
+export const ReviewCommentResultSchema = z.object({
+  destination: z.enum(['agent', 'pr']),
+  runId: z.string().optional(),
+  prUrl: z.string().optional(),
+  url: z.string().optional(),
+});
+export type ReviewCommentResult = z.infer<typeof ReviewCommentResultSchema>;
+
+export const PrReviewResultSchema = z.object({
+  prUrl: z.string(),
+  id: z.number(),
+  url: z.string().optional(),
+  event: z.string(),
+  comments: z.number(),
+  merged: z.boolean(),
+  mergePolicy: z.object({
+    mergesFromHere: z.boolean(),
+    blockLabels: z
+      .array(z.string())
+      .nullish()
+      .transform((v) => v ?? []),
+    quorum: ReviewOutcomeSchema.nullish(),
+  }),
+});
+export type PrReviewResult = z.infer<typeof PrReviewResultSchema>;
 
 // #218 — task-type playbooks, decision logs, steering phrases and the
 // verify-skill issue. Fetched on demand, never on the SSE frame.
