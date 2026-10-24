@@ -136,33 +136,74 @@ type settingsLayer struct {
 // that does not exist is skipped; one that does not parse, or sets a section
 // outside LayeredSections, is an error naming the file.
 func readSettingsLayers(workflowPath string) ([]settingsLayer, error) {
+	layers, _, err := readSettingsLayerFiles(workflowPath)
+	return layers, err
+}
+
+// SettingsFile is one settings layer file as Load read it (#245): the
+// daemon watches each one, with Hash as the watcher's baseline.
+type SettingsFile struct {
+	Layer  string
+	Path   string
+	Exists bool
+	// Hash is workflow.FileHash of the bytes Load read (workflow.AbsentHash
+	// when the file did not exist).
+	Hash [32]byte
+}
+
+// readSettingsLayerFiles is readSettingsLayers that also reports every layer
+// file it looked at — present or not, but not a layer that is off — with the
+// hash of the bytes it read.
+func readSettingsLayerFiles(workflowPath string) ([]settingsLayer, []SettingsFile, error) {
 	var out []settingsLayer
+	var files []SettingsFile
 	for _, name := range SettingsLayerNames {
 		path := SettingsLayerPath(workflowPath, name)
 		if path == "" {
 			continue
 		}
-		data, err := ReadSettingsFile(path)
+		raw, exists, err := readSettingsRaw(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if data != nil {
-			out = append(out, settingsLayer{name: name, path: path, data: data})
+		files = append(files, SettingsFile{Layer: name, Path: path, Exists: exists, Hash: workflow.FileHash(raw, exists)})
+		if !exists {
+			continue
 		}
+		data, err := parseSettingsFile(path, raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, settingsLayer{name: name, path: path, data: data})
 	}
-	return out, nil
+	return out, files, nil
 }
 
 // ReadSettingsFile parses a JSONC settings file. It returns nil, nil when the
 // file does not exist.
 func ReadSettingsFile(path string) (map[string]any, error) {
+	raw, exists, err := readSettingsRaw(path)
+	if err != nil || !exists {
+		return nil, err
+	}
+	return parseSettingsFile(path, raw)
+}
+
+func readSettingsRaw(path string) ([]byte, bool, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("config: read %s: %w", path, err)
+		return nil, false, fmt.Errorf("config: read %s: %w", path, err)
 	}
+	return raw, true, nil
+}
+
+// parseSettingsFile is parseSettings with the error naming the file; a
+// syntax error already names the line ("hujson: line 3, column 16: ..."),
+// and so does a section-shape error (settingsKeyLine).
+func parseSettingsFile(path string, raw []byte) (map[string]any, error) {
 	data, err := parseSettings(raw)
 	if err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
@@ -199,20 +240,36 @@ func parseSettings(raw []byte) (map[string]any, error) {
 	}
 	for k, v := range top {
 		if !slices.Contains(LayeredSections, k) {
-			return nil, fmt.Errorf("%q cannot be set here (settings files cover %s; the rest stays in WORKFLOW.md)",
-				k, strings.Join(LayeredSections, ", "))
+			return nil, fmt.Errorf("%s%q cannot be set here (settings files cover %s; the rest stays in WORKFLOW.md)",
+				settingsKeyLine(raw, k), k, strings.Join(LayeredSections, ", "))
 		}
 		if slices.Contains(ListSections, k) {
 			if _, isList := v.([]any); !isList {
-				return nil, fmt.Errorf("%q must be a list", k)
+				return nil, fmt.Errorf("%s%q must be a list", settingsKeyLine(raw, k), k)
 			}
 			continue
 		}
 		if _, isObject := v.(map[string]any); !isObject {
-			return nil, fmt.Errorf("%q must be an object of settings", k)
+			return nil, fmt.Errorf("%s%q must be an object of settings", settingsKeyLine(raw, k), k)
 		}
 	}
 	return top, nil
+}
+
+// settingsKeyLine returns "line N: " for the value of the top-level key in
+// raw, so an error about a section names where it is (#245: a hand edit that
+// does not load is logged with its file and line). Empty when the key cannot
+// be located.
+func settingsKeyLine(raw []byte, key string) string {
+	doc, err := hujson.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	v := doc.Find("/" + JSONPointer(key))
+	if v == nil || v.StartOffset > len(raw) {
+		return ""
+	}
+	return fmt.Sprintf("line %d: ", bytes.Count(raw[:v.StartOffset], []byte("\n"))+1)
 }
 
 // ParseJSONC decodes one JSONC value (comments and trailing commas allowed)

@@ -44,7 +44,7 @@ type Workflow struct {
 	Config         map[string]any
 	PromptTemplate string
 	// ContentHash is the sha256 of the exact bytes Load parsed. The daemon
-	// hands it to WatchFrom as the watcher's baseline, so an edit that lands
+	// hands it to the config watcher as its baseline, so an edit that lands
 	// between Load and the watcher's first reading is still seen as a change
 	// (M1-close C2). Zero for a Workflow not produced by Load.
 	ContentHash [32]byte

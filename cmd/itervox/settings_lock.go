@@ -91,10 +91,11 @@ func currentSettingsGeneration(path string) uint64 {
 
 // loadSettingsGeneration is the main loop's reload step. Under the settings
 // gate it advances the generation, which fences every save of the previous
-// generation. It then drops the self-write links the file already reflects:
-// every registering writer holds this gate, so none can be mid-write. Last,
-// it loads the config. The returned Config's WorkflowHash is the watcher's
-// baseline (workflow.WatchFrom).
+// generation. It then drops the self-write links the files already reflect
+// (WORKFLOW.md and each settings file, #245): every registering writer holds
+// this gate, so none can be mid-write. Last, it loads the config. The
+// returned Config's WorkflowHash and SettingsFiles hashes are the watcher's
+// baselines (watchConfigFiles).
 //
 // The generation advances even when the load fails: the previous generation
 // has stopped either way, and the retried load will read whatever is on disk.
@@ -103,7 +104,9 @@ func loadSettingsGeneration(path string) (*config.Config, uint64, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.gen++
-	workflow.ForgetSelfWrites(path)
+	for _, f := range configWatchFiles(path) {
+		workflow.ForgetSelfWrites(f.Path) // WORKFLOW.md and the settings files (#245)
+	}
 	cfg, err := config.Load(path)
 	return cfg, g.gen, err
 }

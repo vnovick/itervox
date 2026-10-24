@@ -37,11 +37,13 @@ type setting = config.SettingAssignment
 // returned alongside the WORKFLOW.md error. Callers change memory only after
 // this returns nil, so a failed save leaves memory untouched.
 //
-// Neither write reloads the daemon (CORE-116). The watcher watches only
-// WORKFLOW.md, and the key removal is a registered self-write; when no key
-// is present in WORKFLOW.md and there is no extra mutator, nothing is written
-// to it at all. A later reload (an operator edit of WORKFLOW.md) re-reads the
-// settings layers through config.Load, so the saved value survives it.
+// Neither write reloads the daemon (CORE-116, #245). The watcher watches
+// WORKFLOW.md and the settings files, and both writes are registered
+// self-writes (the settings file by config.SetSettings, the key removal by
+// the workflow patcher); when no key is present in WORKFLOW.md and there is
+// no extra mutator, nothing is written to it at all. A later reload (an
+// operator edit of either file) re-reads the settings layers through
+// config.Load, so the saved value survives it.
 //
 // The caller holds beginSettingsSave, which serializes it against every
 // other save and fences it against a reload.
@@ -131,14 +133,24 @@ func persistLayer(workflowPath, jsonc string, write func(path string) error, che
 }
 
 // restoreProjectSettings puts a settings layer file back the way
-// persistLayer found it.
+// persistLayer found it. The restore is registered as this process's own
+// write (#245), like the save it undoes, so the watcher reloads for neither.
+// It is registered from the bytes on disk just before the restore: if those
+// are not what the save wrote (something else wrote the file in between),
+// the chain breaks and the watcher reloads, which is the safe outcome.
 func restoreProjectSettings(path string, before []byte, existed, dirExisted bool) error {
+	cur, curErr := os.ReadFile(path)
 	if existed {
-		return atomicfs.WriteFile(path, before, 0o644)
+		if err := atomicfs.WriteFile(path, before, 0o644); err != nil {
+			return err
+		}
+		workflow.RecordSelfWrite(path, cur, curErr == nil, before, true)
+		return nil
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	workflow.RecordSelfWrite(path, cur, curErr == nil, nil, false)
 	if !dirExisted {
 		_ = os.Remove(filepath.Dir(path)) // only if empty; a leftover empty dir is harmless
 	}

@@ -370,7 +370,7 @@ agent:
 
 Itervox adds up what every run of an issue uses (the implementer, its retries, reviewers and automation runs) and checks it after each update from the agent. When the issue reaches either limit, its agent is stopped, the issue is paused with reason `budget_exceeded`, and the dashboard notifies (if notifications are on). Retries, automations and an answered question do not start it again while it is over budget: each pauses it instead.
 
-To let it continue, raise the budget in `WORKFLOW.md` (the daemon reloads it) or with `itervox config set agent.budget.tokens N` (applied at the next reload), and resume the issue from the dashboard. Resuming without raising it pauses the issue again at once.
+To let it continue, raise the budget in `WORKFLOW.md` (the daemon reloads it) or with `itervox config set agent.budget.tokens N` (the daemon reloads for it too), and resume the issue from the dashboard. Resuming without raising it pauses the issue again at once.
 
 The totals live in `issue_spend.json` in the daemon's logs directory, so a restart does not reset a budget; a run's usage is written when the run ends, so a crash loses only the running turns' usage. `itervox report costs` prints them per issue and per day; see the [CLI reference](/cli/#itervox-report-costs--tokens-and-cost-per-issue-and-per-day).
 
@@ -1307,12 +1307,24 @@ its stop timeout must exceed `--shutdown-grace` (for systemd:
 signal), and `itervox stop --grace` must exceed it too, or the drain is cut
 short by a `SIGKILL`.
 
-### What an edit to `WORKFLOW.md` does
+### What an edit to `WORKFLOW.md` or a settings file does
+
+The file watcher watches `WORKFLOW.md` and the user, project and local
+settings files (`~/.itervox/settings.jsonc` or `$ITERVOX_USER_SETTINGS`,
+`.itervox/settings.jsonc`, `.itervox/settings.local.jsonc`) as one set
+(#245): a change to any of them starts the same 2-second quiet period, and an
+edit that touches several at once (`itervox init --update` moving keys out of
+`WORKFLOW.md`) reloads once. A settings file that does not exist yet is
+watched by its path, so creating it — `.itervox/` included — is picked up;
+deleting one reloads without that layer. `itervox doctor` lists the watched
+files (`watched: …`).
 
 Settings saved from the dashboard never reload: each is written as the
-daemon's own write and applied in memory. An **operator edit** (your editor,
-`git pull`, a deploy) is detected by the file watcher and applied with
-**drain, then reload**: admission stops exactly as for a shutdown, in-flight
+daemon's own write and applied in memory (a setting without a runtime setter
+is reported as needing a restart). `itervox config set` and `itervox init
+--update` run as separate processes, so a running daemon reloads exactly once
+for their write. An **operator edit** (your editor, `git pull`, a deploy) is
+detected by the file watcher and applied with **drain, then reload**: admission stops exactly as for a shutdown, in-flight
 turns finish (bounded by the same `--shutdown-grace`; past it the remaining
 turns are cancelled), and then the new generation loads the file and starts
 dispatching again. `/ready` reports `draining` meanwhile. A signal during a
@@ -1326,8 +1338,16 @@ to be hot-swappable, while only the fields on the runtime-mutable list can be
 changed safely under a running generation. Draining keeps the one-generation-
 at-a-time invariant and loses no work; the cost is that an edit takes effect
 only after the current turns end (or the grace expires), and no new work
-starts in between. An edit that makes the file invalid still drains first,
-then shows the "config invalid" banner and waits for a fix.
+starts in between.
+
+Before it drains, the daemon loads and validates the edited files off to the
+side. An edit that does not load — to `WORKFLOW.md` or any settings file —
+does not drain: the running generation keeps its config, the log gets one
+error naming the file (and the line, for a settings file that does not parse
+or sets a section of the wrong shape), and the dashboard shows the "config
+invalid" banner naming the file until an edit fixes it, which then reloads.
+If a file becomes invalid between that check and the reload, the reload waits
+for a fix with the banner up, as before.
 
 ### Log format
 
@@ -1491,7 +1511,7 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 
 **The settings schema.** Every key of these sections is described by a JSON Schema generated from Itervox's config registry, with a label, a description, its type, enum values, minimum and default: [`https://itervox.dev/schema/settings.schema.json`](https://itervox.dev/schema/settings.schema.json) (`site/public/schema/settings.schema.json`, printed by `itervox config schema`). Point `"$schema"` at it for completion and checks in your editor; a settings file may carry that `"$schema"` key. A test fails when the loader reads a layered key that has no schema entry, and when the published file is stale (`make settings-schema` regenerates it).
 
-**The Settings page.** The dashboard's Settings page has an **All settings** section rendered from that schema: every layered setting, grouped by section and topic, with a control for its type (a toggle, a number, a choice, a one-per-line list, `key = value` lines for a map; a value with its own shape, such as `agent.profiles` or `agent.backend_fallback`, is shown read-only and edited on its own page or in the JSON view). Each field shows whether this layer sets it or which layer it inherits from, and whether a change applies at once or after a restart. A tab picks the layer every save writes — **User**, **Project** or **Project local** — and a **JSON** view shows that layer's file as text, comments included, checked against the schema as you type. Saves go through the same comment-preserving writer as `itervox config set` (the JSON view's text is written as typed). A save to the project or local layer also moves the keys it sets out of `WORKFLOW.md` (a copy left there would only be reported as a conflict); a user-layer save never edits the project, and the page says when a higher layer — `WORKFLOW.md` included — still overrides the value. Settings with a runtime setter (max workers, max retries, the switch budget and window, inline input, dispatch strategy, the reviewer profile and auto-review, the dependency analyzer profile, SSH hosts and their descriptions, available models, workspace auto-clear, the tracker's active, terminal, completion and failed states, and `dependencies.analysis_mode`) apply to the running daemon at once; the rest apply at the next restart or `WORKFLOW.md` reload, and the save says which. A save made against a file someone else changed meanwhile is refused and the page reloads the file.
+**The Settings page.** The dashboard's Settings page has an **All settings** section rendered from that schema: every layered setting, grouped by section and topic, with a control for its type (a toggle, a number, a choice, a one-per-line list, `key = value` lines for a map; a value with its own shape, such as `agent.profiles` or `agent.backend_fallback`, is shown read-only and edited on its own page or in the JSON view). Each field shows whether this layer sets it or which layer it inherits from, and whether a change applies at once or after a restart. A tab picks the layer every save writes — **User**, **Project** or **Project local** — and a **JSON** view shows that layer's file as text, comments included, checked against the schema as you type. Saves go through the same comment-preserving writer as `itervox config set` (the JSON view's text is written as typed). A save to the project or local layer also moves the keys it sets out of `WORKFLOW.md` (a copy left there would only be reported as a conflict); a user-layer save never edits the project, and the page says when a higher layer — `WORKFLOW.md` included — still overrides the value. Settings with a runtime setter (max workers, max retries, the switch budget and window, inline input, dispatch strategy, the reviewer profile and auto-review, the dependency analyzer profile, SSH hosts and their descriptions, available models, workspace auto-clear, the tracker's active, terminal, completion and failed states, and `dependencies.analysis_mode`) apply to the running daemon at once; the rest apply at the next restart or reload (a save is the daemon's own write, so it does not reload by itself), and the save says which. A save made against a file someone else changed meanwhile is refused and the page reloads the file.
 
 **Moving between Symphony and Itervox.** `itervox import WORKFLOW.md` converts a Symphony workflow, or an Itervox v0.x one, into this layout (settings to `.itervox/settings.jsonc`, profile prompts to prompt files, a `WORKFLOW.md.bak`, and a list of every key it could not map); `itervox export --symphony` writes a Symphony `WORKFLOW.md` with the Symphony core keys and the worker prompt and lists the Itervox-only features it dropped. See the [CLI reference](/cli/#itervox-import--convert-a-symphony-or-older-itervox-workflow).
 

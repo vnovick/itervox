@@ -64,9 +64,16 @@ live in three JSONC files with one published schema
   the failed state, the project filter and scope, `dependencies.analysis_mode`
   and automations write the project settings file (or the local one when it
   already sets the key) and remove the key from `WORKFLOW.md`.
-- The `cfgMu` runtime fields and reload behaviour are unchanged: the daemon
-  reloads when `WORKFLOW.md` changes; a hand edit of a settings file applies at
-  the next restart or reload.
+- Live reload (#245): the daemon watches the user, project and local settings
+  files together with `WORKFLOW.md` (one 2 s debounce, the same validation, the
+  same drain-then-reload), so a hand edit of any of them applies without a
+  restart. A settings file that does not exist yet is watched by its path, so
+  creating it is picked up; deleting it reloads without that layer. Itervox's
+  own writes (Settings page saves) never reload; `itervox config set` and
+  `itervox init --update` reload a running daemon once. An edit that does not
+  load keeps the running config, logs one error naming the file and line, and
+  shows on the dashboard banner. `itervox doctor` lists the watched files. The
+  `cfgMu` runtime fields are unchanged.
 
 See the site guide "Moving settings out of WORKFLOW.md"
 (`site/src/content/docs/guides/settings-migration.mdx`).
