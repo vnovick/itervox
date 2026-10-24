@@ -1,5 +1,11 @@
 package workflow
 
+// The generic front-matter key writer below was production code until #239
+// moved every key it wrote (tracker.*, dependencies.*) to the layered
+// settings files, written by config.SetSettings. Its tests are kept (comment,
+// order, indentation and refusal coverage, and the per-field patcher
+// wrappers in testonly_test.go) through this test-only copy.
+
 import (
 	"bytes"
 	"encoding/json"

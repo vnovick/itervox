@@ -68,11 +68,15 @@ func SettingFieldFor(key string) (SettingField, bool) {
 
 // sectionInfo titles and describes each layered section in the schema.
 var sectionInfo = map[string][2]string{
-	"agent":     {"Agent", "The agent runner: command, capacity, retries, timeouts, review, SSH and rate limits."},
-	"hub":       {"Hub", "The machine's itervox hub: one URL for every project (#228). Read at startup."},
-	"polling":   {"Polling", "How often the tracker is polled."},
-	"server":    {"Server", "The dashboard and API server."},
-	"workspace": {"Workspace", "Per-issue working directories."},
+	"agent":        {"Agent", "The agent runner: command, capacity, retries, timeouts, review, SSH and rate limits."},
+	"automations":  {"Automations", "The automation rules: what starts an agent run besides the active states (#239)."},
+	"dependencies": {"Dependencies", "Dependency analysis and how blockers gate dispatch (#239)."},
+	"hooks":        {"Hooks", "Shell scripts run around each workspace and agent run (#239)."},
+	"hub":          {"Hub", "The machine's itervox hub: one URL for every project (#228). Read at startup."},
+	"polling":      {"Polling", "How often the tracker is polled."},
+	"server":       {"Server", "The dashboard and API server."},
+	"tracker":      {"Tracker", "The issue tracker: connection, states, scope, store and webhooks (#239). Secrets are $VAR references only."},
+	"workspace":    {"Workspace", "Per-issue working directories."},
 }
 
 // SettingsSchema returns the JSON Schema of a settings file, built from
@@ -87,6 +91,15 @@ func SettingsSchema() map[string]any {
 	}
 	for _, f := range SettingFields {
 		parts := strings.Split(f.Key, ".")
+		if len(parts) == 1 {
+			// A list section (automations) is the field itself.
+			field := fieldSchema(f)
+			if info, ok := sectionInfo[f.Key]; ok {
+				field["description"] = info[1]
+			}
+			props[f.Key] = field
+			continue
+		}
 		node := props[parts[0]].(map[string]any)
 		for _, p := range parts[1 : len(parts)-1] {
 			children := node["properties"].(map[string]any)
@@ -103,7 +116,7 @@ func SettingsSchema() map[string]any {
 		"$schema":              "https://json-schema.org/draft/2020-12/schema",
 		"$id":                  SettingsSchemaURL,
 		"title":                "Itervox settings file",
-		"description":          "A settings layer: ~/.itervox/settings.jsonc (user), .itervox/settings.jsonc (project, committed) or .itervox/settings.local.jsonc (project local, gitignored). Later layers win, and WORKFLOW.md wins over all of them. The files are JSONC: comments and trailing commas are allowed. Generated from the Itervox config registry; do not edit by hand.",
+		"description":          "A settings layer: ~/.itervox/settings.jsonc (user), .itervox/settings.jsonc (project, committed) or .itervox/settings.local.jsonc (project local, gitignored). Later layers win; the project and local files also win over the same key in WORKFLOW.md's front matter (deprecated there), which in turn wins over the user file. Secrets are $VAR references only. The files are JSONC: comments and trailing commas are allowed. Generated from the Itervox config registry; do not edit by hand.",
 		"type":                 TypeObject,
 		"additionalProperties": false,
 		"properties":           props,
@@ -180,6 +193,12 @@ func ValidateSettingValue(key string, value any) error {
 	}
 	if err := checkType(f.Type, value); err != nil {
 		return fmt.Errorf("config: %s: %w", key, err)
+	}
+	if s, isString := value.(string); isString && IsSecretKey(key) && s != "" && !IsEnvReference(s) {
+		// #239: a settings file holds a reference to a secret, never the
+		// secret itself (the project file is committed). The message never
+		// quotes the value.
+		return fmt.Errorf("config: %s: a secret is set as a $VAR reference (e.g. $LINEAR_API_KEY) with the value in the environment or .itervox/.env, never inline in a settings file", key)
 	}
 	if s, isString := value.(string); isString && len(f.Enum) > 0 && !slices.Contains(f.Enum, s) {
 		return fmt.Errorf("config: %s: %q is not one of %s", key, s, strings.Join(quoteAll(f.Enum), ", "))

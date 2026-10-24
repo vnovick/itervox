@@ -15,9 +15,10 @@ import (
 
 // newSettingsFile is what SetSetting starts a missing settings file from.
 const newSettingsFile = `// Itervox settings (JSONC: comments and trailing commas are fine).
-// Layers: built-in defaults < ~/.itervox/settings.jsonc < .itervox/settings.jsonc
-// < .itervox/settings.local.jsonc (gitignored) < WORKFLOW.md.
-// Sections: agent, polling, server, workspace. See the configuration docs.
+// Layers: built-in defaults < ~/.itervox/settings.jsonc < WORKFLOW.md front matter
+// < .itervox/settings.jsonc < .itervox/settings.local.jsonc (gitignored).
+// Sections: agent, automations, dependencies, hooks, hub, polling, server,
+// tracker, workspace. Secrets are $VAR references only. See the configuration docs.
 {
   "$schema": "` + SettingsSchemaURL + `",
 }
@@ -47,7 +48,8 @@ func SetSettings(path string, settings ...SettingAssignment) error {
 	anyValue := false
 	for i, s := range settings {
 		parts := strings.Split(s.Key, ".")
-		if len(parts) < 2 || slices.Contains(parts, "") {
+		listSection := len(parts) == 1 && slices.Contains(ListSections, parts[0])
+		if (len(parts) < 2 && !listSection) || slices.Contains(parts, "") {
 			return fmt.Errorf("config: %q is not a settings key (use section.name, e.g. agent.max_turns)", s.Key)
 		}
 		if !slices.Contains(LayeredSections, parts[0]) {

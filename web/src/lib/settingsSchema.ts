@@ -90,6 +90,25 @@ export function flattenSettingsSchema(doc: SettingsSchemaDoc): SettingsFieldDef[
   };
   for (const [section, node] of Object.entries(doc.properties)) {
     if (section.startsWith('$')) continue;
+    if (node.type !== 'object') {
+      // A list section (#239: automations) is itself the setting.
+      out.push({
+        key: section,
+        section,
+        kind: kindOf(node),
+        label: node.title ?? section,
+        description: node.description ?? '',
+        group: node['x-itervox-group'] ?? section,
+        default: node.default,
+        enum: node.enum ?? [],
+        minimum: node.minimum,
+        itemType: node.items?.type,
+        live: node['x-itervox-live'] === true,
+        editor: node['x-itervox-editor'],
+        replacedBy: node['x-itervox-replaced-by'],
+      });
+      continue;
+    }
     walk(section, section, node);
   }
   return out;
@@ -189,6 +208,9 @@ function typeMatches(def: SettingsFieldDef, v: unknown): boolean {
     case 'list':
       return Array.isArray(v);
     default:
+      // A json field whose items are objects (#239: automations,
+      // tracker.filter) holds a list of them.
+      if (def.itemType === 'object') return Array.isArray(v);
       return typeof v === 'object' && v !== null && !Array.isArray(v);
   }
 }
@@ -204,6 +226,8 @@ export function parseSettingsText(text: string, fields: SettingsFieldDef[]): Par
   if (typeof data !== 'object' || data === null || Array.isArray(data))
     return { ok: false, error: 'the file must be one JSON object' };
   const sections = new Set(fields.map((f) => f.section));
+  // A list section (#239: automations) is one field; its type check is below.
+  const listSections = new Set(fields.filter((f) => f.key === f.section).map((f) => f.section));
   let keys = 0;
   for (const [section, value] of Object.entries(data as Record<string, unknown>)) {
     if (section === '$schema') continue;
@@ -212,6 +236,7 @@ export function parseSettingsText(text: string, fields: SettingsFieldDef[]): Par
         ok: false,
         error: `"${section}" cannot be set here (sections: ${[...sections].join(', ')})`,
       };
+    if (listSections.has(section)) continue;
     if (typeof value !== 'object' || value === null || Array.isArray(value))
       return { ok: false, error: `"${section}" must be an object of settings` };
   }
@@ -247,7 +272,10 @@ export const SETTINGS_LAYER_INFO: Partial<Record<string, { label: string; git: s
   },
   project: { label: 'Project', git: 'Committed with the code: the team’s settings.' },
   local: { label: 'Project local', git: 'Yours, for this project only. Gitignored.' },
-  workflow: { label: 'WORKFLOW.md', git: 'The workflow file, which wins over every layer.' },
+  workflow: {
+    label: 'WORKFLOW.md',
+    git: 'The workflow’s front matter (deprecated for these settings): wins over your user file; the project and local files win over it.',
+  },
   default: { label: 'Default', git: 'Built in.' },
   environment: { label: 'Environment', git: 'An environment variable.' },
 };

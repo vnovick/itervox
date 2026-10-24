@@ -74,8 +74,8 @@ func validWorkflow(t *testing.T, path string) *config.Config {
 }
 
 // TestTrackerScopeSaveCombinations (#182): the dashboard's combined scope
-// filter saves any combination of projects, assignee and labels to
-// WORKFLOW.md — what the file then loads is what memory holds — resolving
+// filter saves any combination of projects, assignee and labels (#239: to
+// the settings file) — what the config then loads is what memory holds — resolving
 // the assignee first; an unknown user is refused (422) with file and memory
 // unchanged.
 func TestTrackerScopeSaveCombinations(t *testing.T) {
@@ -113,18 +113,27 @@ func TestTrackerScopeSaveCombinations(t *testing.T) {
 			}
 		})
 	}
+	// #239: the scope keys live in the settings file; WORKFLOW.md no longer
+	// holds them, and a cleared key is removed (it used to be commented out).
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, 1, strings.Count(string(data), "assignee:"), "the assignee line is reused, not repeated")
-	assert.Contains(t, string(data), `# labels: ["agent"]`, "cleared keys are commented out with their last value")
+	assert.NotContains(t, string(data), "project_slug:")
+	assert.NotContains(t, string(data), "assignee:")
+	settingsPath := config.ProjectSettingsPath(path)
+	settings, err := config.ReadSettingsFile(settingsPath)
+	require.NoError(t, err)
+	tr, _ := settings["tracker"].(map[string]any)
+	assert.NotContains(t, tr, "assignee", "a cleared key is removed")
+	assert.NotContains(t, tr, "labels")
 
-	before := string(data)
+	before, settingsBefore := string(data), readString(t, settingsPath)
 	fsm.resolveErr = tracker.ErrAssigneeNotFound
 	err = m.SetScope(t.Context(), server.TrackerScope{Assignee: "nobody@example.com"})
 	require.ErrorIs(t, err, server.ErrScopeAssigneeNotFound)
 	data, err = os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, before, string(data), "an unresolvable assignee writes nothing")
+	assert.Equal(t, settingsBefore, readString(t, settingsPath))
 	assert.Empty(t, fsm.Scope().Assignee, "and changes nothing in memory")
 }
 

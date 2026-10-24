@@ -150,6 +150,13 @@ func newUpgradeProbe(workflowPath string) (upgradeProbe, error) {
 	if err != nil {
 		return upgradeProbe{}, err
 	}
+	// #239: the layered sections may live in the settings files; merge
+	// them over the front matter as the loader does (still raw maps, no
+	// parsing). A settings file that does not parse leaves the front
+	// matter alone, which is what this command can still explain.
+	if merged, _, err := config.MergedFrontMatter(workflowPath); err == nil {
+		front = merged
+	}
 	home, _ := os.UserHomeDir()
 	return upgradeProbe{
 		WorkflowPath: workflowPath,

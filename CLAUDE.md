@@ -425,6 +425,47 @@ section stay easy to diff.
 The canonical allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`;
 keep this section in sync with that test. All **other** `cfg` fields are read-only after startup — no lock needed for them.
 
+### Settings layers — one config format (#239)
+
+Config comes from layered JSONC files plus `WORKFLOW.md`, merged in
+`internal/config/layers.go`: defaults < user (`~/.itervox/settings.jsonc`,
+personal defaults) < `WORKFLOW.md` front matter < project
+(`.itervox/settings.jsonc`, committed) < local (`.itervox/settings.local.jsonc`,
+gitignored). The project and local files win over the front matter; the front
+matter wins over the user file, and only a project/local value over a
+front-matter key is reported as a conflict.
+
+- **Layered sections** (`config.LayeredSections`): `agent`, `automations`
+  (a list section, `config.ListSections`: a file sets the whole list),
+  `dependencies`, `hooks`, `hub`, `polling`, `server`, `tracker`, `workspace`.
+  Every key the loader reads in them has a `config.SettingFields` entry (the
+  published schema and the Settings page come from it; the schema tests fail
+  otherwise — regenerate with `make settings-schema`).
+- **WORKFLOW.md holds the prompt** (its body), the schema marker, the
+  non-layered sections, and `config.FrontMatterKeptKeys` (`agent.profiles`,
+  `agent.available_models`, `agent.reviewer_prompt`), which their editors write
+  there. Front-matter keys still apply; `config.Load` reports them in
+  `cfg.FrontMatter` (deprecated keys, and conflicts with a settings file), which
+  `itervox doctor` and the startup log (`logFrontMatterReport`, once per process)
+  print. Do not add a new layered key that only WORKFLOW.md can hold.
+- **Saves** of layered keys go through `persistSettings` (project file, or the
+  local file when it already sets the key) / `SaveSettingsLayer` (the layer the
+  Settings page picks), both via `config.SetSettings`, and remove the key from
+  WORKFLOW.md. There is no per-key WORKFLOW.md writer for these sections.
+- **Secrets** in a settings file are `$VAR` references only:
+  `config.ValidateSettingValue` refuses an inline secret, and
+  `itervox init --update` (`cmd/itervox/init_settings_move.go`) leaves a key
+  holding one in WORKFLOW.md. Never resolve a `$VAR` into a settings file.
+- **Fresh projects**: `itervox init` / `quickstart` (`scaffoldWorkflow` →
+  `moveScaffoldSettings`) write the layered sections to
+  `.itervox/settings.jsonc`, so a new project has nothing deprecated.
+- **Migration**: `itervox init --update` moves the layered front-matter keys
+  to `.itervox/settings.jsonc` (WORKFLOW.md.bak first, YAML comments carried as
+  `//` comments, refused if the merged config would change; `--dry-run`).
+- The `cfgMu` allowlist and reload behaviour did not change: the Live tracker
+  state, failed-state and analysis-mode settings apply through their existing
+  setters; the watcher still watches only WORKFLOW.md.
+
 ### Snapshot access
 
 `Snapshot()` acquires `snapMu.RLock` and returns a copy of `lastSnap`.
@@ -515,7 +556,9 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
 - **Migration entry point** is `itervox init --update --workflow WORKFLOW.md`.
   It writes a `WORKFLOW.md.bak` next to the workflow, extracts each profile's
   inline `prompt:` into `INSTRUCTIONS.md`, generates a starter `SOUL.md`, patches
-  the root `.gitignore`, and stamps `itervox_schema_version: 2`.
+  the root `.gitignore`, and stamps `itervox_schema_version: 2`. Then (#239) it
+  moves the layered front-matter keys to `.itervox/settings.jsonc` (see
+  "Settings layers" above); `--dry-run` previews that move and writes nothing.
 - **`.itervox/HEARTBEAT.md`** is the daemon liveness file. Written on startup by
   `cmd/itervox/heartbeat.go` and refreshed after state changes at a bounded
   interval (15s by default). Atomic write via `atomicfs.WriteFile`. The dashboard

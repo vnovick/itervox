@@ -17,14 +17,18 @@ import (
 type setting = config.SettingAssignment
 
 // persistSettings is the one persistence step of a dashboard/TUI save of
-// layered settings (#129: agent.*, polling.*, server.*, workspace.*). Every
-// key goes to the PROJECT settings file, .itervox/settings.jsonc next to
-// WORKFLOW.md, with config.SetSettings, which keeps the file's comments and
-// creates it when missing. WORKFLOW.md outranks that file, so the same save
-// then removes each key, and its deprecated alias spelling, from WORKFLOW.md's
-// front matter: left there, it would override the saved value at the next
-// load. extra mutators (the profiles block, automations) ride in that same
-// single WORKFLOW.md write.
+// layered settings (#129, #239: every config.LayeredSections key — agent,
+// automations, dependencies, hooks, hub, polling, server, tracker,
+// workspace). Every key goes to one settings file with config.SetSettings,
+// which keeps the file's comments and creates it when missing: the
+// project-local file (.itervox/settings.local.jsonc) when it already sets one
+// of the keys — the layer the operator chose for them, which a project-file
+// value would not override — else the PROJECT settings file,
+// .itervox/settings.jsonc next to WORKFLOW.md (settingsSaveLayer). The same
+// save then removes each key, and its deprecated alias spelling, from
+// WORKFLOW.md's front matter: the settings file wins over it (#239), so a
+// copy left there would only be reported as a conflict. extra mutators (the
+// profiles block) ride in that same single WORKFLOW.md write.
 //
 // The two files move together: JSONC first, then WORKFLOW.md. When the
 // WORKFLOW.md step fails, the JSONC file is put back to its previous bytes,
@@ -46,8 +50,29 @@ func persistSettings(workflowPath string, settings []setting, extra ...workflow.
 	for _, s := range settings {
 		remove = append(remove, s.Key)
 	}
-	return persistLayer(workflowPath, config.ProjectSettingsPath(workflowPath),
+	for _, s := range settings {
+		if s.Key == "automations" {
+			remove = append(remove, "schedules") // the legacy spelling; automations replace it
+		}
+	}
+	return persistLayer(workflowPath, settingsSaveLayer(workflowPath, settings),
 		func(path string) error { return config.SetSettings(path, settings...) }, nil, remove, extra...)
+}
+
+// settingsSaveLayer is the file a dashboard/TUI save of settings writes: the
+// project-local file when it already sets one of their keys, else the project
+// file. A local file that does not parse is left alone (the project file is
+// written, and the load reports the broken file).
+func settingsSaveLayer(workflowPath string, settings []setting) string {
+	local := config.LocalSettingsPath(workflowPath)
+	if data, err := config.ReadSettingsFile(local); err == nil && data != nil {
+		for _, s := range settings {
+			if config.SettingsDataSets(data, s.Key) {
+				return local
+			}
+		}
+	}
+	return config.ProjectSettingsPath(workflowPath)
 }
 
 // persistLayer is persistSettings for any settings layer file (#158): write

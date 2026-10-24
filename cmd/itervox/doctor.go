@@ -139,6 +139,11 @@ type DoctorReport struct {
 	// drift is informational, not actionable.
 	ItervoxBinEnv    string
 	StartupErrorPath string
+	// FrontMatter is what WORKFLOW.md's front matter still sets of the
+	// layered sections (#239): each key deprecated there, naming where it
+	// moves, and each key a settings file also sets (the file wins).
+	// Notices only: they never fail doctor.
+	FrontMatter config.FrontMatterReport
 	// PortInUseWarning is the operator-facing diagnostic when WORKFLOW.md's
 	// configured server.port is currently held by another process. Empty when
 	// the port is free OR when no `lsof`-style probe could be performed.
@@ -249,6 +254,7 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	cfg, err := config.Load(workflowPath)
 	loadErr := err
 	if err == nil {
+		report.FrontMatter = cfg.FrontMatter
 		err = config.ValidateDispatch(cfg)
 	}
 	report.SchemaPassed = err == nil
@@ -518,6 +524,7 @@ func renderDoctorReport(r DoctorReport) string {
 			fmt.Fprintf(&b, "info: %s\n", r.DriftWarning)
 		}
 	}
+	renderFrontMatterReport(&b, r.FrontMatter)
 	if r.StartupErrorPath != "" {
 		fmt.Fprintf(&b, "last startup error: %s — investigate the file, then `itervox doctor --clear-startup-error` once resolved\n", r.StartupErrorPath)
 	}
@@ -555,6 +562,17 @@ func renderDoctorReport(r DoctorReport) string {
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
 	}
 	return b.String()
+}
+
+// renderFrontMatterReport lists the deprecated front-matter keys, each with
+// where it moves, and the keys a settings file overrides (#239).
+func renderFrontMatterReport(b *strings.Builder, r config.FrontMatterReport) {
+	for _, key := range r.Deprecated {
+		fmt.Fprintf(b, "deprecated: %s\n", config.DeprecationMessage(key))
+	}
+	for _, c := range r.Conflicts {
+		fmt.Fprintf(b, "WARNING: %s\n", c.Message())
+	}
 }
 
 func or(s, fallback string) string {

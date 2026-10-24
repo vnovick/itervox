@@ -172,11 +172,16 @@ func configSet(workflow, layer string, key string, value any, out, errOut io.Wri
 		return 1
 	}
 	var effective *config.Setting
+	var shadowsFront bool
 	if _, statErr := os.Stat(workflow); statErr == nil {
-		if _, err := config.Load(workflow); err != nil {
+		cfg, err := config.Load(workflow)
+		if err != nil {
 			restoreSettingsFile(path, before, readErr == nil)
 			_, _ = fmt.Fprintf(errOut, "itervox config %s: %s does not load with this change, so it was not made: %v\n", verb, workflow, err)
 			return 1
+		}
+		for _, c := range cfg.FrontMatter.Conflicts {
+			shadowsFront = shadowsFront || c.Key == key || strings.HasPrefix(c.Key, key+".")
 		}
 		settings, err := config.Explain(workflow)
 		if err == nil {
@@ -212,6 +217,10 @@ func configSet(workflow, layer string, key string, value any, out, errOut io.Wri
 	case config.SettingsLayerRank(effective.Layer) > config.SettingsLayerRank(layer):
 		_, _ = fmt.Fprintf(errOut, "warning: the %s layer also sets %s (%s), and it wins over this file\n",
 			effective.Layer, key, formatSettingValue(effective.Value))
+	}
+	if shadowsFront && value != nil {
+		// #239: the settings file wins over WORKFLOW.md's front matter.
+		_, _ = fmt.Fprintf(errOut, "note: WORKFLOW.md's front matter also sets %s; this file wins over it — remove it from WORKFLOW.md (or run `itervox init --update`)\n", key)
 	}
 	_, _ = fmt.Fprintln(out, "A running daemon picks it up when it next loads WORKFLOW.md: restart it, or save WORKFLOW.md.")
 	return 0

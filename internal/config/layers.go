@@ -1,16 +1,22 @@
 package config
 
-// Settings layers (#129, #158). Agent, hub, polling, workspace and server settings
+// Settings layers (#129, #158, #239). Every layered section (agent,
+// automations, dependencies, hooks, hub, polling, server, tracker, workspace)
 // can come from three JSONC files as well as from WORKFLOW.md:
 //
-//	built-in defaults → user (~/.itervox/settings.jsonc)
+//	built-in defaults → user (~/.itervox/settings.jsonc: personal defaults)
+//	                  → WORKFLOW.md front matter (deprecated for these sections)
 //	                  → project (.itervox/settings.jsonc next to WORKFLOW.md, committed)
 //	                  → local (.itervox/settings.local.jsonc, gitignored)
-//	                  → WORKFLOW.md front matter
 //
-// The last layer that sets a key wins. Maps merge key by key; any other value
-// (a list included) is replaced whole. WORKFLOW.md stays the only home of the
-// tracker, hooks, dependencies, automations and the prompt.
+// The last layer that sets a key wins. The user file holds personal defaults
+// for every project, so a project's own front matter keeps winning over it;
+// the project and local files win over the front matter (#239), and a key the
+// front matter and one of them both set is reported once as a conflict
+// (FrontMatterReport). Maps merge key by key; any other value (a list
+// included) is replaced whole. WORKFLOW.md keeps the prompt template (its
+// body), the schema marker, the sections that are not layered, and the agent
+// profiles the profile editor writes.
 
 import (
 	"bytes"
@@ -42,7 +48,12 @@ const (
 var SettingsLayerNames = []string{LayerUser, LayerProject, LayerLocal}
 
 // LayeredSections are the WORKFLOW.md sections a settings file may set.
-var LayeredSections = []string{"agent", "hub", "polling", "server", "workspace"}
+// tracker, hooks, dependencies and automations joined in #239.
+var LayeredSections = []string{"agent", "automations", "dependencies", "hooks", "hub", "polling", "server", "tracker", "workspace"}
+
+// ListSections are the layered sections whose value is a list, not an object
+// of settings: a settings file sets the whole list.
+var ListSections = []string{"automations"}
 
 // UserSettingsEnv overrides the user settings file path; "off" disables the
 // user layer.
@@ -97,16 +108,18 @@ func SettingsLayerPath(workflowPath, layer string) string {
 }
 
 // SettingsLayerRank orders the settings layers, lowest first: a layer of a
-// higher rank wins over one of a lower rank.
+// higher rank wins over one of a lower rank. WORKFLOW.md's front matter sits
+// between the user file (personal defaults, which it overrides) and the
+// project and local files (which override it, #239).
 func SettingsLayerRank(layer string) int {
 	switch layer {
 	case LayerUser:
 		return 1
-	case LayerProject:
-		return 2
-	case LayerLocal:
-		return 3
 	case LayerWorkflow:
+		return 2
+	case LayerProject:
+		return 3
+	case LayerLocal:
 		return 4
 	}
 	return 0
@@ -158,7 +171,8 @@ func ReadSettingsFile(path string) (map[string]any, error) {
 }
 
 // ParseSettings parses the text of a settings file the way the loader does:
-// JSONC, an object whose keys are LayeredSections, each an object. It is the
+// JSONC, an object whose keys are LayeredSections, each an object (a list
+// for ListSections). It is the
 // check the dashboard's JSON view is held to before a save.
 func ParseSettings(raw []byte) (map[string]any, error) { return parseSettings(raw) }
 
@@ -187,6 +201,12 @@ func parseSettings(raw []byte) (map[string]any, error) {
 		if !slices.Contains(LayeredSections, k) {
 			return nil, fmt.Errorf("%q cannot be set here (settings files cover %s; the rest stays in WORKFLOW.md)",
 				k, strings.Join(LayeredSections, ", "))
+		}
+		if slices.Contains(ListSections, k) {
+			if _, isList := v.([]any); !isList {
+				return nil, fmt.Errorf("%q must be a list", k)
+			}
+			continue
 		}
 		if _, isObject := v.(map[string]any); !isObject {
 			return nil, fmt.Errorf("%q must be an object of settings", k)
@@ -237,16 +257,24 @@ func normalizeJSON(v any) any {
 	return v
 }
 
-// mergeLayers merges the settings layers under the WORKFLOW.md front matter
-// and records, for every leaf key path ("agent.max_turns"), the layer that
+// mergeLayers merges the layers in SettingsLayerRank order — the user file,
+// then the WORKFLOW.md front matter, then the project and local files (#239)
+// — and records, for every leaf key path ("agent.max_turns"), the layer that
 // set it.
 func mergeLayers(front map[string]any, layers []settingsLayer) (map[string]any, map[string]settingsSource) {
 	merged := map[string]any{}
 	sources := map[string]settingsSource{}
+	frontDone := false
 	for _, l := range layers {
+		if !frontDone && SettingsLayerRank(l.name) > SettingsLayerRank(LayerWorkflow) {
+			mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+			frontDone = true
+		}
 		mergeInto(merged, l.data, "", settingsSource{layer: l.name, path: l.path}, sources)
 	}
-	mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+	if !frontDone {
+		mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+	}
 	return merged, sources
 }
 
@@ -328,7 +356,7 @@ func asStringMap(v any) (map[string]any, bool) {
 }
 
 // MergedFrontMatter returns WORKFLOW.md's front matter with the settings
-// layers merged under it, as the loader sees it before parsing, and the
+// layers merged over it, as the loader sees it before parsing, and the
 // prompt template. `itervox export --symphony` (#158) reads the keys a
 // project actually sets from it, wherever they live.
 func MergedFrontMatter(workflowPath string) (map[string]any, string, error) {
