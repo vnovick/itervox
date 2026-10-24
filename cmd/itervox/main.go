@@ -35,6 +35,7 @@ import (
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
+	"github.com/vnovick/itervox/internal/prwatch"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -1062,7 +1063,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	//
 	// #173: the PR-event watcher (poll of the open managed PRs, plus the
 	// webhook receiver when pr_events.webhook_secret is set).
-	prEventWebhooks := startPREvents(ctx, cfg, tr, orch)
+	// #238: the same GitHub client (and token source) serves change review.
+	githubPRs := &prwatch.Client{Token: prEventsTokenSource(cfg)}
+	prEventWebhooks := startPREvents(ctx, cfg, tr, orch, githubPRs)
 	// #52 deferral — startDepsAutoAnalyze (below) is wired inside this
 	// `srvListener != nil` block purely because that's where depsSvc,
 	// adapter, and the other server-only wiring already live, not because
@@ -1193,6 +1196,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Version:         version,                                       // #212: GET /api/v1/summary
 			Dispatch:        dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
 			Changes:         changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
+			ChangeReview:    changeReviewAdapter{orch: orch},               // #238: line comments, PR reviews, the diff's PR source
+			GitHubPRs:       githubPRs,                                     // #238: the PR-event watcher's GitHub client
 			Playbooks:       playbooksAdapter{orch: orch},                  // #218: playbooks, decision logs, verify-skill issue
 			SteeringPhrases: cfg.Sessions.SteeringPhrases,                  // #218
 		})

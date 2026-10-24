@@ -146,9 +146,9 @@ func newPREventWatcher(cfg *config.Config, tr tracker.Tracker, orch prEventOrche
 // automation event poll while GitHub's request budget is low; nothing is
 // fetched while no PR-event rule is configured), and, with
 // pr_events.webhook_secret set, the webhook receiver it returns for
-// POST /api/v1/webhooks/pr-events. Runs until ctx ends.
-func startPREvents(ctx context.Context, cfg *config.Config, tr tracker.Tracker, orch prEventOrchestrator) server.WebhookHandler {
-	client := &prwatch.Client{Token: prEventsTokenSource(cfg)}
+// POST /api/v1/webhooks/pr-events. Runs until ctx ends. client is shared
+// with change review (#238): one GitHub credential path.
+func startPREvents(ctx context.Context, cfg *config.Config, tr tracker.Tracker, orch prEventOrchestrator, client *prwatch.Client) server.WebhookHandler {
 	w := newPREventWatcher(cfg, tr, orch, client)
 	go func() {
 		defer failFastOnPanic("pr-events-poll")

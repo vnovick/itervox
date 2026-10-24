@@ -1527,6 +1527,13 @@ type Config struct {
 	// Changes backs GET /api/v1/issues/{identifier}/context and /diff
 	// (#215). Nil answers 503.
 	Changes ChangesClient
+	// ChangeReview and GitHubPRs back change review (#238): line comments
+	// to the running agent or the PR, operator PR reviews, and the diff's
+	// PR source. GitHubPRs is the PR-event watcher's GitHub client (the
+	// daemon's existing credentials). Either nil: no PR source, and the
+	// PR routes answer 409 no_pr.
+	ChangeReview ChangeReviewClient
+	GitHubPRs    PRReviewAPI
 	// Playbooks backs the playbook, decision-log and verify-skill-issue
 	// endpoints (#218). Nil answers 503.
 	Playbooks PlaybooksClient
@@ -1599,6 +1606,10 @@ type Server struct {
 	dispatch DispatchClient
 	// changes mirrors Config.Changes (#215).
 	changes ChangesClient
+	// changeReview / github mirror Config.ChangeReview / Config.GitHubPRs
+	// (#238).
+	changeReview ChangeReviewClient
+	github       PRReviewAPI
 	// playbooks / steeringPhrases mirror Config.Playbooks /
 	// Config.SteeringPhrases (#218).
 	playbooks       PlaybooksClient
@@ -1656,6 +1667,8 @@ func New(cfg Config) *Server {
 		version:             cfg.Version,
 		dispatch:            cfg.Dispatch,
 		changes:             cfg.Changes,
+		changeReview:        cfg.ChangeReview,
+		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
 		steeringPhrases:     cfg.SteeringPhrases,
 	}
@@ -1809,10 +1822,12 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
-			r.Get("/issues/{identifier}/context", s.handleIssueContext)       // #215
-			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)             // #215: hunks need operator
-			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
-			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
+			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
+			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
+			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
