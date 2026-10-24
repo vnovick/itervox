@@ -112,6 +112,17 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 
 > **Release checks:** before tagging, run the checks in [docs/release-checks.md](docs/release-checks.md): a self-hosted issue run and a cloud deploy smoke test (manual `Release acceptance` workflow; they need real accounts), and confirm the upgrade test is green.
 
+> **Release secrets:** a `vX.Y.Z` tag runs `release.yml` (GoReleaser) and then `desktop-release.yml` (the Mac app), which read these repository secrets. Only the maintainer's release needs them; contributors and users never need an Apple ID — a build from source (`make desktop`) is not quarantined and opens without signing.
+>
+> | Secret | Used for |
+> |---|---|
+> | `HOMEBREW_TAP_GITHUB_TOKEN` | Writing to `vnovick/homebrew-tap`: the CLI formula (GoReleaser) and the app's cask `Casks/itervox.rb` (`desktop/scripts/homebrew-cask.sh`) |
+> | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | Signing the app, the disk image and the CLI with the Developer ID certificate |
+> | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_API_PRIVATE_KEY` (or `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) | Notarization |
+> | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Signing the updater archive behind `latest.json` |
+>
+> Without the Apple secrets the Mac build is unsigned, publishes no `latest.json` and does not touch the cask; with only some of them set the job fails. How to create each one: [docs/release-mac.md](docs/release-mac.md#one-time-setup).
+
 > **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 
 > **Manual testing scenarios:** for end-to-end behaviour that automated tests cannot fully cover (real agent CLIs, dashboard UI, hot-reload, daemon-backed actions, full automation chains), follow the [Manual Testing Guide](https://itervox.dev/guides/manual-testing/) (source: `site/src/content/docs/guides/manual-testing.mdx`). Add a scenario there whenever you ship a feature with a non-trivial E2E behaviour or fix a regression that escaped `make verify`.
