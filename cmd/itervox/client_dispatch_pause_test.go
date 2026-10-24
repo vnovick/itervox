@@ -79,8 +79,9 @@ func TestClientPauseAllDispatchRefused(t *testing.T) {
 // its reason under the header; an unpaused daemon shows no such line.
 func TestWatchShowsDispatchPause(t *testing.T) {
 	var s watchState
-	assert.NotContains(t, renderWatch(s, time.Now(), false), "PAUSED")
+	w := &watcher{}
+	assert.NotContains(t, w.renderStatus(&s, time.Now(), false), "PAUSED")
 	require.NoError(t, json.Unmarshal([]byte(`{"dispatchPaused":{"reason":"deploy freeze"}}`), &s))
-	assert.Contains(t, renderWatch(s, time.Now(), false),
+	assert.Contains(t, w.renderStatus(&s, time.Now(), false),
 		"ALL DISPATCH PAUSED — running agents continue, nothing new starts: deploy freeze (itervox resume)\n")
 }

@@ -17,11 +17,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/x/term"
+	"github.com/vnovick/itervox/internal/logging"
 )
 
-// Terminal commands that replace the TUI (#120). They talk to a running
-// daemon's API, so they work over SSH and without a terminal.
+// Terminal commands (#120, #240). They talk to a running daemon's API (or,
+// with --project, to one project through the machine's hub), so they work
+// over SSH and without a terminal. None of them reads stdin or changes a
+// terminal mode.
 
 func runClientCommand(name string, args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -36,8 +38,8 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 	fs.SetOutput(errOut)
 	var df daemonFlags
 	df.register(fs)
-	interval := fs.Duration("interval", 2*time.Second, "watch: refresh interval")
-	once := fs.Bool("once", false, "watch: print the view once and exit")
+	var wf watchFlags
+	wf.register(fs)
 	follow := fs.Bool("f", false, "logs: keep following new lines")
 	reason := fs.String("reason", "", "pause (all dispatch): why, shown on the dashboard")
 	pauseFor := fs.Duration("for", 0, "pause (all dispatch): resume by itself after this long, e.g. 2h")
@@ -60,7 +62,17 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 	}
 	switch name {
 	case "watch":
-		return watchDaemon(ctx, c, *interval, *once, out, errOut)
+		if len(pos) != 0 {
+			return usage("usage: itervox watch [--issue ID] [--project NAME] [--events-only] [--json] [--since SEQ] [--once]")
+		}
+		opt, err := wf.options(df, out, os.Getenv)
+		if err != nil {
+			return usage(err.Error())
+		}
+		if opt.hubLine == nil && df.url == "" && df.project == "" {
+			opt.hubLine = localHubLine(df.workflow)
+		}
+		return watchCommand(ctx, c, opt, out, errOut)
 	case "logs":
 		if len(pos) != 1 {
 			return usage("usage: itervox logs [-f] <issue>")
@@ -122,6 +134,13 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(out, "Workers: %d.\n", res.Workers)
+	case "approve": // #240: answer a guardrail approval request
+		if len(pos) != 1 {
+			return usage("usage: itervox approve <issue>")
+		}
+		if err := approveCommand(rctx, c, pos[0], out); err != nil {
+			return fail(err)
+		}
 	case "reply":
 		if len(pos) < 2 {
 			return usage("usage: itervox reply <issue> <text>")
@@ -156,171 +175,6 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// watchState is the part of GET /api/v1/state that watch shows.
-type watchState struct {
-	MaxConcurrentAgents int `json:"maxConcurrentAgents"`
-	Running             []struct {
-		Identifier string `json:"identifier"`
-		State      string `json:"state"`
-		Kind       string `json:"kind"`
-		Backend    string `json:"backend"`
-		WorkerHost string `json:"workerHost"`
-		TurnCount  int    `json:"turnCount"`
-		Tokens     int    `json:"tokens"`
-		ElapsedMs  int64  `json:"elapsedMs"`
-		LastEvent  string `json:"lastEvent"`
-	} `json:"running"`
-	Retrying []struct {
-		Identifier string    `json:"identifier"`
-		Attempt    int       `json:"attempt"`
-		DueAt      time.Time `json:"dueAt"`
-		Error      string    `json:"error"`
-	} `json:"retrying"`
-	InputRequired []struct {
-		Identifier string `json:"identifier"`
-		State      string `json:"state"`
-		Context    string `json:"context"`
-	} `json:"inputRequired"`
-	AutomationQueue []struct {
-		Identifier   string `json:"identifier"`
-		AutomationID string `json:"automationId"`
-		Reason       string `json:"reason"`
-	} `json:"automationQueue"`
-	Paused           []string          `json:"paused"`
-	PauseReasons     map[string]string `json:"pauseReasons"`
-	DispatchPressure struct {
-		EligibleWaiting int `json:"eligibleWaiting"`
-	} `json:"dispatchPressure"`
-	// DispatchPaused is the daemon-wide dispatch pause (#213), nil when none.
-	DispatchPaused *struct {
-		Reason string `json:"reason"`
-	} `json:"dispatchPaused"`
-}
-
-// renderWatch is the watch view of s at now, in plain text. Without live,
-// the fields that change on every poll (elapsed time, tokens, retry due
-// times) are left out: that view is what a non-terminal watch compares to
-// decide whether to print again.
-func renderWatch(s watchState, now time.Time, live bool) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "itervox · %d/%d agents · %d waiting for a slot · %d retrying · %d waiting for input · %d queued automations · %d paused\n",
-		len(s.Running), s.MaxConcurrentAgents, s.DispatchPressure.EligibleWaiting, len(s.Retrying), len(s.InputRequired), len(s.AutomationQueue), len(s.Paused))
-	if p := s.DispatchPaused; p != nil { // #213
-		b.WriteString("ALL DISPATCH PAUSED — running agents continue, nothing new starts")
-		if p.Reason != "" {
-			b.WriteString(": " + p.Reason)
-		}
-		b.WriteString(" (itervox resume)\n")
-	}
-	section := func(title string, n int) bool {
-		if n == 0 {
-			return false
-		}
-		fmt.Fprintf(&b, "\n%s\n", title)
-		return true
-	}
-	if section("RUNNING", len(s.Running)) {
-		for _, r := range s.Running {
-			who := r.Backend
-			if r.Kind != "" && r.Kind != "worker" {
-				who += " " + r.Kind
-			}
-			if r.WorkerHost != "" {
-				who += " @" + r.WorkerHost
-			}
-			elapsed, tokens := "", ""
-			if live {
-				elapsed, tokens = shortDuration(time.Duration(r.ElapsedMs)*time.Millisecond), fmtTokens(r.Tokens)
-			}
-			fmt.Fprintf(&b, "  %-10s %-14s %-18s %6s  turn %-3d %7s tok  %s\n", r.Identifier, clip(r.State, 14), clip(who, 18),
-				elapsed, r.TurnCount, tokens, clip(oneLine(r.LastEvent), 60))
-		}
-	}
-	if section("RETRYING", len(s.Retrying)) {
-		for _, r := range s.Retrying {
-			in := "now"
-			if d := r.DueAt.Sub(now); d > 0 {
-				in = "in " + shortDuration(d)
-			}
-			if !live {
-				in = ""
-			}
-			fmt.Fprintf(&b, "  %-10s attempt %-3d %-9s %s\n", r.Identifier, r.Attempt, in, clip(oneLine(r.Error), 70))
-		}
-	}
-	if section("WAITING FOR INPUT", len(s.InputRequired)) {
-		for _, r := range s.InputRequired {
-			fmt.Fprintf(&b, "  %-10s %s\n", r.Identifier, clip(oneLine(r.Context), 90))
-		}
-	}
-	if section("QUEUED AUTOMATIONS", len(s.AutomationQueue)) {
-		for _, q := range s.AutomationQueue {
-			fmt.Fprintf(&b, "  %-10s %-24s %s\n", q.Identifier, clip(q.AutomationID, 24), strings.ReplaceAll(q.Reason, "_", " "))
-		}
-	}
-	if section("PAUSED", len(s.Paused)) {
-		for _, id := range s.Paused {
-			if reason := s.PauseReasons[id]; reason != "" {
-				fmt.Fprintf(&b, "  %-10s %s\n", id, strings.ReplaceAll(reason, "_", " "))
-			} else {
-				fmt.Fprintf(&b, "  %s\n", id)
-			}
-		}
-	}
-	if len(s.Running)+len(s.Retrying)+len(s.InputRequired)+len(s.AutomationQueue)+len(s.Paused)+s.DispatchPressure.EligibleWaiting == 0 {
-		b.WriteString("\nNothing running or waiting.\n")
-	}
-	return b.String()
-}
-
-// watchDaemon shows renderWatch until ctx ends: redrawn in place on a terminal,
-// otherwise printed again, with a time stamp, only when something other than
-// the ticking elapsed times, token counts and retry countdowns changed.
-func watchDaemon(ctx context.Context, c *daemonClient, every time.Duration, once bool, out, errOut io.Writer) int {
-	tty := false
-	if f, ok := out.(*os.File); ok {
-		tty = term.IsTerminal(f.Fd())
-	}
-	last := ""
-	for {
-		rctx, cancel := context.WithTimeout(ctx, clientTimeout)
-		var s watchState
-		err := c.request(rctx, http.MethodGet, "/state", nil, &s)
-		cancel()
-		if ctx.Err() != nil {
-			return 0 // stopped (Ctrl-C) while a request was in flight: not a failure
-		}
-		now := time.Now()
-		view, key := "", ""
-		if err != nil {
-			if once {
-				_, _ = fmt.Fprintln(errOut, "itervox watch: "+err.Error())
-				return 1
-			}
-			view = "itervox watch: " + err.Error() + " (retrying)\n"
-			key = view
-			c.rediscover() // a restarted daemon may listen on a new port
-		} else {
-			view, key = renderWatch(s, now, true), renderWatch(s, now, false)
-		}
-		switch {
-		case once:
-			_, _ = io.WriteString(out, view)
-			return 0
-		case tty:
-			_, _ = io.WriteString(out, "\x1b[H\x1b[2J"+now.Format("15:04:05")+"  (Ctrl-C to quit)\n"+view)
-		case key != last:
-			_, _ = fmt.Fprintf(out, "--- %s ---\n%s", now.Format(time.RFC3339), view)
-		}
-		last = key
-		select {
-		case <-ctx.Done():
-			return 0
-		case <-time.After(every):
-		}
-	}
-}
-
 // logEntry is one line of GET /issues/{id}/logs and the log stream.
 type logEntry struct {
 	Level   string `json:"level"`
@@ -330,7 +184,7 @@ type logEntry struct {
 }
 
 func (e logEntry) String() string {
-	msg := e.Message
+	msg := logging.RedactString(e.Message) // #240: every terminal log line is redacted
 	if e.Tool != "" {
 		msg = "[" + e.Tool + "] " + msg
 	}
@@ -341,6 +195,18 @@ func (e logEntry) String() string {
 // (GET /issues/{id}/log-stream, reconnecting from the last line seen) until
 // ctx ends.
 func printLogs(ctx context.Context, c *daemonClient, identifier string, follow bool, out io.Writer) error {
+	return followLogs(ctx, c, identifier, follow, func(e *logEntry) {
+		if e == nil {
+			_, _ = fmt.Fprintln(out, "… (earlier lines were dropped from the buffer)")
+			return
+		}
+		_, _ = fmt.Fprintln(out, e.String())
+	})
+}
+
+// followLogs is printLogs with each line (nil for a gap: lines dropped from
+// the daemon's buffer) handed to emit.
+func followLogs(ctx context.Context, c *daemonClient, identifier string, follow bool, emit func(*logEntry)) error {
 	path := "/issues/" + url.PathEscape(identifier)
 	if !follow {
 		rctx, cancel := context.WithTimeout(ctx, clientTimeout)
@@ -349,15 +215,15 @@ func printLogs(ctx context.Context, c *daemonClient, identifier string, follow b
 		if err := c.request(rctx, http.MethodGet, path+"/logs", nil, &entries); err != nil {
 			return err
 		}
-		for _, e := range entries {
-			_, _ = fmt.Fprintln(out, e.String())
+		for i := range entries {
+			emit(&entries[i])
 		}
 		return nil
 	}
 	lastID := ""
 	refused := 0
 	for ctx.Err() == nil {
-		err := streamLogs(ctx, c, path+"/log-stream", &lastID, out)
+		err := streamLogs(ctx, c, path+"/log-stream", &lastID, emit)
 		var ae *apiError
 		if errors.As(err, &ae) {
 			// Refused: a retry would be refused too, except right after a
@@ -380,7 +246,7 @@ func printLogs(ctx context.Context, c *daemonClient, identifier string, follow b
 
 // streamLogs reads one log-stream connection; lastID is the last event id,
 // sent back as Last-Event-ID so a reconnect resumes after it.
-func streamLogs(ctx context.Context, c *daemonClient, path string, lastID *string, out io.Writer) error {
+func streamLogs(ctx context.Context, c *daemonClient, path string, lastID *string, emit func(*logEntry)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/v1"+path, nil)
 	if err != nil {
 		return err
@@ -412,10 +278,10 @@ func streamLogs(ctx context.Context, c *daemonClient, path string, lastID *strin
 			case "log":
 				var e logEntry
 				if json.Unmarshal([]byte(data), &e) == nil {
-					_, _ = fmt.Fprintln(out, e.String())
+					emit(&e)
 				}
 			case "gap":
-				_, _ = fmt.Fprintln(out, "… (earlier lines were dropped from the buffer)")
+				emit(nil)
 			}
 			id, event, data = "", "", ""
 		case strings.HasPrefix(line, "id:"):

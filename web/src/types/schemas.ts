@@ -140,6 +140,11 @@ export const RunningRowSchema = z.object({
   // #157 — the rule set the run was given; absent when no rule applied.
   rulesHash: z.string().optional(),
   ruleIds: z.array(z.string()).optional(),
+  // #240 — issue title, resolved profile (absent for the default) and the
+  // run's estimated cost (absent until the backend reports one).
+  title: z.string().optional(),
+  profile: z.string().optional(),
+  costUsdEstimated: z.number().optional(),
 });
 
 // #186 — per-component digests of a run's prompt version (hashes only).
@@ -455,6 +460,9 @@ export const InputRequiredEntrySchema = z.object({
   // can render a "Stale" badge + age tooltip without re-parsing queuedAt.
   stale: z.boolean().optional(),
   ageMinutes: z.number().optional(),
+  // #240 — a guardrail approval request (#204): "approve" runs the held
+  // command once, any other reply rejects it.
+  guardrailApproval: z.boolean().optional(),
 });
 
 export const AutomationQueueBackpressureSchema = z.object({

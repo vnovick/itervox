@@ -378,13 +378,12 @@ spec:
 
 ---
 
-## Terminal UI under systemd
+## Logs under systemd
 
-`itervox` runs headless by default (since v0.2.4); the deprecated Bubbletea TUI
-starts only with `--tui`, and even then a TTY ownership guard refuses it without a
-controlling terminal and the daemon continues. No flag needed.
+`itervox` always runs headless (the terminal UI was removed in v0.3; watch the
+daemon from a shell with `itervox watch`). No flag needed.
 
-**Where the logs go.** With no controlling terminal the daemon fans logs out to
+**Where the logs go.** The daemon fans logs out to
 **both stderr and the rotating file**, so `journalctl -u itervox` keeps working for the
 whole run rather than going quiet after the startup banner (the tokenised dashboard URL
 is withheld from it — see "Authentication" above). Pass `--log-format=json`

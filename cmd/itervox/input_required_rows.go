@@ -17,7 +17,9 @@ import (
 func sortedInputRequiredRows(entries map[string]*orchestrator.InputRequiredEntry, pending map[string]*orchestrator.PendingInputResumeEntry, staleAfter time.Duration, now time.Time) []server.InputRequiredRow {
 	rows := make([]server.InputRequiredRow, 0, len(entries)+len(pending))
 	for _, entry := range entries {
-		rows = append(rows, makeInputRequiredRow("input_required", entry.Identifier, entry.SessionID, entry.Context, entry.Backend, entry.ProfileName, entry.QueuedAt, staleAfter, now))
+		row := makeInputRequiredRow("input_required", entry.Identifier, entry.SessionID, entry.Context, entry.Backend, entry.ProfileName, entry.QueuedAt, staleAfter, now)
+		row.GuardrailApproval = entry.GuardrailApprovalID != "" // #240
+		rows = append(rows, row)
 	}
 	for _, entry := range pending {
 		context := "Reply received, waiting to resume."

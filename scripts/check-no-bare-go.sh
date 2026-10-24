@@ -5,8 +5,8 @@
 #   (a) be a `go func(...) {` whose leading defers include
 #       RecoverGoroutine(...) (one-shot task: recover, log, count, reconcile
 #       via onPanic — internal/orchestrator/gosafe.go) or
-#       failFastOnPanic(...) (long-lived loop: log through slog, restore the
-#       terminal, re-panic — cmd/itervox/gosafe.go), or
+#       failFastOnPanic(...) (long-lived loop: log through slog, re-panic —
+#       cmd/itervox/gosafe.go), or
 #       recoverServerGoroutine(...) (internal/server's one-shot sibling of
 #       RecoverGoroutine; server must not import orchestrator), or
 #       recoverHubGoroutine(...) (internal/hub and internal/hub/slack: logs
@@ -41,7 +41,6 @@ internal/agent/claude.go|go func() {|1|readLines stdout scanner: stdlib-only rea
 internal/agent/steer.go|go func() {|1|live-steering stdin writer (#178): writes stream-json lines into the pipe of the claude turn RunTurn started; recovers its own panic (logged, stdin closed) and is joined by RunTurn after cmd.Wait, which closes the write end and so unblocks it
 internal/agent/ssh.go|go func() {|1|remoteStdin payload writer (CORE-155): one io.WriteString into the ssh stdin pipe, no callbacks; joined by the caller after cmd.Wait, which closes that pipe and so unblocks it
 internal/agent/testdata/fakesshd/main.go|go func() {|2|test-only fake sshd (built by internal/agent TestMain, never linked into itervox): the stdin relay and the stdout/stderr relays, each one io.Copy between pipes; the process exits when the remote command is done
-internal/statusui/statusui.go|go func() {|2|bubbletea Program.Run catches panics and restores the terminal; the ctx->Quit forwarder has no failure mode; statusui must not import orchestrator
 cmd/itervox/demo.go|go demoOpenWhenReady(|1|demoOpenWhenReady defers RecoverGoroutine itself; a panic only loses the browser opening
 cmd/itervox/demo.go|go d.control(|1|demoRun.control defers RecoverGoroutine itself; a panic only stops the demo's stand-in operator
 internal/tracker/github/client.go|go func(i int, it T) {|1|boundedDo fan-out joined by wg.Wait in the calling goroutine (event-loop tick); fail-fast like the event loop

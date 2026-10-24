@@ -101,12 +101,9 @@ var forbiddenWriteTokens = []string{
 	"ptracepokedata",
 }
 
-// devTTYAllowed: the TUI resets its own controlling terminal (`stty sane`
-// on /dev/tty) after Bubbletea exits; nothing else opens /dev/tty.
-var devTTYAllowed = map[string]string{
-	"internal/statusui/statusui.go":       "stty sane on the daemon's own controlling terminal",
-	"internal/statusui/tty_guard_unix.go": "restores the daemon's own terminal mode",
-}
+// devTTYAllowed lists the files that may open /dev/tty. None may: the
+// terminal UI, which reset its own controlling terminal, was removed (#240).
+var devTTYAllowed = map[string]string{}
 
 // stdinHelpers are functions handed an *exec.Cmd by their caller; the
 // caller's own creation of that command is what the check verifies.

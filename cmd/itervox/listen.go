@@ -171,11 +171,6 @@ func bindAddr(host string, port int) string {
 	return net.JoinHostPort(unbracketHost(host), strconv.Itoa(port))
 }
 
-// dashboardBaseURL is the dashboard URL for a configured host and port.
-func dashboardBaseURL(host string, port int) string {
-	return "http://" + bindAddr(host, port) + "/"
-}
-
 func unbracketHost(h string) string {
 	if len(h) >= 2 && h[0] == '[' && h[len(h)-1] == ']' {
 		return h[1 : len(h)-1]

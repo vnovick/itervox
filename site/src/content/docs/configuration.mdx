@@ -557,7 +557,7 @@ Itervox can distribute agent work across multiple remote hosts via SSH. Each hos
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `ssh_hosts` | string[] | `[]` | List of SSH hosts in `"host"` or `"host:port"` format. When empty, agents run locally. |
-| `ssh_host_descriptions` | object | `{}` | Optional display labels for `ssh_hosts`. Keys are host strings, values are user-facing descriptions shown in the dashboard and TUI. |
+| `ssh_host_descriptions` | object | `{}` | Optional display labels for `ssh_hosts`. Keys are host strings, values are user-facing descriptions shown in the dashboard. |
 | `ssh_strict_host_checking` | string | `"accept-new"` | Default `StrictHostKeyChecking` mode applied to every SSH worker connection. Valid values: `accept-new` (TOFU — pin on first contact, reject on mismatch), `yes` (strict — reject any unknown or changed key), `no` / `off` (permissive — accept any key, **insecure**), `ask` (prompt — incompatible with `BatchMode=yes`). Defaults to `accept-new` so a brand-new host's key is recorded in `~/.ssh/known_hosts` on first contact and any subsequent mismatch is rejected. |
 | `ssh_strict_host_by_host` | object | `{}` | Per-host override for `StrictHostKeyChecking`, taking precedence over `ssh_strict_host_checking`. Keys are host addresses (matching entries in `ssh_hosts`), values use the same set as the default. Use to harden production hosts to `yes` or temporarily relax a sandbox VM to `no`. |
 | `dispatch_strategy` | string | `"round-robin"` | How issues are routed to SSH hosts. `"round-robin"` cycles through hosts in order. `"least-loaded"` sends each new issue to the host with the fewest active workers. Ignored when `ssh_hosts` is empty. |
@@ -766,7 +766,7 @@ a minute before it, has moved. Its `{{ trigger.previous_state }}` is then
 empty, since the poll never saw it. A move from an active state reports its
 previous state as before. An issue created in the trigger state does not fire.
 Neither does an issue that only became visible because the runtime project
-filter (dashboard or TUI) changed: the first poll after a filter change takes a
+filter (dashboard) changed: the first poll after a filter change takes a
 fresh baseline instead of inferring moves.
 
 `tracker_comment_added` watches comments only on the issues the poll lists, so
@@ -1268,7 +1268,7 @@ inject the port as `$PORT`, so the bind can come from the environment:
 
 Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once — only when stderr is a terminal or `ITERVOX_PRINT_TOKEN=1` (`--no-print-token` always suppresses it). Headless (systemd, containers, redirected stderr), an auto-generated token is written to `<logs-dir>/api-token` (mode 0600, rewritten on every start) instead, and the log line carries only its path and a `sha256:` fingerprint. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /api/v1/health` (static liveness) and `GET /api/v1/ready` (event-loop readiness) probes are auth-exempt so load balancers, uptime monitors and container health checks can use them without a token — they are the only auth-exempt routes. `GET /metrics` (opt-in via `server.metrics.enabled`) always needs the token.
 
-**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the TUI) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
+**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the terminal commands) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
 
 **Host guard (DNS rebinding) in unauthenticated mode.** The cross-origin guard cannot stop DNS rebinding: a page on a hostname the attacker controls re-points that name at your daemon's address and then talks to it *same-origin*, so it could otherwise store a profile with an arbitrary `command`, rewrite settings, or read state and logs. With `server.allow_unauthenticated: true`, every route — API, SSE, the dashboard and static files — therefore requires the request's `Host` (port and IPv6 brackets stripped, case-insensitive) to be `localhost`, an IP address, the configured `server.host`, or a name in `server.allowed_hosts`; anything else gets 403 with code `host_not_allowed`. IP addresses always pass because a rebinding attack needs a DNS name — so browsing to `http://192.168.1.20:8090` with `host: 0.0.0.0`, container probes by pod IP, and SSH tunnels to `localhost` all keep working, as does the Vite dev proxy (it forwards `Host: localhost:<port>`). `GET /api/v1/health` is exempt because it returns a constant, and `GET /api/v1/ready` because it returns only booleans and the tracker's rate-limit reset and is probed by whatever name the platform uses. **If you reach an unauthenticated daemon through a reverse proxy, tunnel, MagicDNS or container service hostname, add that name to `server.allowed_hosts`.** Token mode has no Host check: a rebound page never holds the bearer token.
 
@@ -1309,7 +1309,7 @@ short by a `SIGKILL`.
 
 ### What an edit to `WORKFLOW.md` does
 
-Settings saved from the dashboard or TUI never reload: each is written as the
+Settings saved from the dashboard never reload: each is written as the
 daemon's own write and applied in memory. An **operator edit** (your editor,
 `git pull`, a deploy) is detected by the file watcher and applied with
 **drain, then reload**: admission stops exactly as for a shutdown, in-flight
@@ -1332,14 +1332,12 @@ then shows the "config invalid" banner and waits for a fix.
 ### Log format
 
 `--log-format text|json` (or `ITERVOX_LOG_FORMAT`; the flag wins) selects
-the format of the rotating log file **and**, unless the terminal UI runs
-(it starts only with `--tui` since v0.2.4), of stderr — one JSON object per
-log record, for platforms that collect stdout/stderr. With `--tui` on a
-terminal, logs go to the file only. Both
+the format of the rotating log file **and** of stderr — one JSON object per
+log record, for platforms that collect stdout/stderr. Both
 sinks go through the same secret redaction (`Bearer` tokens, `lin_api_…`,
 `ghp_…`, `sk-ant-…` are written as `***`). Lines printed before logging
-starts or outside it (usage text, fatal start-up errors, the TUI's own
-"not starting" notice) are plain text in either format.
+starts or outside it (usage text, fatal start-up errors) are plain text in
+either format.
 
 ### GitHub state labels: `itervox doctor --fix`
 
@@ -1497,7 +1495,7 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 
 **Moving between Symphony and Itervox.** `itervox import WORKFLOW.md` converts a Symphony workflow, or an Itervox v0.x one, into this layout (settings to `.itervox/settings.jsonc`, profile prompts to prompt files, a `WORKFLOW.md.bak`, and a list of every key it could not map); `itervox export --symphony` writes a Symphony `WORKFLOW.md` with the Symphony core keys and the worker prompt and lists the Itervox-only features it dropped. See the [CLI reference](/cli/#itervox-import--convert-a-symphony-or-older-itervox-workflow).
 
-**Dashboard and TUI saves.** A setting saved from the dashboard or the TUI in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear, and since #239 the tracker states, the failed state, the project filter, the tracker scope and filter, `dependencies.analysis_mode` and the automations) is written to `.itervox/settings.jsonc` — or to `.itervox/settings.local.jsonc` when that file already sets the key, so the save is never shadowed — which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were. A scope save removes the keys it clears (it used to comment them out in `WORKFLOW.md`). If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Agent profiles are saved to `WORKFLOW.md`, and `itervox models refresh` writes `agent.available_models` to the settings file that sets it, else to `WORKFLOW.md`.
+**Dashboard saves.** A setting saved from the dashboard in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear, and since #239 the tracker states, the failed state, the project filter, the tracker scope and filter, `dependencies.analysis_mode` and the automations) is written to `.itervox/settings.jsonc` — or to `.itervox/settings.local.jsonc` when that file already sets the key, so the save is never shadowed — which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were. A scope save removes the keys it clears (it used to comment them out in `WORKFLOW.md`). If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Agent profiles are saved to `WORKFLOW.md`, and `itervox models refresh` writes `agent.available_models` to the settings file that sets it, else to `WORKFLOW.md`.
 
 **See where each value comes from.** `itervox config show` prints every setting Itervox reads, its effective value and its layer (with the file for `user` and `project`), plus `environment` (and the variable) for a server bind set by `ITERVOX_SERVER_HOST`, `ITERVOX_SERVER_PORT` or `PORT`; `--json` for scripts. A key a layer sets that Itervox does not read is listed with a note, and so is a value of the wrong type that was ignored for the default. Secrets such as `tracker.api_key` are shown as `(set, hidden)`, and a password inside a URL as `hidden`.
 

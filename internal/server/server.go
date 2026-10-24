@@ -49,7 +49,9 @@ var ErrBackendLimited = errors.New("server: agent backend is limited")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
-	Identifier    string    `json:"identifier"`
+	Identifier string `json:"identifier"`
+	// Title is the issue's title (#240: itervox watch lanes).
+	Title         string    `json:"title,omitempty"`
 	State         string    `json:"state"`
 	TurnCount     int       `json:"turnCount"`
 	LastEvent     string    `json:"lastEvent,omitempty"`
@@ -81,6 +83,13 @@ type RunningRow struct {
 	// RulesHash / RuleIDs name the rule set the run was given (#157).
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// Profile is the run's resolved agent profile, empty for the default
+	// (#240).
+	Profile string `json:"profile,omitempty"`
+	// CostUSDEstimated is the run's session-cumulative estimated cost as
+	// its backend reports it (Claude's total_cost_usd, CORE-091); null
+	// until reported, and always null for Codex (#240).
+	CostUSDEstimated *float64 `json:"costUsdEstimated,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -1255,6 +1264,10 @@ type InputRequiredRow struct {
 	// AgeMinutes is the wall-clock age of the entry in whole minutes — handy
 	// for the dashboard tooltip without re-parsing QueuedAt on every render.
 	AgeMinutes int `json:"ageMinutes,omitempty"`
+	// GuardrailApproval marks a guardrail approval request (#204): a reply
+	// whose first word is approve/yes/ok runs the held command once; any
+	// other reply rejects it (#240: itervox watch prints itervox approve).
+	GuardrailApproval bool `json:"guardrailApproval,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.

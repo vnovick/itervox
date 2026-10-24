@@ -88,7 +88,6 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make test` | `go test -race ./cmd/... ./internal/... -count=1` |
 | `make coverage` | Run tests with coverage over `./cmd/... ./internal/...`; output `coverage.html` |
 | `make benchmark` | `go test -bench=. -benchmem ./cmd/... ./internal/...` |
-| `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
 | `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
 | `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
 | `make fmt` | `gofmt -l -w cmd internal` |
@@ -137,7 +136,6 @@ itervox/
 │   ├── prdetector/       # Detects PR URLs in agent output
 │   ├── prompt/           # Liquid template rendering
 │   ├── server/           # HTTP API, SSE, embedded web/dist (chi router)
-│   ├── statusui/         # Bubbletea terminal dashboard
 │   ├── templates/        # WORKFLOW.md scaffolding + bundled prompt templates (e.g. human_input.md)
 │   ├── tracker/          # Tracker interface + adapters
 │   │   ├── tracker.go    # Tracker interface
@@ -175,8 +173,6 @@ orchestrator (single-goroutine state machine — imports agent, config, domain,
 app (EnrichIssue business logic — imports domain, tracker)
 
 server (HTTP API — imports domain, config)
-
-statusui (Bubbletea TUI — imports domain)
 
 templates (WORKFLOW.md scaffolding + bundled prompts)
 
@@ -252,35 +248,15 @@ go test -race ./cmd/... ./internal/...           # with race detector (required 
 go test -v ./internal/orchestrator/...           # verbose
 ```
 
-### TUI tests (`internal/statusui`)
+### Terminal command tests (`itervox watch`)
 
-The status UI package uses two complementary testing strategies:
-
-#### Pure-function and model-state tests
-
-Whitebox unit tests cover pure helpers (`wrapText`, `fmtDuration`, `truncate`, `extractPRLink`, `buildNavItems`, …). Interactive model-state tests use [`charmbracelet/x/exp/teatest`](https://pkg.go.dev/github.com/charmbracelet/x/exp/teatest) to drive the full `Update→View` pipeline:
-
-```go
-tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
-tm.Send(tickMsg(time.Now()))
-tm.Quit()
-final := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second)).(Model)
-assert.Len(t, final.sessions, 1)
-```
-
-#### Golden-file tests (catwalk)
-
-Render-path tests use [`knz/catwalk`](https://github.com/knz/catwalk) — a data-driven framework that records `View()` output into golden files under `internal/statusui/testdata/` (`catwalk_details`, `catwalk_picker`, `catwalk_profile_picker`, `catwalk_split`). Each test file contains an input sequence followed by the expected rendered output.
-
-**Regenerating golden files** after an intentional TUI change:
-
-```bash
-make tui-golden                               # preferred
-# or directly:
-go test ./internal/statusui/... -args -rewrite
-```
-
-Review the diff in `internal/statusui/testdata/` — it is the exact render change — and commit alongside your code change. The catwalk tests run in the `pre-push` hook, so unintentional renders fail before they reach CI.
+`itervox watch` and the quick actions (`cmd/itervox/client_commands.go`,
+`watch.go`, `watch_render.go`) are tested against a fake daemon
+(`newFakeDaemon` in `client_commands_test.go`, `fakeFeed` in `watch_test.go`)
+that records every request. Assert on the printed text or JSON lines, never on
+golden files. `TestWatchNeverChangesTerminalMode` (Linux) runs watch on a real
+pseudo-terminal and checks the terminal's mode and stdin are untouched — any
+change that puts a terminal into raw mode or reads stdin fails it.
 
 ### Frontend tests
 

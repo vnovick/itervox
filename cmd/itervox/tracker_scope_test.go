@@ -137,20 +137,6 @@ func TestTrackerScopeSaveCombinations(t *testing.T) {
 	assert.Empty(t, fsm.Scope().Assignee, "and changes nothing in memory")
 }
 
-// TestTUIPickerScope (#182): the TUI picker's "assigned to" row ANDs with
-// the selected projects and keeps the labels.
-func TestTUIPickerScope(t *testing.T) {
-	cfg := &config.Config{}
-	fsm := &fakeScopeManager{scope: tracker.Scope{Labels: []string{"agent"}}}
-	assert.Equal(t, tracker.Scope{Projects: []string{"alpha"}, Assignee: "me", Labels: []string{"agent"}},
-		tuiPickerScope(fsm, cfg, []string{"alpha", "__assignee__"}))
-	fsm.scope.Assignee = "ada@example.com"
-	assert.Equal(t, tracker.Scope{Projects: []string{}, Assignee: "ada@example.com", Labels: []string{"agent"}},
-		tuiPickerScope(fsm, cfg, []string{"__assignee__"}), "the current assignee is kept")
-	assert.Equal(t, tracker.Scope{Projects: []string{"alpha"}, Labels: []string{"agent"}},
-		tuiPickerScope(fsm, cfg, []string{"alpha"}), "unchecked: anyone")
-}
-
 // scopePollFake is a poll tracker with a combined scope: only the issues
 // assigned to the current assignee are visible.
 type scopePollFake struct {

@@ -30,9 +30,9 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
-| `-tui` | bool | `false` | Start the terminal UI (on a terminal; without one it warns and runs headless). **Deprecated**: the terminal UI will be removed in v0.3. Without `--tui`, Itervox runs headless (since v0.2.4): no terminal UI, logs on stderr (text, or JSON with `--log-format json`), and the dashboard URL printed there, with its token only when stderr is a terminal. Watch and act from another shell with [`itervox watch`](#itervox-watch--a-terminal-view-of-a-running-daemon) and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply) |
+| `-tui` | bool | `false` | **Removed in v0.3.** Prints one line pointing to [`itervox watch`](#itervox-watch--a-live-terminal-panel) and exits with code `2`. Itervox always runs headless: no terminal UI, logs on stderr (text, or JSON with `--log-format json`), and the dashboard URL printed there, with its token only when stderr is a terminal. Watch and act from another shell with `itervox watch` and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply-approve) |
 | `-no-hub` | bool | `false` | Do not become or join the machine's [hub](/guides/hub/) (#228): no hub lock, `hub_member: false` in the registry, not listed or proxied by the hub. Same as `hub.enabled: false` |
-| `-headless` | bool | `false` | Headless even with `--tui`, and the tokenised dashboard URL is never printed, even on a terminal (an auto-generated token is still in `<logs-dir>/api-token`) |
+| `-headless` | bool | `false` | The tokenised dashboard URL is never printed, even on a terminal (an auto-generated token is still in `<logs-dir>/api-token`) |
 
 > To try Itervox without a tracker account, API keys or an agent CLI, run
 > [`itervox demo`](#itervox-demo--try-it-in-30-seconds).
@@ -373,15 +373,35 @@ Prints what each issue's agents have used: input and output tokens and estimated
 
 ---
 
-## `itervox watch` — A terminal view of a running daemon
+## `itervox watch` — A live terminal panel
 
 ```bash
-itervox watch [--interval 2s] [--once] [--workflow WORKFLOW.md] [--logs-dir DIR] [--url URL]
+itervox watch [--issue ID] [--project NAME] [--events-only] [--json] [--since SEQ]
+              [--interval 2s] [--once] [--workflow WORKFLOW.md] [--logs-dir DIR] [--url URL]
 ```
 
-A read-only, plain-text view of the daemon running in this project: how many eligible issues are waiting for a free slot, the running agents (state, backend, worker host, run time, turns, tokens, last event), retries with their attempt and due time, issues waiting for input with the question, queued automation runs with the reason, and paused issues with the pause reason. On a terminal it redraws every `--interval`; without one (a pipe, a log file, `ssh host itervox watch`) it prints the view again, with a time stamp, only when something other than the ticking run times, token counts and retry countdowns changes. `--once` prints it once and exits.
+A read-only live panel over the daemon running in this project (#240). It shows:
 
-These commands, `itervox logs` and the quick actions below find the daemon from `.itervox/dashboard_url` (or `--url`) and its API token from `ITERVOX_API_TOKEN`, then `ITERVOX_API_TOKEN` in `.itervox/.env`, then `<logs-dir>/api-token`. They exit `1` when the daemon cannot be reached or refuses (its message is printed) and `2` on a usage error.
+- **A status header**: running agents against slots, queued automation runs, retries, requests waiting for you, issues waiting for a slot and issues blocked by dependencies — with a `slot-bound` or `dependency-bound` line when one of them is what holds work back —, paused issues, `ALL DISPATCH PAUSED` while all dispatch is paused, and the hub when this daemon serves it.
+- **One lane per running issue**: identifier, title, profile and backend (and `reviewer` / `@host`), elapsed time, turn, tokens and estimated cost, and the latest activity line — the run's last tool call (name and target, never its output) and current step from the [run context](/api-reference/), or the state's last event line on a daemon without run contexts. Every line is redacted like the other log surfaces, and control characters are dropped.
+- **Events as they happen**, from the event feed (`GET /api/v1/feed`): runs started, finished and failed, pull requests opened and merged, review verdicts, guardrail refusals, lessons proposed, dispatch paused and resumed. Watch reads the feed by cursor, so a dropped connection or a restarted daemon continues where it left off; events that left the daemon's feed window before they were read are reported as a gap. When it stops it prints the cursor (`stopped at feed cursor 1234; resume with: itervox watch --since 1234`).
+- **What needs you**, highlighted: each input request with `itervox reply <issue> "<your answer>"` and each guardrail approval with `itervox approve <issue>` (and the `reply` that refuses it), including the `--workflow`, `--url` or `--project` flags that reach the same daemon. Watch prints the command; it never answers.
+
+On a terminal the panel is redrawn in place every `--interval`, coloured by state (running green, reviewers cyan, what needs you bold yellow, failures red); `NO_COLOR` (any value) or `TERM=dumb` turns colour off. Without a terminal (a pipe, a file, `ssh host itervox watch`, a CI log) it is plain text: the status again, with a time stamp, only when something other than the ticking run times, token counts, costs and retry countdowns changes, and each event once.
+
+Watch never reads stdin and never changes the terminal's mode (no raw mode, no alternate screen), so it works the same over SSH, in tmux and without a terminal, and Ctrl-C is an ordinary interrupt.
+
+| Flag | Description |
+|------|-------------|
+| `--issue ID` | Follow one issue: its lane, its full run log (redacted, streamed like `itervox logs -f`) and its events |
+| `--project NAME` | Watch one project through the machine's [hub](/guides/hub/): the hub's address from `~/.itervox/daemons/hub.lock` (or `--url`), the hub token from `ITERVOX_HUB_TOKEN` (`itervox token create --hub`) |
+| `--events-only` | The event stream alone, one line per event — for piping |
+| `--json` | One JSON object per line: `{"type":"status",…}` when the status changes (`lanes`, `needsYou` with each `command`, the counts and `feedCursor`), `{"type":"event",…}` per feed event (the feed event's fields plus `text` and, for input requests, `command`), `{"type":"gap","after","oldestSeq"}`, and with `--issue` `{"type":"log",…}`. Never coloured |
+| `--since SEQ` | Replay the feed events after cursor `SEQ`, then keep following. Without it, watch starts at the feed's head |
+| `--interval 2s` | Refresh interval |
+| `--once` | Print once and exit (with `--since`, the events after it too) |
+
+These commands, `itervox logs` and the quick actions below find the daemon from `.itervox/dashboard_url` (or `--url`) and its API token from `ITERVOX_API_TOKEN`, then `ITERVOX_API_TOKEN` in `.itervox/.env`, then `<logs-dir>/api-token`. With `--project NAME` they go through the machine's hub instead, with `ITERVOX_HUB_TOKEN`. They exit `1` when the daemon cannot be reached or refuses (its message is printed) and `2` on a usage error. See the [terminal guide](/guides/terminal/) for recipes.
 
 ---
 
@@ -395,7 +415,7 @@ Prints the issue's run log, one line per event (`time LEVEL [tool] message`). Wi
 
 ---
 
-## Quick actions: pause, resume, dispatch, workers, reply
+## Quick actions: pause, resume, dispatch, workers, reply, approve
 
 ```bash
 itervox pause <issue>          # stop the issue's agent and pause the issue
@@ -403,9 +423,10 @@ itervox resume <issue>         # resume a paused issue
 itervox dispatch <issue>       # move the issue to the first active state; it starts when a slot is free
 itervox workers <n>            # set max_concurrent_agents (saved to WORKFLOW.md)
 itervox reply <issue> <text>   # answer an agent's question; queued, applied if the issue is waiting for input
+itervox approve <issue>        # approve the command a guardrail is holding for the issue; it runs once
 ```
 
-The same actions as the dashboard and the (deprecated) terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
+The same actions as the dashboard, through the API. `approve` answers a [guardrail approval](/guides/guardrails/) with `approve`, and refuses (exit `1`, nothing sent) when the issue is waiting for an ordinary answer instead; to refuse a held command, `itervox reply <issue> <reason>`. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
 ### Pause and resume all dispatch
 
@@ -576,9 +597,10 @@ itervox -h
 |----------|---------|-------------|
 | `ITERVOX_DRY_RUN` | `""` | Set to `"1"` to enable dry-run mode. The orchestrator logs dispatch decisions but does **not** start agent workers. Useful for verifying configuration and dispatch logic without consuming API tokens. |
 | `ITERVOX_API_TOKEN` | `""` | Enables bearer-token authentication on all `/api/v1/*` routes (except `/api/v1/health`). Requests must include `Authorization: Bearer <token>`. When unset, Itervox auto-generates an ephemeral token at startup on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). The dashboard URL that carries the token is printed to stderr once, only when stderr is a terminal (see `ITERVOX_PRINT_TOKEN`); an auto-generated token is also written to `<logs-dir>/api-token` (mode 0600, rewritten on every start), which is where a headless run (systemd, containers) finds it. Pin a stable value in `.itervox/.env` for bookmarks that survive restarts. |
+| `ITERVOX_HUB_TOKEN` | `""` | The hub token (`itervox token create --hub`) that `itervox watch --project NAME` and the other client commands send to the machine's [hub](/guides/hub/) with `--project`. Read by those commands only, never by the daemon. |
 | `ITERVOX_USER_SETTINGS` | `""` | Path of the user [settings file](/configuration/#settings-files-jsonc-layers) instead of `~/.itervox/settings.jsonc`; `off` turns the user layer off. |
 | `ITERVOX_PRINT_TOKEN` | `""` | `1`/`true` prints the tokenised dashboard URL on stderr even when stderr is not a terminal; `0`/`false` suppresses it even on a terminal. Unset: printed only on a terminal. `-no-print-token` always wins. |
-| `ITERVOX_SUPERVISOR_TOKEN` | `""` | The API token a supervisor (the macOS app, a process manager) starts the daemon with. Required as the bearer token like `ITERVOX_API_TOKEN`, which it replaces, and even with `server.allow_unauthenticated: true`; never printed or written anywhere (stderr, log file, terminal UI, `HEARTBEAT.md`, `api-token`). 16–512 printable ASCII characters without spaces, or the process exits with code 2. See [Running under a supervisor](#running-under-a-supervisor). |
+| `ITERVOX_SUPERVISOR_TOKEN` | `""` | The API token a supervisor (the macOS app, a process manager) starts the daemon with. Required as the bearer token like `ITERVOX_API_TOKEN`, which it replaces, and even with `server.allow_unauthenticated: true`; never printed or written anywhere (stderr, log file, `HEARTBEAT.md`, `api-token`). 16–512 printable ASCII characters without spaces, or the process exits with code 2. See [Running under a supervisor](#running-under-a-supervisor). |
 | `ITERVOX_LOGIN_SHELL_PATH` | `auto` | When to take PATH from the user's login shell: `auto` (not started from an interactive shell, or an agent CLI missing), `always` (`1`/`true`) or `never` (`0`/`false`). See [Login-shell PATH](#login-shell-path). |
 
 ### Auto-loading

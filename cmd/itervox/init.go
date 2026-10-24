@@ -46,13 +46,13 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 		writeLocalTrackerBlock(&b)
 	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
-		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
+		b.WriteString("  #                        Or pick projects in the web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
 		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\", \"Duplicate\"]\n")
 		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
 		b.WriteString("  #                                  # Set to \"\" to disable auto-transition.\n")
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
-		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown on the Kanban board; not auto-dispatched.\n")
 		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
 	default:
 		b.WriteString("  project_slug: " + slug + "\n")
@@ -71,7 +71,7 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 		b.WriteString("  #                               # MUST exist as a label in your repo.\n")
 		b.WriteString("  #                               # Set to \"\" to disable, or reuse an active label.\n")
 		b.WriteString("  completion_state: \"in-review\"  # Label applied when the agent finishes.\n")
-		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown on the Kanban board; not auto-dispatched.\n")
 		b.WriteString("  #                               # Must be an array — not a bare string.\n")
 		b.WriteString("  backlog_states: [\"backlog\"]\n")
 		b.WriteString("  # failed_state: \"backlog\"        # Label for issues that exhaust all retries.\n")
@@ -478,7 +478,7 @@ func runInit(args []string) {
 	if *trackerKind == "linear" {
 		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
 		nextStep++
-		fmt.Printf("  %d. Select a project via the TUI (press p) or the web dashboard\n", nextStep)
+		fmt.Printf("  %d. Select a project in the web dashboard\n", nextStep)
 		nextStep++
 	} else {
 		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
@@ -487,7 +487,7 @@ func runInit(args []string) {
 	// server.port: 0 above means the daemon binds an OS-assigned port, not
 	// the 8090 default — find the actual URL with one of these instead of
 	// guessing a port (CORE-022).
-	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url, press 'w' in the TUI to copy it, or run \"itervox doctor\"\n", nextStep)
+	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url or run \"itervox doctor\"\n", nextStep)
 	nextStep++
 	fmt.Printf("  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
 }

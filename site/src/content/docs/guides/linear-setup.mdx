@@ -32,7 +32,7 @@ export LINEAR_API_KEY="lin_api_xxxxxxxxxxxxxxxxxxxx"
 The project slug identifies which Linear project Itervox should poll. You can find it in two ways:
 
 1. **From Linear URLs** — it is the short identifier shown in issue prefixes (e.g. issues prefixed `ENG-` belong to the `ENG` project slug)
-2. **From the dashboard** — start the daemon without a `project_slug` and use the web dashboard's project dropdown (or, in the deprecated terminal UI started with `--tui`, the project selector on `p`) to browse available projects interactively
+2. **From the dashboard** — start the daemon without a `project_slug` and use the web dashboard's project dropdown to browse available projects interactively
 
 ## Scope: project, assignee, labels
 
@@ -54,9 +54,9 @@ tracker:
 - **`labels`** — ANDed with the above: an issue must carry at least one of the listed labels.
 - `active_states`, `terminal_states`, `working_state`, `completion_state` and `backlog_states` keep their meaning.
 - Every read uses the same scope: the poll, the tracker store's full and incremental pulls, webhook refreshes, the dependency analyzer's issue set and automation polls.
-- **Leaving the scope mid-run** — an issue reassigned to someone else, whose matching label is removed, or that is moved to another project while an agent works on it: the running worker finishes, no new run (or retry) is dispatched, and the dashboard and TUI mark the run "out of scope". Bring it back into scope and it is picked up again.
+- **Leaving the scope mid-run** — an issue reassigned to someone else, whose matching label is removed, or that is moved to another project while an agent works on it: the running worker finishes, no new run (or retry) is dispatched, and the dashboard marks the run "out of scope". Bring it back into scope and it is picked up again.
 - **The agent's own writes** — state moves, comments, the branch name, follow-up issues — never set an assignee, so a run cannot push its own issue out of scope. Follow-up issues an agent creates are unassigned until a person routes them.
-- **At runtime** the dashboard's **Settings → Tracker Scope** card has three independent controls — projects (or all), assignee (anyone, me, or a user from your workspace; resolved before saving) and labels — and saving writes `project_slug`, `assignee` and `labels` to `WORKFLOW.md` (a cleared key is commented out) without a reload. The TUI picker (`p`) toggles **Assigned to …** next to the projects. The dashboard header and the TUI show the active scope, e.g. `ENG · assigned to me · label: agent`.
+- **At runtime** the dashboard's **Settings → Tracker Scope** card has three independent controls — projects (or all), assignee (anyone, me, or a user from your workspace; resolved before saving) and labels — and saving writes `project_slug`, `assignee` and `labels` to `WORKFLOW.md` (a cleared key is commented out) without a reload. The dashboard header shows the active scope, e.g. `ENG · assigned to me · label: agent`.
 - `itervox doctor` checks that the assignee resolves to a user the key can see (exit 1 if not, or if `team` names no team the key can read) and that the key can read the issues assigned to that user across its teams.
 - `tracker.sync` (the local issue sync) accepts `assignee` and `labels` with its required `project_slug`: they narrow the project it pulls from.
 
