@@ -280,7 +280,7 @@ fn cask_is_rendered_with_version_and_sha() {
         r#"{"bundle":{"macOS":{"minimumSystemVersion":"13.0"}}}"#,
     )
     .unwrap();
-    let out = dir.path().join("itervox.rb");
+    let out = dir.path().join("itervox-app.rb");
     let o = run(Command::new("bash")
         .arg(cask_script())
         .args(["render", "--version", "v0.3.0", "--dmg"])
@@ -292,7 +292,7 @@ fn cask_is_rendered_with_version_and_sha() {
     assert!(o.status.success(), "{}", text(&o.stderr));
     let cask = std::fs::read_to_string(&out).unwrap();
     for line in [
-        "cask \"itervox\" do",
+        "cask \"itervox-app\" do",
         "  version \"0.3.0\"",
         &format!("  sha256 \"{want_sha}\""),
         "  url \"https://github.com/vnovick/itervox/releases/download/v#{version}/Itervox_#{version}_universal.dmg\"",
@@ -301,10 +301,28 @@ fn cask_is_rendered_with_version_and_sha() {
         "  auto_updates true",
         "  depends_on macos: \">= :ventura\"",
         "  app \"Itervox.app\"",
+        "  caveats <<~EOS",
+        "    CLI formula with: brew install vnovick/tap/itervox",
         "end",
     ] {
         assert!(cask.lines().any(|l| l == line), "missing {line:?} in\n{cask}");
     }
+    // The cask's token is not the CLI formula's name: a plain
+    // `brew install vnovick/tap/itervox` stays the command-line tool.
+    let goreleaser = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.goreleaser.yaml"),
+    )
+    .unwrap();
+    let formula = goreleaser
+        .split("brews:")
+        .nth(1)
+        .and_then(|b| b.lines().find_map(|l| l.trim().strip_prefix("- name: ")))
+        .expect("the CLI formula in .goreleaser.yaml");
+    assert_eq!(formula, "itervox");
+    assert!(
+        !cask.contains(&format!("cask \"{formula}\" do")),
+        "the cask must not share the formula's name\n{cask}"
+    );
 
     // The app's real minimum macOS has a Homebrew name; --sha256 works
     // without a DMG.
@@ -385,10 +403,10 @@ fn fake_gh(dir: &Path) -> (PathBuf, PathBuf) {
 
 fn publish(dir: &Path, notarized: &str, version: &str, token: Option<&str>) -> (Output, String) {
     let (bin, log) = fake_gh(dir);
-    let cask = dir.join("itervox.rb");
+    let cask = dir.join("itervox-app.rb");
     std::fs::write(
         &cask,
-        format!("cask \"itervox\" do\n  version \"{version}\"\nend\n"),
+        format!("cask \"itervox-app\" do\n  version \"{version}\"\nend\n"),
     )
     .unwrap();
     let path = format!(
@@ -448,11 +466,11 @@ fn cask_step_is_skipped_without_signing_secrets() {
         .unwrap_or_else(|| panic!("no PUT: {calls}"));
     assert!(
         put.starts_with(
-            "gh token=set api -X PUT repos/vnovick/homebrew-tap/contents/Casks/itervox.rb"
+            "gh token=set api -X PUT repos/vnovick/homebrew-tap/contents/Casks/itervox-app.rb"
         ),
         "{put}"
     );
-    assert!(put.contains("message=itervox 0.3.0 (cask)"), "{put}");
+    assert!(put.contains("message=itervox-app 0.3.0 (cask)"), "{put}");
     assert!(
         put.contains("sha=blobsha1"),
         "updates the existing file: {put}"

@@ -337,7 +337,7 @@ jobs:
 
       # --- the Homebrew cask -------------------------------------------------
 
-      # Casks/itervox.rb in the tap that holds the CLI formula (#244), with
+      # Casks/itervox-app.rb in the tap that holds the CLI formula (#244), with
       # this version and the DMG's SHA-256. It runs only for a notarized
       # build (a failed notarization fails the job before this step) and
       # after the DMG is on the release, so `brew install --cask` never
@@ -354,6 +354,6 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           bash desktop/scripts/homebrew-cask.sh render \
-            --version "$VERSION" --dmg "$DMG" --repo "$REPO" --out "$OUT/itervox.rb"
+            --version "$VERSION" --dmg "$DMG" --repo "$REPO" --out "$OUT/itervox-app.rb"
           bash desktop/scripts/homebrew-cask.sh publish \
-            --cask "$OUT/itervox.rb" --version "$VERSION" --notarized "$NOTARIZED"
+            --cask "$OUT/itervox-app.rb" --version "$VERSION" --notarized "$NOTARIZED"

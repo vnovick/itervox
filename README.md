@@ -44,6 +44,8 @@ go install github.com/vnovick/itervox/cmd/itervox@latest
 
 Pre-built binaries for macOS and Linux are available on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
+On a Mac you can install the menu bar app instead: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so you need only one of the two; see the [Mac app guide](https://itervox.dev/guides/mac-app/#install).
+
 ### Authenticating the agent CLI
 
 Itervox shells out to `claude` or `codex` and does **not** manage agent credentials itself. Before running Itervox, authenticate the agent CLI once on every machine where it will execute (including any SSH worker hosts):
@@ -172,7 +174,7 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
 
 ### Mac menu-bar app
 
-A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
+A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app`, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
 
 ### View from your phone, anywhere
 
