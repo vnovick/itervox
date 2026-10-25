@@ -13,10 +13,19 @@ It is a thin [Tauri](https://tauri.app/) shell: the app bundle contains the same
 
 ## Install
 
+First pick what you need:
+
+| You want | Install | You get |
+|---|---|---|
+| Itervox on a server, over SSH, or only in a terminal | `brew install vnovick/tap/itervox` (or a [release binary](/getting-started/)) | The `itervox` command and daemon |
+| The Mac app | One of the three ways below, for example `brew install --cask vnovick/tap/itervox-app` | `Itervox.app`, with its own `itervox` daemon inside |
+
+The app does not need the command-line formula: it runs the daemon bundled in it. For the `itervox` command as well, use the app's **Install Command-Line Tool…** menu item, which links that bundled daemon onto your PATH and follows the app's updates. If you also install the formula, you have two `itervox` binaries and the one earlier on your PATH wins; keep only one.
+
 There are three ways to install the app. None of them needs an Apple ID or an Apple developer account: only the maintainer's release build is signed and notarized, once, for everyone.
 
 - **Disk image.** Download `Itervox_<version>_universal.dmg` from the [latest release](https://github.com/vnovick/itervox/releases/latest), open it and drag **Itervox** to **Applications**. The app is signed with a Developer ID and notarized by Apple, so it opens without a Gatekeeper warning, on Apple silicon and Intel Macs (macOS 11 or later).
-- **Homebrew.** `brew install --cask vnovick/tap/itervox` installs the same signed, notarized disk image from the release (the cask is updated by the release workflow after notarization succeeds). The cask is marked `auto_updates`: the app [updates itself](#updates), so a plain `brew upgrade` leaves it alone and `brew upgrade --cask --greedy itervox` upgrades it through Homebrew. `vnovick/tap/itervox` without `--cask` is the command-line formula.
+- **Homebrew.** `brew install --cask vnovick/tap/itervox-app` installs the same signed, notarized disk image from the release (the cask is updated by the release workflow after notarization succeeds). The cask is named `itervox-app` so that `vnovick/tap/itervox` stays the command-line formula. It is marked `auto_updates`: the app [updates itself](#updates), so a plain `brew upgrade` leaves it alone and `brew upgrade --cask --greedy itervox-app` upgrades it through Homebrew.
 - **From source.** `make desktop` in a checkout of the repository ([Build it from source](#build-it-from-source)). A build made on your own Mac is not quarantined, so Gatekeeper opens it without signing or notarization.
 
 Open the app from **Applications**: an app opened from the disk image or the Downloads folder runs from a read-only copy and cannot update itself or install the command-line tool.

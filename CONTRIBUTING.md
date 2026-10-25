@@ -116,7 +116,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 >
 > | Secret | Used for |
 > |---|---|
-> | `HOMEBREW_TAP_GITHUB_TOKEN` | Writing to `vnovick/homebrew-tap`: the CLI formula (GoReleaser) and the app's cask `Casks/itervox.rb` (`desktop/scripts/homebrew-cask.sh`) |
+> | `HOMEBREW_TAP_GITHUB_TOKEN` | Writing to `vnovick/homebrew-tap`: the CLI formula (GoReleaser) and the app's cask `Casks/itervox-app.rb` (`desktop/scripts/homebrew-cask.sh`) |
 > | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | Signing the app, the disk image and the CLI with the Developer ID certificate |
 > | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_API_PRIVATE_KEY` (or `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) | Notarization |
 > | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Signing the updater archive behind `latest.json` |

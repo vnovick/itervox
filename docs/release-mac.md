@@ -15,8 +15,8 @@ described in the [Mac app guide](../site/src/content/docs/guides/mac-app.mdx).
 | `latest.json` | The updater manifest installed apps read |
 
 After those are uploaded, a notarized release also updates the Homebrew cask
-`Casks/itervox.rb` in `vnovick/homebrew-tap` (#244), so that
-`brew install --cask vnovick/tap/itervox` installs the `.dmg` above.
+`Casks/itervox-app.rb` in `vnovick/homebrew-tap` (#244), so that
+`brew install --cask vnovick/tap/itervox-app` installs the `.dmg` above.
 
 GoReleaser's `itervox_darwin_amd64.tar.gz` / `_arm64.tar.gz` (and the
 Homebrew formula built from them) stay as they were: built on Linux and not
@@ -108,7 +108,7 @@ key that carries the new public key, then switch the secrets.
    notes);
 9. uploads everything to the release, `latest.json` last, so a manifest is
    never published before the archive it points at;
-10. for a notarized build only, renders `Casks/itervox.rb` with the version,
+10. for a notarized build only, renders `Casks/itervox-app.rb` with the version,
     the `.dmg`'s SHA-256, `depends_on macos:` from
     `bundle.macOS.minimumSystemVersion` and `auto_updates true`
     (`desktop/scripts/homebrew-cask.sh render`), and commits it to the tap
