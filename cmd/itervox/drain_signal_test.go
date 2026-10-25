@@ -275,9 +275,13 @@ func TestSIGTERMDrainGraceExpiryCancelsTurn(t *testing.T) {
 }
 
 // TestSIGTERMWhileConfigInvalidExits: after an operator edit makes
-// WORKFLOW.md invalid, no generation runs and the loop waits for a fix. A
-// SIGTERM in that state must still stop the daemon (it used to sleep through
-// the retry backoff without reading the signal channel, forever).
+// WORKFLOW.md invalid, the daemon is in the config-invalid state and waits
+// for a fix. A SIGTERM in that state must still stop the daemon (it used to
+// sleep through the retry backoff without reading the signal channel,
+// forever). Since #245 the watcher checks an edit before draining, so an
+// invalid edit keeps the running generation (one "config edit is invalid"
+// error) instead of entering the retry loop; the loop is still reached when
+// the file turns invalid between that check and the reload.
 func TestSIGTERMWhileConfigInvalidExits(t *testing.T) {
 	p := newDaemonProject(t)
 	cmd, stderrPath := p.startHeadless(t, nil)
@@ -288,7 +292,7 @@ func TestSIGTERMWhileConfigInvalidExits(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, 20*time.Second, "config-invalid state", func() bool {
-		return strings.Contains(readTrim(t, stderrPath), "config invalid")
+		return strings.Contains(readTrim(t, stderrPath), "config edit is invalid")
 	})
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)

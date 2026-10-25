@@ -51,6 +51,16 @@ function StatusPill({
   );
 }
 
+// #245 — the config-invalid banner names the file whose edit did not load:
+// WORKFLOW.md or one of the settings files (".itervox/settings.jsonc").
+function configFileLabel(path: string | undefined): string {
+  if (!path) return 'WORKFLOW.md';
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const base = parts[parts.length - 1] ?? path;
+  const parent = parts[parts.length - 2];
+  return parent === '.itervox' ? `.itervox/${base}` : base;
+}
+
 const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
   // v0.2.0 audit P2-10 — connection-state timing comes from the shared
   // useConnectionState hook so this header and the Dashboard overlay agree
@@ -88,21 +98,27 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
   return (
     <>
-      {/* Config-invalid banner — surfaces an in-flight WORKFLOW.md reload
-          failure so the operator knows their last edit didn't take and the
-          daemon is running on the previously-valid config (T-26). */}
+      {/* Config-invalid banner — surfaces an edit of WORKFLOW.md or a
+          settings file that did not load, so the operator knows it didn't
+          take and the daemon is running on the previously-valid config
+          (T-26, #245). retryAttempt is 0 when the running generation kept
+          its config and waits for the next edit. */}
       {configInvalid && (
         <div
           role="alert"
           className="bg-theme-warning-soft text-theme-warning-text border-theme-warning sticky top-0 z-40 border-b px-4 py-2 text-sm"
           data-testid="config-invalid-banner"
         >
-          <strong className="font-semibold">WORKFLOW.md is invalid:</strong>{' '}
+          <strong className="font-semibold">
+            {configFileLabel(configInvalid.path)} is invalid:
+          </strong>{' '}
           <span className="font-mono text-xs">{configInvalid.error}</span>
           <span className="text-theme-text-secondary ml-2 text-xs">
-            (retry attempt {configInvalid.retryAttempt}
-            {configInvalid.retryAt ? ` at ${configInvalid.retryAt}` : ''}; daemon running on the
-            last valid config)
+            {configInvalid.retryAttempt > 0
+              ? `(retry attempt ${String(configInvalid.retryAttempt)}${
+                  configInvalid.retryAt ? ` at ${configInvalid.retryAt}` : ''
+                }; daemon running on the last valid config)`
+              : '(daemon running on the last valid config; fix the file to apply it)'}
           </span>
         </div>
       )}
