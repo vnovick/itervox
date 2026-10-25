@@ -307,6 +307,15 @@ fn cask_is_rendered_with_version_and_sha() {
     ] {
         assert!(cask.lines().any(|l| l == line), "missing {line:?} in\n{cask}");
     }
+    // macOS runs this script with bash 3.2, which misparses a here-document
+    // inside command substitution (the release job failed with "unexpected
+    // EOF while looking for matching" on such a script), so the cask is
+    // printed by a function, never captured from `$(cat <<…)`.
+    let script = std::fs::read_to_string(cask_script()).unwrap();
+    assert!(
+        !script.contains("$(cat <<"),
+        "homebrew-cask.sh builds text with a here-document inside $( )"
+    );
     // The cask's token is not the CLI formula's name: a plain
     // `brew install vnovick/tap/itervox` stays the command-line tool.
     let goreleaser = std::fs::read_to_string(
