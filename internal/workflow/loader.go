@@ -232,6 +232,9 @@ type ProfileEntry struct {
 	AllowedActions []string
 	// CreateIssueState is the target tracker state/column for the create_issue action.
 	CreateIssueState string
+	// CreateIssueLabels is the create_issue label allow-list (#253; empty
+	// omits the key).
+	CreateIssueLabels []string
 	// PermissionMode is the profile's permission_mode ("" omits the key).
 	PermissionMode string
 	// RequireEvidence is the profile's require_evidence list (#80).
@@ -322,6 +325,14 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.CreateIssueState != "" {
 					replacement = append(replacement, lvl3+"create_issue_state: "+strconv.Quote(entry.CreateIssueState))
+				}
+				if len(entry.CreateIssueLabels) > 0 {
+					replacement = append(replacement, lvl3+"create_issue_labels:")
+					for _, label := range entry.CreateIssueLabels {
+						if label != "" {
+							replacement = append(replacement, lvl4+"- "+strconv.Quote(label))
+						}
+					}
 				}
 				if entry.PermissionMode != "" {
 					replacement = append(replacement, lvl3+"permission_mode: "+strconv.Quote(entry.PermissionMode))

@@ -299,8 +299,8 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/guardrail/approvals` (#204)
 - `GET /agent-actions/{identifier}/guardrail/approvals/{id}` (#204)
 
-Profiles opt into these capabilities with `allowed_actions` and
-`create_issue_state` in `WORKFLOW.md`. The guardrail routes take a separate
+Profiles opt into these capabilities with `allowed_actions`,
+`create_issue_state` and `create_issue_labels` in `WORKFLOW.md`. The guardrail routes take a separate
 per-run guardrail grant that only the guardrail shims and hooks hold (see
 [Guardrail endpoints](#guardrail-endpoints-204)).
 
@@ -2431,7 +2431,7 @@ daemon-backed permissions through profile `allowed_actions`.
 | `POST` | `/agent-actions/{identifier}/comment` | `{"body":"..."}` | `{"ok":true}` |
 | `POST` | `/agent-actions/{identifier}/comment_pr` | `{"summary":"...","findings":[{"path":"...","line":42,"severity":"warning","body":"..."}]}` | `{"ok":true,"findings":N}` |
 | `POST` | `/agent-actions/{identifier}/merge_pr` | `{"pr":42,"strategy":"squash"}` | `{"ok":true,"merge_commit":"<sha>","strategy":"squash"}` |
-| `POST` | `/agent-actions/{identifier}/create-issue` | `{"title":"...","body":"..."}` | `{"ok":true,"issue":{...}}` |
+| `POST` | `/agent-actions/{identifier}/create-issue` | `{"title":"...","body":"...","labels":["repo:web"],"blocked_by_source":true}` (`labels` and `blocked_by_source` optional) | `{"ok":true,"issue":{...}}` |
 | `POST` | `/agent-actions/{identifier}/move-state` | `{"state":"Todo"}` | `{"ok":true}` |
 | `POST` | `/agent-actions/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
 
@@ -2439,6 +2439,21 @@ daemon-backed permissions through profile `allowed_actions`.
 
 These routes require an `Authorization: Bearer <grant-token>` header carrying a
 short-lived action grant for the specific issue and action.
+
+The `create-issue` body takes optional `labels` and `blocked_by_source` (#253).
+The issue is created in the profile's `create_issue_state`. Each label must be
+in the profile's `create_issue_labels` (compared ignoring case; the allow-list's
+spelling is sent to the tracker): any other label, or any label when the
+allow-list is empty, is refused with `403` `agent_action_denied` and the message
+`label_not_allowed:<label>`, before anything is created; a blank label is a
+`400`. Linear resolves the names among the source issue's team and workspace
+labels and fails the create when one does not exist; GitHub adds them beside
+the state label; the local tracker writes them to the issue file.
+`blocked_by_source: true` records the source issue as a blocker of the new one:
+a Linear "blocks" relation, the `Blocked by #N` body line on GitHub, `blocked_by`
+in a local issue file. If the issue was created but its Linear relation failed,
+the error names the created issue. The `itervox action create-issue` shim sends
+them for `--label` (repeatable) and `--blocked-by-source`.
 
 `provide-input` never answers a guardrail approval request (#204): the
 request stays open and the daemon logs the attempt.

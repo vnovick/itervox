@@ -343,6 +343,7 @@ agent:
       instructions_file: .itervox/agents/qa/INSTRUCTIONS.md
       allowed_actions: [comment, create_issue, move_state]
       create_issue_state: Todo
+      create_issue_labels: [repo:web]
 ```
 
 These permissions do **not** give the agent arbitrary shell or tracker access.
@@ -352,6 +353,29 @@ automation helpers that comment on the issue, move it back to `Todo`, create a
 follow-up issue, or auto-resume a blocked run with `provide_input`.
 
 If `allowed_actions` includes `create_issue`, `create_issue_state` is required.
+
+`create_issue` can also label the new issue and mark it blocked by the current
+one:
+
+```bash
+itervox action create-issue --title "..." --body "..." --label repo:web --blocked-by-source
+```
+
+- `--label` (repeatable) must name a label in the profile's
+  `create_issue_labels`. The daemon refuses any other label with
+  `agent_action_denied`, and an empty `create_issue_labels` (the default)
+  allows none. The agent's prompt lists the allowed labels. On Linear the label
+  must exist in the source issue's team or workspace; GitHub adds it beside the
+  state label; the local tracker writes it to the issue file.
+- `--blocked-by-source` records the current issue as the new issue's blocker,
+  the way each tracker already reads blockers: a Linear "blocks" relation, the
+  `Blocked by #N` line on GitHub, `blocked_by` in a local issue file. The new
+  issue is not dispatched until the current one reaches a terminal state
+  (or, with `dependencies.stacked_prs`, until it is in review).
+
+Together they hand work to another daemon: see
+[Work across two repositories](/guides/automations/#9-work-across-two-repositories).
+`create_issue_labels` is not edited on the dashboard; a dashboard save keeps it.
 
 In v0.2.0, daemon-backed action env vars and shims are injected only for local
 workers. SSH remote workers with `allowed_actions` receive a prompt warning that
@@ -538,3 +562,4 @@ agent:
 | `enabled` | `true` | Set to `false` to hide from dispatch selectors and automations |
 | `allowed_actions` | `[]` | Daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input` |
 | `create_issue_state` | `""` | Tracker state for new issues (required when `create_issue` is in `allowed_actions`) |
+| `create_issue_labels` | `[]` | Labels `create_issue` may put on new issues (`--label`); any other label is refused |

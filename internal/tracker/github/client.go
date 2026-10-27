@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -787,16 +788,33 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	return comment, nil
 }
 
-// CreateIssue creates a new GitHub issue in the configured repository. The
-// sourceIssueID is accepted for tracker interface parity but not otherwise used.
-func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+// CreateIssue creates a new GitHub issue in the configured repository, with
+// the state label first and in.Labels after it. in.BlockedBySource appends
+// the managed "Blocked by #<source>" body line the body parser reads as a
+// blocker (the same line the local issue sync writes), so the source issue
+// gates the new one; otherwise sourceIssueID is not used.
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
 	u := fmt.Sprintf("%s/repos/%s/%s/issues", c.cfg.Endpoint, c.owner, c.repo)
+	body := in.Body
+	if in.BlockedBySource && strings.TrimSpace(sourceIssueID) != "" {
+		body = tracker.JoinSyncBlockersLine(body, tracker.SyncBlockersLine(issueRefs([]string{sourceIssueID})))
+	}
 	payloadBody := map[string]any{
-		"title": title,
+		"title": in.Title,
 		"body":  body,
 	}
-	if stateName = strings.TrimSpace(stateName); stateName != "" {
-		payloadBody["labels"] = []string{stateName}
+	stateName := strings.TrimSpace(in.State)
+	var labels []string
+	if stateName != "" {
+		labels = append(labels, stateName)
+	}
+	for _, l := range in.Labels {
+		if l = strings.TrimSpace(l); l != "" && !slices.ContainsFunc(labels, func(have string) bool { return strings.EqualFold(have, l) }) {
+			labels = append(labels, l)
+		}
+	}
+	if len(labels) > 0 {
+		payloadBody["labels"] = labels
 	}
 	payload, err := json.Marshal(payloadBody)
 	if err != nil {

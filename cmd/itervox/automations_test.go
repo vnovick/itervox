@@ -461,7 +461,7 @@ func (t *pollTracker) CreateComment(context.Context, string, string) (*domain.Co
 	return nil, nil
 }
 
-func (t *pollTracker) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
+func (t *pollTracker) CreateIssue(context.Context, string, tracker.NewIssue) (*domain.Issue, error) {
 	return nil, nil
 }
 

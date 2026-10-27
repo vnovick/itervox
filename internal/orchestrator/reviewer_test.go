@@ -703,8 +703,8 @@ func (t *noCandidateTracker) CreateComment(ctx context.Context, issueID, body st
 	return t.base.CreateComment(ctx, issueID, body)
 }
 
-func (t *noCandidateTracker) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
-	return t.base.CreateIssue(ctx, sourceIssueID, title, body, stateName)
+func (t *noCandidateTracker) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	return t.base.CreateIssue(ctx, sourceIssueID, in)
 }
 
 func (t *noCandidateTracker) UpdateIssueState(ctx context.Context, issueID, stateName string) error {

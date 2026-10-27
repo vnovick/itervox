@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // VerifySkillIssueTitle is the title of the issue Repo Analysis's
@@ -39,7 +40,9 @@ func (o *Orchestrator) CreateVerifySkillIssue(ctx context.Context) (*domain.Issu
 	if o.tracker == nil {
 		return nil, errors.New("orchestrator: no tracker to create the verify-skill issue in")
 	}
-	created, err := o.tracker.CreateIssue(ctx, o.anyTrackedIssueID(ctx), VerifySkillIssueTitle, verifySkillIssueBody, o.enforceIssueState())
+	created, err := o.tracker.CreateIssue(ctx, o.anyTrackedIssueID(ctx), tracker.NewIssue{
+		Title: VerifySkillIssueTitle, Body: verifySkillIssueBody, State: o.enforceIssueState(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: create the verify-skill issue: %w", err)
 	}
