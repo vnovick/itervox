@@ -121,6 +121,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	skipFreshDispatchSetup := inputRequiredResume
 
 	wsPath := ""
+	wsPort := 0     // the workspace's ITERVOX_PORT (#250)
 	stackedOn := "" // the blocker branch this worktree is stacked on (#73)
 	branchName := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
 	activeBranchName := branchName
@@ -196,6 +197,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		// #250: the workspace's port reaches every hook of this run (and,
+		// below, the agent); copy_files ran inside EnsureWorkspace, before
+		// after_create.
+		wsPort = ws.Port
+		ctx = workspace.WithHookEnv(ctx, workspace.PortEnv(wsPort)...)
+		o.reportCopyFiles(issue.Identifier, runLogID, ws)
 		if ws.BareFetchFailure != "" {
 			// #195: a failing shared-clone fetch used to be a WARN line only,
 			// so a base that stopped moving went unnoticed. The workspace
@@ -342,6 +349,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if guard != nil {
 		ctx = agent.WithRunEnv(ctx, guardEnv)
 	}
+	ctx = withLocalWorkspacePort(ctx, wsPort, workerHost) // #250
 	defer func() {
 		o.agentActionTokens.Revoke(guardToken)
 		guard.Remove()
@@ -483,6 +491,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		evidenceBlock = buildEvidenceBlock(requiredEvidence, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
+	setRunPort(runVars, wsPort)                                                           // #250
 	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(stackedOn)) // #215
 	// #157: the rule set this run was dispatched with. `{{ rules }}` places
 	// it in any template; otherwise a `## Rules` block goes ahead of the
@@ -560,6 +569,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// a loop — defer would not fire until runWorker returns (GO-R10-2).
 			if wsPath != "" {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
+				hookCtx = workspace.WithHookEnv(hookCtx, workspace.PortEnv(wsPort)...) // #250
 				if hookErr := workspace.RunHook(hookCtx, afterRunHook, wsPath, hookTimeoutMs, o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
 					slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issue.ID, "error", hookErr)
 				}
@@ -748,7 +758,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
 		result, runErr := o.runner.RunTurn(steerCtx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
-			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
+			withRemoteWorkspacePort(agentCommand, wsPort, workerHost), workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 		rcReport.endTurn(result) // #215
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.

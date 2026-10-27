@@ -22,6 +22,7 @@ type fakeChanges struct {
 	patch    string
 	handoffs []HandoffRow
 	files    []string // FileDiff calls
+	port     int
 }
 
 func (f *fakeChanges) RunContext(string) (RunContextRow, bool) {
@@ -47,6 +48,8 @@ func (f *fakeChanges) FileDiff(_ context.Context, _, _, file string) (FileDiffRe
 }
 
 func (f *fakeChanges) Handoffs(string) []HandoffRow { return f.handoffs }
+
+func (f *fakeChanges) WorkspacePort(string) int { return f.port }
 
 func newChangesServer(t *testing.T, ch ChangesClient) (*Server, map[apitokens.Scope]string) {
 	t.Helper()
@@ -130,6 +133,7 @@ func TestRunContextEndpoint(t *testing.T) {
 			LastToolCall: &RunToolCall{Name: "Edit", Target: "a.go"}, Steers: []RunSteerRow{}},
 		diff:     DiffResponse{Files: []DiffFileRow{{Path: "a.go", Status: "modified"}}},
 		handoffs: []HandoffRow{{Title: "Plan", Path: ".itervox/handoff/x.md"}},
+		port:     41003,
 	}
 	srv, secrets := newChangesServer(t, ch)
 	rec := doReq(t, srv, http.MethodGet, "/api/v1/issues/ENG-1/context", secrets[apitokens.ScopeViewer])
@@ -140,6 +144,7 @@ func TestRunContextEndpoint(t *testing.T) {
 	assert.Equal(t, "Edit", resp.Run.LastToolCall.Name)
 	assert.Equal(t, "a.go", resp.ChangedFiles[0].Path)
 	assert.Equal(t, "Plan", resp.Handoffs[0].Title)
+	assert.Equal(t, 41003, resp.Port, "#250: the workspace's ITERVOX_PORT")
 
 	ch.diffErr = ErrDiffBaseNotFound
 	rec = doReq(t, srv, http.MethodGet, "/api/v1/issues/ENG-1/context", secrets[apitokens.ScopeViewer])

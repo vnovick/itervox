@@ -391,6 +391,16 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
   dispatch the entrypoints in `TestMain`.
 
+### Workspace port ledger is workspace state, not `State`
+
+`ITERVOX_PORT` (#250) is owned by `workspace.Manager`: assigned in
+`EnsureWorkspace`, released by `RemoveWorkspace`, persisted in
+`.itervox-ports.json` under `workspace.root` and guarded by the package-level
+`portsMu`. Those calls already run off the event loop (worker goroutines,
+auto-clear, startup cleanup, `itervox clear`), no dispatch decision reads the
+port, and the hooks that need it run on the same goroutines — so it is not
+event-loop state. Do not mirror it into `orchestrator.State`.
+
 ### `cfgMu` guards exactly these fields (and nothing else)
 
 > **Canonical source for codex too** — AGENTS.md is a thin pointer that tells
@@ -643,7 +653,8 @@ memory (managed memory files, selection and the `## Memory` block — imports
 gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
          & co. and requires a dir; audited by TestNoRawGitExecOutsideGitexec)
 
-workflow ──── config ──── workspace (hooks — also imports procgroup)
+workflow ──── config ──── workspace (hooks — also imports procgroup, gitexec,
+                                     atomicfs and logging)
 
 rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
        server and cmd/itervox)

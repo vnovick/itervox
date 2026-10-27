@@ -68,6 +68,23 @@ describe('IssueNowPanel (#215)', () => {
     expect(mockFetch).toHaveBeenCalledWith('/api/v1/issues/ENG-1/context', expect.anything());
   });
 
+  it("shows the workspace's ITERVOX_PORT when it has one (#250)", async () => {
+    routeFetch(mockFetch, {
+      '/api/v1/issues/ENG-1/context': { body: { ...liveContext, port: 41003 } },
+    });
+    render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
+    const port = await screen.findByTestId('now-port');
+    expect(port).toHaveTextContent('41003');
+    expect(port).toHaveTextContent('ITERVOX_PORT');
+  });
+
+  it('shows no port line without one', async () => {
+    routeFetch(mockFetch, { '/api/v1/issues/ENG-1/context': { body: liveContext } });
+    render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
+    expect(await screen.findByText('Now')).toBeInTheDocument();
+    expect(screen.queryByTestId('now-port')).not.toBeInTheDocument();
+  });
+
   it('labels a finished run as the last run with its outcome', async () => {
     routeFetch(mockFetch, {
       '/api/v1/issues/ENG-1/context': {

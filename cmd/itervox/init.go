@@ -131,6 +131,7 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 	b.WriteString("  worktree: true\n")
 	b.WriteString("  clone_url: " + cloneURL + "\n")
 	b.WriteString("  base_branch: " + info.DefaultBranch + "\n")
+	writeCopyFilesLine(&b, info.CopyFiles) // #250
 
 	b.WriteString("\nhooks:\n")
 	b.WriteString("  # after_create and before_run are no longer needed for clone/reset —\n")

@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Workspace setup: `workspace.copy_files` and `ITERVOX_PORT`** (#250). `workspace.copy_files` lists paths or globs, relative to the repository root that holds `WORKFLOW.md`, copied from that checkout into each new worktree after it is created and before `hooks.after_create`, and refreshed at the start of each later run unless the worktree's copy is newer. Only files git ignores are copied: each one is checked with `git check-ignore` in the checkout and in the worktree, and a tracked or unignored match is skipped with a warning in the issue log, so a copied file cannot be committed. Directories are copied recursively up to `workspace.copy_files_max_bytes` per run (default 10 MB; a cap hit is logged), symlinks are never followed, file modes and times are kept, and an absolute entry or one with `..` fails the load. Values of a copied dotenv file are registered with the log redactor; the agent can read every copied file. SSH workers get no transfer: they run in the same, shared workspace path. `itervox init` writes `copy_files: [".env", ".env.local"]` for those of the two that exist and are gitignored; the default is empty, so existing projects copy nothing. Each issue's workspace also gets a TCP port from `workspace.port_range` (default `41000-41999`) as `ITERVOX_PORT` for the agent (local runs through the environment, SSH runs in front of the agent command) and for every hook, as `{{ run.port }}` in prompts, and in the issue's Now panel (`port` on `GET /api/v1/issues/{identifier}/context`). The port is stable while the workspace exists, survives restarts (`.itervox-ports.json` under `workspace.root`, or `<root>/worktrees` in worktree mode) and is released when the workspace is removed. See [Workspace setup](site/src/content/docs/configuration.mdx#workspace-setup).
+
 ---
 
 ## [0.3.0] — Unreleased

@@ -592,6 +592,65 @@ changes nothing.
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
 | `base_branch` | string | `"main"` | Branch worktrees are created from |
+| `copy_files` | []string | `[]` | Paths or `filepath.Match` globs, relative to the repository root that holds `WORKFLOW.md`, copied from that checkout into each new worktree after it is created and before `hooks.after_create`, and refreshed on each later run unless the worktree's copy is newer. Only files git ignores (`git check-ignore`, in the checkout and in the worktree) are copied; a tracked or unignored match is skipped with a warning. Directories are copied recursively, symlinks are never followed, file modes and times are kept. An absolute entry or one with `..` fails the load. Values of a copied dotenv file (`.env`, `.env.*`, `*.env`) are registered with the log redactor. **The agent can read these files.** Worktree mode only. See [Workspace setup](#workspace-setup-copy_files-and-itervox_port) |
+| `copy_files_max_bytes` | int | `10485760` | Most bytes `copy_files` copies into one worktree per run (10 MB); the rest is skipped and the cap hit is logged |
+| `port_range` | string | `"41000-41999"` | `LOW-HIGH` range (1024–65535) each issue's workspace gets a TCP port from, as `ITERVOX_PORT` for the agent and every hook and `{{ run.port }}` in prompts. Stable while the workspace exists, released when it is removed, persisted across restarts |
+
+### Workspace setup: `copy_files` and `ITERVOX_PORT`
+
+Each issue runs in its own worktree, which starts with only what git tracks.
+`workspace.copy_files` brings in the files a project needs but does not commit
+(`.env`, `.env.local`, a local config), and `ITERVOX_PORT` gives each
+workspace its own TCP port so parallel dev servers do not collide.
+
+```yaml
+workspace:
+  worktree: true
+  copy_files: [".env", ".env.local", "config/local"]
+  port_range: "41000-41999"
+```
+
+- **Source.** Paths are relative to the git top level of the directory that
+  holds `WORKFLOW.md` (the main checkout), and are read from there.
+- **Only ignored files.** Every file is checked with `git check-ignore` in the
+  main checkout and in the new worktree; a tracked or unignored match is
+  skipped and the issue log says why, so a copied file cannot be committed
+  from the worktree. `.git` is never copied.
+- **When.** After the worktree is created and before `hooks.after_create`, and
+  again at the start of each later run: a file is copied when the worktree has
+  none or the main checkout's copy is newer, so an edit made in the worktree
+  is kept.
+- **Limits.** Directories are copied recursively up to `copy_files_max_bytes`
+  per run (a cap hit is logged); symlinks — a match, a directory on the way to
+  it, or an entry inside a copied directory — are skipped, never followed.
+- **Secrets.** The values in a copied dotenv file (`.env`, `.env.<name>`,
+  `<name>.env`) are masked as `***` in the daemon log and in the text Itervox
+  redacts (the run context, recent failures). As for every registered
+  secret, values shorter than 8 characters are not masked, and ordinary
+  values such as `localhost:5432` are masked too. The agent itself can read
+  every copied file: copy only what you would hand the agent.
+- **SSH workers.** Nothing is transferred to a worker host: the copy is made
+  on the daemon's machine, and an SSH worker runs in the same workspace path,
+  which must be shared with the host (as for every SSH run). Without a shared
+  workspace the files are not on the worker.
+- **`itervox init`** writes `copy_files: [".env", ".env.local"]` for those of
+  the two that exist and are gitignored. Projects without the key copy
+  nothing.
+
+`ITERVOX_PORT` is the lowest port of `port_range` that no other workspace of
+this project holds and that can be bound on `127.0.0.1` when the workspace
+is first used. It is set for the agent (local runs through the environment,
+SSH runs as an assignment in front of the agent command) and for
+`after_create`, `before_run`, `after_run` and `before_remove`; prompts get it
+as `{{ run.port }}` and the dashboard's Now panel shows it. The port stays
+with the issue while its workspace exists — across runs, reviewers and
+restarts — and is released when the workspace is removed. It is recorded in
+`.itervox-ports.json` under `workspace.root` (under `<root>/worktrees` in
+worktree mode). The free-port check runs on the daemon's machine; on an SSH
+worker the port is only guaranteed not to be shared with another of this
+daemon's workspaces. Give each project its own `port_range` when several
+daemons run on one machine. A range with no free port leaves the run without
+`ITERVOX_PORT` (logged) rather than failing it.
 
 **Open pull requests and shared branches.** A worker continues an open pull
 request linked from the issue (in its description or comments) only when the
@@ -651,6 +710,8 @@ Both are also Liquid bindings (`{{ run.timestamp }}`, `{{ run.handoff_path }}`) 
 - `run.limit_resets_at` — the previous backend's vendor-published reset (RFC 3339, UTC), empty when unknown
 
 `run.pr_base_branch` is the branch a pull request from this run should target: the blocker's branch when the worktree is stacked on it (`dependencies.stacked_prs`), otherwise `workspace.base_branch`. A stacked run also gets a `## Stacked Branch` block after the Run Context.
+
+`run.port` is the workspace's TCP port, the same value as `ITERVOX_PORT` (see [Workspace setup](#workspace-setup-copy_files-and-itervox_port)); an empty string when the workspace has none.
 
 When a worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the most recent matching `<timestamp>_<profile>.md` to `<timestamp>_<profile>.partial.md` so subsequent agents can distinguish a crash-mid-deliverable from a clean handoff. `TerminalInputRequired` does not mark partial — the agent intentionally paused.
 
