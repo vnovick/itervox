@@ -30,6 +30,9 @@ import { useToastStore } from '../store/toastStore';
 //   for an unknown id) REPLACES. An id in the URL wins over the auto-select
 //   and is only abandoned once loading has settled without it.
 //
+// useNewTaskUrlOpen (mounted by the Dashboard page, #251):
+//   ?newTask=1 opens the New task dialog once and is removed (REPLACE).
+//
 // useAutomationsTabUrlState (mounted by the Automations page, CORE-085):
 //   ?tab= <-> uiStore.automationsTab. A tab click PUSHES (Back returns to the
 //   previous tab); arriving without ?tab= seeds it from the store (REPLACE).
@@ -170,6 +173,24 @@ function hasFilterParams(search: string): boolean {
 
 function filtersKey(f: DashboardUrlFilters): string {
   return `${f.view}\u0000${f.q}\u0000${f.state}`;
+}
+
+/**
+ * #251 — `?newTask=1` (the Mac app's "New Task…" item, or a shared link)
+ * opens the New task dialog once; the param is then removed (replace), so
+ * Back and a reload do not reopen it.
+ */
+export function useNewTaskUrlOpen(): void {
+  const location = useLocation();
+  const write = useWrite();
+  const wanted = new URLSearchParams(location.search).get('newTask') !== null;
+  useEffect(() => {
+    if (!wanted) return;
+    useUIStore.getState().setNewTaskOpen(true);
+    write(location, { newTask: null }, true);
+    // Keyed on the param only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted]);
 }
 
 export function useDashboardUrlState(): void {

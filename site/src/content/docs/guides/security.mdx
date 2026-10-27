@@ -183,6 +183,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/state` | viewer |
 | `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
+| `GET` | `/api/v1/task-templates` | viewer (saved task templates, #251) |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
 | `GET` | `/api/v1/tracker/teams` | viewer |
@@ -233,6 +234,8 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/skills/scan` | operator |
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/tasks` | operator (New task: creates an issue, may dispatch, #251) |
+| `PUT` | `/api/v1/tasks/{identifier}/instructions` | operator (until the task starts, #251) |
 | `POST` | `/api/v1/automations/{id}/test` | admin |
 | `PUT` | `/api/v1/projects/filter` | admin |
 | `PUT` | `/api/v1/rules/{layer}` | admin |
@@ -258,6 +261,9 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/settings/workers` | admin |
 | `POST` | `/api/v1/settings/workspace/auto-clear` | admin |
 | `POST` | `/api/v1/skills/fix` | admin (writes skill files) |
+| `POST` | `/api/v1/task-templates/{name}` | admin (writes `.itervox/tasks/<name>.md`, #251) |
+| `PUT` | `/api/v1/task-templates/{name}` | admin (#251) |
+| `DELETE` | `/api/v1/task-templates/{name}` | admin (#251) |
 | `GET` | `/api/v1/tokens` | admin |
 | `POST` | `/api/v1/tokens` | admin |
 | `DELETE` | `/api/v1/tokens/{id}` | admin |

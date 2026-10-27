@@ -137,6 +137,8 @@ The first notification may ask for permission; you can change it later in **Syst
 
 **Memory** opens it at the dashboard's [Memory](/guides/memory/) page (`<dashboard>/memory`) the same way.
 
+**New Task…** opens it with the dashboard's [New task](/guides/new-task/) form open (`<dashboard>/?newTask=1`) the same way.
+
 ### Project rail
 
 Every dashboard window has a project rail on its left: every project the app knows, so you can switch projects without the menu bar.
@@ -154,6 +156,7 @@ Every dashboard window has a project rail on its left: every project the app kno
 | <kbd>⌘1</kbd> … <kbd>⌘9</kbd> | Show the first nine projects of the rail, top to bottom |
 | <kbd>⌘⇧]</kbd> / <kbd>⌘⇧[</kbd> | Next / previous project (skipping ones without a dashboard) |
 | <kbd>⌥⌘S</kbd> | Show or hide project names |
+| <kbd>⇧⌘N</kbd> | **New Task…**: open the [New task](/guides/new-task/) form of the project in front |
 
 The shortcuts are in the **Projects** menu of the menu bar while a window is open, and act on the window in front.
 
@@ -215,6 +218,7 @@ Each remote shows its state, for example `Prod VM — 2/2 connected · 1 needs i
 - **Open Dashboard** opens its dashboard through the tunnel (`http://127.0.0.1:<local>/`) in a window, with the token handed over exactly as for a local daemon.
 - **Repo Analysis** opens that dashboard's [Repo Analysis](/guides/repo-analysis/) page (`/repo`) through the tunnel, the same way.
 - **Memory** opens that dashboard's [Memory](/guides/memory/) page (`/memory`) through the tunnel, the same way.
+- **New Task…** opens that dashboard's [New task](/guides/new-task/) form (`/?newTask=1`) through the tunnel, the same way.
 - **Enter Token… / Update Token…** reads the token file again, or asks for the token. Use it after the remote daemon restarted with a new auto-generated token (it then shows **token required**).
 
 and for the remote:

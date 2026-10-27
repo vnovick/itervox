@@ -151,7 +151,7 @@ func TestStackedPRsGateIsOffByDefault(t *testing.T) {
 		o := &Orchestrator{cfg: &config.Config{}, workspace: p}
 		o.storeSnap(State{TerminalStates: []string{"Done"}})
 
-		_, err := o.ensureWorkspaceMaybeStacked(context.Background(), issue, "itervox/eng-2")
+		_, err := o.ensureWorkspaceMaybeStacked(context.Background(), issue, "itervox/eng-2", "")
 		require.NoError(t, err)
 		assert.Equal(t, 1, p.plain, "default config must not stack")
 		assert.Zero(t, p.stacked)
@@ -164,7 +164,7 @@ func TestStackedPRsGateIsOffByDefault(t *testing.T) {
 		o := &Orchestrator{cfg: cfg, workspace: p}
 		o.storeSnap(State{TerminalStates: []string{"Done"}})
 
-		_, err := o.ensureWorkspaceMaybeStacked(context.Background(), issue, "itervox/eng-2")
+		_, err := o.ensureWorkspaceMaybeStacked(context.Background(), issue, "itervox/eng-2", "")
 		require.NoError(t, err)
 		assert.Equal(t, 1, p.stacked)
 		assert.Equal(t, "itervox/eng-1", p.startPoint)

@@ -122,6 +122,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	wsPath := ""
 	stackedOn := "" // the blocker branch this worktree is stacked on (#73)
+	// #251: a New task's base branch, when its worktree starts from one.
+	taskSpec, _ := runTask(ctx)
+	taskBase := ""
 	branchName := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
 	activeBranchName := branchName
 
@@ -171,7 +174,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// shows only the increment. Opt-in, best-effort, and type-asserted —
 		// a provider that cannot stack, or a blocker branch that does not
 		// exist here, falls back to workspace.base_branch unchanged.
-		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
+		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName, taskSpec.BaseBranch)
 		if errors.Is(err, workspace.ErrBranchInUse) {
 			// #193: deterministic — git refuses the branch until the other
 			// worktree frees it. The event loop holds the issue with
@@ -196,6 +199,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		if taskSpec.BaseBranch != "" {
+			// The start point was the task's base branch, not a blocker's.
+			taskBase, stackedOn = ws.StackedOn, ""
+		}
 		if ws.BareFetchFailure != "" {
 			// #195: a failing shared-clone fetch used to be a WARN line only,
 			// so a base that stopped moving went unnoticed. The workspace
@@ -322,7 +329,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// implementer's completion_state is terminal (see the #58 notes), and
 		// a missed snapshot would let a branch change go unflagged.
 		gitCtx, gitCancel := context.WithTimeout(context.Background(), postRunTimeout)
-		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
+		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(cmp.Or(stackedOn, taskBase)), o.cfg.Agent.BaseBranch))
 		// The baseline survives a failed or interrupted attempt: a retry
 		// compares against the branch as the reviewer first found it.
 		reviewerBefore, reviewerTracked = reviewerBaseline(gitCtx, wsPath, issue.Identifier, profileName, attempt == 0)
@@ -475,6 +482,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// #218: the task-type playbook this run was dispatched with; its
 	// require_evidence joins the profile's in the one #80 evidence gate.
 	pb := runPlaybook(ctx)
+	_, taskBlock := runTask(ctx) // #251
 	requiredEvidence := runEvidenceChecks(profilesSnap[profileName].RequireEvidence, pb)
 	runEvidenceRelPath := ""
 	evidenceBlock := ""
@@ -482,8 +490,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		runEvidenceRelPath = evidenceRelPathFor(profileName)
 		evidenceBlock = buildEvidenceBlock(requiredEvidence, runEvidenceRelPath)
 	}
-	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
-	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(stackedOn)) // #215
+	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), runEvidenceRelPath, switchNotice)
+	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(cmp.Or(stackedOn, taskBase))) // #215
 	// #157: the rule set this run was dispatched with. `{{ rules }}` places
 	// it in any template; otherwise a `## Rules` block goes ahead of the
 	// profile's SOUL.md and INSTRUCTIONS.md.
@@ -597,6 +605,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if block := buildStackedPRBlock(stackedOn); block != "" {
 			renderedPrompt += "\n\n" + block
 		}
+		if block := buildTaskBaseBlock(taskBase); block != "" {
+			renderedPrompt += "\n\n" + block
+		}
 		if evidenceBlock != "" {
 			renderedPrompt += "\n\n" + evidenceBlock
 		}
@@ -616,18 +627,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// Shared with ComposeEvalPrompt (#189) so a live eval renders exactly
 		// the profile sections a dispatched worker sees.
 		renderedPrompt += profilePromptTail(profileTailInput{
-			Rules:         ruleSet,
-			Memory:        memSel,
-			Playbook:      pb.Playbook.Block(),
-			Template:      promptTemplate,
-			ProfileName:   profileName,
-			Profiles:      profilesSnap,
-			Automation:    automation,
-			Issue:         issue,
-			Attempt:       attemptPtr,
-			RunVars:       runVars,
-			ActionContext: actionContext,
-			Backend:       backend,
+			Rules:            ruleSet,
+			Memory:           memSel,
+			Playbook:         pb.Playbook.Block(),
+			TaskInstructions: taskBlock,
+			Template:         promptTemplate,
+			ProfileName:      profileName,
+			Profiles:         profilesSnap,
+			Automation:       automation,
+			Issue:            issue,
+			Attempt:          attemptPtr,
+			RunVars:          runVars,
+			ActionContext:    actionContext,
+			Backend:          backend,
 		})
 
 		// On the first turn, inject open PR context if detected.

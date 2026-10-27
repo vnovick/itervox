@@ -51,6 +51,8 @@ type PromptParts struct {
 	Memory string `json:"memory,omitempty"`
 	// Playbook is the digest of the run's `## Playbook` block (#218).
 	Playbook string `json:"playbook,omitempty"`
+	// Task is the digest of the run's `## Task instructions` block (#251).
+	Task     string `json:"task,omitempty"`
 	Template string `json:"template,omitempty"`
 }
 
@@ -61,6 +63,8 @@ type promptComponents struct {
 	memory                       memory.Selection
 	// playbook is the run's `## Playbook` block (#218), "" for none.
 	playbook string
+	// task is the run's `## Task instructions` block (#251), "" for none.
+	task string
 }
 
 // writeField writes a length-prefixed field: an 8-byte big-endian length,
@@ -144,19 +148,24 @@ type digestField struct {
 // digest returns the run's prompt-version digest (64 hex chars) and its
 // per-component digests. The digest is SHA-256 over a versioned,
 // length-prefixed concatenation of SOUL.md, INSTRUCTIONS.md, the canonical
-// rule set, the canonical memory selection (#202), the playbook block (#218)
-// and the prompt template source, in that order. The memory and playbook
-// fields are written only when the run has them, so a run without either
-// keeps the digest it had before they existed.
+// rule set, the canonical memory selection (#202), the playbook block (#218),
+// the task instructions block (#251) and the prompt template source, in that
+// order. The memory, playbook and task fields are written only when the run
+// has them, so a run without them keeps the digest it had before they
+// existed.
 func (c promptComponents) digest() (string, PromptParts) {
 	soul, instructions, template := []byte(c.soul), []byte(c.instructions), []byte(c.template)
 	ruleBytes, memBytes, pbBytes := canonicalRules(c.rules), canonicalMemory(c.memory), []byte(c.playbook)
+	taskBytes := []byte(c.task)
 	fields := []digestField{{"soul", soul}, {"instructions", instructions}, {"rules", ruleBytes}}
 	if len(memBytes) > 0 {
 		fields = append(fields, digestField{"memory", memBytes})
 	}
 	if len(pbBytes) > 0 {
 		fields = append(fields, digestField{"playbook", pbBytes})
+	}
+	if len(taskBytes) > 0 {
+		fields = append(fields, digestField{"task", taskBytes})
 	}
 	fields = append(fields, digestField{"template", template})
 	h := sha256.New()
@@ -171,6 +180,7 @@ func (c promptComponents) digest() (string, PromptParts) {
 		Rules:        partDigest(ruleBytes),
 		Memory:       partDigest(memBytes),
 		Playbook:     partDigest(pbBytes),
+		Task:         partDigest(taskBytes),
 		Template:     partDigest(template),
 	}
 }
@@ -179,15 +189,17 @@ func (c promptComponents) digest() (string, PromptParts) {
 // with, the way runWorker assembles it: the profile's SOUL.md and
 // INSTRUCTIONS.md, the run's resolved rules and memory, and the WORKFLOW.md
 // body — or agent.reviewer_prompt for a reviewer run when one is
-// configured. Event loop only (startRun); Profiles and ReviewerProfile are
-// cfgMu fields.
-func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set, mem memory.Selection, pb string) promptComponents {
+// configured — plus the run's task instructions block (#251, "" for none).
+// Event loop only (startRun); Profiles and ReviewerProfile are cfgMu fields.
+func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set, mem memory.Selection, pb, task string) promptComponents {
 	if o == nil || o.cfg == nil || entry == nil {
-		return promptComponents{rules: set, memory: mem, playbook: pb}
+		return promptComponents{rules: set, memory: mem, playbook: pb, task: task}
 	}
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
-	return profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set, mem, pb)
+	c := profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set, mem, pb)
+	c.task = task
+	return c
 }
 
 // profilePromptComponents is what a run of profile is prompted with under

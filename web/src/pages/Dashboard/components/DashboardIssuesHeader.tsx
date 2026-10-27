@@ -1,4 +1,6 @@
 import { FilterPills, type FilterPill } from '../../../components/itervox/FilterPills';
+import { RequireScope } from '../../../components/itervox/RequireScope';
+import { useUIStore } from '../../../store/uiStore';
 import { SearchInput } from '../../../components/itervox/SearchInput';
 import { dashboardViewModes, type DashboardViewMode, viewModeLabel } from './viewModeLabel';
 
@@ -31,6 +33,7 @@ export function DashboardIssuesHeader({
   search,
   setSearch,
 }: DashboardIssuesHeaderProps) {
+  const openNewTask = useUIStore((s) => s.setNewTaskOpen);
   return (
     <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3 sm:px-[18px] sm:py-[14px]">
       <div className="flex items-center justify-between gap-3">
@@ -43,6 +46,18 @@ export function DashboardIssuesHeader({
           </h2>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
+          <RequireScope scope="operator">
+            <button
+              type="button"
+              onClick={() => {
+                openNewTask(true);
+              }}
+              className="bg-theme-accent rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white"
+              title="Create a one-off task with its own instructions"
+            >
+              + New task
+            </button>
+          </RequireScope>
           <div className="bg-theme-bg-elevated border-theme-line inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px]">
             {dashboardViewModes(availableProfileCount > 0).map((mode) => (
               <button

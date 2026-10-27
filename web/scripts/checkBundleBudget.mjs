@@ -13,8 +13,12 @@ import { join } from 'node:path';
 const KB = 1024;
 
 export const BUDGET = {
-  /** All JavaScript in assets/ (before #211: 2,118,115 bytes). */
-  totalJsBytes: 1900 * KB,
+  /**
+   * All JavaScript in assets/ (before #211: 2,118,115 bytes). Raised from
+   * 1900 KiB by #251: the New task form (+8.4 KiB in the Dashboard chunk)
+   * and its lazy issue-detail and query chunks took the total to ~1901 KiB.
+   */
+  totalJsBytes: 1920 * KB,
   /** The entry script plus its modulepreloads from index.html (before #211: 499,682). */
   initialJsBytes: 520 * KB,
   /** Any single chunk (the CodeMirror prompt editor is the largest, ~393 kB). */

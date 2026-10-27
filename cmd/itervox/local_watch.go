@@ -20,6 +20,8 @@ func startLocalIssueWatch(ctx context.Context, tr tracker.Tracker, refresh func(
 		lt = t.Tracker
 		orchRefresh := refresh
 		refresh = func() { orchRefresh(); t.syncer.Nudge() }
+	case interface{ TasksTracker() *local.Tracker }: // #251: the tasks next to Linear/GitHub
+		lt = t.TasksTracker()
 	default:
 		return
 	}
