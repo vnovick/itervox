@@ -76,6 +76,11 @@ func (c changesAdapter) Handoffs(identifier string) []server.HandoffRow {
 	return rows
 }
 
+// WorkspacePort is the issue workspace's ITERVOX_PORT (#250).
+func (c changesAdapter) WorkspacePort(identifier string) int {
+	return c.orch.WorkspacePort(identifier)
+}
+
 func diffFileRow(f workspace.DiffFile) server.DiffFileRow {
 	return server.DiffFileRow{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Binary: f.Binary}
 }

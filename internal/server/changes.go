@@ -145,6 +145,9 @@ type FileDiffResponse struct {
 type RunContextResponse struct {
 	Identifier string         `json:"identifier"`
 	Run        *RunContextRow `json:"run"`
+	// Port is the issue workspace's ITERVOX_PORT (#250); omitted when the
+	// workspace has none.
+	Port int `json:"port,omitempty"`
 	// ChangedFiles are the worktree's changed files (nil when it has none
 	// or no worktree); ChangedFilesError says why they are missing.
 	ChangedFiles      []DiffFileRow `json:"changedFiles"`
@@ -160,6 +163,8 @@ type ChangesClient interface {
 	Diff(ctx context.Context, identifier, base string) (DiffResponse, error)
 	FileDiff(ctx context.Context, identifier, base, file string) (FileDiffResponse, error)
 	Handoffs(identifier string) []HandoffRow
+	// WorkspacePort is the issue workspace's ITERVOX_PORT, or 0 (#250).
+	WorkspacePort(identifier string) int
 }
 
 // writeChangesError maps a ChangesClient error to its response.
@@ -187,7 +192,7 @@ func (s *Server) handleIssueContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "identifier")
-	resp := RunContextResponse{Identifier: id, Handoffs: s.changes.Handoffs(id)}
+	resp := RunContextResponse{Identifier: id, Handoffs: s.changes.Handoffs(id), Port: s.changes.WorkspacePort(id)}
 	if run, ok := s.changes.RunContext(id); ok {
 		resp.Run = &run
 	}

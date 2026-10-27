@@ -1090,6 +1090,31 @@
           "type": "string",
           "x-itervox-group": "Workspace"
         },
+        "copy_files": {
+          "default": [],
+          "description": "Gitignored paths or globs (relative to the repository root) copied from the main checkout into each new worktree before hooks.after_create, and refreshed on later runs. Tracked or unignored matches are skipped. The agent can read these files.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Copy files into worktrees",
+          "type": "array",
+          "x-itervox-group": "Workspace setup"
+        },
+        "copy_files_max_bytes": {
+          "default": 10485760,
+          "description": "Most bytes copy_files copies into one worktree per run; the rest is skipped and reported.",
+          "minimum": 1,
+          "title": "Copy files size cap (bytes)",
+          "type": "integer",
+          "x-itervox-group": "Workspace setup"
+        },
+        "port_range": {
+          "default": "41000-41999",
+          "description": "LOW-HIGH range each issue's workspace gets a TCP port from, as ITERVOX_PORT and {{ run.port }}. Stable while the workspace exists.",
+          "title": "Workspace port range",
+          "type": "string",
+          "x-itervox-group": "Workspace setup"
+        },
         "root": {
           "description": "Directory per-issue workspaces are created in. Default: ~/.itervox/workspaces/<project>. ~ and $VAR are expanded.",
           "title": "Workspace root",

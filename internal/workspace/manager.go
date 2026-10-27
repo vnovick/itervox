@@ -2,10 +2,15 @@ package workspace
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/gitexec"
 )
 
 // Provider defines the workspace operations needed by the orchestrator.
@@ -49,6 +54,23 @@ type Workspace struct {
 	// the last successful fetch (#195). The caller records it once in recent
 	// failures; the worktree itself was created from the last fetched base.
 	BareFetchFailure string
+	// Port is the workspace's TCP port from workspace.port_range (#250),
+	// exported to agents and hooks as ITERVOX_PORT; 0 when none could be
+	// assigned.
+	Port int
+	// CopyFiles is what workspace.copy_files did for this run (#250); nil
+	// when copy_files is empty or this is not a worktree. CopyFilesErr is set
+	// when the pass could not run at all.
+	CopyFiles    *CopyFilesReport
+	CopyFilesErr error
+}
+
+// PortProvider is an OPTIONAL interface for providers that assign each
+// workspace a port (#250). Type-asserted for the same reason as
+// StackedProvider.
+type PortProvider interface {
+	// WorkspacePort returns identifier's workspace port, or 0.
+	WorkspacePort(identifier string) int
 }
 
 // Manager handles creation, reuse, and removal of per-issue workspace directories.
@@ -79,11 +101,65 @@ func (m *Manager) EnsureWorkspace(ctx context.Context, identifier, branchName st
 // review-ergonomics improvement; it must never be the reason a dispatch
 // fails, so an unresolvable start point silently falls back to base_branch.
 func (m *Manager) EnsureWorkspaceFrom(ctx context.Context, identifier, branchName, startPoint string) (Workspace, error) {
+	var ws Workspace
+	var err error
 	if m.cfg.Workspace.Worktree {
-		return m.ensureWorktree(ctx, identifier, branchName, startPoint)
+		ws, err = m.ensureWorktree(ctx, identifier, branchName, startPoint)
+		if err == nil {
+			m.copyFilesInto(ctx, &ws)
+		}
+	} else {
+		// Directory mode has no branches, so there is nothing to stack on.
+		ws, err = m.ensureDirectory(identifier)
 	}
-	// Directory mode has no branches, so there is nothing to stack on.
-	return m.ensureDirectory(identifier)
+	if err != nil {
+		return ws, err
+	}
+	// #250: a port problem never fails the dispatch; the run goes without
+	// ITERVOX_PORT and the warning says why.
+	if port, perr := m.AssignPort(identifier); perr != nil {
+		slog.Warn("workspace: no port assigned", "identifier", identifier, "error", perr)
+	} else {
+		ws.Port = port
+	}
+	return ws, nil
+}
+
+// copyFilesInto runs workspace.copy_files for the worktree ws (#250), from
+// the main checkout: the git top level of the directory holding WORKFLOW.md.
+func (m *Manager) copyFilesInto(ctx context.Context, ws *Workspace) {
+	patterns := m.cfg.Workspace.CopyFiles
+	if len(patterns) == 0 {
+		return
+	}
+	src, err := m.copySource(ctx)
+	if err != nil {
+		ws.CopyFilesErr = err
+		return
+	}
+	dst, err := filepath.Abs(ws.Path)
+	if err != nil {
+		ws.CopyFilesErr = err
+		return
+	}
+	rep, err := CopyFiles(ctx, src, dst, patterns, int64(m.cfg.Workspace.CopyFilesMaxBytes))
+	ws.CopyFiles, ws.CopyFilesErr = &rep, err
+}
+
+// copySource is the main checkout copy_files reads from.
+func (m *Manager) copySource(ctx context.Context) (string, error) {
+	if m.cfg.WorkflowPath == "" {
+		return "", errors.New("workspace: copy_files: no WORKFLOW.md path to find the main checkout from")
+	}
+	dir, err := filepath.Abs(filepath.Dir(m.cfg.WorkflowPath))
+	if err != nil {
+		return "", err
+	}
+	out, err := gitexec.Command(ctx, dir, "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("workspace: copy_files: %s is not in a git checkout: %w", dir, err)
+	}
+	return filepath.Clean(strings.TrimSpace(string(out))), nil
 }
 
 // ensureDirectory is the legacy implementation of EnsureWorkspace: it creates
@@ -143,11 +219,20 @@ func (m *Manager) RemoveWorkspace(ctx context.Context, identifier, branchName st
 		hookPath = WorkspacePath(root, identifier)
 	}
 
+	// #250: before_remove still sees the workspace's port; it is released
+	// once the workspace is gone.
+	hookCtx := WithHookEnv(ctx, PortEnv(m.WorkspacePort(identifier))...)
+	defer func() {
+		if _, err := os.Stat(hookPath); errors.Is(err, os.ErrNotExist) {
+			m.releasePort(identifier)
+		}
+	}()
+
 	if m.cfg.Hooks.BeforeRemove != "" {
 		// logFn is intentionally omitted: at cleanup time the per-issue log buffer
 		// entry may already be removed, so there is no reliable destination for
 		// hook output. Hook failures are still surfaced via slog.Warn below.
-		if err := RunHook(ctx, m.cfg.Hooks.BeforeRemove, hookPath, m.cfg.Hooks.TimeoutMs); err != nil {
+		if err := RunHook(hookCtx, m.cfg.Hooks.BeforeRemove, hookPath, m.cfg.Hooks.TimeoutMs); err != nil {
 			// Hook failure is non-fatal: log and proceed with removal so a broken
 			// hook cannot permanently prevent workspace cleanup.
 			slog.Warn("workspace: before_remove hook failed, proceeding with removal",
