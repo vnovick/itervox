@@ -35,6 +35,8 @@ import { IssueDetailTabs, type IssueDetailTab } from './changes/IssueDetailTabs'
 
 // #215 — the diff viewer is only loaded when the Changes tab opens.
 const IssueChangesTab = lazy(() => import('./changes/IssueChangesTab'));
+// #251: only a New task has instructions; kept out of the initial bundle.
+const IssueTaskInstructions = lazy(() => import('./IssueTaskInstructions'));
 
 // CORE-070 — tracker.working_state default (internal/config/config.go), used
 // only when the snapshot does not publish workingState (older daemons).
@@ -225,6 +227,11 @@ export default function IssueDetailSlide() {
           {/* Agent Profile (backend-aware, #123) */}
           <IssueProfilePicker issue={issue} locked={isProfileLocked} />
           <IssuePlaybookPicker issue={issue} /> {/* #218 */}
+          {issue.task && (
+            <Suspense fallback={null}>
+              <IssueTaskInstructions issue={issue} />
+            </Suspense>
+          )}
           {/* Agent Backend (CORE-056) */}
           <IssueBackendControl
             key={issue.identifier} // BH-M3-10: no error/pending state across issues

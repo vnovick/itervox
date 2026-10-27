@@ -310,7 +310,7 @@ impl RailView {
                 let key = &open[i].key;
                 (Some(key.as_str()) != current).then(|| key.clone())
             }
-            RailCommand::ToggleCollapsed => None,
+            RailCommand::ToggleCollapsed | RailCommand::NewTask => None,
         }
     }
 }
@@ -409,6 +409,8 @@ pub enum RailCommand {
     Previous,
     /// Show or hide the project names.
     ToggleCollapsed,
+    /// Open the focused project's New task form (#251).
+    NewTask,
 }
 
 /// Prefix of the app menu's rail item ids.
@@ -440,8 +442,16 @@ pub fn menu_items() -> Vec<(String, String, String)> {
         "Show or Hide Project Names".to_string(),
         "CmdOrCtrl+Alt+S".to_string(),
     ));
+    v.push((
+        NEW_TASK_MENU_ID.to_string(),
+        "New Task…".to_string(),
+        "CmdOrCtrl+Shift+N".to_string(),
+    ));
     v
 }
+
+/// The Projects menu's "New Task…" item (#251).
+pub const NEW_TASK_MENU_ID: &str = "itervox-rail-new-task";
 
 /// The rail command of an app menu item id.
 pub fn menu_command(id: &str) -> Option<RailCommand> {
@@ -449,6 +459,7 @@ pub fn menu_command(id: &str) -> Option<RailCommand> {
         "next" => Some(RailCommand::Next),
         "previous" => Some(RailCommand::Previous),
         "toggle" => Some(RailCommand::ToggleCollapsed),
+        "new-task" => Some(RailCommand::NewTask),
         other => other
             .strip_prefix("goto-")?
             .parse()
@@ -848,6 +859,11 @@ mod tests {
         for (id, _, _) in &items {
             assert!(menu_command(id).is_some(), "{id}");
         }
+        assert_eq!(
+            menu_command(NEW_TASK_MENU_ID),
+            Some(RailCommand::NewTask),
+            "#251: the Projects menu's New Task… item"
+        );
         assert_eq!(menu_command("itervox-rail-goto-10"), None);
         assert_eq!(menu_command("open-dashboard"), None);
     }

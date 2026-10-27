@@ -562,6 +562,9 @@ func patchRootGitignoreForAgents(projectDir string) error {
 			// private.
 			"!.itervox/issues/",
 			"!.itervox/issues/**",
+			// #251: saved task templates are committed with the code.
+			"!.itervox/tasks/",
+			"!.itervox/tasks/**",
 			// #157: the project rules layer is committed with the code.
 			"!.itervox/rules.json",
 		)

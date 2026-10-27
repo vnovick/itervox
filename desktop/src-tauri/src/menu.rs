@@ -114,6 +114,18 @@ pub fn memory_link(base_url: &str) -> String {
     page_link(base_url, "memory")
 }
 
+/// The dashboard with its New task form open (#251): `{base}?newTask=1`.
+/// The dashboard opens the form once and drops the parameter
+/// (web/src/hooks/useUrlState.ts, useNewTaskUrlOpen). Rebased onto a remote
+/// daemon's tunnel like the other page links.
+pub fn new_task_link(base_url: &str) -> String {
+    let mut b = base_url.to_string();
+    if !b.ends_with('/') {
+        b.push('/');
+    }
+    format!("{b}?newTask=1")
+}
+
 fn page_link(base_url: &str, page: &str) -> String {
     let mut b = base_url.to_string();
     if !b.ends_with('/') {
@@ -180,6 +192,16 @@ pub fn build_menu<'a>(
                 MenuAction::OpenUrl {
                     project: v.key.clone(),
                     url: memory_link(&v.record.as_ref().map(|r| r.base_url()).unwrap_or_default()),
+                },
+            ),
+            b.item(
+                "New Task…",
+                v.running() && !busy,
+                MenuAction::OpenUrl {
+                    project: v.key.clone(),
+                    url: new_task_link(
+                        &v.record.as_ref().map(|r| r.base_url()).unwrap_or_default(),
+                    ),
                 },
             ),
             MenuEntry::Separator,
@@ -351,6 +373,14 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                 MenuAction::OpenUrl {
                     project: d.key.clone(),
                     url: memory_link(&d.url().unwrap_or_default()),
+                },
+            ),
+            b.item(
+                "New Task…",
+                up,
+                MenuAction::OpenUrl {
+                    project: d.key.clone(),
+                    url: new_task_link(&d.url().unwrap_or_default()),
                 },
             ),
             b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
@@ -641,6 +671,45 @@ mod tests {
             memory_link("http://127.0.0.1:50001"),
             "http://127.0.0.1:50001/memory"
         );
+    }
+
+    /// #251: each daemon's submenu has "New Task…", which opens its
+    /// dashboard with the New task form (`?newTask=1`) the same way as
+    /// Repo Analysis: OpenUrl with the project key, through the usual token
+    /// handoff — no IPC into the dashboard webview.
+    #[test]
+    fn new_task_menu_opens_form() {
+        let mut up = view("/up", true);
+        if let Some(r) = up.record.as_mut() {
+            r.url = "http://127.0.0.1:8090/".into();
+        }
+        let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
+        let (id, enabled) = find(&spec, "New Task…", "up").unwrap();
+        assert!(enabled);
+        assert_eq!(
+            spec.actions[id],
+            MenuAction::OpenUrl {
+                project: "/up".into(),
+                url: "http://127.0.0.1:8090/?newTask=1".into(),
+            }
+        );
+        assert!(!find(&spec, "New Task…", "down").unwrap().1);
+        assert_eq!(
+            new_task_link("http://127.0.0.1:50001"),
+            "http://127.0.0.1:50001/?newTask=1"
+        );
+    }
+
+    /// Drift guard: the parameter is the one the dashboard reads.
+    #[test]
+    fn new_task_query_param_matches_the_dashboard() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../web/src/hooks/useUrlState.ts"
+        ))
+        .expect("web/src/hooks/useUrlState.ts");
+        assert!(src.contains("new URLSearchParams(location.search).get('newTask')"));
+        assert!(new_task_link("http://h:1/").ends_with("?newTask=1"));
     }
 
     #[test]

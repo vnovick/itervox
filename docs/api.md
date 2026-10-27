@@ -185,6 +185,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/state` | viewer |
 | `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
+| `GET` | `/api/v1/task-templates` | viewer (saved task templates, #251) |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
 | `GET` | `/api/v1/tracker/teams` | viewer |
@@ -237,6 +238,8 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/skills/scan` | operator |
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/tasks` | operator (New task: creates an issue, may dispatch, #251) |
+| `PUT` | `/api/v1/tasks/{identifier}/instructions` | operator (until the task starts, #251) |
 | `POST` | `/api/v1/automations/{id}/test` | admin |
 | `PUT` | `/api/v1/projects/filter` | admin |
 | `POST` | `/api/v1/memory/{id}/promote-to-rule` | admin (writes a rules layer, #217) |
@@ -263,6 +266,9 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/settings/workers` | admin |
 | `POST` | `/api/v1/settings/workspace/auto-clear` | admin |
 | `POST` | `/api/v1/skills/fix` | admin (writes skill files) |
+| `POST` | `/api/v1/task-templates/{name}` | admin (writes `.itervox/tasks/<name>.md`, #251) |
+| `PUT` | `/api/v1/task-templates/{name}` | admin (#251) |
+| `DELETE` | `/api/v1/task-templates/{name}` | admin (#251) |
 | `GET` | `/api/v1/tokens` | admin |
 | `POST` | `/api/v1/tokens` | admin |
 | `DELETE` | `/api/v1/tokens/{id}` | admin |
@@ -1709,6 +1715,76 @@ pass. Errors: `400 bad_request` (`field: "backend"` unless `claude` or
 bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
+
+### New task and task templates (#251)
+
+Fetched on demand; none of these are on the `/state` snapshot or the SSE
+frames. See the [New task guide](/guides/new-task/).
+
+#### `POST /api/v1/tasks`
+
+Creates a task (operator). The body:
+
+```json
+{"title": "Upgrade lodash", "instructions": "Run `make test` after the bump.",
+ "where": "local", "start": true,
+ "profile": "implementer", "backend": "codex", "playbook": "feature", "baseBranch": "release/2.x",
+ "template": "upgrade", "vars": {"package": "lodash"}}
+```
+
+Only `title` is required (or `template`, whose title is used). `where` is
+`local` (the default: an Itervox-only issue file in `.itervox/issues/`, also
+in a Linear or GitHub project, where tasks are named `TASK-1`, `TASK-2`, …)
+or `tracker` (an issue in the project's Linear or GitHub tracker). The task
+is created in the first of `tracker.active_states`; with `start: true` the
+daemon runs a dispatch pass at once, which starts it through the normal path
+(slots, guardrails, budgets and dependencies still apply). With `template`,
+the template's fields fill what the body leaves empty and `vars` fill its
+`{{var}}` placeholders. `profile`, `backend` and `playbook` become the
+issue's overrides; `instructions` (at most 16 KiB) and `baseBranch` are kept
+by the daemon in `.itervox/task_specs.json`.
+
+`201`:
+
+```json
+{"identifier": "TASK-3", "title": "Upgrade lodash", "state": "Todo", "local": true, "started": true}
+```
+
+Errors: `400` with a `field` (`title_required`, `missing_vars`,
+`unknown_template`, `unknown_profile`, `unknown_backend`, `unknown_playbook`,
+`invalid_base`, `instructions_too_long`); `409 local_tasks_unavailable` for
+`where: "local"` when the tracker cannot hold local tasks (the memory
+tracker); `502 task_create_failed` when the tracker refuses the create (the
+message is redacted).
+
+#### `PUT /api/v1/tasks/{identifier}/instructions`
+
+Replaces a task's instructions (operator) until its first run starts:
+`{"instructions": "…"}` → `200`. `404` for an issue that is not a task,
+`409 task_started` once a run has started (the instructions are then the
+record of what the run was given). `GET /api/v1/issues/{identifier}` reports
+a task as `task: {"instructions", "baseBranch", "local", "started"}`.
+
+#### `GET /api/v1/task-templates`
+
+The templates in `.itervox/tasks/` (viewer), with each one's placeholders:
+
+```json
+{"localTasks": true, "templates": [
+  {"name": "upgrade", "title": "Upgrade {{package}}", "instructions": "Bump {{package}} to {{version}}.",
+   "profile": "implementer", "baseBranch": "main", "vars": ["package", "version"]}
+], "problems": [{"path": ".itervox/tasks/Bad.md", "message": "…"}]}
+```
+
+`localTasks` says whether `where: "local"` is available.
+
+#### `POST` / `PUT` / `DELETE /api/v1/task-templates/{name}`
+
+Manage templates (admin; they write committable files). The body is a
+template row without `name` and `vars`. `POST` creates (`201`; `409
+template_exists`), `PUT` creates or replaces (`200`), `DELETE` removes
+(`204`; `404`). A name is lower-case letters, digits, `-` or `_` (`400
+invalid_name`).
 
 ### Playbooks, decisions and steering (#218)
 
