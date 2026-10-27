@@ -102,6 +102,10 @@ type Policy struct {
 	// and approvals). Empty when no endpoint is available.
 	DaemonURL string `json:"daemon_url,omitempty"`
 	Token     string `json:"token,omitempty"`
+	// PreApproved are commands, in their display form, that the operator
+	// approved before the run started (`itervox run --approve`, #252): a
+	// matching approval command runs without asking. Empty in the daemon.
+	PreApproved []string `json:"pre_approved,omitempty"`
 }
 
 // policyFileName and adoptedFileName live in the runtime directory.
@@ -147,6 +151,15 @@ func ProtectedBranches(base ...string) []string {
 		}
 	}
 	return out
+}
+
+// preApproved reports whether display, a command's display form, is one
+// the operator approved before the run (whitespace-insensitive).
+func (p Policy) preApproved(display string) bool {
+	want := strings.Join(strings.Fields(display), " ")
+	return want != "" && slices.ContainsFunc(p.PreApproved, func(c string) bool {
+		return strings.Join(strings.Fields(c), " ") == want
+	})
 }
 
 // protected reports whether branch may never be pushed to or merged into.

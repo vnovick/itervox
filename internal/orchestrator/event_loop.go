@@ -1505,6 +1505,9 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 		// needed (the worker now owns the session via its RunEntry).
 		delete(state.PausedSessions, issue.Identifier)
 	}
+	if resumeCtx == nil { // #252: `itervox run --answer/--approve` continues the previous run
+		resumeCtx = o.takeOneShotResume(reviewerRun)
+	}
 	o.workersWg.Add(issue.Identifier)
 	switchNotice := o.backendSwitchNotice(&state, issue.Identifier, backend, profileName, nil) // CORE-101
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil, switchNotice)
@@ -2490,7 +2493,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// reply detection can find the question by key no matter when
 			// the outbox delivers it.
 			entry.QuestionCommentKey = o.newInputRequiredCommentKey(issue.Identifier)
-			questionBody := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))
+			questionBody := tracker.MarkManagedComment(o.inputRequiredCommentBody(entry))
 			if err := o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
 				questionBody, "question"); err != nil {
 				// CORE-121: the key stays until a keyless direct post is

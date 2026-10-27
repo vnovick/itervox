@@ -259,6 +259,9 @@ func main() {
 		case "init":
 			runInit(os.Args[2:])
 			return
+		case "run": // #252: one issue, then exit (CI)
+			runIssueCLI(os.Args[2:])
+			return
 		case "clear":
 			runClear(os.Args[2:])
 			return

@@ -349,6 +349,7 @@ Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the 
 | `itervox demo` | Try Itervox in about a minute: a throwaway board with fake issues and a scripted agent, no tracker, keys or agent CLI; everything stays in a temporary directory |
 | `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
+| `itervox run --issue <id>` | Run one issue and exit, for CI: agent turns, reviewers, push, PR, issue comment; exit codes 0 / 2 failed / 3 needs input / 4 budget / 5 config. A GitHub Action wraps it (`uses: vnovick/itervox/action@<ref>`); see [Running in CI](site/src/content/docs/guides/ci.mdx) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
 | `itervox init --template <name>` | Starter template: `minimal` (one implementer), `full` (four profiles, auto-review chain, common automations), `rate-limit-fallback` (backend fallback plus a `rate_limited` switch), `pr-review` (PR reviewer automations), `daily-qa` (daily cron QA). Without it, the standard four-profile scaffold. See the [CLI reference](site/src/content/docs/cli.mdx#starter-templates) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |

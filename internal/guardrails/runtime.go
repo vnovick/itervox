@@ -56,6 +56,9 @@ type Options struct {
 	ApprovalsEnabled  bool
 	DaemonURL         string
 	Token             string
+	// PreApproved are approval commands the operator approved before the
+	// run (Policy.PreApproved).
+	PreApproved []string
 }
 
 // Runtime is one run's prepared guardrails directory.
@@ -90,6 +93,7 @@ func Prepare(ctx context.Context, opts Options) (*Runtime, error) {
 		BinDir:            filepath.Join(dir, "bin"),
 		DaemonURL:         opts.DaemonURL,
 		Token:             opts.Token,
+		PreApproved:       opts.PreApproved,
 	}
 	r := &Runtime{policy: p}
 	if err := r.write(opts.Executable); err != nil {

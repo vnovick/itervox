@@ -12,7 +12,8 @@ itervox [flags]
 itervox <command> [flags]
 ```
 
-When no command is given, `itervox` starts the daemon (run mode).
+When no command is given, `itervox` starts the daemon. To run a single issue
+and exit (CI), use [`itervox run --issue`](#itervox-run--one-issue-then-exit-ci).
 
 
 ---
@@ -51,6 +52,57 @@ itervox -verbose -shutdown-grace 60s
 
 # Write logs to a specific directory
 itervox -logs-dir /var/log/itervox
+```
+
+---
+
+## `itervox run` — One issue, then exit (CI)
+
+```bash
+itervox run --issue <id> [--workflow WORKFLOW.md] [--worktree] [--answer TEXT|@FILE]
+            [--approve CMD] [--timeout 45m] [--json] [--log-dir DIR] [--verbose]
+```
+
+Runs one issue to completion and exits — the entry point for CI (#252). It
+loads the same `WORKFLOW.md` and settings files as the daemon and runs the
+daemon's orchestrator on that issue only: the agent's turns (same prompt,
+profiles, playbooks, rules, memory, guardrails and `agent.budget`), the reviewer
+quorum, then the completion path — push the issue branch, open the PR (`gh pr
+create`), comment on the issue, move it to `tracker.completion_state`. No HTTP
+server, hub, dashboard, automations or polling of other issues; no listening
+socket is opened. The current checkout is the workspace: the issue branch is
+created (or continued from `origin`) in place. Guide: [Running in CI](/guides/ci/).
+
+| Flag | Description |
+|------|-------------|
+| `--issue ID` | The issue to run (required). On GitHub `12` and `#12` both work |
+| `--workflow PATH` | Path to `WORKFLOW.md` (default `WORKFLOW.md`); its git checkout is the workspace |
+| `--worktree` | Work in a git worktree under `.itervox/run/worktrees/` instead of switching the checkout's branch |
+| `--answer TEXT` | Continue a run that exited `3` with a question: the new run continues from the handoffs committed on the issue branch, told the question and this answer. `@FILE` reads the answer from a file |
+| `--approve CMD` | Allow this [guardrail approval command](/guides/guardrails/) for this run only (the command an earlier run named when it exited `3`); every other approval command is still refused |
+| `--timeout DUR` | Cap the whole run; the agent turn timeout is lowered below it. Default: no cap |
+| `--json` | Print one JSON object instead of the Markdown summary |
+| `--log-dir DIR` | Write redacted logs: `itervox.log`, the per-issue logs under `issues/`, and the spend ledger `issue_spend.json` (so `agent.budget` counts across runs that share the directory) |
+| `--verbose` | DEBUG-level logs |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | PR opened, or nothing to do |
+| `2` | Failed (including a timeout, a failed turn, or another run holding the issue's lock) |
+| `3` | Needs input: a question (posted on the issue and committed as a handoff on the pushed branch) or a guardrail approval, which fails closed in a run |
+| `4` | Budget exceeded (`agent.budget`) |
+| `5` | Configuration error |
+
+The summary (issue, branch, PR link, turns, tokens, cost, reviewer verdicts,
+and on exit `3` the question and how to answer it) goes to stdout and is
+appended to `$GITHUB_STEP_SUMMARY` when that is set. Logs go to stderr. One run
+per issue at a time: `.itervox/run/issue-<id>.lock` in the checkout.
+
+```bash
+itervox run --issue ENG-12 --timeout 45m --log-dir logs
+itervox run --issue 12 --answer "Use Postgres"
+itervox run --issue 12 --approve "vercel --prod"
+itervox run --issue 12 --json | jq -r .pr_url
 ```
 
 ---
