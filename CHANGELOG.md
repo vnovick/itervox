@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **A native Windows daemon** (#259). `itervox.exe` builds for `windows/amd64` and `windows/arm64`, and each release ships them as `itervox_windows_<arch>.zip` (Homebrew is unchanged). Each agent and hook runs in a Job Object with kill-on-close (`internal/procgroup`'s Windows file): cancelling a run ends its whole process tree, and if the daemon dies Windows ends its agents, so the Unix orphan ledger is not needed there. Hooks and agent CLIs given by name run under bash, found as `ITERVOX_SHELL`, then `%ProgramFiles%\Git\bin\bash.exe`, then `bash` on PATH (never the WSL launcher); without one, agent CLIs are executed directly and hooks fail with `hook_failed: no bash to run hooks with: install Git for Windows (Git Bash) or set ITERVOX_SHELL to a bash.exe`. The pid, `WORKFLOW.md`, API-token and hub locks use `LockFileEx` where Unix uses `flock` (new `internal/winflock`); atomic writes retry while another handle briefly holds the target; guardrail shims get a `.cmd` wrapper next to each sh shim; the prompt file is delete-on-close. `sessions.tmux_control: true` is refused when the daemon loads a workflow on Windows (`sessions.tmux_control: true is not available on Windows`), and the Sessions panel's liveness check reports `process inspection is not available on Windows`. `itervox stop` ends a Windows daemon without a graceful drain (Ctrl+C in its console drains). `make vet` (part of `make verify`) now also runs `GOOS=windows go vet ./cmd/... ./internal/...`, and a `windows-latest` CI job builds the binary, vets natively, runs the Windows package tests and an `itervox demo` smoke test (`scripts/demo-smoke.sh`). Guide: [Running on Windows](site/src/content/docs/guides/windows.mdx).
+
 ---
 
 ## [0.3.0] — Unreleased

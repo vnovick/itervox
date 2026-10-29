@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent_test
 
 // CORE-001: on a read error (idle read timeout, or a scanner error from an

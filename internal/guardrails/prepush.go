@@ -169,11 +169,15 @@ func chainHook(origDir, name string, args, env []string, input []byte, stdout, s
 	if origDir == "" {
 		return 0
 	}
-	hook := filepath.Join(origDir, name)
-	if info, err := os.Stat(hook); err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+	prog, argv, err := hookArgv(filepath.Join(origDir, name), args)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "guardrails: the repository's %s hook cannot run: %v\n", name, err)
+		return 1
+	}
+	if prog == "" {
 		return 0
 	}
-	cmd := exec.Command(hook, args...)
+	cmd := exec.Command(prog, argv...)
 	cmd.Env = env
 	cmd.Stdin = bytes.NewReader(input)
 	cmd.Stdout = stdout

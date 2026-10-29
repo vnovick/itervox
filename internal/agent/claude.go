@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/vnovick/itervox/internal/procgroup"
@@ -70,13 +69,13 @@ func validateCLI(name, hint string) error {
 		}
 	}
 
-	if !validateCLIShellFallback {
-		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
-	}
-
 	// Attempt 2: fall back to an interactive login shell so ~/.zshrc /
 	// ~/.bashrc PATH additions and shell aliases/functions are picked up.
+	// There is none on a Windows host without bash (loginShell is "").
 	shell := loginShell()
+	if !validateCLIShellFallback || shell == "" {
+		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
+	}
 	// Bounded stderr (fix round 1, M7): an rc file can print arbitrarily
 	// much, and only the tail explains a failure.
 	stderr := newTailBuffer(maxValidationStderrBytes)
@@ -108,17 +107,15 @@ const validationWaitDelay = 2 * time.Second
 
 func buildValidationShellCommand(ctx context.Context, shell, invocation string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shell, "-ilc", invocation)
-	// Group kill on the 5s deadline plus a WaitDelay (M7). Configure sets
-	// Setpgid; it is replaced below by Setsid, which ALSO makes the shell
-	// the leader of a new process group (pgid == pid), so procgroup's
-	// Cancel — Kill(cmd.Process.Pid) — still reaches the whole group.
-	// Setsid and Setpgid cannot be combined: setpgid after setsid fails
-	// with EPERM for a session leader.
-	procgroup.Configure(cmd, validationWaitDelay)
-	// Detach the fallback login shell from the caller's controlling TTY so an
-	// interactive rc file cannot steal or leave behind the foreground process
-	// group just before Bubble Tea starts.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Group kill on the 5s deadline plus a WaitDelay (M7). On Unix
+	// ConfigureDetached replaces Configure's Setpgid with Setsid, which
+	// ALSO makes the shell the leader of a new process group (pgid == pid),
+	// so procgroup's Cancel — Kill(cmd.Process.Pid) — still reaches the
+	// whole group. Setsid detaches the fallback login shell from the
+	// caller's controlling TTY so an interactive rc file cannot steal or
+	// leave behind the foreground process group just before Bubble Tea
+	// starts.
+	procgroup.ConfigureDetached(cmd, validationWaitDelay)
 	return cmd
 }
 
@@ -236,10 +233,12 @@ func (c *ClaudeRunner) RunTurn(
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
 			}
 		}
-		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-			// Clean absolute path with no flags — run the binary directly,
-			// no shell needed; the prompt file is its stdin.
-			cmd = exec.CommandContext(turnCtx, command, buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+		shell := loginShell()
+		if name, head, direct := directInvocation(command, shell, "claude"); direct {
+			// Clean absolute path with no flags (or, on Windows, no bash to
+			// run a command line with) — run the binary directly, no shell
+			// needed; the prompt file is its stdin.
+			cmd = exec.CommandContext(turnCtx, name, append(head, buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)...)
 			if live != nil {
 				cmd.Stdin = live.r
 			} else {
@@ -254,10 +253,10 @@ func (c *ClaudeRunner) RunTurn(
 			if live != nil {
 				redirect = localPromptRedirect
 			}
-			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
+			cmd = exec.CommandContext(turnCtx, shell, "-lc",
 				RunEnvFrom(ctx).shellPrefix()+buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil))
 			if live != nil {
-				cmd.ExtraFiles = []*os.File{live.r}
+				setPromptFD3(cmd, live.r)
 			} else {
 				setPromptFD3(cmd, promptIn)
 			}
@@ -293,7 +292,7 @@ func (c *ClaudeRunner) RunTurn(
 	stderrBuf := newTailBuffer(maxStderrCaptureBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		live.abandon()
 		live = nil
 		return TurnResult{Failed: true}, fmt.Errorf("agent: start: %w", err)
@@ -698,12 +697,36 @@ func setProcessGroup(cmd *exec.Cmd) {
 	procgroup.Configure(cmd, 5*time.Second)
 }
 
-// loginShell returns the user's login shell from $SHELL, falling back to bash.
+// loginShell returns the user's login shell from $SHELL, falling back to
+// bash. On Windows it is procgroup.Shell's bash instead ($SHELL there is
+// an MSYS path when set at all), or "" when there is none.
 func loginShell() string {
-	if sh := os.Getenv("SHELL"); sh != "" {
-		return sh
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "bash"
 	}
-	return "bash"
+	return procgroup.Shell(sh)
+}
+
+// directInvocation reports whether a local turn starts the agent CLI
+// without a shell, and if so its executable and leading arguments (the
+// turn's own flags follow). A clean absolute path with no flags always
+// runs directly. Anything else needs a login shell to resolve it — and
+// when there is none (shell == "", a Windows host without bash) the
+// command is split on whitespace and executed directly, the Windows PATH
+// finding the CLI; an empty command falls back to fallback.
+func directInvocation(command, shell, fallback string) (name string, head []string, direct bool) {
+	if filepath.IsAbs(command) && !strings.Contains(command, " ") {
+		return command, nil, true
+	}
+	if shell != "" {
+		return "", nil, false
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return fallback, nil, true
+	}
+	return fields[0], fields[1:], true
 }
 
 // ShellQuote wraps s in single quotes for bash. Its output is parsed only by

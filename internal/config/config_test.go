@@ -198,7 +198,7 @@ func TestTildeExpansionOnWorkspaceRoot(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	home, _ := os.UserHomeDir()
-	assert.Equal(t, home+"/itervox_ws", cfg.Workspace.Root)
+	assert.Equal(t, filepath.Join(home, "itervox_ws"), cfg.Workspace.Root)
 }
 
 func TestAgentCommandNotTildeExpanded(t *testing.T) {
@@ -576,7 +576,7 @@ Prompt.
 
 	_, err := config.Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".itervox/agents/implementer/INSTRUCTIONS.md")
+	assert.Contains(t, err.Error(), filepath.FromSlash(".itervox/agents/implementer/INSTRUCTIONS.md"))
 }
 
 func TestSchema2ProfileValidatesFilesBeforeCommand(t *testing.T) {
@@ -601,7 +601,7 @@ Prompt.
 
 	_, err := config.Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".itervox/agents/implementer/SOUL.md")
+	assert.Contains(t, err.Error(), filepath.FromSlash(".itervox/agents/implementer/SOUL.md"))
 }
 
 func TestSchema2ProfileRejectsInlinePrompt(t *testing.T) {

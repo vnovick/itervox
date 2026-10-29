@@ -1,11 +1,11 @@
-//go:build !(darwin || linux || freebsd || openbsd || netbsd || dragonfly)
+//go:build !(darwin || linux || freebsd || openbsd || netbsd || dragonfly || windows)
 
 package hub
 
 import "errors"
 
 // lockSupported reports whether the hub election works on this platform.
-// Without flock(2) (Windows, not a release target) no daemon becomes the hub.
+// Without flock(2) or LockFileEx no daemon becomes the hub.
 const lockSupported = false
 
 // Lock is the hub lock; never acquired on this platform.

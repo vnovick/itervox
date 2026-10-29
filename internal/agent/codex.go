@@ -127,13 +127,14 @@ func (c *CodexRunner) RunTurn(
 		if promptIn, err = promptFile(prompt); err != nil {
 			return TurnResult{Failed: true, FailureText: err.Error()}, err
 		}
-		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-			cmd = exec.CommandContext(turnCtx, command, buildCodexDirectArgs(sessionID, workspacePath, permissionMode)...)
+		shell := loginShell()
+		if name, head, direct := directInvocation(command, shell, "codex"); direct {
+			cmd = exec.CommandContext(turnCtx, name, append(head, buildCodexDirectArgs(sessionID, workspacePath, permissionMode)...)...)
 			setPromptStdin(cmd, promptIn)
 		} else {
 			// fd 3, not stdin: a login profile that reads stdin cannot eat
 			// the prompt (see ClaudeRunner.RunTurn).
-			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
+			cmd = exec.CommandContext(turnCtx, shell, "-lc",
 				RunEnvFrom(ctx).shellPrefix()+buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode))
 			setPromptFD3(cmd, promptIn)
 		}
@@ -180,7 +181,7 @@ func (c *CodexRunner) RunTurn(
 	stderrBuf := newTailBuffer(maxStderrCaptureBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/agent"
@@ -116,6 +117,9 @@ func (r *Runtime) write(exe string) error {
 		if err := os.WriteFile(filepath.Join(p.BinDir, name), []byte(script), 0o700); err != nil {
 			return fmt.Errorf("guardrails: write shim %s: %w", name, err)
 		}
+		if err := writeNativeShim(runtime.GOOS, p.BinDir, name, exe, policyPath); err != nil {
+			return err
+		}
 	}
 	for _, name := range gitHookNames {
 		var script string
@@ -130,6 +134,32 @@ func (r *Runtime) write(exe string) error {
 		}
 	}
 	return nil
+}
+
+// writeNativeShim writes, on Windows, a name.cmd wrapper next to the sh
+// shim: bash (Git Bash, the agent's Bash tool) runs the sh shim, while
+// cmd.exe, PowerShell and PATHEXT lookups only consider files with an
+// executable extension. Elsewhere it writes nothing.
+func writeNativeShim(goos, binDir, name, exe, policyPath string) error {
+	if goos != "windows" {
+		return nil
+	}
+	path := filepath.Join(binDir, name+".cmd")
+	if err := os.WriteFile(path, []byte(cmdShimScript(exe, policyPath, name)), 0o700); err != nil {
+		return fmt.Errorf("guardrails: write shim %s.cmd: %w", name, err)
+	}
+	return nil
+}
+
+// cmdShimScript is the batch-file form of the sh shim: it carries
+// shimMarker in its first lines (so resolveReal skips it) and forwards
+// every argument and the exit status. Arguments are double-quoted, with
+// '%' doubled so cmd.exe does not expand it.
+func cmdShimScript(exe, policyPath, name string) string {
+	q := func(s string) string { return `"` + strings.ReplaceAll(s, "%", "%%") + `"` }
+	return "@echo off\r\nrem " + shimMarker + "\r\n" +
+		q(exe) + " " + shimEntrypoint + " " + q(policyPath) + " " + q(name) + " %*\r\n" +
+		"exit /b %ERRORLEVEL%\r\n"
 }
 
 // forwarderScript runs the repository's own hook name, when there is one.

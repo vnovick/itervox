@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/joho/godotenv"
@@ -267,8 +266,8 @@ func setEnvSecret(path, key, value string, replace bool) error {
 		info, statErr = os.Stat(ownerDir)
 	}
 	if statErr == nil {
-		if st, ok := info.Sys().(*syscall.Stat_t); ok && os.Geteuid() == 0 {
-			if err := os.Chown(path, int(st.Uid), int(st.Gid)); err != nil {
+		if uid, gid, ok := fileOwner(info); ok && os.Geteuid() == 0 {
+			if err := os.Chown(path, uid, gid); err != nil {
 				return fmt.Errorf("keep the owner of %s: %w", path, err)
 			}
 		}

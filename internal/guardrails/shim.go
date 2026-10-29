@@ -174,8 +174,9 @@ func commandKey(cwd, tool string, args []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// execFn replaces the process with the real program (syscall.Exec);
-// tests substitute it.
+// execFn replaces the process with the real program (syscall.Exec), or on
+// Windows, which has no exec, runs it as a child and returns its exit
+// status; tests substitute it.
 var execFn = execProgram
 
 // runShim is a shim: decide, then refuse, wait for an approval, or exec
@@ -205,11 +206,12 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 	if tool == "git" {
 		env = withHooksPath(env, filepath.Join(p.Dir, "hooks"))
 	}
-	if err := execFn(real, append([]string{tool}, args...), env); err != nil {
+	code, err := execFn(real, append([]string{tool}, args...), env)
+	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "guardrails: run %s: %v\n", tool, err)
 		return 126
 	}
-	return 0
+	return code
 }
 
 // waitForApproval asks the daemon for an approval and waits for the
@@ -303,15 +305,16 @@ func resolveReal(tool, pathList string) (string, error) {
 		if d == "" {
 			continue
 		}
-		cand := filepath.Join(d, tool)
-		info, err := os.Stat(cand)
-		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-			continue
+		for _, cand := range executableCandidates(d, tool) {
+			info, err := os.Stat(cand)
+			if err != nil || info.IsDir() || !isExecutableMode(info) {
+				continue
+			}
+			if isShim(cand) {
+				continue
+			}
+			return cand, nil
 		}
-		if isShim(cand) {
-			continue
-		}
-		return cand, nil
 	}
 	return "", fmt.Errorf("command not found on PATH (outside the guardrail shims)")
 }

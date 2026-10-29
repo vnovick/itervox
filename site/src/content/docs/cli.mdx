@@ -552,7 +552,7 @@ A program that starts and manages daemons — the [Mac app](/guides/mac-app/), a
 
 1. Start `itervox --workflow <path>` with `ITERVOX_SUPERVISOR_TOKEN=<token>` in the environment (`openssl rand -hex 32`). The API requires exactly that token, even with `server.allow_unauthenticated: true` or a different `ITERVOX_API_TOKEN` in `.itervox/.env`, and the daemon never prints or writes it: no tokenised URL on stderr (whatever `ITERVOX_PRINT_TOKEN` says), none in the log file, `HEARTBEAT.md`, `dashboard_url`, the registry or `<logs-dir>/api-token`.
 2. Find it, and daemons started elsewhere, with `itervox status --all --json`; poll `GET {url}api/v1/health` (no token) for liveness.
-3. Call the API with `Authorization: Bearer <token>`; stop a daemon with `itervox stop --workflow <path>` or `SIGTERM`.
+3. Call the API with `Authorization: Bearer <token>`; stop a daemon with `itervox stop --workflow <path>` or `SIGTERM` (on Windows `itervox stop` ends the daemon without a graceful drain: [Running on Windows](/guides/windows/#what-differs-on-windows)).
 
 Started from Finder or launchd, the daemon finds `claude` and `codex` through the user's login shell (next section).
 
@@ -610,6 +610,7 @@ itervox -h
 | `ITERVOX_USER_SETTINGS` | `""` | Path of the user [settings file](/configuration/#settings-files-jsonc-layers) instead of `~/.itervox/settings.jsonc`; `off` turns the user layer off. |
 | `ITERVOX_PRINT_TOKEN` | `""` | `1`/`true` prints the tokenised dashboard URL on stderr even when stderr is not a terminal; `0`/`false` suppresses it even on a terminal. Unset: printed only on a terminal. `-no-print-token` always wins. |
 | `ITERVOX_SUPERVISOR_TOKEN` | `""` | The API token a supervisor (the macOS app, a process manager) starts the daemon with. Required as the bearer token like `ITERVOX_API_TOKEN`, which it replaces, and even with `server.allow_unauthenticated: true`; never printed or written anywhere (stderr, log file, `HEARTBEAT.md`, `api-token`). 16–512 printable ASCII characters without spaces, or the process exits with code 2. See [Running under a supervisor](#running-under-a-supervisor). |
+| `ITERVOX_SHELL` | `""` | Windows only: the `bash.exe` that runs hooks and agent CLIs given by name. Unset: Git for Windows' bash, then `bash` on PATH (never the WSL launcher); with none, agent CLIs run directly and hooks fail. See [Running on Windows](/guides/windows/#which-shell-runs-what). |
 | `ITERVOX_LOGIN_SHELL_PATH` | `auto` | When to take PATH from the user's login shell: `auto` (not started from an interactive shell, or an agent CLI missing), `always` (`1`/`true`) or `never` (`0`/`false`). See [Login-shell PATH](#login-shell-path). |
 
 ### Auto-loading

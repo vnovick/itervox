@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent_test
 
 // M1-B2 round 3 follow-ups from the security review of the stdin transport:
