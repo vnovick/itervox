@@ -1,5 +1,5 @@
-//! System events that make every tunnel suspect: the Mac woke from sleep,
-//! or the network changed (#156).
+//! System events that make every tunnel suspect: the computer woke from
+//! sleep, or the network changed (#156).
 //!
 //! Both are detected by polling, with no Objective-C bridge:
 //!
@@ -9,7 +9,9 @@
 //!   larger than the monotonic one between two polls means the machine slept.
 //! - **Network change**: the set of non-loopback interface addresses that
 //!   are up (`getifaddrs`) differs from the previous poll — Wi-Fi joined or
-//!   left, a VPN up or down, a new DHCP lease.
+//!   left, a VPN up or down, a new DHCP lease. Windows has no
+//!   `getifaddrs`; there the fingerprint is the source address of the
+//!   default IPv4 and IPv6 routes (#260).
 //!
 //! The tunnel thread asks a [`SystemEventSource`] for events on every tick;
 //! tests use their own source to fire events at will.
@@ -40,6 +42,7 @@ pub fn slept(wall_elapsed: Duration, mono_elapsed: Duration) -> bool {
 }
 
 /// The up, non-loopback interface addresses, as `name=address` strings.
+#[cfg(unix)]
 pub fn interface_fingerprint() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -83,6 +86,32 @@ pub fn interface_fingerprint() -> BTreeSet<String> {
             out.insert(format!("{name}={addr}"));
         }
         libc::freeifaddrs(head);
+    }
+    out
+}
+
+/// Windows: the local addresses the system routes outbound IPv4 and IPv6
+/// traffic from, as `route4=…`/`route6=…`. Connecting a UDP socket only
+/// asks the routing table; nothing is sent. A network change (Wi-Fi, VPN,
+/// a new lease) changes the source address, which is what matters to a
+/// tunnel. Wake is still seen through the clocks where they differ; where
+/// the monotonic clock keeps counting through sleep, a wake that keeps the
+/// address goes unnoticed and the tunnel's health probe catches it.
+#[cfg(not(unix))]
+pub fn interface_fingerprint() -> BTreeSet<String> {
+    use std::net::UdpSocket;
+    let mut out = BTreeSet::new();
+    // TEST-NET addresses: routable in form, never contacted.
+    for (tag, bind, peer) in [
+        ("route4", "0.0.0.0:0", "192.0.2.1:9"),
+        ("route6", "[::]:0", "[2001:db8::1]:9"),
+    ] {
+        let local = UdpSocket::bind(bind)
+            .and_then(|s| s.connect(peer).map(|()| s))
+            .and_then(|s| s.local_addr());
+        if let Ok(a) = local {
+            out.insert(format!("{tag}={}", a.ip()));
+        }
     }
     out
 }

@@ -659,14 +659,14 @@ pub fn run_bounded(
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    use std::os::unix::process::CommandExt;
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .env("PATH", &tools.path_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
+        .stderr(Stdio::piped());
+    crate::platform::own_process_group(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not run {}: {e}", program.display()))?;
     let mut out = child.stdout.take().ok_or("no stdout")?;

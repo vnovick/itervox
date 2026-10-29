@@ -19,6 +19,11 @@
 //! still appear through the process scan; the tests ignore them). The agent
 //! is a shell script standing in for the `claude` CLI.
 
+// Unix only: the stand-in agent is a shell script and the stop is a
+// SIGTERM. Windows has no native daemon to test yet (#259); its stop goes
+// through `itervox stop` (supervisor::stop_command).
+#![cfg(unix)]
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};

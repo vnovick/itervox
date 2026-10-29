@@ -57,12 +57,7 @@ impl HubLock {
 }
 
 fn pid_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    // SAFETY: kill with signal 0 only checks that the process exists.
-    let rc = unsafe { libc::kill(pid, 0) };
-    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    crate::platform::process_alive(pid)
 }
 
 /// The running hub, from `hub.lock` in `registry_dir`: `None` when there is
