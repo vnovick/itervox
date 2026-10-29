@@ -548,7 +548,7 @@ Every object carries every key. `token_source` is `supervisor`, `env` (`ITERVOX_
 
 ### Running under a supervisor
 
-A program that starts and manages daemons — the [Mac app](/guides/mac-app/), a process manager — should:
+A program that starts and manages daemons — the [Mac app](/guides/desktop-app/), a process manager — should:
 
 1. Start `itervox --workflow <path>` with `ITERVOX_SUPERVISOR_TOKEN=<token>` in the environment (`openssl rand -hex 32`). The API requires exactly that token, even with `server.allow_unauthenticated: true` or a different `ITERVOX_API_TOKEN` in `.itervox/.env`, and the daemon never prints or writes it: no tokenised URL on stderr (whatever `ITERVOX_PRINT_TOKEN` says), none in the log file, `HEARTBEAT.md`, `dashboard_url`, the registry or `<logs-dir>/api-token`.
 2. Find it, and daemons started elsewhere, with `itervox status --all --json`; poll `GET {url}api/v1/health` (no token) for liveness.

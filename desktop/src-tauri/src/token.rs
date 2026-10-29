@@ -4,8 +4,9 @@
 //! keeps it so it can call that daemon's API and open its dashboard later,
 //! also after the app restarts (the daemons outlive it). On macOS the token
 //! lives in the login Keychain (service [`KEYCHAIN_SERVICE`], account = the
-//! project's absolute WORKFLOW.md path); elsewhere in memory only, which is
-//! enough for tests and Linux development.
+//! project's absolute WORKFLOW.md path); on Windows in the Credential
+//! Manager and on Linux in the Secret Service when one runs (#260), in
+//! memory otherwise.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -144,15 +145,27 @@ impl<S: TokenStore> TokenStore for CachedTokenStore<S> {
     }
 }
 
-/// The platform's store: the Keychain on macOS, memory elsewhere.
+/// The platform's store: the Keychain on macOS.
 pub fn platform_store() -> Box<dyn TokenStore> {
-    if cfg!(target_os = "macos") {
-        Box::new(CachedTokenStore::new(KeyringTokenStore::new(
-            KEYCHAIN_SERVICE,
-        )))
+    store_for(KEYCHAIN_SERVICE)
+}
+
+/// The OS credential store for `service`: the macOS Keychain, the Windows
+/// Credential Manager, or on Linux the Secret Service (GNOME Keyring,
+/// KWallet) when the session runs one (#260). Without one, memory: tokens
+/// then last until the app quits, and daemons it started keep running.
+pub fn store_for(service: &str) -> Box<dyn TokenStore> {
+    if credential_store_available() {
+        Box::new(CachedTokenStore::new(KeyringTokenStore::new(service)))
     } else {
         Box::new(MemoryTokenStore::default())
     }
+}
+
+/// Whether the OS credential store can be used: always on macOS (as
+/// before), otherwise when `keyring` could open it.
+fn credential_store_available() -> bool {
+    cfg!(target_os = "macos") || keyring::Entry::store_status().is_ok()
 }
 
 #[cfg(test)]

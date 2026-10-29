@@ -46,6 +46,11 @@ pub enum MenuAction {
     CheckForUpdates,
     InstallUpdate,
     InstallCli,
+    /// Open a web page in the default browser (#260: the release page of an
+    /// update on Linux and Windows, the guide to local projects on Windows).
+    OpenExternal(String),
+    /// Turn Start at Login on or off (#260, Linux and Windows).
+    ToggleAutostart,
     Quit,
 }
 

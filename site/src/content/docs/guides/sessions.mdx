@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-The dashboard's **Sessions** page (`/sessions`, in the sidebar) shows every agent session the daemon is running, one tab per session, with its live transcript and a composer. The [Mac app's Sessions window](/guides/mac-app/#sessions-window) lists the sessions of every daemon you have — local and remote — and opens each one here.
+The dashboard's **Sessions** page (`/sessions`, in the sidebar) shows every agent session the daemon is running, one tab per session, with its live transcript and a composer. The [Mac app's Sessions window](/guides/desktop-app/#sessions-window) lists the sessions of every daemon you have — local and remote — and opens each one here.
 
 A **session** is an agent CLI session, identified by the CLI's own session ID (Claude Code's session, Codex's thread), not by the issue: a run that resumes the same session keeps its tab. In the first seconds of a run, before the CLI has reported its ID, the session is addressed by itervox's run ID.
 
@@ -99,7 +99,7 @@ Before every write the daemon checks again that the pane still exists and still 
 
 These sessions are itervox's (tab detail **started in tmux**): controllable whatever `sessions.tmux_control` says, with the attach command (`tmux attach -t itervox-<id>`) and a copy button, so you can take over in a terminal, and **Stop session**, which runs `tmux kill-session` (only for sessions itervox started). They do not count toward `max_concurrent_agents`; at most 8 run at once. When you quit the CLI the tmux session ends and the tab goes away. They survive a `WORKFLOW.md` reload; after a daemon restart they are still running in tmux, but itervox no longer owns them — they are listed like any session started by hand (controllable only with `tmux_control`).
 
-In the [Mac app's Sessions window](/guides/mac-app/#sessions-window), **New session…** under a daemon opens its dashboard at this form.
+In the [Mac app's Sessions window](/guides/desktop-app/#sessions-window), **New session…** under a daemon opens its dashboard at this form.
 
 ### When tmux is not installed
 

@@ -15,7 +15,6 @@
 //! know.
 
 use std::io::ErrorKind;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -42,11 +41,9 @@ pub enum RegistryError {
     Unreadable(String),
 }
 
-/// `~/.itervox/daemons`.
+/// `~/.itervox/daemons` (`%USERPROFILE%\.itervox\daemons` on Windows).
 pub fn registry_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(|h| PathBuf::from(h).join(".itervox").join("daemons"))
+    crate::platform::home_dir().map(|h| h.join(".itervox").join("daemons"))
 }
 
 /// Whether a record's pid is still its project's daemon.
@@ -84,14 +81,14 @@ fn probe_pid_lock(pid_path: &Path) -> Ownership {
     if matches!(std::fs::symlink_metadata(&runtime), Err(e) if e.kind() == ErrorKind::NotFound) {
         return Ownership::Stale;
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(runtime.join("daemon.pid.lock"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = opts.open(runtime.join("daemon.pid.lock"));
     let Ok(file) = file else {
         return Ownership::Unknown;
     };
@@ -258,8 +255,11 @@ mod tests {
     /// Lays the shared fixture out under `root`; returns it parsed and the
     /// lock files held for its `hold_lock` projects.
     fn lay_out(root: &Path) -> (serde_json::Value, Vec<std::fs::File>) {
+        // The root goes into JSON strings, so it is escaped the way JSON
+        // needs (a Windows temp path has backslashes).
+        let root_json = serde_json::to_string(&root.display().to_string()).unwrap();
         let text = FIXTURE
-            .replace("__ROOT__", &root.display().to_string())
+            .replace("__ROOT__", &root_json[1..root_json.len() - 1])
             .replace("__LIVE_PID__", &std::process::id().to_string())
             .replace("__DEAD_PID__", &reaped_pid().to_string());
         let fx: serde_json::Value = serde_json::from_str(&text).unwrap();

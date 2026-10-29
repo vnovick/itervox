@@ -8,11 +8,19 @@
 //! after the inherited one. The merged PATH is also what the tunnel and
 //! discovery processes run with: `gcloud` is a script that needs it to find
 //! its Python.
+//!
+//! On Linux (#260) an app started from the desktop's launcher inherits the
+//! session's PATH, which may also lack them; the same lookup applies, with
+//! bash, zsh and fish as login shells. Windows has no login shell to ask:
+//! the app inherits the user's PATH and finds `ssh.exe` and `gcloud.cmd`
+//! there or in the Cloud SDK's install directories.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+use crate::platform::Os;
 
 /// Bounds the whole login-shell lookup, rc files included.
 pub const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -58,19 +66,60 @@ impl Tools {
     }
 }
 
-/// The first executable named `name` in `path` (a PATH value).
+/// The first executable named `name` in `path` (a PATH value). On
+/// Windows the name is tried with the extensions a command runs with
+/// (`ssh.exe`, `gcloud.cmd`).
 pub fn find_in_path(name: &str, path: &OsStr) -> Option<PathBuf> {
+    let names = executable_names(Os::current(), name);
     std::env::split_paths(path)
         .filter(|d| d.is_absolute())
-        .map(|d| d.join(name))
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
         .find(|p| is_executable(p))
 }
 
+/// The file names `name` may have as a command on `os`.
+pub fn executable_names(os: Os, name: &str) -> Vec<String> {
+    match os {
+        Os::Windows => ["exe", "cmd", "bat"]
+            .iter()
+            .map(|ext| format!("{name}.{ext}"))
+            .collect(),
+        Os::Mac | Os::Linux => vec![name.to_string()],
+    }
+}
+
+/// Where `gcloud` commonly lives on `os` when no PATH names it, searched
+/// last: [`FALLBACK_DIRS`] on the Mac; on Linux the snap and the Cloud
+/// SDK's own installer; on Windows the Cloud SDK installer's per-user and
+/// per-machine locations.
+pub fn fallback_dirs(os: Os, home: Option<&Path>) -> Vec<PathBuf> {
+    match os {
+        Os::Mac => FALLBACK_DIRS.iter().map(PathBuf::from).collect(),
+        Os::Linux => {
+            let mut v = vec![PathBuf::from("/snap/bin"), PathBuf::from("/usr/local/bin")];
+            if let Some(h) = home {
+                v.push(h.join("google-cloud-sdk/bin"));
+            }
+            v
+        }
+        Os::Windows => {
+            let sdk = Path::new("Google")
+                .join("Cloud SDK")
+                .join("google-cloud-sdk")
+                .join("bin");
+            let mut v = Vec::new();
+            if let Some(h) = home {
+                v.push(h.join("AppData").join("Local").join(&sdk));
+            }
+            v.push(Path::new(r"C:\Program Files (x86)").join(&sdk));
+            v.push(Path::new(r"C:\Program Files").join(&sdk));
+            v
+        }
+    }
+}
+
 fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    crate::platform::is_executable(p)
 }
 
 /// `a` followed by the directories of `b` not already in `a`.
@@ -86,13 +135,19 @@ pub fn merge_paths(a: &OsStr, b: &OsStr) -> OsString {
 
 /// The arguments that make `shell` print its login PATH between markers.
 /// csh and tcsh take `-l` only alone, so they source the login files
-/// themselves.
+/// themselves. fish keeps PATH as a list: `string join` prints it with
+/// colons whatever the fish version (bash and zsh print `$PATH` as is).
 pub fn login_shell_args(shell: &Path) -> Vec<String> {
     let print = format!("printf '%s%s%s' {PATH_MARKER} \"$PATH\" {PATH_MARKER}");
     let base = shell
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if base == "fish" {
+        let fish_print =
+            format!("printf '%s%s%s' {PATH_MARKER} (string join : $PATH) {PATH_MARKER}");
+        return vec!["-l".into(), "-i".into(), "-c".into(), fish_print];
+    }
     if base == "csh" || base == "tcsh" {
         vec![
             "-c".into(),
@@ -120,13 +175,13 @@ pub fn parse_marked_path(out: &[u8]) -> Option<String> {
 /// cannot hang the app.
 pub fn login_shell_path(shell: &Path, timeout: Duration) -> Result<String, String> {
     use std::io::Read;
-    use std::os::unix::process::CommandExt;
-    let mut child = Command::new(shell)
-        .args(login_shell_args(shell))
+    let mut cmd = Command::new(shell);
+    cmd.args(login_shell_args(shell))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
+        .stderr(Stdio::null());
+    crate::platform::own_process_group(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("{}: {e}", shell.display()))?;
     let mut stdout = child.stdout.take().ok_or("no stdout")?;
@@ -157,16 +212,8 @@ pub fn login_shell_path(shell: &Path, timeout: Duration) -> Result<String, Strin
     parse_marked_path(&out).ok_or_else(|| format!("{} printed no PATH", shell.display()))
 }
 
-/// SIGKILLs the process group led by `pid`.
-pub fn kill_group(pid: u32) {
-    let Ok(pid) = i32::try_from(pid) else { return };
-    if pid > 1 {
-        // SAFETY: killpg on a group this app created with process_group(0).
-        unsafe {
-            libc::killpg(pid, libc::SIGKILL);
-        }
-    }
-}
+/// SIGKILLs the process group led by `pid` (the process tree on Windows).
+pub use crate::platform::kill_group;
 
 /// Resolves the tools: the inherited PATH first; when `ssh` or `gcloud` is
 /// missing from it, the login shell's PATH merged after it; the fallback
@@ -187,7 +234,11 @@ pub fn resolve_tools(inherited: &OsStr, shell: Option<&Path>, timeout: Duration)
             }
         }
     }
-    let fallback = std::env::join_paths(FALLBACK_DIRS).unwrap_or_default();
+    let fallback = std::env::join_paths(fallback_dirs(
+        Os::current(),
+        crate::platform::home_dir().as_deref(),
+    ))
+    .unwrap_or_default();
     let search = merge_paths(&path_env, &fallback);
     Tools {
         ssh: find_in_path("ssh", &search),
@@ -197,7 +248,8 @@ pub fn resolve_tools(inherited: &OsStr, shell: Option<&Path>, timeout: Duration)
     }
 }
 
-/// [`resolve_tools`] for this process: its PATH and `$SHELL`.
+/// [`resolve_tools`] for this process: its PATH and `$SHELL` (Windows has
+/// no login shell to ask; the app inherits the user's PATH there).
 pub fn resolve_tools_for_app() -> Tools {
     let inherited = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
     let shell = std::env::var_os("SHELL").map(PathBuf::from);
@@ -207,11 +259,69 @@ pub fn resolve_tools_for_app() -> Tools {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     fn exe(path: &Path, body: &str) {
         std::fs::write(path, body).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// #260: the login-shell lookup speaks bash, zsh and fish.
+    #[test]
+    fn login_shell_path_works_with_bash_zsh_and_fish() {
+        for sh in ["/bin/bash", "/usr/bin/zsh"] {
+            let a = login_shell_args(Path::new(sh));
+            assert_eq!(&a[..3], &["-l", "-i", "-c"], "{sh}");
+            assert!(a[3].contains("\"$PATH\""), "{sh}: {}", a[3]);
+        }
+        let f = login_shell_args(Path::new("/usr/bin/fish"));
+        assert_eq!(&f[..3], &["-l", "-i", "-c"]);
+        assert!(f[3].contains("(string join : $PATH)"), "{}", f[3]);
+        assert!(!f[3].contains("\"$PATH\""), "{}", f[3]);
+    }
+
+    /// The real shells, where installed: each prints its login PATH
+    /// between the markers (a missing shell is skipped).
+    #[cfg(unix)]
+    #[test]
+    fn real_bash_zsh_and_fish_print_their_login_path() {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut ran = 0;
+        for name in ["bash", "zsh", "fish"] {
+            let Some(sh) = find_in_path(name, &path) else {
+                continue;
+            };
+            let p = login_shell_path(&sh, Duration::from_secs(20))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                std::env::split_paths(&p).any(|d| d.is_absolute()),
+                "{name}: {p}"
+            );
+            // A list joined with spaces (fish's `$PATH` in old versions)
+            // would read as one bogus directory.
+            assert!(!p.contains(" /"), "{name}: {p}");
+            ran += 1;
+        }
+        assert!(ran >= 1, "no bash, zsh or fish on PATH");
+    }
+
+    #[test]
+    fn tools_are_found_with_each_platforms_names_and_fallbacks() {
+        assert_eq!(executable_names(Os::Linux, "ssh"), ["ssh"]);
+        assert_eq!(executable_names(Os::Mac, "gcloud"), ["gcloud"]);
+        assert_eq!(
+            executable_names(Os::Windows, "gcloud"),
+            ["gcloud.exe", "gcloud.cmd", "gcloud.bat"]
+        );
+        let mac: Vec<PathBuf> = FALLBACK_DIRS.iter().map(PathBuf::from).collect();
+        assert_eq!(fallback_dirs(Os::Mac, Some(Path::new("/Users/me"))), mac);
+        let linux = fallback_dirs(Os::Linux, Some(Path::new("/home/me")));
+        assert!(linux.contains(&PathBuf::from("/snap/bin")));
+        assert!(linux.contains(&PathBuf::from("/home/me/google-cloud-sdk/bin")));
+        let win = fallback_dirs(Os::Windows, Some(Path::new(r"C:\Users\me")));
+        assert!(win[0].ends_with("AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin"));
     }
 
     #[test]
@@ -221,6 +331,7 @@ mod tests {
         assert_eq!(parse_marked_path(b"no markers"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn merge_keeps_order_and_drops_duplicates() {
         let m = merge_paths(OsStr::new("/usr/bin:/bin"), OsStr::new("/opt/x:/bin"));
@@ -239,6 +350,7 @@ mod tests {
     /// Launched from Finder: launchd's PATH has no gcloud; the login shell's
     /// profile adds its directory, so it is found and the tunnels run with
     /// that PATH.
+    #[cfg(unix)]
     #[test]
     fn tools_come_from_the_login_shell_path_when_launched_from_finder() {
         let dir = tempfile::tempdir().unwrap();
@@ -271,6 +383,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hanging_login_shell_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
