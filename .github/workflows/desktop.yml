@@ -182,7 +182,7 @@ jobs:
           test -x "$RUNNER_TEMP/squashfs-root/usr/bin/itervox"
           "$RUNNER_TEMP/squashfs-root/usr/bin/itervox" --version
           listing="$(dpkg-deb -c deb/*.deb)"
-          if ! grep -q '/usr/bin/itervox$' <<<"$listing"; then
+          if ! grep -Eq ' (\./|/)?usr/bin/itervox$' <<<"$listing"; then
             echo "::error::the .deb has no /usr/bin/itervox"
             printf '%s\n' "$listing"
             exit 1
