@@ -7,13 +7,15 @@
 //!   mount the app runs from.
 //! - **Windows**: the value `Itervox` under the registry Run key
 //!   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, written and
-//!   removed by `tauri-plugin-autostart`.
+//!   removed by the app (`app_update.rs`). The value is the executable's
+//!   path in double quotes ([`run_value`]): unquoted, a path with spaces
+//!   (`C:\Program Files\…`, where the MSI installs) would make Windows try
+//!   to run `C:\Program` at login.
 //! - **macOS**: not on this platform; the Mac uses System Settings → General
 //!   → Login Items, and the tray shows no item for it.
 //!
 //! The plan is plain data so every platform's entry is tested from any one;
-//! the Linux file is written here, the Windows value by the plugin
-//! (`app.rs`).
+//! the Linux file is written here, the Windows value in `app_update.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -65,6 +67,22 @@ pub fn exec_quote(arg: &str) -> String {
     format!("\"{string_escaped}\"")
 }
 
+/// The Run key value that starts `exe` with `args`: the path always in
+/// double quotes (Windows paths cannot contain `"`), then each argument,
+/// quoted when it has a space or tab.
+pub fn run_value(exe: &Path, args: &[&str]) -> String {
+    let mut v = format!("\"{}\"", exe.display());
+    for a in args {
+        if a.is_empty() || a.contains([' ', '\t']) {
+            v.push_str(&format!(" \"{a}\""));
+        } else {
+            v.push(' ');
+            v.push_str(a);
+        }
+    }
+    v
+}
+
 /// The XDG autostart entry that runs `exe`.
 pub fn xdg_entry(exe: &Path) -> String {
     format!(
@@ -94,9 +112,7 @@ pub fn plan(os: Os, config_home: Option<&Path>, exe: &Path, appimage: Option<&Pa
         Os::Windows => Plan::RunKey {
             key: RUN_KEY,
             name: RUN_VALUE,
-            // What tauri-plugin-autostart writes: the path, then the
-            // (here empty) argument list.
-            command: format!("{} ", exe.display()),
+            command: run_value(exe, &[]),
         },
     }
 }
@@ -182,7 +198,7 @@ mod tests {
             Plan::RunKey {
                 key: r"Software\Microsoft\Windows\CurrentVersion\Run",
                 name: "Itervox",
-                command: format!("{} ", win_exe.display()),
+                command: format!("\"{}\"", win_exe.display()),
             }
         );
         assert!(matches!(
@@ -193,6 +209,27 @@ mod tests {
             plan(Os::Linux, None, exe, None),
             Plan::Unsupported(_)
         ));
+    }
+
+    /// #260 follow-up: an unquoted Run value with a space in the path makes
+    /// Windows run `C:\Program` at login.
+    #[test]
+    fn windows_run_value_quotes_the_exe_path() {
+        let exe = Path::new(r"C:\Program Files\Itervox\Itervox.exe");
+        assert_eq!(
+            run_value(exe, &[]),
+            r#""C:\Program Files\Itervox\Itervox.exe""#
+        );
+        assert_eq!(
+            run_value(exe, &["--minimized", "a b"]),
+            r#""C:\Program Files\Itervox\Itervox.exe" --minimized "a b""#
+        );
+        match plan(Os::Windows, None, exe, None) {
+            Plan::RunKey { command, .. } => {
+                assert_eq!(command, r#""C:\Program Files\Itervox\Itervox.exe""#)
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

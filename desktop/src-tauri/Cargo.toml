@@ -34,8 +34,8 @@ tauri-plugin-updater = "2"
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 
-# Windows (#260): process liveness, the user PATH for the command-line tool,
-# and the registry Run key for Start at Login.
+# Windows (#260): process liveness, and the registry for the user PATH of
+# the command-line tool and the Run key of Start at Login.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
@@ -43,7 +43,6 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.56"
-tauri-plugin-autostart = "2"
 
 [dev-dependencies]
 tempfile = "3"

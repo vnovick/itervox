@@ -100,14 +100,6 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(app_update::plugin());
-    // #260: Start at Login through the registry Run key on Windows; Linux
-    // writes its XDG entry itself (autostart.rs), the Mac has none.
-    #[cfg(windows)]
-    let builder = builder.plugin(
-        tauri_plugin_autostart::Builder::new()
-            .app_name(crate::autostart::RUN_VALUE)
-            .build(),
-    );
     let app = builder
         .setup(|app| {
             // A menu-bar app has no Dock icon until a window opens. Linux

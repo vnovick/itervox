@@ -452,19 +452,82 @@ pub fn toggle_autostart(app: &AppHandle) {
     }
 }
 
-/// The Run key through tauri-plugin-autostart (Windows).
+/// The Run key (Windows): on when the app's value is there.
 #[cfg(windows)]
-fn run_key_enabled(app: &AppHandle) -> Option<bool> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().ok()
+fn run_key_enabled(_app: &AppHandle) -> Option<bool> {
+    run_key::get().ok().map(|v| v.is_some())
 }
 
+/// Writes the quoted value (`autostart::run_value`) or removes it.
 #[cfg(windows)]
-fn toggle_run_key(app: &AppHandle) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    let al = app.autolaunch();
-    let on = al.is_enabled().map_err(|e| e.to_string())?;
-    if on { al.disable() } else { al.enable() }.map_err(|e| e.to_string())
+fn toggle_run_key(_app: &AppHandle) -> Result<(), String> {
+    let on = run_key::get()?.is_some();
+    if on {
+        return run_key::delete();
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    run_key::set(&autostart::run_value(&exe, &[]))
+}
+
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Itervox`.
+#[cfg(windows)]
+mod run_key {
+    use crate::autostart::{RUN_KEY, RUN_VALUE};
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+
+    /// Task Manager's per-entry on/off switch for the Run key.
+    const APPROVED: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
+    fn not_found(e: &std::io::Error) -> bool {
+        e.kind() == std::io::ErrorKind::NotFound
+    }
+
+    pub fn get() -> Result<Option<String>, String> {
+        let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_READ)
+        {
+            Ok(k) => k,
+            Err(e) if not_found(&e) => return Ok(None),
+            Err(e) => return Err(format!("HKCU\\{RUN_KEY}: {e}")),
+        };
+        match key.get_value::<String, _>(RUN_VALUE) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if not_found(&e) => Ok(None),
+            Err(e) => Err(format!("HKCU\\{RUN_KEY}\\{RUN_VALUE}: {e}")),
+        }
+    }
+
+    pub fn set(value: &str) -> Result<(), String> {
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(RUN_KEY)
+            .map_err(|e| format!("HKCU\\{RUN_KEY}: {e}"))?;
+        key.set_value(RUN_VALUE, &value)
+            .map_err(|e| format!("HKCU\\{RUN_KEY}\\{RUN_VALUE}: {e}"))?;
+        // A switch-off left in Task Manager would keep the new value from
+        // running: turning it on here clears that.
+        if let Ok(approved) =
+            RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(APPROVED, KEY_READ | KEY_WRITE)
+        {
+            let _ = approved.delete_value(RUN_VALUE);
+        }
+        Ok(())
+    }
+
+    pub fn delete() -> Result<(), String> {
+        let key = match RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(RUN_KEY, KEY_READ | KEY_WRITE)
+        {
+            Ok(k) => k,
+            Err(e) if not_found(&e) => return Ok(()),
+            Err(e) => return Err(format!("HKCU\\{RUN_KEY}: {e}")),
+        };
+        match key.delete_value(RUN_VALUE) {
+            Ok(()) => Ok(()),
+            Err(e) if not_found(&e) => Ok(()),
+            Err(e) => Err(format!("HKCU\\{RUN_KEY}\\{RUN_VALUE}: {e}")),
+        }
+    }
 }
 
 #[cfg(not(windows))]
