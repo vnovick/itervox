@@ -191,13 +191,17 @@ func TestDispatchEndpointsRoundTrip(t *testing.T) {
 	require.NotNil(t, res.DispatchPaused)
 	assert.Equal(t, "deploy", res.DispatchPaused.Reason)
 	require.NotNil(t, res.DispatchPaused.Until)
-	assert.True(t, orch.Snapshot().DispatchPaused.Active)
+	// The response carries the loop's answer; the published snapshot follows
+	// a moment later, so wait for it instead of reading it once.
+	assert.Eventually(t, func() bool { return orch.Snapshot().DispatchPaused.Active },
+		5*time.Second, 10*time.Millisecond, "the snapshot shows the pause")
 
 	assert.Equal(t, http.StatusBadRequest, post("/api/v1/dispatch/pause", `{"until":"2001-01-01T00:00:00Z"}`).Code)
 
 	w = post("/api/v1/dispatch/resume", "")
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.JSONEq(t, `{"dispatchPaused":null}`, w.Body.String())
-	assert.False(t, orch.Snapshot().DispatchPaused.Active)
+	assert.Eventually(t, func() bool { return !orch.Snapshot().DispatchPaused.Active },
+		5*time.Second, 10*time.Millisecond, "the snapshot shows the resume")
 	assert.Nil(t, dispatchPauseRow(orch.Snapshot().DispatchPaused), "the snapshot row is null when not paused")
 }
