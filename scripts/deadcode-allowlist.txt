@@ -14,3 +14,10 @@ internal/metrics/counters.go GuardrailBlockCount | counter reader used by intern
 internal/tracker/ratelimit_gate.go RateLimitGate.Clear | used by cmd/itervox outbox flusher tests to reset the shared gate (cross-package)
 internal/tracker/ratelimit_retry.go HasWriteIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
 internal/tracker/ratelimit_retry.go HasReadIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
+internal/agent/isolation_sandboxexec.go newSandboxExec | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sandboxExec.Name | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sandboxExec.Available | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sandboxExec.Wrap | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sandboxExecProfile | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sbplString | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go regexQuote | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build

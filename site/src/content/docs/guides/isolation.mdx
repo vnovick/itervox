@@ -1,0 +1,158 @@
+---
+title: Process isolation
+description: Run each agent inside an operating-system sandbox (bubblewrap or Landlock on Linux, sandbox-exec on macOS) so it can write only to its own workspace and cannot read credentials elsewhere on the machine.
+sidebar:
+  order: 11
+---
+
+[Permission modes](/guides/agent-permissions/) and [guardrails](/guides/guardrails/)
+decide what an agent is *asked* to do and refuse dangerous commands through
+shims. Neither confines the process itself: a backend without its own sandbox,
+or a tool the agent runs outside the shims, can write anywhere the daemon's
+user can and read every credential in `$HOME`.
+
+`isolation: process` closes that gap. The agent CLI — and every process it
+starts — runs inside an operating-system sandbox chosen per profile.
+
+```yaml
+agent:
+  isolation: none            # default for profiles that set nothing
+  profiles:
+    coder:
+      command: claude
+      isolation: process     # this profile runs sandboxed
+      isolation_extra_write:
+        - ~/.npm             # npm's cache, for `npm install`
+      isolation_extra_deny:
+        - ~/work/other-client
+```
+
+| Value | Meaning |
+|---|---|
+| `none` *(default)* | As before: the agent has the daemon user's full filesystem access. |
+| `process` | The agent subprocess runs inside an OS sandbox. |
+
+`agent.isolation` is the default for profiles that do not set `isolation`.
+Existing projects see no change: nothing is sandboxed until you ask for it.
+An unknown value fails config load — falling back to `none` would be less
+confined than what you asked for.
+
+## What a sandboxed run may do
+
+**Write** only to:
+
+- the issue's workspace;
+- the git directories that worktree needs: its private git dir
+  (`.git/worktrees/<name>`, or `.bare/worktrees/<name>` for the shared clone)
+  and the shared `objects`, `refs` and `logs` (the shared git dir itself —
+  `config`, `hooks`, `packed-refs` — stays readable);
+- the system temp directory;
+- the agent CLIs' own state: `~/.claude`, `~/.claude.json`, `~/.codex`,
+  `~/.cache`;
+- Claude's per-run log directory;
+- anything in `isolation_extra_write`.
+
+**Read** everything except:
+
+- `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.netrc`,
+  `~/.docker/config.json`, `~/.kube`;
+- the daemon's own secrets: the project's `.itervox/.env` and
+  `.itervox/*token*` files, `~/.itervox/hub` and the dashboard token files
+  under `~/.itervox/logs`;
+- every other workspace (the whole workspace root is hidden; this run's
+  workspace is put back);
+- anything in `isolation_extra_deny`.
+
+Paths that do not exist when the run starts are left out. Both extra lists
+take absolute paths or paths starting with `~/`.
+
+**Network** stays open: agents need their APIs, and the guardrail shims and
+agent actions call the daemon over localhost.
+
+**Processes:** the sandbox covers every child the agent starts. The agent stays
+in the daemon's process group, so cancelling a run still stops all of it.
+
+The lists live in one place in the code (`internal/agent/isolation_policy.go`)
+and `itervox doctor` prints them.
+
+## Mechanisms
+
+| Platform | Mechanism | How |
+|---|---|---|
+| Linux | **bubblewrap** (`bwrap`), preferred | A read-only bind of `/`, writable binds for the write list, an empty read-only tmpfs over each denied directory and `/dev/null` over each denied file. Only a mount namespace: same PIDs, same network. |
+| Linux | **Landlock** (kernel 5.13+), fallback | Used when `bwrap` is missing or cannot create namespaces (for example where unprivileged user namespaces are disabled). Itervox re-executes itself as a small launcher that restricts itself and then execs the agent. |
+| macOS | **sandbox-exec** | A generated profile: writes denied except the write list, reads and writes denied on the deny list. |
+
+Install bubblewrap with your package manager (`apt install bubblewrap`,
+`dnf install bubblewrap`). Landlock needs nothing installed, but it can only
+grant access, so the deny list becomes "everything except": a directory that
+holds a denied path (your `$HOME`, `/` itself) cannot be *listed* under
+Landlock, though everything in it that is not denied can still be opened, and
+entries created there after the run started are not reachable. Prefer
+bubblewrap where you can.
+
+With bubblewrap a single writable *file* (such as `~/.claude.json`) can be
+written in place but not replaced by renaming another file over it; on macOS
+the file's lock and temp siblings (`~/.claude.json.tmp…`) are writable too.
+
+## Fail closed
+
+When a profile asks for `process` and no mechanism works, **the run does not
+start.** The issue's log says why (`worker: run not started: agent: process
+isolation unavailable: bubblewrap: bwrap is not installed; landlock: …`), the
+run counts as a failed attempt like other configuration errors, and
+`itervox doctor` reports it as an error. There is no silent fallback to running
+unconfined.
+
+The same applies to a [tmux session](/guides/sessions/) started from the
+Sessions panel with a sandboxed profile (or under `agent.isolation: process`):
+the request is refused with the reason instead of starting an unconfined CLI.
+The dependency analyzer and live evals run their profile's agent sandboxed
+too.
+
+## SSH workers
+
+The sandbox wraps a local subprocess; on an SSH worker the only local process
+is `ssh`. So for now `isolation: process` together with `agent.ssh_hosts` is
+refused when the config loads, naming the profiles:
+
+```text
+config: isolation "process" is not supported on SSH workers yet: coder set isolation: process while agent.ssh_hosts is set; remove agent.ssh_hosts or set isolation: none for them
+```
+
+SSH hosts added at runtime are caught too: such a run fails with the same
+reason instead of starting.
+
+## Hooks are not sandboxed
+
+`after_create`, `before_run`, `after_run` and `before_remove` are your own
+scripts and run as before, outside the sandbox.
+
+## Seeing it
+
+- The run's log states the mechanism and the policy:
+  `worker: isolation: process via bubblewrap; write: …; denied: …; network: allowed`.
+- The issue detail shows **Sandboxed (bubblewrap)** (or `landlock`,
+  `sandbox-exec`) while the run is live; `/api/v1/state` carries it as
+  `running[].isolation`.
+- `itervox doctor` has an **Isolation** section: each mechanism with whether it
+  works on this machine, the profiles that ask for `process`, the mechanism
+  runs would use and the lists. A profile asking for a sandbox on a machine
+  with none fails doctor.
+
+```text
+Isolation
+  bubblewrap: available
+  landlock: available
+  profiles with isolation: process: coder
+  sandbox: bubblewrap
+  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache (+ isolation_extra_write)
+  unreadable: ~/.ssh, ~/.aws, …, every other workspace under ~/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
+  network: allowed; hooks: not sandboxed
+```
+
+## Not covered
+
+- Container or VM isolation per run.
+- Network filtering.
+- Sandboxing SSH workers.

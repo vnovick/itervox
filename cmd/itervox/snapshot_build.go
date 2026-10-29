@@ -88,6 +88,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Title:            r.Issue.Title, // #240
 				Profile:          r.ProfileName, // #240
 				CostUSDEstimated: r.CostUSD,     // #240
+				Isolation:        r.Isolation,   // #258
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {

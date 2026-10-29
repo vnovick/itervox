@@ -233,6 +233,11 @@ var bootCrash crashReport
 var noPrintToken bool
 
 func main() {
+	// #258: the Landlock launcher re-executes this binary; it restricts
+	// itself and execs the agent before anything else runs.
+	if code, ok := agent.RunIsolationHelper(os.Args); ok {
+		exitWithoutCleanup(code)
+	}
 	runGuardrailEntrypoint(os.Args) // #204: shims and hooks, before any daemon start-up work
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
