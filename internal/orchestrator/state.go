@@ -369,6 +369,10 @@ type RunEntry struct {
 	Backend        string // e.g. "claude", "codex", or "" when unknown
 	ProfileName    string // resolved agent profile name, empty = default
 	Kind           string // "worker" (default) | "reviewer" | "automation"
+	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
+	// "landlock", "sandbox-exec"; #258), empty when it runs unsandboxed.
+	// Reported by the worker once it resolved the sandbox.
+	Isolation string
 	// AutomationID is the rule ID that dispatched this run; empty for
 	// manually dispatched runs. Set once at dispatch and never mutated.
 	AutomationID string

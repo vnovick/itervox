@@ -90,6 +90,9 @@ type RunningRow struct {
 	// its backend reports it (Claude's total_cost_usd, CORE-091); null
 	// until reported, and always null for Codex (#240).
 	CostUSDEstimated *float64 `json:"costUsdEstimated,omitempty"`
+	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
+	// "landlock", "sandbox-exec"; #258); absent when unsandboxed.
+	Isolation string `json:"isolation,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.

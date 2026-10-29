@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Process-level agent isolation** (#258). A profile with `isolation: process` (or every profile that sets none, under `agent.isolation: process`) runs its agent CLI, and every process it starts, inside an operating-system sandbox: bubblewrap on Linux (Landlock, kernel 5.13+, when `bwrap` is missing or cannot create namespaces; Itervox re-executes itself as the launcher) and `sandbox-exec` on macOS. The run may write only to its workspace, the git directories its worktree needs (its private git dir and the shared objects, refs and logs), the temp directory, the agent CLIs' state (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.cache`) and Claude's log directory; it cannot read `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`, the project's `.itervox/.env` and token files, the hub and dashboard token files, or any other workspace. Network stays open. New profile keys `isolation_extra_write` and `isolation_extra_deny` extend the lists. It fails closed: with no working sandbox the run does not start, its log names the reason and `itervox doctor` reports an error; a tmux session from the Sessions panel is refused the same way, and the dependency analyzer and live evals run sandboxed too. `isolation: process` together with `agent.ssh_hosts` fails config load (sandboxing SSH workers is not supported yet). Every local launch path is covered (direct exec, login shell, tmux); with isolation `none` — the default — commands are byte-identical to before. The run log states the mechanism and policy, the issue detail shows **Sandboxed (bubblewrap)**, `/api/v1/state` gains `running[].isolation`, and `itervox doctor` gains an `Isolation` section. Hooks are not sandboxed. The macOS CI job now runs the `sandbox-exec` real-process test. Guide: [Process isolation](site/src/content/docs/guides/isolation.mdx).
+
 ---
 
 ## [0.3.0] — Unreleased

@@ -166,6 +166,9 @@ func (c *ClaudeRunner) RunTurn(
 	if err := rejectNULPrompt(prompt); err != nil {
 		return TurnResult{Failed: true, FailureText: err.Error()}, err
 	}
+	if err := refuseRemoteIsolation(ctx, workerHost); err != nil { // #258
+		return TurnResult{Failed: true, FailureText: err.Error()}, err
+	}
 	// turnCtx is always cancellable, even when the hard turn timeout is
 	// disabled (turnTimeoutMs <= 0): on a read error we must be able to kill
 	// the subprocess immediately rather than relying on a no-op cancel that
@@ -182,6 +185,15 @@ func (c *ClaudeRunner) RunTurn(
 	}
 	defer cancel()
 
+	// Created before the command is built: a sandboxed turn (#258) gets
+	// the log dir writable only if it exists by then.
+	logDirEnv := ""
+	if logDir != "" && workerHost == "" {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
+		}
+		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
+	}
 	var cmd *exec.Cmd
 	var stdinFeed *remoteStdin // SSH only: the script, then held open (CORE-155)
 	var promptIn *os.File      // local only: the prompt, for the CLI's stdin (CORE-156)
@@ -239,7 +251,11 @@ func (c *ClaudeRunner) RunTurn(
 		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
 			// Clean absolute path with no flags — run the binary directly,
 			// no shell needed; the prompt file is its stdin.
-			cmd = exec.CommandContext(turnCtx, command, buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+			var err error
+			argv := append([]string{command}, buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258: sandboxed when the run asks
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
 			if live != nil {
 				cmd.Stdin = live.r
 			} else {
@@ -254,8 +270,12 @@ func (c *ClaudeRunner) RunTurn(
 			if live != nil {
 				redirect = localPromptRedirect
 			}
-			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				RunEnvFrom(ctx).shellPrefix()+buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil))
+			var err error
+			argv := []string{loginShell(), "-lc",
+				RunEnvFrom(ctx).shellPrefix() + buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil)}
+			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
 			if live != nil {
 				cmd.ExtraFiles = []*os.File{live.r}
 			} else {
@@ -266,13 +286,6 @@ func (c *ClaudeRunner) RunTurn(
 	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
-	}
-	logDirEnv := ""
-	if logDir != "" && workerHost == "" {
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
-			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
-		}
-		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
 	}
 	// Set unconditionally: Go inherits the parent environment when cmd.Env is
 	// nil, so leaving it unset on any path silently drops the marker. For the
