@@ -1,0 +1,178 @@
+---
+title: Stacked pull requests
+description: Start a dependent issue on its blocker's branch, point its pull request at that branch, and keep a chain of dependent issues moving while each blocker waits in review.
+sidebar:
+  order: 8
+---
+
+By default Itervox does not start an issue while any of its blockers is
+unresolved, and every worktree branches from `workspace.base_branch`. A chain
+of dependent issues therefore moves one merge at a time: B waits until A is
+merged, C until B is merged.
+
+With **stacked pull requests** on, a dependent can start as soon as its
+blocker's work is done and in review. Its worktree branches from the
+blocker's branch, so it builds on the blocker's commits, and its pull request
+targets that branch, so reviewers see only the dependent's own changes. When
+the blocker lands, Itervox replays the dependent onto `base_branch` and points
+its pull request there.
+
+This guide walks through the behaviour. Every rule is also in the
+[configuration reference](/configuration/#stacked-worktrees).
+
+## Turn it on
+
+Stacking needs git worktrees (`workspace.worktree: true`); in the plain
+directory layout there are no branches to stack on. Then set
+`dependencies.stacked_prs` in `.itervox/settings.jsonc`:
+
+```jsonc
+{
+  "dependencies": {
+    "stacked_prs": true,
+  },
+}
+```
+
+or in YAML, in `WORKFLOW.md`'s front matter (still read, but deprecated for
+this section since v0.3 — see [Moving settings out of WORKFLOW.md](/guides/settings-migration/)):
+
+```yaml
+dependencies:
+  stacked_prs: true
+```
+
+On the Settings page it is **Stacked PRs** in the **All settings** section
+(the `dependencies` section, under **Dependency gating**). A hand edit of
+either file reloads the daemon.
+
+It is off by default.
+
+## When an issue stacks
+
+An issue stacks only when it has **exactly one live blocker** — a blocker
+not in a terminal state — and that blocker has an identifier:
+
+| Blockers | What happens |
+|---|---|
+| None live (all terminal) | Not stacked. A landed blocker's work is already in `base_branch`. |
+| Exactly one live blocker, with an identifier | Stacked on that blocker's branch. |
+| One live blocker without an identifier | Not stacked: it cannot name a branch, and Itervox does not guess. |
+| Two or more live blockers | Not stacked: any one base would be arbitrary, and the pull request would not be reviewable on its own. |
+
+The blocker's branch is the one its own run used: the tracker's branch name
+when the tracker reports one (Linear), otherwise `itervox/<identifier>`.
+
+A run counts as stacked only when its worktree has the blocker's branch in
+its history and that branch has commits `base_branch` does not. An existing
+worktree is reused as it is, so it is stacked only if it was already built on
+the blocker.
+
+## Starting while the blocker is in review
+
+Normally an issue with an unresolved blocker is not dispatched. With
+`stacked_prs` on there is one exception: when the issue's **only**
+unresolved blocker is in `tracker.completion_state` (its run finished and
+its work is in review, not yet merged), the dependent is dispatched right
+away, stacked on the blocker's branch.
+
+On GitHub, a blocker counts as in review when it carries the
+`completion_state` label. With the [local tracker](/guides/local-issues/),
+it is the blocker file's `state:`.
+
+This is what lets a chain move without waiting for each merge:
+
+1. A finishes and moves to **In Review**. Its branch `itervox/eng-1` has A's
+   commits.
+2. B (blocked by A) is dispatched at once. Its worktree branches from
+   `itervox/eng-1`; its pull request targets `itervox/eng-1`.
+3. B finishes and moves to **In Review**. C (blocked by B) starts on B's
+   branch, and so on.
+
+While B runs, the Deps tab still shows A as B's blocker: A has not landed.
+
+## What the agent is told, and what Itervox enforces
+
+- **The prompt.** `{{ run.pr_base_branch }}` is the blocker's branch on a
+  stacked run (and `workspace.base_branch` otherwise). A stacked run also
+  gets a `## Stacked Branch` block in its prompt telling the agent to open its
+  pull request with `gh pr create --base <blocker-branch>`.
+- **The pull request base.** After a stacked run succeeds, if the issue has
+  an open pull request (one the run opened, or one already linked from the
+  issue), Itervox runs `gh pr edit <url> --base <blocker-branch>` unless the
+  base already matches. GitHub accepts only a base that exists on the
+  remote, so the blocker's branch must have been pushed; if `gh` refuses, the
+  daemon logs a warning and the pull request keeps its base. Automation runs
+  are not retargeted.
+
+## When the blocker's branch is missing
+
+The two ways an issue reaches a stacked worktree fail differently, on
+purpose.
+
+**Admitted because the blocker is in review.** The dependent was started
+only *because* it could build on the blocker's branch. If that branch is not
+in this checkout (never dispatched here, worked on another machine, worktree
+cleared), running on `base_branch` would build on code the blocker has not
+landed. So no agent runs:
+
+- a worktree made for this run is removed (its branch is deleted too, unless
+  it carries commits of its own); a worktree that already existed but is not
+  stacked on the blocker — for example one made from `base_branch` before the
+  dependency was added — is kept as it is;
+- the issue's log says `worker: blocker is in review but its branch is not
+  available here to stack on; waiting for it to land` (or, for a reused
+  worktree, that the existing worktree is not stacked on the blocker's
+  branch);
+- the issue goes back to waiting for its blocker, like any blocked issue, and
+  is not admitted again on every tick.
+
+The miss is remembered per dependent and per blocker state. It is forgotten,
+and stacking is tried again, when the blocker leaves review and comes back,
+when the issue's blocker changes, or when the daemon restarts (the record is
+not persisted). No retry is consumed.
+
+**Any other path.** A retry, a [backend fallback](/guides/backend-health/)
+re-dispatch, a reviewer run or an input-required resume does not go through
+the blocker gate, for example when a blocker was added or reopened after the
+dependent first started. On these paths stacking is best effort: if the
+blocker's branch does not exist, the worktree is made from `base_branch` and
+the decision is logged. Review ergonomics is never the reason a dispatch
+fails.
+
+## When the blocker lands: restacking
+
+When a blocker reaches a terminal state, Itervox rebases the dependent's
+worktree onto `base_branch`, so the stack does not drift behind later merges,
+and points the dependent's open pull request at `base_branch` with
+`gh pr edit --base` (also when the branch already sits on `base_branch`).
+Three cases are refused rather than forced:
+
+| Situation | What happens |
+|---|---|
+| The dependent is **running** | Deferred until the first dependency audit after the run ends (dropped if the issue is blocked again by then). Rebasing under a live agent would move `HEAD` beneath it. |
+| The worktree has **uncommitted changes** | Skipped; that work exists nowhere else. |
+| The rebase **conflicts** | Aborted, with the branch left exactly as it was, and the issue moves to input required with the reason. |
+
+An issue that still has another live blocker is never restacked. Restacking
+does not push: until the rebased branch is pushed, the pull request still
+shows its old commits.
+
+## Things that turn stacking off in practice
+
+- **`workspace.auto_clear: true` in the legacy layout** (the repository at
+  `workspace.root`, no `clone_url`): a blocker's finished run removes its
+  worktree and local branch, so there is nothing to stack on and dependents
+  wait for the merge as before. Keep `auto_clear` off, or use `clone_url`.
+- **Several live blockers.** Split the work, or let the issue wait for all
+  but one of them to land.
+- **The blocker was worked on another machine.** Its branch is not in this
+  checkout; the dependent waits for the merge.
+
+## See also
+
+- [Dependency management](/guides/dependency-management/): blocker sources,
+  eligibility and the dependency audit.
+- [Dashboard Deps tab](/guides/dashboard-deps/): the graph of blockers.
+- [Configuration: stacked worktrees](/configuration/#stacked-worktrees) and
+  [`dependencies`](/configuration/#dependencies).
