@@ -240,16 +240,24 @@ mod tests {
         assert_eq!(exec_quote("/a/100%"), "\"/a/100%%\"");
     }
 
+    /// An absolute path on the host: `p` itself on Unix, `C:` plus `p` with
+    /// backslashes on Windows (where `/xdg` is not absolute).
+    fn abs(p: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:{}", p.replace('/', "\\")))
+        } else {
+            PathBuf::from(p)
+        }
+    }
+
     #[test]
     fn config_home_follows_xdg() {
-        let home = Path::new("/home/me");
+        let home = abs("/home/me");
+        let xdg = abs("/xdg");
+        assert_eq!(config_home(Some(&xdg), Some(&home)), Some(xdg.clone()));
         assert_eq!(
-            config_home(Some(Path::new("/xdg")), Some(home)),
-            Some(PathBuf::from("/xdg"))
-        );
-        assert_eq!(
-            config_home(Some(Path::new("rel")), Some(home)),
-            Some(PathBuf::from("/home/me/.config"))
+            config_home(Some(Path::new("rel")), Some(&home)),
+            Some(home.join(".config"))
         );
         assert_eq!(config_home(None, None), None);
     }

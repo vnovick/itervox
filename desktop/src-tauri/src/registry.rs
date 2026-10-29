@@ -255,8 +255,11 @@ mod tests {
     /// Lays the shared fixture out under `root`; returns it parsed and the
     /// lock files held for its `hold_lock` projects.
     fn lay_out(root: &Path) -> (serde_json::Value, Vec<std::fs::File>) {
+        // The root goes into JSON strings, so it is escaped the way JSON
+        // needs (a Windows temp path has backslashes).
+        let root_json = serde_json::to_string(&root.display().to_string()).unwrap();
         let text = FIXTURE
-            .replace("__ROOT__", &root.display().to_string())
+            .replace("__ROOT__", &root_json[1..root_json.len() - 1])
             .replace("__LIVE_PID__", &std::process::id().to_string())
             .replace("__DEAD_PID__", &reaped_pid().to_string());
         let fx: serde_json::Value = serde_json::from_str(&text).unwrap();
