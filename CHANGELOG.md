@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **`create_issue` can label the new issue and mark it blocked by the source** (#253). The create-issue body takes optional `labels` and `blocked_by_source: true`, and the `itervox action create-issue` shim takes `--label` (repeatable) and `--blocked-by-source`. Each label must be in the profile's new `create_issue_labels` allow-list (empty by default, so no label is allowed); any other label is refused with `403 agent_action_denied` (`label_not_allowed:<label>`) before anything is created. Linear resolves the names among the source issue's team and workspace labels and fails the create when one does not exist; GitHub adds them beside the state label; the local tracker writes them to the issue file. `blocked_by_source` records the source issue as the new issue's blocker the way each adapter already reads blockers: a Linear "blocks" relation, the managed `Blocked by #N` body line on GitHub, `blocked_by` in a local issue file. The agent prompt's actions section lists the profile's allowed labels. A dashboard profile save keeps `create_issue_labels`. Inside Go, `tracker.Tracker.CreateIssue` now takes a `tracker.NewIssue` (title, body, state, labels, blocked-by-source) instead of positional strings. New recipe: [Work across two repositories](site/src/content/docs/guides/automations.mdx#9-work-across-two-repositories) — daemon A files a labelled, blocked follow-up that daemon B, filtering on the label, starts once A's issue is done; `TestCrossRepoRecipeConfigRoutesFollowUp` loads the recipe's two configurations from the guide.
+
 ---
 
 ## [0.3.0] — Unreleased

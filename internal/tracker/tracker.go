@@ -115,6 +115,27 @@ type StateListSetter interface {
 	SetStateLists(active, terminal []string)
 }
 
+// NewIssue describes the follow-up issue Tracker.CreateIssue writes.
+type NewIssue struct {
+	// Title is the new issue's title (required).
+	Title string
+	// Body is the new issue's description.
+	Body string
+	// State is the tracker state (Linear workflow state, GitHub state label,
+	// local state) the issue is created in.
+	State string
+	// Labels are added to the new issue: Linear resolves each name among the
+	// source issue's team and workspace labels (an unknown name fails the
+	// create), GitHub adds them beside the state label, and the local tracker
+	// writes them to the issue file. Callers check them against an allow-list
+	// first; the adapters do not.
+	Labels []string
+	// BlockedBySource records the source issue as a blocker of the new one:
+	// a Linear "blocks" relation, the GitHub "Blocked by #N" body line, or
+	// the local tracker's blocked_by front matter.
+	BlockedBySource bool
+}
+
 // Tracker is the interface all tracker adapters must implement.
 type Tracker interface {
 	// FetchCandidateIssues returns issues in active states for the configured project.
@@ -135,7 +156,9 @@ type Tracker interface {
 
 	// CreateIssue creates a follow-up issue in the same tracker/project context as
 	// sourceIssueID and returns the created issue when the adapter can provide it.
-	CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error)
+	// in.Labels are applied to the new issue and in.BlockedBySource records
+	// sourceIssueID as its blocker, each the way the adapter reads them back.
+	CreateIssue(ctx context.Context, sourceIssueID string, in NewIssue) (*domain.Issue, error)
 
 	// UpdateIssueState transitions the issue to the named state.
 	// For Linear this resolves the state name to an ID; for GitHub it manages labels.

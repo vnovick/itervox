@@ -22,6 +22,24 @@ func TestIssueThenValidate_HappyPath(t *testing.T) {
 	assert.Equal(t, "Todo", grant.CreateIssueState)
 }
 
+// TestIssueWithScope_StoresCreateIssueLabels (#253): the grant carries the
+// create_issue label allow-list, copied so a later change to the caller's
+// slice cannot widen it.
+func TestIssueWithScope_StoresCreateIssueLabels(t *testing.T) {
+	s := NewStore()
+	labels := []string{"repo:web"}
+	token, err := s.IssueWithScope("ENG-1", "run-1", []string{"create_issue"},
+		Scope{CreateIssueState: "Todo", CreateIssueLabels: labels, MoveIssueState: "Done"}, time.Hour)
+	require.NoError(t, err)
+	labels[0] = "anything"
+
+	grant, _, ok := s.Validate(token, "ENG-1", "create_issue", time.Now())
+	require.True(t, ok)
+	assert.Equal(t, "Todo", grant.CreateIssueState)
+	assert.Equal(t, []string{"repo:web"}, grant.CreateIssueLabels)
+	assert.Equal(t, "Done", grant.MoveIssueState)
+}
+
 func TestIssueScoped_StoresMoveIssueState(t *testing.T) {
 	s := NewStore()
 	token, err := s.IssueScoped("ENG-1", "run-1", []string{"move_state"}, "", "Todo", time.Hour)

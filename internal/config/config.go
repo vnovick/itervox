@@ -422,6 +422,11 @@ type AgentProfile struct {
 	// CreateIssueState is the tracker state/column used when the create_issue
 	// action is allowed for this profile.
 	CreateIssueState string
+	// CreateIssueLabels is the allow-list of labels a create_issue call may
+	// put on the new issue (#253); a requested label outside it is refused
+	// with agent_action_denied. Empty (the default) allows no labels.
+	// YAML key: create_issue_labels.
+	CreateIssueLabels []string
 	// PermissionMode selects the approval/sandbox flags this profile's agent
 	// turns launch with: "bypass" (default, the long-standing behaviour) or
 	// "sandbox". Both are non-interactive — itervox is headless, so a mode
@@ -1482,17 +1487,18 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				return nil, err
 			}
 			profiles[name] = AgentProfile{
-				Command:          cmd,
-				SoulFile:         soulFile,
-				InstructionsFile: instructionsFile,
-				Soul:             soul,
-				Instructions:     instructions,
-				Backend:          backend,
-				Enabled:          boolPtr(boolField(m, "enabled", true)),
-				AllowedActions:   allowed,
-				CreateIssueState: strField(m, "create_issue_state", ""),
-				PermissionMode:   strField(m, "permission_mode", ""),
-				RequireEvidence:  requireEvidence,
+				Command:           cmd,
+				SoulFile:          soulFile,
+				InstructionsFile:  instructionsFile,
+				Soul:              soul,
+				Instructions:      instructions,
+				Backend:           backend,
+				Enabled:           boolPtr(boolField(m, "enabled", true)),
+				AllowedActions:    allowed,
+				CreateIssueState:  strField(m, "create_issue_state", ""),
+				CreateIssueLabels: NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
+				PermissionMode:    strField(m, "permission_mode", ""),
+				RequireEvidence:   requireEvidence,
 			}
 			continue
 		}
@@ -1505,14 +1511,15 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			return nil, err
 		}
 		profiles[name] = AgentProfile{
-			Command:          cmd,
-			Prompt:           strField(m, "prompt", ""),
-			Backend:          strField(m, "backend", ""),
-			Enabled:          boolPtr(boolField(m, "enabled", true)),
-			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
-			CreateIssueState: strField(m, "create_issue_state", ""),
-			PermissionMode:   strField(m, "permission_mode", ""),
-			RequireEvidence:  requireEvidence,
+			Command:           cmd,
+			Prompt:            strField(m, "prompt", ""),
+			Backend:           strField(m, "backend", ""),
+			Enabled:           boolPtr(boolField(m, "enabled", true)),
+			AllowedActions:    NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
+			CreateIssueState:  strField(m, "create_issue_state", ""),
+			CreateIssueLabels: NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
+			PermissionMode:    strField(m, "permission_mode", ""),
+			RequireEvidence:   requireEvidence,
 		}
 	}
 	if len(profiles) == 0 {

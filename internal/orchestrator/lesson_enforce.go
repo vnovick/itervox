@@ -11,6 +11,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/memory"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // Enforcement suggestions (#217). When a lesson's evidence reaches
@@ -148,7 +149,9 @@ func (o *Orchestrator) AcceptLessonEnforcement(ctx context.Context, id string) (
 			sourceID = src.ID
 		}
 	}
-	created, err := o.tracker.CreateIssue(ctx, sourceID, memory.EnforcementIssueTitle(e), memory.EnforcementIssueBody(e), o.enforceIssueState())
+	created, err := o.tracker.CreateIssue(ctx, sourceID, tracker.NewIssue{
+		Title: memory.EnforcementIssueTitle(e), Body: memory.EnforcementIssueBody(e), State: o.enforceIssueState(),
+	})
 	if err != nil {
 		return memory.Entry{}, nil, fmt.Errorf("orchestrator: create the enforcement issue: %w", err)
 	}

@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/gitexec"
@@ -357,10 +358,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if automation != nil && automation.Trigger.Type == config.AutomationTriggerBlockersResolved {
 		profileMoveIssueState = strings.TrimSpace(automation.MoveToState)
 	}
+	actionScope := agentactions.Scope{
+		CreateIssueState:  profileCreateIssueState,
+		CreateIssueLabels: config.NormalizeCreateIssueLabels(profilesSnap[profileName].CreateIssueLabels),
+		MoveIssueState:    profileMoveIssueState,
+	}
 	actionContext := ""
 	if len(profileAllowedActions) > 0 {
 		if workerHost != "" {
-			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, true)
+			actionContext = buildAgentActionContext(profileAllowedActions, actionScope, true)
 		} else if o.agentActionTokens == nil || o.agentActionBaseURL == "" {
 			slog.Warn("worker: profile allowed_actions configured but daemon action bridge is unavailable",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName)
@@ -369,8 +375,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			issue.Identifier,
 			runLogID,
 			profileAllowedActions,
-			profileCreateIssueState,
-			profileMoveIssueState,
+			actionScope,
 			turnTimeoutMs,
 		); err != nil {
 			slog.Warn("worker: failed to prepare daemon action bridge",
@@ -392,7 +397,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				"ITERVOX_RUN_ID":             runLogID,
 				"PATH":                       pathValue,
 			})
-			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, false)
+			actionContext = buildAgentActionContext(profileAllowedActions, actionScope, false)
 			defer func() {
 				o.agentActionTokens.Revoke(token)
 				_ = os.RemoveAll(shimDir)
@@ -1642,8 +1647,8 @@ func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs 
 }
 
 func prepareAgentActionRuntime(tokens interface {
-	IssueScoped(issueIdentifier, runSessionID string, allowedActions []string, createIssueState, moveIssueState string, ttl time.Duration) (string, error)
-}, issueIdentifier, runLogID string, allowedActions []string, createIssueState, moveIssueState string, turnTimeoutMs int) (string, string, error) {
+	IssueWithScope(issueIdentifier, runSessionID string, allowedActions []string, scope agentactions.Scope, ttl time.Duration) (string, error)
+}, issueIdentifier, runLogID string, allowedActions []string, scope agentactions.Scope, turnTimeoutMs int) (string, string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", "", fmt.Errorf("resolve current executable: %w", err)
@@ -1658,7 +1663,7 @@ func prepareAgentActionRuntime(tokens interface {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("write shim: %w", err)
 	}
-	token, err := tokens.IssueScoped(issueIdentifier, runLogID, allowedActions, createIssueState, moveIssueState, agentActionTokenTTL(turnTimeoutMs))
+	token, err := tokens.IssueWithScope(issueIdentifier, runLogID, allowedActions, scope, agentActionTokenTTL(turnTimeoutMs))
 	if err != nil {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("issue action token: %w", err)
@@ -1713,7 +1718,8 @@ func prependEnvToCommand(command string, env map[string]string) string {
 	return b.String()
 }
 
-func buildAgentActionContext(actions []string, createIssueState, moveIssueState string, remoteUnavailable bool) string {
+func buildAgentActionContext(actions []string, scope agentactions.Scope, remoteUnavailable bool) string {
+	createIssueState, moveIssueState := scope.CreateIssueState, scope.MoveIssueState
 	normalized := config.NormalizeAllowedActions(actions)
 	if len(normalized) == 0 {
 		return ""
@@ -1735,6 +1741,7 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 			} else {
 				lines = append(lines, "- `itervox action create-issue --title \"...\" --body \"...\"` creates a follow-up issue using the profile's configured target state.")
 			}
+			lines = append(lines, createIssueOptionLines(scope.CreateIssueLabels)...)
 		case config.AgentActionMoveState:
 			if moveIssueState != "" {
 				lines = append(lines, "- `itervox action move-state --state \""+moveIssueState+"\"` moves the current issue to the automation-approved tracker state.")
@@ -1750,6 +1757,20 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// createIssueOptionLines describes create-issue's optional flags (#253):
+// --label with the profile's allowed labels, and --blocked-by-source.
+func createIssueOptionLines(labels []string) []string {
+	lines := []string{"  - Add `--blocked-by-source` to record the current issue as a blocker of the new one."}
+	if len(labels) == 0 {
+		return append(lines, "  - No labels are allowed on new issues for this profile.")
+	}
+	quoted := make([]string, len(labels))
+	for i, l := range labels {
+		quoted[i] = "`" + l + "`"
+	}
+	return append(lines, "  - Add `--label \"...\"` (repeatable) to label the new issue; allowed labels: "+strings.Join(quoted, ", ")+". Any other label is refused.")
 }
 
 func renderProfilePromptBlocks(profile config.AgentProfile, issue domain.Issue, attempt *int, extra map[string]any) []string {

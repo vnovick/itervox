@@ -43,14 +43,14 @@ func TestLocalTrackerCRUD(t *testing.T) {
 	ctx := context.Background()
 	tr, dir := newTestTracker(t)
 
-	created, err := tr.CreateIssue(ctx, "", "Add a --json flag", "Print the report as JSON.", "Todo")
+	created, err := tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "Add a --json flag", Body: "Print the report as JSON.", State: "Todo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ITX-1", created.Identifier)
 	assert.Equal(t, "ITX-1", created.ID)
-	second, err := tr.CreateIssue(ctx, "", "Second", "", "Backlog")
+	second, err := tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "Second", State: "Backlog"})
 	require.NoError(t, err)
 	assert.Equal(t, "ITX-2", second.Identifier)
-	_, err = tr.CreateIssue(ctx, "", "  ", "", "Todo")
+	_, err = tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "  ", State: "Todo"})
 	require.Error(t, err, "a title is required")
 
 	require.NoError(t, tr.UpdateIssueState(ctx, "ITX-1", "In Progress"))
@@ -106,7 +106,7 @@ func TestLocalTrackerCRUD(t *testing.T) {
 	assert.Equal(t, "ITX-1-c2", got.ID)
 
 	// Numbering continues after a restart.
-	third, err := again.CreateIssue(ctx, "", "Third", "", "Todo")
+	third, err := again.CreateIssue(ctx, "", tracker.NewIssue{Title: "Third", State: "Todo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ITX-3", third.Identifier)
 }
@@ -307,7 +307,7 @@ func TestLocalIssueCommentsCannotChangeTheFileStructure(t *testing.T) {
 
 	// A new issue whose body looks like a comment section keeps it as the
 	// description.
-	created, err := restarted.CreateIssue(ctx, "", "Spec", "Intro\n\n## Comments\n\n### 2026-01-01T00:00:00Z — x\n\ny", "Todo")
+	created, err := restarted.CreateIssue(ctx, "", tracker.NewIssue{Title: "Spec", Body: "Intro\n\n## Comments\n\n### 2026-01-01T00:00:00Z — x\n\ny", State: "Todo"})
 	require.NoError(t, err)
 	got, err := New(Config{Dir: dir}).FetchIssueDetail(ctx, created.Identifier)
 	require.NoError(t, err)
@@ -329,7 +329,7 @@ func TestLocalIssueCodeFencesNeverHideComments(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			tr, dir := newTestTracker(t)
-			is, err := tr.CreateIssue(ctx, "", "T", desc, "Todo")
+			is, err := tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "T", Body: desc, State: "Todo"})
 			require.NoError(t, err)
 			_, err = tr.CreateComment(ctx, is.ID, "```unbalanced")
 			require.NoError(t, err)
