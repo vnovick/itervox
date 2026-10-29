@@ -580,13 +580,27 @@ fn local_hub_serves_its_members_to_the_app() {
     let token = parse_created_token(&out.stdout).expect("one token line");
     let origin = lock.origin();
 
-    let stop = AtomicBool::new(false);
-    let mut first = None;
-    stream_events(&origin, &token, &mut None, &stop, &mut |ev| {
-        first.get_or_insert(ev);
-        stop.store(true, Ordering::Relaxed);
-    });
-    assert_eq!(first, Some(HubEvent::Projects(1)));
+    // hub.lock can appear before the daemon has joined as a member, so a
+    // stream opened in that window rightly counts 0. Reconnect until a
+    // stream's first frame counts the one member.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let stop = AtomicBool::new(false);
+        let mut first = None;
+        stream_events(&origin, &token, &mut None, &stop, &mut |ev| {
+            first.get_or_insert(ev);
+            stop.store(true, Ordering::Relaxed);
+        });
+        if first == Some(HubEvent::Projects(1)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "first frame {first:?}, want Projects(1): {}",
+            f.log()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 
     let reader = HubReader::default();
     let pool = ClientPool::default();
