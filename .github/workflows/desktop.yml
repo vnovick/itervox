@@ -181,7 +181,12 @@ jobs:
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/desktop/src-tauri/target/release/bundle/$appimage" --appimage-extract >/dev/null)
           test -x "$RUNNER_TEMP/squashfs-root/usr/bin/itervox"
           "$RUNNER_TEMP/squashfs-root/usr/bin/itervox" --version
-          dpkg-deb -c deb/*.deb | grep '/usr/bin/itervox$' >/dev/null  # not -q: an early exit SIGPIPEs dpkg-deb under pipefail
+          listing="$(dpkg-deb -c deb/*.deb)"
+          if ! grep -q '/usr/bin/itervox$' <<<"$listing"; then
+            echo "::error::the .deb has no /usr/bin/itervox"
+            printf '%s\n' "$listing"
+            exit 1
+          fi
 
       - name: Upload the bundles
         uses: actions/upload-artifact@v4
