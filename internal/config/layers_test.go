@@ -322,7 +322,7 @@ func TestExplainRedactsNestedSecretsAndNotes(t *testing.T) {
 	writeSettings(t, soul, "# SOUL")
 	writeSettings(t, instr, "# INSTRUCTIONS")
 	wf := layeredProject(t, "",
-		`{"agent": {"profiles": {"helper": {"command": "claude", "soul_file": "`+soul+`", "instructions_file": "`+instr+`", "api_key": "`+secret+`",
+		`{"agent": {"profiles": {"helper": {"command": "claude", "soul_file": "`+filepath.ToSlash(soul)+`", "instructions_file": "`+filepath.ToSlash(instr)+`", "api_key": "`+secret+`",
 		  "env": {"TOKEN": "`+secret+`"}}},
 		  "extra": {"nested": {"password": "`+secret+`"}, "urls": ["https://u:`+secret+`@x.example/r"]}}}`, "")
 	// A mistyped secret in WORKFLOW.md: its "ignored" note quotes the value.

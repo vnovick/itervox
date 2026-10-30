@@ -143,8 +143,8 @@ Every `WORKFLOW.md` read-modify-write holds an in-process mutex and then an
 `flock` on the sidecar `.WORKFLOW.md.lock` (CORE-149), so `itervox init
 --update` and `itervox models refresh` — separate processes — cannot lose
 updates against a running daemon. The sidecar is transient and gitignored by
-`itervox init --update`; on platforms without `flock` (Windows) the file lock
-is a no-op.
+`itervox init --update`; on Windows the same lock is a `LockFileEx` lock
+(`internal/winflock`).
 
 ### Tracker abstraction
 

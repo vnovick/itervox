@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -97,6 +98,12 @@ var fakeSSHDBin string
 // binary takes about a second to start on macOS, and every fake ssh
 // connection starts one), then runs the tests.
 func TestMain(m *testing.M) {
+	if runtime.GOOS == "windows" {
+		// fakesshd is a Unix fixture (Setsid, SIGPIPE); the SSH tests that
+		// use it do not build on Windows.
+		goleak.VerifyTestMain(m)
+		return
+	}
 	dir, err := os.MkdirTemp("", "itervox-fakesshd-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fakesshd:", err)

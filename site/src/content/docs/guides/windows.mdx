@@ -1,0 +1,81 @@
+---
+title: Running on Windows
+description: Install the native Windows itervox daemon from the release zip, put it on PATH, give it Git Bash for hooks, and know which features are Linux and macOS only.
+---
+
+The `itervox` daemon runs natively on Windows 10 and 11 (x64 and Arm64, #259).
+Claude Code and Codex both run on Windows, and Claude Code there uses Git
+Bash, which also gives Itervox's hooks the `bash` they are written for.
+
+## Install
+
+1. Download `itervox_windows_amd64.zip` (or `itervox_windows_arm64.zip` on an
+   Arm PC) from the [latest release](https://github.com/vnovick/itervox/releases/latest).
+   Homebrew is for macOS and Linux only.
+2. Unzip it and move `itervox.exe` to a folder of its own, for example
+   `%LOCALAPPDATA%\Programs\itervox`.
+3. Put that folder on your PATH: **Settings → System → About → Advanced
+   system settings → Environment Variables**, select `Path` under *User
+   variables*, **Edit → New**, paste the folder, then open a new terminal.
+   From PowerShell instead:
+
+   ```powershell
+   $dir = "$env:LOCALAPPDATA\Programs\itervox"
+   [Environment]::SetEnvironmentVariable("Path", "$([Environment]::GetEnvironmentVariable('Path','User'));$dir", "User")
+   ```
+
+4. Install [Git for Windows](https://git-scm.com/download/win). Itervox needs
+   `git` for worktrees, and Git Bash's `bash.exe` for hooks.
+5. Check it: `itervox --version`, then `itervox demo`, which runs a board with
+   a fake agent and needs no account, key or agent CLI.
+
+## Which shell runs what
+
+Hooks (`hooks.*`) are bash scripts, and an agent CLI given by name
+(`agent.command: claude`) is started through a login shell so your profile's
+PATH applies, exactly as on Linux and macOS. On Windows, Itervox looks for
+that bash in this order:
+
+1. `ITERVOX_SHELL` — a full path to a `bash.exe`;
+2. Git for Windows' bash, `%ProgramFiles%\Git\bin\bash.exe`;
+3. `bash` on PATH — except `C:\Windows\System32\bash.exe`, the WSL launcher,
+   whose bash runs inside Linux and cannot see your Windows tools.
+
+When none is found:
+
+- the agent CLI is executed **directly** (`agent.command: claude --model opus`
+  runs `claude` from your Windows PATH with those arguments);
+- **every hook fails** with `hook_failed: no bash to run hooks with: install
+  Git for Windows (Git Bash) or set ITERVOX_SHELL to a bash.exe`.
+
+`$SHELL` is ignored on Windows: when it is set (Git Bash sets it) it holds an
+MSYS path such as `/usr/bin/bash`, which Windows cannot start.
+
+## What differs on Windows
+
+| Area | On Windows |
+|---|---|
+| Stopping agents | Each agent and hook runs in a Windows Job Object. Cancelling a run ends its whole process tree, and if the daemon itself dies, Windows ends every agent it started. There is no orphan ledger (`.itervox/run/agent-pgids.json`) to reap after a crash. |
+| `itervox stop` | Ends the daemon at once: Windows has no `SIGTERM` to send to another process, so there is no graceful drain. Press `Ctrl+C` in the daemon's own console to drain running agents first. |
+| Prompt delivery | The prompt reaches a CLI started through Git Bash on that shell's stdin (Windows cannot hand a child an extra file descriptor). A login profile that reads stdin would consume it; Git Bash's default profile does not. |
+| Guardrail shims | Each shim gets a `.cmd` wrapper next to it, so `git` and `gh` typed in cmd.exe or PowerShell are guarded too; Git Bash uses the shell shims. |
+| Lock files | The pid lock, the `WORKFLOW.md` edit lock, the API-token store lock and the hub lock use Windows file locks; a killed daemon releases them at once, as on Unix. |
+
+## Not available on Windows
+
+- **tmux control** — tmux does not run on Windows. A workflow with
+  `sessions.tmux_control: true` is refused when the daemon loads it, with
+  `sessions.tmux_control: true is not available on Windows`. **New session**
+  in the Sessions panel reports tmux as unavailable.
+- **Whether a hand-started session is still running** — the Sessions panel
+  decides this from `/proc` or `ps` and `lsof`, which Windows lacks; the
+  check reports `process inspection is not available on Windows`.
+- **The login-shell PATH lookup** ([Login-shell PATH](/cli/#login-shell-path))
+  — the daemon keeps the PATH it was started with.
+- **Changing a file's owner** in `itervox secret` when run as root — Windows
+  has no Unix owners.
+
+## Desktop app
+
+The Windows desktop app is tracked separately; this page covers the
+command-line daemon it runs.
