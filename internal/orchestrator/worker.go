@@ -802,6 +802,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 
+		// #252: `itervox run` has no approval channel, so an approval
+		// command the agent tried was refused; the run ends input-required
+		// naming it instead of finishing without it.
+		if refused := o.oneShotRefusedApprovals(issue.Identifier, guard); len(refused) > 0 && !errors.Is(runErr, context.Canceled) {
+			o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
+				workerHost, profileName, activeBranchName, oneShotApprovalContext(refused), "",
+				buildInputRequiredExitRunEntry(issue, attempt, startedAt, turn, runLogID, workerHost, backend,
+					cumulativeInput, cumulativeCached, cumulativeOutput, result))
+			return
+		}
+
 		// CORE-051: a failed turn carrying a quota limit signal (CORE-050)
 		// exits TerminalRateLimited so the event loop can evaluate the
 		// rate_limited fallback on this first failure. It runs BEFORE the
@@ -1074,7 +1085,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
 	// pre-run guard (now the workspace is on the newly-created branch).
 	if wsPath != "" && prCtx == nil && !automationRun {
-		if prURL := workspace.FindOpenPRURL(ctx, wsPath); prURL != "" {
+		prURL := workspace.FindOpenPRURL(ctx, wsPath)
+		if prURL == "" && !readOnlyReviewer { // #252: `itervox run` opens the PR itself
+			prURL = o.openOneShotPR(ctx, wsPath, activeBranchName, issue)
+		}
+		if prURL != "" {
 			detectedPRURL = prURL
 			// Dedup: check if we already posted a PR comment for this URL.
 			prComment := fmt.Sprintf("🔗 Pull request created: %s", prURL)

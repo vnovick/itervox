@@ -470,6 +470,18 @@ front-matter key is reported as a conflict.
   state, failed-state and analysis-mode settings apply through their existing
   setters; the watcher still watches only WORKFLOW.md.
 
+### `itervox run` is the same orchestrator in one-shot mode
+
+`itervox run --issue <id>` (#252, `cmd/itervox/run_cmd*.go`) does not
+re-implement the worker: it runs `orchestrator.New(...).Run` fed one candidate
+(`singleIssueTracker`), with `MaxConcurrentAgents = 1`, and stops it once
+`runSettled` sees the run (and its reviewers) over. Run-mode behaviour is
+confined to `orchestrator.OneShot` (`SetOneShot`, before `Run`; nil in the
+daemon): opening the PR, the `--answer`/`--approve` resume context (consumed
+by the event loop on the first dispatch), the question footer, and
+fail-closed guardrail approvals. No HTTP listener, hub, heartbeat or
+automation is started — `TestRunHasNoServerOrHub` pins that.
+
 ### Snapshot access
 
 `Snapshot()` acquires `snapMu.RLock` and returns a copy of `lastSnap`.
