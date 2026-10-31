@@ -13,47 +13,44 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sessions — Itervox</title>
+<link rel="stylesheet" href="theme.css">
 <style>
-  :root { color-scheme: light dark; --bg:#fbfaf8; --panel:#fff; --line:#e4e1dc; --text:#1d1b19;
-    --muted:#77716a; --accent:#d9480f; --warn-bg:#fff1e6; --warn:#c2410c; --err:#b91c1c; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#151412; --panel:#1d1b19; --line:#33302c; --text:#eeeae4; --muted:#9a938a;
-      --accent:#fb923c; --warn-bg:#3a2214; --warn:#fdba74; --err:#f87171; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font:13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background:var(--bg); color:var(--text); }
-  header { position:sticky; top:0; padding:12px 16px; background:var(--bg); border-bottom:1px solid var(--line); }
-  h1 { margin:0; font-size:15px; }
-  #summary { color:var(--muted); margin-top:2px; }
-  main { padding:8px 16px 24px; }
-  section { margin-top:14px; }
-  h2 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
-  h2 .where { text-transform:none; letter-spacing:0; font-weight:normal; }
-  .error { color:var(--err); margin:4px 0; }
-  .empty { color:var(--muted); margin:4px 0; }
+  /* Layout only: colours, surfaces, radii and shadows come from theme.css. */
+  body { font-size:14px; line-height:1.4; }
+  header { position:sticky; top:10px; z-index:1; margin:10px 10px 0; padding:12px 18px; border-radius:var(--r-bar); }
+  h1 { margin:0; font-size:16px; font-weight:700; letter-spacing:-.01em; }
+  #summary { color:var(--text2); margin-top:2px; font-size:13px; }
+  main { padding:2px 10px 20px; }
+  section { margin-top:10px; padding:14px 14px 10px; border-radius:var(--r-panel); }
+  section > :last-child { margin-bottom:4px; }
+  h2 { margin:0 0 8px 2px; font-size:15px; font-weight:600; }
+  h2 .where { font-weight:400; font-size:13px; color:var(--muted); }
+  .error { color:var(--err); margin:4px 2px; font-size:13px; }
+  .empty { color:var(--muted); margin:4px 2px; font-size:13px; }
   button.session { display:flex; width:100%; gap:10px; align-items:center; text-align:left; cursor:pointer;
-    background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px;
-    padding:8px 10px; margin:4px 0; font:inherit; }
-  button.session:focus { outline:2px solid var(--accent); outline-offset:1px; }
-  .id { font-family:ui-monospace, Menlo, monospace; font-weight:600; min-width:72px; }
-  .meta { color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .badge { border-radius:999px; padding:1px 8px; font-size:11px; font-weight:600; background:var(--warn-bg); color:var(--warn); }
-  .status { color:var(--muted); font-size:11px; }
-  button.session.external { border-style:dashed; opacity:.75; }
+    min-height:44px; padding:8px 12px; margin:6px 0; font-size:13px; }
+  button.session:hover { background:var(--card-hover); }
+  button.session:focus { outline:2px solid var(--focus); outline-offset:2px; }
+  button.session:focus:not(:focus-visible) { outline:none; }
+  .id { font-family:var(--font-mono); font-weight:600; min-width:72px; }
+  .meta { color:var(--text2); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { border-radius:var(--r-pill); padding:2px 9px; font-size:12px; font-weight:600; white-space:nowrap;
+    background:var(--warn-soft); color:var(--warn); }
+  .status { color:var(--muted); font-size:12px; white-space:nowrap; }
+  button.session.external { background:var(--card-faint); border-style:dashed; border-color:var(--dashed); box-shadow:none; }
   button.session.external .id { font-weight:500; color:var(--muted); }
-  .origin { color:var(--muted); font-size:11px; font-style:italic; white-space:nowrap; }
-  .tmux { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:10px;
-    font-family:ui-monospace, Menlo, monospace; color:var(--muted); white-space:nowrap; }
-  .tmux.controllable { border-color:var(--accent); color:var(--accent); }
-  .tmux-warning { background:var(--warn-bg); color:var(--warn); border-radius:6px; padding:6px 8px; margin:4px 0; }
-  .tmux-warning code { font-family:ui-monospace, Menlo, monospace; }
-  button.new-session { font:inherit; font-size:12px; cursor:pointer; background:none; color:var(--accent);
-    border:1px solid var(--line); border-radius:6px; padding:3px 8px; margin:2px 0 4px; }
+  .origin { color:var(--muted); font-size:12px; font-style:italic; white-space:nowrap; }
+  .tmux { border-radius:var(--r-pill); padding:1px 8px; font-size:11px; background:var(--hover);
+    font-family:var(--font-mono); color:var(--text2); white-space:nowrap; }
+  .tmux.controllable { background:var(--accent-soft); color:var(--accent-text); }
+  .tmux-warning { background:var(--warn-soft); color:var(--warn); border-radius:var(--r-row); padding:8px 12px;
+    margin:4px 0 6px; font-size:13px; }
+  .tmux-warning code { font-family:var(--font-mono); }
+  button.new-session { font-size:13px; min-height:32px; padding:0 14px; margin:0 0 4px; }
 </style>
 </head>
-<body>
-<header>
+<body class="page">
+<header class="glass">
   <h1>Sessions</h1>
   <div id="summary">Reading the daemons…</div>
 </header>
@@ -96,13 +93,13 @@
         (view.external > 0 ? ' · ' + view.external + ' started outside itervox' : '');
     groupsEl.textContent = '';
     view.groups.forEach(function (g) {
-      var sec = el('section');
+      var sec = el('section', 'glass');
       var h = el('h2', null, g.name + ' ');
       h.appendChild(el('span', 'where', '— ' + g.location));
       sec.appendChild(h);
       if (g.tmuxWarning) sec.appendChild(el('p', 'tmux-warning', g.tmuxWarning));
       if (g.newSession) {
-        var ns = el('button', 'new-session', 'New session…');
+        var ns = el('button', 'new-session chip', 'New session…');
         ns.type = 'button';
         ns.title = 'Start an agent in a new tmux session on this daemon';
         ns.addEventListener('click', function () { newSession(g.daemon); });
@@ -112,7 +109,7 @@
       else if (g.sessions.length === 0) sec.appendChild(el('p', 'empty', 'No sessions.'));
       g.sessions.forEach(function (s) {
         var external = s.owner === 'external';
-        var b = el('button', external ? 'session external' : 'session');
+        var b = el('button', external ? 'session card external' : 'session card');
         b.type = 'button';
         b.dataset.ref = g.daemon + '\n' + s.key;
         b.appendChild(el('span', 'id', s.label));

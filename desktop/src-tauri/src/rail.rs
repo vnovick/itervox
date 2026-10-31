@@ -506,6 +506,8 @@ pub enum RailAction {
     },
     /// Collapse (true) or expand the rail.
     Collapse(bool),
+    /// The rail's "Add project" button: the tray's "Add Project…".
+    AddProject,
 }
 
 /// The action behind a navigation of the rail page, or `None` for an
@@ -526,6 +528,7 @@ pub fn rail_action(url: &str) -> Option<RailAction> {
     let key = || param("key").filter(|k| !k.is_empty());
     match action {
         "ready" => Some(RailAction::Ready),
+        "add-project" => Some(RailAction::AddProject),
         "switch" => key().map(RailAction::Switch),
         "open-new" => key().map(RailAction::OpenInNewWindow),
         "pin" => key().map(RailAction::Pin),
@@ -1236,6 +1239,10 @@ mod tests {
             Some(RailAction::Ready)
         );
         assert_eq!(
+            rail_action("tauri://localhost/__itervox/rail/add-project"),
+            Some(RailAction::AddProject)
+        );
+        assert_eq!(
             rail_action("tauri://localhost/__itervox/rail/switch?key="),
             None
         );
@@ -1276,6 +1283,7 @@ mod tests {
             "go('move', { key: key, before: before })",
             "go('nudge', { key: r.key, delta: String(delta) })",
             "go('collapse', { value: view.collapsed ? '0' : '1' })",
+            "go('add-project')",
         ] {
             assert!(html.contains(call), "{call}");
         }
@@ -1318,6 +1326,46 @@ mod tests {
             "__TAURI",
         ] {
             assert!(!html.contains(forbidden), "rail.html uses {forbidden}");
+        }
+    }
+
+    /// The app's pages share one stylesheet (`dist/theme.css`): every
+    /// colour lives there as a custom property, light and dark, so a page
+    /// carries no colour literals or inline styles of its own.
+    #[test]
+    fn pages_share_the_theme_stylesheet() {
+        let dist = concat!(env!("CARGO_MANIFEST_DIR"), "/../dist/");
+        let theme = std::fs::read_to_string(format!("{dist}theme.css")).expect("dist/theme.css");
+        assert!(theme.contains("@media (prefers-color-scheme: dark)"));
+        assert!(theme.contains("@media (prefers-reduced-transparency: reduce)"));
+        for page in ["rail.html", "sessions.html", "index.html"] {
+            let html = std::fs::read_to_string(format!("{dist}{page}")).expect(page);
+            assert!(
+                html.contains(r#"<link rel="stylesheet" href="theme.css">"#),
+                "{page} links theme.css"
+            );
+            assert!(
+                html.contains(r#"<body class="page""#),
+                "{page}: page backdrop"
+            );
+            for literal in ["rgba(", "rgb(", "style=\"", "#fff", "#000"] {
+                assert!(!html.contains(literal), "{page} has {literal}");
+            }
+            // No hex colours: every `#` in a style block is an id selector.
+            if let Some((_, rest)) = html.split_once("<style>") {
+                let css = rest.split_once("</style>").map(|(c, _)| c).unwrap_or("");
+                for (i, _) in css.match_indices('#') {
+                    let next: String = css[i + 1..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+                    assert!(
+                        !(matches!(next.len(), 3 | 6 | 8)
+                            && next.chars().all(|c| c.is_ascii_hexdigit())),
+                        "{page} has the colour #{next}"
+                    );
+                }
+            }
         }
     }
 }
