@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,11 @@ import (
 	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/procgroup"
 )
+
+// ErrNoHookShell is why every hook fails on a Windows host without bash:
+// hooks are bash scripts, and procgroup.Shell found neither $ITERVOX_SHELL,
+// Git for Windows' bash nor a bash on PATH.
+var ErrNoHookShell = errors.New("no bash to run hooks with: install Git for Windows (Git Bash) or set ITERVOX_SHELL to a bash.exe")
 
 const defaultHookTimeoutMs = 60000
 const maxHookOutputBytes = 256 * 1024
@@ -31,7 +37,8 @@ var itervoxEnvAllowlist = []string{
 }
 
 // RunHook runs a shell script in the given workspacePath directory using
-// `bash -lc <script>`. An empty script is a no-op. timeoutMs <= 0 falls
+// `bash -lc <script>` (on Windows, procgroup.Shell's bash; with none it
+// fails with ErrNoHookShell). An empty script is a no-op. timeoutMs <= 0 falls
 // back to the default of 60000ms.
 //
 // The optional logFn, if provided, is called once per output line after the
@@ -52,8 +59,12 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	hookCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
+	shell := procgroup.Shell("bash")
+	if shell == "" {
+		return fmt.Errorf("hook_failed: %w", ErrNoHookShell)
+	}
 	out := &cappedOutput{max: maxHookOutputBytes}
-	cmd := exec.CommandContext(hookCtx, "bash", "-lc", script)
+	cmd := exec.CommandContext(hookCtx, shell, "-lc", script)
 	cmd.Dir = workspacePath
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -64,7 +75,7 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 
 	// Start + Track + Wait rather than Run so the hook's group is in the
 	// CORE-042 orphan ledger while it runs.
-	runErr := cmd.Start()
+	runErr := procgroup.Start(cmd)
 	if runErr == nil {
 		untrack := procgroup.Track(ctx, cmd)
 		runErr = cmd.Wait()

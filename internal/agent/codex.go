@@ -130,8 +130,9 @@ func (c *CodexRunner) RunTurn(
 		if promptIn, err = promptFile(prompt); err != nil {
 			return TurnResult{Failed: true, FailureText: err.Error()}, err
 		}
-		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-			argv := append([]string{command}, buildCodexDirectArgs(sessionID, workspacePath, permissionMode)...)
+		shell := loginShell()
+		if name, head, direct := directInvocation(command, shell, "codex"); direct {
+			argv := append(append([]string{name}, head...), buildCodexDirectArgs(sessionID, workspacePath, permissionMode)...)
 			if cmd, err = agentCommand(ctx, turnCtx, argv); err != nil { // #258: sandboxed when the run asks
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
 			}
@@ -139,7 +140,7 @@ func (c *CodexRunner) RunTurn(
 		} else {
 			// fd 3, not stdin: a login profile that reads stdin cannot eat
 			// the prompt (see ClaudeRunner.RunTurn).
-			argv := []string{loginShell(), "-lc",
+			argv := []string{shell, "-lc",
 				RunEnvFrom(ctx).shellPrefix() + buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode)}
 			if cmd, err = agentCommand(ctx, turnCtx, argv); err != nil { // #258
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
@@ -189,7 +190,7 @@ func (c *CodexRunner) RunTurn(
 	stderrBuf := newTailBuffer(maxStderrCaptureBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
 		}

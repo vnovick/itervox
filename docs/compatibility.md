@@ -57,7 +57,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 |---|---|---|
 | macOS (arm64, x86_64) | **Supported** | Primary development platform. |
 | Linux (x86_64, arm64) | **Supported** | Used in CI (`ubuntu-latest`). |
-| Windows | **Unsupported** | Agent CLIs (Claude Code, Codex) do not support Windows. Itervox's workspace/shell plumbing assumes a POSIX shell. |
+| Windows (x64, Arm64) | **Supported** (native daemon, #259) | Release zip, not Homebrew. Hooks and agent CLIs given by name run under Git for Windows' bash (`ITERVOX_SHELL` overrides). Agents run in Job Objects. tmux control (`sessions.tmux_control`) and hand-started-session liveness are unavailable. Built, vetted and smoke-tested by the `windows-latest` CI job. |
 
 ---
 

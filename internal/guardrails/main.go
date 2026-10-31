@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
 )
 
 // IsEntrypoint reports whether arg (os.Args[1]) is one of the entrypoints
@@ -46,9 +45,4 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runPrePush(p, rest, env, stdin, stdout, stderr)
 	}
 	return runShim(p, name, rest, env, realPATH, stderr)
-}
-
-// execProgram replaces the process with path.
-func execProgram(path string, argv, env []string) error {
-	return syscall.Exec(path, argv, env)
 }

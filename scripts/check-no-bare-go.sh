@@ -43,6 +43,7 @@ internal/agent/ssh.go|go func() {|1|remoteStdin payload writer (CORE-155): one i
 internal/agent/testdata/fakesshd/main.go|go func() {|2|test-only fake sshd (built by internal/agent TestMain, never linked into itervox): the stdin relay and the stdout/stderr relays, each one io.Copy between pipes; the process exits when the remote command is done
 cmd/itervox/demo.go|go demoOpenWhenReady(|1|demoOpenWhenReady defers RecoverGoroutine itself; a panic only loses the browser opening
 cmd/itervox/demo.go|go d.control(|1|demoRun.control defers RecoverGoroutine itself; a panic only stops the demo's stand-in operator
+internal/procgroup/procgroup_windows.go|go func() {|1|Windows Job Object watcher (#259): one WaitForSingleObject on the child, then release the job and close the handle; two syscalls, no callbacks; procgroup must not import orchestrator
 internal/tracker/github/client.go|go func(i int, it T) {|1|boundedDo fan-out joined by wg.Wait in the calling goroutine (event-loop tick); fail-fast like the event loop
 ALLOW
 )

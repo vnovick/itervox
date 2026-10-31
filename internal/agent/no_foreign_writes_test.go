@@ -108,9 +108,10 @@ var devTTYAllowed = map[string]string{}
 // stdinHelpers are functions handed an *exec.Cmd by their caller; the
 // caller's own creation of that command is what the check verifies.
 var stdinHelpers = map[string]string{
-	"internal/agent/prompt_stdin.go:setPromptStdin": "the prompt file of a command RunTurn created",
-	"internal/agent/prompt_stdin.go:setPromptFD3":   "the prompt file of a command RunTurn created",
-	"internal/agent/ssh.go:attachRemoteStdin":       "the script pipe of the ssh command RunTurn created",
+	"internal/agent/prompt_stdin.go:setPromptStdin":       "the prompt file of a command RunTurn created",
+	"internal/agent/prompt_stdin_unix.go:setPromptFD3":    "the prompt file of a command RunTurn created",
+	"internal/agent/prompt_stdin_windows.go:setPromptFD3": "the prompt file of a command RunTurn created (its stdin on Windows)",
+	"internal/agent/ssh.go:attachRemoteStdin":             "the script pipe of the ssh command RunTurn created",
 }
 
 // osPipeAllowed: the live-steering stdin of a claude turn RunTurn starts.

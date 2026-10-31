@@ -147,8 +147,12 @@ size-budget:
 fmt:
 	gofmt -l -w cmd internal
 
+# The GOOS=windows pass (#259) catches Windows build breaks — a Unix-only
+# syscall, a Setsid outside a _unix.go file — on Linux and macOS, tests
+# included, without a Windows machine.
 vet:
 	go vet $(GO_PACKAGES)
+	GOOS=windows go vet $(GO_PACKAGES)
 
 lint-go:
 	golangci-lint run ./cmd/... ./internal/...

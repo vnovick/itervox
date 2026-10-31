@@ -728,7 +728,10 @@ See the [Agent Handoff guide](https://itervox.dev/guides/agent-handoff/) for a w
 
 ## `hooks`
 
-Lifecycle scripts run via `bash -lc` inside each workspace. `after_create` and
+Lifecycle scripts run via `bash -lc` inside each workspace (on Windows, Git
+Bash's `bash.exe` or `ITERVOX_SHELL`; without one every hook fails — see
+[Running on Windows](https://itervox.dev/guides/windows/#which-shell-runs-what)).
+`after_create` and
 `before_run` are fatal on non-zero exit; `after_run` and `before_remove`
 failures are logged and ignored by default.
 
@@ -772,7 +775,7 @@ startup.
 | `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
 | `steering_phrases` | list | six defaults | One-click steering chips in the Sessions composer and the issue steer box (#218): `{label, message}` entries or bare default labels; `[]` shows none. See the site's [Steering phrases](https://itervox.dev/guides/playbooks/#steering-phrases). |
-| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
+| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. Not available on Windows, where tmux does not run: `true` there stops the workflow from loading ([Running on Windows](https://itervox.dev/guides/windows/)). |
 
 ```yaml
 sessions:

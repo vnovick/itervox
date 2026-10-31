@@ -467,12 +467,13 @@ Itervox is designed for **high-trust local environments**:
 
 | Surface | macOS | Linux | Windows |
 |---|---|---|---|
-| Orchestrator + web dashboard | Supported | Supported | Unsupported (use WSL2) |
-| Terminal commands (`itervox watch`, quick actions) | Supported | Supported | Unsupported (use WSL2) |
-| Local agent execution | Supported | Supported | Unsupported (use WSL2) |
-| SSH worker hosts | Supported | Supported | Unsupported (use WSL2) |
+| Orchestrator + web dashboard | Supported | Supported | Supported (native x64 and Arm64; `itervox demo` smoke-tested in CI) |
+| Terminal commands (`itervox watch`, quick actions) | Supported | Supported | Builds; not CI-tested |
+| Local agent execution | Supported | Supported | Supported (hooks need Git Bash) |
+| SSH worker hosts | Supported | Supported | Builds; not CI-tested (the remote host runs Linux or macOS) |
+| tmux control in the Sessions panel | Supported | Supported | Not available |
 
-Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses worktree paths that do not translate cleanly to Windows. Use WSL2, or run Itervox against Linux/macOS workers.
+The Windows daemon ships as a zip in each release. Hooks run under Git for Windows' bash; tmux control and the "is this hand-started session still running" check are Linux and macOS only. See [Running on Windows](https://itervox.dev/guides/windows/).
 
 ---
 

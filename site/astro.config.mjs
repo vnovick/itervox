@@ -50,6 +50,7 @@ export default defineConfig({
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
             { label: 'Sessions panel', slug: 'guides/sessions' },
             { label: 'Mac App (menu bar)', slug: 'guides/mac-app' },
+            { label: 'Running on Windows', slug: 'guides/windows' },
             { label: 'The hub (one URL)', slug: 'guides/hub' },
             { label: 'Slack (through the hub)', slug: 'guides/slack' },
             { label: 'Your phone (web app & push)', slug: 'guides/phone' },
