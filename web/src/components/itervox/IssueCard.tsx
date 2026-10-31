@@ -131,6 +131,7 @@ export default memo(function IssueCard({
             {...dragHandleAttributes}
             aria-label={`Move ${issue.identifier}`}
             data-testid="issue-card-drag-handle"
+            data-drag-handle-for={issue.identifier}
             onClick={(e) => {
               // A click on the handle is not a request to open the issue.
               e.stopPropagation();

@@ -17,11 +17,13 @@ export function AutomationQueueItem({
 }) {
   const unresolved = dependency?.unresolvedBlockers ?? [];
   return (
+    // Narrow panel (no column header): a compact card, the name on its own line
+    // and the other fields wrapping inline beneath it. Wide panel: a table row.
     <div
       data-testid={`automation-queue-card-${row.identifier}`}
-      className="grid gap-2 px-2.5 py-2.5 text-[13px] @3xl:grid-cols-[1.1fr_0.8fr_1.1fr_1fr_0.9fr_1fr_0.7fr_0.6fr_0.7fr] @3xl:items-center @3xl:gap-3"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2.5 py-2.5 text-[13px] @3xl:grid @3xl:grid-cols-[1.1fr_0.8fr_1.1fr_1fr_0.9fr_1fr_0.7fr_0.6fr_0.7fr] @3xl:gap-3"
     >
-      <div className="min-w-0">
+      <div className="min-w-0 basis-full @3xl:basis-auto">
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-theme-text min-w-0 truncate text-[13px] font-medium">
             {row.automationId}
@@ -47,7 +49,9 @@ export function AutomationQueueItem({
           </div>
         )}
       </div>
-      <div className="flex min-w-0 flex-wrap gap-1">
+      <div
+        className={`min-w-0 flex-wrap gap-1 ${unresolved.length === 0 ? 'hidden @3xl:flex' : 'flex'}`}
+      >
         {unresolved.length === 0 ? (
           <span className="text-theme-muted text-[11px]">none</span>
         ) : (
@@ -76,7 +80,7 @@ export function AutomationQueueItem({
       <div className="text-theme-text-secondary">
         {row.attemptCount === 1 ? '1 attempt' : `${String(row.attemptCount)} attempts`}
       </div>
-      <div>
+      <div className="ml-auto @3xl:ml-0">
         <button
           type="button"
           aria-label={`Open ${row.identifier} details`}

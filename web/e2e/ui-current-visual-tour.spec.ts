@@ -1,6 +1,6 @@
 // Visual tour (route-mocked): every page and overlay renders in both themes
 // without page errors. Screenshots go to test-results/visual-tour/<theme>/
-// (or VISUAL_TOUR_DIR) so a reviewer can compare them with the design.
+// (or VISUAL_TOUR_DIR) so a reviewer can check every screen by eye.
 
 import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';

@@ -16,6 +16,7 @@ import IssueCard from '../../../components/itervox/IssueCard';
 import { BOARD_DND_ACCESSIBILITY } from '../../../components/itervox/BoardColumn/boardAnnouncements';
 import { columnKeyboardCoordinates } from '../../../components/itervox/BoardColumn/columnKeyboardCoordinates';
 import BoardColumn from '../../../components/itervox/BoardColumn';
+import { refocusHandleAfterDrop } from '../../../components/itervox/BoardColumn/refocusHandleAfterDrop';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import type { TrackerIssue, InputRequiredEntry } from '../../../types/schemas';
 import {
@@ -212,6 +213,8 @@ export const BoardView = memo(function BoardView({
     const current = issues.find((i) => i.identifier === identifier);
     if (!current || current.state === newState) return;
     onStateChange(identifier, newState);
+    // A keyboard drop re-mounts the card in its new column; keep focus on it.
+    if (event.activatorEvent instanceof KeyboardEvent) refocusHandleAfterDrop(identifier);
   };
 
   if (!snapshotLoaded) {
