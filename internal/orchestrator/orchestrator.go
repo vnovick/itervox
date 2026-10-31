@@ -409,6 +409,10 @@ type Orchestrator struct {
 	// Tests replace them.
 	findOpenPRURL func(ctx context.Context, wsPath string) string
 	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// oneShot is the `itervox run` mode (#252); nil in the daemon. Set
+	// before Run by SetOneShot. Its Resume is consumed by the event loop.
+	oneShot *OneShot
+
 	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
 	// means workspace.EnsurePRFooter.
 	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)

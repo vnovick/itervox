@@ -266,7 +266,8 @@ dev:
 # Shell tests for the deploy/ scripts (CORE-061 fetch-secrets, CORE-062
 # bootstrap data disk + HOME relocation, CORE-107 upgrade rollback + cleanup
 # retention, CORE-113 heartbeat exporter, watchdog and alert-rule family
-# names), and the CHANGELOG split check (#246). Cloud CLIs, curl,
+# names), the CHANGELOG split check (#246) and the GitHub Action's trust
+# check and run script (#252). Cloud CLIs, gh, curl,
 # blkid/mount/mkfs and systemctl are stubbed on
 # PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
 .PHONY: deploy-test
@@ -285,6 +286,8 @@ deploy-test:
 	bash deploy/monitoring/rules_names_test.sh
 	bash deploy/acceptance/self-hosted-run_test.sh
 	bash deploy/acceptance/gcp-deploy-smoke_test.sh
+	bash action/trust-check_test.sh
+	bash action/run_test.sh
 
 # Deploy lint (CORE-105). Same targets as .github/workflows/deploy-lint.yml;
 # each tool runs from a pinned image, so only docker is needed.
@@ -298,7 +301,7 @@ SMOKE_IMAGE      ?= itervox:deploy-smoke
 deploy-lint: deploy-shellcheck deploy-hadolint deploy-actionlint deploy-promtool deploy-tofu
 
 deploy-shellcheck:
-	@files=$$(find deploy -name '*.sh' -type f | sort); printf 'shellcheck %s\n' $$files; \
+	@files=$$(find deploy action -name '*.sh' -type f | sort); printf 'shellcheck %s\n' $$files; \
 	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $$files
 
 deploy-hadolint:
@@ -306,7 +309,7 @@ deploy-hadolint:
 	docker run --rm -i $(HADOLINT_IMAGE) < deploy/docker/Dockerfile
 
 deploy-actionlint:
-	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(ACTIONLINT_IMAGE) -color=false .github/workflows/deploy-lint.yml
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(ACTIONLINT_IMAGE) -color=false .github/workflows/deploy-lint.yml .github/workflows/action.yml
 
 deploy-promtool:
 	docker run --rm -v "$(CURDIR)/deploy/monitoring:/w:ro" -w /w --entrypoint promtool $(PROMETHEUS_IMAGE) check rules prometheus-rules.yml

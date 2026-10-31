@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -17,14 +18,22 @@ import (
 //	POST /api/v1/agent-actions/{identifier}/guardrail/events      Event
 //	POST /api/v1/agent-actions/{identifier}/guardrail/approvals   ApprovalRequest → ApprovalStatus
 //	GET  /api/v1/agent-actions/{identifier}/guardrail/approvals/{id}              → ApprovalStatus
+//
+// Without an endpoint, reports go to the run's local refusal log instead
+// (refusalLog), which the run reads back (Runtime.RefusedApprovals).
 type client struct {
 	base, token, identifier string
+	logPath                 string
 	http                    *http.Client
 }
 
 func newClient(p Policy) client {
-	return client{base: strings.TrimRight(p.DaemonURL, "/"), token: p.Token, identifier: p.Identifier,
+	c := client{base: strings.TrimRight(p.DaemonURL, "/"), token: p.Token, identifier: p.Identifier,
 		http: &http.Client{Timeout: 10 * time.Second}}
+	if p.Dir != "" {
+		c.logPath = filepath.Join(p.Dir, refusalLogName)
+	}
+	return c
 }
 
 func (c client) enabled() bool { return c.base != "" && c.token != "" && c.identifier != "" }
@@ -69,6 +78,7 @@ func (c client) do(method, endpoint string, body, out any) error {
 // refusal stands whether or not the report lands.
 func (c client) report(ev Event) {
 	if !c.enabled() {
+		appendRefusal(c.logPath, ev)
 		return
 	}
 	_ = c.do(http.MethodPost, c.endpoint("events"), ev, nil)
