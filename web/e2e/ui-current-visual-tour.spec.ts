@@ -4,10 +4,11 @@
 
 import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
-import { installMockApi } from './fixtures/mockApi';
+import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
 import {
   activeRunScenario,
+  automationsPassScenario,
   inputRequiredScenario,
   mobileShellScenario,
   quickstartScenario,
@@ -25,6 +26,73 @@ const pausable: Scenario = {
   },
 };
 
+// Agents view: a backlog issue routed to a profile, so the profile columns
+// (whose headers open the agent profile viewer) render.
+const routedBacklog: Scenario = {
+  ...settingsMatrixScenario,
+  issues: settingsMatrixScenario.issues.map((issue) => ({
+    ...issue,
+    state: 'Backlog',
+    agentProfile: 'reviewer',
+  })),
+};
+
+// Sessions: one tmux session the panel controls (screen + keys) and one
+// issue run waiting for input, so the tab list, console and composer render.
+const json = (body: unknown) => ({
+  status: 200,
+  contentType: 'application/json',
+  body: JSON.stringify(body),
+});
+const mockSessions = (api: MockApiHandle) => {
+  const now = new Date().toISOString();
+  api.override(/\/api\/v1\/sessions$/, (route) =>
+    route.fulfill(
+      json({
+        generatedAt: now,
+        sessions: [
+          {
+            id: 'tmux-demo-1',
+            owner: 'itervox',
+            identifier: '',
+            title: 'Tidy the demo fixtures',
+            kind: 'tmux',
+            backend: 'claude',
+            status: 'running',
+            cwd: '/work/demo',
+            tmuxPane: { id: '%3', label: '%3' },
+            controllable: true,
+            attachCommand: 'tmux attach -t itervox-demo-1',
+          },
+          {
+            id: 'sess-demo-2',
+            owner: 'itervox',
+            identifier: 'DEMO-2',
+            title: 'Demo issue waiting on the operator',
+            profile: 'default',
+            backend: 'claude',
+            status: 'input_required',
+            inputContext: 'Which branch should this target?',
+          },
+        ],
+        tmux: { available: true, version: '3.4', installHint: 'brew install tmux', control: true },
+      }),
+    ),
+  );
+  api.override(/\/api\/v1\/sessions\/[^/?]+\/screen(\?|$)/, (route) =>
+    route.fulfill(
+      json({
+        id: 'tmux-demo-1',
+        pane: '%3',
+        label: '%3',
+        text: '> Tidy the demo fixtures\n● Reading src/test/fixtures/issues.ts\n✓ Edited src/test/fixtures/issues.ts\n? Keep the old ids or renumber them?',
+        lines: 4,
+        capturedAt: now,
+      }),
+    ),
+  );
+};
+
 const OUT = process.env.VISUAL_TOUR_DIR ?? 'test-results/visual-tour';
 const THEMES = ['light', 'dark'] as const;
 
@@ -34,6 +102,9 @@ interface Stop {
   scenario: Scenario;
   ready: (page: Page) => Promise<unknown>;
   open?: (page: Page) => Promise<unknown>;
+  beforeNavigate?: (api: MockApiHandle) => void;
+  /** Capture the viewport only (a dialog over a long page). Default: full page. */
+  viewportOnly?: boolean;
 }
 
 const heading = (name: string | RegExp) => (page: Page) =>
@@ -56,7 +127,8 @@ const pages: Stop[] = [
     name: 'sessions',
     route: '/sessions',
     scenario: activeRunScenario,
-    ready: (p) => p.waitForLoadState('networkidle'),
+    beforeNavigate: mockSessions,
+    ready: (p) => expect(p.getByTestId('tmux-screen')).toContainText('Tidy the demo fixtures'),
   },
   {
     name: 'logs',
@@ -88,6 +160,23 @@ const pages: Stop[] = [
 ];
 
 const overlays: Stop[] = [
+  {
+    name: 'automations-activity',
+    route: '/automations?tab=activity',
+    scenario: automationsPassScenario,
+    ready: (p) => expect(p.getByTestId('automations-activity')).toBeVisible(),
+  },
+  {
+    name: 'agent-info',
+    route: '/?view=agents',
+    scenario: routedBacklog,
+    viewportOnly: true,
+    ready: (p) => expect(p.getByRole('heading', { name: 'reviewer', level: 3 })).toBeVisible(),
+    open: async (p) => {
+      await p.getByRole('heading', { name: 'reviewer', level: 3 }).click();
+      await expect(p.getByRole('dialog', { name: 'Agent profile reviewer' })).toBeVisible();
+    },
+  },
   {
     name: 'issue-detail',
     route: '/?issue=DEMO-1',
@@ -142,9 +231,9 @@ const overlays: Stop[] = [
   },
 ];
 
-async function shoot(page: Page, theme: string, name: string, viewport: string) {
+async function shoot(page: Page, theme: string, name: string, viewport: string, fullPage = true) {
   await page.waitForTimeout(250);
-  await page.screenshot({ path: `${OUT}/${theme}/${viewport}-${name}.png`, fullPage: true });
+  await page.screenshot({ path: `${OUT}/${theme}/${viewport}-${name}.png`, fullPage });
 }
 
 for (const theme of THEMES) {
@@ -157,7 +246,11 @@ for (const theme of THEMES) {
       test(`${stop.name} renders`, async ({ page }, info) => {
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(e.message));
-        await bootApp(page, { scenario: stop.scenario, route: stop.route });
+        await bootApp(page, {
+          scenario: stop.scenario,
+          route: stop.route,
+          beforeNavigate: stop.beforeNavigate,
+        });
         await stop.ready(page);
         if (stop.open) await stop.open(page);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -166,6 +259,7 @@ for (const theme of THEMES) {
           theme,
           stop.name,
           info.project.name.includes('mobile') ? 'mobile' : 'desktop',
+          !stop.viewportOnly,
         );
         expect(errors).toEqual([]);
       });

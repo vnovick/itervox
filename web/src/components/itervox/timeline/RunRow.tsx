@@ -74,15 +74,16 @@ export const RunRow = memo(function RunRow({
         tabIndex={0}
         aria-expanded={expanded}
         aria-label={`Run #${String(runNumber)} at ${timeLabel}, ${fmtMs(session.elapsedMs)}`}
-        className="hover:bg-theme-bg-soft focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+        className="hover:bg-theme-bg-soft focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] transition-colors focus-visible:ring-2 focus-visible:outline-none"
         style={{ minHeight: ROW_MIN_HEIGHT, padding: '8px 0' }}
         onClick={onToggleExpand}
         onKeyDown={activateOnKey(onToggleExpand)}
       >
         {/* Expand chevron */}
         <span
-          className="w-4 shrink-0 text-center text-xs"
-          style={{ color: subagents.length > 0 ? 'var(--text-secondary)' : 'transparent' }}
+          className={`w-4 shrink-0 text-center text-xs ${
+            subagents.length > 0 ? 'text-theme-text-secondary' : 'text-transparent'
+          }`}
         >
           {expanded ? '▼' : '▶'}
         </span>
@@ -93,18 +94,18 @@ export const RunRow = memo(function RunRow({
           style={{ width: LABEL_WIDTH }}
           title={session.startedAt}
         >
-          <span className="text-theme-accent-strong font-semibold">#{runNumber}</span>
+          <span className="text-theme-text font-sans text-xs font-semibold">#{runNumber}</span>
           <span className="text-theme-muted"> · {timeLabel}</span>
         </span>
 
         {/* Bar track */}
         <div
-          className="bg-theme-bg-soft relative flex-1 overflow-hidden rounded"
-          style={{ height: BAR_HEIGHT }}
+          className="glass-card relative flex-1 overflow-hidden rounded-[var(--radius-sm)]"
+          style={{ height: BAR_HEIGHT + 12 }}
         >
           {/* Progress bar */}
           <div
-            className="absolute top-0 flex h-full items-center rounded"
+            className="absolute top-1.5 bottom-1.5 flex items-center rounded-full"
             style={{
               left: `${String(barLeft * 100)}%`,
               width: `${String(barWidth * 100)}%`,
@@ -116,7 +117,7 @@ export const RunRow = memo(function RunRow({
           {subagents.map((sa, si) => (
             <div
               key={si}
-              className="absolute top-0 z-10 h-full w-0.5"
+              className="absolute top-1.5 bottom-1.5 z-10 w-0.5"
               style={{
                 left: `${String((barLeft + sa.startFrac * barWidth) * 100)}%`,
                 background: TICK_MARK_STYLE,
@@ -145,7 +146,7 @@ export const RunRow = memo(function RunRow({
         {/* Status badge (non-live only) */}
         {!isLive && (
           <span
-            className="shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.03em] uppercase"
+            className="shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold"
             style={badge}
           >
             {statusBadgeLabel(session.status)}

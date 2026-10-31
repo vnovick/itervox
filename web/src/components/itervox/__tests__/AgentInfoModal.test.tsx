@@ -226,7 +226,7 @@ describe('AgentInfoModal', () => {
       expect(screen.getByText('Sonnet 4.6 - Balanced')).toBeInTheDocument();
     });
 
-    it('does not display model badge when command has no --model flag', () => {
+    it('shows "Default model" when command has no --model flag', () => {
       render(
         <AgentInfoModal
           profileName="coder"
@@ -234,13 +234,9 @@ describe('AgentInfoModal', () => {
           onClose={vi.fn()}
         />,
       );
-      // The model badge has bg-theme-bg-soft class; there should be no element with model text
-      // Just verify agent-info-content renders without a model badge span
-      const content = screen.getByTestId('agent-info-content');
-      // Only the backend badge should exist, not a model badge
-      const badges = content.querySelectorAll('span.rounded-full');
-      // One badge for backend
-      expect(badges.length).toBe(1);
+      // One backend pill, and the model pill falls back to the default label.
+      expect(screen.getAllByTestId('agent-info-backend')).toHaveLength(1);
+      expect(screen.getByTestId('agent-info-model')).toHaveTextContent('Default model');
     });
   });
 

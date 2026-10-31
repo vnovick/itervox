@@ -57,10 +57,10 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {!isFollowing && (
-        <div className="border-theme-line bg-theme-panel flex flex-shrink-0 justify-end border-b px-3 py-1">
+        <div className="border-theme-line flex flex-shrink-0 justify-end border-b px-4 py-1">
           <button
             onClick={scrollToBottom}
-            className="text-theme-accent-text text-[10px] font-medium transition-colors hover:opacity-80"
+            className="text-theme-accent-text text-[11px] font-medium transition-colors hover:opacity-80"
           >
             ▼ Jump to live
           </button>
@@ -69,7 +69,7 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
       <div
         ref={containerRef}
         onScroll={onScroll}
-        className="bg-theme-panel-dark flex-1 overflow-y-auto p-3 font-mono text-[12px] leading-[1.6]"
+        className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px] leading-[1.6]"
       >
         {entries.length === 0 ? (
           <p className="text-theme-muted italic">No logs yet for {identifier}.</p>

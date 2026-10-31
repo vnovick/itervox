@@ -9,7 +9,8 @@ import {
   modelLabel,
   normalizeAllowedActions,
 } from '../profileCommands';
-import { backendBadgeClass, backendLabel } from './profileBadges';
+import { backendLabel } from './profileBadges';
+import { Button } from '../../../components/ui/button';
 
 function fmtTokens(n: number): string {
   if (n < 1000) return String(n);
@@ -65,127 +66,108 @@ export function ProfileRow({
     };
   }, [inventory]);
 
+  const modelText = inferredModel ? modelLabel(inferredBackend, inferredModel) : 'default model';
+  const instructionsExcerpt = instructionsText
+    ? `${instructionsText.slice(0, 180)}${instructionsText.length > 180 ? '…' : ''}`
+    : 'No profile instructions configured yet.';
+
   return (
-    <article className="border-theme-line bg-theme-bg-soft flex min-h-[176px] w-full flex-col gap-3 rounded-[var(--radius-md)] border p-4">
-      <div className="flex w-full items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-theme-text text-sm font-semibold">{name}</p>
-            <span
-              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${backendBadgeClass(inferredBackend)}`}
-            >
-              {backendLabel(inferredBackend)}
-            </span>
-            {inferredModel && (
-              <span className="bg-theme-panel text-theme-text-secondary rounded-full px-2 py-0.5 font-mono text-[10px]">
-                {modelLabel(inferredBackend, inferredModel)}
-              </span>
-            )}
-          </div>
-          <p className="text-theme-text-secondary mt-2 text-[11px] leading-relaxed">
-            {instructionsText
-              ? `${instructionsText.slice(0, 180)}${instructionsText.length > 180 ? '…' : ''}`
-              : 'No profile instructions configured yet.'}
-          </p>
-        </div>
-        <span
-          className={`rounded-[var(--radius-sm)] px-2.5 py-1 text-[11px] font-medium whitespace-nowrap ${
-            isEnabled
-              ? 'bg-theme-success-soft text-theme-success-text'
-              : 'bg-theme-panel text-theme-text-secondary'
-          }`}
-        >
+    <article className="glass-card flex w-full flex-col gap-1.5 rounded-[18px] px-3.5 py-3">
+      <div className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-2">
+        <p className="text-theme-text text-[15px] font-semibold">{name}</p>
+        <span className={`pill px-2 py-0 text-xs ${isEnabled ? 'pill-ok' : 'pill-neutral'}`}>
           {isEnabled ? 'Active' : 'Inactive'}
         </span>
-      </div>
+        <span className="text-theme-text-secondary text-xs">
+          {backendLabel(inferredBackend)} ·{' '}
+          <span className={inferredModel ? 'font-mono' : ''}>{modelText}</span>
+        </span>
+        {tokenSummary && (
+          <span
+            className="text-theme-muted text-xs"
+            title="Approx. token cost this profile inherits from the global skills inventory. Every profile loads the full surface today; per-profile whitelist/blacklist is on the roadmap."
+          >
+            Inherits ~{fmtTokens(tokenSummary.total)} tok ({tokenSummary.skillCount} skills)
+          </span>
+        )}
 
-      {(actionLabels.length > 0 || (def.unknownAllowedActions?.length ?? 0) > 0) && (
-        <div className="mt-auto flex flex-wrap gap-1">
-          {actionLabels.map((label) => (
-            <span
-              key={label}
-              className="bg-theme-panel text-theme-text-secondary rounded-full px-2 py-0.5 text-[10px]"
-            >
-              {label}
-            </span>
-          ))}
-          {/* CORE-047 round 2: actions from a newer daemon, read-only. */}
-          {def.unknownAllowedActions?.map((raw) => (
-            <span
-              key={`unknown:${raw}`}
-              title={unknownValueLabel('action', raw)}
-              className="bg-theme-warning-soft text-theme-warning-text rounded-full px-2 py-0.5 text-[10px]"
-            >
-              {raw} (unknown)
-            </span>
-          ))}
-        </div>
-      )}
-
-      {tokenSummary && (
-        <p
-          className="text-theme-muted text-[10px]"
-          title="Approx. token cost this profile inherits from the global skills inventory. Per-profile whitelist/blacklist is on the roadmap; until it ships, every profile loads the full surface."
-        >
-          Inherits ~{fmtTokens(tokenSummary.total)} tok ({tokenSummary.skillCount} skills) — every
-          profile loads the full surface today
-        </p>
-      )}
-
-      <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-        <button
-          onClick={onEdit}
-          className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80"
-        >
-          Edit
-        </button>
-        <button
-          onClick={async () => {
-            setPendingAction('toggle');
-            await onToggleEnabled(name, def, !isEnabled);
-            setPendingAction(null);
-          }}
-          disabled={pendingAction !== null}
-          className="bg-theme-accent rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-50"
-        >
-          {pendingAction === 'toggle' ? 'Saving…' : isEnabled ? 'Deactivate' : 'Activate'}
-        </button>
-        {confirmDelete ? (
-          <>
-            <span className="text-theme-muted text-xs">Delete?</span>
-            <button
-              onClick={async () => {
-                setPendingAction('delete');
-                await onDelete(name);
-                setPendingAction(null);
-                setConfirmDelete(false);
-              }}
-              disabled={pendingAction !== null}
-              className="bg-theme-danger rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-50"
-            >
-              {pendingAction === 'delete' ? '…' : 'Yes'}
-            </button>
-            <button
-              onClick={() => {
-                setConfirmDelete(false);
-              }}
-              disabled={pendingAction !== null}
-              className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-2.5 py-1.5 text-xs transition-colors hover:opacity-80 disabled:opacity-50"
-            >
-              No
-            </button>
-          </>
-        ) : (
-          <button
-            onClick={() => {
-              setConfirmDelete(true);
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          <Button
+            variant="glass"
+            size="md"
+            onClick={async () => {
+              setPendingAction('toggle');
+              await onToggleEnabled(name, def, !isEnabled);
+              setPendingAction(null);
             }}
             disabled={pendingAction !== null}
-            className="border-theme-danger text-theme-danger-text rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80 disabled:opacity-50"
           >
-            Delete
-          </button>
-        )}
+            {pendingAction === 'toggle' ? 'Saving…' : isEnabled ? 'Deactivate' : 'Activate'}
+          </Button>
+          <Button variant="glass" size="md" onClick={onEdit}>
+            Edit
+          </Button>
+          {confirmDelete ? (
+            <>
+              <span className="text-theme-muted text-xs">Delete?</span>
+              <Button
+                variant="destructive"
+                size="md"
+                onClick={async () => {
+                  setPendingAction('delete');
+                  await onDelete(name);
+                  setPendingAction(null);
+                  setConfirmDelete(false);
+                }}
+                disabled={pendingAction !== null}
+              >
+                {pendingAction === 'delete' ? '…' : 'Yes'}
+              </Button>
+              <Button
+                variant="glass"
+                size="md"
+                onClick={() => {
+                  setConfirmDelete(false);
+                }}
+                disabled={pendingAction !== null}
+              >
+                No
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="glass-danger"
+              size="md"
+              onClick={() => {
+                setConfirmDelete(true);
+              }}
+              disabled={pendingAction !== null}
+            >
+              Delete
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex w-full flex-wrap items-center gap-1.5">
+        <p className="text-theme-muted min-w-0 flex-1 basis-64 truncate text-xs">
+          {instructionsExcerpt}
+        </p>
+        {actionLabels.map((label) => (
+          <span key={label} className="pill pill-neutral px-2 py-0 text-[11px]">
+            {label}
+          </span>
+        ))}
+        {/* CORE-047 round 2: actions from a newer daemon, read-only. */}
+        {def.unknownAllowedActions?.map((raw) => (
+          <span
+            key={`unknown:${raw}`}
+            title={unknownValueLabel('action', raw)}
+            className="pill pill-warn px-2 py-0 text-[11px]"
+          >
+            {raw} (unknown)
+          </span>
+        ))}
       </div>
     </article>
   );

@@ -262,10 +262,7 @@ export default function Timeline() {
     <>
       <PageMeta title="Itervox | Timeline" description="Agent timeline" />
 
-      <div
-        data-testid="timeline-filter-bar"
-        className="border-theme-line flex items-center gap-2 border-b px-3 py-2"
-      >
+      <div data-testid="timeline-filter-bar" className="mb-4 flex flex-wrap items-center gap-2">
         <button
           type="button"
           data-testid="timeline-chip-automation"
@@ -280,12 +277,12 @@ export default function Timeline() {
               ? 'Show only runs dispatched by an automation rule'
               : 'No automation runs in the current snapshot'
           }
-          className={`rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+          className={`glass-chip min-h-10 px-3.5 text-[13px] transition-colors ${
             !hasAnyAutomationRun
-              ? 'border-theme-line text-theme-muted/60 cursor-not-allowed'
+              ? 'text-theme-muted cursor-not-allowed opacity-70'
               : automationOnly
-                ? 'border-theme-success/40 bg-theme-success-soft text-theme-success-text'
-                : 'border-theme-line text-theme-muted hover:text-theme-text'
+                ? 'bg-theme-success-soft text-theme-success-text'
+                : 'text-theme-text hover:bg-theme-panel'
           }`}
         >
           automation runs only
@@ -295,14 +292,12 @@ export default function Timeline() {
           value={activePromptFilter}
           onChange={setPromptFilter}
         />
-        <span className="text-theme-muted ml-auto font-mono text-[10px]">
-          {allSessions.length} runs
-        </span>
+        <span className="text-theme-text-secondary text-[13px]">{allSessions.length} runs</span>
       </div>
 
       {/* CORE-087 — stacked below md (select above the detail pane); dvh
           so mobile browser chrome does not push the pane off-screen. */}
-      <div className="flex h-[calc(100dvh-140px)] min-h-[420px] flex-col md:min-h-[500px] md:flex-row">
+      <div className="flex h-[calc(100dvh-170px)] min-h-[420px] flex-col gap-4 md:min-h-[500px] md:flex-row md:items-start">
         <TimelineSidebar
           issueGroups={issueGroups}
           selectedId={selectedId}

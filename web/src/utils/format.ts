@@ -23,6 +23,19 @@ export function orchDotClass(state: string): string {
   return 'bg-gray-300 dark:bg-gray-600';
 }
 
+/**
+ * Token-based status dot for an orchestrator state: pair with `.status-dot`.
+ * Running pulses green, waiting on retry or on the operator is orange,
+ * paused is red, anything else is the idle grey.
+ */
+export function orchStatusDotClass(state: string): string {
+  if (state === 'running') return 'dot-ok animate-pulse';
+  if (state === 'retrying' || state === 'pending_input_resume') return 'dot-warn animate-pulse';
+  if (state === 'input_required') return 'dot-warn';
+  if (state === 'paused') return 'dot-danger';
+  return 'dot-idle';
+}
+
 export function formatOrchestratorState(state: string): string {
   if (state === 'pending_input_resume') return 'reply received';
   return state.replace(/_/g, ' ');

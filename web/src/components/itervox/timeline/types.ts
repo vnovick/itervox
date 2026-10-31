@@ -168,22 +168,19 @@ export function filterByRun(logs: IssueLogEntry[], run: NormalisedSession | null
 
 // ─── Status dot style ─────────────────────────────────────────────────────────
 
-export function dotStyle(status: NormalisedSession['status']): React.CSSProperties {
+/** Status-dot tone for a run status; pair with `.status-dot`. */
+export function dotClass(status: NormalisedSession['status']): string {
   switch (status) {
     case 'live':
-      return {
-        background: 'var(--success)',
-        boxShadow: '0 0 0 4px var(--success-soft)',
-      };
+      return 'dot-ok animate-pulse';
     case 'succeeded':
-      return { background: 'var(--accent)' };
+      return 'bg-theme-accent';
     case 'failed':
-      return { background: 'var(--danger)' };
+      return 'dot-danger';
     case 'stalled':
-      return { background: 'var(--warning)' };
     case 'input_required':
-      return { background: 'var(--warning)', boxShadow: '0 0 0 4px var(--warning-soft)' };
+      return 'dot-warn';
     default:
-      return { background: 'var(--muted)' };
+      return 'dot-idle';
   }
 }

@@ -45,8 +45,8 @@ export function ProfileReferencePicker({ backend, onInsert }: ProfileReferencePi
     <section aria-label={title} className={fieldSurfaceCls}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-theme-text text-[11px] font-semibold">{title}</p>
-          <p className="text-theme-muted mt-0.5 text-[11px]">
+          <p className="field-label mb-0">{title}</p>
+          <p className="field-help mt-0.5">
             {describeCounts(itemCounts(items))}. Click one to add a reference to INSTRUCTIONS.md.
           </p>
         </div>
@@ -59,7 +59,7 @@ export function ProfileReferencePicker({ backend, onInsert }: ProfileReferencePi
               setQuery(e.target.value);
             }}
             placeholder="Filter"
-            className={`${inputCls} max-w-[180px] py-1 text-xs`}
+            className={`${inputCls} max-w-[200px] text-[13px]`}
           />
         )}
       </div>
@@ -74,7 +74,7 @@ export function ProfileReferencePicker({ backend, onInsert }: ProfileReferencePi
                 onClick={() => {
                   onInsert(referenceText(item));
                 }}
-                className="bg-theme-panel text-theme-text-secondary hover:text-theme-text rounded-full px-2 py-0.5 font-mono text-[11px]"
+                className="pill pill-neutral hover:text-theme-text px-2.5 py-0.5 font-mono text-xs"
               >
                 {item.name}
                 <span className="text-theme-muted ml-1 font-sans">{KIND_LABEL[item.kind]}</span>

@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useDialogLayer } from '../dialog/useDialogLayer';
 
 /**
@@ -50,7 +51,10 @@ export const Modal: React.FC<ModalProps> = ({
     ? 'w-full h-full rounded-none'
     : 'relative w-full max-h-[85vh] overflow-y-auto';
 
-  return (
+  // Portalled to <body>: a glass panel is its own stacking context
+  // (isolation: isolate), so a dialog rendered inside one would otherwise
+  // paint under the app shell whatever its z-index.
+  return createPortal(
     <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto p-4">
       {!isFullscreen && (
         // Backdrop: a mouse shortcut to close; Escape closes via useDialogLayer.
@@ -97,6 +101,7 @@ export const Modal: React.FC<ModalProps> = ({
         )}
         <div className={padded ? 'p-6' : ''}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };

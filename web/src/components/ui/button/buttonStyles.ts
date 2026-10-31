@@ -4,11 +4,19 @@ import { cn } from '../cn';
  * Button looks (visual refresh):
  * - `primary`     accent fill, white text
  * - `secondary`   the glass chip: translucent white, hairline rim (alias `glass`)
+ * - `glass-danger` the glass chip with red text (a quiet destructive trigger)
  * - `ghost`       text only, subtle fill on hover
  * - `danger`      soft red tint, red text (a destructive *trigger*)
  * - `destructive` solid red, white text (the confirming step)
  */
-export type ButtonVariant = 'primary' | 'secondary' | 'glass' | 'ghost' | 'danger' | 'destructive';
+export type ButtonVariant =
+  | 'primary'
+  | 'secondary'
+  | 'glass'
+  | 'glass-danger'
+  | 'ghost'
+  | 'danger'
+  | 'destructive';
 export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
 
 const GLASS = 'glass-chip text-theme-text hover:bg-theme-panel-strong';
@@ -17,6 +25,7 @@ const VARIANT: Record<ButtonVariant, string> = {
   primary: 'bg-theme-accent text-white shadow-theme-sm hover:brightness-110',
   secondary: GLASS,
   glass: GLASS,
+  'glass-danger': 'glass-chip text-theme-danger-text hover:bg-theme-danger-soft',
   ghost: 'text-theme-text-secondary hover:bg-theme-bg-soft hover:text-theme-text',
   danger: 'bg-theme-danger-soft text-theme-danger-text hover:opacity-90',
   destructive: 'bg-theme-danger text-white shadow-theme-sm hover:brightness-110',

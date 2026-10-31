@@ -59,7 +59,7 @@ export function PREventFilterFields({
     (field) => PR_EVENT_FILTER_TRIGGER[field] === values.triggerType,
   );
   return (
-    <div className="border-theme-line bg-theme-bg-soft space-y-3 rounded-[var(--radius-sm)] border px-3 py-3">
+    <div className="field-group space-y-3">
       <p className={helperTextCls}>
         Fires only for pull requests an Itervox run opened or continued, from GitHub webhooks
         (pr_events.webhook_secret) or a poll of those PRs.
