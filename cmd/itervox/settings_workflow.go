@@ -22,17 +22,20 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			enabledField = &enabled
 		}
 		out[name] = workflow.ProfileEntry{
-			Command:           profile.Command,
-			Prompt:            profile.Prompt,
-			SoulFile:          strings.TrimSpace(profile.SoulFile),
-			InstructionsFile:  strings.TrimSpace(profile.InstructionsFile),
-			Backend:           profile.Backend,
-			Enabled:           enabledField,
-			AllowedActions:    config.NormalizeAllowedActions(profile.AllowedActions),
-			CreateIssueState:  strings.TrimSpace(profile.CreateIssueState),
-			CreateIssueLabels: config.NormalizeCreateIssueLabels(profile.CreateIssueLabels),
-			PermissionMode:    strings.TrimSpace(profile.PermissionMode),
-			RequireEvidence:   config.NormalizeEvidenceChecks(profile.RequireEvidence),
+			Command:             profile.Command,
+			Prompt:              profile.Prompt,
+			SoulFile:            strings.TrimSpace(profile.SoulFile),
+			InstructionsFile:    strings.TrimSpace(profile.InstructionsFile),
+			Backend:             profile.Backend,
+			Enabled:             enabledField,
+			AllowedActions:      config.NormalizeAllowedActions(profile.AllowedActions),
+			CreateIssueState:    strings.TrimSpace(profile.CreateIssueState),
+			CreateIssueLabels:   config.NormalizeCreateIssueLabels(profile.CreateIssueLabels),
+			PermissionMode:      strings.TrimSpace(profile.PermissionMode),
+			RequireEvidence:     config.NormalizeEvidenceChecks(profile.RequireEvidence),
+			Isolation:           strings.TrimSpace(profile.Isolation),
+			IsolationExtraWrite: profile.IsolationExtraWrite,
+			IsolationExtraDeny:  profile.IsolationExtraDeny,
 		}
 	}
 	return out

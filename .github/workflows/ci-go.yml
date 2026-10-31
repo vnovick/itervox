@@ -41,6 +41,11 @@ jobs:
       - name: Build
         run: go build ./cmd/... ./internal/...
 
+      # #258: the Linux real-process isolation test needs bwrap (it skips
+      # without it); Landlock needs nothing installed.
+      - name: Install bubblewrap
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+
       # -tags sshmatrix: the slow SSH login-shell matrix in internal/agent,
       # skipped by a plain `go test` (CORE-172). goleak.VerifyTestMain runs in
       # internal/agent, internal/server and internal/orchestrator (CORE-112).
@@ -67,6 +72,28 @@ jobs:
       - name: Dead code
         run: make deadcode
 
+
+  # #258: the macOS sandbox (sandbox-exec) can only be exercised on macOS.
+  # The test fails (not skips) there when sandbox-exec does not work.
+  isolation-macos:
+    name: Isolation (macOS sandbox-exec)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Real-process sandbox-exec test
+        shell: bash
+        run: |
+          go test -race -count=1 -v \
+            -run '^(TestIsolationRealProcessSandboxExec|TestIsolationPolicyWriteAndDenyLists|TestIsolationNoneLeavesCommandUnchanged|TestIsolationProcessWrapsEveryLaunchPath)$' \
+            ./internal/agent/ | tee isolation.out
+          grep -q -- '--- PASS: TestIsolationRealProcessSandboxExec' isolation.out
 
   lint:
     name: Lint

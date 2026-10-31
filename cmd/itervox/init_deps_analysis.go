@@ -145,6 +145,9 @@ func runInitDepsAnalysis(workflowPath, requestedMode string) (issueCount, analyz
 		ReadTimeoutMs: cfg.Agent.ReadTimeoutMs,
 		TurnTimeoutMs: cfg.Agent.TurnTimeoutMs,
 		RulesBlock:    analyzerRulesBlock(cfg, profileName, profile, slog.Default()), // #157
+
+		DefaultIsolation: cfg.Agent.Isolation, // #258
+		ProjectDir:       filepath.Dir(cfg.WorkflowPath),
 	}, plan.ToAnalyze, trackerEdges, chunkSize, nil)
 	if err != nil {
 		return 0, 0, 0, "", false, fmt.Errorf("agent pass: %w", err)

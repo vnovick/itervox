@@ -94,6 +94,10 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		PermissionMode:    existingProfile.PermissionMode,
 		RequireEvidence:   existingProfile.RequireEvidence,
 		CreateIssueLabels: existingProfile.CreateIssueLabels,
+		// #258: likewise the sandbox settings.
+		Isolation:           existingProfile.Isolation,
+		IsolationExtraWrite: existingProfile.IsolationExtraWrite,
+		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {

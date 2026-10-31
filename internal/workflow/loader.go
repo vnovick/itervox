@@ -239,12 +239,32 @@ type ProfileEntry struct {
 	PermissionMode string
 	// RequireEvidence is the profile's require_evidence list (#80).
 	RequireEvidence []string
+	// Isolation is the profile's isolation ("" omits the key, #258);
+	// IsolationExtraWrite / IsolationExtraDeny its extra path lists.
+	Isolation           string
+	IsolationExtraWrite []string
+	IsolationExtraDeny  []string
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
 type AutomationFilterEntry = automationdef.Filter
 type AutomationPolicyEntry = automationdef.Policy
 type AutomationEntry = automationdef.Definition
+
+// appendQuotedList appends header and one quoted "- item" line per
+// non-empty item, or nothing when items has none.
+func appendQuotedList(lines []string, header, itemIndent string, items []string) []string {
+	var body []string
+	for _, item := range items {
+		if item != "" {
+			body = append(body, itemIndent+"- "+strconv.Quote(item))
+		}
+	}
+	if len(body) == 0 {
+		return lines
+	}
+	return append(append(lines, header), body...)
+}
 
 // MutateProfilesBlock returns a Mutator that replaces (or inserts) the
 // agent.profiles: block. See PatchProfilesBlock.
@@ -345,6 +365,11 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 						}
 					}
 				}
+				if entry.Isolation != "" {
+					replacement = append(replacement, lvl3+"isolation: "+strconv.Quote(entry.Isolation))
+				}
+				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_write:", lvl4, entry.IsolationExtraWrite)
+				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_deny:", lvl4, entry.IsolationExtraDeny)
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))
 				}

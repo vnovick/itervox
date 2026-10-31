@@ -1786,6 +1786,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			if ev.RunEntry.AgentSessionID != "" {
 				entry.AgentSessionID = ev.RunEntry.AgentSessionID
 			}
+			if ev.RunEntry.Isolation != "" { // #258
+				entry.Isolation = ev.RunEntry.Isolation
+			}
 			if entry.PendingInputResume && (ev.RunEntry.TurnCount > 0 || ev.RunEntry.TotalTokens > 0 || ev.RunEntry.LastMessage != "") {
 				delete(state.PendingInputResumes, entry.Issue.Identifier)
 				entry.PendingInputResume = false

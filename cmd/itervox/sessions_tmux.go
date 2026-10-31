@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -59,6 +60,11 @@ type tmuxSessions struct {
 	// guard prepares the guardrails of each session it starts (#204); nil
 	// when guardrails are off.
 	guard *tmuxGuardrails
+	// isolation is agent.isolation, the default for a session without a
+	// profile or whose profile sets none (#258); isolationDetect resolves
+	// the sandbox mechanism, nil meaning agent.DetectIsolation.
+	isolation       string
+	isolationDetect func() (agent.IsolationMechanism, error)
 }
 
 func (t *tmuxSessions) tmux() tmuxctl.Client { return t.detect.client }
@@ -256,11 +262,13 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 		return orchestrator.AgentSession{}, err
 	}
 	configured, mode := t.agentCommand, agent.PermissionSandbox
+	var profile config.AgentProfile
 	if req.Profile != "" {
 		p, ok := t.orch.AgentProfileCfg(req.Profile)
 		if !ok {
 			return orchestrator.AgentSession{}, server.ErrUnknownProfile
 		}
+		profile = p
 		if p.Command != "" {
 			configured = p.Command
 		}
@@ -275,6 +283,12 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 	command, err := interactiveCommand(req.Backend, configured, mode, req.Prompt, lookPath)
 	if err != nil {
 		return orchestrator.AgentSession{}, &server.BadSessionRequestError{Field: "backend", Message: err.Error()}
+	}
+	// #258: the CLI runs in the profile's sandbox, like a dispatched run.
+	// Refused, not started unconfined, when no sandbox works here.
+	iso, err := t.sessionIsolation(profile, cwd)
+	if err != nil {
+		return orchestrator.AgentSession{}, &server.BadSessionRequestError{Field: "profile", Message: err.Error()}
 	}
 	s := orchestrator.TmuxSession{ID: "itervox-" + shortID(), Backend: req.Backend, Cwd: cwd, Profile: req.Profile}
 	switch err := t.orch.ReserveTmuxSession(s); {
@@ -294,6 +308,11 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 			command = prefix + command
 		}
 	}
+	if command, err = agent.IsolateShellCommand(iso, command); err != nil { // #258
+		t.orch.FinishTmuxSessionStart(s.ID, true)
+		t.guard.release(s.ID)
+		return orchestrator.AgentSession{}, fmt.Errorf("cmd/itervox: sandbox the tmux session: %w", err)
+	}
 	err = t.tmux().NewSession(ctx, s.ID, cwd, command)
 	t.orch.FinishTmuxSessionStart(s.ID, err != nil)
 	if err != nil {
@@ -301,9 +320,17 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 		return orchestrator.AgentSession{}, fmt.Errorf("cmd/itervox: tmux new-session: %w", err)
 	}
 	slog.Info("sessions: tmux session started", "session_id", s.ID, "backend", s.Backend, "cwd", cwd,
-		"profile", s.Profile, "prompt_bytes", len(req.Prompt))
+		"profile", s.Profile, "prompt_bytes", len(req.Prompt), "isolation", cmp.Or(iso.Name(), config.IsolationNone))
 	return orchestrator.AgentSession{ID: s.ID, Owner: orchestrator.SessionOwnerItervox, Kind: orchestrator.SessionKindTmux,
 		Backend: s.Backend, Cwd: cwd, Profile: s.Profile, Status: orchestrator.SessionStatusRunning, StartedAt: time.Now()}, nil
+}
+
+// sessionIsolation resolves the sandbox a session's profile asks for
+// (#258): nil for isolation none, an error when no sandbox works here.
+// The session's command line goes through agent.IsolateShellCommand.
+func (t *tmuxSessions) sessionIsolation(profile config.AgentProfile, cwd string) (*agent.Isolation, error) {
+	return agent.PrepareIsolation(config.ResolveIsolation(profile.Isolation, t.isolation),
+		agent.RunIsolationInputs(cwd, t.workspaceRoot, t.projectRoot, profile), t.isolationDetect)
 }
 
 // kill kills one of itervox's tmux sessions.

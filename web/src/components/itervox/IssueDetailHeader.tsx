@@ -131,6 +131,15 @@ export default function IssueDetailHeader({
             🤖 {latestAutomationId}
           </button>
         )}
+        {runningRow?.isolation && (
+          <span
+            data-testid="issue-detail-isolation-badge"
+            title="The agent runs in an operating-system sandbox: it can write only to its workspace, and credentials and other workspaces are hidden"
+            className="flex-shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300"
+          >
+            Sandboxed ({runningRow.isolation})
+          </span>
+        )}
         <span className="bg-theme-bg-soft text-theme-text-secondary ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium">
           {backend}
         </span>
