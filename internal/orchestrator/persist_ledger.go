@@ -66,6 +66,7 @@ const (
 	ledgerFeed
 	ledgerDispatchPause
 	ledgerPlaybookOverrides
+	ledgerTaskSpecs
 	numLedgers
 )
 
@@ -85,6 +86,7 @@ var ledgerNames = [numLedgers]string{
 	ledgerFeed:               "feed",
 	ledgerDispatchPause:      "dispatch_paused",
 	ledgerPlaybookOverrides:  "playbook_overrides",
+	ledgerTaskSpecs:          "task_specs",
 }
 
 // ledgerOp is one full version of a ledger: write data to path, or remove it.

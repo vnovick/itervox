@@ -491,6 +491,32 @@ itervox approve <issue>        # approve the command a guardrail is holding for 
 
 The same actions as the dashboard, through the API. `approve` answers a [guardrail approval](/guides/guardrails/) with `approve`, and refuses (exit `1`, nothing sent) when the issue is waiting for an ordinary answer instead; to refuse a held command, `itervox reply <issue> <reason>`. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
+### New task
+
+```bash
+itervox task "Upgrade lodash" --instructions @notes.md --start
+itervox task "Add parser tests" --tracker --profile implementer --base release/2.x
+itervox task --template upgrade --var package=lodash --var version=4.17.21
+itervox task --templates
+```
+
+Creates a [New task](/guides/new-task/) on the running daemon (`POST /api/v1/tasks`, operator scope): a local task file in `.itervox/issues/` by default (`TASK-1`, … in a Linear or GitHub project), or an issue in the project's tracker with `--tracker`. It is created in the first active state.
+
+| Flag | Meaning |
+|---|---|
+| `--instructions <text\|@file>` | Custom instructions (Markdown) for this task only; `@path` reads a file, `@-` stdin. Added to the task's prompt as a `## Task instructions` block after the playbook. |
+| `--profile NAME` | The agent profile to run it with. |
+| `--backend claude\|codex` | The backend to run it on. |
+| `--playbook NAME` | The playbook to attach (`none` for none). |
+| `--base BRANCH` | The branch its worktree starts from and its pull request targets. |
+| `--tracker` | Create it in the tracker instead of as a local task. |
+| `--start` | Dispatch it at once; slots, guardrails, budgets and dependencies still apply. Without it, the next poll picks it up. |
+| `--template NAME` | Start from `.itervox/tasks/NAME.md`; flags you give override its fields. |
+| `--var key=value` | Fill a template's `{{key}}` placeholder (repeatable). A placeholder without a value is refused. |
+| `--templates` | List the saved templates and their placeholders, and exit. |
+
+It prints the created identifier, or the daemon's reason for refusing (exit `1`); a usage error is exit `2`.
+
 ### Pause and resume all dispatch
 
 ```bash

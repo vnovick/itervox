@@ -154,6 +154,7 @@ export const PromptPartsSchema = z.object({
   rules: z.string().optional(),
   memory: z.string().optional(), // #202 — absent when the run had no memory block
   playbook: z.string().optional(), // #218 — absent when the run had no playbook
+  task: z.string().optional(), // #251 — absent when the run had no task instructions
   template: z.string().optional(),
 });
 
@@ -1115,6 +1116,16 @@ export const TrackerIssueSchema = z.object({
   playbook: z.string().optional(),
   playbookSource: z.string().optional(),
   playbookOverride: z.string().optional(),
+  // #251 — the issue's New task record (single-issue read only): its custom
+  // instructions, editable until the task first starts.
+  task: z
+    .object({
+      instructions: z.string().optional(),
+      baseBranch: z.string().optional(),
+      local: z.boolean().optional(),
+      started: z.boolean(),
+    })
+    .optional(),
 });
 
 // Inferred TypeScript types — re-exported from itervox.ts for backward compatibility.
@@ -2339,3 +2350,53 @@ export const HubAttentionStateSchema = z.object({
     .transform((v) => v ?? []),
 });
 export type HubAttentionState = z.infer<typeof HubAttentionStateSchema>;
+
+// #251 — New task and saved task templates. Fetched on demand.
+export const TaskTemplateSchema = z.object({
+  name: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  instructions: z.string().optional(),
+  profile: z.string().optional(),
+  playbook: z.string().optional(),
+  backend: z.string().optional(),
+  baseBranch: z.string().optional(),
+  vars: stringList,
+});
+export type TaskTemplate = z.infer<typeof TaskTemplateSchema>;
+
+export const TaskTemplatesResponseSchema = z.object({
+  localTasks: z.boolean().default(false),
+  templates: z
+    .array(TaskTemplateSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  problems: z
+    .array(z.object({ path: z.string(), message: z.string() }))
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type TaskTemplatesResponse = z.infer<typeof TaskTemplatesResponseSchema>;
+
+/** The body of POST /api/v1/tasks. */
+export const TaskCreateRequestSchema = z.object({
+  title: z.string(),
+  instructions: z.string(),
+  profile: z.string().optional(),
+  backend: z.string().optional(),
+  playbook: z.string().optional(),
+  baseBranch: z.string().optional(),
+  where: z.enum(['local', 'tracker']),
+  start: z.boolean(),
+});
+export type TaskCreateRequest = z.infer<typeof TaskCreateRequestSchema>;
+
+export const TaskCreateResultSchema = z.object({
+  identifier: z.string(),
+  title: z.string(),
+  state: z.string(),
+  url: z.string().optional(),
+  local: z.boolean(),
+  started: z.boolean(),
+});
+export type TaskCreateResult = z.infer<typeof TaskCreateResultSchema>;

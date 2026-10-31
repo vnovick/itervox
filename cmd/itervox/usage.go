@@ -163,6 +163,16 @@ Commands:
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question
   approve  <issue>         approve the command a guardrail is holding (once)
+  task     "<title>"       create a New task: a local task file (or a tracker
+                           issue with --tracker) in the first active state
+             --instructions <text|@file>  custom instructions for this task
+             --profile NAME  --backend claude|codex  --playbook NAME
+             --base BRANCH   the worktree's start and the PR's base
+             --start         dispatch at once (slots, guardrails, budgets
+                             and dependencies still apply)
+             --template NAME  start from .itervox/tasks/NAME.md
+             --var key=value  fill a template placeholder (repeatable)
+             --templates      list the saved templates
 
   --version  Print version information
 

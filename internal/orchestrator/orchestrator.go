@@ -280,6 +280,11 @@ type Orchestrator struct {
 	issueBackendsMu sync.RWMutex
 	issueBackends   map[string]string // identifier → "claude"|"codex"
 
+	// tasks are the New task specs (#251): custom instructions, base branch
+	// and playbook per task identifier. Written by HTTP goroutines and read
+	// by startRun, under tasks.mu (task.go).
+	tasks taskBook
+
 	// commentCountsMu guards commentCounts, which is written by
 	// BumpCommentCount (any goroutine, called from the HTTP handler that
 	// serves /api/v1/agent-actions/{identifier}/comment) and read by

@@ -484,6 +484,13 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 				"identifier", issue.Identifier)
 			continue
 		}
+		// #251: a New task with this title is still being created; its
+		// instructions are recorded before any run of it starts.
+		if o.taskCreationPending(issue.Title) {
+			slog.Info("orchestrator: a task with this title is being created; dispatching it on a later tick",
+				"identifier", issue.Identifier)
+			continue
+		}
 		// #116 claim check: the list may come from the local store, so read
 		// the issue from the tracker before starting it. The same read
 		// serves the input-required recovery. Off the loop (#187), the pick

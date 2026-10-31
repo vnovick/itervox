@@ -329,7 +329,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Task: p.Task, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

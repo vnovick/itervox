@@ -321,6 +321,9 @@ func main() {
 		case "report":
 			runReport(os.Args[2:])
 			return
+		case "task": // #251
+			runTask(os.Args[2:])
+			return
 		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply", "approve": // #120, #240
 			runClientCommand(os.Args[1], os.Args[2:])
 			return
@@ -748,6 +751,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	resolveTrackerAssignee(ctx, cfg, tr) // #182: off the event loop, before the store reads through it
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 	tr = withLocalSync(cfg, workflowPath, tr) // #118
+	if demoSession == nil {
+		tr = withLocalTasks(cfg, tr) // #251: Itervox-only tasks next to Linear/GitHub
+	}
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -812,6 +818,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
+	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -1047,6 +1054,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
 			ti.Review = reviewRow(snap, issue.Identifier)                // #135
 			app.ApplyPlaybook(&ti, *issue, snap, orch.PlaybookChooser()) // #218
+			ti.Task = issueTaskRow(orch, issue.Identifier)               // #251
 			return &ti, nil
 		}
 
@@ -1154,6 +1162,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ChangeReview:    changeReviewAdapter{orch: orch},               // #238: line comments, PR reviews, the diff's PR source
 			GitHubPRs:       githubPRs,                                     // #238: the PR-event watcher's GitHub client
 			Playbooks:       playbooksAdapter{orch: orch},                  // #218: playbooks, decision logs, verify-skill issue
+			Tasks:           newTasksAdapter(orch, workflowPath),           // #251: New task and task templates
 			SteeringPhrases: cfg.Sessions.SteeringPhrases,                  // #218
 		})
 		adapter.notify = srv.Notify
@@ -1185,8 +1194,8 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	startAutomations(ctx, cfg, tr, orch)
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
-	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
-	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                // #118: local issue files <-> tracker.sync
+	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(trackerBehindTasks(tr)), orch) // #84
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                                    // #118: local issue files <-> tracker.sync
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same

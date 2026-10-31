@@ -20,7 +20,8 @@ import { FailuresPanel } from './components/FailuresPanel';
 import { DashboardIssuesPanel } from './components/DashboardIssuesPanel';
 import { AttentionInbox } from './components/AttentionInbox';
 import { FirstRunChecklist } from './components/FirstRunChecklist';
-import { useDashboardUrlState } from '../../hooks/useUrlState';
+import { useDashboardUrlState, useNewTaskUrlOpen } from '../../hooks/useUrlState';
+import { NewTaskDialog } from '../../components/itervox/newTask/NewTaskDialog';
 import { useHashScroll } from '../../hooks/useHashScroll';
 
 // v0.2.0 audit P2-9 — typed empty arrays now live in `utils/constants.ts`
@@ -51,6 +52,7 @@ const EMPTY_ISSUES: TrackerIssue[] = [];
 export default function Dashboard() {
   // CORE-079 — ?view= / ?q= / ?state= <-> the dashboard view and filters.
   useDashboardUrlState();
+  useNewTaskUrlOpen(); // #251: ?newTask=1 (the Mac app's New Task… item)
   // CORE-086 — header pills and ops chips link to sections by hash; scroll
   // once the targeted section has rows (the key changes when any does).
   const sectionRowsKey = useItervoxStore((st) => {
@@ -200,6 +202,7 @@ export default function Dashboard() {
         title="Itervox | Dashboard"
         description="Itervox — autonomous agentic harness for multi-agent collaboration, observability, human input, and fleet distribution"
       />
+      <NewTaskDialog />
       <div className="space-y-[14px]">
         <ProjectSelector />
         {/* CORE-077 — everything that needs the operator, with inline

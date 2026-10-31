@@ -21,23 +21,27 @@ type profileTailInput struct {
 	Rules  rules.Set
 	Memory memory.Selection
 	// Playbook is the run's `## Playbook` block (#218), "" for none.
-	Playbook      string
-	Template      string // the run's base template (WORKFLOW.md body or reviewer_prompt)
-	ProfileName   string
-	Profiles      map[string]config.AgentProfile
-	Automation    *AutomationDispatch
-	Issue         domain.Issue
-	Attempt       *int
-	RunVars       map[string]any
-	ActionContext string
-	Backend       string
+	Playbook string
+	// TaskInstructions is the run's `## Task instructions` block (#251),
+	// "" for none.
+	TaskInstructions string
+	Template         string // the run's base template (WORKFLOW.md body or reviewer_prompt)
+	ProfileName      string
+	Profiles         map[string]config.AgentProfile
+	Automation       *AutomationDispatch
+	Issue            domain.Issue
+	Attempt          *int
+	RunVars          map[string]any
+	ActionContext    string
+	Backend          string
 }
 
 // profilePromptTail renders the profile-dependent tail of a worker prompt,
 // each block preceded by a blank line: the #157 `## Rules` block (unless one
 // of the run's templates places the rules itself), the #202 `## Memory`
 // block, the profile's SOUL.md and
-// INSTRUCTIONS.md, the #218 `## Playbook` block, the automation's
+// INSTRUCTIONS.md, the #218 `## Playbook` block, the #251 `## Task
+// instructions` block, the automation's
 // instructions, the daemon action notice and the sub-agent roster. runWorker and ComposeEvalPrompt (#189) share it,
 // so a live eval judges the prompt a dispatched worker actually receives.
 func profilePromptTail(in profileTailInput) string {
@@ -75,6 +79,8 @@ func profilePromptTail(in profileTailInput) string {
 	}
 	// #218: the task-type playbook, right after INSTRUCTIONS.md.
 	add(in.Playbook)
+	// #251: a New task's custom instructions, right after the playbook.
+	add(in.TaskInstructions)
 	if in.Automation != nil && in.Automation.Instructions != "" {
 		bindings := automationTriggerBindings(in.Automation)
 		maps.Copy(bindings, in.RunVars)

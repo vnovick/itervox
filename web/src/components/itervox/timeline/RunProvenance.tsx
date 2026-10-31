@@ -11,6 +11,8 @@ const PART_LABELS: readonly [keyof PromptParts, string][] = [
   ['instructions', 'INSTRUCTIONS.md'],
   ['rules', 'rules'],
   ['memory', 'memory'],
+  ['playbook', 'playbook'],
+  ['task', 'task instructions'], // #251
   ['template', 'template'],
 ];
 
