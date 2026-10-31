@@ -489,8 +489,45 @@ fn open_new_task(app: &AppHandle, shared: &Arc<Shared>, key: &str, label: String
     }
 }
 
+/// A Go menu item: shows `path` in the dashboard webview of the window
+/// focused last, through the embedded dashboard's navigate hook.
+pub(super) fn go(app: &AppHandle, shared: &Shared, path: &str) {
+    let target = {
+        let windows = lock(&shared.dash.windows);
+        let focused = lock(&shared.dash.focused).clone();
+        focused
+            .filter(|l| windows.contains_key(l))
+            .or_else(|| windows.keys().next().cloned())
+            .and_then(|l| windows.get(&l).map(|w| (l, w.view.clone())))
+    };
+    let Some((label, view)) = target else {
+        return;
+    };
+    if let Some(v) = app.get_webview(&view) {
+        let _ = v.eval(crate::dashboard::navigate_script(path));
+        let _ = v.set_focus();
+    }
+    if let Some(w) = app.get_window(&label) {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// The Go menu: every dashboard page (crate::go_menu).
+fn go_submenu(app: &AppHandle) -> tauri::Result<tauri::menu::Submenu<tauri::Wry>> {
+    use tauri::menu::{MenuItem, PredefinedMenuItem, Submenu};
+    let go = Submenu::new(app, "Go", true)?;
+    for (i, (id, label)) in crate::go_menu::go_menu_items().into_iter().enumerate() {
+        if crate::go_menu::separator_before(i, &id) {
+            go.append(&PredefinedMenuItem::separator(app)?)?;
+        }
+        go.append(&MenuItem::with_id(app, id, label, true, None::<&str>)?)?;
+    }
+    Ok(go)
+}
+
 /// The Projects menu of a dashboard window on Linux and Windows: the rail's
-/// shortcuts, each accelerator shown and bound with Ctrl.
+/// shortcuts, each accelerator shown and bound with Ctrl; then the Go menu.
 #[cfg(not(target_os = "macos"))]
 fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use crate::platform::{accelerator, Os};
@@ -506,12 +543,13 @@ fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> 
         projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
     }
     menu.append(&projects)?;
+    menu.append(&go_submenu(app)?)?;
     Ok(menu)
 }
 
-/// Adds the Projects menu with the rail's shortcuts to the macOS menu bar
-/// (shown while a window is open), keeping the default menus (Edit's copy
-/// and paste for the dashboard's text fields).
+/// Adds the Projects menu with the rail's shortcuts and the Go menu to the
+/// macOS menu bar (shown while a window is open), keeping the default menus
+/// (Edit's copy and paste for the dashboard's text fields).
 #[cfg(target_os = "macos")]
 pub(super) fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -525,6 +563,7 @@ pub(super) fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
         projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
     }
     menu.append(&projects)?;
+    menu.append(&go_submenu(app)?)?;
     app.set_menu(menu)?;
     Ok(())
 }

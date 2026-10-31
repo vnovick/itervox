@@ -12,6 +12,8 @@ import { HubProjectSwitcher } from '../components/itervox/HubProjectSwitcher';
 import { useDashboardHref } from '../hooks/useDashboardHref';
 import { useUIStore } from '../store/uiStore';
 import { NewTaskButton } from '../components/itervox/newTask/NewTaskButton';
+import { useEmbedded } from '../hooks/useEmbeddedShell';
+import { EmbeddedMoreMenu, EmbeddedNavLinks, EmbeddedTitle } from './EmbeddedNav';
 
 // CORE-076 — pill colour per status-model tone (one palette for all pills).
 // The `.pill-*` classes live in index.css (tokens.contrast.test.ts measures
@@ -89,6 +91,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
     headline,
   } = useStatusSummary();
   const dashboardHref = useDashboardHref();
+  // Embedded in the desktop app: `project · ISSUE`, Board / Sessions /
+  // New task / More; the status chips show as space allows.
+  const embedded = useEmbedded();
 
   const liveLabel = sseConnected
     ? 'Live'
@@ -140,7 +145,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
       )}
       <header className="glass-panel glass-bar flex min-w-0 flex-wrap items-center gap-2 px-3 py-2.5 text-sm sm:gap-3 md:px-4">
         {/* Mobile menu button */}
-        {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
+        {onMenuClick && !embedded && <MobileMenuButton onClick={onMenuClick} />}
 
         {/* Live pulse — the connection status of this itervox daemon. */}
         <span className="text-theme-text flex shrink-0 items-center gap-1.5 font-semibold">
@@ -150,11 +155,13 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             )}
             <span className={`status-dot relative ${sseConnected ? 'dot-ok' : 'dot-danger'}`} />
           </span>
-          <span>{liveLabel}</span>
+          <span className={embedded ? 'sr-only' : undefined}>{liveLabel}</span>
         </span>
 
+        {embedded && <EmbeddedTitle />}
+
         {/* Project name — disambiguates multiple daemons running for different repos. */}
-        {projectName && (
+        {projectName && !embedded && (
           <span
             className="text-theme-text max-w-[120px] min-w-0 truncate font-mono text-[13px] font-medium sm:max-w-[200px]"
             title={`Project: ${projectName}`}
@@ -168,70 +175,75 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
         {demoMode && <DemoModeBadge />}
 
-        {/* Orchestrator state */}
-        <span
-          data-testid="header-orchestrator-state"
-          className={`pill shrink-0 font-semibold ${PILL_TONE_CLASS[STATUS_META[headline].tone] ?? 'pill-neutral'}`}
-        >
-          {STATUS_META[headline].label}
-        </span>
-
-        {/* Running count */}
-        {running > 0 && (
-          <Link
-            to={dashboardHref('running-sessions')}
-            data-status-key="running"
-            data-status-count={running}
-            title="Jump to the running sessions"
-            className="text-theme-text flex items-center gap-1 rounded underline-offset-2 hover:underline"
+        {/* Embedded: the status chips show from the lg breakpoint up. */}
+        <span className={embedded ? 'hidden min-w-0 items-center gap-2 lg:flex' : 'contents'}>
+          {/* Orchestrator state */}
+          <span
+            data-testid="header-orchestrator-state"
+            className={`pill shrink-0 font-semibold ${PILL_TONE_CLASS[STATUS_META[headline].tone] ?? 'pill-neutral'}`}
           >
-            <strong>{running}</strong>
-            <span>{STATUS_META.running.noun}</span>
-          </Link>
-        )}
+            {STATUS_META[headline].label}
+          </span>
 
-        {paused > 0 && (
-          <StatusPill
-            statusKey="paused"
-            count={paused}
-            to={dashboardHref('running-sessions')}
-            title="Jump to the paused sessions"
-          />
-        )}
+          {/* Running count */}
+          {running > 0 && (
+            <Link
+              to={dashboardHref('running-sessions')}
+              data-status-key="running"
+              data-status-count={running}
+              title="Jump to the running sessions"
+              className="text-theme-text flex items-center gap-1 rounded underline-offset-2 hover:underline"
+            >
+              <strong>{running}</strong>
+              <span>{STATUS_META.running.noun}</span>
+            </Link>
+          )}
 
-        {awaitingInput > 0 && (
-          <StatusPill
-            statusKey="input_required"
-            count={awaitingInput}
-            to={dashboardHref('attention-inbox')}
-            title="Jump to the attention inbox"
-          />
-        )}
+          {paused > 0 && (
+            <StatusPill
+              statusKey="paused"
+              count={paused}
+              to={dashboardHref('running-sessions')}
+              title="Jump to the paused sessions"
+            />
+          )}
 
-        {pendingInputResumes > 0 && (
-          <StatusPill
-            statusKey="pending_input_resume"
-            count={pendingInputResumes}
-            to={dashboardHref('pending-resume')}
-            title="Jump to the Resuming panel"
-          />
-        )}
+          {awaitingInput > 0 && (
+            <StatusPill
+              statusKey="input_required"
+              count={awaitingInput}
+              to={dashboardHref('attention-inbox')}
+              title="Jump to the attention inbox"
+            />
+          )}
 
-        {retrying > 0 && (
-          <StatusPill
-            statusKey="retrying"
-            count={retrying}
-            prefix="↻ "
-            to={dashboardHref('retry-queue')}
-            title="Jump to the retry queue"
-          />
-        )}
+          {pendingInputResumes > 0 && (
+            <StatusPill
+              statusKey="pending_input_resume"
+              count={pendingInputResumes}
+              to={dashboardHref('pending-resume')}
+              title="Jump to the Resuming panel"
+            />
+          )}
+
+          {retrying > 0 && (
+            <StatusPill
+              statusKey="retrying"
+              count={retrying}
+              prefix="↻ "
+              to={dashboardHref('retry-queue')}
+              title="Jump to the retry queue"
+            />
+          )}
+        </span>
 
         <span aria-hidden="true" className="flex-1" />
 
+        {embedded && <EmbeddedNavLinks />}
+
         {/* Capacity bar — hidden on mobile */}
         {maxAgents > 0 && (
-          <span className="hidden items-center gap-2.5 md:flex">
+          <span className={`hidden items-center gap-2.5 ${embedded ? 'xl:flex' : 'md:flex'}`}>
             <span className="sr-only">running/max</span>
             <span className="subtle-fill h-1.5 w-20 overflow-hidden rounded-full">
               <span
@@ -280,6 +292,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
         {/* #251 — New task, from every page (operator scope). */}
         <NewTaskButton />
+        {embedded && <EmbeddedMoreMenu />}
       </header>
     </div>
   );

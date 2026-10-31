@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use crate::dashboard::token_init_script;
+use crate::dashboard::dashboard_init_script;
 use crate::model::{Health, PendingOp, ProjectView};
 use crate::projects::RailPrefs;
 use crate::remote_model::{ConnectionView, RemoteDaemonView};
@@ -576,7 +576,7 @@ pub fn rail_page_allowed(url: &str) -> bool {
 
 /// What a dashboard webview needs to show a project: its URL, and the
 /// origin and token the token initialization script hands over
-/// ([`token_init_script`]).
+/// ([`dashboard_init_script`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashTarget {
     pub url: String,
@@ -619,12 +619,12 @@ pub fn switch_plan(
     }
 }
 
-/// The token initialization script of a dashboard webview showing `t`.
+/// The initialization script of a dashboard webview showing `t`: the
+/// embedded flag, and the token when the daemon has one.
 pub fn init_script_for(t: &DashTarget) -> Option<String> {
-    match (&t.token, t.origin.as_deref()) {
-        (Some(tok), Some(origin)) => Some(token_init_script(origin, tok)),
-        _ => None,
-    }
+    t.origin
+        .as_deref()
+        .map(|origin| dashboard_init_script(origin, t.token.as_deref()))
 }
 
 #[cfg(test)]
@@ -1139,7 +1139,10 @@ mod tests {
             plan,
             SwitchPlan::Replace {
                 url: "http://127.0.0.1:8091/".into(),
-                init_script: Some(token_init_script("http://127.0.0.1:8091", "tok-b")),
+                init_script: Some(dashboard_init_script(
+                    "http://127.0.0.1:8091",
+                    Some("tok-b")
+                )),
             }
         );
         let SwitchPlan::Replace { url, init_script } = &plan else {
@@ -1172,7 +1175,7 @@ mod tests {
             switch_plan(Some((&a.origin, &a.token)), &restarted),
             SwitchPlan::Replace { .. }
         ));
-        // An open API (no token): no script at all.
+        // An open API (no token): the embedded flag only.
         let open = DashTarget {
             url: "http://127.0.0.1:8092/".into(),
             origin: Some("http://127.0.0.1:8092".into()),
@@ -1182,7 +1185,7 @@ mod tests {
             switch_plan(Some((&a.origin, &a.token)), &open),
             SwitchPlan::Replace {
                 url: "http://127.0.0.1:8092/".into(),
-                init_script: None
+                init_script: Some(dashboard_init_script("http://127.0.0.1:8092", None)),
             }
         );
         // A new window: the same script.
@@ -1190,7 +1193,10 @@ mod tests {
             switch_plan(None, &a),
             SwitchPlan::Replace {
                 url: a.url.clone(),
-                init_script: Some(token_init_script("http://127.0.0.1:8090", "tok-a")),
+                init_script: Some(dashboard_init_script(
+                    "http://127.0.0.1:8090",
+                    Some("tok-a")
+                )),
             }
         );
 

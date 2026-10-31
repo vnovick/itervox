@@ -11,6 +11,7 @@ pub mod client;
 pub mod daemon_state;
 pub mod dashboard;
 pub mod events;
+pub mod go_menu;
 pub mod hub_notify;
 pub mod hub_source;
 pub mod menu;

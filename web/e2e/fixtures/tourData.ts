@@ -486,3 +486,56 @@ export function installChangesData(api: MockApiHandle): void {
     }),
   );
 }
+
+/**
+ * The issue's changes (GET /issues/{id}/diff and one file's patch), for the
+ * issue view's Changes column: the files the live run context lists.
+ */
+export function installDiffData(api: MockApiHandle): void {
+  api.override(/\/api\/v1\/issues\/[^/]+\/diff(\?|$)/, (route) => {
+    const url = new URL(route.request().url());
+    const identifier = decodeURIComponent(
+      url.pathname.split('/issues/')[1]?.replace('/diff', '') ?? '',
+    );
+    const files = liveRunContext(identifier).changedFiles;
+    const file = url.searchParams.get('file');
+    if (file === null) {
+      return route.fulfill(
+        json({
+          identifier,
+          base: 'main',
+          mergeBase: '0f3c2a9d1e7b4c55aa21',
+          files,
+          hunksAllowed: true,
+          source: 'worktree',
+          sources: ['worktree'],
+        }),
+      );
+    }
+    const f = files.find((x) => x.path === file) ?? files[0];
+    return route.fulfill(
+      json({
+        identifier,
+        base: 'main',
+        file: f,
+        bytes: 240,
+        maxBytes: 1_000_000,
+        source: 'worktree',
+        patch: [
+          `diff --git a/${f.path} b/${f.path}`,
+          `--- a/${f.path}`,
+          `+++ b/${f.path}`,
+          '@@ -1,4 +1,5 @@',
+          ' func Greeting(name string) string {',
+          '-\treturn "Hello, " + name',
+          '+\tif name == "" {',
+          '+\t\treturn legacyGreeting()',
+          '+\t}',
+          '+\treturn fmt.Sprintf("Hello, %s!", name)',
+          ' }',
+          '',
+        ].join('\n'),
+      }),
+    );
+  });
+}

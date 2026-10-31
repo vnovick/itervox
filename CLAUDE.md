@@ -199,6 +199,14 @@ only the event loop mutates them.
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- `ReviewContinuations` holds operator reviews sent from the Changes tab while
+  no run was live (`POST /api/v1/issues/{identifier}/review-continue` →
+  `QueueReviewContinuation` → `EventReviewContinue`). It is event-loop state
+  persisted to `review_continuations.json` (ledger writer). The issue's next
+  worker run writes it as `.itervox/handoff/<ISO8601>_operator-review.md` before
+  its first prompt and only then deletes it; reviewer and automation runs never
+  take it. Without the tracker move, `resumeReviewContinuations` starts the
+  issue in place once every admission gate except "in an active state" allows.
 - `StackOnReviewState` (tick snapshot of `tracker.completion_state` when
   `dependencies.stacked_prs` is on) and `StackUnavailable` are event-loop
   state. An issue whose only unresolved blocker is in review is admitted
