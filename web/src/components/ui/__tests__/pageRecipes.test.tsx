@@ -59,6 +59,9 @@ describe('TemplateTile', () => {
     expect(tile).toHaveAccessibleName(/Writes test plans\./);
     expect(tile).toHaveAttribute('title', 'Writes test plans.\nActions: Comment');
     expect(screen.getByText('claude-sonnet')).toHaveClass('pill', 'pill-neutral', 'font-mono');
+    // A long model id truncates inside the tile; the full id is its title.
+    expect(screen.getByText('claude-sonnet')).toHaveClass('truncate', 'max-w-full');
+    expect(screen.getByText('claude-sonnet')).toHaveAttribute('title', 'claude-sonnet');
     expect(screen.getByText('Use Template')).toBeInTheDocument();
     await userEvent.click(tile);
     expect(onUse).toHaveBeenCalledTimes(1);

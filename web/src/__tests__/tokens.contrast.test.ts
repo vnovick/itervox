@@ -331,3 +331,22 @@ describe('tokens.contrast', () => {
     expect(logs).not.toMatch(/#4b5563/);
   });
 });
+
+// Data-series bars (Repo provider split / context budget) are non-text
+// graphics: each fill needs 3:1 against the --subtle track it sits in.
+describe('data series tokens', () => {
+  for (const [name, t] of Object.entries(THEMES)) {
+    it(`${name}: every --series-N meets 3:1 on its track and on the panel`, () => {
+      const s = surfaces(t);
+      for (let n = 1; n <= 6; n++) {
+        const fill = solid(t, `--series-${String(n)}`);
+        expect(
+          ratio(fill, s['subtle in glass']),
+          `series-${String(n)} on track`,
+        ).toBeGreaterThanOrEqual(3);
+        expect(ratio(fill, s.glass), `series-${String(n)} on glass`).toBeGreaterThanOrEqual(3);
+      }
+      expect(theme['--color-theme-series-1']).toBe('var(--series-1)');
+    });
+  }
+});

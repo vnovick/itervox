@@ -23,7 +23,6 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
   // stream for the same issue. An empty identifier disables both the stream
   // and the one-shot fetch.
   const { data: liveEntries } = useIssueLogs(logSlice === undefined ? identifier : '', isLive);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   const [isFollowing, setIsFollowing] = useState(true);
@@ -31,7 +30,7 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
   // logSlice is provided when viewing a specific subagent's logs; fall back to live entries
   const entries = useMemo(() => logSlice ?? liveEntries, [logSlice, liveEntries]);
 
-  // CORE-024 — scrollIntoView's `behavior` is an explicit argument, so the
+  // CORE-024 — scrollTo's `behavior` is an explicit argument, so the
   // CSS `scroll-behavior: auto !important` under `prefers-reduced-motion:
   // reduce` (index.css) cannot override it. Honor the preference in JS.
   const prefersReducedMotion = usePrefersReducedMotion();
@@ -44,18 +43,26 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
     setIsFollowing(followRef.current);
   };
 
+  // Scroll the log box itself, never its ancestors: scrollIntoView also
+  // scrolls the page, which on a phone slid the filter row under the
+  // sticky top bar every time a log line arrived.
+  const scrollLogToEnd = (behavior: ScrollBehavior) => {
+    const el = containerRef.current;
+    if (el && typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight, behavior });
+  };
+
   useEffect(() => {
-    if (followRef.current) bottomRef.current?.scrollIntoView({ behavior: scrollBehavior });
+    if (followRef.current) scrollLogToEnd(scrollBehavior);
   }, [entries, scrollBehavior]);
 
   const scrollToBottom = () => {
     followRef.current = true;
     setIsFollowing(true);
-    bottomRef.current?.scrollIntoView({ behavior: scrollBehavior });
+    scrollLogToEnd(scrollBehavior);
   };
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex max-h-full min-h-0 flex-col overflow-hidden">
       {!isFollowing && (
         <div className="border-theme-line flex flex-shrink-0 justify-end border-b px-4 py-1">
           <button
@@ -69,7 +76,7 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
       <div
         ref={containerRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px] leading-[1.6]"
+        className="min-h-0 overflow-y-auto px-4 py-3 font-mono text-[12.5px] leading-[1.6]"
       >
         {entries.length === 0 ? (
           <p className="text-theme-muted italic">No logs yet for {identifier}.</p>
@@ -97,7 +104,6 @@ export function AgentLogPanel({ identifier, logSlice }: AgentLogPanelProps) {
             );
           })
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

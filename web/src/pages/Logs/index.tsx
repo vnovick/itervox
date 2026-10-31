@@ -40,6 +40,14 @@ const AUTOMATION_FIRED_PREFIX = 'AUTOMATION FIRED';
 // the operator-facing "show me automation lines only" affordance.
 const FILTER_CHIPS = ['text', 'action', 'subagent', 'warn', 'error', 'automation'] as const;
 type FilterChip = (typeof FILTER_CHIPS)[number];
+// A pressed chip takes its level's tone (warn amber, error red); the
+// message kinds keep the accent and the grouping chips stay neutral.
+const CHIP_PRESSED_TONE: Partial<Record<FilterChip, string>> = {
+  warn: 'bg-theme-warning-soft text-theme-warning-text',
+  error: 'bg-theme-danger-soft text-theme-danger-text',
+  subagent: 'bg-theme-subtle text-theme-text-secondary',
+  automation: 'bg-theme-subtle text-theme-text-secondary',
+};
 type InputRequiredRow = NonNullable<StateSnapshot['inputRequired']>[number];
 const EMPTY_INPUT_REQUIRED: readonly InputRequiredRow[] = [];
 const EMPTY_PAUSED: readonly string[] = [];
@@ -431,7 +439,10 @@ export default function Logs() {
                   onPressedChange={() => {
                     toggleChip(chip);
                   }}
-                  className="px-2.5 py-1 font-sans text-xs"
+                  className={cn(
+                    'px-2.5 py-1 font-sans text-xs',
+                    activeChips.has(chip) && CHIP_PRESSED_TONE[chip],
+                  )}
                 >
                   {chip}
                 </ToggleChip>
@@ -482,6 +493,7 @@ export default function Logs() {
               <EmptyState title="$ waiting for agent output…" className="font-mono" />
             ) : (
               <Terminal
+                className="px-2 py-1.5"
                 entries={logEntries}
                 follow
                 showTime={false}

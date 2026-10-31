@@ -50,6 +50,23 @@ export function labelSource(source: string): string {
   return source;
 }
 
+/** Bar fill per provider: claude, shared and codex keep one colour across the page. */
+export const PROVIDER_FILL: Record<'claude' | 'codex' | 'shared', string> = {
+  claude: 'bg-theme-series-1',
+  shared: 'bg-theme-series-2',
+  codex: 'bg-theme-series-3',
+};
+
+/** Bar fill per capability kind (context budget), one data series each. */
+export const SECTION_FILL: Record<SectionKey, string> = {
+  skills: 'bg-theme-series-1',
+  subagents: 'bg-theme-series-2',
+  plugins: 'bg-theme-series-3',
+  mcp: 'bg-theme-series-4',
+  hooks: 'bg-theme-series-5',
+  instructions: 'bg-theme-series-6',
+};
+
 export function classifyProvider(s: {
   Provider: string;
   Source: string;

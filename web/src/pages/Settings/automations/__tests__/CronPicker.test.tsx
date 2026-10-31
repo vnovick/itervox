@@ -138,3 +138,12 @@ describe('CronPicker round-trip with the server parser', () => {
     }
   });
 });
+
+describe('CronPicker layout', () => {
+  it('gives the preset menu a full row and left-aligns the field values', () => {
+    render(<Harness initial="0 9 * * 1-5" />);
+    const presetCell = screen.getByTestId('cron-preset').parentElement;
+    expect(presetCell).toHaveClass('col-span-2', 'sm:col-span-5');
+    expect(screen.getByTestId('cron-field-minute')).not.toHaveClass('text-center');
+  });
+});

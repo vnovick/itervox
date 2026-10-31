@@ -74,7 +74,7 @@ export function ProfileRow({
   return (
     <article className="glass-card flex w-full flex-col gap-1.5 rounded-[18px] px-3.5 py-3">
       <div className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-2">
-        <p className="text-theme-text text-[15px] font-semibold">{name}</p>
+        <p className="text-theme-text text-[17px] font-semibold">{name}</p>
         <span className={`pill px-2 py-0 text-xs ${isEnabled ? 'pill-ok' : 'pill-neutral'}`}>
           {isEnabled ? 'Active' : 'Inactive'}
         </span>

@@ -9,14 +9,12 @@ import {
   BAR_HEIGHT,
   SUB_BAR_HEIGHT,
   ROW_MIN_HEIGHT,
-  LABEL_WIDTH,
-  ELAPSED_WIDTH,
-  TOKENS_WIDTH,
-  SUBAGENT_LABEL_WIDTH,
-  barGradient,
-  statusBadgeStyle,
+  ROW_GRID,
+  ROW_META,
+  ROW_TRACK,
+  barFillClass,
+  statusBadgeTone,
   statusBadgeLabel,
-  TICK_MARK_STYLE,
 } from './styles';
 
 function fmtTokens(n: number): string {
@@ -60,10 +58,10 @@ export const RunRow = memo(function RunRow({
   const barWidth = Math.max(barRight - barLeft, 0.02);
 
   const isLive = session.status === 'live';
-  const bg = barGradient(session.status);
-  const badge = statusBadgeStyle(session.status);
+  const fill = barFillClass(session.status);
 
   const timeLabel = formatAxisTime(new Date(session.startedAt).getTime());
+  const mainSelected = selectedSubagentIdx === null;
 
   return (
     <>
@@ -74,14 +72,16 @@ export const RunRow = memo(function RunRow({
         tabIndex={0}
         aria-expanded={expanded}
         aria-label={`Run #${String(runNumber)} at ${timeLabel}, ${fmtMs(session.elapsedMs)}`}
-        className="hover:bg-theme-bg-soft focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] transition-colors focus-visible:ring-2 focus-visible:outline-none"
-        style={{ minHeight: ROW_MIN_HEIGHT, padding: '8px 0' }}
+        data-testid="timeline-run-row"
+        className={`${ROW_GRID} hover:bg-theme-subtle focus-visible:ring-theme-accent cursor-pointer rounded-[var(--radius-sm)] py-2 transition-colors focus-visible:ring-2 focus-visible:outline-none`}
+        style={{ minHeight: ROW_MIN_HEIGHT }}
         onClick={onToggleExpand}
         onKeyDown={activateOnKey(onToggleExpand)}
       >
         {/* Expand chevron */}
         <span
-          className={`w-4 shrink-0 text-center text-xs ${
+          aria-hidden="true"
+          className={`text-center text-xs ${
             subagents.length > 0 ? 'text-theme-text-secondary' : 'text-transparent'
           }`}
         >
@@ -90,8 +90,7 @@ export const RunRow = memo(function RunRow({
 
         {/* Run number + time */}
         <span
-          className="shrink-0 font-mono text-[11px] leading-tight"
-          style={{ width: LABEL_WIDTH }}
+          className="min-w-0 truncate font-mono text-[11px] leading-tight"
           title={session.startedAt}
         >
           <span className="text-theme-text font-sans text-xs font-semibold">#{runNumber}</span>
@@ -100,16 +99,17 @@ export const RunRow = memo(function RunRow({
 
         {/* Bar track */}
         <div
-          className="glass-card relative flex-1 overflow-hidden rounded-[var(--radius-sm)]"
+          data-testid="timeline-run-track"
+          className={`${ROW_TRACK} glass-card relative overflow-hidden rounded-[var(--radius-sm)]`}
           style={{ height: BAR_HEIGHT + 12 }}
         >
           {/* Progress bar */}
           <div
-            className="absolute top-1.5 bottom-1.5 flex items-center rounded-full"
+            data-testid="timeline-run-bar"
+            className={`absolute top-1.5 bottom-1.5 rounded-lg ${fill}`}
             style={{
               left: `${String(barLeft * 100)}%`,
               width: `${String(barWidth * 100)}%`,
-              background: bg,
             }}
             title={`${session.identifier} — ${fmtMs(session.elapsedMs)}`}
           />
@@ -117,57 +117,49 @@ export const RunRow = memo(function RunRow({
           {subagents.map((sa, si) => (
             <div
               key={si}
-              className="absolute top-1.5 bottom-1.5 z-10 w-0.5"
-              style={{
-                left: `${String((barLeft + sa.startFrac * barWidth) * 100)}%`,
-                background: TICK_MARK_STYLE,
-              }}
+              className="bg-theme-hairline absolute top-1.5 bottom-1.5 z-10 w-0.5"
+              style={{ left: `${String((barLeft + sa.startFrac * barWidth) * 100)}%` }}
             />
           ))}
         </div>
 
-        {/* Elapsed time */}
-        <span
-          className="text-theme-text-secondary shrink-0 text-right font-mono text-[11px]"
-          style={{ width: ELAPSED_WIDTH }}
-        >
-          {fmtMs(session.elapsedMs)}
-        </span>
-
-        {/* Tokens consumed */}
-        <span
-          className="text-theme-muted shrink-0 text-right font-mono text-[11px]"
-          style={{ width: TOKENS_WIDTH }}
-          title={`${String(session.tokens)} tokens`}
-        >
-          {fmtTokens(session.tokens)}
-        </span>
-
-        {/* Status badge (non-live only) */}
-        {!isLive && (
-          <span
-            className="shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold"
-            style={badge}
-          >
-            {statusBadgeLabel(session.status)}
+        <span className={ROW_META}>
+          {/* Elapsed time */}
+          <span className="text-theme-text-secondary w-[60px] text-right font-mono text-[11px]">
+            {fmtMs(session.elapsedMs)}
           </span>
-        )}
+
+          {/* Tokens consumed */}
+          <span
+            className="text-theme-muted w-[44px] text-right font-mono text-[11px]"
+            title={`${String(session.tokens)} tokens`}
+          >
+            {fmtTokens(session.tokens)}
+          </span>
+
+          {/* Status badge (non-live only); a fixed slot keeps every track equal. */}
+          <span className="flex justify-end @xl:w-[76px]">
+            {!isLive && (
+              <span className={`tag ${statusBadgeTone(session.status)}`}>
+                {statusBadgeLabel(session.status)}
+              </span>
+            )}
+          </span>
+        </span>
       </div>
 
-      {/* Expanded subagent rows */}
+      {/* Expanded subagent rows: the same grid and time axis as the run row. */}
       {expanded && (
         <div className="space-y-0.5 pb-1">
           {/* Main run bar (when expanded) */}
           <div
             role="button"
             tabIndex={0}
-            aria-pressed={selectedSubagentIdx === null}
+            aria-pressed={mainSelected}
             aria-label="Main agent log"
-            className="focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:ring-2 focus-visible:outline-none"
-            style={{
-              paddingLeft: 24,
-              background: selectedSubagentIdx === null ? 'var(--accent-soft)' : 'transparent',
-            }}
+            className={`${ROW_GRID} focus-visible:ring-theme-accent hover:bg-theme-subtle cursor-pointer rounded-[var(--radius-sm)] py-1 transition-colors focus-visible:ring-2 focus-visible:outline-none ${
+              mainSelected ? 'bg-theme-subtle' : ''
+            }`}
             onClick={() => {
               onSelectSubagent(null);
             }}
@@ -175,30 +167,30 @@ export const RunRow = memo(function RunRow({
               onSelectSubagent(null);
             })}
           >
-            <span className="text-theme-muted shrink-0 text-xs">◈</span>
+            <span aria-hidden="true" className="text-theme-muted text-center text-xs">
+              ◈
+            </span>
             <span
-              className="shrink-0 truncate font-mono text-[11px]"
-              style={{
-                width: SUBAGENT_LABEL_WIDTH,
-                color:
-                  selectedSubagentIdx === null ? 'var(--accent-strong)' : 'var(--text-secondary)',
-              }}
+              className={`min-w-0 truncate font-mono text-[11px] ${
+                mainSelected ? 'text-theme-accent-text font-semibold' : 'text-theme-text-secondary'
+              }`}
             >
               Main
             </span>
             <div
-              className="bg-theme-bg-soft relative flex-1 overflow-hidden rounded"
+              className={`${ROW_TRACK} bg-theme-subtle relative overflow-hidden rounded-full`}
               style={{ height: SUB_BAR_HEIGHT }}
             >
               <div
-                className="absolute top-0 h-full rounded"
+                data-testid="timeline-main-bar"
+                className={`absolute top-0 h-full rounded-full ${fill}`}
                 style={{
                   left: `${String(barLeft * 100)}%`,
                   width: `${String(barWidth * 100)}%`,
-                  background: bg,
                 }}
               />
             </div>
+            <span className={ROW_META} />
           </div>
 
           {/* Subagent bars */}
