@@ -1,0 +1,206 @@
+/* Shared look of the app's own pages (rail.html, sessions.html, index.html):
+   every colour, surface, radius and shadow is a custom property here, light
+   and dark, plus the shared surface classes. Pages lay themselves out with
+   these tokens and classes only.
+
+   Light and dark follow the system appearance. Surfaces are translucent
+   with a backdrop blur where the webview supports it (WKWebView on macOS,
+   WebView2 on Windows, WebKitGTK on Linux); without blur, or when the user
+   asks for reduced transparency, they fall back to opaque colours. The
+   window itself is opaque on every platform, so the page draws its own
+   soft colour field behind the panels. */
+
+:root {
+  color-scheme: light;
+  --font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  /* Text */
+  --text: #172033;
+  --text2: #3b465c;
+  --muted: #4b5568;
+  --accent: #1d4ed8;
+  --accent-text: #1e3a8a;
+  --accent-soft: rgba(29, 78, 216, 0.1);
+  --focus: #1d4ed8;
+  --warn: #9a3412;
+  --warn-soft: rgba(251, 146, 60, 0.18);
+  --err: #b91c1c;
+  --badge-solid: #c2410c;
+  --on-badge: #ffffff;
+
+  /* Health dots */
+  --dot-ok: #16a34a;
+  --dot-idle: #94a3b8;
+  --dot-down: #dc2626;
+  --dot-warn: #ea580c;
+  --dot-pending: #2563eb;
+
+  /* Page: base colour, a veil and three soft glows */
+  --bg: #e9edf5;
+  --veil: rgba(246, 248, 252, 0.68);
+  --glow-a: rgba(70, 110, 230, 0.55);
+  --glow-b: rgba(255, 140, 90, 0.42);
+  --glow-c: rgba(60, 200, 170, 0.36);
+
+  /* Surfaces */
+  --glass: rgba(255, 255, 255, 0.42);
+  --glass-border: rgba(255, 255, 255, 0.62);
+  --glass-highlight: rgba(255, 255, 255, 0.95);
+  --glass-lowlight: rgba(255, 255, 255, 0.28);
+  --glass-solid: #f4f6fb;
+  --chip: rgba(255, 255, 255, 0.55);
+  --chip-hover: rgba(255, 255, 255, 0.82);
+  --chip-border: rgba(255, 255, 255, 0.7);
+  --card: rgba(255, 255, 255, 0.74);
+  --card-hover: rgba(255, 255, 255, 0.9);
+  --card-border: rgba(255, 255, 255, 0.85);
+  --card-faint: rgba(255, 255, 255, 0.3);
+  --card-solid: #ffffff;
+  --sheet: rgba(250, 251, 255, 0.84);
+  --sheet-solid: #fbfcff;
+  --hover: rgba(23, 32, 51, 0.06);
+  --hairline: rgba(23, 32, 51, 0.12);
+  --dashed: rgba(23, 32, 51, 0.18);
+
+  /* Shadows */
+  --shadow-glass: inset 0 1px 0 var(--glass-highlight), inset 0 -1px 0 var(--glass-lowlight),
+    0 10px 30px rgba(28, 38, 72, 0.14);
+  --shadow-chip: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --shadow-card: inset 0 1px 0 var(--glass-highlight), 0 4px 14px rgba(28, 38, 72, 0.08);
+  --shadow-sheet: inset 0 1px 0 var(--glass-highlight), 0 18px 50px rgba(28, 38, 72, 0.3);
+
+  /* Blur */
+  --blur-glass: blur(28px) saturate(185%);
+  --blur-chip: blur(14px) saturate(170%);
+  --blur-sheet: blur(34px) saturate(200%);
+
+  /* Radii */
+  --r-panel: 20px;
+  --r-bar: 18px;
+  --r-card: 14px;
+  --r-row: 12px;
+  --r-item: 9px;
+  --r-pill: 999px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --text: #e8edf7;
+    --text2: #b4bfd3;
+    --muted: #97a3b8;
+    --accent: #7ea2ff;
+    --accent-text: #c3d4ff;
+    --accent-soft: rgba(76, 125, 255, 0.2);
+    --focus: #7ea2ff;
+    --warn: #fdba74;
+    --warn-soft: rgba(251, 146, 60, 0.18);
+    --err: #fca5a5;
+
+    --dot-ok: #22c55e;
+    --dot-idle: #7c879b;
+    --dot-down: #f87171;
+    --dot-warn: #fb923c;
+    --dot-pending: #60a5fa;
+
+    --bg: #080c17;
+    --veil: rgba(16, 21, 36, 0.68);
+    --glow-a: rgba(70, 110, 230, 0.46);
+    --glow-b: rgba(255, 140, 90, 0.32);
+    --glow-c: rgba(60, 200, 170, 0.22);
+
+    --glass: rgba(255, 255, 255, 0.072);
+    --glass-border: rgba(255, 255, 255, 0.11);
+    --glass-highlight: rgba(255, 255, 255, 0.16);
+    --glass-lowlight: rgba(255, 255, 255, 0.05);
+    --glass-solid: #141a2a;
+    --chip: rgba(255, 255, 255, 0.094);
+    --chip-hover: rgba(255, 255, 255, 0.14);
+    --chip-border: rgba(255, 255, 255, 0.12);
+    --card: rgba(255, 255, 255, 0.125);
+    --card-hover: rgba(255, 255, 255, 0.16);
+    --card-border: rgba(255, 255, 255, 0.145);
+    --card-faint: rgba(255, 255, 255, 0.05);
+    --card-solid: #1b2234;
+    --sheet: rgba(24, 30, 48, 0.86);
+    --sheet-solid: #1a2032;
+    --hover: rgba(255, 255, 255, 0.06);
+    --hairline: rgba(255, 255, 255, 0.14);
+    --dashed: rgba(255, 255, 255, 0.18);
+
+    --shadow-glass: inset 0 1px 0 var(--glass-highlight), inset 0 -1px 0 var(--glass-lowlight),
+      0 10px 30px rgba(0, 0, 0, 0.36);
+    --shadow-chip: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    --shadow-card: inset 0 1px 0 var(--glass-highlight), 0 4px 14px rgba(0, 0, 0, 0.21);
+    --shadow-sheet: inset 0 1px 0 var(--glass-highlight), 0 18px 50px rgba(0, 0, 0, 0.6);
+  }
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body { margin: 0; font-family: var(--font-ui); color: var(--text); background: transparent; }
+button { font: inherit; color: inherit; }
+
+/* The page's colour field: a fixed decorative layer behind the content. */
+.page::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(var(--veil), var(--veil)),
+    radial-gradient(520px 480px at -60px -40px, var(--glow-a), transparent 70%),
+    radial-gradient(480px 460px at 115% 40%, var(--glow-b), transparent 70%),
+    radial-gradient(520px 420px at 40% 112%, var(--glow-c), transparent 70%),
+    var(--bg);
+}
+
+/* Panels */
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur-glass); backdrop-filter: var(--blur-glass);
+  border: 1px solid var(--glass-border); box-shadow: var(--shadow-glass);
+}
+/* Pill buttons on a panel */
+.chip {
+  background: var(--chip);
+  -webkit-backdrop-filter: var(--blur-chip); backdrop-filter: var(--blur-chip);
+  border: 1px solid var(--chip-border); box-shadow: var(--shadow-chip);
+  border-radius: var(--r-pill); color: var(--text); font-weight: 600; cursor: pointer;
+}
+.chip:hover { background: var(--chip-hover); }
+/* Items inside a panel */
+.card {
+  background: var(--card); border: 1px solid var(--card-border);
+  box-shadow: var(--shadow-card); border-radius: var(--r-card);
+}
+/* Floating menus */
+.sheet {
+  background: var(--sheet);
+  -webkit-backdrop-filter: var(--blur-sheet); backdrop-filter: var(--blur-sheet);
+  border: 1px solid var(--card-border); box-shadow: var(--shadow-sheet);
+}
+.mono { font-family: var(--font-mono); }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* Without backdrop blur the translucent surfaces would read as washed out:
+   use the opaque colours. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass { background: var(--glass-solid); }
+  .chip { background: var(--card-solid); }
+  .sheet { background: var(--sheet-solid); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .page::before { background: var(--bg); }
+  .glass { background: var(--glass-solid); }
+  .chip, .card { background: var(--card-solid); }
+  .sheet { background: var(--sheet-solid); }
+  .glass, .chip, .sheet { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (forced-colors: active) {
+  .glass, .chip, .card, .sheet { border-color: CanvasText; }
+}

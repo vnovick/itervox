@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Changed
+
+- **Mac app: visual refresh of the project rail and the Sessions window.** Both pages now use translucent panels over a soft colour field, in light and dark (following the system appearance), with opaque fallbacks when blur is unavailable or reduced transparency is on. Each rail row shows its state in words (`3 running`, `1 input`, `idle`, `stopped`, …) and the rail gains an **Add project** button (the tray's "Add Project…"). The tray's summary line now also counts what waits for input across every daemon (`2 projects · 1 running · 1 needs input`).
+
 ---
 
 ## [0.3.0] — Unreleased

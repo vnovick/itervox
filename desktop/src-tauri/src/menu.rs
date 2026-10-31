@@ -142,13 +142,21 @@ pub fn build_menu<'a>(
             .flat_map(|c| c.daemons.iter())
             .map(|d| d.needs_input())
             .sum::<usize>();
-    entries.push(b.label(match views.len() {
+    let mut header = match views.len() {
         0 => "No projects".to_string(),
         n => format!(
             "{n} project{} · {running} running",
             if n == 1 { "" } else { "s" }
         ),
-    }));
+    };
+    // The summary names what waits for a human, across every daemon.
+    if waiting > 0 {
+        header.push_str(&format!(
+            " · {waiting} need{} input",
+            if waiting == 1 { "s" } else { "" }
+        ));
+    }
+    entries.push(b.label(header));
     if let Some(e) = status_error {
         entries.push(b.label(format!("⚠ {e}")));
     }
@@ -800,6 +808,56 @@ mod tests {
         assert!(paused("/a", true)
             .status_line()
             .ends_with("dispatch paused"));
+    }
+
+    /// The header summarises the projects, the running daemons and, when
+    /// any, how many items wait for input across local and remote daemons.
+    #[test]
+    fn header_summarises_running_and_waiting() {
+        let header = |spec: &MenuSpec| match &spec.entries[0] {
+            MenuEntry::Item { label, enabled, .. } => {
+                assert!(!enabled, "the header is a label");
+                label.clone()
+            }
+            e => panic!("header: {e:?}"),
+        };
+        let input = |id: &str| InputRequired {
+            identifier: id.into(),
+            state: "input_required".into(),
+            queued_at: "t".into(),
+            context: String::new(),
+        };
+        assert_eq!(
+            header(&build_menu(&[], &[], [].iter(), None)),
+            "No projects"
+        );
+        let views = [view("/a", true), view("/b", false)];
+        assert_eq!(
+            header(&build_menu(&views, &[], [].iter(), None)),
+            "2 projects · 1 running"
+        );
+        let mut one = view("/a", true);
+        one.health = Health::Ok(StateSummary {
+            input_required: vec![input("ENG-1")],
+            ..Default::default()
+        });
+        assert_eq!(
+            header(&build_menu(
+                &[one.clone(), view("/b", false)],
+                &[],
+                [].iter(),
+                None
+            )),
+            "2 projects · 1 running · 1 needs input"
+        );
+        one.health = Health::Ok(StateSummary {
+            input_required: vec![input("ENG-1"), input("ENG-2")],
+            ..Default::default()
+        });
+        assert_eq!(
+            header(&build_menu(&[one], &[], [].iter(), None)),
+            "1 project · 1 running · 2 need input"
+        );
     }
 
     #[test]

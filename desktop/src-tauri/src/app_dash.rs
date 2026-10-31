@@ -436,6 +436,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, label: &str, action: Rai
             save_prefs(app, shared, |r, p| nudge(r, p, &key, delta))
         }
         RailAction::Collapse(v) => set_collapsed(app, shared, v),
+        RailAction::AddProject => super::add_project(app, shared),
     }
 }
 
