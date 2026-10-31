@@ -361,20 +361,23 @@ qa-daemon: e2e
 qa-current: verify qa-current-ui qa-daemon
 	@echo "qa-current: full existing-functionality baseline passed"
 
-# ── Mac app (#128) ───────────────────────────────────────────────────────
-# A Tauri v2 menu-bar shell in desktop/ that bundles the daemon as a sidecar
-# (see site/src/content/docs/mac-app.mdx). Needs a Rust toolchain; `make
-# desktop` additionally needs macOS (Xcode Command Line Tools) and the Tauri
-# CLI, installed on first use at TAURI_CLI_VERSION. Not part of `make verify`,
-# which stays Rust-free; CI runs `desktop-test` and the unsigned bundle on a
-# macOS runner (.github/workflows/desktop.yml).
+# ── Desktop app (#128, #260) ─────────────────────────────────────────────
+# A Tauri v2 tray app in desktop/ that bundles the daemon as a sidecar (see
+# site/src/content/docs/guides/desktop-app.mdx). Needs a Rust toolchain;
+# `make desktop` additionally needs the Tauri CLI, installed on first use at
+# TAURI_CLI_VERSION, and the platform's build tools: Xcode Command Line Tools
+# on macOS, the GTK/WebKitGTK/AppIndicator development packages on Linux.
+# Not part of `make verify`, which stays Rust-free; CI runs `desktop-test`
+# and the unsigned bundles on macOS, Linux and Windows runners
+# (.github/workflows/desktop.yml).
 DESKTOP_DIR := desktop/src-tauri
 TAURI_CLI_VERSION := 2.12.2
 HOST_TRIPLE = $(shell rustc -vV | sed -n 's/^host: //p')
 
 .PHONY: desktop desktop-sidecar desktop-sidecar-host desktop-test desktop-tauri-cli
 
-# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one on a Mac).
+# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one) on a Mac;
+# the host's sidecar elsewhere.
 desktop-sidecar: web-deps web-build
 	bash desktop/scripts/build-sidecar.sh
 
@@ -393,9 +396,10 @@ desktop-tauri-cli:
 	@cargo tauri --version 2>/dev/null | grep -qx 'tauri-cli $(TAURI_CLI_VERSION)' \
 	  || cargo install tauri-cli --version $(TAURI_CLI_VERSION) --locked
 
-# The unsigned app bundle for this Mac's architecture:
-# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg).
-# Releases are signed and notarized by .github/workflows/desktop-release.yml
-# (#130, docs/release-mac.md).
+# The unsigned bundles for this machine: on a Mac
+# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg), on
+# Linux bundle/appimage/*.AppImage and bundle/deb/*.deb. Releases are built
+# by .github/workflows/desktop-release.yml (#130, docs/release-mac.md; Linux
+# and Windows #260).
 desktop: desktop-sidecar desktop-tauri-cli
 	cd $(DESKTOP_DIR) && cargo tauri build

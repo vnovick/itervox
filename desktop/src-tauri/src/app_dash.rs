@@ -290,11 +290,15 @@ fn create(
     let label = format!("dashboard-{n}");
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    let window = tauri::window::WindowBuilder::new(app, &label)
+    let builder = tauri::window::WindowBuilder::new(app, &label)
         .title(title)
         .inner_size(1280.0, 860.0)
-        .min_inner_size(720.0, 480.0)
-        .build()?;
+        .min_inner_size(720.0, 480.0);
+    // Linux and Windows have no app menu bar: the window carries the
+    // Projects menu, with Ctrl accelerators (#260).
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.menu(window_menu(app)?);
+    let window = builder.build()?;
     let (x, w, h) = bounds(&window, collapsed(shared));
 
     let (nav_app, nav_shared, nav_label) = (app.clone(), Arc::clone(shared), label.clone());
@@ -482,6 +486,26 @@ fn open_new_task(app: &AppHandle, shared: &Arc<Shared>, key: &str, label: String
         ),
         Err(e) => error_dialog(app, &e),
     }
+}
+
+/// The Projects menu of a dashboard window on Linux and Windows: the rail's
+/// shortcuts, each accelerator shown and bound with Ctrl.
+#[cfg(not(target_os = "macos"))]
+fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use crate::platform::{accelerator, Os};
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let menu = Menu::new(app)?;
+    let projects = Submenu::new(app, "Projects", true)?;
+    for (i, (id, label, accel)) in crate::rail::menu_items().into_iter().enumerate() {
+        // Separators after Previous and after Project 9, as on the Mac.
+        if i == 2 || i == 2 + crate::rail::MAX_SHORTCUTS {
+            projects.append(&PredefinedMenuItem::separator(app)?)?;
+        }
+        let accel = accelerator(Os::current(), &accel);
+        projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
+    }
+    menu.append(&projects)?;
+    Ok(menu)
 }
 
 /// Adds the Projects menu with the rail's shortcuts to the macOS menu bar

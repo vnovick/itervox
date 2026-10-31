@@ -3,7 +3,8 @@
 Every `vX.Y.Z` tag publishes, next to GoReleaser's archives, a signed and
 notarized Mac build (#130). This page covers the one-time setup, what the
 workflow does, and how to verify a build by hand. The app itself is
-described in the [Mac app guide](../site/src/content/docs/guides/mac-app.mdx).
+described in the [desktop app guide](../site/src/content/docs/guides/desktop-app.mdx).
+The Linux and Windows apps (#260) are covered [at the end](#linux-and-windows-260).
 
 ## What a release contains
 
@@ -186,3 +187,25 @@ To check the update path end to end: install the previous release from its
 relaunches and `Itervox.app/Contents/Info.plist` (`CFBundleShortVersionString`)
 shows the new version, as does `itervox --version` through an installed
 command-line tool.
+
+## Linux and Windows (#260)
+
+The same `desktop-release.yml` run builds, next to the Mac job and
+independent of it:
+
+| Asset | What |
+|---|---|
+| `Itervox_<version>_amd64.AppImage`, `Itervox_<version>_aarch64.AppImage` | The Linux app with the Linux `itervox` daemon as its sidecar (the job checks the AppImage carries it) |
+| `Itervox_<version>_amd64.deb`, `Itervox_<version>_arm64.deb` | The same for Debian and Ubuntu; the daemon installs as `/usr/bin/itervox` |
+| `Itervox_<version>_x64_en-US.msi`, `Itervox_<version>_x64-setup.exe` | The Windows installers (MSI per machine, NSIS per user) |
+
+None of them is signed and none needs a secret. They are not in
+`latest.json`: Linux and Windows apps do not update themselves, they link to
+the newest release's page. MSI accepts only numeric versions, so a
+prerelease with letters (`0.4.0-rc.1`) ships the NSIS installer alone.
+
+On Windows, `desktop/scripts/windows-sidecar.sh` builds `itervox.exe` and
+bundles it as the sidecar when the daemon builds for Windows (#259); until
+then the installers carry no local daemon and the app says that local
+projects need WSL or a remote daemon. Nothing in the workflow changes when
+it starts building.
