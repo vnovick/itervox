@@ -400,3 +400,89 @@ export function installRunContextData(api: MockApiHandle): void {
     route.fulfill(json({ phrases: [{ label: 'Wrap up', message: 'Wrap up and open the PR.' }] })),
   );
 }
+
+// Review and continue — the Changes tab's data: a PR diff with two files,
+// each file's patch, and the review routes.
+const CHANGES_FILES = [
+  { path: 'internal/greeting/greeting.go', status: 'modified', additions: 4, deletions: 2 },
+  { path: 'internal/greeting/greeting_test.go', status: 'modified', additions: 3, deletions: 0 },
+];
+const CHANGES_PATCHES: Record<string, string> = {
+  'internal/greeting/greeting.go': [
+    'diff --git a/internal/greeting/greeting.go b/internal/greeting/greeting.go',
+    '--- a/internal/greeting/greeting.go',
+    '+++ b/internal/greeting/greeting.go',
+    '@@ -8,7 +8,9 @@ package greeting',
+    ' // Hello returns the greeting for name.',
+    ' func Hello(name string) string {',
+    '-\tif name == "" {',
+    '-\t\treturn "Hello!"',
+    '+\tname = strings.TrimSpace(name)',
+    '+\tif name == "" {',
+    '+\t\treturn fallbackGreeting',
+    ' \t}',
+    '+\t// Keep the old greeting as a fallback.',
+    ' \treturn "Hello, " + name + "!"',
+    ' }',
+    '',
+  ].join('\n'),
+  'internal/greeting/greeting_test.go': [
+    'diff --git a/internal/greeting/greeting_test.go b/internal/greeting/greeting_test.go',
+    '--- a/internal/greeting/greeting_test.go',
+    '+++ b/internal/greeting/greeting_test.go',
+    '@@ -4,3 +4,6 @@ import "testing"',
+    ' func TestHello(t *testing.T) {',
+    ' \tif got := Hello("Ada"); got != "Hello, Ada!" {',
+    ' \t\tt.Fatal(got)',
+    '+\t}',
+    '+\tif got := Hello("  "); got != fallbackGreeting {',
+    '+\t\tt.Fatal(got)',
+    '',
+  ].join('\n'),
+};
+
+export function installChangesData(api: MockApiHandle): void {
+  installRunContextData(api);
+  api.override(/\/api\/v1\/issues\/[^/]+\/diff(\?|$)/, (route) => {
+    const url = new URL(route.request().url());
+    const identifier = decodeURIComponent(
+      url.pathname.split('/issues/')[1]?.replace('/diff', '') ?? '',
+    );
+    const file = url.searchParams.get('file');
+    const base = { identifier, base: 'main', source: 'pr' };
+    if (file) {
+      const patch = CHANGES_PATCHES[file] ?? '';
+      return route.fulfill(
+        json({
+          ...base,
+          file: CHANGES_FILES.find((f) => f.path === file),
+          patch,
+          bytes: patch.length,
+          maxBytes: 262144,
+        }),
+      );
+    }
+    return route.fulfill(
+      json({
+        ...base,
+        mergeBase: 'b1c2d3e4f5a6',
+        headSha: 'a9b8c7d6e5f4a3b2',
+        hunksAllowed: true,
+        sources: ['pr', 'worktree'],
+        prUrl: 'https://github.com/example/greeting/pull/12',
+        worktreePath: `/work/${identifier}`,
+        files: CHANGES_FILES,
+      }),
+    );
+  });
+  api.override(/\/api\/v1\/issues\/[^/]+\/review-continue$/, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        agent: { delivery: 'queued', queuedAt: T, movedTo: 'In Progress' },
+        pr: { posted: true, prUrl: 'https://github.com/example/greeting/pull/12', comments: 2 },
+      }),
+    }),
+  );
+}

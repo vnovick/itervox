@@ -110,6 +110,9 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				Playbook:      entry.Playbook,
 				Steers:        entry.Steers,
 				SteersDropped: entry.SteersDropped,
+				// The stalled run's history keeps the review it continued.
+				ContinuedFromReview: entry.ContinuedFromReview,
+				ReviewComments:      entry.ReviewComments,
 			}
 			select {
 			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunID: entry.RunID, RunEntry: &stalledEntry}:
@@ -205,6 +208,14 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 		// dispatch and clears state.Running before the worker exits,
 		// stranding the AutomationID/TriggerType from history (F-1).
 		if entry.Kind == "automation" {
+			entry.Issue.State = refreshedState
+			entry.LastEventAt = &now
+			continue
+		}
+		// A run started to continue from an operator review without a
+		// tracker move runs outside the active states by design; only a
+		// terminal state other than completion_state stops it.
+		if entry.NoTrackerMove && (!isTerminalState(refreshedState, state) || isReviewState(refreshedState, state)) {
 			entry.Issue.State = refreshedState
 			entry.LastEventAt = &now
 			continue

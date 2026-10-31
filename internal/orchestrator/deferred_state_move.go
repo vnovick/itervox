@@ -157,6 +157,8 @@ func moveWouldStopRun(entry *RunEntry, target string, state State) bool {
 		return false // automation runs are never stopped for their issue's state
 	case entry.Kind == "reviewer" && isReviewState(target, state):
 		return false
+	case entry.NoTrackerMove && (!isTerminalState(target, state) || isReviewState(target, state)):
+		return false
 	case isActiveState(target, state):
 		return false
 	}

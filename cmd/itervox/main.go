@@ -861,12 +861,13 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath)                                     // M4-close BH-M4-2
-		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                       // #136
-		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                      // #173
-		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json")) // #177
-		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                              // #213
-		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))           // #213
+		orch.SetPendingReviewsFile(pendingReviewsPath)                                      // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                        // #136
+		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                       // #173
+		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json"))  // #177
+		orch.SetReviewContinuationsFile(filepath.Join(logDir, "review_continuations.json")) // review and continue
+		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                               // #213
+		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))            // #213
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
@@ -1158,17 +1159,17 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
 			Sessions:        sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
-			RepoReadiness:   repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
-			RepoEvals:       repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
-			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
-			Version:         version,                                       // #212: GET /api/v1/summary
-			Dispatch:        dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
-			Changes:         changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
-			ChangeReview:    changeReviewAdapter{orch: orch},               // #238: line comments, PR reviews, the diff's PR source
-			GitHubPRs:       githubPRs,                                     // #238: the PR-event watcher's GitHub client
-			Playbooks:       playbooksAdapter{orch: orch},                  // #218: playbooks, decision logs, verify-skill issue
-			Tasks:           newTasksAdapter(orch, workflowPath),           // #251: New task and task templates
-			SteeringPhrases: cfg.Sessions.SteeringPhrases,                  // #218
+			RepoReadiness:   repoReadinessProvider(workflowPath),                                          // #200: the doctor checks, off the event loop
+			RepoEvals:       repoEvalsProvider(workflowPath),                                              // #201: persisted eval reports, read-only
+			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath),                                // #201: background job, off the event loop
+			Version:         version,                                                                      // #212: GET /api/v1/summary
+			Dispatch:        dispatchAdapter{orch: orch},                                                  // #213: the feed and the dispatch pause
+			Changes:         changesAdapter{orch: orch},                                                   // #215: run context and worktree diff, off the event loop
+			ChangeReview:    changeReviewAdapter{orch: orch, tr: tr, moveState: adapter.UpdateIssueState}, // #238: line comments, PR reviews, the diff's PR source
+			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
+			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
+			Tasks:           newTasksAdapter(orch, workflowPath),                                          // #251: New task and task templates
+			SteeringPhrases: cfg.Sessions.SteeringPhrases,                                                 // #218
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

@@ -142,6 +142,21 @@ type HistoryRow struct {
 	// and bounded; SteersDropped counts the older ones not kept.
 	Steers        []HistorySteer `json:"steers,omitempty"`
 	SteersDropped int            `json:"steersDropped,omitempty"`
+	// ContinuedFromReview marks a run that continued from an operator
+	// review (POST .../review-continue); ReviewComments counts its line
+	// comments.
+	ContinuedFromReview bool `json:"continuedFromReview,omitempty"`
+	ReviewComments      int  `json:"reviewComments,omitempty"`
+}
+
+// QueuedReviewRow is an operator review waiting for its issue's next
+// worker run: never the review text.
+type QueuedReviewRow struct {
+	Identifier   string    `json:"identifier"`
+	Comments     int       `json:"comments"`
+	HasNote      bool      `json:"hasNote,omitempty"`
+	MoveToActive bool      `json:"moveToActive"`
+	QueuedAt     time.Time `json:"queuedAt"`
 }
 
 // HistoryPromptParts are the per-component digests of a run's prompt
@@ -947,6 +962,9 @@ type StateSnapshot struct {
 	// page's review queue (#203): the Memory nav item's count. Omitted when
 	// none.
 	ProposedLessons int `json:"proposedLessons,omitempty"`
+	// QueuedReviews are operator reviews waiting for their issue's next
+	// worker run (POST .../review-continue), oldest first.
+	QueuedReviews []QueuedReviewRow `json:"queuedReviews,omitempty"`
 }
 
 // Backend health statuses carried by BackendHealthRow.Status.
@@ -1871,9 +1889,10 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
 			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
 			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
-			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
-			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
-			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
+			r.Post("/issues/{identifier}/review-continue", s.handleReviewContinue)
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)        // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)

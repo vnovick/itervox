@@ -6,7 +6,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
 import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
-import { installRunContextData, installTourData } from './fixtures/tourData';
+import { installChangesData, installRunContextData, installTourData } from './fixtures/tourData';
+import { makeIssue } from '../src/test/fixtures/issues';
 import {
   activeRunScenario,
   automationsPassScenario,
@@ -290,6 +291,72 @@ const overlays: Stop[] = [
     },
   },
 ];
+
+// Review and continue: an idle issue in review with a PR diff, so the
+// Changes tab shows the draft review and its send bar.
+const reviewable: Scenario = {
+  ...pausable,
+  snapshot: {
+    ...pausable.snapshot,
+    capabilities: [...(pausable.snapshot.capabilities ?? []), 'change_review', 'review_continue'],
+  },
+  issues: [
+    ...pausable.issues,
+    makeIssue({ identifier: 'DEMO-REV-1', title: 'Trim the greeting', state: 'In Review' }),
+  ],
+};
+
+const openReviewDraft = async (p: Page) => {
+  const dialog = p.getByRole('dialog', { name: 'DEMO-REV-1' });
+  await dialog.getByRole('tab', { name: 'Changes' }).click();
+  await dialog.getByRole('button', { name: /^M ?internal\/greeting\/greeting\.go/ }).click();
+  await dialog.getByRole('button', { name: 'Select line 10', exact: true }).click();
+  await dialog
+    .getByRole('button', { name: 'Select line 12', exact: true })
+    .click({ modifiers: ['Shift'] });
+  await dialog
+    .getByRole('textbox', { name: 'Comment' })
+    .fill('Name the fallback constant in the doc comment.');
+  await dialog.getByRole('button', { name: 'Add to review' }).click();
+  await dialog
+    .getByRole('textbox', { name: 'Overall note' })
+    .fill('Close; also cover blank names in the test.');
+  await expect(dialog.getByTestId('review-draft-count')).toHaveText('1 comment');
+};
+
+overlays.push(
+  {
+    name: 'changes-draft',
+    route: '/?issue=DEMO-REV-1',
+    scenario: reviewable,
+    beforeNavigate: installChangesData,
+    viewportOnly: true,
+    ready: (p) =>
+      expect(
+        p.getByRole('dialog', { name: 'DEMO-REV-1' }).getByRole('tab', { name: 'Changes' }),
+      ).toBeVisible(),
+    open: openReviewDraft,
+  },
+  {
+    name: 'changes-split',
+    route: '/?issue=DEMO-REV-1',
+    scenario: reviewable,
+    beforeNavigate: installChangesData,
+    viewportOnly: true,
+    ready: (p) =>
+      expect(
+        p.getByRole('dialog', { name: 'DEMO-REV-1' }).getByRole('tab', { name: 'Changes' }),
+      ).toBeVisible(),
+    open: async (p) => {
+      await openReviewDraft(p);
+      const dialog = p.getByRole('dialog', { name: 'DEMO-REV-1' });
+      // Phone width keeps the unified diff only.
+      const split = dialog.getByRole('button', { name: 'Side by side' });
+      if (await split.isVisible()) await split.click();
+      await dialog.getByTestId('diff-viewer').scrollIntoViewIfNeeded();
+    },
+  },
+);
 
 const viewportOf = (project: string) => (project.includes('mobile') ? 'mobile' : 'desktop');
 

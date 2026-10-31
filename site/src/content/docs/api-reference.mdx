@@ -1317,6 +1317,82 @@ One line or range comment, sent to the running agent or posted on the PR.
   pr_closed` (closed or merged), `404 pr_not_found` (the credentials cannot
   read the PR), `502 github_failed`.
 
+#### `POST /issues/{identifier}/review-continue`
+
+The operator's whole draft review — line and range comments plus an
+overall note — sent to the agent in one action (the dashboard's **Send to
+agent**). Operator scope; advertised as the `review_continue` capability.
+
+```json
+{
+  "comments": [
+    {"path": "internal/server/changes.go", "startLine": 12, "line": 14, "side": "RIGHT",
+     "body": "This should return 404, not 500.", "quote": "+\twriteError(w, 500, …)"},
+    {"path": "web/src/a.ts", "line": 3, "side": "LEFT", "body": "Keep this check."}
+  ],
+  "note": "Close. Also cover the empty case in a test.",
+  "moveToActive": true,
+  "alsoPostOnPR": true
+}
+```
+
+- Each comment has the fields of `review-comments` (`line`, `startLine`,
+  `side`, `startSide`, `body` at most 8 KiB, `quote` cut to 4 KiB). At most
+  50 comments; `note` is at most 8 KiB; a comment or a note is required
+  (`400 bad_request` with `field`).
+- **A live run** gets the review as steering (the [Sessions](#sessions)
+  path): ONE message listing every comment (file and lines, the quoted
+  lines in a fenced block, the comment) after the note. Quotes are
+  shortened to fit the 10 KiB message limit; only a review whose comments
+  alone do not fit is split into numbered parts (`[Operator review, part 1
+  of 2]`). `agent` is `{"delivery":"steered","runId":"…","messages":1}`.
+- **No live run**: the review is queued for the issue's next worker run and
+  `agent` is `{"delivery":"queued","queuedAt":"…","movedTo":"In Progress"}`.
+  The queue is runtime state (`review_continuations.json` next to the
+  daemon log, written by the ledger writer), so it survives a restart until
+  a run takes it. That run writes it into the issue's worktree as
+  `.itervox/handoff/<ISO8601>_operator-review.md` before its first prompt,
+  so the **Prior Agent Handoffs** block carries it; the record is dropped
+  once the file is written (a run that exits before writing it leaves it
+  for the next run). A paused issue is resumed (`"resumed": true`).
+  - `moveToActive` (default `true`): an issue outside the active states is
+    moved to the first active state through the same path as the board's
+    **Dispatch** (`PATCH .../state`), and the normal tick starts it.
+    `movedTo` names the state; a failed move takes the review back and
+    answers with the tracker's error.
+  - `moveToActive: false`: no tracker write. The issue is dispatched in
+    its own state on a tick whose gates admit it — free slots, no dispatch
+    pause, no `pause_dispatch_when_any_in_state` hit, the per-state limit,
+    tracker and gating inferred blockers, branch in use, then the backend
+    breaker and `agent.budget` — and stays queued until then. That run does
+    not move the issue to the working state, reconciliation does not stop it
+    for being outside the active states (a terminal state other than
+    `tracker.completion_state` still does), and it skips the completion move
+    when the issue already sits in `tracker.completion_state`. An issue in
+    another terminal state is refused (`409 issue_closed`).
+  - The run works on the issue's own branch (an open PR's branch, else the
+    issue's branch). When `workspace.auto_clear_workspace` removed the
+    worktree and its local branch after the last run, the worktree is
+    recreated from `origin/<branch>` (in a `workspace.clone_url` bare clone
+    and in the operator's own clone), not from the base branch.
+- `alsoPostOnPR: true` and the issue has a PR: the comments (and the note
+  as the body) are also posted as ONE GitHub review with event `comment`
+  (the `pr-review` path). `pr` reports it — `{"posted":true,"url":"…",
+  "comments":2}` or `{"posted":false,"error":"github_rejected","message":
+  "…"}` (`no_pr`, `pr_closed`, `pr_not_found`, `github_timeout`,
+  `github_failed`). A PR failure never undoes the agent delivery; the
+  response is still `202`.
+- Errors (nothing is sent anywhere): `409 input_required` (answer with
+  `provide-input`), `409 issue_closed`, `409 no_active_state`, `404
+  not_found`, `503 not_configured`.
+
+The run that took a queued review has `continuedFromReview: true` and
+`reviewComments` in its history row (the Timeline shows "Continued from
+your review (N comments)"), and `/api/v1/state` lists waiting reviews in
+`queuedReviews` (`identifier`, `comments`, `hasNote`, `moveToActive`,
+`queuedAt`; never the text). A feed event `review_comment_posted` (`via:
+agent`, `count`) is recorded; the comment text is never logged.
+
 #### `POST /issues/{identifier}/pr-review`
 
 One GitHub review: an event and the batched line comments, submitted

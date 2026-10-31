@@ -211,6 +211,10 @@ export const HistoryRowSchema = z.object({
   // Operator messages delivered to the run (redacted, bounded).
   steers: z.array(RunSteerSchema).optional(),
   steersDropped: z.number().optional(),
+  // Review and continue — the run took an operator review queued while no
+  // run was live; reviewComments counts its line comments.
+  continuedFromReview: z.boolean().optional(),
+  reviewComments: z.number().optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -827,6 +831,16 @@ export const DispatchPauseRowSchema = z.object({
 });
 export type DispatchPauseRow = z.infer<typeof DispatchPauseRowSchema>;
 
+// Review and continue — one operator review waiting for its next run.
+export const QueuedReviewRowSchema = z.object({
+  identifier: z.string(),
+  comments: z.number(),
+  hasNote: z.boolean().optional(),
+  moveToActive: z.boolean(),
+  queuedAt: z.string(),
+});
+export type QueuedReviewRow = z.infer<typeof QueuedReviewRowSchema>;
+
 export const StateSnapshotSchema = z.object({
   generatedAt: z.string(),
   pollIntervalMs: z.number().optional(), // omitempty — matches Go StateSnapshot.PollIntervalMs
@@ -972,6 +986,9 @@ export const StateSnapshotSchema = z.object({
   // CORE-175 — optional daemon features the dashboard may use; an absent
   // entry hides the matching UI (older daemons omit the whole field).
   capabilities: z.array(z.string()).optional(),
+  // Review and continue — operator reviews waiting for their issue's next
+  // worker run (counts only, never the text). Absent when none.
+  queuedReviews: z.array(QueuedReviewRowSchema).optional(),
   // #213 — the daemon-wide dispatch pause: null while dispatch runs, absent
   // on daemons predating it. feedSeq is the newest event-feed seq
   // (GET /api/v1/feed?since=).
@@ -2145,6 +2162,32 @@ export const PrReviewResultSchema = z.object({
   }),
 });
 export type PrReviewResult = z.infer<typeof PrReviewResultSchema>;
+
+// Review and continue — POST /api/v1/issues/{identifier}/review-continue:
+// the draft review steered into the live run, or queued for the next run;
+// and, when asked, the PR review outcome (reported, never undoing the agent
+// delivery).
+export const ReviewContinueResultSchema = z.object({
+  agent: z.object({
+    delivery: tolerantEnum('reviewContinue.delivery', ['steered', 'queued'], 'queued'),
+    runId: z.string().optional(),
+    messages: z.number().optional(),
+    queuedAt: z.string().optional(),
+    movedTo: z.string().optional(),
+    resumed: z.boolean().optional(),
+  }),
+  pr: z
+    .object({
+      posted: z.boolean(),
+      prUrl: z.string().optional(),
+      url: z.string().optional(),
+      comments: z.number().optional(),
+      error: z.string().optional(),
+      message: z.string().optional(),
+    })
+    .optional(),
+});
+export type ReviewContinueResult = z.infer<typeof ReviewContinueResultSchema>;
 
 // #218 — task-type playbooks, decision logs, steering phrases and the
 // verify-skill issue. Fetched on demand, never on the SSE frame.

@@ -1,12 +1,13 @@
 ---
-title: Review changes — line comments, PR reviews, open in editor
-description: Comment on lines of an agent's diff for the running agent or the pull request, review the PR from the issue detail view, and open files in VS Code or Cursor.
+title: Review changes — draft a review, send it to the agent, review the PR
+description: Draft line and range comments on an agent's diff, send the whole review to the running agent or to a new run on the issue's branch, review the PR from the issue detail view, and open files in VS Code or Cursor.
 ---
 
 The **Changes** tab ([Now & Changes](/guides/now-and-changes/)) shows what
-an agent changed. Since #238 you can act on it there: comment on a line or
-a range, send the comment to the agent that is still working or post it on
-the pull request, review the PR, and jump to the file in your editor.
+an agent changed. You can act on it there: draft a review of line and range
+comments with an overall note, send it to the agent in one action (the
+running agent, or a new run on the issue's branch when none is live), post
+it on the pull request, and jump to a file in your editor.
 
 ## Which diff you see
 
@@ -19,41 +20,88 @@ the pull request, review the PR, and jump to the file in your editor.
 
 If GitHub cannot be read, the tab says so and shows the worktree.
 
-## Comment on a line or a range
+## Read the diff
 
-Open a file, click a line number to select that line, and shift-click
-another line in the same hunk to select a range. A comment box opens under
-the diff. Choose where the comment goes:
+- **Unified or side by side.** The toggle above the file list switches the
+  diff between one column and old and new side by side; the choice is kept
+  in your browser. At phone width the diff is always unified.
+- **Filter and viewed ticks.** Type part of a path to filter the file list.
+  Tick a file's box once you have read it: the row dims and the count
+  ("2/5 viewed") goes up. The ticks last while the dashboard tab is open.
+- **Keys.** With focus anywhere in the tab (not in a text field):
+  <kbd>j</kbd> / <kbd>k</kbd> open the next / previous file, <kbd>n</kbd> /
+  <kbd>p</kbd> jump to the next / previous comment of your draft. The keys
+  are listed under the file list, next to **Previous comment** and **Next
+  comment** buttons that do the same.
 
-- **Send to the agent** — available while a run is live. The comment
-  becomes a steering message, the same path as **Steer the run**, that
-  names the file and the lines and quotes the selected diff lines:
+## Draft a review
 
-  ````
-  Review comment on internal/server/changes.go, lines 12-14:
-
-  ```diff
-  +	writeError(w, 500, …)
-  ```
-
-  This should return 404, not 500.
-  ````
-
-- **Post on the PR** — available while the tab shows the PR's files, so the
-  line numbers are GitHub's. **Post now** posts it as a review comment on
-  that file and line; **Add to review** keeps it as a pending comment for
-  the review below.
+Open a file and click a line number to select that line. Shift-click
+another line in the same hunk, or drag across the line numbers, to select a
+range. A comment box opens under the diff; **Add to review** (or
+<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd>) adds the comment to your
+**draft** for this issue. Add as many as you like, across files; each shows
+under the line it ends on, the file list counts them, and **Your review**
+below the diff lists them (click one to jump to it, ✕ to drop it) with an
+**Overall note**. The draft lasts while the dashboard tab is open: switching
+files or tabs, or closing the issue panel, keeps it; a reload does not.
 
 A deleted line comments on the base side of the diff, any other line on the
 new side, which is how GitHub anchors review comments.
 
+## Send it to the agent
+
+**Send to agent** sends the whole draft in one action:
+
+- **A run is live**: the running agent gets one steering message (the same
+  path as **Steer the run**) with the note and every comment — the file and
+  lines, the quoted diff lines, then the comment:
+
+  ````
+  Operator review of your changes (2 comments). Address each comment:
+
+  Overall: Close. Also cover the empty case in a test.
+
+  1. internal/server/changes.go, lines 12-14
+  ```diff
+  +	writeError(w, 500, …)
+  ```
+  This should return 404, not 500.
+  ````
+
+- **No run is live**: a **new run** continues on the issue's own branch.
+  The review waits in a queue that survives a daemon restart; the run that
+  takes it finds it as a handoff file,
+  `.itervox/handoff/<time>_operator-review.md`, in its **Prior Agent
+  Handoffs**. Two checkboxes decide how the run starts:
+  - **Move to _first active state_** (on by default; shown only when the
+    issue is not in an active state): the issue moves back in the tracker
+    exactly as the board's **Dispatch** does, and the normal dispatch starts
+    it. Unchecked, the run starts **without changing the tracker state**:
+    Itervox dispatches it where it is once the usual gates admit it (a free
+    slot, no dispatch pause, blockers, the backend breaker, the budget), the
+    run does not move the issue to the working state, and it is not stopped
+    for being outside the active states.
+  - **Also post on the PR** (on by default; shown only when the issue has a
+    PR): the comments are also posted as one GitHub review (**Comment**). If
+    GitHub refuses, a separate error says so; the agent still gets the
+    review.
+
+  While a review waits, the tab says so. Once a run took it, its Timeline
+  entry shows **Continued from your review (N comments)** under **Operator
+  messages**.
+
+The run works on the issue's branch even when `workspace.auto_clear_workspace`
+removed the worktree after the last run: the worktree is recreated from the
+branch on `origin`, where the earlier run pushed it.
+
 ## Review the PR
 
-Under the diff, **Review the PR** lists the pending comments (remove any
-you no longer want) and takes an optional summary. **Comment**, **Request
-changes** and **Approve** each submit **one** GitHub review that carries
-every pending comment. Request changes and Comment need a summary or at
-least one comment.
+While the tab shows the PR's files, **Review the PR** submits the same
+draft as **one** GitHub review: **Comment**, **Request changes** or
+**Approve**, with the overall note as its summary. Request changes and
+Comment need a note or at least one comment. The draft is cleared once the
+review is submitted.
 
 Itervox never merges from here. After a review the tab says what still
 governs the merge:
@@ -97,6 +145,9 @@ curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8090/api/v1/issues/ENG-
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"destination":"agent","path":"a.go","line":14,"startLine":12,"body":"Use gitexec here."}' \
   http://127.0.0.1:8090/api/v1/issues/ENG-12/review-comments
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"comments":[{"path":"a.go","line":14,"startLine":12,"body":"Use gitexec here."}],"note":"Close.","moveToActive":false,"alsoPostOnPR":true}' \
+  http://127.0.0.1:8090/api/v1/issues/ENG-12/review-continue
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"event":"request_changes","body":"Split this.","comments":[{"path":"a.go","line":6,"body":"nit"}]}' \
   http://127.0.0.1:8090/api/v1/issues/ENG-12/pr-review

@@ -127,6 +127,7 @@ var routeScopes = map[string]routeAccess{
 	"PUT /api/v1/tasks/{identifier}/instructions":            accessOperator, // #251: until the task starts
 	"POST /api/v1/issues/{identifier}/review-comments":       accessOperator, // #238: to the running agent or the PR
 	"POST /api/v1/issues/{identifier}/pr-review":             accessOperator, // #238: one GitHub review, never merges
+	"POST /api/v1/issues/{identifier}/review-continue":       accessOperator, // the draft review to the agent: steer, or queue for the next run
 	"POST /api/v1/repo/readiness/verify-skill-issue":         accessOperator, // #218: creates a tracker issue
 	"DELETE /api/v1/issues/{identifier}/deps-override":       accessOperator,
 	"POST /api/v1/issues/{identifier}/failures/ack":          accessOperator,

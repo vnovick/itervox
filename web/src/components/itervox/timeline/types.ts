@@ -34,6 +34,9 @@ export interface NormalisedSession {
   promptParts?: PromptParts;
   steers?: RunSteer[];
   steersDropped?: number;
+  /** Review and continue — the run took an operator review (N comments). */
+  continuedFromReview?: boolean;
+  reviewComments?: number;
 }
 
 export function fromRunning(r: RunningRow): NormalisedSession {
@@ -69,6 +72,8 @@ export function fromHistory(h: HistoryRow): NormalisedSession {
     promptParts: h.promptParts,
     steers: h.steers,
     steersDropped: h.steersDropped,
+    continuedFromReview: h.continuedFromReview,
+    reviewComments: h.reviewComments,
   };
 }
 

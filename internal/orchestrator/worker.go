@@ -287,7 +287,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// Transition issue to working state (e.g. Todo → In Progress).
-	if !skipFreshDispatchSetup && !automationRun {
+	// A run continuing an operator review in place makes no tracker write.
+	if !skipFreshDispatchSetup && !automationRun && !runNoTrackerMove(ctx) {
 		o.transitionToWorking(ctx, issue)
 	}
 
@@ -508,6 +509,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// prompt would include turn 1..N-1's outputs as "prior agent handoffs."
 	runTimestamp := handoffRunTimestamp(startedAt)
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
+	// An operator review queued while no run was live: written into the
+	// handoff dir before the first prompt, so the Prior Agent Handoffs
+	// block carries it.
+	o.deliverReviewContinuation(ctx, runReviewContinuation(ctx), wsPath, startedAt, runLogID)
 	// CORE-101: the Liquid `run` object for the WORKFLOW.md body, profile
 	// SOUL/INSTRUCTIONS and automation instructions.
 	// #218: the task-type playbook this run was dispatched with; its
@@ -1361,7 +1366,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
-	if completionState != "" && ctx.Err() == nil && !automationRun {
+	// A run that continued an operator review in place leaves an issue that
+	// already sits in completion_state where it is: no tracker write.
+	alreadyComplete := runNoTrackerMove(ctx) && strings.EqualFold(issue.State, completionState)
+	if completionState != "" && ctx.Err() == nil && !automationRun && !alreadyComplete {
 		// From here the run only finishes; mark it before the issue turns
 		// terminal in the tracker, so a reconcile tick between this move and
 		// the exit below leaves the run to that exit (#125).

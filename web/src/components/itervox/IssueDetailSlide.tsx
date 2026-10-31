@@ -161,6 +161,7 @@ export default function IssueDetailSlide() {
             <IssueChangesTab
               identifier={issue.identifier}
               live={issue.orchestratorState === 'running'}
+              issueState={issue.state}
             />
           </Suspense>
         </div>
