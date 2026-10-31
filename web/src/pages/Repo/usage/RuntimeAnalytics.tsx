@@ -20,8 +20,8 @@ interface RuntimeAnalyticsProps {
 export function RuntimeAnalytics({ analytics, recs }: RuntimeAnalyticsProps) {
   if (!analytics || analytics.HasRuntimeEvidence === false) {
     return (
-      <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
-        <p className="text-theme-text mb-1 text-sm font-medium">Runtime analytics</p>
+      <div className="glass-panel px-5 py-[18px]">
+        <p className="section-title mb-1">Runtime analytics</p>
         <p className="text-theme-muted text-xs">
           Runtime evidence not yet available — set{' '}
           <code className="font-mono">CLAUDE_CODE_LOG_DIR</code> and run a few sessions to populate.
@@ -37,8 +37,8 @@ export function RuntimeAnalytics({ analytics, recs }: RuntimeAnalyticsProps) {
   ).length;
 
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
-      <p className="text-theme-text mb-2 text-sm font-medium">
+    <div className="glass-panel px-5 py-[18px]">
+      <p className="section-title mb-2">
         Runtime analytics{' '}
         <span className="text-theme-muted text-xs">
           (last scan {new Date(analytics.GeneratedAt).toLocaleTimeString()})

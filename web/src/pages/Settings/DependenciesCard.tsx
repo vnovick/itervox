@@ -42,29 +42,20 @@ export function DependenciesCard({ mode, onSetMode }: DependenciesCardProps) {
   };
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Dependencies</h2>
-      </div>
-      <div className="px-5 py-5">
+    <div>
+      <div>
         <div
           data-testid="deps-analysis-mode"
           role="radiogroup"
           aria-label="Dependency analysis mode"
-          className="space-y-3"
+          className="grid gap-2 sm:grid-cols-2"
         >
           {OPTIONS.map((opt) => (
-            <label key={opt.value} className="flex cursor-pointer items-start gap-3">
-              <span
-                aria-hidden="true"
-                className="border-theme-line relative mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
-              >
-                {mode === opt.value && <span className="bg-theme-accent h-2 w-2 rounded-full" />}
-              </span>
+            <label key={opt.value} className="choice-card cursor-pointer items-start">
               <input
                 type="radio"
                 name="deps-analysis-mode"
-                className="sr-only"
+                className="accent-theme-accent mt-0.5 shrink-0"
                 aria-label={opt.label}
                 checked={mode === opt.value}
                 disabled={saving}

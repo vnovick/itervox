@@ -29,8 +29,8 @@ export function ProviderBreakdown({ inventory }: { inventory: SkillsInventory })
   const max = Math.max(1, stats.claude.tokens, stats.codex.tokens, stats.shared.tokens);
 
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
-      <p className="text-theme-text mb-2 text-sm font-medium">
+    <div className="glass-panel px-5 py-[18px]">
+      <p className="section-title mb-2">
         By provider <span className="text-theme-muted text-xs">(skill cost split)</span>
       </p>
       <div className="space-y-2">
@@ -41,7 +41,7 @@ export function ProviderBreakdown({ inventory }: { inventory: SkillsInventory })
             <div key={p} className="flex items-center gap-2 text-xs">
               <span className="text-theme-muted w-24 flex-shrink-0 capitalize">{p}</span>
               <span className="text-theme-text w-10 flex-shrink-0 tabular-nums">{s.count}</span>
-              <div className="bg-theme-bg-elevated relative h-3 flex-1 overflow-hidden rounded">
+              <div className="subtle-fill relative h-2.5 flex-1 overflow-hidden rounded-full">
                 <div
                   className="bg-theme-accent absolute inset-y-0 left-0"
                   style={{ width: `${String(pct)}%` }}

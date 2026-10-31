@@ -15,6 +15,8 @@ export interface BootOptions {
   route?: string;
   /** Default: 'one-shot'. */
   sseMode?: SseMode;
+  /** Runs after the mocks are installed and before navigation (route overrides). */
+  setup?: (api: MockApiHandle) => void;
 }
 
 export interface BootResult {
@@ -22,10 +24,11 @@ export interface BootResult {
 }
 
 export async function bootApp(page: Page, options: BootOptions): Promise<BootResult> {
-  const { scenario, token = E2E_TOKEN, route = '/', sseMode = 'one-shot' } = options;
+  const { scenario, token = E2E_TOKEN, route = '/', sseMode = 'one-shot', setup } = options;
 
   const api = await installMockApi(page, scenario);
   await installMockSse(page, scenario, sseMode);
+  setup?.(api);
 
   // The token query goes before any #hash (e.g. /repo#usage, #200).
   const hashAt = route.indexOf('#');

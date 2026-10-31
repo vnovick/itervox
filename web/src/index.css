@@ -1046,6 +1046,196 @@ body::before {
     text-transform: uppercase;
     color: var(--muted);
   }
+
+  /* --- shared page recipes: field label, tag chip, choice card, switch,
+     stat tile, data table, code block --- */
+  /* Code wells stay dark in both themes (prompt blocks, shell snippets). */
+  :root,
+  [data-theme='dark'] {
+    --code-bg: rgba(0, 0, 0, 0.38);
+    --code-text: #dfe6f3;
+    --switch-off: rgba(255, 255, 255, 0.18);
+  }
+  [data-theme='light'] {
+    --code-bg: rgba(23, 32, 51, 0.88);
+    --code-text: #dfe6f3;
+    --switch-off: rgba(23, 32, 51, 0.18);
+  }
+
+  /* A form field's label: 12px / 600, secondary ink. */
+  .field-label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  /* A compact .pill for status words inside rows (pass / warn / error). */
+  .pill-sm {
+    padding: 1px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+  }
+
+  /* A small value chip inside a card (scope values, states, tags). */
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: var(--radius-full);
+    padding: 2px 9px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--text);
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+  }
+
+  /* A selectable option rendered as a card (radio-like pickers). Lights up
+     when it is pressed/checked or holds a checked input. */
+  .choice-card {
+    display: flex;
+    gap: 8px;
+    border-radius: 14px;
+    padding: 10px 12px;
+    text-align: left;
+    color: var(--text);
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+    transition: background-color var(--duration-fast) ease;
+  }
+  .choice-card:hover {
+    background: var(--card);
+  }
+  .choice-card:is([aria-pressed='true'], [aria-checked='true'], [data-active='true']),
+  .choice-card:has(input:checked) {
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--card);
+    border-color: var(--accent);
+  }
+  .choice-card:disabled,
+  .choice-card[aria-disabled='true'] {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
+  /* An on/off switch drawn on a native checkbox: <input type="checkbox"
+     class="switch" />. Keeps the checkbox role, label and keyboard. */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 44px;
+    height: 26px;
+    margin: 0;
+    border-radius: var(--radius-full);
+    background: var(--switch-off);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-full);
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: transform var(--duration-fast) ease;
+  }
+  .switch:checked {
+    background: var(--dot-ok);
+  }
+  .switch:checked::after {
+    transform: translateX(18px);
+  }
+  .switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* A metric tile: small label over a large number. */
+  .stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    text-align: left;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+  }
+  button.stat-tile:hover {
+    background: var(--panel-strong);
+  }
+  .stat-tile:is([aria-pressed='true'], [aria-expanded='true'], [data-active='true']) {
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--card);
+    border-color: var(--accent);
+  }
+  .stat-tile-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .stat-tile-value {
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A data table inside a panel: secondary-ink header, hairline rows. */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .data-table th {
+    padding: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .data-table td,
+  .data-table tbody th {
+    padding: 8px;
+    border-top: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .data-table tbody th {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text);
+  }
+  .data-table tbody tr:hover > * {
+    background: var(--subtle);
+  }
+
+  /* A monospace code well (prompt blocks, commands). */
+  .code-block {
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    overflow-x: auto;
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
 }
 
 /* Transitional bridge: the dashboard's existing top-level sections are

@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useAuthStore } from './authStore';
 import { SERVER_DOWN_RETRY_MS } from '../utils/timings';
+import { StatusCard, StatusScreen } from '../components/common/StatusCard';
+import { plainButtonClass } from '../components/ui/button/buttonRecipe';
 
 /**
  * Shown when /api/v1/health fails with a network error — distinguishes
@@ -29,27 +31,26 @@ export function ServerDownScreen({ onRetry }: { onRetry: () => void }) {
     };
   }, []);
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="glass-sheet max-w-md p-7 text-center">
-        <h1 className="mb-2 text-xl font-semibold">Can't reach the daemon</h1>
-        <p className="text-theme-muted mb-4 text-sm">
-          <code className="font-mono text-xs">/api/v1/health</code> is unreachable. Check that{' '}
-          <code className="font-mono text-xs">itervox</code> is running and the host/port match your
-          dashboard URL.
+    <StatusScreen>
+      <StatusCard eyebrow="Daemon unreachable" title="Can't reach the daemon">
+        <p>
+          <code className="text-theme-text font-mono text-[13px] font-semibold">
+            /api/v1/health
+          </code>{' '}
+          is unreachable. Check that <code className="font-mono text-[13px]">itervox</code> is
+          running and the host/port match your dashboard URL.
         </p>
-        <p className="text-theme-muted mb-4 text-xs">
-          Retrying automatically every {SERVER_DOWN_RETRY_MS / 1000} seconds.
-        </p>
+        <p>Retrying automatically every {SERVER_DOWN_RETRY_MS / 1000} seconds.</p>
         <button
           type="button"
+          className={plainButtonClass('primary', 'lg')}
           onClick={() => {
             setStatus('unknown');
           }}
-          className="rounded-[var(--radius-md)] bg-[color:var(--color-accent)] px-4 py-2 text-sm font-medium text-white"
         >
           Retry
         </button>
-      </div>
-    </div>
+      </StatusCard>
+    </StatusScreen>
   );
 }

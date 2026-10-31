@@ -2,12 +2,12 @@
 
 import { useId } from 'react';
 import { Button } from '../../components/ui/button';
+import { cn } from '../../components/ui/cn';
 import type { Rule } from '../../types/schemas';
 import { splitList } from './rulesModel';
 import {
   fieldLabelCls,
   fieldSurfaceCls,
-  helperTextCls,
   inputCls,
   selectCls,
   textareaCls,
@@ -44,20 +44,7 @@ export function RuleFields({ rule, index, error, onChange, onRemove }: RuleField
   return (
     <fieldset className={fieldSurfaceCls} data-testid={`rule-${String(index)}`}>
       <legend className="sr-only">Rule {index + 1}</legend>
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
-        <div>
-          <label className={fieldLabelCls} htmlFor={`${uid}-id`}>
-            ID
-          </label>
-          <input
-            id={`${uid}-id`}
-            className={inputCls}
-            value={rule.id}
-            onChange={(e) => {
-              onChange({ ...rule, id: e.target.value });
-            }}
-          />
-        </div>
+      <div className="grid gap-x-2.5 gap-y-3 sm:grid-cols-[7.5rem_minmax(0,1fr)]">
         <div>
           <label className={fieldLabelCls} htmlFor={`${uid}-severity`}>
             Severity
@@ -74,42 +61,51 @@ export function RuleFields({ rule, index, error, onChange, onRemove }: RuleField
             <option value="should">should</option>
           </select>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onRemove}
-          aria-label={`Remove rule ${rule.id || String(index + 1)}`}
-        >
-          Remove
-        </Button>
+        <div>
+          <label className={fieldLabelCls} htmlFor={`${uid}-text`}>
+            Text
+          </label>
+          <textarea
+            id={`${uid}-text`}
+            rows={1}
+            className={cn(textareaCls, 'min-h-10 font-sans text-sm')}
+            value={rule.text}
+            onChange={(e) => {
+              onChange({ ...rule, text: e.target.value });
+            }}
+          />
+        </div>
+        <div>
+          <label className={fieldLabelCls} htmlFor={`${uid}-id`}>
+            ID
+          </label>
+          <input
+            id={`${uid}-id`}
+            className={cn(inputCls, 'font-mono text-[13px]')}
+            value={rule.id}
+            onChange={(e) => {
+              onChange({ ...rule, id: e.target.value });
+            }}
+          />
+        </div>
+        <div>
+          <label className={fieldLabelCls} htmlFor={`${uid}-description`}>
+            Description (not sent to the agent)
+          </label>
+          <input
+            id={`${uid}-description`}
+            className={inputCls}
+            value={rule.description ?? ''}
+            onChange={(e) => {
+              onChange({
+                ...rule,
+                description: e.target.value === '' ? undefined : e.target.value,
+              });
+            }}
+          />
+        </div>
       </div>
-      <div>
-        <label className={fieldLabelCls} htmlFor={`${uid}-text`}>
-          Text
-        </label>
-        <textarea
-          id={`${uid}-text`}
-          className={textareaCls}
-          value={rule.text}
-          onChange={(e) => {
-            onChange({ ...rule, text: e.target.value });
-          }}
-        />
-      </div>
-      <div>
-        <label className={fieldLabelCls} htmlFor={`${uid}-description`}>
-          Description (not sent to the agent)
-        </label>
-        <input
-          id={`${uid}-description`}
-          className={inputCls}
-          value={rule.description ?? ''}
-          onChange={(e) => {
-            onChange({ ...rule, description: e.target.value === '' ? undefined : e.target.value });
-          }}
-        />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-2.5 sm:grid-cols-3">
         {SCOPE_FIELDS.map((f) => (
           <div key={f.key}>
             <label className={fieldLabelCls} htmlFor={`${uid}-${f.key}`}>
@@ -119,7 +115,7 @@ export function RuleFields({ rule, index, error, onChange, onRemove }: RuleField
                 comma) while each change commits the parsed list. */}
             <input
               id={`${uid}-${f.key}`}
-              className={inputCls}
+              className={cn(inputCls, 'min-h-8 rounded-full py-1 text-xs')}
               defaultValue={(rule.scope?.[f.key] ?? []).join(', ')}
               placeholder={f.placeholder}
               onChange={(e) => {
@@ -129,7 +125,21 @@ export function RuleFields({ rule, index, error, onChange, onRemove }: RuleField
           </div>
         ))}
       </div>
-      <p className={helperTextCls}>Scope lists are comma-separated; * and ? match any text.</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-theme-muted text-xs">
+          Scope lists are comma-separated; * and ? match any text.
+        </p>
+        <Button
+          variant="secondary"
+          size="xs"
+          pill
+          className="text-theme-danger-text ml-auto"
+          onClick={onRemove}
+          aria-label={`Remove rule ${rule.id || String(index + 1)}`}
+        >
+          Remove
+        </Button>
+      </div>
       {error && (
         <p role="alert" className="text-theme-danger-text text-xs">
           {error}

@@ -4,6 +4,9 @@ import { apiRequest } from './apiRequest';
 import { HUB_API_BASE } from './apiBase';
 import { useTokenStore } from './tokenStore';
 import { defaultDeviceName, pairingCodeFromHash } from '../lib/pwa';
+import { StatusCard } from '../components/common/StatusCard';
+import { plainButtonClass } from '../components/ui/button/buttonRecipe';
+import { FIELD_CLASS } from '../components/ui/Input/fieldClass';
 
 /**
  * #231 — the phone's side of pairing, at /hub/pair#code=... (the link in the
@@ -44,49 +47,53 @@ export function PairDeviceScreen({ onPaired }: { onPaired?: () => void }) {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-4 p-6">
-      <h1 className="text-theme-text text-lg font-semibold">Pair this device with the hub</h1>
-      {code === '' ? (
-        <p role="alert" className="text-theme-danger-text text-sm">
-          This link has no pairing code. Scan the QR code on the hub page again.
-        </p>
-      ) : (
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void pair();
-          }}
-        >
-          <label className="text-theme-text-secondary flex flex-col gap-1 text-sm">
-            Device name
-            <input
-              value={name}
-              maxLength={48}
-              onChange={(e) => {
-                setName(e.target.value);
-              }}
-              className="border-theme-line bg-theme-bg-elevated text-theme-text h-11 rounded-lg border px-3 text-base"
-            />
-          </label>
-          {error && (
-            <p role="alert" className="text-theme-danger-text text-sm">
-              {error}
-            </p>
-          )}
-          <button
-            type="submit"
-            disabled={busy || name.trim() === ''}
-            className="bg-theme-accent h-11 rounded-lg text-sm font-medium text-white disabled:opacity-50"
-          >
-            {busy ? 'Pairing…' : 'Pair'}
-          </button>
-          <p className="text-theme-muted text-xs">
-            This device gets its own operator token: it can answer, approve, steer and pause. Revoke
-            it any time from the hub page.
+    <main className="flex min-h-screen items-center justify-center p-4 sm:p-6">
+      <StatusCard eyebrow="From the hub's QR code" title="Pair this device with the hub">
+        {code === '' ? (
+          <p role="alert" className="text-theme-danger-text">
+            This link has no pairing code. Scan the QR code on the hub page again.
           </p>
-        </form>
-      )}
+        ) : (
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void pair();
+            }}
+          >
+            <div className="flex flex-col">
+              <label htmlFor="pair-device-name" className="field-label">
+                Device name
+              </label>
+              <input
+                id="pair-device-name"
+                value={name}
+                maxLength={48}
+                onChange={(e) => {
+                  setName(e.target.value);
+                }}
+                className={`${FIELD_CLASS} h-11 text-base`}
+              />
+            </div>
+            <p>
+              This device gets its own operator token: it can answer, approve, steer and pause.
+              Revoke it any time from the hub page.
+            </p>
+            {error && (
+              <p role="alert" className="text-theme-danger-text">
+                {error}
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={busy || name.trim() === ''}
+              className={plainButtonClass('primary', 'lg', 'self-start')}
+            >
+              {busy ? 'Pairing…' : 'Pair'}
+            </button>
+          </form>
+        )}
+      </StatusCard>
     </main>
   );
 }

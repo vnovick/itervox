@@ -13,6 +13,8 @@ interface NavLinkProps {
    */
   badge?: number;
   badgeLabel?: string;
+  /** Called when the link is followed (the mobile drawer closes itself). */
+  onNavigate?: () => void;
 }
 
 /** A labelled sidebar row (`.nav-item` in index.css): icon, label, count. */
@@ -22,6 +24,7 @@ export function NavLink({
   label,
   badge = 0,
   badgeLabel = 'need attention',
+  onNavigate,
 }: NavLinkProps) {
   const resolved = useResolvedPath(to);
   const match = useMatch({ path: resolved.pathname, end: true });
@@ -33,6 +36,7 @@ export function NavLink({
       aria-current={match ? 'page' : undefined}
       data-active={match ? 'true' : undefined}
       className="nav-item"
+      onClick={onNavigate}
     >
       <span
         aria-hidden="true"

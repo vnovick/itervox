@@ -33,22 +33,22 @@ export default function Rules() {
         title="Itervox | Rules"
         description="Itervox rules — instructions every agent run follows"
       />
-      <div className="w-full max-w-6xl space-y-6">
+      <div className="w-full max-w-6xl space-y-4">
         <div>
-          <h1 className="text-theme-text text-2xl font-bold tracking-tight">Rules</h1>
-          <p className="text-theme-muted mt-1 text-sm">
+          <h1 className="page-title">Rules</h1>
+          <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">
             Short instructions every run follows: workers, reviewers and the dependency analyzer.
             The rules in scope go into the prompt as a <code>## Rules</code> block ahead of the
             profile’s SOUL.md and INSTRUCTIONS.md, must rules first. A later layer replaces a rule
             with the same id, except a user must rule. Edits apply to the next run; no restart.
           </p>
         </div>
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
-          <section className="space-y-4">
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+          <section aria-label="Rules" className="glass-panel min-w-0 space-y-3 px-5 py-[18px]">
             <div
               role="tablist"
               aria-label="Rules layers"
-              className="border-theme-line flex gap-1 border-b"
+              className="segmented max-w-full overflow-x-auto"
             >
               {RULES_LAYER_NAMES.map((name, i) => {
                 const active = name === current;
@@ -61,11 +61,7 @@ export default function Rules() {
                     aria-selected={active}
                     aria-controls="rules-layer-panel"
                     tabIndex={active ? 0 : -1}
-                    className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
-                      active
-                        ? 'border-theme-accent text-theme-text'
-                        : 'text-theme-muted hover:text-theme-text border-transparent'
-                    }`}
+                    className="text-sm whitespace-nowrap"
                     onClick={() => {
                       setCurrent(name);
                     }}

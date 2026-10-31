@@ -4,6 +4,7 @@ import { IssueNowPanel } from '../../components/itervox/changes/IssueNowPanel';
 import { IssueSteerBox } from '../../components/itervox/IssueSteerBox';
 import { MobileIssueDecision } from '../../components/itervox/hubPhone/MobileIssueDecision';
 import { DispatchPauseToggle } from '../Dashboard/components/DispatchPauseToggle';
+import { buttonClass } from '../../components/ui/button/buttonStyles';
 
 // #231 — one issue on a phone, inside its project through the hub
 // (/hub/p/{project}/m/{issue}): what the run is doing now, the answer it
@@ -17,13 +18,19 @@ export default function MobileIssuePage() {
   const project = ctx.mode === 'hubProject' ? ctx.project : '';
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
-      <header className="flex items-center gap-2">
-        <a href="/hub/m" className="text-theme-accent-strong text-sm" aria-label="Back to the hub">
+    <main className="mx-auto flex min-h-screen max-w-xl flex-col gap-3 px-4 pt-[max(2.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <header className="flex items-center gap-2.5 pb-1">
+        <a
+          href="/hub/m"
+          className={buttonClass('secondary', 'lg', 'font-semibold', true)}
+          aria-label="Back to the hub"
+        >
           ‹ Hub
         </a>
-        <h1 className="text-theme-text font-mono text-base font-semibold">{identifier}</h1>
-        {project && <span className="text-theme-muted ml-auto truncate text-xs">{project}</span>}
+        <h1 className="text-theme-text font-mono text-xl font-bold">{identifier}</h1>
+        {project && (
+          <span className="text-theme-text-secondary ml-auto truncate text-xs">{project}</span>
+        )}
       </header>
       <MobileIssueDecision identifier={identifier} />
       <IssueNowPanel identifier={identifier} live />
@@ -34,7 +41,7 @@ export default function MobileIssuePage() {
       {project && (
         <a
           href={`/hub/p/${encodeURIComponent(project)}/?issue=${encodeURIComponent(identifier)}`}
-          className="text-theme-muted text-xs underline"
+          className="text-theme-accent-text self-center text-sm underline underline-offset-2"
         >
           Open in the full dashboard
         </a>

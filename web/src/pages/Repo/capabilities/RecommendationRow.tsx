@@ -5,6 +5,8 @@
 import { useState } from 'react';
 import { RECOMMENDATION_HELP } from './recommendationHelp';
 import { SEVERITY_BG, type FixDescriptor } from './skillsFormat';
+import { buttonClass } from '../../../components/ui/button/buttonStyles';
+import { cn } from '../../../components/ui/cn';
 
 export interface RecommendationRowIssue {
   ID: string;
@@ -31,24 +33,20 @@ export function RecommendationRow({ issue, onApplyFix, fixPending }: Recommendat
   // on the right edge handles keyboard a11y; the rest of the row mirrors
   // the same click for affordance.
   return (
-    <li className="border-theme-line rounded border">
+    <li className="glass-card overflow-hidden">
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the aria-expanded toggle button inside is the keyboard path */}
       <div
         onClick={() => {
           setOpen((v) => !v);
         }}
-        className="flex w-full cursor-pointer items-start justify-between gap-3 p-2 text-left hover:bg-[var(--bg-soft)]"
+        className="flex w-full cursor-pointer items-start justify-between gap-3 px-3.5 py-3 text-left"
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span
-              className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase ${
-                SEVERITY_BG[issue.Severity] ?? SEVERITY_BG.info
-              }`}
-            >
+            <span className={`pill pill-sm ${SEVERITY_BG[issue.Severity] ?? SEVERITY_BG.info}`}>
               {issue.Severity}
             </span>
-            <span className="text-theme-text text-xs font-semibold">{issue.Title}</span>
+            <span className="text-theme-text text-[13px] font-semibold">{issue.Title}</span>
             <button
               type="button"
               aria-expanded={open}
@@ -57,12 +55,12 @@ export function RecommendationRow({ issue, onApplyFix, fixPending }: Recommendat
                 e.stopPropagation();
                 setOpen((v) => !v);
               }}
-              className="text-theme-muted ml-auto rounded px-1 text-[10px] hover:bg-[var(--bg-soft)]"
+              className="text-theme-text-secondary hover:bg-theme-subtle ml-auto rounded-full px-1.5 text-[10px]"
             >
               {open ? '▼' : '▶'}
             </button>
           </div>
-          <p className="text-theme-muted mt-1 text-xs">{issue.Description}</p>
+          <p className="text-theme-text-secondary mt-1 text-[13px]">{issue.Description}</p>
         </div>
         {issue.Fix && (
           <button
@@ -73,11 +71,12 @@ export function RecommendationRow({ issue, onApplyFix, fixPending }: Recommendat
             }}
             disabled={fixPending}
             title={issue.Fix.Destructive ? 'Destructive — confirms before running' : 'Apply fix'}
-            className={`flex-shrink-0 rounded border px-2 py-1 text-[10px] font-semibold disabled:opacity-50 ${
-              issue.Fix.Destructive
-                ? 'border-theme-danger/40 text-theme-danger-text hover:bg-theme-danger-soft'
-                : 'border-theme-line text-theme-text hover:bg-[var(--bg-soft)]'
-            }`}
+            className={buttonClass(
+              'secondary',
+              'xs',
+              cn('flex-shrink-0', issue.Fix.Destructive && 'text-theme-danger-text'),
+              true,
+            )}
           >
             {issue.Fix.Label}
           </button>
@@ -85,7 +84,7 @@ export function RecommendationRow({ issue, onApplyFix, fixPending }: Recommendat
       </div>
 
       {open && (
-        <div className="border-theme-line border-t bg-[var(--bg-soft)] p-3 text-xs">
+        <div className="border-theme-line subtle-fill border-t px-3.5 py-3 text-xs">
           {help ? (
             <>
               <p className="text-theme-text mb-2 font-semibold">What this means</p>

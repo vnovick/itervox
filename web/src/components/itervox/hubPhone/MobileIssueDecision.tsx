@@ -28,16 +28,19 @@ export function MobileIssueDecision({ identifier }: { identifier: string }) {
     <RequireScope scope="operator">
       <section
         aria-label={run.pendingApproval ? 'Approval' : 'Reply'}
-        className="border-theme-warning-text/30 flex flex-col gap-2 rounded-[var(--radius-sm)] border p-3"
+        className="glass-panel flex flex-col gap-3 rounded-[var(--radius-lg)] p-4"
       >
-        <h2 className="text-theme-text text-sm font-semibold">
+        <h2 className="pill pill-warn self-start">
           {run.pendingApproval ? 'Waiting for your approval' : 'Waiting for your answer'}
         </h2>
-        <p className="text-theme-text-secondary text-sm break-words">{run.pendingInput}</p>
+        <p className="text-theme-text text-lg leading-snug font-semibold break-words">
+          {run.pendingInput}
+        </p>
         {run.pendingApproval ? (
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="primary"
+              size="lg"
               className="h-12"
               disabled={provide.isPending}
               onClick={() => {

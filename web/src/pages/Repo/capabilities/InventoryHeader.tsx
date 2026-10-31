@@ -2,6 +2,7 @@
 // from Settings → SkillsCard).
 
 import type { SkillsInventory } from '../../../types/schemas';
+import { buttonClass } from '../../../components/ui/button/buttonStyles';
 
 interface InventoryHeaderProps {
   inventory: SkillsInventory;
@@ -12,26 +13,22 @@ interface InventoryHeaderProps {
 export function InventoryHeader({ inventory, scanning, onRescan }: InventoryHeaderProps) {
   const inventoryStale = inventory.Stale === true;
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
+    <div className="glass-panel px-5 py-[18px]">
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-theme-text text-sm font-medium">Inventory</p>
+            <p className="section-title">Inventory</p>
             <span
               role="status"
-              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
-                inventoryStale
-                  ? 'border-theme-warning/40 bg-theme-warning-soft text-theme-warning-text'
-                  : 'border-theme-success/40 bg-theme-success-soft text-theme-success-text'
-              }`}
+              className={`pill pill-sm ${inventoryStale ? 'pill-warn' : 'pill-ok'}`}
             >
               {inventoryStale ? 'Stale' : 'Tracked files current'}
             </span>
           </div>
-          <p className="text-theme-muted mt-0.5 text-xs">
+          <p className="text-theme-text-secondary mt-1 text-xs">
             Last scanned: {new Date(inventory.ScanTime).toLocaleString()}
           </p>
-          <p className="text-theme-muted mt-1 max-w-xl text-[11px]">
+          <p className="text-theme-text-secondary mt-1 max-w-xl text-xs">
             {inventoryStale
               ? 'Tracked config or inventory files changed since the last scan. Click Re-scan to refresh recommendations.'
               : 'Tracked config and inventory files are unchanged since the last scan. Click Re-scan after adding new roots or changing untracked paths.'}
@@ -40,7 +37,7 @@ export function InventoryHeader({ inventory, scanning, onRescan }: InventoryHead
         <button
           onClick={onRescan}
           disabled={scanning}
-          className="border-theme-line text-theme-text rounded border px-3 py-1.5 text-xs font-semibold hover:bg-[var(--bg-soft)] disabled:opacity-50"
+          className={buttonClass('secondary', 'sm', undefined, true)}
         >
           {scanning ? 'Scanning…' : 'Re-scan'}
         </button>

@@ -44,7 +44,8 @@ export function RulesForm({ rules, saving, onSave }: RulesFormProps) {
       ))}
       <div className="flex flex-wrap gap-2">
         <Button
-          size="sm"
+          variant="secondary"
+          pill
           onClick={() => {
             setRows((prev) => [...prev, ruleRow({ id: '', severity: 'should', text: '' })]);
           }}
@@ -53,7 +54,7 @@ export function RulesForm({ rules, saving, onSave }: RulesFormProps) {
         </Button>
         <Button
           variant="primary"
-          size="sm"
+          pill
           disabled={saving || errors !== null}
           onClick={() => {
             onSave(draft);

@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportClientError } from '../../lib/clientErrorReporter';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
+import { StatusCard, StatusScreen } from './StatusCard';
 
 interface Props {
   children: ReactNode;
@@ -37,23 +39,21 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
 
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-8 text-center">
-        <h1 className="text-theme-danger-text text-2xl font-semibold">Something went wrong</h1>
-        <p className="text-theme-text-secondary max-w-md text-sm">
-          The dashboard encountered an unexpected error. Try refreshing the page.
-        </p>
-        <pre className="subtle-fill text-theme-text max-w-lg overflow-auto rounded-[var(--radius-sm)] p-4 text-left text-xs">
-          {error.message}
-        </pre>
-        <button
-          onClick={() => {
-            window.location.reload();
-          }}
-          className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm text-white hover:brightness-110"
-        >
-          Reload
-        </button>
-      </div>
+      <StatusScreen>
+        <StatusCard eyebrow="Dashboard error" title="Something went wrong">
+          <p>The dashboard encountered an unexpected error. Try refreshing the page.</p>
+          <pre className="code-block max-h-48 text-left">{error.message}</pre>
+          <button
+            type="button"
+            onClick={() => {
+              window.location.reload();
+            }}
+            className={plainButtonClass('primary', 'lg')}
+          >
+            Reload
+          </button>
+        </StatusCard>
+      </StatusScreen>
     );
   }
 }
