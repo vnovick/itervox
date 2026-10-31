@@ -38,7 +38,7 @@ export function DashboardIssuesHeader({
         Issues
         <span className="text-theme-muted font-medium tabular-nums">{filteredCount}</span>
       </h2>
-      <div role="group" aria-label="Issue view" className="segmented flex-wrap">
+      <div role="group" aria-label="Issue view" className="segmented">
         {dashboardViewModes(availableProfileCount > 0).map((mode) => (
           <button
             key={mode}

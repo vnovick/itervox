@@ -15,6 +15,8 @@ interface SlidePanelProps {
   size?: Size;
   /** Render the title in the monospace face (identifiers). */
   monoTitle?: boolean;
+  /** Inline content after the title in the header row (status pills). */
+  titleAccessory?: ReactNode;
 }
 
 // A floating sheet (.glass-sheet), inset 12px from the window edges.
@@ -38,6 +40,7 @@ export function SlidePanel({
   direction = 'right',
   size = 'wide',
   monoTitle = false,
+  titleAccessory,
 }: SlidePanelProps) {
   const titleId = useId();
 
@@ -70,14 +73,17 @@ export function SlidePanel({
         }`}
       >
         <div className="flex items-center justify-between gap-3 px-6 pt-5 pb-3">
-          <h2
-            id={titleId}
-            className={`text-theme-text text-lg font-semibold ${
-              monoTitle ? 'font-mono' : 'tracking-[-0.01em]'
-            }`}
-          >
-            {title}
-          </h2>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+            <h2
+              id={titleId}
+              className={`text-theme-text text-lg font-semibold ${
+                monoTitle ? 'font-mono' : 'tracking-[-0.01em]'
+              }`}
+            >
+              {title}
+            </h2>
+            {titleAccessory}
+          </div>
           <button
             type="button"
             onClick={onClose}

@@ -118,7 +118,7 @@ export function HostPool() {
         </h3>
         <span className="count-pill">{hosts.length}</span>
       </div>
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,13rem),1fr))] gap-2.5">
         {hosts.map((host) => (
           <HostTile key={host.id} host={host} />
         ))}

@@ -7,6 +7,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
 import { activeRunScenario, type Scenario } from './fixtures/scenarios';
+import { installRunContextData } from './fixtures/tourData';
+import type { MockApiHandle } from './fixtures/mockApi';
 import {
   makeInputRequiredIssue,
   makeIssue,
@@ -26,8 +28,14 @@ const now = new Date().toISOString();
 
 // Every dashboard section has rows: needs input, running + paused sessions,
 // a queued automation with an open blocker, two worker hosts.
+// run_context and dispatch_pause: the daemon advertises both, so the issue
+// detail shows its Now card, tabs, steering and playbook, and the status
+// strip shows Pause dispatch.
+const CAPABILITIES = ['run_context', 'dispatch_pause'];
+
 const fullDashboard: Scenario = {
   snapshot: makeSnapshot({
+    capabilities: CAPABILITIES,
     maxConcurrentAgents: 3,
     running: [
       makeRunningRow({ identifier: 'DEMO-RUN-1', backend: 'claude', lastEvent: 'tool_use:Edit' }),
@@ -94,6 +102,36 @@ const fullDashboard: Scenario = {
   logs: {},
 };
 
+// A running issue with everything the detail view can show: status changes,
+// comments, a branch, priority and labels, over the live run context.
+const runningDetail: Scenario = {
+  ...activeRunScenario,
+  snapshot: { ...activeRunScenario.snapshot, capabilities: CAPABILITIES },
+  issues: activeRunScenario.issues.map((issue) =>
+    issue.identifier === 'DEMO-RUN-1'
+      ? {
+          ...issue,
+          title: 'Move the greeting into its own module',
+          branchName: 'itervox/demo-run-1',
+          priority: 2,
+          labels: ['backend'],
+          statusChanges: [
+            { fromState: 'Todo', toState: 'In Progress', source: 'itervox', at: now },
+            { fromState: 'Backlog', toState: 'Todo', source: 'tracker', at: now },
+          ],
+          comments: [
+            {
+              author: 'itervox',
+              body: 'Should the old greeting stay as a fallback?',
+              createdAt: now,
+            },
+            { author: 'vlad', body: 'Yes, keep it for one release.', createdAt: now },
+          ],
+        }
+      : issue,
+  ),
+};
+
 const OUT = process.env.VISUAL_TOUR_DIR ?? 'test-results/visual-tour';
 const THEMES = ['light', 'dark'] as const;
 
@@ -102,6 +140,8 @@ interface Stop {
   route: string;
   scenario: Scenario;
   open?: (page: Page) => Promise<unknown>;
+  /** Capture the viewport only (an overlay over a long page). Default: full page. */
+  viewportOnly?: boolean;
 }
 
 const hero = (page: Page) =>
@@ -117,11 +157,18 @@ const stops: Stop[] = [
   {
     name: 'issue-detail-running',
     route: '/?issue=DEMO-RUN-1',
-    scenario: activeRunScenario,
-    open: (p) => expect(p.getByRole('dialog', { name: 'DEMO-RUN-1' })).toBeVisible(),
+    scenario: runningDetail,
+    viewportOnly: true,
+    open: async (p) => {
+      const dialog = p.getByRole('dialog', { name: 'DEMO-RUN-1' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole('tab', { name: 'Changes' })).toBeVisible();
+      await expect(dialog.getByText('Updating the greeting module')).toBeVisible();
+    },
   },
   {
     name: 'queue-detail',
+    viewportOnly: true,
     route: '/',
     scenario: fullDashboard,
     open: async (p) => {
@@ -131,6 +178,7 @@ const stops: Stop[] = [
   },
   {
     name: 'new-task',
+    viewportOnly: true,
     route: '/?newTask=1',
     scenario: activeRunScenario,
     open: (p) => expect(p.getByRole('dialog', { name: 'New task' })).toBeVisible(),
@@ -146,6 +194,7 @@ const stops: Stop[] = [
   },
   {
     name: 'command-palette-confirm',
+    viewportOnly: true,
     route: '/',
     scenario: activeRunScenario,
     open: async (p) => {
@@ -168,12 +217,21 @@ for (const theme of THEMES) {
       test(`${stop.name} renders`, async ({ page }) => {
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(e.message));
-        await bootApp(page, { scenario: stop.scenario, route: stop.route });
+        await bootApp(page, {
+          scenario: stop.scenario,
+          route: stop.route,
+          beforeNavigate: (api: MockApiHandle) => {
+            installRunContextData(api);
+          },
+        });
         await hero(page);
         if (stop.open) await stop.open(page);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         await page.waitForTimeout(250);
-        await page.screenshot({ path: `${OUT}/${theme}/desktop-${stop.name}.png`, fullPage: true });
+        await page.screenshot({
+          path: `${OUT}/${theme}/desktop-${stop.name}.png`,
+          fullPage: !stop.viewportOnly,
+        });
         expect(errors).toEqual([]);
       });
     }

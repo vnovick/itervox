@@ -61,7 +61,7 @@ describe('ConfirmButton size', () => {
 
   it('is a small row trigger by default', () => {
     render(button());
-    expect(screen.getByRole('button', { name: 'Discard' })).toHaveClass('text-xs', 'py-1.5');
+    expect(screen.getByRole('button', { name: 'Discard' })).toHaveClass('text-xs', 'h-7');
   });
 
   it('lg matches the 44px footer buttons', () => {

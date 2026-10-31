@@ -33,8 +33,8 @@ export default function Automations() {
         title="Itervox | Automations"
         description="Itervox automations — cron and event-driven helper runs"
       />
-      <div className="flex w-full max-w-none flex-col gap-4">
-        <div className="flex flex-wrap items-center gap-3 px-1.5 pt-1">
+      <div className="page-container">
+        <div className="page-header flex flex-wrap items-center gap-3">
           <div className="mr-auto">
             <h1 className="page-title">Automations</h1>
             <p className="text-theme-text-secondary text-sm">
@@ -51,7 +51,7 @@ export default function Automations() {
           hidden={tab !== 'configure'}
         >
           <div className="flex flex-col gap-4">
-            <Card variant="subtle" className="space-y-1">
+            <Card variant="card" className="space-y-1">
               <p className="text-theme-text text-[13px] font-semibold">Automation scope</p>
               <p className="text-theme-text-secondary text-[13px] leading-relaxed">
                 Scheduled QA checks, backlog review, helper agents that react to input-required

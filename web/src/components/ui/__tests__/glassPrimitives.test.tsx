@@ -47,10 +47,42 @@ describe('Button variants', () => {
       'bg-theme-danger',
       'text-white',
     );
+    // danger is the one destructive-trigger look: red text on the glass chip.
     expect(screen.getByRole('button', { name: 'Soft' })).toHaveClass(
-      'bg-theme-danger-soft',
+      'glass-chip',
       'text-theme-danger-text',
     );
+    expect(screen.getByRole('button', { name: 'Soft' })).not.toHaveClass('bg-theme-danger');
+  });
+
+  it('a disabled filled button drops to the chip surface instead of fading', () => {
+    render(
+      <>
+        <Button variant="primary" disabled>
+          Send
+        </Button>
+        <Button variant="secondary" disabled>
+          Cancel
+        </Button>
+      </>,
+    );
+    const send = screen.getByRole('button', { name: 'Send' });
+    expect(send).toHaveClass('disabled:bg-theme-chip', 'disabled:text-theme-muted');
+    expect(send).not.toHaveClass('disabled:opacity-50');
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveClass('disabled:opacity-50');
+  });
+
+  it('chip variants carry the light-theme rim class', () => {
+    render(
+      <>
+        <Button variant="secondary">A</Button>
+        <Button variant="glass-danger">B</Button>
+        <Button variant="ghost">C</Button>
+      </>,
+    );
+    expect(screen.getByRole('button', { name: 'A' })).toHaveClass('btn-chip');
+    expect(screen.getByRole('button', { name: 'B' })).toHaveClass('btn-chip');
+    expect(screen.getByRole('button', { name: 'C' })).not.toHaveClass('btn-chip');
   });
 
   it('lg size is 40px tall', () => {
@@ -149,7 +181,7 @@ describe('Overlays', () => {
 });
 
 describe('ConfirmButton', () => {
-  it('soft trigger, then a card row with a solid confirm and a Cancel', async () => {
+  it('red-text chip trigger, then a card row with a solid confirm and a Cancel', async () => {
     const onConfirm = vi.fn();
     render(
       <ConfirmButton
@@ -161,14 +193,35 @@ describe('ConfirmButton', () => {
       />,
     );
     const trigger = screen.getByRole('button', { name: 'Discard' });
-    expect(trigger).toHaveClass('bg-theme-danger-soft', 'rounded-full');
+    // One destructive-trigger style: red text on the neutral glass chip.
+    expect(trigger).toHaveClass('glass-chip', 'text-theme-danger-text', 'rounded-full');
+    expect(trigger).not.toHaveClass('bg-theme-danger', 'bg-theme-danger-soft');
     await userEvent.click(trigger);
     const yes = screen.getByRole('button', { name: 'Yes, discard' });
     expect(yes).toHaveClass('bg-theme-danger', 'text-white');
     expect(yes).toHaveFocus();
     expect(yes.closest('.glass-card')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveClass('glass-chip');
     await userEvent.click(yes);
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('tone="neutral" draws a plain chip trigger; the confirm step stays solid red', async () => {
+    render(
+      <ConfirmButton
+        label="Rotate"
+        confirmLabel="Yes, rotate"
+        pendingLabel="Rotating…"
+        isPending={false}
+        onConfirm={vi.fn()}
+        tone="neutral"
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Rotate' });
+    expect(trigger).toHaveClass('glass-chip', 'text-theme-text');
+    expect(trigger).not.toHaveClass('text-theme-danger-text');
+    await userEvent.click(trigger);
+    expect(screen.getByRole('button', { name: 'Yes, rotate' })).toHaveClass('bg-theme-danger');
   });
 });
 

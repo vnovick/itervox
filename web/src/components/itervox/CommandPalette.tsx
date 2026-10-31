@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { Modal } from '../ui/modal';
@@ -130,6 +130,22 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     else inputRef.current?.focus();
   }, [pending]);
 
+  // The list fades out at its bottom edge while more rows sit below it, so a
+  // half-visible last row reads as "scroll for more" rather than cut off.
+  const listRef = useRef<HTMLUListElement>(null);
+  const [fadeEnd, setFadeEnd] = useState(false);
+  const updateFade = useCallback(() => {
+    const el = listRef.current;
+    setFadeEnd(!!el && el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  }, []);
+  useEffect(() => {
+    // Measured after layout (the list's rows have rendered).
+    const raf = requestAnimationFrame(updateFade);
+    return () => {
+      cancelAnimationFrame(raf);
+    };
+  }, [matches.length, pending, updateFade]);
+
   const execute = (command: Command) => {
     if (command.confirm) {
       setPending(command);
@@ -140,30 +156,44 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   };
 
   if (pending?.confirm) {
+    // The confirm step keeps the palette's chrome: the header row names the
+    // chosen command where the search field was, then the prompt.
     return (
-      <div className="space-y-4 px-5 py-5">
-        <p className="text-theme-text text-[15px] leading-relaxed">{pending.confirm.prompt}</p>
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="lg"
-            onClick={() => {
-              setPending(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            ref={confirmRef}
-            variant="destructive"
-            size="lg"
-            onClick={() => {
-              pending.run();
-              onClose();
-            }}
-          >
-            {pending.confirm.confirmLabel}
-          </Button>
+      <div>
+        <div className="border-theme-line flex items-center gap-3 border-b px-5 py-3.5">
+          <Search aria-hidden="true" className="text-theme-text-secondary h-4 w-4 flex-shrink-0" />
+          <span className="text-theme-text min-w-0 flex-1 truncate text-base">{pending.label}</span>
+          <kbd aria-hidden="true" className="tag font-mono">
+            esc
+          </kbd>
+        </div>
+        <div className="space-y-3 px-5 pt-4 pb-5">
+          <p className="eyebrow text-theme-text-secondary">Confirm step</p>
+          <p className="text-theme-text text-[15px] leading-normal">{pending.confirm.prompt}</p>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              variant="secondary"
+              size="lg"
+              pill
+              onClick={() => {
+                setPending(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              ref={confirmRef}
+              variant="destructive"
+              size="lg"
+              pill
+              onClick={() => {
+                pending.run();
+                onClose();
+              }}
+            >
+              {pending.confirm.confirmLabel}
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -207,10 +237,13 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         </kbd>
       </div>
       <ul
+        ref={listRef}
         id={listId}
         role="listbox"
         aria-label="Commands"
-        className="max-h-[420px] overflow-y-auto px-2 py-2"
+        onScroll={updateFade}
+        data-fade={fadeEnd || undefined}
+        className={cn('max-h-[420px] overflow-y-auto px-2 py-2', fadeEnd && 'scroll-fade-end')}
       >
         {matches.length === 0 && (
           <li role="presentation" className="text-theme-muted px-3 py-2 text-xs">

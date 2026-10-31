@@ -40,7 +40,7 @@ export function TemplateTile({
       <span className="text-theme-text text-[13px] font-semibold">{title}</span>
       {meta && <span className="flex flex-wrap items-center gap-1">{meta}</span>}
       {description && <span className="sr-only">{description}</span>}
-      {note && <span className="text-theme-danger-text text-xs leading-relaxed">{note}</span>}
+      {note && <span className="text-theme-warning-text text-[11px] leading-snug">{note}</span>}
       <span className={buttonClass('glass', 'xs', 'mt-auto', true)}>Use Template</span>
     </button>
   );

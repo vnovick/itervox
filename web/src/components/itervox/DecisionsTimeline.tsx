@@ -29,7 +29,11 @@ export function DecisionsTimeline({ identifier, live }: { identifier: string; li
   const runs = (data?.runs ?? []).filter((r) => r.decisions.length > 0);
   if (runs.length === 0) return null;
   return (
-    <section data-testid="decisions-timeline" aria-label="Decisions">
+    <section
+      data-testid="decisions-timeline"
+      aria-label="Decisions"
+      className="glass-card rounded-[18px] px-3.5 py-3"
+    >
       <h4 className="text-theme-text mb-2 text-[13px] font-semibold">Decisions</h4>
       <ol className="space-y-3">
         {runs.map((run) => (

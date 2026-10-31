@@ -17,7 +17,10 @@ const STRATEGIES: { id: string; label: string; desc: string; available: boolean 
 
 export function SSHHostsCard() {
   const hosts = useItervoxStore((s) => s.snapshot?.sshHosts ?? EMPTY_HOSTS);
-  const strategy = useItervoxStore((s) => s.snapshot?.dispatchStrategy ?? 'round-robin');
+  // The daemon routes every value but "least-loaded" round-robin (its
+  // default), so an unset or unrecognised value shows Round Robin selected.
+  const rawStrategy = useItervoxStore((s) => s.snapshot?.dispatchStrategy);
+  const strategy = rawStrategy === 'least-loaded' ? 'least-loaded' : 'round-robin';
   const { addSSHHost, removeSSHHost, setDispatchStrategy } = useSettingsActions();
   const [addOpen, setAddOpen] = useState(false);
   const [removingHost, setRemovingHost] = useState<string | null>(null);
@@ -41,20 +44,33 @@ export function SSHHostsCard() {
         {hosts.length > 0 && (
           <div>
             <p className="field-label">Dispatch strategy</p>
-            <div className="grid grid-cols-2 gap-2">
+            {/* Same control family as the other two-choice pickers: a card
+                per option with a radio indicator. */}
+            <div
+              role="radiogroup"
+              aria-label="Dispatch strategy"
+              className="grid gap-2 sm:grid-cols-2"
+            >
               {STRATEGIES.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  aria-pressed={strategy === s.id}
-                  onClick={() => {
-                    void setDispatchStrategy(s.id);
-                  }}
-                  className="choice-card flex-col gap-0.5"
-                >
-                  <span className="text-theme-text text-[13px] font-semibold">{s.label}</span>
-                  <span className="text-theme-text-secondary text-xs leading-[1.4]">{s.desc}</span>
-                </button>
+                <label key={s.id} className="choice-card items-start">
+                  <input
+                    type="radio"
+                    name="ssh-dispatch-strategy"
+                    className="accent-theme-accent mt-0.5 shrink-0"
+                    checked={strategy === s.id}
+                    onChange={() => {
+                      void setDispatchStrategy(s.id);
+                    }}
+                  />
+                  <span className="min-w-0">
+                    <span className="text-theme-text block text-[13px] font-semibold">
+                      {s.label}
+                    </span>
+                    <span className="text-theme-text-secondary block text-xs leading-[1.4]">
+                      {s.desc}
+                    </span>
+                  </span>
+                </label>
               ))}
             </div>
           </div>

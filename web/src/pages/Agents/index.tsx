@@ -26,8 +26,8 @@ export default function Agents() {
         title="Itervox | Agents"
         description="Itervox agent management — profiles, reviewer behavior, and execution capacity"
       />
-      <div className="flex w-full max-w-none flex-col gap-4">
-        <div className="px-1.5 pt-1">
+      <div className="page-container">
+        <div className="page-header">
           <h1 className="page-title">Agents</h1>
           <p className="text-theme-text-secondary text-sm">
             Manage agent profiles, reviewer behavior, and execution capacity. Profiles remain synced

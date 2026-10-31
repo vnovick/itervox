@@ -4,7 +4,7 @@
 // local — and each layer has a form view and a JSON view of its file. Saves go
 // through the daemon's comment-preserving JSONC writer.
 
-import { useMemo, type KeyboardEvent } from 'react';
+import { useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Banner } from '../../../components/ui/Banner';
 import {
   flattenSettingsSchema,
@@ -19,7 +19,10 @@ import {
 } from '../../../queries/settingsLayers';
 import { useUIStore } from '../../../store/uiStore';
 import { SETTINGS_LAYER_NAMES, type SettingsLayerName } from '../../../types/schemas';
+import { cn } from '../../../components/ui/cn';
+import { inputCls } from '../formStyles';
 import { SchemaSettingsForm } from './SchemaSettingsForm';
+import { settingsSectionId, settingsSectionTitle } from './settingsSections';
 import { SettingsLayerJson } from './SettingsLayerJson';
 
 const VIEWS = [
@@ -27,7 +30,14 @@ const VIEWS = [
   { id: 'json', label: 'JSON' },
 ] as const;
 
-export function SchemaSettingsCard() {
+interface SchemaSettingsCardProps {
+  /** The section heading, drawn at the start of the toolbar row. */
+  heading?: ReactNode;
+  /** Help text under the toolbar. */
+  help?: ReactNode;
+}
+
+export function SchemaSettingsCard({ heading, help }: SchemaSettingsCardProps = {}) {
   const schema = useSettingsSchema();
   const layers = useSettingsLayers();
   const save = useSaveSettingsLayer();
@@ -45,6 +55,18 @@ export function SchemaSettingsCard() {
     [layers.data],
   );
   const layer = layers.data?.layers.find((l) => l.name === current);
+  const sections = useMemo(() => [...new Set(fields.map((f) => f.section))], [fields]);
+  const [filter, setFilter] = useState('');
+  const [openSections, setOpenSections] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSection = (section: string, open: boolean) => {
+    setOpenSections((prev) => {
+      const next = new Set(prev);
+      if (open) next.add(section);
+      else next.delete(section);
+      return next;
+    });
+  };
+  const formView = view !== 'json';
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const n = SETTINGS_LAYER_NAMES.length;
@@ -57,45 +79,91 @@ export function SchemaSettingsCard() {
   };
 
   if (schema.isError || layers.isError) {
-    return <p className="text-theme-danger-text text-sm">Could not load the settings.</p>;
+    return (
+      <div className="space-y-2">
+        {heading}
+        <p className="text-theme-danger-text text-sm">Could not load the settings.</p>
+      </div>
+    );
   }
   if (!schema.data || !layers.data) {
-    return <p className="text-theme-muted text-sm">Loading settings…</p>;
+    return (
+      <div className="space-y-2">
+        {heading}
+        <p className="text-theme-muted text-sm">Loading settings…</p>
+      </div>
+    );
   }
   const name = current as SettingsLayerName;
   const draftKey = `${current}-${layer?.version ?? ''}`;
 
   return (
     <div className="space-y-4">
-      <div
-        role="tablist"
-        aria-label="Settings layers"
-        className="segmented max-w-full overflow-x-auto"
-      >
-        {SETTINGS_LAYER_NAMES.map((n, i) => {
-          const active = n === current;
-          return (
-            <button
-              key={n}
-              id={`settings-tab-${n}`}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-controls="settings-layer-panel"
-              tabIndex={active ? 0 : -1}
-              className="text-sm whitespace-nowrap"
-              onClick={() => {
-                setCurrent(n);
+      {/* Toolbar: heading, layer tabs, filter, section links. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {heading}
+        <div role="tablist" aria-label="Settings layers" className="segmented">
+          {SETTINGS_LAYER_NAMES.map((n, i) => {
+            const active = n === current;
+            return (
+              <button
+                key={n}
+                id={`settings-tab-${n}`}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls="settings-layer-panel"
+                tabIndex={active ? 0 : -1}
+                className="text-sm"
+                onClick={() => {
+                  setCurrent(n);
+                }}
+                onKeyDown={(e) => {
+                  onKeyDown(e, i);
+                }}
+              >
+                {settingsLayerLabel(n)}
+              </button>
+            );
+          })}
+        </div>
+        {formView && layer?.writable && !layer.error && (
+          <>
+            <input
+              type="search"
+              aria-label="Filter settings"
+              placeholder="Filter settings"
+              className={cn(inputCls, 'w-auto min-w-0 flex-[1_1_220px] rounded-full')}
+              value={filter}
+              onChange={(e) => {
+                setFilter(e.target.value);
               }}
-              onKeyDown={(e) => {
-                onKeyDown(e, i);
-              }}
-            >
-              {settingsLayerLabel(n)}
-            </button>
-          );
-        })}
+            />
+            <nav aria-label="Settings sections" className="flex flex-wrap items-center gap-1">
+              {sections.map((section) => (
+                <a
+                  key={section}
+                  href={`#${settingsSectionId(section)}`}
+                  className="text-theme-text-secondary hover:text-theme-text rounded-full px-2 py-1 text-[13px]"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    toggleSection(section, true);
+                    requestAnimationFrame(() => {
+                      // Not every environment implements scrollIntoView (jsdom).
+                      const target: Partial<Pick<Element, 'scrollIntoView'>> | null =
+                        document.getElementById(settingsSectionId(section));
+                      target?.scrollIntoView?.({ block: 'start' });
+                    });
+                  }}
+                >
+                  {settingsSectionTitle(section)}
+                </a>
+              ))}
+            </nav>
+          </>
+        )}
       </div>
+      {help}
       <div
         id="settings-layer-panel"
         role="tabpanel"
@@ -105,7 +173,12 @@ export function SchemaSettingsCard() {
       >
         {layer && (
           <div className="space-y-1">
-            <p className="text-theme-text font-mono text-xs break-all">{layer.path || '(off)'}</p>
+            <p
+              className="text-theme-text truncate font-mono text-xs"
+              title={layer.path || undefined}
+            >
+              {layer.path || '(off)'}
+            </p>
             <p className="text-theme-muted text-xs">
               {SETTINGS_LAYER_INFO[name]?.git}{' '}
               {!layer.exists && layer.writable && 'The file does not exist yet; saving creates it.'}
@@ -167,6 +240,9 @@ export function SchemaSettingsCard() {
                 onSave={(values) => {
                   save.mutate({ layer: name, baseVersion: layer.version, values });
                 }}
+                filter={filter}
+                openSections={openSections}
+                onToggleSection={toggleSection}
               />
             )}
           </>

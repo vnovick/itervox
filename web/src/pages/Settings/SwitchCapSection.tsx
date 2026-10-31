@@ -66,7 +66,8 @@ export function SwitchCapSection({
         issue to a different profile within the rolling window. Use{' '}
         <span className="font-mono">0</span> for unlimited.
       </p>
-      <div className="mt-2 flex items-center gap-3">
+      {/* Wraps as two "input + unit" pairs on narrow cards. */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
         <input
           id="retries-max-switches"
           type="number"
@@ -85,31 +86,33 @@ export function SwitchCapSection({
               e.currentTarget.blur();
             }
           }}
-          className={cn(inputCls, 'w-32')}
-        />
-        <span className="text-theme-text-secondary text-xs">switches per</span>
-        <input
-          id="retries-switch-window"
-          aria-label="Rate-limit switch window in hours"
-          type="number"
-          min={1}
-          inputMode="numeric"
-          value={windowH.draft}
-          disabled={saving}
-          onChange={(e) => {
-            windowH.setDraft(e.target.value);
-          }}
-          onBlur={() => {
-            void windowH.commit();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.currentTarget.blur();
-            }
-          }}
           className={cn(inputCls, 'w-24')}
         />
-        <span className="text-theme-text-secondary text-xs">hours</span>
+        <span className="text-theme-text-secondary text-xs whitespace-nowrap">switches per</span>
+        <span className="flex items-center gap-3">
+          <input
+            id="retries-switch-window"
+            aria-label="Rate-limit switch window in hours"
+            type="number"
+            min={1}
+            inputMode="numeric"
+            value={windowH.draft}
+            disabled={saving}
+            onChange={(e) => {
+              windowH.setDraft(e.target.value);
+            }}
+            onBlur={() => {
+              void windowH.commit();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur();
+              }
+            }}
+            className={cn(inputCls, 'w-24')}
+          />
+          <span className="text-theme-text-secondary text-xs">hours</span>
+        </span>
       </div>
       {error && (
         <span role="alert" className="text-theme-danger-text mt-1 block text-xs">

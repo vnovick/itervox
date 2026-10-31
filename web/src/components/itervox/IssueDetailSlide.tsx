@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import MarkdownPanel from './MarkdownPanel';
-import IssueDetailHeader from './IssueDetailHeader';
+import IssueDetailHeader, { IssueDetailBadges } from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { IssueStatusChanges } from './IssueStatusChanges';
@@ -126,6 +126,16 @@ export default function IssueDetailSlide() {
     issue.orchestratorState === 'retrying' ||
     issue.orchestratorState === 'paused';
 
+  const headerProps = {
+    issue,
+    runningRows,
+    history: historyRows,
+    profileDefs,
+    defaultBackend,
+    automations,
+    syncing: outboxSyncing.includes(issue.identifier),
+  };
+
   return (
     <SlidePanel
       isOpen
@@ -134,17 +144,10 @@ export default function IssueDetailSlide() {
       monoTitle
       title={issue.identifier}
       onClose={close}
+      titleAccessory={<IssueDetailBadges {...headerProps} />}
     >
-      {/* Sub-header: badges + title (extracted to IssueDetailHeader, T-20) */}
-      <IssueDetailHeader
-        issue={issue}
-        runningRows={runningRows}
-        history={historyRows}
-        profileDefs={profileDefs}
-        defaultBackend={defaultBackend}
-        automations={automations}
-        syncing={outboxSyncing.includes(issue.identifier)}
-      />
+      {/* Title on its own line; the badges sit inline after the identifier. */}
+      <IssueDetailHeader {...headerProps} badges={false} />
 
       {runContextSupported && <IssueDetailTabs tab={tab} onChange={setTab} />}
 
@@ -197,11 +200,15 @@ export default function IssueDetailSlide() {
               </button>
             )}
           </div>
-          <IssueStatusChanges changes={issue.statusChanges} />
-          <DecisionsTimeline
-            identifier={issue.identifier}
-            live={issue.orchestratorState === 'running'}
-          />
+          {/* Status changes beside decisions; either takes the full width
+              when the other has nothing to show. */}
+          <div className="flex flex-col gap-3 empty:hidden sm:flex-row sm:items-start [&>*]:min-w-0 [&>*]:flex-1">
+            <IssueStatusChanges changes={issue.statusChanges} />
+            <DecisionsTimeline
+              identifier={issue.identifier}
+              live={issue.orchestratorState === 'running'}
+            />
+          </div>
           <IssueReviews
             review={issue.review}
             rerunPending={triggerAIReviewMutation.isPending}
@@ -226,20 +233,22 @@ export default function IssueDetailSlide() {
               ))}
             </div>
           )}
-          {/* Agent Profile (backend-aware, #123) */}
-          <IssueProfilePicker issue={issue} locked={isProfileLocked} />
-          <IssuePlaybookPicker issue={issue} /> {/* #218 */}
+          {/* Agent profile (backend-aware, #123), playbook (#218) and backend
+              (CORE-056): one row of equal selects on wider sheets. */}
+          <div className="grid items-start gap-3 sm:grid-cols-3">
+            <IssueProfilePicker issue={issue} locked={isProfileLocked} />
+            <IssuePlaybookPicker issue={issue} />
+            <IssueBackendControl
+              key={issue.identifier} // BH-M3-10: no error/pending state across issues
+              issue={issue}
+              defaultBackend={defaultBackend}
+            />
+          </div>
           {issue.task && (
             <Suspense fallback={null}>
               <IssueTaskInstructions issue={issue} />
             </Suspense>
           )}
-          {/* Agent Backend (CORE-056) */}
-          <IssueBackendControl
-            key={issue.identifier} // BH-M3-10: no error/pending state across issues
-            issue={issue}
-            defaultBackend={defaultBackend}
-          />
           {/* Branch */}
           {issue.branchName && (
             <div className="flex flex-wrap items-center gap-2">

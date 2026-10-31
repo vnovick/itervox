@@ -8,6 +8,12 @@ interface ConfirmModalProps {
   onConfirm: () => void;
   /** Title text. */
   title: string;
+  /**
+   * Optional context eyebrow above the title: where the action came from
+   * (e.g. "Dashboard · status strip"), so a dialog over a busy page says
+   * what it belongs to.
+   */
+  context?: string;
   /** Optional description below the title. */
   description?: string;
   /** Label for the confirm button. Default: 'Confirm'. */
@@ -41,6 +47,7 @@ export function ConfirmModal({
   onClose,
   onConfirm,
   title,
+  context,
   description,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
@@ -58,11 +65,16 @@ export function ConfirmModal({
       className="max-w-md"
       ariaLabelledBy={titleId}
     >
+      {context && (
+        <p data-testid="confirm-context" className="eyebrow text-theme-text-secondary mb-1.5">
+          {context}
+        </p>
+      )}
       <p id={titleId} className="text-theme-text text-[17px] font-semibold tracking-[-0.01em]">
         {title}
       </p>
       {description && (
-        <p className="text-theme-text-secondary mt-2.5 text-sm leading-relaxed">{description}</p>
+        <p className="text-theme-text-secondary mt-2.5 text-sm leading-normal">{description}</p>
       )}
       <ModalFooter>
         <button

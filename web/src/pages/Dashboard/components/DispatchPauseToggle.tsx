@@ -17,14 +17,14 @@ const BUTTON_CLASS = plainButtonClass('secondary', 'md', {
   extra: 'min-h-9 flex-shrink-0 text-[13px]',
 });
 
-export function DispatchPauseToggle() {
+export function DispatchPauseToggle({ context }: { context?: string } = {}) {
   const supported = useItervoxStore(
     (s) => s.snapshot?.capabilities?.includes(DISPATCH_PAUSE_CAPABILITY) ?? false,
   );
   // #214 — pause/resume is operator scope; a viewer sees only the chip.
   const canOperate = useScopeAllows('operator');
   if (!supported) return null;
-  return canOperate ? <DispatchPauseControl /> : <DispatchPausedChip />;
+  return canOperate ? <DispatchPauseControl context={context} /> : <DispatchPausedChip />;
 }
 
 function DispatchPausedChip() {
@@ -39,7 +39,7 @@ function DispatchPausedChip() {
   ) : null;
 }
 
-function DispatchPauseControl() {
+function DispatchPauseControl({ context }: { context?: string }) {
   const paused = useItervoxStore((s) => s.snapshot?.dispatchPaused ?? null);
   const [confirming, setConfirming] = useState(false);
   const mutation = useSetDispatchPause();
@@ -84,6 +84,7 @@ function DispatchPauseControl() {
           setConfirming(false);
         }}
         onConfirm={confirm}
+        context={context}
         title={pausing ? 'Pause all dispatch?' : 'Resume dispatch?'}
         description={
           pausing

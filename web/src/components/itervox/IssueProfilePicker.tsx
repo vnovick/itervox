@@ -80,7 +80,7 @@ export function IssueProfilePicker({
           onChange={(e) => {
             setIssueProfile.mutate({ identifier: issue.identifier, profile: e.target.value });
           }}
-          className="glass-chip text-theme-text focus-visible:ring-theme-accent min-h-10 min-w-[160px] cursor-pointer rounded-[var(--radius-sm)] px-3 text-[13px] focus:outline-none focus-visible:ring-2"
+          className="glass-chip text-theme-text focus-visible:ring-theme-accent min-h-10 w-full min-w-0 cursor-pointer rounded-[var(--radius-sm)] px-3 text-[13px] focus:outline-none focus-visible:ring-2"
         >
           <option value="">
             {EMPTY_PROFILE_LABEL} · {backendLabel(defaultBackend)}

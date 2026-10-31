@@ -50,8 +50,8 @@ export default function RepoAnalysis() {
         title="Itervox | Repo Analysis"
         description="Itervox repo analysis — capabilities, runtime usage and cost, prompt versions, agent readiness, evals and failure hotspots"
       />
-      <div className="w-full max-w-6xl space-y-4">
-        <div>
+      <div className="page-container">
+        <div className="page-header">
           <h1 className="page-title">Repo Analysis</h1>
           <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">
             What your agents load, what it costs, which prompt version ran, whether the repository

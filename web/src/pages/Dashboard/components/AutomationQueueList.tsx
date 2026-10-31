@@ -51,7 +51,7 @@ export function AutomationQueueList({
   return (
     <section
       aria-labelledby="automation-queue-heading"
-      className="glass-panel flex flex-col gap-2 overflow-hidden px-3 py-4 sm:px-[18px]"
+      className="glass-panel @container flex flex-col gap-2 overflow-hidden px-3 py-4 sm:px-[18px]"
     >
       <div className="flex flex-col gap-3 px-1">
         <div className="flex items-center justify-between gap-3">
@@ -121,7 +121,7 @@ export function AutomationQueueList({
         </div>
       ) : (
         <div>
-          <div className="table-head hidden grid-cols-[1.1fr_0.8fr_1.1fr_1fr_0.9fr_1fr_0.7fr_0.6fr_0.7fr] gap-3 px-2.5 py-2 lg:grid">
+          <div className="table-head hidden grid-cols-[1.1fr_0.8fr_1.1fr_1fr_0.9fr_1fr_0.7fr_0.6fr_0.7fr] gap-3 px-2.5 py-2 @3xl:grid">
             <span>Automation</span>
             <span>Trigger</span>
             <span>Issue</span>

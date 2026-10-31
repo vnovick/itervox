@@ -76,12 +76,16 @@ export const proseClass = [
 
 export type BadgeColor = 'primary' | 'success' | 'error' | 'warning' | 'info' | 'light' | 'dark';
 
-/** Map a tracker state string to a Badge color variant. */
+/**
+ * Map a tracker state string to a Badge color variant. Work in flight is the
+ * accent tone (warning is reserved for things that need attention), review
+ * and done read as success, and queued states (Todo, Backlog, …) stay
+ * neutral so the in-flight state is the one that stands out.
+ */
 export function stateBadgeColor(state: string): BadgeColor {
   const s = state.toLowerCase();
-  if (s.includes('progress')) return 'warning';
+  if (s.includes('progress')) return 'primary';
   if (s.includes('review') || s.includes('done')) return 'success';
-  if (s.includes('todo')) return 'primary';
   return 'light';
 }
 

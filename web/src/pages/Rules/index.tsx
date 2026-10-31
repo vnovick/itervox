@@ -33,8 +33,8 @@ export default function Rules() {
         title="Itervox | Rules"
         description="Itervox rules — instructions every agent run follows"
       />
-      <div className="w-full max-w-6xl space-y-4">
-        <div>
+      <div className="page-container">
+        <div className="page-header">
           <h1 className="page-title">Rules</h1>
           <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">
             Short instructions every run follows: workers, reviewers and the dependency analyzer.

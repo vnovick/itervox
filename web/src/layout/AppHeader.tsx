@@ -138,7 +138,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
           </span>
         </div>
       )}
-      <header className="glass-panel flex min-w-0 flex-wrap items-center gap-2 px-3 py-2.5 text-sm sm:gap-3 md:px-4">
+      <header className="glass-panel glass-bar flex min-w-0 flex-wrap items-center gap-2 px-3 py-2.5 text-sm sm:gap-3 md:px-4">
         {/* Mobile menu button */}
         {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
 
@@ -254,13 +254,28 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             entry and the primitives pull in tailwind-merge (M6-close). */}
         <button
           type="button"
-          className="glass-chip text-theme-text hover:bg-theme-panel-strong inline-flex h-9 items-center gap-1.5 px-3.5 text-[13px] font-medium transition-colors"
+          className="glass-chip text-theme-text hover:bg-theme-panel-strong inline-flex h-9 items-center gap-1.5 px-3 text-[13px] font-medium transition-colors sm:px-3.5"
           aria-keyshortcuts="Control+K Meta+K"
           onClick={() => {
             useUIStore.getState().setCommandPaletteOpen(true);
           }}
         >
-          Commands <kbd className="text-theme-muted font-sans">Ctrl/⌘ K</kbd>
+          {/* Phones: a search glyph keeps the top bar to two rows; the
+              label stays the accessible name. */}
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            className="h-4 w-4 sm:hidden"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <span className="sr-only sm:not-sr-only">Commands</span>
+          <kbd className="text-theme-muted hidden font-sans sm:inline">Ctrl/⌘ K</kbd>
         </button>
 
         {/* #251 — New task, from every page (operator scope). */}

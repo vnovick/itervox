@@ -36,8 +36,8 @@ export default function Memory() {
         title="Itervox | Memory"
         description="Itervox memory — what agents carry from one run to the next"
       />
-      <div className="w-full max-w-6xl space-y-4">
-        <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+      <div className="page-container">
+        <div className="page-header flex flex-wrap items-start gap-x-6 gap-y-3">
           <div className="min-w-0 flex-1 basis-[28rem]">
             <h1 className="page-title">Memory</h1>
             <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">

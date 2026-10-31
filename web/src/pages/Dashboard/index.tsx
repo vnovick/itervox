@@ -203,7 +203,7 @@ export default function Dashboard() {
         description="Itervox — autonomous agentic harness for multi-agent collaboration, observability, human input, and fleet distribution"
       />
       <NewTaskDialog />
-      <div className="space-y-4">
+      <div className="page-container">
         <ProjectSelector />
         {/* CORE-077 — everything that needs the operator, with inline
             Reply / Resume / Discard, above every other section. */}
@@ -231,16 +231,25 @@ export default function Dashboard() {
           <HeroStats />
         </section>
 
-        <RunningSessionsTable />
-
-        <AutomationQueueList
-          queue={automationQueue}
-          running={running}
-          backpressure={automationQueueBackpressure}
-          dependencyAudit={dependencyAudit}
-          onSelectIssue={handleIssueSelect}
-          onSelectQueue={handleQueueSelect}
-        />
+        {/* Wide screens: Running Sessions beside the Automation Queue and
+            the Host pool; a section that renders nothing frees its column
+            (empty:hidden), and narrow screens stack as before. */}
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+          <div className="min-w-0 empty:hidden xl:flex-1">
+            <RunningSessionsTable />
+          </div>
+          <div className="flex min-w-0 flex-col gap-4 empty:hidden xl:flex-1">
+            <AutomationQueueList
+              queue={automationQueue}
+              running={running}
+              backpressure={automationQueueBackpressure}
+              dependencyAudit={dependencyAudit}
+              onSelectIssue={handleIssueSelect}
+              onSelectQueue={handleQueueSelect}
+            />
+            <HostPool />
+          </div>
+        </div>
 
         <OutboxList entries={outboxEntries} onSelectIssue={handleIssueSelect} />
 
@@ -269,7 +278,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        <HostPool />
         <ReviewQueueSection />
         <PendingResumePanel onSelect={handleIssueSelect} />
         <RetryQueueTable />

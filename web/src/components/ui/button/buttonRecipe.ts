@@ -8,10 +8,14 @@
  *
  * - `primary`     accent fill, white text
  * - `secondary`   the glass chip: translucent white, hairline rim (alias `glass`)
- * - `glass-danger` the glass chip with red text (a quiet destructive trigger)
+ * - `glass-danger` the glass chip with red text: THE destructive trigger look
  * - `ghost`       text only, subtle fill on hover
- * - `danger`      soft red tint, red text (a destructive *trigger*)
- * - `destructive` solid red, white text (the confirming step)
+ * - `danger`      alias of `glass-danger` (one destructive-trigger style)
+ * - `destructive` solid red, white text (only the confirming step)
+ *
+ * The chip variants also carry `.btn-chip`, which gives them a visible
+ * hairline rim on the light theme, where a white chip on a white card
+ * would otherwise vanish.
  */
 export type ButtonVariant =
   | 'primary'
@@ -23,16 +27,25 @@ export type ButtonVariant =
   | 'destructive';
 export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
 
-const GLASS = 'glass-chip text-theme-text hover:bg-theme-panel-strong';
+// Filled buttons (primary / destructive) do not fade when disabled — a
+// washed-out accent reads as broken. They drop to the chip surface with
+// muted text and a hairline rim instead, which reads as "not available yet".
+const FILLED_DISABLED =
+  'disabled:bg-theme-chip disabled:text-theme-muted disabled:border disabled:border-theme-hairline disabled:shadow-none disabled:filter-none';
+// Everything else fades.
+const FADE_DISABLED = 'disabled:opacity-50';
+
+const GLASS = `glass-chip btn-chip text-theme-text hover:bg-theme-panel-strong ${FADE_DISABLED}`;
+const GLASS_DANGER = `glass-chip btn-chip text-theme-danger-text hover:bg-theme-danger-soft ${FADE_DISABLED}`;
 
 export const BUTTON_VARIANT: Record<ButtonVariant, string> = {
-  primary: 'bg-theme-accent text-white shadow-theme-sm hover:brightness-110',
+  primary: `bg-theme-accent text-white shadow-theme-sm hover:brightness-110 ${FILLED_DISABLED}`,
   secondary: GLASS,
   glass: GLASS,
-  'glass-danger': 'glass-chip text-theme-danger-text hover:bg-theme-danger-soft',
-  ghost: 'text-theme-text-secondary hover:bg-theme-bg-soft hover:text-theme-text',
-  danger: 'bg-theme-danger-soft text-theme-danger-text hover:opacity-90',
-  destructive: 'bg-theme-danger text-white shadow-theme-sm hover:brightness-110',
+  'glass-danger': GLASS_DANGER,
+  ghost: `text-theme-text-secondary hover:bg-theme-bg-soft hover:text-theme-text ${FADE_DISABLED}`,
+  danger: GLASS_DANGER,
+  destructive: `bg-theme-danger text-white shadow-theme-sm hover:brightness-110 ${FILLED_DISABLED}`,
 };
 
 export const BUTTON_SIZE: Record<ButtonSize, string> = {
@@ -47,7 +60,7 @@ export const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-theme-accent focus-visible:ring-offset-1 focus-visible:ring-offset-theme-bg';
 
 export const BUTTON_BASE =
-  'inline-flex items-center justify-center gap-1.5 font-medium whitespace-nowrap transition-[background-color,filter,opacity] disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex items-center justify-center gap-1.5 font-medium whitespace-nowrap transition-[background-color,filter,opacity] disabled:cursor-not-allowed';
 
 /**
  * A button class without tailwind-merge. Pass only classes that do not

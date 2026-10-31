@@ -48,7 +48,7 @@ export function IssuePlaybookPicker({ issue }: { issue: TrackerIssue }) {
           onChange={(e) => {
             setPlaybook.mutate({ identifier: issue.identifier, playbook: e.target.value });
           }}
-          className="glass-chip text-theme-text focus-visible:ring-theme-accent min-h-10 min-w-[160px] cursor-pointer rounded-[var(--radius-sm)] px-3 text-[13px] focus:outline-none focus-visible:ring-2"
+          className="glass-chip text-theme-text focus-visible:ring-theme-accent min-h-10 w-full min-w-0 cursor-pointer rounded-[var(--radius-sm)] px-3 text-[13px] focus:outline-none focus-visible:ring-2"
         >
           <option value={AUTO}>Automatic</option>
           <option value={NONE}>None</option>

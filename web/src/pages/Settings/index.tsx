@@ -67,8 +67,8 @@ export default function Settings() {
         title="Itervox | Settings"
         description="Itervox settings — tracker states, workspace, retries, capacity, rate limits and failover, SSH hosts"
       />
-      <div className="w-full max-w-[1200px] space-y-4">
-        <div>
+      <div className="page-container">
+        <div className="page-header">
           <h1 className="page-title">Settings</h1>
           <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">
             Configure tracker, workspace, connectivity, and maintenance behaviour. Agent profiles
@@ -212,17 +212,24 @@ export default function Settings() {
         {/* #158 — every layered setting, rendered from the settings schema. */}
         {isAdmin && (
           <section aria-labelledby="section-all-settings" className={PANEL}>
-            <h2 id="section-all-settings" className={TITLE}>
-              All settings
-            </h2>
-            <p className="text-theme-text-secondary text-xs">
-              Every agent, automations, dependencies, hooks, hub, polling, server, tracker and
-              workspace setting, from the settings schema. Pick the layer a save writes: your user
-              file, the project file (committed) or the project-local file (gitignored). The project
-              and local files win over the same key in WORKFLOW.md (whose front matter is deprecated
-              for them), and WORKFLOW.md wins over your user file.
-            </p>
-            <SchemaSettingsCard />
+            {/* A compact toolbar (layer tabs, filter, section links) over
+                sections that start collapsed and open on demand. */}
+            <SchemaSettingsCard
+              heading={
+                <h2 id="section-all-settings" className={`${TITLE} mr-2`}>
+                  All settings
+                </h2>
+              }
+              help={
+                <p className="field-help">
+                  Every agent, automations, dependencies, hooks, hub, polling, server, tracker and
+                  workspace setting, from the settings schema. Pick the layer a save writes: your
+                  user file, the project file (committed) or the project-local file (gitignored).
+                  The project and local files win over the same key in WORKFLOW.md (whose front
+                  matter is deprecated for them), and WORKFLOW.md wins over your user file.
+                </p>
+              }
+            />
           </section>
         )}
 

@@ -436,7 +436,7 @@ export function LiveOpsStrip() {
           <LiveIndicator status={indicatorStatus} size="sm" label={statusLabel} />
         </span>
         {/* #213 — pause/resume all dispatch, with a confirm. */}
-        <DispatchPauseToggle />
+        <DispatchPauseToggle context="Dashboard · status strip" />
         <OpsChip
           label={`Capacity ${model.capacityLabel}`}
           title={`${String(model.runningCount)} ${STATUS_META.running.noun}`}

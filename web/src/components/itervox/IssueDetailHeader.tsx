@@ -20,15 +20,7 @@ import type {
  *  2. The configured profile's backend or command (covers between-runs).
  *  3. The default backend.
  */
-export default function IssueDetailHeader({
-  issue,
-  runningRows,
-  history,
-  profileDefs,
-  defaultBackend,
-  automations,
-  syncing,
-}: {
+interface IssueDetailHeaderProps {
   issue: TrackerIssue;
   runningRows: RunningRow[] | undefined;
   history?: HistoryRow[];
@@ -41,7 +33,37 @@ export default function IssueDetailHeader({
    * DraggableCard has used since Task 4 (accepted-minor D on the final
    * review: ListView/IssueDetailSlide had no equivalent marker). */
   syncing?: boolean;
-}) {
+}
+
+/**
+ * The header: badges, then the title on its own line. With `badges={false}`
+ * only the title renders — the slide draws the badges inline after the
+ * identifier (IssueDetailBadges in the panel's title row).
+ */
+export default function IssueDetailHeader({
+  badges = true,
+  ...props
+}: IssueDetailHeaderProps & { badges?: boolean }) {
+  return (
+    <div className="flex-shrink-0 space-y-3 px-6 pb-3">
+      {badges && <IssueDetailBadges {...props} />}
+      <p className="text-theme-text text-xl leading-tight font-semibold tracking-[-0.01em]">
+        {props.issue.title}
+      </p>
+    </div>
+  );
+}
+
+/** State, run state, sync / automation / sandbox markers and the backend tag. */
+export function IssueDetailBadges({
+  issue,
+  runningRows,
+  history,
+  profileDefs,
+  defaultBackend,
+  automations,
+  syncing,
+}: IssueDetailHeaderProps) {
   const runningRow = runningRows?.find((r) => r.identifier === issue.identifier);
   const runningBackend = runningRow?.backend;
   const profileHint =
@@ -83,68 +105,63 @@ export default function IssueDetailHeader({
   };
 
   return (
-    <div className="flex-shrink-0 space-y-3 px-6 pb-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge color={stateBadgeColor(issue.state)} size="sm">
-          {issue.state}
-        </Badge>
-        <Badge
-          color={
-            issue.orchestratorState === 'running'
-              ? 'success'
-              : issue.orchestratorState === 'retrying' ||
-                  issue.orchestratorState === 'pending_input_resume'
-                ? 'warning'
-                : 'light'
-          }
-          size="sm"
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <Badge color={stateBadgeColor(issue.state)} size="sm">
+        {issue.state}
+      </Badge>
+      <Badge
+        color={
+          issue.orchestratorState === 'running'
+            ? 'success'
+            : issue.orchestratorState === 'retrying' ||
+                issue.orchestratorState === 'pending_input_resume'
+              ? 'warning'
+              : 'light'
+        }
+        size="sm"
+      >
+        {formatOrchestratorState(issue.orchestratorState)}
+      </Badge>
+      {syncing && (
+        <span
+          data-testid="issue-detail-syncing-badge"
+          title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+          className="pill pill-accent flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
         >
-          {formatOrchestratorState(issue.orchestratorState)}
-        </Badge>
-        {syncing && (
-          <span
-            data-testid="issue-detail-syncing-badge"
-            title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-            className="pill pill-accent flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
-          >
-            ⟳ Syncing
-          </span>
-        )}
-        {latestAutomationId && (
-          <button
-            type="button"
-            data-testid="automation-source-badge"
-            onClick={onAutomationClick}
-            disabled={automationStale}
-            title={
-              automationStale
-                ? 'Rule deleted'
-                : `Triggered by automation ${latestAutomationId} — click to open the rule`
-            }
-            className={
-              'pill px-2 py-0.5 text-[10px] leading-4 transition-colors ' +
-              (automationStale
-                ? 'pill-neutral cursor-not-allowed line-through opacity-60'
-                : 'pill-ok hover:brightness-95')
-            }
-          >
-            🤖 {latestAutomationId}
-          </button>
-        )}
-        {runningRow?.isolation && (
-          <span
-            data-testid="issue-detail-isolation-badge"
-            title="The agent runs in an operating-system sandbox: it can write only to its workspace, and credentials and other workspaces are hidden"
-            className="pill pill-ok flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
-          >
-            Sandboxed ({runningRow.isolation})
-          </span>
-        )}
-        <span className="tag ml-auto">{backend}</span>
-      </div>
-      <p className="text-theme-text text-xl leading-tight font-semibold tracking-[-0.01em]">
-        {issue.title}
-      </p>
+          ⟳ Syncing
+        </span>
+      )}
+      {latestAutomationId && (
+        <button
+          type="button"
+          data-testid="automation-source-badge"
+          onClick={onAutomationClick}
+          disabled={automationStale}
+          title={
+            automationStale
+              ? 'Rule deleted'
+              : `Triggered by automation ${latestAutomationId} — click to open the rule`
+          }
+          className={
+            'pill px-2 py-0.5 text-[10px] leading-4 transition-colors ' +
+            (automationStale
+              ? 'pill-neutral cursor-not-allowed line-through opacity-60'
+              : 'pill-ok hover:brightness-95')
+          }
+        >
+          🤖 {latestAutomationId}
+        </button>
+      )}
+      {runningRow?.isolation && (
+        <span
+          data-testid="issue-detail-isolation-badge"
+          title="The agent runs in an operating-system sandbox: it can write only to its workspace, and credentials and other workspaces are hidden"
+          className="pill pill-ok flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
+        >
+          Sandboxed ({runningRow.isolation})
+        </span>
+      )}
+      <span className="tag ml-auto">{backend}</span>
     </div>
   );
 }

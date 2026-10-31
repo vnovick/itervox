@@ -95,9 +95,9 @@ describe('formatOrchestratorState', () => {
 });
 
 describe('stateBadgeColor', () => {
-  it('returns warning for in-progress states', () => {
-    expect(stateBadgeColor('In Progress')).toBe('warning');
-    expect(stateBadgeColor('in_progress')).toBe('warning');
+  it('returns the accent tone (primary) for in-progress states', () => {
+    expect(stateBadgeColor('In Progress')).toBe('primary');
+    expect(stateBadgeColor('in_progress')).toBe('primary');
   });
 
   it('returns success for review and done states', () => {
@@ -105,9 +105,9 @@ describe('stateBadgeColor', () => {
     expect(stateBadgeColor('Done')).toBe('success');
   });
 
-  it('returns primary for todo states', () => {
-    expect(stateBadgeColor('Todo')).toBe('primary');
-    expect(stateBadgeColor('TODO')).toBe('primary');
+  it('keeps queued todo states neutral (light)', () => {
+    expect(stateBadgeColor('Todo')).toBe('light');
+    expect(stateBadgeColor('TODO')).toBe('light');
   });
 
   it('returns light for unrecognised states', () => {

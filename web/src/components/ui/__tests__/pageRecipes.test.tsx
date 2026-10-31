@@ -70,7 +70,8 @@ describe('TemplateTile', () => {
     const tile = screen.getByRole('button', { name: /Gate/ });
     expect(tile).toBeDisabled();
     expect(tile).not.toHaveAttribute('title');
-    expect(screen.getByText('Create the profile first.')).toHaveClass('text-theme-danger-text');
+    // A quiet warning, not danger red: the tile is disabled, not failing.
+    expect(screen.getByText('Create the profile first.')).toHaveClass('text-theme-warning-text');
     await userEvent.click(tile);
     expect(onUse).not.toHaveBeenCalled();
   });
@@ -103,6 +104,30 @@ describe('ModalFooter divider', () => {
     );
     expect(footer()).toHaveAttribute('data-divider', 'true');
     expect(footer()).toHaveClass('border-t', 'border-theme-line-strong');
+  });
+
+  it('the long-form (divider) footer pins to the bottom of the sheet; opt out with sticky={false}', () => {
+    const { rerender, container } = render(
+      <ModalFooter>
+        <button>OK</button>
+      </ModalFooter>,
+    );
+    const footer = () => container.firstChild as HTMLElement;
+    expect(footer()).not.toHaveClass('sheet-footer');
+    rerender(
+      <ModalFooter divider>
+        <button>OK</button>
+      </ModalFooter>,
+    );
+    expect(footer()).toHaveClass('sheet-footer');
+    expect(footer()).toHaveAttribute('data-sticky', 'true');
+    rerender(
+      <ModalFooter divider sticky={false}>
+        <button>OK</button>
+      </ModalFooter>,
+    );
+    expect(footer()).not.toHaveClass('sheet-footer');
+    expect(css).toMatch(/\.sheet-footer \{[^}]*position: sticky;[^}]*bottom: 0;/);
   });
 });
 

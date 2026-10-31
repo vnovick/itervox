@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
 import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
-import { installTourData } from './fixtures/tourData';
+import { installRunContextData, installTourData } from './fixtures/tourData';
 import {
   activeRunScenario,
   automationsPassScenario,
@@ -18,14 +18,17 @@ import {
   type Scenario,
 } from './fixtures/scenarios';
 
-// The pause-dispatch control only renders when the daemon advertises it.
-const pausable: Scenario = {
-  ...activeRunScenario,
+// The pause-dispatch control and the issue detail's run context (Now card,
+// Details / Changes tabs, steering, decisions, playbook) only render when
+// the daemon advertises them.
+const withCapabilities = (scenario: Scenario): Scenario => ({
+  ...scenario,
   snapshot: {
-    ...activeRunScenario.snapshot,
-    capabilities: [...(activeRunScenario.snapshot.capabilities ?? []), 'dispatch_pause'],
+    ...scenario.snapshot,
+    capabilities: [...(scenario.snapshot.capabilities ?? []), 'dispatch_pause', 'run_context'],
   },
-};
+});
+const pausable = withCapabilities(activeRunScenario);
 
 // Agents view: a backlog issue routed to a profile, so the profile columns
 // (whose headers open the agent profile viewer) render.
@@ -116,7 +119,8 @@ const pages: Stop[] = [
   {
     name: 'dashboard',
     route: '/',
-    scenario: activeRunScenario,
+    scenario: pausable,
+    beforeNavigate: installRunContextData,
     ready: heading('Autonomous agentic harness'),
   },
   {
@@ -201,9 +205,14 @@ const overlays: Stop[] = [
   },
   {
     name: 'issue-detail',
-    route: '/?issue=DEMO-1',
-    scenario: quickstartScenario,
-    ready: (p) => expect(p.getByRole('dialog', { name: 'DEMO-1' })).toBeVisible(),
+    route: '/?issue=DEMO-RUN-1',
+    scenario: pausable,
+    beforeNavigate: installRunContextData,
+    viewportOnly: true,
+    ready: (p) =>
+      expect(
+        p.getByRole('dialog', { name: 'DEMO-RUN-1' }).getByRole('tab', { name: 'Changes' }),
+      ).toBeVisible(),
   },
   {
     name: 'input-required',
@@ -213,6 +222,7 @@ const overlays: Stop[] = [
   },
   {
     name: 'command-palette',
+    viewportOnly: true,
     route: '/',
     scenario: activeRunScenario,
     ready: heading('Autonomous agentic harness'),
@@ -223,6 +233,7 @@ const overlays: Stop[] = [
   },
   {
     name: 'pause-dispatch-confirm',
+    viewportOnly: true,
     route: '/',
     scenario: pausable,
     ready: heading('Autonomous agentic harness'),
@@ -233,6 +244,7 @@ const overlays: Stop[] = [
   },
   {
     name: 'profile-form',
+    viewportOnly: true,
     route: '/agents',
     scenario: settingsMatrixScenario,
     ready: heading('Agents'),
@@ -254,6 +266,7 @@ const overlays: Stop[] = [
   },
   {
     name: 'add-worker-host',
+    viewportOnly: true,
     route: '/settings',
     scenario: settingsMatrixScenario,
     ready: heading('Settings'),
@@ -267,6 +280,7 @@ const overlays: Stop[] = [
   },
   {
     name: 'automation-form',
+    viewportOnly: true,
     route: '/automations',
     scenario: settingsMatrixScenario,
     ready: heading('Automations'),

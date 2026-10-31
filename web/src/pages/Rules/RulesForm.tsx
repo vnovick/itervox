@@ -25,8 +25,13 @@ export function RulesForm({ rules, saving, onSave }: RulesFormProps) {
 
   return (
     <div className="space-y-3">
-      {rows.length === 0 && (
+      {rows.length === 0 ? (
         <p className="text-theme-muted text-sm">This layer has no rules yet.</p>
+      ) : (
+        <p className="text-theme-muted text-xs">
+          Scope lists (Projects, Profiles, Backends) are comma-separated; * and ? match any text.
+          Empty means all.
+        </p>
       )}
       {rows.map((row, i) => (
         <RuleFields

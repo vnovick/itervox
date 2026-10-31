@@ -317,3 +317,86 @@ export function installTourData(api: MockApiHandle): void {
   fixed(/\/hub\/api\/v1\/whoami$/, { scope: 'admin' });
   fixed(/\/hub\/api\/v1\/notifications$/, HUB_NOTIFICATIONS);
 }
+
+// Run context for a live run (the issue detail's Now card, steering, Details /
+// Changes tabs, decisions and the playbook select), keyed by identifier.
+function liveRunContext(identifier: string) {
+  return {
+    identifier,
+    run: {
+      runId: `run-${identifier}`,
+      live: true,
+      profile: 'default',
+      backend: 'claude',
+      startedAt: T,
+      updatedAt: T,
+      currentStep: 'Updating the greeting module, then running the unit tests.',
+      lastToolCall: { name: 'Bash', target: 'go test ./internal/greeting/...', at: T },
+      toolCalls: 12,
+      turnCount: 3,
+      totalTokens: 4200,
+      queuedSteers: 1,
+      steers: [{ text: 'Keep the old greeting as a fallback.', at: T, delivery: 'delivered' }],
+      playbook: 'refactor',
+    },
+    changedFiles: [
+      { path: 'internal/greeting/greeting.go', status: 'M', additions: 18, deletions: 4 },
+      { path: 'internal/greeting/greeting_test.go', status: 'M', additions: 22, deletions: 0 },
+    ],
+    handoffs: [],
+  };
+}
+
+const PLAYBOOKS = {
+  enabled: true,
+  playbooks: [
+    {
+      name: 'refactor',
+      description: 'Behaviour-preserving restructuring',
+      keywords: ['refactor'],
+      requireEvidence: [],
+    },
+    {
+      name: 'bugfix',
+      description: 'Reproduce, fix, add a regression test',
+      keywords: ['bug'],
+      requireEvidence: [],
+    },
+  ],
+};
+
+function decisions(identifier: string) {
+  return {
+    identifier,
+    runs: [
+      {
+        path: `.itervox/handoff/2026-10-01T12-00-00Z_coder.md`,
+        runTimestamp: T,
+        role: 'coder',
+        decisions: [
+          {
+            decision: 'Keep the old greeting as a fallback',
+            why: 'callers outside this repo still use it',
+            alternative: 'remove it now',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** The endpoints behind the run_context capability, for the issue detail. */
+export function installRunContextData(api: MockApiHandle): void {
+  const idOf = (url: string, tail: string) =>
+    decodeURIComponent(new URL(url).pathname.split('/issues/')[1]?.replace(tail, '') ?? '');
+  api.override(/\/api\/v1\/issues\/[^/]+\/context$/, (route) =>
+    route.fulfill(json(liveRunContext(idOf(route.request().url(), '/context')))),
+  );
+  api.override(/\/api\/v1\/issues\/[^/]+\/decisions$/, (route) =>
+    route.fulfill(json(decisions(idOf(route.request().url(), '/decisions')))),
+  );
+  api.override(/\/api\/v1\/playbooks$/, (route) => route.fulfill(json(PLAYBOOKS)));
+  api.override(/\/api\/v1\/steering\/phrases$/, (route) =>
+    route.fulfill(json({ phrases: [{ label: 'Wrap up', message: 'Wrap up and open the PR.' }] })),
+  );
+}

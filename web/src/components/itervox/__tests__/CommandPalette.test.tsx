@@ -1,6 +1,6 @@
 // CORE-095 — the command palette.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { useState } from 'react';
@@ -95,6 +95,11 @@ describe('CommandPalette', () => {
     expect(mocks.terminate).not.toHaveBeenCalled();
     const confirm = screen.getByRole('button', { name: /yes, discard ENG-1/i });
     expect(confirm).toHaveFocus();
+    // The confirm step keeps the palette chrome: the chosen command in the
+    // header row and a "Confirm step" eyebrow over the prompt.
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Confirm step')).toHaveClass('eyebrow');
+    expect(within(dialog).getAllByText(/^Discard ENG-1/).length).toBeGreaterThan(0);
     await user.click(confirm);
     expect(mocks.terminate).toHaveBeenCalledWith('ENG-1');
   });

@@ -34,6 +34,7 @@ export function IssueBackendControl({
       <h4 className="field-label mb-1.5">Agent Backend</h4>
       <div className="flex flex-wrap items-center gap-2">
         <BackendSelector
+          size="field"
           value={issue.agentBackend ?? ''}
           showLabel={false}
           ariaLabel="Agent backend"

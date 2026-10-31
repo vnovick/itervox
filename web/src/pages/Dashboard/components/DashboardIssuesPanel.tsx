@@ -20,6 +20,7 @@ import type {
 import { DashboardIssuesHeader } from './DashboardIssuesHeader';
 import { DashboardIssueViews } from './DashboardIssueViews';
 import { useNotificationsTotal } from './useNotificationsTotal';
+import { buildStateFilterPills } from './stateFilterPills';
 
 interface DashboardIssuesPanelProps {
   issues: TrackerIssue[];
@@ -76,18 +77,10 @@ export function DashboardIssuesPanel({
   const { upsertProfile } = useSettingsActions();
   const notificationsTotal = useNotificationsTotal(issues);
 
-  const filterPills = useMemo<FilterPill[]>(() => {
-    const pills: FilterPill[] = [{ id: 'all', label: 'All Issues', states: [] }];
-    if (activeStates.length > 0)
-      pills.push({ id: 'active', label: 'Active', states: activeStates });
-    if (backlogStates.length > 0)
-      pills.push({ id: 'backlog', label: 'Backlog', states: backlogStates });
-    if (completionState)
-      pills.push({ id: 'review', label: completionState, states: [completionState] });
-    if (terminalStates.length > 0)
-      pills.push({ id: 'done', label: 'Done', states: terminalStates });
-    return pills;
-  }, [activeStates, backlogStates, terminalStates, completionState]);
+  const filterPills = useMemo<FilterPill[]>(
+    () => buildStateFilterPills({ activeStates, backlogStates, completionState, terminalStates }),
+    [activeStates, backlogStates, terminalStates, completionState],
+  );
 
   const activePillStates = useMemo(() => {
     if (stateFilter === 'all') return null;

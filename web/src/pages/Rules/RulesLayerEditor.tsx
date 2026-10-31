@@ -28,7 +28,11 @@ export function RulesLayerEditor({ layer, schemaUrl }: { layer: RulesLayer; sche
     <div className="space-y-3" data-testid={`rules-layer-${layer.name}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1 space-y-0.5">
-          <p className="text-theme-text font-mono text-xs break-all">{layer.path || '(off)'}</p>
+          {/* One line, never broken mid-word: long paths truncate (full path
+              on hover). */}
+          <p className="text-theme-text truncate font-mono text-xs" title={layer.path || undefined}>
+            {layer.path || '(off)'}
+          </p>
           <p className="text-theme-muted text-xs">
             {info.git}{' '}
             {!layer.exists && layer.writable && 'The file does not exist yet; saving creates it.'}

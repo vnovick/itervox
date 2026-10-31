@@ -267,7 +267,7 @@ export default function BoardColumn({
     <div
       ref={setNodeRef}
       data-board-column={state}
-      className="board-column relative flex max-h-[85vh] w-[240px] min-w-[220px] flex-1 flex-col gap-2 overflow-hidden transition-colors duration-200"
+      className="board-column relative flex max-h-[85vh] w-[240px] min-w-[220px] flex-1 snap-start flex-col gap-2 overflow-hidden transition-colors duration-200 max-sm:min-w-[78vw]"
       style={color && isOver ? { borderColor: `${color.accent}44` } : undefined}
     >
       {/* Dark overlay when dropping */}

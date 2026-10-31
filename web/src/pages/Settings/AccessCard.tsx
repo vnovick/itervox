@@ -122,6 +122,7 @@ export function AccessCard() {
                 <span className="ml-auto flex gap-1.5">
                   <ConfirmButton
                     label="Rotate"
+                    tone="neutral"
                     ariaLabel={`Rotate ${t.name}`}
                     confirmLabel="Yes, rotate"
                     pendingLabel="Rotating…"

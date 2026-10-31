@@ -2,6 +2,10 @@
 // grouped by section and heading, each shown with the value this layer sets or
 // the one it inherits. Edits collect in a draft; Save writes only the changed
 // keys to the layer the tab names (null unsets a key there).
+//
+// Sections start collapsed so the page stays short; the filter (in the
+// card's toolbar) opens every section with a match, and the toolbar's
+// section links open one section on demand.
 
 import { useState } from 'react';
 import { Button } from '../../../components/ui/button';
@@ -11,8 +15,8 @@ import {
   type SettingsFieldDef,
 } from '../../../lib/settingsSchema';
 import type { SettingsEffective, SettingsLayer } from '../../../types/schemas';
-import { inputCls } from '../formStyles';
 import { SchemaField } from './SchemaField';
+import { settingsSectionId, settingsSectionTitle } from './settingsSections';
 
 interface SchemaSettingsFormProps {
   fields: SettingsFieldDef[];
@@ -20,18 +24,18 @@ interface SchemaSettingsFormProps {
   effective: Map<string, SettingsEffective>;
   saving: boolean;
   onSave: (values: Record<string, unknown>) => void;
+  /** Text from the toolbar's filter; a match opens its section. */
+  filter?: string;
+  /** Sections the operator has expanded. */
+  openSections?: ReadonlySet<string>;
+  onToggleSection?: (section: string, open: boolean) => void;
 }
 
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
   return Object.fromEntries(Object.entries(record).filter(([k]) => k !== key));
 }
 
-const SECTION_TITLES: Record<string, string> = {
-  agent: 'Agent',
-  polling: 'Polling',
-  server: 'Server',
-  workspace: 'Workspace',
-};
+const NO_SECTIONS: ReadonlySet<string> = new Set();
 
 export function SchemaSettingsForm({
   fields,
@@ -39,11 +43,13 @@ export function SchemaSettingsForm({
   effective,
   saving,
   onSave,
+  filter = '',
+  openSections = NO_SECTIONS,
+  onToggleSection,
 }: SchemaSettingsFormProps) {
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [resets, setResets] = useState<Record<string, number>>({});
-  const [filter, setFilter] = useState('');
 
   const needle = filter.trim().toLowerCase();
   const visible = needle
@@ -61,21 +67,27 @@ export function SchemaSettingsForm({
   };
 
   return (
-    <div className="space-y-4">
-      <input
-        type="search"
-        aria-label="Filter settings"
-        placeholder="Filter settings"
-        className={inputCls}
-        value={filter}
-        onChange={(e) => {
-          setFilter(e.target.value);
-        }}
-      />
+    <div className="space-y-2">
       {sections.map((section) => (
-        <details key={section} open className="glass-card">
-          <summary className="text-theme-text cursor-pointer px-4 py-3 text-sm font-semibold">
-            {SECTION_TITLES[section] ?? section}
+        <details
+          key={section}
+          id={settingsSectionId(section)}
+          open={needle !== '' || openSections.has(section)}
+          onToggle={(e) => {
+            if (needle !== '') return;
+            const open = e.currentTarget.open;
+            if (open !== openSections.has(section)) onToggleSection?.(section, open);
+          }}
+          className="glass-card scroll-mt-24"
+        >
+          <summary className="text-theme-text flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-semibold">
+            {settingsSectionTitle(section)}
+            <span className="text-theme-muted text-xs font-normal">
+              {(() => {
+                const n = visible.filter((f) => f.section === section).length;
+                return `${String(n)} setting${n === 1 ? '' : 's'}`;
+              })()}
+            </span>
           </summary>
           <div className="space-y-5 px-4 pb-4">
             {groupSettingsFields(visible.filter((f) => f.section === section)).map(
@@ -124,7 +136,7 @@ export function SchemaSettingsForm({
         </details>
       ))}
       {visible.length === 0 && <p className="text-theme-muted text-sm">No setting matches.</p>}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 pt-2">
         <Button
           variant="primary"
           size="sm"

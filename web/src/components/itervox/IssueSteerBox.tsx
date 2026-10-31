@@ -37,17 +37,25 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
       <section data-testid="issue-steer-box" className="space-y-2">
         <h4 className="field-label">Steer the run</h4>
         <SteeringChips onSend={submit} disabled={send.isPending} />
-        <textarea
-          aria-label={`Message to the agent on ${identifier}`}
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-          }}
-          rows={2}
-          placeholder="Message the running agent…"
-          className={`${FIELD_CLASS} rounded-[14px] py-2.5`}
-        />
-        <div className="flex justify-end">
+        {/* One line that grows with its text, Send inline. */}
+        <div className="flex items-end gap-2">
+          <textarea
+            aria-label={`Message to the agent on ${identifier}`}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              // Ctrl/⌘+Enter sends; plain Enter keeps adding lines.
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submit(draft);
+              }
+            }}
+            rows={1}
+            placeholder="Message the running agent…"
+            className={`${FIELD_CLASS} field-sizing-content max-h-40 min-h-10 resize-none rounded-[14px] py-2`}
+          />
           <button
             type="button"
             disabled={send.isPending || !draft.trim()}
@@ -55,7 +63,8 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
               submit(draft);
             }}
             className={plainButtonClass('primary', 'lg', {
-              extra: 'min-h-11 px-[18px] font-semibold',
+              pill: true,
+              extra: 'shrink-0 px-[18px] font-semibold',
             })}
           >
             {send.isPending ? 'Sending…' : 'Send'}

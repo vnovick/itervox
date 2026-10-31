@@ -19,7 +19,9 @@ export function IssueCommentComposer({ identifier }: IssueCommentComposerProps) 
   const trimmed = text.trim();
 
   return (
-    <div data-testid="issue-comment-composer" className="space-y-2">
+    // One line that grows with its text (multi-line comments still work),
+    // with the Post comment chip inline.
+    <div data-testid="issue-comment-composer" className="flex items-end gap-2">
       <textarea
         aria-label="Post a comment"
         value={text}
@@ -27,28 +29,26 @@ export function IssueCommentComposer({ identifier }: IssueCommentComposerProps) 
           setText(e.target.value);
         }}
         placeholder="Post a comment on this issue…"
-        rows={3}
-        className={`${FIELD_CLASS} rounded-[14px] py-2.5`}
+        rows={1}
+        className={`${FIELD_CLASS} field-sizing-content max-h-48 min-h-10 resize-none rounded-[14px] py-2`}
       />
-      <div className="flex justify-end">
-        <button
-          type="button"
-          disabled={post.isPending || trimmed === ''}
-          onClick={() => {
-            post.mutate(
-              { identifier, body: trimmed },
-              {
-                onSuccess: () => {
-                  setText('');
-                },
+      <button
+        type="button"
+        disabled={post.isPending || trimmed === ''}
+        onClick={() => {
+          post.mutate(
+            { identifier, body: trimmed },
+            {
+              onSuccess: () => {
+                setText('');
               },
-            );
-          }}
-          className={plainButtonClass('primary', 'lg', { pill: true })}
-        >
-          {post.isPending ? 'Posting…' : 'Post comment'}
-        </button>
-      </div>
+            },
+          );
+        }}
+        className={plainButtonClass('secondary', 'lg', { pill: true, extra: 'shrink-0' })}
+      >
+        {post.isPending ? 'Posting…' : 'Post comment'}
+      </button>
     </div>
   );
 }

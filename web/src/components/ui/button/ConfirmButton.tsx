@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { plainButtonClass } from './buttonRecipe';
 
 interface ConfirmButtonProps {
   label: string;
@@ -10,6 +11,13 @@ interface ConfirmButtonProps {
   ariaLabel?: string;
   /** `sm` (default) for rows; `lg` matches 44px footer buttons. */
   size?: 'sm' | 'lg';
+  /**
+   * The trigger's look. `danger` (default): red text on the neutral glass
+   * chip, the one destructive-trigger style. `neutral`: the plain chip, for
+   * a guarded action that is not destructive (e.g. rotating a token). The
+   * confirming "Yes" step is solid red either way.
+   */
+  tone?: 'danger' | 'neutral';
 }
 
 /**
@@ -33,6 +41,7 @@ export function ConfirmButton({
   onConfirm,
   ariaLabel,
   size = 'sm',
+  tone = 'danger',
 }: ConfirmButtonProps) {
   const [confirming, setConfirming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -80,7 +89,10 @@ export function ConfirmButton({
             onConfirm();
           }}
           disabled={isPending}
-          className="bg-theme-danger rounded-[10px] px-2.5 py-1 text-xs font-semibold text-white disabled:cursor-wait"
+          className={plainButtonClass('destructive', 'xs', {
+            pill: true,
+            extra: 'font-semibold disabled:cursor-wait',
+          })}
         >
           {isPending ? pendingLabel : confirmLabel}
         </button>
@@ -89,7 +101,7 @@ export function ConfirmButton({
           onClick={() => {
             setConfirming(false);
           }}
-          className="border-theme-line-strong bg-theme-panel text-theme-text rounded-[10px] border px-2.5 py-1 text-xs"
+          className={plainButtonClass('secondary', 'xs', { pill: true })}
         >
           Cancel
         </button>
@@ -106,9 +118,14 @@ export function ConfirmButton({
         setConfirming(true);
       }}
       disabled={isPending}
-      className={`bg-theme-danger-soft text-theme-danger-text rounded-full font-medium hover:brightness-105 disabled:cursor-wait disabled:opacity-50 ${
-        size === 'lg' ? 'min-h-11 px-4 text-[15px]' : 'px-3.5 py-1.5 text-xs'
-      }`}
+      className={plainButtonClass(
+        tone === 'danger' ? 'glass-danger' : 'secondary',
+        size === 'lg' ? 'lg' : 'xs',
+        {
+          pill: true,
+          extra: size === 'lg' ? 'min-h-11 disabled:cursor-wait' : 'disabled:cursor-wait',
+        },
+      )}
     >
       {label}
     </button>

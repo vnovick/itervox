@@ -167,8 +167,9 @@ export default function RunningSessionsTable() {
               </Badge>
             </div>
 
-            {/* Turn count + subagent badge */}
-            <span className="text-theme-muted flex items-center gap-1.5 text-[13px]">
+            {/* Turn count, subagent badge and elapsed time: one unit that
+                wraps as a whole, so "30s" never lands on a line of its own. */}
+            <span className="text-theme-muted flex items-center gap-1.5 text-[13px] whitespace-nowrap">
               {row.turnCount != null ? `turn ${String(row.turnCount)}` : '—'}
               {(row.subagentCount ?? 0) > 0 && (
                 <span
@@ -178,10 +179,8 @@ export default function RunningSessionsTable() {
                   ↗ {row.subagentCount}
                 </span>
               )}
+              <span className="font-mono text-xs">{fmtMs(row.elapsedMs)}</span>
             </span>
-
-            {/* Elapsed */}
-            <span className="text-theme-muted font-mono text-xs">{fmtMs(row.elapsedMs)}</span>
 
             {/* Actions */}
             <div
