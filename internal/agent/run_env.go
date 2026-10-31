@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"slices"
+
+	"github.com/vnovick/itervox/internal/procgroup"
 )
 
 // RunEnv is extra environment for a run's local agent turns (#204: the
@@ -49,5 +51,5 @@ func (e RunEnv) shellPrefix() string {
 	if e.PathPrepend == "" {
 		return ""
 	}
-	return "PATH=" + ShellQuote(e.PathPrepend) + `:"$PATH" `
+	return "PATH=" + ShellQuote(procgroup.ShellPathList(e.PathPrepend)) + `:"$PATH" `
 }

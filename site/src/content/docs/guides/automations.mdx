@@ -954,6 +954,76 @@ automations:
 
 The fixer's push starts new checks and a new Greptile review on the new head, which fire the rules again only if there is something new to fix: each (check, head, conclusion) and each review ID dispatches once. When a fixer is still running, the next event queues behind it instead of starting a second run on the same issue.
 
+### 9. Work across two repositories
+
+One change often spans two repositories: an API change in `api` and the matching change in `web`. Run one daemon per repository, both reading the **same** tracker, and let daemon A file the web half as a labelled follow-up that daemon B picks up once A's issue is done.
+
+How it fits together, as the code does it:
+
+- `create_issue` creates the follow-up in the source issue's context: on Linear, the source issue's team and project; on GitHub, the repository the daemon tracks; on the local tracker, the same issues directory. So both daemons must read the same Linear project, the same GitHub issues repository or the same local issues directory. Each daemon still works in its own code repository (its `workspace` and hooks decide what is cloned).
+- `--label repo:web` puts the routing label on the follow-up. The daemon refuses any label that is not in the profile's `create_issue_labels` (`403 agent_action_denied`, `label_not_allowed:<label>`). On Linear the label must already exist in the source issue's team or workspace, or the create fails before anything is written.
+- `--blocked-by-source` records A's issue as the follow-up's blocker: a Linear "blocks" relation, the `Blocked by #N` line on GitHub, `blocked_by:` in a local issue file. These are the blockers the adapters already read, so B does not dispatch the follow-up (`blocked_by:<A's issue>`) until A's issue reaches one of B's `terminal_states`.
+- A's `tracker.filter` excludes the label and B's selects it, so exactly one daemon owns each issue.
+
+Daemon A, in the `api` repository:
+
+```yaml
+# api/WORKFLOW.md (front matter)
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  active_states: [Todo, In Progress]
+  terminal_states: [Done, Cancelled]
+  completion_state: In Review
+  filter:
+    - projects: [platform]       # the shared Linear project's slug
+      labels_none: [repo:web]    # web follow-ups belong to daemon B
+agent:
+  command: claude
+  profiles:
+    splitter:
+      command: claude
+      soul_file: .itervox/agents/splitter/SOUL.md
+      instructions_file: .itervox/agents/splitter/INSTRUCTIONS.md
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+      create_issue_labels: [repo:web]
+automations:
+  - id: web-follow-up
+    enabled: true
+    trigger:
+      type: pr_opened
+    profile: splitter
+    instructions: |
+      The API change for {{ issue.identifier }} is in review. If the web app needs a
+      matching change, file exactly one follow-up for it:
+      itervox action create-issue --label repo:web --blocked-by-source --title "..." --body "..."
+      Say in the body which API change it depends on. If the web app needs nothing, do nothing.
+```
+
+Daemon B, in the `web` repository:
+
+```yaml
+# web/WORKFLOW.md (front matter)
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  active_states: [Todo, In Progress]
+  terminal_states: [Done, Cancelled]
+  completion_state: In Review
+  filter:
+    - projects: [platform]
+      labels_any: [repo:web]     # only the follow-ups daemon A files
+```
+
+The flow: A's worker opens its pull request and moves its issue to `In Review`; the `pr_opened` rule runs `splitter` on that issue, which files the web follow-up in `Todo` with `repo:web`, blocked by the API issue. B sees the follow-up at once but holds it, because `In Review` is not one of B's `terminal_states`. When the API issue reaches `Done`, the blocker resolves and B dispatches the follow-up. A never reads it.
+
+Leave `dependencies.stacked_prs` off in B: it would start the follow-up while its blocker is still in `In Review`, stacked on the blocker's branch, which lives in the other repository.
+
+Keep `create_issue_labels` to the routing labels the profile needs: each one is a way to hand work to another daemon. `TestCrossRepoRecipeConfigRoutesFollowUp` loads both configurations above and checks that B's filter selects the labelled follow-up and A's does not.
+
 ## Additional automation designs
 
 The Automations page includes starter templates for these v0.2.0-safe patterns. They are deliberately comment-first and single-profile; none of them adds a hidden workflow engine.
@@ -978,7 +1048,7 @@ Use profile `allowed_actions` as the safety boundary. Automations read private w
 | Planner/debate profiles | Low to medium | `comment` only |
 | Input-required helpers | Medium | `comment`, `provide_input`; narrow with `input_context_regex` and `max_age_minutes` |
 | QA or reviewer handoff | Medium | `comment`; add `move_state` only when the destination state and failure behavior are explicit |
-| Follow-up issue creation | Medium to high | `create_issue` with `create_issue_state` set to an intake state |
+| Follow-up issue creation | Medium to high | `create_issue` with `create_issue_state` set to an intake state; `create_issue_labels` only for the routing labels the profile needs (see [example 9](#9-work-across-two-repositories)) |
 | Autonomous merge sweep | High — merges code without a human | Built-in `merge-bot` actions only; keep the `merge_pr` gate list intact; see [example 7](#7-autonomous-merge-sweep-advanced--read-the-caution-first) |
 | SSH-hosted action profiles | High until bridge support is verified | Local execution, or comment-only remote profiles |
 | Destructive cleanup, secret handling, external communications | High | Keep manual or require human approval outside Itervox |

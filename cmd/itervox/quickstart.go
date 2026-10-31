@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -475,7 +474,7 @@ func quickstartStartDaemon(workflowPath, itervoxDir string, timeout time.Duratio
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Its own session: the daemon outlives this command and the terminal.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachDaemon(cmd)
 	// A stale URL file from an earlier daemon must not be mistaken for this one.
 	_ = os.Remove(dashboardURLFilePath(workflowPath))
 	if err := cmd.Start(); err != nil {

@@ -14,14 +14,15 @@ import (
 
 // repoInfo holds values discovered by scanning the current directory.
 type repoInfo struct {
-	RemoteURL     string // raw git remote URL
-	Owner         string // e.g. "vnovick"
-	Repo          string // e.g. "itervox"
-	CloneURL      string // SSH clone URL reconstructed for after_create hook
-	DefaultBranch string // "main" or "master"
-	ProjectName   string // repo name, used for workspace.root
-	HasClaudeMD   bool   // CLAUDE.md present in dir
-	HasAgentsMD   bool   // AGENTS.md present in dir
+	RemoteURL     string   // raw git remote URL
+	Owner         string   // e.g. "vnovick"
+	Repo          string   // e.g. "itervox"
+	CloneURL      string   // SSH clone URL reconstructed for after_create hook
+	DefaultBranch string   // "main" or "master"
+	ProjectName   string   // repo name, used for workspace.root
+	HasClaudeMD   bool     // CLAUDE.md present in dir
+	HasAgentsMD   bool     // AGENTS.md present in dir
+	CopyFiles     []string // gitignored .env / .env.local to suggest for workspace.copy_files (#250)
 	Stacks        []detectedStack
 	ClaudeModels  []agent.ModelOption // discovered Claude models (may be empty)
 	CodexModels   []agent.ModelOption // discovered Codex models (may be empty)
@@ -75,6 +76,7 @@ func scanRepo(dir string) repoInfo {
 		info.HasAgentsMD = true
 	}
 	info.Stacks = detectStacks(dir)
+	info.CopyFiles = detectCopyFiles(dir)
 
 	return info
 }

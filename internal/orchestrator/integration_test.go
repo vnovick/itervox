@@ -131,8 +131,8 @@ func (t *commentTracker) CreateComment(_ context.Context, issueID, body string) 
 	return &comment, nil
 }
 
-func (t *commentTracker) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
-	return t.base.CreateIssue(ctx, sourceIssueID, title, body, stateName)
+func (t *commentTracker) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	return t.base.CreateIssue(ctx, sourceIssueID, in)
 }
 
 func (t *commentTracker) UpdateIssueState(ctx context.Context, issueID, stateName string) error {

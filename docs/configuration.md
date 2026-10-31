@@ -138,6 +138,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). `0`/negative values fall back to the default; use `max_retries` to control retry count |
 | `max_retries` | int | `5` | Maximum retry attempts before moving to `failed_state`. `0` means unlimited. When the failed turn carried a vendor limit signal, the retry waits for the vendor's reset time or retry delay (at most 6 hours) instead of the normal back-off, if that is longer |
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |
+| `isolation` | string | `"none"` | Default process isolation for profiles that do not set `isolation`: `none` or `process` (OS sandbox; the run does not start when none works). Other values, and `process` with `agent.ssh_hosts`, fail config load. Read at load time. See [Process isolation](https://itervox.dev/guides/isolation/) |
 | `pr_footer` | bool | `false` | Append a one-line "Shipped with Itervox" footer to each PR an agent run opens on its own branch (not PRs merely linked from the issue), once per PR (hidden `<!-- itervox:shipped -->` marker; added with `gh pr edit` after a successful worker run). README badge: `[![Shipped with Itervox](https://img.shields.io/badge/shipped%20with-Itervox-6f42c1)](https://github.com/vnovick/itervox)` |
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `live_steering` | bool | `false` | Lets a message typed in the [Sessions panel](https://itervox.dev/guides/sessions/) reach a running local Claude Code turn mid-turn: the turn runs with `--input-format stream-json`, the prompt is the first message on its stdin and an operator message is written as a further user message; stdin closes when the turn's result arrives. Off — and always for Codex and SSH workers — a message waits for the current turn to end and is delivered as the prompt of the next turn, which resumes the same session. Keep it off when `command` is a wrapper script that reads its stdin to the end before starting Claude. Read at startup. |
@@ -285,6 +286,10 @@ script.
 | `enabled` | Optional boolean. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | Optional list of daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | Required when `allowed_actions` includes `create_issue`; the tracker state/column for follow-up issues. |
+| `create_issue_labels` | Optional list, empty by default: the labels a `create_issue` call may put on the new issue (`itervox action create-issue --label …`). Any other label is refused with `agent_action_denied`; an empty list allows none. Use it to route follow-ups to another daemon whose `tracker.filter` selects the label. Kept as is when the profile is saved from the dashboard. |
+| `isolation` | Optional: `process` runs this profile's agent in an OS sandbox (bubblewrap or Landlock on Linux, sandbox-exec on macOS) that lets it write only to its workspace, its git dirs, the temp dir and the CLI's state, and hides `~/.ssh`, `~/.aws`, the daemon's tokens and other workspaces; `none` turns it off; unset inherits `agent.isolation`. No working sandbox means the run does not start. Refused at load with `agent.ssh_hosts`. See the site's [Process isolation](https://itervox.dev/guides/isolation/) guide. |
+| `isolation_extra_write` | Optional list of absolute (or `~/`) paths a sandboxed run may also write. |
+| `isolation_extra_deny` | Optional list of absolute (or `~/`) paths a sandboxed run may not read or write. |
 | `require_evidence` | Optional list of checks (e.g. `[test, lint, ci]`) a run must prove before the issue moves to `completion_state`: named checks as passing entries in `.itervox/evidence/<profile>.json` (`run.evidence_path`) stamped with the commit they ran on (later commits may only touch `.itervox/`, and no tracked file may have an uncommitted change), `ci` as all-passing PR checks. Without it the run ends input-required with a "Needs evidence" reason. Off by default; must be a list. See the site's [Done needs evidence](https://itervox.dev/configuration/#done-needs-evidence). |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same
@@ -592,6 +597,65 @@ changes nothing.
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
 | `base_branch` | string | `"main"` | Branch worktrees are created from |
+| `copy_files` | []string | `[]` | Paths or `filepath.Match` globs, relative to the repository root that holds `WORKFLOW.md`, copied from that checkout into each new worktree after it is created and before `hooks.after_create`, and refreshed on each later run unless the worktree's copy is newer. Only files git ignores (`git check-ignore`, in the checkout and in the worktree) are copied; a tracked or unignored match is skipped with a warning. Directories are copied recursively, symlinks are never followed, file modes and times are kept. An absolute entry or one with `..` fails the load. Values of a copied dotenv file (`.env`, `.env.*`, `*.env`) are registered with the log redactor. **The agent can read these files.** Worktree mode only. See [Workspace setup](#workspace-setup-copy_files-and-itervox_port) |
+| `copy_files_max_bytes` | int | `10485760` | Most bytes `copy_files` copies into one worktree per run (10 MB); the rest is skipped and the cap hit is logged |
+| `port_range` | string | `"41000-41999"` | `LOW-HIGH` range (1024–65535) each issue's workspace gets a TCP port from, as `ITERVOX_PORT` for the agent and every hook and `{{ run.port }}` in prompts. Stable while the workspace exists, released when it is removed, persisted across restarts |
+
+### Workspace setup: `copy_files` and `ITERVOX_PORT`
+
+Each issue runs in its own worktree, which starts with only what git tracks.
+`workspace.copy_files` brings in the files a project needs but does not commit
+(`.env`, `.env.local`, a local config), and `ITERVOX_PORT` gives each
+workspace its own TCP port so parallel dev servers do not collide.
+
+```yaml
+workspace:
+  worktree: true
+  copy_files: [".env", ".env.local", "config/local"]
+  port_range: "41000-41999"
+```
+
+- **Source.** Paths are relative to the git top level of the directory that
+  holds `WORKFLOW.md` (the main checkout), and are read from there.
+- **Only ignored files.** Every file is checked with `git check-ignore` in the
+  main checkout and in the new worktree; a tracked or unignored match is
+  skipped and the issue log says why, so a copied file cannot be committed
+  from the worktree. `.git` is never copied.
+- **When.** After the worktree is created and before `hooks.after_create`, and
+  again at the start of each later run: a file is copied when the worktree has
+  none or the main checkout's copy is newer, so an edit made in the worktree
+  is kept.
+- **Limits.** Directories are copied recursively up to `copy_files_max_bytes`
+  per run (a cap hit is logged); symlinks — a match, a directory on the way to
+  it, or an entry inside a copied directory — are skipped, never followed.
+- **Secrets.** The values in a copied dotenv file (`.env`, `.env.<name>`,
+  `<name>.env`) are masked as `***` in the daemon log and in the text Itervox
+  redacts (the run context, recent failures). As for every registered
+  secret, values shorter than 8 characters are not masked, and ordinary
+  values such as `localhost:5432` are masked too. The agent itself can read
+  every copied file: copy only what you would hand the agent.
+- **SSH workers.** Nothing is transferred to a worker host: the copy is made
+  on the daemon's machine, and an SSH worker runs in the same workspace path,
+  which must be shared with the host (as for every SSH run). Without a shared
+  workspace the files are not on the worker.
+- **`itervox init`** writes `copy_files: [".env", ".env.local"]` for those of
+  the two that exist and are gitignored. Projects without the key copy
+  nothing.
+
+`ITERVOX_PORT` is the lowest port of `port_range` that no other workspace of
+this project holds and that can be bound on `127.0.0.1` when the workspace
+is first used. It is set for the agent (local runs through the environment,
+SSH runs as an assignment in front of the agent command) and for
+`after_create`, `before_run`, `after_run` and `before_remove`; prompts get it
+as `{{ run.port }}` and the dashboard's Now panel shows it. The port stays
+with the issue while its workspace exists — across runs, reviewers and
+restarts — and is released when the workspace is removed. It is recorded in
+`.itervox-ports.json` under `workspace.root` (under `<root>/worktrees` in
+worktree mode). The free-port check runs on the daemon's machine; on an SSH
+worker the port is only guaranteed not to be shared with another of this
+daemon's workspaces. Give each project its own `port_range` when several
+daemons run on one machine. A range with no free port leaves the run without
+`ITERVOX_PORT` (logged) rather than failing it.
 
 **Open pull requests and shared branches.** A worker continues an open pull
 request linked from the issue (in its description or comments) only when the
@@ -652,6 +716,8 @@ Both are also Liquid bindings (`{{ run.timestamp }}`, `{{ run.handoff_path }}`) 
 
 `run.pr_base_branch` is the branch a pull request from this run should target: the blocker's branch when the worktree is stacked on it (`dependencies.stacked_prs`), otherwise `workspace.base_branch`. A stacked run also gets a `## Stacked Branch` block after the Run Context.
 
+`run.port` is the workspace's TCP port, the same value as `ITERVOX_PORT` (see [Workspace setup](#workspace-setup-copy_files-and-itervox_port)); an empty string when the workspace has none.
+
 When a worker exits with `TerminalFailed` or `TerminalStalled`, the orchestrator renames the most recent matching `<timestamp>_<profile>.md` to `<timestamp>_<profile>.partial.md` so subsequent agents can distinguish a crash-mid-deliverable from a clean handoff. `TerminalInputRequired` does not mark partial — the agent intentionally paused.
 
 The directory is committable: `itervox init` and `itervox init --update` patch the root `.gitignore` to whitelist `!.itervox/handoff/**` alongside `!.itervox/agents/**`. Commit the pipeline trail into PRs so reviewers can read the chain.
@@ -662,7 +728,10 @@ See the [Agent Handoff guide](https://itervox.dev/guides/agent-handoff/) for a w
 
 ## `hooks`
 
-Lifecycle scripts run via `bash -lc` inside each workspace. `after_create` and
+Lifecycle scripts run via `bash -lc` inside each workspace (on Windows, Git
+Bash's `bash.exe` or `ITERVOX_SHELL`; without one every hook fails — see
+[Running on Windows](https://itervox.dev/guides/windows/#which-shell-runs-what)).
+`after_create` and
 `before_run` are fatal on non-zero exit; `after_run` and `before_remove`
 failures are logged and ignored by default.
 
@@ -706,7 +775,7 @@ startup.
 | `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
 | `steering_phrases` | list | six defaults | One-click steering chips in the Sessions composer and the issue steer box (#218): `{label, message}` entries or bare default labels; `[]` shows none. See the site's [Steering phrases](https://itervox.dev/guides/playbooks/#steering-phrases). |
-| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
+| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. Not available on Windows, where tmux does not run: `true` there stops the workflow from loading ([Running on Windows](https://itervox.dev/guides/windows/)). |
 
 ```yaml
 sessions:

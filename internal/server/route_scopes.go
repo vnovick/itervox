@@ -76,6 +76,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/issues/{identifier}/diff":          accessViewer, // #215: ?file= hunks need operator (handleIssueDiff)
 	"GET /api/v1/issues/{identifier}/decisions":     accessViewer, // #218: redacted, bounded decision logs
 	"GET /api/v1/playbooks":                         accessViewer, // #218
+	"GET /api/v1/task-templates":                    accessViewer, // #251
 	"GET /api/v1/steering/phrases":                  accessViewer, // #218
 	"GET /api/v1/logs/identifiers":                  accessViewer,
 	"GET /api/v1/logs":                              accessViewer,
@@ -122,6 +123,8 @@ var routeScopes = map[string]routeAccess{
 	"POST /api/v1/issues/{identifier}/comment":               accessOperator,
 	"POST /api/v1/issues/{identifier}/deps-override":         accessOperator,
 	"POST /api/v1/issues/{identifier}/playbook":              accessOperator, // #218: per-issue playbook override
+	"POST /api/v1/tasks":                                     accessOperator, // #251: New task (creates an issue, may dispatch)
+	"PUT /api/v1/tasks/{identifier}/instructions":            accessOperator, // #251: until the task starts
 	"POST /api/v1/issues/{identifier}/review-comments":       accessOperator, // #238: to the running agent or the PR
 	"POST /api/v1/issues/{identifier}/pr-review":             accessOperator, // #238: one GitHub review, never merges
 	"POST /api/v1/repo/readiness/verify-skill-issue":         accessOperator, // #218: creates a tracker issue
@@ -182,6 +185,9 @@ var routeScopes = map[string]routeAccess{
 	"PUT /api/v1/rules/{layer}":                                    accessAdmin,
 	"POST /api/v1/memory/{id}/promote-to-rule":                     accessAdmin, // #217: writes a rules layer, like PUT /rules/{layer}
 	"POST /api/v1/skills/fix":                                      accessAdmin, // writes skill files
+	"POST /api/v1/task-templates/{name}":                           accessAdmin, // #251: writes .itervox/tasks/
+	"PUT /api/v1/task-templates/{name}":                            accessAdmin, // #251
+	"DELETE /api/v1/task-templates/{name}":                         accessAdmin, // #251
 }
 
 // scopedRouteScope returns the token scope the route method+pattern

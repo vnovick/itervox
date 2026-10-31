@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent_test
 
 // M1-B9 (CORE-155): on an SSH worker a cancelled turn used to kill only the

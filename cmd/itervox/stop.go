@@ -298,11 +298,12 @@ func signalPID(out io.Writer, pid int, sig syscall.Signal) {
 		_, _ = fmt.Fprintf(out, "  PID %d: FindProcess failed: %v\n", pid, err)
 		return
 	}
-	if err := proc.Signal(sig); err != nil {
-		_, _ = fmt.Fprintf(out, "  PID %d: signal %s failed: %v\n", pid, sig, err)
+	sent, err := sendSignal(proc, sig)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "  PID %d: signal %s failed: %v\n", pid, sent, err)
 		return
 	}
-	_, _ = fmt.Fprintf(out, "  PID %d: %s sent\n", pid, sig)
+	_, _ = fmt.Fprintf(out, "  PID %d: %s sent\n", pid, sent)
 }
 
 // stopTargetsGone reports whether every signalled daemon has exited: the pid

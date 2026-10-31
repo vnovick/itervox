@@ -815,8 +815,10 @@ func (s *Server) handleAgentCreateIssue(w http.ResponseWriter, r *http.Request) 
 	}
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title           string   `json:"title"`
+		Body            string   `json:"body"`
+		Labels          []string `json:"labels"`
+		BlockedBySource bool     `json:"blocked_by_source"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil || strings.TrimSpace(body.Title) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "title field required")
@@ -826,12 +828,51 @@ func (s *Server) handleAgentCreateIssue(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "create issue state is not configured for this profile")
 		return
 	}
-	issue, err := s.client.CreateIssue(r.Context(), identifier, body.Title, body.Body, grant.CreateIssueState)
+	labels, denied, ok := allowedCreateIssueLabels(body.Labels, grant.CreateIssueLabels)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "labels entries must be non-empty strings")
+		return
+	}
+	if denied != "" {
+		// #253: a label outside the profile's create_issue_labels is refused
+		// like an action outside allowed_actions.
+		writeError(w, http.StatusForbidden, "agent_action_denied", "label_not_allowed:"+denied)
+		return
+	}
+	issue, err := s.client.CreateIssue(r.Context(), identifier, tracker.NewIssue{
+		Title:           body.Title,
+		Body:            body.Body,
+		State:           grant.CreateIssueState,
+		Labels:          labels,
+		BlockedBySource: body.BlockedBySource,
+	})
 	if err != nil {
 		writeClientError(w, "create_issue_failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "issue": issue})
+}
+
+// allowedCreateIssueLabels checks each requested label against the grant's
+// create_issue_labels allow-list, ignoring case, and returns the allow-list
+// spellings (deduplicated, in request order). denied names the first label
+// the allow-list does not hold; ok is false for a blank entry.
+func allowedCreateIssueLabels(requested, allowed []string) (labels []string, denied string, ok bool) {
+	for _, raw := range requested {
+		l := strings.TrimSpace(raw)
+		if l == "" {
+			return nil, "", false
+		}
+		i := slices.IndexFunc(allowed, func(a string) bool { return strings.EqualFold(strings.TrimSpace(a), l) })
+		if i < 0 {
+			return nil, l, true
+		}
+		canonical := strings.TrimSpace(allowed[i])
+		if !slices.Contains(labels, canonical) {
+			labels = append(labels, canonical)
+		}
+	}
+	return labels, "", true
 }
 
 func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {

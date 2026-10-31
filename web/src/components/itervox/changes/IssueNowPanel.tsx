@@ -7,15 +7,16 @@ const NOW_FILES_SHOWN = 8;
 /**
  * #215 — the issue detail's "Now" panel: what the issue's run is doing
  * (its last step and tool call, never tool output), its counters, what is
- * waiting on a human, and the files changed so far. Polls while the run is
- * live; shows the last finished run otherwise. Renders nothing when the
- * issue has neither a run nor a worktree.
+ * waiting on a human, the workspace's port (#250) and the files changed so
+ * far. Polls while the run is live; shows the last finished run otherwise.
+ * Renders nothing when the issue has neither a run nor a worktree.
  */
 export function IssueNowPanel({ identifier, live }: { identifier: string; live: boolean }) {
   const { data } = useRunContext(identifier, { enabled: true, live });
   if (!data) return null;
   const run = data.run;
-  if (!run && data.changedFiles.length === 0 && data.handoffs.length === 0) return null;
+  if (!run && !data.port && data.changedFiles.length === 0 && data.handoffs.length === 0)
+    return null;
   return (
     <section
       className="border-theme-line bg-theme-bg-soft space-y-2 rounded-[var(--radius-sm)] border p-3"
@@ -39,6 +40,13 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           </span>
         )}
       </div>
+      {data.port ? (
+        <p className="text-xs" data-testid="now-port">
+          <span className="text-theme-muted">Port: </span>
+          <code className="text-theme-text font-mono">{data.port}</code>
+          <span className="text-theme-muted"> (ITERVOX_PORT)</span>
+        </p>
+      ) : null}
       {run?.currentStep && <p className="text-theme-text text-sm">{run.currentStep}</p>}
       {run?.lastToolCall && (
         <p className="text-xs" data-testid="now-last-tool">

@@ -1,6 +1,8 @@
-//! Tauri glue for automatic updates and the command-line tool (#130). The
-//! decisions live in `update.rs` and `cli_tool.rs`; this file runs the check
-//! thread, calls `tauri-plugin-updater`, and shows the results.
+//! Tauri glue for automatic updates and the command-line tool (#130), and
+//! Start at Login (#260). The decisions live in `update.rs`, `cli_tool.rs`
+//! and `autostart.rs`; this file runs the check thread, calls
+//! `tauri-plugin-updater` (macOS) or reads the latest release (Linux,
+//! Windows), and shows the results.
 
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -12,14 +14,17 @@ use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::cli_tool;
+use crate::autostart;
+use crate::cli_tool::{self, CliPlan};
 use crate::menu::MenuAction;
-use crate::update::{self, Manifest, Offer, Schedule, UpdateAction, UpdateState};
+use crate::platform::Os;
+use crate::update::{self, Manifest, Mode, Offer, Schedule, UpdateAction, UpdateState};
 
 /// Called whenever the menu should be rebuilt.
 pub type OnChange = Arc<dyn Fn() + Send + Sync>;
 
 pub struct Updates {
+    mode: Mode,
     state: Mutex<UpdateState>,
     pending: Mutex<Option<tauri_plugin_updater::Update>>,
     wake: Mutex<Option<Sender<()>>>,
@@ -51,10 +56,12 @@ fn pubkey(app: &AppHandle) -> Option<String> {
 /// Starts the check thread: shortly after launch, then every
 /// `update::CHECK_INTERVAL`, and whenever the user chooses Check.
 pub fn setup(app: &AppHandle, on_change: OnChange) -> std::io::Result<()> {
-    let state = update::initial_state(pubkey(app).as_deref());
+    let mode = update::mode_for(Os::current());
+    let state = update::initial_state_for(mode, pubkey(app).as_deref());
     let enabled = !matches!(state, UpdateState::Disabled(_));
     let (tx, rx) = mpsc::channel();
     let updates = Arc::new(Updates {
+        mode,
         state: Mutex::new(state),
         pending: Mutex::default(),
         wake: Mutex::new(enabled.then_some(tx)),
@@ -89,6 +96,15 @@ fn check(app: &AppHandle, updates: &Updates, on_change: &OnChange) {
         return;
     }
     on_change();
+    if updates.mode == Mode::Notify {
+        let result = latest_release().map(|version| {
+            let current = app.package_info().version.to_string();
+            update::is_update(&current, &version).then_some(Offer { version, current })
+        });
+        lock(&updates.state).finish_check(result);
+        on_change();
+        return;
+    }
     let result = tauri::async_runtime::block_on(async { app.updater()?.check().await });
     let result = match result {
         Ok(Some(u)) => match Manifest::parse(&u.raw_json.to_string()) {
@@ -110,6 +126,35 @@ fn check(app: &AppHandle, updates: &Updates, on_change: &OnChange) {
     };
     lock(&updates.state).finish_check(result);
     on_change();
+}
+
+/// Linux and Windows: the latest release's version, from the GitHub API.
+#[cfg(not(target_os = "macos"))]
+fn latest_release() -> Result<String, String> {
+    let body = ureq::get(update::LATEST_RELEASE_API)
+        .header("User-Agent", "itervox-desktop")
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| e.to_string())?
+        .body_mut()
+        .with_config()
+        .limit(1 << 20)
+        .read_to_string()
+        .map_err(|e| e.to_string())?;
+    update::parse_latest_release(&body)
+}
+
+/// The Mac self-updates through the plugin; this path is never taken there.
+#[cfg(target_os = "macos")]
+fn latest_release() -> Result<String, String> {
+    Err("not used on macOS".into())
+}
+
+/// Linux and Windows: the release page of the offered update, if any.
+pub fn release_page(app: &AppHandle) -> Option<String> {
+    let u = updates(app)?;
+    let state = lock(&u.state);
+    state.offer().map(|o| update::release_page(&o.version))
 }
 
 fn updates(app: &AppHandle) -> Option<Arc<Updates>> {
@@ -158,56 +203,339 @@ pub fn menu_items(
     app: &AppHandle,
     sidecar: Option<&Path>,
 ) -> Vec<(String, bool, Option<MenuAction>)> {
+    let page = release_page(app);
     let mut items: Vec<_> = updates(app)
-        .map(|u| lock(&u.state).menu_items())
+        .map(|u| lock(&u.state).menu_items_for(u.mode))
         .unwrap_or_default()
         .into_iter()
         .map(|(label, enabled, action)| {
-            let action = action.map(|a| match a {
-                UpdateAction::Check => MenuAction::CheckForUpdates,
-                UpdateAction::Install => MenuAction::InstallUpdate,
+            let action = action.and_then(|a| match a {
+                UpdateAction::Check => Some(MenuAction::CheckForUpdates),
+                UpdateAction::Install => Some(MenuAction::InstallUpdate),
+                UpdateAction::OpenRelease => page.clone().map(MenuAction::OpenExternal),
             });
             (label, enabled, action)
         })
         .collect();
     if let Some(sidecar) = sidecar {
-        let dirs = cli_tool::link_dirs(app.path().home_dir().ok().as_deref());
-        let (label, enabled) = cli_tool::menu_item(&cli_tool::status(&dirs, sidecar));
-        items.push((label, enabled, enabled.then_some(MenuAction::InstallCli)));
+        if let Some(status) = cli_status(app, sidecar) {
+            let (label, enabled) = cli_tool::menu_item_for(Os::current(), &status);
+            items.push((label, enabled, enabled.then_some(MenuAction::InstallCli)));
+        }
+    }
+    if let Some(enabled) = autostart_enabled(app) {
+        items.push((
+            autostart::menu_label(enabled).to_string(),
+            true,
+            Some(MenuAction::ToggleAutostart),
+        ));
     }
     items
 }
 
-/// Install (or Repair) Command-Line Tool….
-pub fn install_cli(app: &AppHandle, sidecar: Option<&Path>) {
+/// `$APPDIR`: set while the app runs from an AppImage (Linux).
+fn appdir() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDIR").map(Into::into)
+}
+
+fn cli_plan(app: &AppHandle, sidecar: &Path) -> Option<CliPlan> {
     let home = app.path().home_dir().ok();
-    let dirs = cli_tool::link_dirs(home.as_deref());
-    let (msg, kind) = match sidecar.ok_or("the bundled itervox daemon was not found".to_string()) {
-        Err(e) => (e, MessageDialogKind::Error),
-        Ok(sidecar) => match cli_tool::install(&dirs, sidecar) {
-            Err(e) => (e, MessageDialogKind::Error),
-            Ok(link) => {
-                let dir = link.parent().unwrap_or(Path::new("/"));
-                let mut msg = format!(
-                    "Installed {} → {}. It updates together with the app.",
-                    link.display(),
-                    sidecar.display()
+    cli_tool::plan(Os::current(), home.as_deref(), sidecar, appdir().as_deref())
+}
+
+/// The command-line tool's state on this platform.
+fn cli_status(app: &AppHandle, sidecar: &Path) -> Option<cli_tool::CliStatus> {
+    match cli_plan(app, sidecar)? {
+        CliPlan::Link { dirs, target } => Some(cli_tool::status(&dirs, &target)),
+        CliPlan::UserPath { dir } => Some(cli_tool::windows_status(
+            &user_path::read().unwrap_or_default(),
+            &dir,
+        )),
+    }
+}
+
+/// Linux AppImage: a newer AppImage refreshes the copy an installed
+/// command-line tool links to, so `itervox` follows the app. Runs once at
+/// start, off the main thread; nothing happens unless the tool is
+/// installed.
+pub fn refresh_cli_copy(app: &AppHandle, sidecar: Option<&Path>) {
+    let Some(sidecar) = sidecar else { return };
+    if !cli_tool::in_appimage(sidecar, appdir().as_deref()) {
+        return;
+    }
+    let Some(CliPlan::Link { dirs, target }) = cli_plan(app, sidecar) else {
+        return;
+    };
+    if !matches!(
+        cli_tool::status(&dirs, &target),
+        cli_tool::CliStatus::Installed(_)
+    ) {
+        return;
+    }
+    let sidecar = sidecar.to_path_buf();
+    let _ = std::thread::Builder::new()
+        .name("itervox-cli-copy".into())
+        .spawn(move || {
+            if let Err(e) = cli_tool::refresh_copy(&sidecar, &target) {
+                eprintln!(
+                    "itervox desktop: could not refresh {}: {e}",
+                    target.display()
                 );
-                if !cli_tool::on_path(dir, &std::env::var("PATH").unwrap_or_default())
-                    && dir != Path::new("/usr/local/bin")
-                {
-                    msg.push_str(&format!(
-                        " If a new terminal does not find `itervox`, add {} to your PATH.",
-                        dir.display()
-                    ));
-                }
-                (msg, MessageDialogKind::Info)
             }
-        },
+        });
+}
+
+/// The Windows user PATH (`HKCU\Environment\Path`).
+#[cfg(windows)]
+mod user_path {
+    use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::{RegKey, RegValue};
+
+    fn env_key(write: bool) -> std::io::Result<RegKey> {
+        let flags = if write {
+            KEY_READ | KEY_WRITE
+        } else {
+            KEY_READ
+        };
+        RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags("Environment", flags)
+    }
+
+    pub fn read() -> Option<String> {
+        env_key(false).ok()?.get_value::<String, _>("Path").ok()
+    }
+
+    /// Writes the user PATH as `REG_EXPAND_SZ` (so `%USERPROFILE%`-style
+    /// entries keep working) and tells running programs the environment
+    /// changed, so new terminals see it.
+    pub fn write(value: &str) -> Result<(), String> {
+        let key = env_key(true).map_err(|e| format!("HKCU\\Environment: {e}"))?;
+        let mut bytes: Vec<u8> = value
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        bytes.shrink_to_fit();
+        key.set_raw_value(
+            "Path",
+            &RegValue {
+                bytes: bytes.into(),
+                vtype: RegType::REG_EXPAND_SZ,
+            },
+        )
+        .map_err(|e| format!("HKCU\\Environment\\Path: {e}"))?;
+        broadcast();
+        Ok(())
+    }
+
+    fn broadcast() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        };
+        let env: Vec<u16> = "Environment".encode_utf16().chain(Some(0)).collect();
+        let mut result = 0usize;
+        // SAFETY: a broadcast with a NUL-terminated string that outlives
+        // the call and a local for the result.
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                env.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                5000,
+                &mut result,
+            );
+        }
+    }
+}
+
+/// Elsewhere there is no user PATH to change.
+#[cfg(not(windows))]
+mod user_path {
+    pub fn read() -> Option<String> {
+        None
+    }
+
+    pub fn write(_value: &str) -> Result<(), String> {
+        Err("the user PATH is changed on Windows only".into())
+    }
+}
+
+/// Install (or Repair) Command-Line Tool…; on Windows, add it to PATH.
+pub fn install_cli(app: &AppHandle, sidecar: Option<&Path>) {
+    let (msg, kind) = match install_cli_result(app, sidecar) {
+        Ok(msg) => (msg, MessageDialogKind::Info),
+        Err(e) => (e, MessageDialogKind::Error),
     };
     app.dialog()
         .message(msg)
         .title("Itervox")
         .kind(kind)
         .show(|_| {});
+}
+
+fn install_cli_result(app: &AppHandle, sidecar: Option<&Path>) -> Result<String, String> {
+    let sidecar = sidecar.ok_or_else(|| {
+        if Os::current() == Os::Windows {
+            crate::platform::NO_LOCAL_DAEMON_MESSAGE.to_string()
+        } else {
+            "the bundled itervox daemon was not found".to_string()
+        }
+    })?;
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    match cli_plan(app, sidecar).ok_or("no home directory to install into")? {
+        CliPlan::Link { dirs, target } => {
+            let link = if target == sidecar {
+                cli_tool::install(&dirs, sidecar)?
+            } else {
+                cli_tool::install_with_copy(&dirs, sidecar, &target)?
+            };
+            Ok(cli_tool::installed_message(
+                Os::current(),
+                &link,
+                &target,
+                &path_env,
+            ))
+        }
+        CliPlan::UserPath { dir } => {
+            let current = user_path::read().unwrap_or_default();
+            if let Some(new) = cli_tool::windows_path_with(&current, &dir) {
+                user_path::write(&new)?;
+            }
+            Ok(format!(
+                "Added {} to your PATH. Open a new terminal to run `itervox`.",
+                dir.display()
+            ))
+        }
+    }
+}
+
+/// Start at Login: whether it is on, or `None` where the app offers no item
+/// (macOS, or no home directory).
+pub fn autostart_enabled(app: &AppHandle) -> Option<bool> {
+    match autostart_plan(app)? {
+        autostart::Plan::XdgEntry { path, .. } => Some(autostart::xdg_enabled(&path)),
+        autostart::Plan::RunKey { .. } => run_key_enabled(app),
+        autostart::Plan::Unsupported(_) => None,
+    }
+}
+
+fn autostart_plan(app: &AppHandle) -> Option<autostart::Plan> {
+    let home = app.path().home_dir().ok();
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from);
+    let config = autostart::config_home(xdg.as_deref(), home.as_deref());
+    let exe = std::env::current_exe().ok()?;
+    let appimage = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from);
+    Some(autostart::plan(
+        Os::current(),
+        config.as_deref(),
+        &exe,
+        appimage.as_deref(),
+    ))
+}
+
+/// Turns Start at Login over; an error shows in a dialog.
+pub fn toggle_autostart(app: &AppHandle) {
+    let res = match autostart_plan(app) {
+        Some(autostart::Plan::XdgEntry { path, contents }) => {
+            autostart::xdg_set(&path, &contents, !autostart::xdg_enabled(&path))
+        }
+        Some(autostart::Plan::RunKey { .. }) => toggle_run_key(app),
+        _ => Ok(()),
+    };
+    if let Err(e) = res {
+        app.dialog()
+            .message(format!("Could not change Start at Login: {e}"))
+            .title("Itervox")
+            .kind(MessageDialogKind::Error)
+            .show(|_| {});
+    }
+}
+
+/// The Run key (Windows): on when the app's value is there.
+#[cfg(windows)]
+fn run_key_enabled(_app: &AppHandle) -> Option<bool> {
+    run_key::get().ok().map(|v| v.is_some())
+}
+
+/// Writes the quoted value (`autostart::run_value`) or removes it.
+#[cfg(windows)]
+fn toggle_run_key(_app: &AppHandle) -> Result<(), String> {
+    let on = run_key::get()?.is_some();
+    if on {
+        return run_key::delete();
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    run_key::set(&autostart::run_value(&exe, &[]))
+}
+
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Itervox`.
+#[cfg(windows)]
+mod run_key {
+    use crate::autostart::{RUN_KEY, RUN_VALUE};
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+
+    /// Task Manager's per-entry on/off switch for the Run key.
+    const APPROVED: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
+    fn not_found(e: &std::io::Error) -> bool {
+        e.kind() == std::io::ErrorKind::NotFound
+    }
+
+    pub fn get() -> Result<Option<String>, String> {
+        let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_READ)
+        {
+            Ok(k) => k,
+            Err(e) if not_found(&e) => return Ok(None),
+            Err(e) => return Err(format!("HKCU\\{RUN_KEY}: {e}")),
+        };
+        match key.get_value::<String, _>(RUN_VALUE) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if not_found(&e) => Ok(None),
+            Err(e) => Err(format!("HKCU\\{RUN_KEY}\\{RUN_VALUE}: {e}")),
+        }
+    }
+
+    pub fn set(value: &str) -> Result<(), String> {
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(RUN_KEY)
+            .map_err(|e| format!("HKCU\\{RUN_KEY}: {e}"))?;
+        key.set_value(RUN_VALUE, &value)
+            .map_err(|e| format!("HKCU\\{RUN_KEY}\\{RUN_VALUE}: {e}"))?;
+        // A switch-off left in Task Manager would keep the new value from
+        // running: turning it on here clears that.
+        if let Ok(approved) =
+            RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(APPROVED, KEY_READ | KEY_WRITE)
+        {
+            let _ = approved.delete_value(RUN_VALUE);
+        }
+        Ok(())
+    }
+
+    pub fn delete() -> Result<(), String> {
+        let key = match RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(RUN_KEY, KEY_READ | KEY_WRITE)
+        {
+            Ok(k) => k,
+            Err(e) if not_found(&e) => return Ok(()),
+            Err(e) => return Err(format!("HKCU\\{RUN_KEY}: {e}")),
+        };
+        match key.delete_value(RUN_VALUE) {
+            Ok(()) => Ok(()),
+            Err(e) if not_found(&e) => Ok(()),
+            Err(e) => Err(format!("HKCU\\{RUN_KEY}\\{RUN_VALUE}: {e}")),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn run_key_enabled(_app: &AppHandle) -> Option<bool> {
+    None
+}
+
+#[cfg(not(windows))]
+fn toggle_run_key(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
 }

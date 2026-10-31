@@ -185,6 +185,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/state` | viewer |
 | `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
+| `GET` | `/api/v1/task-templates` | viewer (saved task templates, #251) |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
 | `GET` | `/api/v1/tracker/teams` | viewer |
@@ -237,6 +238,8 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/skills/scan` | operator |
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/tasks` | operator (New task: creates an issue, may dispatch, #251) |
+| `PUT` | `/api/v1/tasks/{identifier}/instructions` | operator (until the task starts, #251) |
 | `POST` | `/api/v1/automations/{id}/test` | admin |
 | `PUT` | `/api/v1/projects/filter` | admin |
 | `POST` | `/api/v1/memory/{id}/promote-to-rule` | admin (writes a rules layer, #217) |
@@ -263,6 +266,9 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/settings/workers` | admin |
 | `POST` | `/api/v1/settings/workspace/auto-clear` | admin |
 | `POST` | `/api/v1/skills/fix` | admin (writes skill files) |
+| `POST` | `/api/v1/task-templates/{name}` | admin (writes `.itervox/tasks/<name>.md`, #251) |
+| `PUT` | `/api/v1/task-templates/{name}` | admin (#251) |
+| `DELETE` | `/api/v1/task-templates/{name}` | admin (#251) |
 | `GET` | `/api/v1/tokens` | admin |
 | `POST` | `/api/v1/tokens` | admin |
 | `DELETE` | `/api/v1/tokens/{id}` | admin |
@@ -299,8 +305,8 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/guardrail/approvals` (#204)
 - `GET /agent-actions/{identifier}/guardrail/approvals/{id}` (#204)
 
-Profiles opt into these capabilities with `allowed_actions` and
-`create_issue_state` in `WORKFLOW.md`. The guardrail routes take a separate
+Profiles opt into these capabilities with `allowed_actions`,
+`create_issue_state` and `create_issue_labels` in `WORKFLOW.md`. The guardrail routes take a separate
 per-run guardrail grant that only the guardrail shims and hooks hold (see
 [Guardrail endpoints](#guardrail-endpoints-204)).
 
@@ -654,7 +660,8 @@ Useful top-level fields include:
 - `running[]` rows carry `title` (the issue's title), `profile` (the run's
   resolved profile, omitted for the default) and `costUsdEstimated` (the run's
   estimated cost as its backend reports it; omitted until reported, always for
-  Codex) (#240). `lastEvent` is redacted like every log surface.
+  Codex) (#240), and `isolation` (the sandbox the run's agent runs in:
+  `bubblewrap`, `landlock` or `sandbox-exec`; omitted when unsandboxed, #258). `lastEvent` is redacted like every log surface.
 - `inputRequired[]` rows carry `guardrailApproval: true` for a
   [guardrail approval](/guides/guardrails/) request (#240): `approve` (or
   `itervox approve <issue>`) runs the held command once, any other reply
@@ -1455,11 +1462,14 @@ runs, this session only), plus the worktree's changed files and handoffs.
     "steers": [{"text": "use gitexec", "at": "2026-10-22T10:02:00Z", "delivery": "live"}],
     "guardrailBlocks": 1, "lastGuardrailKind": "push_protected"
   },
+  "port": 41000,
   "changedFiles": [{"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0}],
   "handoffs": [{"title": "Plan the endpoints", "path": ".itervox/handoff/2026-10-22T09-58-00Z_planner.md"}]
 }
 ```
 
+- `port` is the issue workspace's `ITERVOX_PORT` (from
+  `workspace.port_range`); omitted when the workspace has none.
 - `currentStep` is the run's last assistant message, redacted (the log
   redaction: known key shapes, bearer tokens, `NAME_TOKEN=…` assignments,
   URL credentials), whitespace-collapsed and cut to 500 bytes.
@@ -1709,6 +1719,76 @@ pass. Errors: `400 bad_request` (`field: "backend"` unless `claude` or
 bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
+
+### New task and task templates (#251)
+
+Fetched on demand; none of these are on the `/state` snapshot or the SSE
+frames. See the [New task guide](/guides/new-task/).
+
+#### `POST /api/v1/tasks`
+
+Creates a task (operator). The body:
+
+```json
+{"title": "Upgrade lodash", "instructions": "Run `make test` after the bump.",
+ "where": "local", "start": true,
+ "profile": "implementer", "backend": "codex", "playbook": "feature", "baseBranch": "release/2.x",
+ "template": "upgrade", "vars": {"package": "lodash"}}
+```
+
+Only `title` is required (or `template`, whose title is used). `where` is
+`local` (the default: an Itervox-only issue file in `.itervox/issues/`, also
+in a Linear or GitHub project, where tasks are named `TASK-1`, `TASK-2`, …)
+or `tracker` (an issue in the project's Linear or GitHub tracker). The task
+is created in the first of `tracker.active_states`; with `start: true` the
+daemon runs a dispatch pass at once, which starts it through the normal path
+(slots, guardrails, budgets and dependencies still apply). With `template`,
+the template's fields fill what the body leaves empty and `vars` fill its
+`{{var}}` placeholders. `profile`, `backend` and `playbook` become the
+issue's overrides; `instructions` (at most 16 KiB) and `baseBranch` are kept
+by the daemon in `.itervox/task_specs.json`.
+
+`201`:
+
+```json
+{"identifier": "TASK-3", "title": "Upgrade lodash", "state": "Todo", "local": true, "started": true}
+```
+
+Errors: `400` with a `field` (`title_required`, `missing_vars`,
+`unknown_template`, `unknown_profile`, `unknown_backend`, `unknown_playbook`,
+`invalid_base`, `instructions_too_long`); `409 local_tasks_unavailable` for
+`where: "local"` when the tracker cannot hold local tasks (the memory
+tracker); `502 task_create_failed` when the tracker refuses the create (the
+message is redacted).
+
+#### `PUT /api/v1/tasks/{identifier}/instructions`
+
+Replaces a task's instructions (operator) until its first run starts:
+`{"instructions": "…"}` → `200`. `404` for an issue that is not a task,
+`409 task_started` once a run has started (the instructions are then the
+record of what the run was given). `GET /api/v1/issues/{identifier}` reports
+a task as `task: {"instructions", "baseBranch", "local", "started"}`.
+
+#### `GET /api/v1/task-templates`
+
+The templates in `.itervox/tasks/` (viewer), with each one's placeholders:
+
+```json
+{"localTasks": true, "templates": [
+  {"name": "upgrade", "title": "Upgrade {{package}}", "instructions": "Bump {{package}} to {{version}}.",
+   "profile": "implementer", "baseBranch": "main", "vars": ["package", "version"]}
+], "problems": [{"path": ".itervox/tasks/Bad.md", "message": "…"}]}
+```
+
+`localTasks` says whether `where: "local"` is available.
+
+#### `POST` / `PUT` / `DELETE /api/v1/task-templates/{name}`
+
+Manage templates (admin; they write committable files). The body is a
+template row without `name` and `vars`. `POST` creates (`201`; `409
+template_exists`), `PUT` creates or replaces (`200`), `DELETE` removes
+(`204`; `404`). A name is lower-case letters, digits, `-` or `_` (`400
+invalid_name`).
 
 ### Playbooks, decisions and steering (#218)
 
@@ -2431,7 +2511,7 @@ daemon-backed permissions through profile `allowed_actions`.
 | `POST` | `/agent-actions/{identifier}/comment` | `{"body":"..."}` | `{"ok":true}` |
 | `POST` | `/agent-actions/{identifier}/comment_pr` | `{"summary":"...","findings":[{"path":"...","line":42,"severity":"warning","body":"..."}]}` | `{"ok":true,"findings":N}` |
 | `POST` | `/agent-actions/{identifier}/merge_pr` | `{"pr":42,"strategy":"squash"}` | `{"ok":true,"merge_commit":"<sha>","strategy":"squash"}` |
-| `POST` | `/agent-actions/{identifier}/create-issue` | `{"title":"...","body":"..."}` | `{"ok":true,"issue":{...}}` |
+| `POST` | `/agent-actions/{identifier}/create-issue` | `{"title":"...","body":"...","labels":["repo:web"],"blocked_by_source":true}` (`labels` and `blocked_by_source` optional) | `{"ok":true,"issue":{...}}` |
 | `POST` | `/agent-actions/{identifier}/move-state` | `{"state":"Todo"}` | `{"ok":true}` |
 | `POST` | `/agent-actions/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
 
@@ -2439,6 +2519,21 @@ daemon-backed permissions through profile `allowed_actions`.
 
 These routes require an `Authorization: Bearer <grant-token>` header carrying a
 short-lived action grant for the specific issue and action.
+
+The `create-issue` body takes optional `labels` and `blocked_by_source` (#253).
+The issue is created in the profile's `create_issue_state`. Each label must be
+in the profile's `create_issue_labels` (compared ignoring case; the allow-list's
+spelling is sent to the tracker): any other label, or any label when the
+allow-list is empty, is refused with `403` `agent_action_denied` and the message
+`label_not_allowed:<label>`, before anything is created; a blank label is a
+`400`. Linear resolves the names among the source issue's team and workspace
+labels and fails the create when one does not exist; GitHub adds them beside
+the state label; the local tracker writes them to the issue file.
+`blocked_by_source: true` records the source issue as a blocker of the new one:
+a Linear "blocks" relation, the `Blocked by #N` body line on GitHub, `blocked_by`
+in a local issue file. If the issue was created but its Linear relation failed,
+the error names the created issue. The `itervox action create-issue` shim sends
+them for `--label` (repeatable) and `--blocked-by-source`.
 
 `provide-input` never answers a guardrail approval request (#204): the
 request stays open and the daemon logs the attempt.

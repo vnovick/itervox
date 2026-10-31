@@ -484,6 +484,13 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 				"identifier", issue.Identifier)
 			continue
 		}
+		// #251: a New task with this title is still being created; its
+		// instructions are recorded before any run of it starts.
+		if o.taskCreationPending(issue.Title) {
+			slog.Info("orchestrator: a task with this title is being created; dispatching it on a later tick",
+				"identifier", issue.Identifier)
+			continue
+		}
 		// #116 claim check: the list may come from the local store, so read
 		// the issue from the tracker before starting it. The same read
 		// serves the input-required recovery. Off the loop (#187), the pick
@@ -1505,6 +1512,9 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 		// needed (the worker now owns the session via its RunEntry).
 		delete(state.PausedSessions, issue.Identifier)
 	}
+	if resumeCtx == nil { // #252: `itervox run --answer/--approve` continues the previous run
+		resumeCtx = o.takeOneShotResume(reviewerRun)
+	}
 	o.workersWg.Add(issue.Identifier)
 	switchNotice := o.backendSwitchNotice(&state, issue.Identifier, backend, profileName, nil) // CORE-101
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil, switchNotice)
@@ -1775,6 +1785,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			}
 			if ev.RunEntry.AgentSessionID != "" {
 				entry.AgentSessionID = ev.RunEntry.AgentSessionID
+			}
+			if ev.RunEntry.Isolation != "" { // #258
+				entry.Isolation = ev.RunEntry.Isolation
 			}
 			if entry.PendingInputResume && (ev.RunEntry.TurnCount > 0 || ev.RunEntry.TotalTokens > 0 || ev.RunEntry.LastMessage != "") {
 				delete(state.PendingInputResumes, entry.Issue.Identifier)
@@ -2490,7 +2503,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// reply detection can find the question by key no matter when
 			// the outbox delivers it.
 			entry.QuestionCommentKey = o.newInputRequiredCommentKey(issue.Identifier)
-			questionBody := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))
+			questionBody := tracker.MarkManagedComment(o.inputRequiredCommentBody(entry))
 			if err := o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
 				questionBody, "question"); err != nil {
 				// CORE-121: the key stays until a keyless direct post is

@@ -88,6 +88,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Title:            r.Issue.Title, // #240
 				Profile:          r.ProfileName, // #240
 				CostUSDEstimated: r.CostUSD,     // #240
+				Isolation:        r.Isolation,   // #258
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -329,7 +330,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Task: p.Task, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

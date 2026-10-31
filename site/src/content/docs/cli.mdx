@@ -12,7 +12,8 @@ itervox [flags]
 itervox <command> [flags]
 ```
 
-When no command is given, `itervox` starts the daemon (run mode).
+When no command is given, `itervox` starts the daemon. To run a single issue
+and exit (CI), use [`itervox run --issue`](#itervox-run--one-issue-then-exit-ci).
 
 
 ---
@@ -51,6 +52,57 @@ itervox -verbose -shutdown-grace 60s
 
 # Write logs to a specific directory
 itervox -logs-dir /var/log/itervox
+```
+
+---
+
+## `itervox run` — One issue, then exit (CI)
+
+```bash
+itervox run --issue <id> [--workflow WORKFLOW.md] [--worktree] [--answer TEXT|@FILE]
+            [--approve CMD] [--timeout 45m] [--json] [--log-dir DIR] [--verbose]
+```
+
+Runs one issue to completion and exits — the entry point for CI (#252). It
+loads the same `WORKFLOW.md` and settings files as the daemon and runs the
+daemon's orchestrator on that issue only: the agent's turns (same prompt,
+profiles, playbooks, rules, memory, guardrails and `agent.budget`), the reviewer
+quorum, then the completion path — push the issue branch, open the PR (`gh pr
+create`), comment on the issue, move it to `tracker.completion_state`. No HTTP
+server, hub, dashboard, automations or polling of other issues; no listening
+socket is opened. The current checkout is the workspace: the issue branch is
+created (or continued from `origin`) in place. Guide: [Running in CI](/guides/ci/).
+
+| Flag | Description |
+|------|-------------|
+| `--issue ID` | The issue to run (required). On GitHub `12` and `#12` both work |
+| `--workflow PATH` | Path to `WORKFLOW.md` (default `WORKFLOW.md`); its git checkout is the workspace |
+| `--worktree` | Work in a git worktree under `.itervox/run/worktrees/` instead of switching the checkout's branch |
+| `--answer TEXT` | Continue a run that exited `3` with a question: the new run continues from the handoffs committed on the issue branch, told the question and this answer. `@FILE` reads the answer from a file |
+| `--approve CMD` | Allow this [guardrail approval command](/guides/guardrails/) for this run only (the command an earlier run named when it exited `3`); every other approval command is still refused |
+| `--timeout DUR` | Cap the whole run; the agent turn timeout is lowered below it. Default: no cap |
+| `--json` | Print one JSON object instead of the Markdown summary |
+| `--log-dir DIR` | Write redacted logs: `itervox.log`, the per-issue logs under `issues/`, and the spend ledger `issue_spend.json` (so `agent.budget` counts across runs that share the directory) |
+| `--verbose` | DEBUG-level logs |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | PR opened, or nothing to do |
+| `2` | Failed (including a timeout, a failed turn, or another run holding the issue's lock) |
+| `3` | Needs input: a question (posted on the issue and committed as a handoff on the pushed branch) or a guardrail approval, which fails closed in a run |
+| `4` | Budget exceeded (`agent.budget`) |
+| `5` | Configuration error |
+
+The summary (issue, branch, PR link, turns, tokens, cost, reviewer verdicts,
+and on exit `3` the question and how to answer it) goes to stdout and is
+appended to `$GITHUB_STEP_SUMMARY` when that is set. Logs go to stderr. One run
+per issue at a time: `.itervox/run/issue-<id>.lock` in the checkout.
+
+```bash
+itervox run --issue ENG-12 --timeout 45m --log-dir logs
+itervox run --issue 12 --answer "Use Postgres"
+itervox run --issue 12 --approve "vercel --prod"
+itervox run --issue 12 --json | jq -r .pr_url
 ```
 
 ---
@@ -160,6 +212,7 @@ itervox init --tracker linear --template minimal --preset cross-review
 - **Tech stacks** — detects Go, Node.js, Rust, Python, Elixir, and Ruby by the presence of language-specific manifest files (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml` / `requirements.txt`, `mix.exs`, `Gemfile`)
 - **Package manager** — Node.js commands are generated with `pnpm`
 - **CLAUDE.md** — if a `CLAUDE.md` file is present in the scanned directory, the generated prompt template references it automatically
+- **Worktree files** — `.env` and `.env.local`, when they exist and git ignores them, are written to `workspace.copy_files` so each new worktree gets a copy (see [Workspace setup](/configuration/#workspace-setup); the agent can read these files)
 - **Available models** — queries the selected runner CLI (e.g. `claude --list-models`) to discover available models and writes them to `agent.available_models` in the generated file. Falls back to a built-in default list if the CLI does not support model listing.
 
 After writing `WORKFLOW.md`, `itervox init` also creates `.itervox/agents/<profile>/SOUL.md`, `.itervox/agents/<profile>/INSTRUCTIONS.md`, `.itervox/.env` (with a placeholder API key for the chosen tracker), and `.itervox/.gitignore` if they do not already exist. Commit `.itervox/agents/**`; keep `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, and runtime queue files ignored.
@@ -172,6 +225,7 @@ itervox init: scanning .
   branch     : main
   runner     : claude
   CLAUDE.md  : found — prompt will reference it
+  copy_files : .env, .env.local (gitignored; copied into each worktree)
   stack      : Go (go test -race ./cmd/... ./internal/..., golangci-lint run)
 itervox init: wrote WORKFLOW.md
 itervox init: wrote .itervox/agents profiles
@@ -247,6 +301,19 @@ repo readiness:
 ```
 
 The section summarises; it does not change the exit code on its own (the checks above it that already fail doctor, such as a schema error or a failing bare-clone fetch, still do). The tracker probe is bounded to 8 seconds.
+
+After it, an `Isolation` section (#258) lists each sandbox mechanism this machine has (bubblewrap and Landlock on Linux, sandbox-exec on macOS) with why it is unavailable when it is, the profiles that ask for `isolation: process`, the mechanism their runs would use and the writable and unreadable lists. A profile asking for process isolation on a machine where no mechanism works is an `ERROR:` and exits `1`: every run of that profile would be refused. See [Process isolation](/guides/isolation/).
+
+```
+Isolation
+  bubblewrap: unavailable — bwrap is not installed
+  landlock: available
+  profiles with isolation: process: coder
+  sandbox: landlock
+  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache (+ isolation_extra_write)
+  unreadable: ~/.ssh, ~/.aws, …, every other workspace under /Users/me/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
+  network: allowed; hooks: not sandboxed
+```
 
 | Flag | Description |
 |---|---|
@@ -437,6 +504,32 @@ itervox approve <issue>        # approve the command a guardrail is holding for 
 
 The same actions as the dashboard, through the API. `approve` answers a [guardrail approval](/guides/guardrails/) with `approve`, and refuses (exit `1`, nothing sent) when the issue is waiting for an ordinary answer instead; to refuse a held command, `itervox reply <issue> <reason>`. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
+### New task
+
+```bash
+itervox task "Upgrade lodash" --instructions @notes.md --start
+itervox task "Add parser tests" --tracker --profile implementer --base release/2.x
+itervox task --template upgrade --var package=lodash --var version=4.17.21
+itervox task --templates
+```
+
+Creates a [New task](/guides/new-task/) on the running daemon (`POST /api/v1/tasks`, operator scope): a local task file in `.itervox/issues/` by default (`TASK-1`, … in a Linear or GitHub project), or an issue in the project's tracker with `--tracker`. It is created in the first active state.
+
+| Flag | Meaning |
+|---|---|
+| `--instructions <text\|@file>` | Custom instructions (Markdown) for this task only; `@path` reads a file, `@-` stdin. Added to the task's prompt as a `## Task instructions` block after the playbook. |
+| `--profile NAME` | The agent profile to run it with. |
+| `--backend claude\|codex` | The backend to run it on. |
+| `--playbook NAME` | The playbook to attach (`none` for none). |
+| `--base BRANCH` | The branch its worktree starts from and its pull request targets. |
+| `--tracker` | Create it in the tracker instead of as a local task. |
+| `--start` | Dispatch it at once; slots, guardrails, budgets and dependencies still apply. Without it, the next poll picks it up. |
+| `--template NAME` | Start from `.itervox/tasks/NAME.md`; flags you give override its fields. |
+| `--var key=value` | Fill a template's `{{key}}` placeholder (repeatable). A placeholder without a value is refused. |
+| `--templates` | List the saved templates and their placeholders, and exit. |
+
+It prints the created identifier, or the daemon's reason for refusing (exit `1`); a usage error is exit `2`.
+
 ### Pause and resume all dispatch
 
 ```bash
@@ -548,11 +641,11 @@ Every object carries every key. `token_source` is `supervisor`, `env` (`ITERVOX_
 
 ### Running under a supervisor
 
-A program that starts and manages daemons — the [Mac app](/guides/mac-app/), a process manager — should:
+A program that starts and manages daemons — the [Mac app](/guides/desktop-app/), a process manager — should:
 
 1. Start `itervox --workflow <path>` with `ITERVOX_SUPERVISOR_TOKEN=<token>` in the environment (`openssl rand -hex 32`). The API requires exactly that token, even with `server.allow_unauthenticated: true` or a different `ITERVOX_API_TOKEN` in `.itervox/.env`, and the daemon never prints or writes it: no tokenised URL on stderr (whatever `ITERVOX_PRINT_TOKEN` says), none in the log file, `HEARTBEAT.md`, `dashboard_url`, the registry or `<logs-dir>/api-token`.
 2. Find it, and daemons started elsewhere, with `itervox status --all --json`; poll `GET {url}api/v1/health` (no token) for liveness.
-3. Call the API with `Authorization: Bearer <token>`; stop a daemon with `itervox stop --workflow <path>` or `SIGTERM`.
+3. Call the API with `Authorization: Bearer <token>`; stop a daemon with `itervox stop --workflow <path>` or `SIGTERM` (on Windows `itervox stop` ends the daemon without a graceful drain: [Running on Windows](/guides/windows/#what-differs-on-windows)).
 
 Started from Finder or launchd, the daemon finds `claude` and `codex` through the user's login shell (next section).
 
@@ -610,6 +703,7 @@ itervox -h
 | `ITERVOX_USER_SETTINGS` | `""` | Path of the user [settings file](/configuration/#settings-files-jsonc-layers) instead of `~/.itervox/settings.jsonc`; `off` turns the user layer off. |
 | `ITERVOX_PRINT_TOKEN` | `""` | `1`/`true` prints the tokenised dashboard URL on stderr even when stderr is not a terminal; `0`/`false` suppresses it even on a terminal. Unset: printed only on a terminal. `-no-print-token` always wins. |
 | `ITERVOX_SUPERVISOR_TOKEN` | `""` | The API token a supervisor (the macOS app, a process manager) starts the daemon with. Required as the bearer token like `ITERVOX_API_TOKEN`, which it replaces, and even with `server.allow_unauthenticated: true`; never printed or written anywhere (stderr, log file, `HEARTBEAT.md`, `api-token`). 16–512 printable ASCII characters without spaces, or the process exits with code 2. See [Running under a supervisor](#running-under-a-supervisor). |
+| `ITERVOX_SHELL` | `""` | Windows only: the `bash.exe` that runs hooks and agent CLIs given by name. Unset: Git for Windows' bash, then `bash` on PATH (never the WSL launcher); with none, agent CLIs run directly and hooks fail. See [Running on Windows](/guides/windows/#which-shell-runs-what). |
 | `ITERVOX_LOGIN_SHELL_PATH` | `auto` | When to take PATH from the user's login shell: `auto` (not started from an interactive shell, or an agent CLI missing), `always` (`1`/`true`) or `never` (`0`/`false`). See [Login-shell PATH](#login-shell-path). |
 
 ### Auto-loading

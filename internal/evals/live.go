@@ -268,7 +268,14 @@ func runLiveScenario(ctx context.Context, cfg *config.Config, sc Scenario, opts 
 	}
 	runnerCommand := agent.CommandWithBackendHint(envPrefix(sb.env(in.IssueIdentifier))+command, backend)
 
-	turnCtx, cancel := context.WithTimeout(ctx, opts.Budget.Timeout)
+	// #258: the profile's sandbox, as on a dispatched run; no sandbox
+	// available means no eval run rather than an unconfined one.
+	iso, err := agent.PrepareIsolation(config.ResolveIsolation(profile.Isolation, cfg.Agent.Isolation),
+		agent.RunIsolationInputs(sb.Workspace, "", filepath.Dir(cfg.WorkflowPath), profile), nil)
+	if err != nil {
+		return fail("isolation: %v", err)
+	}
+	turnCtx, cancel := context.WithTimeout(agent.WithIsolation(ctx, iso), opts.Budget.Timeout)
 	defer cancel()
 	var overBudget atomic.Bool
 	onProgress := func(p agent.TurnResult) {

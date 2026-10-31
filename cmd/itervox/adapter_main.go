@@ -370,7 +370,8 @@ func (a *orchestratorAdapter) PostOperatorComment(ctx context.Context, identifie
 
 func (a *orchestratorAdapter) CreateIssue(
 	ctx context.Context,
-	identifier, title, body, stateName string,
+	identifier string,
+	in tracker.NewIssue,
 ) (*domain.Issue, error) {
 	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
 	if err != nil {
@@ -379,7 +380,7 @@ func (a *orchestratorAdapter) CreateIssue(
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found", identifier)
 	}
-	return a.tr.CreateIssue(ctx, issue.ID, title, body, stateName)
+	return a.tr.CreateIssue(ctx, issue.ID, in)
 }
 
 func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, stateName string) error {
