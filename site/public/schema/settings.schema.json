@@ -157,6 +157,17 @@
           "x-itervox-group": "Core",
           "x-itervox-live": true
         },
+        "isolation": {
+          "default": "none",
+          "description": "Default for profiles that do not set isolation: none, or process (the agent runs in an OS sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS; the run does not start when none works). Read at load time.",
+          "enum": [
+            "none",
+            "process"
+          ],
+          "title": "Isolation",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
         "live_steering": {
           "default": false,
           "description": "Lets a Sessions-panel message reach a running local Claude turn mid-turn (stream-json stdin). Off, and always for Codex and SSH workers, a message is delivered as the next turn's prompt. Keep off when agent.command is a wrapper script that reads stdin to EOF. Read at startup.",
@@ -1089,6 +1100,31 @@
           "title": "Clone URL",
           "type": "string",
           "x-itervox-group": "Workspace"
+        },
+        "copy_files": {
+          "default": [],
+          "description": "Gitignored paths or globs (relative to the repository root) copied from the main checkout into each new worktree before hooks.after_create, and refreshed on later runs. Tracked or unignored matches are skipped. The agent can read these files.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Copy files into worktrees",
+          "type": "array",
+          "x-itervox-group": "Workspace setup"
+        },
+        "copy_files_max_bytes": {
+          "default": 10485760,
+          "description": "Most bytes copy_files copies into one worktree per run; the rest is skipped and reported.",
+          "minimum": 1,
+          "title": "Copy files size cap (bytes)",
+          "type": "integer",
+          "x-itervox-group": "Workspace setup"
+        },
+        "port_range": {
+          "default": "41000-41999",
+          "description": "LOW-HIGH range each issue's workspace gets a TCP port from, as ITERVOX_PORT and {{ run.port }}. Stable while the workspace exists.",
+          "title": "Workspace port range",
+          "type": "string",
+          "x-itervox-group": "Workspace setup"
         },
         "root": {
           "description": "Directory per-issue workspaces are created in. Default: ~/.itervox/workspaces/<project>. ~ and $VAR are expanded.",

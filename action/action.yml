@@ -1,0 +1,133 @@
+name: Itervox run
+description: >-
+  Run one issue with an Itervox agent and exit: the agent's turns, the
+  reviewer quorum, then push the branch, open the pull request, comment on
+  the issue and move it on. Uses the repository's WORKFLOW.md.
+author: vnovick
+branding:
+  icon: git-pull-request
+  color: purple
+
+inputs:
+  issue:
+    description: The issue to run ("12" or "#12" on GitHub, "ENG-12" on Linear).
+    required: true
+  agent:
+    description: The agent CLI to install, claude, codex or none (already on the runner).
+    required: false
+    default: claude
+  version:
+    description: The itervox release to install ("latest", or a version such as 0.3.1). Pin it.
+    required: false
+    default: latest
+  answer:
+    description: Continue a run that asked a question (exit 3) with this answer.
+    required: false
+    default: ''
+  approve:
+    description: Allow this guardrail approval command for this run only (the command an earlier run named).
+    required: false
+    default: ''
+  timeout:
+    description: Cap on the whole run (a Go duration such as 45m); the agent turn timeout stays below it.
+    required: false
+    default: 60m
+  workflow:
+    description: Path to WORKFLOW.md in the checkout.
+    required: false
+    default: WORKFLOW.md
+  log-dir:
+    description: Directory for redacted logs (upload it as an artifact); empty to keep logs on the job output only.
+    required: false
+    default: ''
+  fail-on-needs-input:
+    description: Fail the step when the run needs input (exit 3) instead of reporting it in the outputs.
+    required: false
+    default: 'false'
+  github-token:
+    description: Token for the trust check, the release download and `gh pr create`.
+    required: false
+    default: ${{ github.token }}
+  dry-run:
+    description: Install and check only (trust check reported, not enforced); no agent runs.
+    required: false
+    default: 'false'
+
+outputs:
+  status:
+    description: pr_opened, succeeded, nothing_to_do, needs_input, budget_exceeded, failed, config_error (or dry_run).
+    value: ${{ steps.run.outputs.status }}
+  exit-code:
+    description: The exit code of itervox run (0, 2, 3, 4 or 5).
+    value: ${{ steps.run.outputs.exit-code }}
+  pr-url:
+    description: The pull request the run opened, if any.
+    value: ${{ steps.run.outputs.pr-url }}
+  summary:
+    description: The run's Markdown summary (also in the job summary).
+    value: ${{ steps.run.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the trigger is trusted
+      id: trust
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        if [ "$DRY_RUN" = true ]; then
+          sh "$GITHUB_ACTION_PATH/trust-check.sh" || echo "dry run: the trigger would be refused"
+        else
+          sh "$GITHUB_ACTION_PATH/trust-check.sh"
+        fi
+
+    - name: Install itervox
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ITERVOX_VERSION: ${{ inputs.version }}
+      run: sh "$GITHUB_ACTION_PATH/install.sh"
+
+    - name: Install the agent CLI
+      if: inputs.dry-run != 'true'
+      shell: bash
+      env:
+        AGENT: ${{ inputs.agent }}
+      run: |
+        case "$AGENT" in
+          claude) npm install --global --no-fund --no-audit @anthropic-ai/claude-code ;;
+          codex) npm install --global --no-fund --no-audit @openai/codex ;;
+          none) echo "using the agent CLI already on the runner" ;;
+          *) echo "itervox action: agent must be claude, codex or none (got '$AGENT')" >&2; exit 5 ;;
+        esac
+
+    - name: Set a git identity when none is configured
+      if: inputs.dry-run != 'true'
+      shell: bash
+      run: |
+        git config user.name >/dev/null || git config user.name "itervox[bot]"
+        git config user.email >/dev/null || git config user.email "itervox-bot@users.noreply.github.com"
+
+    - name: Run the issue
+      id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        ITERVOX_ISSUE: ${{ inputs.issue }}
+        ITERVOX_ANSWER: ${{ inputs.answer }}
+        ITERVOX_APPROVE: ${{ inputs.approve }}
+        ITERVOX_TIMEOUT: ${{ inputs.timeout }}
+        ITERVOX_WORKFLOW: ${{ inputs.workflow }}
+        ITERVOX_LOG_DIR: ${{ inputs.log-dir }}
+        ITERVOX_FAIL_ON_NEEDS_INPUT: ${{ inputs.fail-on-needs-input }}
+      run: |
+        if [ "$DRY_RUN" = true ]; then
+          echo "dry run: would run itervox run --issue \"$ITERVOX_ISSUE\""
+          { echo "status=dry_run"; echo "exit-code=0"; echo "pr-url="; echo "summary="; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        sh "$GITHUB_ACTION_PATH/run.sh"

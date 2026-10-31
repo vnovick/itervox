@@ -105,7 +105,7 @@ export default function IssueDetailHeader({
           <span
             data-testid="issue-detail-syncing-badge"
             title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-            className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+            className="pill pill-accent flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
           >
             ⟳ Syncing
           </span>
@@ -122,14 +122,23 @@ export default function IssueDetailHeader({
                 : `Triggered by automation ${latestAutomationId} — click to open the rule`
             }
             className={
-              'rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ' +
+              'pill px-2 py-0.5 text-[10px] leading-4 transition-colors ' +
               (automationStale
-                ? 'bg-theme-bg-soft text-theme-muted/60 cursor-not-allowed line-through'
-                : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25')
+                ? 'pill-neutral cursor-not-allowed line-through opacity-60'
+                : 'pill-ok hover:brightness-95')
             }
           >
             🤖 {latestAutomationId}
           </button>
+        )}
+        {runningRow?.isolation && (
+          <span
+            data-testid="issue-detail-isolation-badge"
+            title="The agent runs in an operating-system sandbox: it can write only to its workspace, and credentials and other workspaces are hidden"
+            className="pill pill-ok flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
+          >
+            Sandboxed ({runningRow.isolation})
+          </span>
         )}
         <span className="bg-theme-bg-soft text-theme-text-secondary ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium">
           {backend}

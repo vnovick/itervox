@@ -17,6 +17,7 @@ import (
 	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
+	"github.com/vnovick/itervox/internal/tracker"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -90,6 +91,9 @@ type RunningRow struct {
 	// its backend reports it (Claude's total_cost_usd, CORE-091); null
 	// until reported, and always null for Codex (#240).
 	CostUSDEstimated *float64 `json:"costUsdEstimated,omitempty"`
+	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
+	// "landlock", "sandbox-exec"; #258); absent when unsandboxed.
+	Isolation string `json:"isolation,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -150,6 +154,8 @@ type HistoryPromptParts struct {
 	Memory string `json:"memory,omitempty"`
 	// Playbook is the digest of the run's playbook block (#218).
 	Playbook string `json:"playbook,omitempty"`
+	// Task is the digest of the run's task instructions block (#251).
+	Task     string `json:"task,omitempty"`
 	Template string `json:"template,omitempty"`
 }
 
@@ -520,7 +526,10 @@ type OrchestratorClient interface {
 	// agent — the dashboard's reply box / provide-input is the intended way to
 	// answer an agent.
 	PostOperatorComment(ctx context.Context, identifier, body string) (queued bool, err error)
-	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
+	// CreateIssue creates a follow-up of the issue identifier names; in
+	// carries the title, body, state, labels and blocked_by_source flag the
+	// tracker adapter applies (see tracker.NewIssue).
+	CreateIssue(ctx context.Context, identifier string, in tracker.NewIssue) (*domain.Issue, error)
 	UpdateIssueState(ctx context.Context, identifier, stateName string) error
 	SetWorkers(n int) error
 	BumpWorkers(delta int) (int, error)
@@ -633,7 +642,7 @@ func (noopClient) CommentOnIssue(context.Context, string, string) error { return
 func (noopClient) PostOperatorComment(context.Context, string, string) (bool, error) {
 	return false, errNotConfigured
 }
-func (noopClient) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
+func (noopClient) CreateIssue(context.Context, string, tracker.NewIssue) (*domain.Issue, error) {
 	return nil, errNotConfigured
 }
 func (noopClient) UpdateIssueState(context.Context, string, string) error { return errNotConfigured }
@@ -1368,6 +1377,18 @@ type TrackerIssue struct {
 	Playbook         string `json:"playbook,omitempty"`
 	PlaybookSource   string `json:"playbookSource,omitempty"`
 	PlaybookOverride string `json:"playbookOverride,omitempty"`
+	// Task is the issue's New task record (#251): its custom instructions
+	// and base branch, and whether it has started (the instructions are
+	// editable until then). Only on the single-issue read.
+	Task *IssueTaskRow `json:"task,omitempty"`
+}
+
+// IssueTaskRow is an issue's New task record (#251).
+type IssueTaskRow struct {
+	Instructions string `json:"instructions,omitempty"`
+	BaseBranch   string `json:"baseBranch,omitempty"`
+	Local        bool   `json:"local,omitempty"`
+	Started      bool   `json:"started"`
 }
 
 // IssueLogEntry is one parsed log event for /api/v1/issues/{id}/logs.
@@ -1553,6 +1574,9 @@ type Config struct {
 	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
 	// serves (#218, sessions.steering_phrases). Read-only after startup.
 	SteeringPhrases []config.SteeringPhrase
+	// Tasks backs New task and the saved task templates (#251). Nil
+	// answers 503.
+	Tasks TasksClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1627,6 +1651,8 @@ type Server struct {
 	// Config.SteeringPhrases (#218).
 	playbooks       PlaybooksClient
 	steeringPhrases []config.SteeringPhrase
+	// tasks mirrors Config.Tasks (#251).
+	tasks TasksClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1684,6 +1710,7 @@ func New(cfg Config) *Server {
 		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
 		steeringPhrases:     cfg.SteeringPhrases,
+		tasks:               cfg.Tasks,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1821,6 +1848,12 @@ func (s *Server) routes() {
 			r.Post("/repo/readiness/verify-skill-issue", s.handleVerifySkillIssue) // #218
 			r.Get("/playbooks", s.handleListPlaybooks)                             // #218
 			r.Get("/steering/phrases", s.handleSteeringPhrases)                    // #218
+			r.Post("/tasks", s.handleCreateTask)                                   // #251
+			r.Put("/tasks/{identifier}/instructions", s.handleSetTaskInstructions) // #251
+			r.Get("/task-templates", s.handleListTaskTemplates)                    // #251
+			r.Post("/task-templates/{name}", s.handleSaveTaskTemplate(false))      // #251
+			r.Put("/task-templates/{name}", s.handleSaveTaskTemplate(true))        // #251
+			r.Delete("/task-templates/{name}", s.handleDeleteTaskTemplate)         // #251
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)

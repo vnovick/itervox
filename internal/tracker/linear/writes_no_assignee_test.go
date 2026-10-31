@@ -63,7 +63,7 @@ func TestAgentWritesNeverSetTheAssignee(t *testing.T) {
 	_, err = c.CreateCommentWithKey(ctx, id, "99999999-9999-4999-8999-999999999999", "question")
 	require.NoError(t, err)
 	require.NoError(t, c.SetIssueBranch(ctx, id, "eng-9"))
-	_, err = c.CreateIssue(ctx, id, "follow-up", "body", "Done")
+	_, err = c.CreateIssue(ctx, id, tracker.NewIssue{Title: "follow-up", Body: "body", State: "Done"})
 	require.NoError(t, err)
 	title := "renamed"
 	require.NoError(t, c.UpdateIssueFields(ctx, id, tracker.IssueFieldsPatch{Title: &title}))

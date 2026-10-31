@@ -391,6 +391,16 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
   dispatch the entrypoints in `TestMain`.
 
+### Workspace port ledger is workspace state, not `State`
+
+`ITERVOX_PORT` (#250) is owned by `workspace.Manager`: assigned in
+`EnsureWorkspace`, released by `RemoveWorkspace`, persisted in
+`.itervox-ports.json` under `workspace.root` and guarded by the package-level
+`portsMu`. Those calls already run off the event loop (worker goroutines,
+auto-clear, startup cleanup, `itervox clear`), no dispatch decision reads the
+port, and the hooks that need it run on the same goroutines — so it is not
+event-loop state. Do not mirror it into `orchestrator.State`.
+
 ### `cfgMu` guards exactly these fields (and nothing else)
 
 > **Canonical source for codex too** — AGENTS.md is a thin pointer that tells
@@ -469,6 +479,18 @@ front-matter key is reported as a conflict.
 - The `cfgMu` allowlist and reload behaviour did not change: the Live tracker
   state, failed-state and analysis-mode settings apply through their existing
   setters; the watcher still watches only WORKFLOW.md.
+
+### `itervox run` is the same orchestrator in one-shot mode
+
+`itervox run --issue <id>` (#252, `cmd/itervox/run_cmd*.go`) does not
+re-implement the worker: it runs `orchestrator.New(...).Run` fed one candidate
+(`singleIssueTracker`), with `MaxConcurrentAgents = 1`, and stops it once
+`runSettled` sees the run (and its reviewers) over. Run-mode behaviour is
+confined to `orchestrator.OneShot` (`SetOneShot`, before `Run`; nil in the
+daemon): opening the PR, the `--answer`/`--approve` resume context (consumed
+by the event loop on the first dispatch), the question footer, and
+fail-closed guardrail approvals. No HTTP listener, hub, heartbeat or
+automation is started — `TestRunHasNoServerOrHub` pins that.
 
 ### Snapshot access
 
@@ -619,8 +641,13 @@ tmuxctl (stdlib only — the tmux CLI: list/capture panes, paste text, an
          allowlist of keys, new/kill session; the ONLY package that writes to
          processes itervox did not start; imported by cmd/itervox)
 
-procgroup (stdlib only — own process group + group SIGKILL re-sent until
-           ESRCH; the one shared kill path for agent runners and hooks)
+procgroup (stdlib, plus golang.org/x/sys/windows on Windows — own process
+           group + group SIGKILL re-sent until ESRCH on Unix, a kill-on-close
+           Job Object on Windows; the one shared kill path for agent runners
+           and hooks, and the Windows shell resolver)
+
+winflock (Windows only, golang.org/x/sys/windows — LockFileEx behind the
+          pid, WORKFLOW.md, API-token and hub locks; imports no internal package)
 
 metrics (stdlib only — process-wide counters + hand-written Prometheus text
          exposition; a leaf imported by tracker, orchestrator, server,
@@ -643,7 +670,8 @@ memory (managed memory files, selection and the `## Memory` block — imports
 gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
          & co. and requires a dir; audited by TestNoRawGitExecOutsideGitexec)
 
-workflow ──── config ──── workspace (hooks — also imports procgroup)
+workflow ──── config ──── workspace (hooks — also imports procgroup, gitexec,
+                                     atomicfs and logging)
 
 rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
        server and cmd/itervox)

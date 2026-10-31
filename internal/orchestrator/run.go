@@ -51,6 +51,12 @@ type runHandle struct {
 	// (#218), chosen by startRun. Set before the worker starts and never
 	// changed.
 	playbook playbook.Choice
+	// task is the run's New task spec (#251) when its issue is a task, and
+	// taskBlock its `## Task instructions` block ("" for a run the
+	// instructions do not apply to, or none). Set before the worker starts
+	// and never changed.
+	task      TaskSpec
+	taskBlock string
 	// usage is the run's latest cumulative usage, recorded by its worker
 	// after every turn whatever the turn's outcome (#136). The worker's exit
 	// carries it, so the event loop settles a run's final usage even when
@@ -153,10 +159,12 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	h.memory = o.resolveRunMemory(entry, h.rules)
 	entry.MemoryIDs = h.memory.IDs()
 	// #218: the task-type playbook, chosen before the digest it is part of.
-	h.playbook = o.resolveRunPlaybook(state, entry)
+	// #251: a task's spec; its first run freezes the instructions.
+	h.task, h.taskBlock = o.resolveRunTask(entry)
+	h.playbook = o.resolveRunPlaybook(state, entry, h.task.Playbook)
 	entry.Playbook, entry.PlaybookSource = h.playbook.Name(), playbookSource(h.playbook)
 	// #186: the prompt version this run is dispatched with.
-	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory, h.playbook.Playbook.Block()).digest()
+	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory, h.playbook.Playbook.Block(), h.taskBlock).digest()
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}

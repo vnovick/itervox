@@ -114,7 +114,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 
 > **Release checks:** before tagging, run the checks in [docs/release-checks.md](docs/release-checks.md): a self-hosted issue run and a cloud deploy smoke test (manual `Release acceptance` workflow; they need real accounts), and confirm the upgrade test is green.
 
-> **Release secrets:** a `vX.Y.Z` tag runs `release.yml` (GoReleaser) and then `desktop-release.yml` (the Mac app), which read these repository secrets. Only the maintainer's release needs them; contributors and users never need an Apple ID — a build from source (`make desktop`) is not quarantined and opens without signing.
+> **Release secrets:** a `vX.Y.Z` tag runs `release.yml` (GoReleaser) and then `desktop-release.yml` (the Mac app, and the unsigned Linux and Windows apps, which need no secret), which read these repository secrets. Only the maintainer's release needs them; contributors and users never need an Apple ID — a build from source (`make desktop`) is not quarantined and opens without signing.
 >
 > | Secret | Used for |
 > |---|---|

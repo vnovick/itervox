@@ -89,3 +89,19 @@ func NormalizeAllowedActions(actions []string) []string {
 	slices.Sort(normalized)
 	return normalized
 }
+
+// NormalizeCreateIssueLabels cleans a profile's create_issue_labels
+// allow-list (#253): entries are trimmed, blanks dropped and duplicates
+// (ignoring case) dropped, keeping the first spelling and the given order.
+// Nil when nothing is left.
+func NormalizeCreateIssueLabels(labels []string) []string {
+	var out []string
+	for _, l := range labels {
+		l = strings.TrimSpace(l)
+		if l == "" || slices.ContainsFunc(out, func(have string) bool { return strings.EqualFold(have, l) }) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}

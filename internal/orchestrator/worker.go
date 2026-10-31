@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/gitexec"
@@ -121,7 +122,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	skipFreshDispatchSetup := inputRequiredResume
 
 	wsPath := ""
+	wsPort := 0     // the workspace's ITERVOX_PORT (#250)
 	stackedOn := "" // the blocker branch this worktree is stacked on (#73)
+	// #251: a New task's base branch, when its worktree starts from one.
+	taskSpec, _ := runTask(ctx)
+	taskBase := ""
 	branchName := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
 	activeBranchName := branchName
 
@@ -171,7 +176,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// shows only the increment. Opt-in, best-effort, and type-asserted —
 		// a provider that cannot stack, or a blocker branch that does not
 		// exist here, falls back to workspace.base_branch unchanged.
-		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
+		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName, taskSpec.BaseBranch)
 		if errors.Is(err, workspace.ErrBranchInUse) {
 			// #193: deterministic — git refuses the branch until the other
 			// worktree frees it. The event loop holds the issue with
@@ -196,6 +201,16 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		// #250: the workspace's port reaches every hook of this run (and,
+		// below, the agent); copy_files ran inside EnsureWorkspace, before
+		// after_create.
+		wsPort = ws.Port
+		ctx = workspace.WithHookEnv(ctx, workspace.PortEnv(wsPort)...)
+		o.reportCopyFiles(issue.Identifier, runLogID, ws)
+		if taskSpec.BaseBranch != "" {
+			// The start point was the task's base branch, not a blocker's.
+			taskBase, stackedOn = ws.StackedOn, ""
+		}
 		if ws.BareFetchFailure != "" {
 			// #195: a failing shared-clone fetch used to be a WARN line only,
 			// so a base that stopped moving went unnoticed. The workspace
@@ -322,7 +337,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// implementer's completion_state is terminal (see the #58 notes), and
 		// a missed snapshot would let a branch change go unflagged.
 		gitCtx, gitCancel := context.WithTimeout(context.Background(), postRunTimeout)
-		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(stackedOn), o.cfg.Agent.BaseBranch))
+		reviewDiffBlock = buildReviewDiffBlock(gitCtx, wsPath, reviewBaseCandidates(o.prBaseBranch(cmp.Or(stackedOn, taskBase)), o.cfg.Agent.BaseBranch))
 		// The baseline survives a failed or interrupted attempt: a retry
 		// compares against the branch as the reviewer first found it.
 		reviewerBefore, reviewerTracked = reviewerBaseline(gitCtx, wsPath, issue.Identifier, profileName, attempt == 0)
@@ -342,6 +357,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if guard != nil {
 		ctx = agent.WithRunEnv(ctx, guardEnv)
 	}
+	ctx = withLocalWorkspacePort(ctx, wsPort, workerHost) // #250
 	defer func() {
 		o.agentActionTokens.Revoke(guardToken)
 		guard.Remove()
@@ -357,10 +373,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if automation != nil && automation.Trigger.Type == config.AutomationTriggerBlockersResolved {
 		profileMoveIssueState = strings.TrimSpace(automation.MoveToState)
 	}
+	actionScope := agentactions.Scope{
+		CreateIssueState:  profileCreateIssueState,
+		CreateIssueLabels: config.NormalizeCreateIssueLabels(profilesSnap[profileName].CreateIssueLabels),
+		MoveIssueState:    profileMoveIssueState,
+	}
 	actionContext := ""
 	if len(profileAllowedActions) > 0 {
 		if workerHost != "" {
-			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, true)
+			actionContext = buildAgentActionContext(profileAllowedActions, actionScope, true)
 		} else if o.agentActionTokens == nil || o.agentActionBaseURL == "" {
 			slog.Warn("worker: profile allowed_actions configured but daemon action bridge is unavailable",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName)
@@ -369,8 +390,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			issue.Identifier,
 			runLogID,
 			profileAllowedActions,
-			profileCreateIssueState,
-			profileMoveIssueState,
+			actionScope,
 			turnTimeoutMs,
 		); err != nil {
 			slog.Warn("worker: failed to prepare daemon action bridge",
@@ -392,12 +412,30 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				"ITERVOX_RUN_ID":             runLogID,
 				"PATH":                       pathValue,
 			})
-			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, profileMoveIssueState, false)
+			actionContext = buildAgentActionContext(profileAllowedActions, actionScope, false)
 			defer func() {
 				o.agentActionTokens.Revoke(token)
 				_ = os.RemoveAll(shimDir)
 			}()
 		}
+	}
+
+	// #258: process isolation, resolved once per run before anything runs
+	// in the workspace (hooks are not sandboxed, but must not run for a run
+	// that cannot start). No sandbox available means no run.
+	iso, isoErr := o.prepareRunIsolation(profilesSnap[profileName], workerHost, wsPath)
+	if isoErr != nil {
+		slog.Warn("worker: isolation unavailable; run not started",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName, "error", isoErr)
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR", fmt.Sprintf("worker: run not started: %v", isoErr), runLogID))
+		}
+		o.sendExit(ctx, issue, attempt, TerminalFailed, isoErr)
+		return
+	}
+	if iso != nil {
+		ctx = agent.WithIsolation(ctx, iso)
+		o.reportRunIsolation(ctx, issue, runLogID, iso)
 	}
 
 	// --- Multi-turn loop ---
@@ -475,6 +513,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// #218: the task-type playbook this run was dispatched with; its
 	// require_evidence joins the profile's in the one #80 evidence gate.
 	pb := runPlaybook(ctx)
+	_, taskBlock := runTask(ctx) // #251
 	requiredEvidence := runEvidenceChecks(profilesSnap[profileName].RequireEvidence, pb)
 	runEvidenceRelPath := ""
 	evidenceBlock := ""
@@ -482,8 +521,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		runEvidenceRelPath = evidenceRelPathFor(profileName)
 		evidenceBlock = buildEvidenceBlock(requiredEvidence, runEvidenceRelPath)
 	}
-	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
-	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(stackedOn)) // #215
+	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), runEvidenceRelPath, switchNotice)
+	setRunPort(runVars, wsPort)                                                                             // #250
+	rcReport := o.newRunContextReporter(ctx, issue.Identifier, o.prBaseBranch(cmp.Or(stackedOn, taskBase))) // #215
 	// #157: the rule set this run was dispatched with. `{{ rules }}` places
 	// it in any template; otherwise a `## Rules` block goes ahead of the
 	// profile's SOUL.md and INSTRUCTIONS.md.
@@ -560,6 +600,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			// a loop — defer would not fire until runWorker returns (GO-R10-2).
 			if wsPath != "" {
 				hookCtx, hookCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
+				hookCtx = workspace.WithHookEnv(hookCtx, workspace.PortEnv(wsPort)...) // #250
 				if hookErr := workspace.RunHook(hookCtx, afterRunHook, wsPath, hookTimeoutMs, o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
 					slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issue.ID, "error", hookErr)
 				}
@@ -597,6 +638,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if block := buildStackedPRBlock(stackedOn); block != "" {
 			renderedPrompt += "\n\n" + block
 		}
+		if block := buildTaskBaseBlock(taskBase); block != "" {
+			renderedPrompt += "\n\n" + block
+		}
 		if evidenceBlock != "" {
 			renderedPrompt += "\n\n" + evidenceBlock
 		}
@@ -616,18 +660,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// Shared with ComposeEvalPrompt (#189) so a live eval renders exactly
 		// the profile sections a dispatched worker sees.
 		renderedPrompt += profilePromptTail(profileTailInput{
-			Rules:         ruleSet,
-			Memory:        memSel,
-			Playbook:      pb.Playbook.Block(),
-			Template:      promptTemplate,
-			ProfileName:   profileName,
-			Profiles:      profilesSnap,
-			Automation:    automation,
-			Issue:         issue,
-			Attempt:       attemptPtr,
-			RunVars:       runVars,
-			ActionContext: actionContext,
-			Backend:       backend,
+			Rules:            ruleSet,
+			Memory:           memSel,
+			Playbook:         pb.Playbook.Block(),
+			TaskInstructions: taskBlock,
+			Template:         promptTemplate,
+			ProfileName:      profileName,
+			Profiles:         profilesSnap,
+			Automation:       automation,
+			Issue:            issue,
+			Attempt:          attemptPtr,
+			RunVars:          runVars,
+			ActionContext:    actionContext,
+			Backend:          backend,
 		})
 
 		// On the first turn, inject open PR context if detected.
@@ -748,7 +793,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
 		result, runErr := o.runner.RunTurn(steerCtx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
-			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
+			withRemoteWorkspacePort(agentCommand, wsPort, workerHost), workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 		rcReport.endTurn(result) // #215
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.
@@ -800,6 +845,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					}
 				}
 			}
+		}
+
+		// #252: `itervox run` has no approval channel, so an approval
+		// command the agent tried was refused; the run ends input-required
+		// naming it instead of finishing without it.
+		if refused := o.oneShotRefusedApprovals(issue.Identifier, guard); len(refused) > 0 && !errors.Is(runErr, context.Canceled) {
+			o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
+				workerHost, profileName, activeBranchName, oneShotApprovalContext(refused), "",
+				buildInputRequiredExitRunEntry(issue, attempt, startedAt, turn, runLogID, workerHost, backend,
+					cumulativeInput, cumulativeCached, cumulativeOutput, result))
+			return
 		}
 
 		// CORE-051: a failed turn carrying a quota limit signal (CORE-050)
@@ -1074,7 +1130,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
 	// pre-run guard (now the workspace is on the newly-created branch).
 	if wsPath != "" && prCtx == nil && !automationRun {
-		if prURL := workspace.FindOpenPRURL(ctx, wsPath); prURL != "" {
+		prURL := workspace.FindOpenPRURL(ctx, wsPath)
+		if prURL == "" && !readOnlyReviewer { // #252: `itervox run` opens the PR itself
+			prURL = o.openOneShotPR(ctx, wsPath, activeBranchName, issue)
+		}
+		if prURL != "" {
 			detectedPRURL = prURL
 			// Dedup: check if we already posted a PR comment for this URL.
 			prComment := fmt.Sprintf("🔗 Pull request created: %s", prURL)
@@ -1642,8 +1702,8 @@ func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs 
 }
 
 func prepareAgentActionRuntime(tokens interface {
-	IssueScoped(issueIdentifier, runSessionID string, allowedActions []string, createIssueState, moveIssueState string, ttl time.Duration) (string, error)
-}, issueIdentifier, runLogID string, allowedActions []string, createIssueState, moveIssueState string, turnTimeoutMs int) (string, string, error) {
+	IssueWithScope(issueIdentifier, runSessionID string, allowedActions []string, scope agentactions.Scope, ttl time.Duration) (string, error)
+}, issueIdentifier, runLogID string, allowedActions []string, scope agentactions.Scope, turnTimeoutMs int) (string, string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", "", fmt.Errorf("resolve current executable: %w", err)
@@ -1658,7 +1718,7 @@ func prepareAgentActionRuntime(tokens interface {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("write shim: %w", err)
 	}
-	token, err := tokens.IssueScoped(issueIdentifier, runLogID, allowedActions, createIssueState, moveIssueState, agentActionTokenTTL(turnTimeoutMs))
+	token, err := tokens.IssueWithScope(issueIdentifier, runLogID, allowedActions, scope, agentActionTokenTTL(turnTimeoutMs))
 	if err != nil {
 		_ = os.RemoveAll(shimDir)
 		return "", "", fmt.Errorf("issue action token: %w", err)
@@ -1713,7 +1773,8 @@ func prependEnvToCommand(command string, env map[string]string) string {
 	return b.String()
 }
 
-func buildAgentActionContext(actions []string, createIssueState, moveIssueState string, remoteUnavailable bool) string {
+func buildAgentActionContext(actions []string, scope agentactions.Scope, remoteUnavailable bool) string {
+	createIssueState, moveIssueState := scope.CreateIssueState, scope.MoveIssueState
 	normalized := config.NormalizeAllowedActions(actions)
 	if len(normalized) == 0 {
 		return ""
@@ -1735,6 +1796,7 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 			} else {
 				lines = append(lines, "- `itervox action create-issue --title \"...\" --body \"...\"` creates a follow-up issue using the profile's configured target state.")
 			}
+			lines = append(lines, createIssueOptionLines(scope.CreateIssueLabels)...)
 		case config.AgentActionMoveState:
 			if moveIssueState != "" {
 				lines = append(lines, "- `itervox action move-state --state \""+moveIssueState+"\"` moves the current issue to the automation-approved tracker state.")
@@ -1750,6 +1812,20 @@ func buildAgentActionContext(actions []string, createIssueState, moveIssueState 
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// createIssueOptionLines describes create-issue's optional flags (#253):
+// --label with the profile's allowed labels, and --blocked-by-source.
+func createIssueOptionLines(labels []string) []string {
+	lines := []string{"  - Add `--blocked-by-source` to record the current issue as a blocker of the new one."}
+	if len(labels) == 0 {
+		return append(lines, "  - No labels are allowed on new issues for this profile.")
+	}
+	quoted := make([]string, len(labels))
+	for i, l := range labels {
+		quoted[i] = "`" + l + "`"
+	}
+	return append(lines, "  - Add `--label \"...\"` (repeatable) to label the new issue; allowed labels: "+strings.Join(quoted, ", ")+". Any other label is refused.")
 }
 
 func renderProfilePromptBlocks(profile config.AgentProfile, issue domain.Issue, attempt *int, extra map[string]any) []string {

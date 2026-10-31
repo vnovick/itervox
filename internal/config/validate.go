@@ -171,6 +171,9 @@ func ValidateDispatch(cfg *Config) error {
 	if err := ValidateWorkflowSchema(cfg); err != nil {
 		return err
 	}
+	if err := validatePlatform(cfg, hostGOOS); err != nil {
+		return err
+	}
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {

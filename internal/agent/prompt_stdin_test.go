@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent_test
 
 // M2-B3 (CORE-156): the prompt (SOUL + INSTRUCTIONS + template + every prior

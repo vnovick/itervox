@@ -16,8 +16,6 @@ const ROOTS = ['components', 'pages', 'layout', 'App.tsx'];
 const ALLOW: Record<string, string> = {
   // A QR code must stay black on white whatever the theme, or phones cannot scan it.
   'components/itervox/hubPhone/QrCode.tsx': 'QR modules need fixed black-on-white',
-  // Changed on the stacking branch; its badges move to .pill-* tokens after that merge.
-  'components/itervox/IssueDetailHeader.tsx': 'pending migration after the stack merge',
 };
 
 const HEX = /(?<![\w&])#(?![0-9]+\b)[0-9a-fA-F]{3,8}\b/g;
