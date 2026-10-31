@@ -38,20 +38,18 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-8 text-center">
-        <h1 className="text-2xl font-semibold text-red-600 dark:text-red-400">
-          Something went wrong
-        </h1>
-        <p className="max-w-md text-sm text-gray-600 dark:text-gray-400">
+        <h1 className="text-theme-danger-text text-2xl font-semibold">Something went wrong</h1>
+        <p className="text-theme-text-secondary max-w-md text-sm">
           The dashboard encountered an unexpected error. Try refreshing the page.
         </p>
-        <pre className="max-w-lg overflow-auto rounded bg-gray-100 p-4 text-left text-xs text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+        <pre className="subtle-fill text-theme-text max-w-lg overflow-auto rounded-[var(--radius-sm)] p-4 text-left text-xs">
           {error.message}
         </pre>
         <button
           onClick={() => {
             window.location.reload();
           }}
-          className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+          className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm text-white hover:brightness-110"
         >
           Reload
         </button>

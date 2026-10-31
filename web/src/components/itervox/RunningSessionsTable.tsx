@@ -162,7 +162,7 @@ export default function RunningSessionsTable() {
             {/* Kind + State badge */}
             <div className="flex items-center gap-1 whitespace-nowrap">
               {row.kind === 'reviewer' && (
-                <span className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-purple-400 uppercase">
+                <span className="bg-theme-purple-soft text-theme-purple-text rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase">
                   Review
                 </span>
               )}
@@ -248,7 +248,7 @@ export default function RunningSessionsTable() {
         <div
           style={{
             borderTop: sorted.length > 0 ? '1px solid var(--line)' : undefined,
-            background: 'rgba(245,158,11,0.03)',
+            background: 'var(--warning-soft)',
           }}
         >
           <div className="px-4 py-3">

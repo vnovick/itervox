@@ -13,8 +13,8 @@ interface HostEntry {
 }
 
 function loadBarColor(pct: number): string {
-  if (pct >= 90) return '#ef4444';
-  if (pct >= 75) return '#f59e0b';
+  if (pct >= 90) return 'var(--danger)';
+  if (pct >= 75) return 'var(--warning)';
   return 'var(--accent)';
 }
 
@@ -32,11 +32,11 @@ function HostTile({ host }: { host: HostEntry }) {
       : { bg: 'var(--accent-soft)', color: 'var(--accent-text)', label: 'SSH' };
 
   return (
-    <div className="bg-theme-bg-elevated border-theme-line overflow-hidden rounded-xl border">
+    <div className="glass-card overflow-hidden">
       <div className="border-theme-line flex items-center gap-2.5 border-b px-3.5 py-3">
         <span
           className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0${host.disabled ? '' : 'animate-pulse'}`}
-          style={{ background: host.disabled ? '#6b7280' : '#22c55e' }}
+          style={{ background: host.disabled ? 'var(--dot-idle)' : 'var(--dot-ok)' }}
         />
         <span
           className="min-w-0 flex-1 truncate font-mono text-[12px] font-semibold"
@@ -73,7 +73,7 @@ function HostTile({ host }: { host: HostEntry }) {
               className="h-full rounded-full transition-all"
               style={{
                 width: `${String(Math.min(pct, 100))}%`,
-                background: host.disabled ? '#6b7280' : loadBarColor(pct),
+                background: host.disabled ? 'var(--dot-idle)' : loadBarColor(pct),
               }}
             />
           </div>

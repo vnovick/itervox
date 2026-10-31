@@ -106,7 +106,7 @@ export function PendingReview({ identifier, prUrl }: { identifier: string; prUrl
         }}
         rows={2}
         placeholder="Summary (optional for an approval)"
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-2 py-1.5 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
       />
       <div className="flex flex-wrap justify-end gap-2">
         {EVENTS.map((e) => (

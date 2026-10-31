@@ -7,7 +7,7 @@ export function DemoModeBadge() {
       data-testid="header-demo-mode"
       role="status"
       title="itervox demo: fake issues and a scripted agent. Nothing is sent to a tracker."
-      className="bg-theme-warning-soft text-theme-warning-text shrink-0 rounded px-2 py-0.5 font-mono text-xs font-semibold"
+      className="pill pill-warn shrink-0 font-semibold"
     >
       Demo mode
     </span>

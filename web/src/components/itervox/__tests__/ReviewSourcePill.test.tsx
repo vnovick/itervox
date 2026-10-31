@@ -7,9 +7,9 @@ describe('ReviewSourcePill', () => {
     render(<ReviewSourcePill source="session" />);
     const el = screen.getByText(/completed this session/i);
     expect(el).toBeInTheDocument();
-    // Tone marker — green tones are encoded with emerald classes per the
-    // notifications_plan §C palette.
-    expect(el.className).toMatch(/emerald/);
+    // Tone marker — the green tone is the success token (visual refresh:
+    // the emerald palette classes became theme tokens).
+    expect(el.className).toMatch(/theme-success/);
   });
 
   it('renders the muted "in review (tracker)" pill for source = "tracker"', () => {

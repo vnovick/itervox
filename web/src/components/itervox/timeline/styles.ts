@@ -40,11 +40,11 @@ type SessionStatus = NormalisedSession['status'];
 
 const BAR_GRADIENTS: Record<SessionStatus, string> = {
   live: 'linear-gradient(90deg, var(--accent), var(--teal))',
-  succeeded: 'linear-gradient(90deg, var(--success), #16a34a)',
-  failed: 'linear-gradient(90deg, var(--danger), #dc2626)',
-  cancelled: 'linear-gradient(90deg, #52525b, #3f3f46)',
-  stalled: 'linear-gradient(90deg, var(--warning, #f59e0b), #d97706)',
-  input_required: 'linear-gradient(90deg, var(--warning, #f59e0b), #d97706)',
+  succeeded: 'linear-gradient(90deg, var(--success-strong), var(--success))',
+  failed: 'linear-gradient(90deg, var(--danger-text), var(--danger))',
+  cancelled: 'linear-gradient(90deg, var(--dot-idle), var(--muted))',
+  stalled: 'linear-gradient(90deg, var(--warning-text), var(--warning))',
+  input_required: 'linear-gradient(90deg, var(--warning-text), var(--warning))',
 };
 
 /** Returns the CSS gradient background for a run bar based on status. */
@@ -62,12 +62,12 @@ interface BadgeStyle {
 const BADGE_STYLES: Record<string, BadgeStyle> = {
   succeeded: { background: 'var(--success-soft)', color: 'var(--success-strong)' },
   failed: { background: 'var(--danger-soft)', color: 'var(--danger-text)' },
-  stalled: { background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' },
-  input_required: { background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' },
+  stalled: { background: 'var(--warning-soft)', color: 'var(--warning-text)' },
+  input_required: { background: 'var(--warning-soft)', color: 'var(--warning-text)' },
 };
 
 const DEFAULT_BADGE: BadgeStyle = {
-  background: 'rgba(113,113,122,0.15)',
+  background: 'var(--subtle)',
   color: 'var(--text-secondary)',
 };
 
@@ -97,8 +97,8 @@ export function statusBadgeLabel(status: SessionStatus): string {
 // ─── Subagent bar colours (cycling) ──────────────────────────────────────────
 
 export const SUBAGENT_COLORS = [
-  { text: 'var(--accent-strong)', bar: 'linear-gradient(90deg, #a855f7, #6366f1)' },
-  { text: 'var(--teal)', bar: 'linear-gradient(90deg, #14b8a6, #22c55e)' },
+  { text: 'var(--accent-strong)', bar: 'linear-gradient(90deg, var(--purple), var(--accent))' },
+  { text: 'var(--teal)', bar: 'linear-gradient(90deg, var(--teal), var(--success))' },
   { text: 'var(--accent-strong)', bar: 'linear-gradient(90deg, var(--accent), var(--teal))' },
 ] as const;
 
@@ -110,4 +110,4 @@ export function subagentColor(idx: number) {
 // ─── Tick mark styling ───────────────────────────────────────────────────────
 
 /** CSS for a tick mark (subagent boundary or action event). */
-export const TICK_MARK_STYLE = 'rgba(255,255,255,0.4)';
+export const TICK_MARK_STYLE = 'var(--hairline)';

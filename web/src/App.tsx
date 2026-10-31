@@ -88,9 +88,11 @@ function SidebarContent() {
           : 0;
   return (
     <>
-      {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
-          aligns with the dashboard content row in the main column. */}
-      <nav className="flex flex-1 flex-col gap-1">
+      <div className="flex items-center gap-2.5 px-2.5 pt-1 pb-[18px]">
+        <span aria-hidden="true" className="brand-tile" />
+        <span className="text-theme-text text-[17px] font-bold tracking-[-0.01em]">Itervox</span>
+      </div>
+      <nav className="flex flex-col gap-0.5">
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.to}
@@ -103,8 +105,10 @@ function SidebarContent() {
         ))}
       </nav>
 
-      {/* Theme toggle pinned to bottom */}
-      <ThemeToggle />
+      {/* Theme toggle pinned to the bottom */}
+      <div className="mt-auto pt-6">
+        <ThemeToggle />
+      </div>
     </>
   );
 }
@@ -147,9 +151,9 @@ export function AppShell() {
   });
 
   return (
-    <div className="flex min-h-screen">
-      {/* Desktop sidebar — hidden on mobile */}
-      <aside className="bg-theme-bg-soft border-theme-line fixed top-0 bottom-0 left-0 z-40 hidden w-16 flex-col items-center gap-2 border-r py-4 md:flex">
+    <div className="min-h-screen md:pl-[232px]">
+      {/* Desktop sidebar: a labelled glass column, inset from the window. */}
+      <aside className="glass-shell fixed top-4 bottom-4 left-4 z-40 hidden w-[200px] flex-col overflow-y-auto px-2.5 py-4 md:flex">
         <SidebarContent />
       </aside>
 
@@ -169,8 +173,7 @@ export function AppShell() {
         }`}
       >
         <div
-          className="absolute inset-0"
-          style={{ background: 'rgba(0,0,0,0.5)' }}
+          className="glass-scrim absolute inset-0"
           aria-label="Close navigation"
           role="button"
           tabIndex={0}
@@ -180,21 +183,21 @@ export function AppShell() {
           }}
         />
         <aside
-          className={`bg-theme-bg-soft border-theme-line absolute top-0 bottom-0 left-0 flex w-16 flex-col items-center gap-2 border-r py-4 transition-transform duration-200 ${
-            mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+          className={`glass-sheet absolute top-2.5 bottom-2.5 left-2.5 flex w-[250px] max-w-[calc(100vw-40px)] flex-col overflow-y-auto px-2.5 py-5 transition-transform duration-200 ${
+            mobileNavOpen ? 'translate-x-0' : '-translate-x-[110%]'
           }`}
         >
           <SidebarContent />
         </aside>
       </div>
 
-      <main className="flex min-w-0 flex-1 flex-col md:ml-16">
+      <main className="flex min-w-0 flex-col px-3 pb-6 md:pr-4 md:pl-0">
         <AppHeader
           onMenuClick={() => {
             setMobileNavOpen(true);
           }}
         />
-        <div className="flex-1 p-3 md:p-6">
+        <div className="min-w-0 flex-1 pt-4">
           <Outlet />
         </div>
       </main>

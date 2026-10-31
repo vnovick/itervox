@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Changed
+
+- **Dashboard visual refresh: shared surfaces and shell.** The dashboard has a new look in both themes: translucent, blurred panels over a soft three-colour glow, a labelled sidebar (icons with names, count pills, a **Theme** button), a floating top bar, and rounder sheets for dialogs, slide-overs and the mobile navigation drawer. Every colour, surface, radius and shadow now comes from the design tokens in `web/src/index.css` (`--glass`, `--card`, `--chip`, `--sheet`, `--scrim`, `--subtle`, `--hairline` and the remapped semantic tokens) and the shared UI primitives, which every page inherits; translucent surfaces fall back to opaque ones when the browser lacks `backdrop-filter` or the viewer prefers reduced transparency. The default theme is still dark. Contrast is checked for every text and signal token on every composited surface in both themes, and a new test fails when component or page code adds a raw colour literal.
+
 ---
 
 ## [0.3.0] — Unreleased

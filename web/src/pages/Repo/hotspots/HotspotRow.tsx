@@ -33,7 +33,7 @@ export function HotspotRow({ row }: { row: Row }) {
         {issues.map((id, i) => (
           <span key={id}>
             {i > 0 && ', '}
-            <Link to={logsPath(id)} className="text-theme-accent font-mono hover:underline">
+            <Link to={logsPath(id)} className="text-theme-accent-text font-mono hover:underline">
               {id}
             </Link>
           </span>
@@ -52,7 +52,7 @@ export function HotspotRow({ row }: { row: Row }) {
               >
                 <Link
                   to={logsPath(r.identifier)}
-                  className="text-theme-accent font-mono hover:underline"
+                  className="text-theme-accent-text font-mono hover:underline"
                 >
                   {r.identifier}
                 </Link>
@@ -65,7 +65,7 @@ export function HotspotRow({ row }: { row: Row }) {
                     href={r.prUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-theme-accent ml-auto hover:underline"
+                    className="text-theme-accent-text ml-auto hover:underline"
                   >
                     PR
                   </a>

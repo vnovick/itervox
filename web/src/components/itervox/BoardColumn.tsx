@@ -301,7 +301,7 @@ export default function BoardColumn({
         className={`pointer-events-none absolute inset-0 z-10 rounded-[var(--radius-md)] transition-opacity duration-150 ${
           isOver ? 'opacity-100' : 'opacity-0'
         }`}
-        style={{ background: 'rgba(0,0,0,0.25)' }}
+        style={{ background: 'var(--scrim)' }}
       />
 
       {/* Column header */}

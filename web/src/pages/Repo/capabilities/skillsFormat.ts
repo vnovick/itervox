@@ -24,9 +24,9 @@ export const SECTION_LABELS: Record<SectionKey, string> = {
 };
 
 export const SEVERITY_BG: Record<string, string> = {
-  error: 'bg-red-500/15 text-red-400 border-red-400/40',
-  warn: 'bg-yellow-500/15 text-yellow-400 border-yellow-400/40',
-  info: 'bg-blue-500/15 text-blue-400 border-blue-400/40',
+  error: 'bg-theme-danger-soft text-theme-danger-text border-theme-danger/40',
+  warn: 'bg-theme-warning-soft text-theme-warning-text border-theme-warning/40',
+  info: 'bg-theme-accent-soft text-theme-accent-text border-theme-accent/40',
 };
 
 // Display-time relabeling. The Go scanner's `Source` strings are designed

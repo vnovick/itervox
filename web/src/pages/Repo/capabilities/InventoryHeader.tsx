@@ -21,8 +21,8 @@ export function InventoryHeader({ inventory, scanning, onRescan }: InventoryHead
               role="status"
               className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
                 inventoryStale
-                  ? 'border-yellow-400/40 bg-yellow-500/15 text-yellow-400'
-                  : 'border-emerald-400/40 bg-emerald-500/15 text-emerald-400'
+                  ? 'border-theme-warning/40 bg-theme-warning-soft text-theme-warning-text'
+                  : 'border-theme-success/40 bg-theme-success-soft text-theme-success-text'
               }`}
             >
               {inventoryStale ? 'Stale' : 'Tracked files current'}

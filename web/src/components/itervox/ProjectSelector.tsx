@@ -118,14 +118,7 @@ export function ProjectSelector() {
 
       {/* GitHub notice — no repositories selected means all repos are tracked */}
       {showGitHubNotice && (
-        <div
-          className="flex items-start gap-2.5 rounded-[var(--radius-md)] px-4 py-3 text-xs"
-          style={{
-            background: 'rgba(245,158,11,0.08)',
-            border: '1px solid rgba(245,158,11,0.2)',
-            color: 'var(--warning-text)',
-          }}
-        >
+        <div className="bg-theme-warning-soft text-theme-warning-text flex items-start gap-2.5 rounded-[var(--radius-md)] px-4 py-3 text-xs">
           <span className="mt-px flex-shrink-0">⚠</span>
           <span>
             No GitHub projects are selected — all repositories will be tracked. To filter to

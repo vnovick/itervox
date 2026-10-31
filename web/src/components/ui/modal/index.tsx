@@ -45,17 +45,18 @@ export const Modal: React.FC<ModalProps> = ({
 
   if (!isOpen) return null;
 
+  // The sheet recipe (.glass-sheet): frosted surface, radius 28, deep shadow.
   const contentClasses = isFullscreen
-    ? 'w-full h-full'
-    : 'relative w-full max-h-[85vh] overflow-y-auto rounded-[var(--radius-lg)]';
+    ? 'w-full h-full rounded-none'
+    : 'relative w-full max-h-[85vh] overflow-y-auto';
 
   return (
-    <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto">
+    <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto p-4">
       {!isFullscreen && (
         // Backdrop: a mouse shortcut to close; Escape closes via useDialogLayer.
         <div
           role="presentation"
-          className="fixed inset-0 h-full w-full bg-black/50 backdrop-blur-sm"
+          className="glass-scrim fixed inset-0 h-full w-full"
           onClick={onClose}
         ></div>
       )}
@@ -66,8 +67,7 @@ export const Modal: React.FC<ModalProps> = ({
         aria-modal="true"
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
-        className={`${contentClasses} ${className ?? ''} border-theme-line bg-theme-bg-elevated border`}
-        style={{ boxShadow: 'var(--shadow-lg)' }}
+        className={`glass-sheet text-theme-text ${contentClasses} ${className ?? ''}`}
         onClick={(e) => {
           e.stopPropagation();
         }}
@@ -76,11 +76,12 @@ export const Modal: React.FC<ModalProps> = ({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="bg-theme-bg-soft text-theme-muted absolute top-3 right-3 z-999 flex h-8 w-8 items-center justify-center rounded-full transition-colors sm:top-4 sm:right-4"
+            className="glass-chip text-theme-text-secondary hover:text-theme-text absolute top-4 right-4 z-999 flex h-9 w-9 items-center justify-center transition-colors sm:top-5 sm:right-5"
           >
             <svg
-              width="24"
-              height="24"
+              aria-hidden="true"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
               xmlns="http://www.w3.org/2000/svg"

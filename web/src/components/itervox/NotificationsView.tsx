@@ -105,7 +105,7 @@ function toneStripeClass(tone: 'info' | 'warning' | 'danger'): string {
     case 'danger':
       return 'bg-theme-danger';
     case 'warning':
-      return 'bg-amber-500';
+      return 'bg-theme-dot-warn';
     case 'info':
     default:
       return 'bg-theme-accent';

@@ -66,7 +66,7 @@ export function AutomationActivityCard({
         <Sparkline
           values={data.sparkValues}
           height={32}
-          color="var(--accent-color, #4f46e5)"
+          color="var(--accent)"
           ariaLabel={`Last ${String(SPARKLINE_DAYS)} days of fires for ${automation.id}`}
         />
 
@@ -133,7 +133,9 @@ function EnabledChip({ enabled }: { enabled: boolean }) {
   return (
     <span
       className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
-        enabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+        enabled
+          ? 'bg-theme-success-soft text-theme-success-text'
+          : 'bg-theme-warning-soft text-theme-warning-text'
       }`}
     >
       {enabled ? 'enabled' : 'disabled'}
@@ -143,14 +145,14 @@ function EnabledChip({ enabled }: { enabled: boolean }) {
 
 function StatusDot({ status, live }: { status: string; live: boolean }) {
   const color = live
-    ? 'bg-sky-400 animate-pulse'
+    ? 'bg-theme-accent animate-pulse'
     : status === 'succeeded'
-      ? 'bg-emerald-400'
+      ? 'bg-theme-dot-ok'
       : status === 'failed'
-        ? 'bg-rose-500'
+        ? 'bg-theme-danger'
         : status === 'cancelled'
-          ? 'bg-zinc-400'
-          : 'bg-amber-400';
+          ? 'bg-theme-dot-idle'
+          : 'bg-theme-dot-warn';
   return <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
 }
 

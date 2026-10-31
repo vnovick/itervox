@@ -26,10 +26,10 @@ export function InputRequiredPanel({
 
   if (issue.orchestratorState === 'pending_input_resume') {
     return (
-      <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+      <div className="border-theme-warning/30 bg-theme-warning-soft space-y-3 rounded-lg border p-4">
         <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
-          <h4 className="text-sm font-semibold text-orange-400">Reply received</h4>
+          <span className="bg-theme-dot-warn h-2.5 w-2.5 rounded-full" />
+          <h4 className="text-theme-warning-text text-sm font-semibold">Reply received</h4>
         </div>
         <p className="text-theme-text-secondary text-sm">
           Itervox has your reply and is waiting to resume the agent.
@@ -42,10 +42,10 @@ export function InputRequiredPanel({
   if (issue.orchestratorState !== 'input_required') return null;
 
   return (
-    <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+    <div className="border-theme-warning/30 bg-theme-warning-soft space-y-3 rounded-lg border p-4">
       <div className="flex items-center gap-2">
-        <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
-        <h4 className="text-sm font-semibold text-orange-400">Agent needs your input</h4>
+        <span className="bg-theme-dot-warn h-2.5 w-2.5 rounded-full" />
+        <h4 className="text-theme-warning-text text-sm font-semibold">Agent needs your input</h4>
       </div>
       {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
       <RequireScope

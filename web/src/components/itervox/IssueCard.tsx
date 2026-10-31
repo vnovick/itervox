@@ -77,9 +77,9 @@ function statusDotClass(state: string): string {
     case 'retrying':
       return 'bg-theme-danger';
     case 'input_required':
-      return 'bg-orange-400';
+      return 'bg-theme-dot-warn';
     case 'pending_input_resume':
-      return 'bg-orange-400';
+      return 'bg-theme-dot-warn';
     default:
       return 'bg-theme-muted';
   }
@@ -232,7 +232,7 @@ export default memo(function IssueCard({
                   ? `Input requested ${formatAge(inputRequiredAgeMinutes)} ago — likely abandoned`
                   : 'Input request is stale — likely abandoned'
               }
-              className="flex-shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+              className="bg-theme-warning-soft text-theme-warning-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
             >
               ⚠ Stale
             </span>
@@ -247,7 +247,7 @@ export default memo(function IssueCard({
               title={`Retry attempt ${String(retryAttempt)}${
                 maxRetries && maxRetries > 0 ? ` of ${String(maxRetries)}` : ' (unlimited)'
               }`}
-              className="flex-shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+              className="bg-theme-warning-soft text-theme-warning-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
             >
               {`↻ retry ${String(retryAttempt)}${
                 maxRetries && maxRetries > 0 ? `/${String(maxRetries)}` : ''
@@ -268,7 +268,7 @@ export default memo(function IssueCard({
                 e.stopPropagation();
                 onSelect(issue.identifier);
               }}
-              className="flex-shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/25"
+              className="bg-theme-success-soft text-theme-success-text hover:bg-theme-success-soft flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
             >
               📝 {commentCount} {commentCount === 1 ? 'review' : 'reviews'}
             </button>
@@ -283,7 +283,7 @@ export default memo(function IssueCard({
             <span
               data-testid="issue-card-syncing-badge"
               title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-              className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+              className="bg-theme-accent-soft text-theme-accent-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
             >
               ⟳ Syncing
             </span>
@@ -379,12 +379,12 @@ export default memo(function IssueCard({
 
         {/* State badge — only when active */}
         {isInputRequired && (
-          <span className="rounded bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
+          <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px] font-medium">
             Needs Input
           </span>
         )}
         {isPendingInputResume && (
-          <span className="rounded bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
+          <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px] font-medium">
             Resuming
           </span>
         )}

@@ -67,7 +67,7 @@ export function InputReplyBox({
           placeholder="Type your reply… (will be posted as a comment to the tracker)"
           aria-label={`Reply to the agent${suffix}`}
           rows={4}
-          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
         />
       )}
       <div className="flex items-center gap-2">

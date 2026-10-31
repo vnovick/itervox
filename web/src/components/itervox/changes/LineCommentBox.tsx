@@ -62,7 +62,7 @@ export function LineCommentBox({
         }}
         rows={3}
         placeholder="What should change here?"
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-2 py-1.5 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-2 py-1.5 text-sm focus:ring-1 focus:outline-none"
       />
       <fieldset className="flex flex-wrap gap-3 text-xs">
         <legend className="sr-only">Destination</legend>

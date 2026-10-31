@@ -8,8 +8,8 @@ import { fmtSeen } from '../prompts/promptVersionGroups';
 
 const BADGE =
   'inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase';
-const PASS_STYLE = 'border-emerald-400/40 bg-emerald-500/15 text-emerald-400';
-const FAIL_STYLE = 'border-red-400/40 bg-red-500/15 text-red-400';
+const PASS_STYLE = 'border-theme-success/40 bg-theme-success-soft text-theme-success-text';
+const FAIL_STYLE = 'border-theme-danger/40 bg-theme-danger-soft text-theme-danger-text';
 
 const DIGEST_SOURCE_LABEL: Record<string, string> = {
   live: 'computed by the live run',
@@ -25,7 +25,9 @@ export function EvalCaseRow({ c }: { c: RepoEvalCase }) {
           {c.pass ? 'pass' : 'fail'}
         </span>
         {c.regression && (
-          <span className={`${BADGE} border-orange-400/40 bg-orange-500/15 text-orange-400`}>
+          <span
+            className={`${BADGE} border-theme-warning/40 bg-theme-warning-soft text-theme-warning-text`}
+          >
             regression
           </span>
         )}
@@ -49,7 +51,7 @@ export function EvalCaseRow({ c }: { c: RepoEvalCase }) {
         )}
       </p>
       {c.regression && c.previousDigest && (
-        <p className="mt-1 text-[11px] text-orange-400">
+        <p className="text-theme-warning-text mt-1 text-[11px]">
           Passed on <code className="font-mono">{shortDigest(c.previousDigest)}</code>
           {c.previousAt && ` (${fmtSeen(c.previousAt)})`}, fails on{' '}
           <code className="font-mono">{shortDigest(c.promptDigest ?? '')}</code>.

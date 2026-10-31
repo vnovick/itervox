@@ -65,7 +65,7 @@ export function PromptVersionTable({
                       onClick={() => {
                         onSelect(active ? null : v.promptDigest);
                       }}
-                      className="text-theme-accent font-mono hover:underline"
+                      className="text-theme-accent-text font-mono hover:underline"
                     >
                       {shortDigest(v.promptDigest)}
                     </button>

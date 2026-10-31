@@ -74,7 +74,7 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
           className="flex-1 rounded-lg border-2 px-3 py-2.5 text-left"
           style={{
             borderColor: 'var(--accent)',
-            background: 'rgba(99,102,241,0.06)',
+            background: 'var(--accent-soft)',
           }}
         >
           <div className="text-theme-text text-[13px] font-semibold">SSH</div>
@@ -89,10 +89,7 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
         >
           <div className="flex items-center gap-1.5">
             <span className="text-theme-text text-[13px] font-semibold">Docker</span>
-            <span
-              className="rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase"
-              style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8' }}
-            >
+            <span className="pill pill-accent px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
               Soon
             </span>
           </div>

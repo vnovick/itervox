@@ -213,7 +213,7 @@ export function ListView({
                       <span
                         data-testid="issue-row-syncing-badge"
                         title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-                        className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+                        className="bg-theme-accent-soft text-theme-accent-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
                       >
                         ⟳ Syncing
                       </span>
@@ -232,8 +232,8 @@ export function ListView({
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                           b === 'codex'
-                            ? 'bg-emerald-500/15 text-emerald-400'
-                            : 'bg-orange-500/15 text-orange-400'
+                            ? 'bg-theme-success-soft text-theme-success-text'
+                            : 'bg-theme-warning-soft text-theme-warning-text'
                         }`}
                       >
                         {b === 'codex' ? 'Codex' : 'Claude'}

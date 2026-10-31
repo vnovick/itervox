@@ -15,14 +15,16 @@ export interface BannerProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * CORE-094 — an inline notice. `danger` is announced assertively
- * (role=alert); the other tones politely (role=status).
+ * CORE-094 — an inline notice: a rounded soft tint of its tone. `danger` is
+ * announced assertively (role=alert); the other tones politely
+ * (role=status). For a notice pinned over scrolling content use the
+ * `.banner-warn` / `.banner-danger` classes (opaque-backed) instead.
  */
 export function Banner({ tone = 'info', className, ...rest }: BannerProps) {
   return (
     <div
       role={tone === 'danger' ? 'alert' : 'status'}
-      className={cn('px-4 py-1.5 text-xs', TONE[tone], className)}
+      className={cn('rounded-[var(--radius-md)] px-4 py-2 text-[13px]', TONE[tone], className)}
       {...rest}
     />
   );

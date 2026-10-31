@@ -33,9 +33,9 @@ function GenerateVerifySkill() {
 }
 
 const STATUS_STYLE: Record<RepoReadinessCheck['status'], string> = {
-  pass: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-400',
-  warn: 'border-yellow-400/40 bg-yellow-500/15 text-yellow-400',
-  fail: 'border-red-400/40 bg-red-500/15 text-red-400',
+  pass: 'border-theme-success/40 bg-theme-success-soft text-theme-success-text',
+  warn: 'border-theme-warning/40 bg-theme-warning-soft text-theme-warning-text',
+  fail: 'border-theme-danger/40 bg-theme-danger-soft text-theme-danger-text',
 };
 
 function ReadinessRow({ check }: { check: RepoReadinessCheck }) {

@@ -284,7 +284,7 @@ export default function Timeline() {
             !hasAnyAutomationRun
               ? 'border-theme-line text-theme-muted/60 cursor-not-allowed'
               : automationOnly
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                ? 'border-theme-success/40 bg-theme-success-soft text-theme-success-text'
                 : 'border-theme-line text-theme-muted hover:text-theme-text'
           }`}
         >

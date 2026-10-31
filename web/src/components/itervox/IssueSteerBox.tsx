@@ -43,7 +43,7 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
           }}
           rows={2}
           placeholder="Message the running agent…"
-          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
         />
         <div className="flex justify-end">
           <button

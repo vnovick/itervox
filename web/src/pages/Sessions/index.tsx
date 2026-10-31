@@ -117,7 +117,7 @@ export default function Sessions() {
             <h1 className="text-theme-text text-sm font-semibold">
               Sessions{' '}
               {waiting > 0 && (
-                <span data-testid="sessions-waiting" className="text-orange-400">
+                <span data-testid="sessions-waiting" className="text-theme-warning-text">
                   · {waiting} waiting
                 </span>
               )}

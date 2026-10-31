@@ -159,14 +159,14 @@ describe('IssueCard', () => {
   it('shows orange status dot for input_required issue', () => {
     const inputIssue = { ...baseIssue, orchestratorState: 'input_required' as const };
     const { container } = render(<IssueCard issue={inputIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-orange-400');
+    const dot = container.querySelector('.bg-theme-dot-warn');
     expect(dot).toBeInTheDocument();
   });
 
   it('shows orange status dot for pending_input_resume issue', () => {
     const pendingIssue = { ...baseIssue, orchestratorState: 'pending_input_resume' as const };
     const { container } = render(<IssueCard issue={pendingIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-orange-400');
+    const dot = container.querySelector('.bg-theme-dot-warn');
     expect(dot).toBeInTheDocument();
   });
 

@@ -173,16 +173,16 @@ export function dotStyle(status: NormalisedSession['status']): React.CSSProperti
     case 'live':
       return {
         background: 'var(--success)',
-        boxShadow: '0 0 0 4px rgba(34,197,94,0.2)',
+        boxShadow: '0 0 0 4px var(--success-soft)',
       };
     case 'succeeded':
       return { background: 'var(--accent)' };
     case 'failed':
       return { background: 'var(--danger)' };
     case 'stalled':
-      return { background: 'var(--warning, #f59e0b)' };
+      return { background: 'var(--warning)' };
     case 'input_required':
-      return { background: 'var(--warning, #f59e0b)', boxShadow: '0 0 0 4px rgba(245,158,11,0.2)' };
+      return { background: 'var(--warning)', boxShadow: '0 0 0 4px var(--warning-soft)' };
     default:
       return { background: 'var(--muted)' };
   }

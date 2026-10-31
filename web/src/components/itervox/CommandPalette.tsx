@@ -135,7 +135,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           </Button>
           <Button
             ref={confirmRef}
-            variant="danger"
+            variant="destructive"
             size="sm"
             onClick={() => {
               pending.run();

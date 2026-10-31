@@ -74,7 +74,7 @@ export function PendingResumePanel({ onSelect }: { onSelect?: (identifier: strin
         <div>
           <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold">
             Resuming
-            <span className="rounded-full bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-bold text-orange-400">
+            <span className="bg-theme-warning-soft text-theme-warning-text rounded-full px-1.5 py-0.5 text-[10px] font-bold">
               {q ? `${String(filtered.length)}/${String(resuming.length)}` : resuming.length}
             </span>
           </h2>

@@ -30,7 +30,7 @@ export function ServerDownScreen({ onRetry }: { onRetry: () => void }) {
   }, []);
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="bg-theme-bg-soft border-theme-line max-w-md rounded-[var(--radius-lg)] border p-6 text-center shadow-xl">
+      <div className="glass-sheet max-w-md p-7 text-center">
         <h1 className="mb-2 text-xl font-semibold">Can't reach the daemon</h1>
         <p className="text-theme-muted mb-4 text-sm">
           <code className="font-mono text-xs">/api/v1/health</code> is unreachable. Check that{' '}

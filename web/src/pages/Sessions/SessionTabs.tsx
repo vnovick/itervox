@@ -99,7 +99,7 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
               {waiting ? (
                 <span
                   data-testid="session-badge-input"
-                  className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-semibold text-orange-400"
+                  className="bg-theme-warning-soft text-theme-warning-text rounded-full px-2 py-0.5 text-[10px] font-semibold"
                 >
                   needs input
                 </span>

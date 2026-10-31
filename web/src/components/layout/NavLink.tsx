@@ -15,6 +15,7 @@ interface NavLinkProps {
   badgeLabel?: string;
 }
 
+/** A labelled sidebar row (`.nav-item` in index.css): icon, label, count. */
 export function NavLink({
   to,
   icon,
@@ -30,28 +31,18 @@ export function NavLink({
       to={to}
       aria-label={badge > 0 ? `${label}, ${String(badge)} ${badgeLabel}` : label}
       aria-current={match ? 'page' : undefined}
-      title={label}
       data-active={match ? 'true' : undefined}
-      style={
-        match
-          ? {
-              background: 'var(--accent-soft)',
-              color: 'var(--accent-strong)',
-              border: '1px solid var(--accent)',
-            }
-          : { color: 'var(--text-secondary)', border: '1px solid transparent' }
-      }
-      className="relative flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]"
+      className="nav-item"
     >
-      <span aria-hidden="true" className="flex h-4 w-4 items-center justify-center">
+      <span
+        aria-hidden="true"
+        className="flex h-[18px] w-[18px] shrink-0 items-center justify-center"
+      >
         {icon}
       </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge > 0 && (
-        <span
-          data-testid="nav-badge"
-          aria-hidden="true"
-          className="bg-theme-warning absolute -top-1 -right-1 min-w-4 rounded-full px-1 text-center text-[10px] leading-4 font-bold text-black"
-        >
+        <span data-testid="nav-badge" aria-hidden="true" className="nav-count">
           {badge > 99 ? '99+' : badge}
         </span>
       )}

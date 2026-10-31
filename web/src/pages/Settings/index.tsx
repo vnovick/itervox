@@ -255,7 +255,10 @@ export default function Settings() {
         {/* #200 — the inventory is analysis, not a setting. */}
         <p className="text-theme-muted text-sm">
           Skills inventory moved to{' '}
-          <Link to="/repo#capabilities" className="text-theme-accent hover:underline">
+          <Link
+            to="/repo#capabilities"
+            className="text-theme-accent-text underline underline-offset-2"
+          >
             Repo Analysis
           </Link>
           .

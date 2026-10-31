@@ -67,41 +67,26 @@ export function ConfirmButton({
 
   if (confirming) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="text-theme-muted text-xs">Are you sure?</span>
+      <div className="glass-card inline-flex items-center gap-2 rounded-[14px] py-1 pr-1 pl-3">
+        <span className="text-theme-text-secondary text-xs">Are you sure?</span>
         <button
           ref={confirmRef}
+          type="button"
           onClick={() => {
             if (isPending) return;
             onConfirm();
           }}
           disabled={isPending}
-          style={{
-            padding: '4px 10px',
-            borderRadius: 4,
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: isPending ? 'wait' : 'pointer',
-            background: 'var(--danger)',
-            color: '#fff',
-            border: 'none',
-          }}
+          className="bg-theme-danger rounded-[10px] px-2.5 py-1 text-xs font-semibold text-white disabled:cursor-wait"
         >
           {isPending ? pendingLabel : confirmLabel}
         </button>
         <button
+          type="button"
           onClick={() => {
             setConfirming(false);
           }}
-          style={{
-            padding: '4px 10px',
-            borderRadius: 4,
-            fontSize: 12,
-            cursor: 'pointer',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            border: '1px solid var(--line)',
-          }}
+          className="border-theme-line-strong bg-theme-panel text-theme-text rounded-[10px] border px-2.5 py-1 text-xs"
         >
           Cancel
         </button>
@@ -112,22 +97,13 @@ export function ConfirmButton({
   return (
     <button
       ref={triggerRef}
+      type="button"
       aria-label={ariaLabel}
       onClick={() => {
         setConfirming(true);
       }}
       disabled={isPending}
-      style={{
-        padding: '6px 14px',
-        borderRadius: 4,
-        fontSize: 12,
-        fontWeight: 500,
-        cursor: isPending ? 'wait' : 'pointer',
-        background: 'transparent',
-        color: 'var(--danger-text)',
-        border: '1px solid var(--danger)',
-        opacity: isPending ? 0.5 : 1,
-      }}
+      className="bg-theme-danger-soft text-theme-danger-text rounded-full px-3.5 py-1.5 text-xs font-medium hover:brightness-105 disabled:cursor-wait disabled:opacity-50"
     >
       {label}
     </button>

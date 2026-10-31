@@ -31,7 +31,8 @@ export async function bootApp(page: Page, options: BootOptions): Promise<BootRes
   const hashAt = route.indexOf('#');
   const path = hashAt < 0 ? route : route.slice(0, hashAt);
   const hash = hashAt < 0 ? '' : route.slice(hashAt);
-  const target = token ? `${path}?token=${encodeURIComponent(token)}${hash}` : route;
+  const sep = path.includes('?') ? '&' : '?';
+  const target = token ? `${path}${sep}token=${encodeURIComponent(token)}${hash}` : route;
   await page.goto(target);
 
   return { api };

@@ -25,7 +25,7 @@ function TranscriptItem({ entry }: { entry: TranscriptEntry }) {
       <span
         className={
           entry.role === 'user' && !tool
-            ? 'w-12 shrink-0 font-mono font-semibold text-orange-400'
+            ? 'text-theme-warning-text w-12 shrink-0 font-mono font-semibold'
             : 'text-theme-muted w-12 shrink-0 font-mono'
         }
       >

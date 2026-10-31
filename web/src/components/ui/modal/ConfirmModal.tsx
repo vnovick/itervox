@@ -23,9 +23,14 @@ interface ConfirmModalProps {
 }
 
 const VARIANT_CLASSES = {
-  danger: 'bg-theme-danger text-white hover:opacity-90',
-  primary: 'bg-theme-accent text-white hover:opacity-90',
+  danger: 'bg-theme-danger text-white hover:brightness-110',
+  primary: 'bg-theme-accent text-white hover:brightness-110',
 } as const;
+
+// A 40px button with 12px corners (the Button primitive's `lg` size, kept
+// as plain classes so this module does not pull in tailwind-merge).
+const BUTTON =
+  'inline-flex h-10 items-center justify-center rounded-[var(--radius-sm)] px-4 text-[15px] font-medium transition-[filter,background-color,opacity] disabled:opacity-50';
 
 /**
  * Standard confirmation modal with title, description, Cancel + Confirm buttons.
@@ -50,24 +55,28 @@ export function ConfirmModal({
       onClose={onClose}
       showCloseButton={false}
       padded
-      className="max-w-sm"
+      className="max-w-md"
       ariaLabelledBy={titleId}
     >
-      <p id={titleId} className="text-theme-text text-sm font-semibold">
+      <p id={titleId} className="text-theme-text text-[17px] font-semibold tracking-[-0.01em]">
         {title}
       </p>
-      {description && <p className="text-theme-muted mt-1 text-xs">{description}</p>}
+      {description && (
+        <p className="text-theme-text-secondary mt-2.5 text-sm leading-relaxed">{description}</p>
+      )}
       <ModalFooter>
         <button
+          type="button"
           onClick={onClose}
-          className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3.5 py-1.5 text-xs font-medium transition-colors hover:opacity-80"
+          className={`${BUTTON} glass-chip text-theme-text hover:bg-theme-panel-strong`}
         >
           {cancelLabel}
         </button>
         <button
+          type="button"
           onClick={onConfirm}
           disabled={isPending}
-          className={`rounded-[var(--radius-sm)] px-3.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 ${VARIANT_CLASSES[variant]}`}
+          className={`${BUTTON} font-semibold ${VARIANT_CLASSES[variant]}`}
         >
           {isPending ? (pendingLabel ?? confirmLabel) : confirmLabel}
         </button>

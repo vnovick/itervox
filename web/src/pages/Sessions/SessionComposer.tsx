@@ -120,7 +120,7 @@ export function SessionComposer({ session, inlineInput, tmux }: SessionComposerP
         rows={3}
         aria-label={`Message to the agent on ${label}`}
         placeholder="Message the running agent…"
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
       />
       <div className="flex items-center gap-3">
         <Button

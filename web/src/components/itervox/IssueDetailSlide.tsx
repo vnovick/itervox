@@ -176,12 +176,7 @@ export default function IssueDetailSlide() {
                   triggerAIReviewMutation.mutate(issue.identifier);
                 }}
                 disabled={triggerAIReviewMutation.isPending}
-                className="rounded-[var(--radius-sm)] px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80"
-                style={{
-                  background: 'rgba(168,85,247,0.12)',
-                  borderColor: 'rgba(168,85,247,0.2)',
-                  color: 'rgb(168,85,247)',
-                }}
+                className="bg-theme-purple-soft text-theme-purple-text rounded-[var(--radius-sm)] px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80"
                 title={`Dispatch reviewer (${reviewerProfile} profile)`}
               >
                 {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
@@ -317,7 +312,7 @@ export default function IssueDetailSlide() {
                             {c.author || 'Unknown'}
                           </span>
                           {showQuestionMarker && i === latestBotCommentIdx && (
-                            <span className="rounded-full bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
+                            <span className="bg-theme-warning-soft text-theme-warning-text rounded-full px-1.5 py-0.5 text-[10px] font-medium">
                               {issue.orchestratorState === 'input_required'
                                 ? 'agent question'
                                 : 'reply received'}

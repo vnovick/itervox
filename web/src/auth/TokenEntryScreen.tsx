@@ -63,7 +63,7 @@ export function TokenEntryScreen() {
           e.preventDefault();
           void submitToken();
         }}
-        className="bg-theme-bg-soft border-theme-line w-full max-w-md rounded-[var(--radius-lg)] border p-6 shadow-xl"
+        className="glass-sheet w-full max-w-md p-7"
       >
         <h1 className="mb-2 text-xl font-semibold">Sign in to Itervox</h1>
         <p className="text-theme-muted mb-4 text-sm">
@@ -103,7 +103,7 @@ export function TokenEntryScreen() {
         {error && (
           <div
             role="alert"
-            className="mt-3 rounded-[var(--radius-sm)] border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-400"
+            className="border-theme-danger/40 bg-theme-danger-soft text-theme-danger-text mt-3 rounded-[var(--radius-sm)] border px-3 py-2 text-sm"
           >
             {error}
           </div>

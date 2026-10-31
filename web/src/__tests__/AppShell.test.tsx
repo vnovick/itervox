@@ -73,4 +73,26 @@ describe('AppShell', () => {
       window.matchMedia = original;
     }
   });
+
+  // Visual refresh — the labelled glass sidebar and the glass drawer.
+  it('renders the glass sidebar with the wordmark, labelled links and the Theme button', () => {
+    const { container } = renderAppShell();
+    const aside = container.querySelector('aside.glass-shell');
+    expect(aside).not.toBeNull();
+    if (!aside) return;
+    expect(aside).toHaveTextContent('Itervox');
+    for (const label of ['Dashboard', 'Timeline', 'Sessions', 'Logs', 'Settings']) {
+      expect(aside).toHaveTextContent(label);
+    }
+    expect(aside.querySelector('button.glass-chip')).toHaveTextContent('Theme');
+  });
+
+  it('the drawer is a glass sheet over a scrim', () => {
+    renderAppShell();
+    const drawer = screen.getByRole('dialog', { name: 'Navigation', hidden: true });
+    expect(drawer.querySelector('aside')).toHaveClass('glass-sheet');
+    expect(screen.getByRole('button', { name: 'Close navigation', hidden: true })).toHaveClass(
+      'glass-scrim',
+    );
+  });
 });

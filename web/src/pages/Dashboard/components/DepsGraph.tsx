@@ -179,12 +179,12 @@ export function layoutDependencyGraph(
           : undefined,
         style: {
           stroke: isCycleEdge
-            ? 'var(--danger, #ef4444)'
+            ? 'var(--danger)'
             : edge.resolved
-              ? 'var(--text-muted)'
+              ? 'var(--muted)'
               : edge.sourceKnown
                 ? 'var(--accent)'
-                : 'var(--warning, #f59e0b)',
+                : 'var(--warning)',
           strokeWidth: isCycleEdge ? 2.5 : edge.resolved ? 1 : 2,
           strokeDasharray: isCycleEdge ? undefined : isInferred ? '4 2' : undefined,
           opacity: edge.resolved ? 0.55 : 0.9,
@@ -682,7 +682,7 @@ function DepsEdgeLegend() {
       <div className="flex items-center gap-1.5">
         <span
           className="inline-block h-[3px] w-6"
-          style={{ background: 'var(--danger, #ef4444)' }}
+          style={{ background: 'var(--danger)' }}
           aria-hidden
         />
         <span>cycle</span>

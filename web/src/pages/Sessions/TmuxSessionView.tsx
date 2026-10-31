@@ -76,7 +76,7 @@ export function TmuxControls({ session }: { session: SessionRow }) {
         rows={2}
         aria-label="Text to type into the session"
         placeholder="Type into the session…"
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
       />
       <div className="flex flex-wrap items-center gap-2">
         <Button

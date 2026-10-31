@@ -75,7 +75,7 @@ export function RecommendationRow({ issue, onApplyFix, fixPending }: Recommendat
             title={issue.Fix.Destructive ? 'Destructive — confirms before running' : 'Apply fix'}
             className={`flex-shrink-0 rounded border px-2 py-1 text-[10px] font-semibold disabled:opacity-50 ${
               issue.Fix.Destructive
-                ? 'border-red-400/40 text-red-400 hover:bg-red-500/10'
+                ? 'border-theme-danger/40 text-theme-danger-text hover:bg-theme-danger-soft'
                 : 'border-theme-line text-theme-text hover:bg-[var(--bg-soft)]'
             }`}
           >
