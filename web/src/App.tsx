@@ -1,4 +1,11 @@
-import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Outlet,
+  Navigate,
+  useLocation,
+} from 'react-router';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useItervoxSSE } from './hooks/useItervoxSSE';
 import {
@@ -34,6 +41,7 @@ import { PageLoader } from './components/common/PageLoader';
 import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
 import { AttentionNotifier } from './components/itervox/AttentionNotifier';
 import { getApiContext, routerBasename } from './auth/apiBase';
+import { isEmbeddedLanding, useEmbedded, useEmbeddedNavigateHook } from './hooks/useEmbeddedShell';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Sessions = lazy(() => import('./pages/Sessions'));
@@ -45,6 +53,8 @@ const RepoAnalysis = lazy(() => import('./pages/Repo'));
 const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
+// The issue view (one issue: what its agent is doing, and its changes).
+const Focus = lazy(() => import('./pages/Focus'));
 const HubPage = lazy(() => import('./pages/Hub'));
 // #231 — the phone layout: the hub's /hub/m and one issue at
 // /hub/p/{project}/m/{issue}.
@@ -118,6 +128,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 // mobile nav drawer's `inert` behavior without needing to also mount the SSE
 // hooks, routes and query client that the default App export wires up.
 export function AppShell() {
+  // Embedded in the desktop app: no sidebar or drawer (the app has its
+  // project rail and a Go menu); the top bar carries the navigation.
+  const embedded = useEmbedded();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
 
@@ -150,6 +163,19 @@ export function AppShell() {
     containerRef: drawerRef,
     lockScroll: false,
   });
+
+  if (embedded) {
+    return (
+      <div className="min-h-screen" data-shell="embedded">
+        <main className="flex min-w-0 flex-col px-3 pb-6 md:px-4">
+          <AppHeader />
+          <div className="min-w-0 flex-1 pt-4">
+            <Outlet />
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen md:pl-[232px]">
@@ -214,6 +240,22 @@ export { buildSnapshotInvalidationFingerprint };
 // CORE-087 — the route table, exported so a test can render it without the
 // SSE hooks. The catch-all 404 is inside AppShell so it keeps the sidebar and
 // header navigation.
+/**
+ * The board, except on an embedded window's first load of "/" (nothing else
+ * asked for in the URL), which lands on the issue view instead.
+ */
+function BoardIndex() {
+  const location = useLocation();
+  if (isEmbeddedLanding(location)) return <Navigate to="/focus" replace />;
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <PageErrorBoundary>
+        <Dashboard />
+      </PageErrorBoundary>
+    </Suspense>
+  );
+}
+
 export function AppRouteTable() {
   return (
     <Routes>
@@ -228,12 +270,13 @@ export function AppRouteTable() {
         }
       />
       <Route element={<AppShell />}>
+        <Route index element={<BoardIndex />} />
         <Route
-          index
+          path="/focus/:identifier?"
           element={
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
-                <Dashboard />
+                <Focus />
               </PageErrorBoundary>
             </Suspense>
           }
@@ -350,6 +393,8 @@ function AppWithSSE() {
   useMultiTabWarning();
   // CORE-079 — ?issue= <-> the global IssueDetailSlide selection.
   useIssueUrlSync();
+  // Embedded: window.__itervoxNavigate for the desktop app's Go menu.
+  useEmbeddedNavigateHook();
 
   const refreshSnapshot = useItervoxStore((s) => s.refreshSnapshot);
   useEffect(() => {

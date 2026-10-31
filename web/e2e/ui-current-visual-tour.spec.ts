@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
 import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
-import { installRunContextData, installTourData } from './fixtures/tourData';
+import { installDiffData, installRunContextData, installTourData } from './fixtures/tourData';
 import {
   activeRunScenario,
   automationsPassScenario,
@@ -110,6 +110,8 @@ interface Stop {
   beforeNavigate?: (api: MockApiHandle) => void;
   /** Capture the viewport only (a dialog over a long page). Default: full page. */
   viewportOnly?: boolean;
+  /** Boot as the desktop app's dashboard window (embedded mode). */
+  embedded?: boolean;
 }
 
 const heading = (name: string | RegExp) => (page: Page) =>
@@ -182,6 +184,66 @@ const pages: Stop[] = [
     route: '/no-such-page',
     scenario: settingsMatrixScenario,
     ready: (p) => expect(p.getByRole('link', { name: 'Back to Home Page' })).toBeVisible(),
+  },
+];
+
+// The issue view, with a file of the Changes column open; and the desktop
+// app's embedded window (no sidebar; the top bar carries the navigation).
+const focusScenario: Scenario = {
+  ...pausable,
+  snapshot: { ...pausable.snapshot, projectName: 'web-app' },
+};
+const runAndDiff = (api: MockApiHandle) => {
+  installRunContextData(api);
+  installDiffData(api);
+};
+const openFirstFile = async (p: Page) => {
+  await p
+    .getByTestId('focus-changes')
+    .getByRole('button', { name: /greeting\.go/ })
+    .first()
+    .click();
+  await expect(p.getByText('return legacyGreeting()')).toBeVisible();
+};
+const issueView: Stop[] = [
+  {
+    name: 'focus',
+    route: '/focus/DEMO-RUN-1',
+    scenario: focusScenario,
+    beforeNavigate: runAndDiff,
+    ready: (p) => expect(p.getByTestId('focus-last-tool')).toBeVisible(),
+    open: openFirstFile,
+  },
+  {
+    name: 'embedded-focus',
+    route: '/',
+    embedded: true,
+    viewportOnly: true,
+    scenario: focusScenario,
+    beforeNavigate: runAndDiff,
+    ready: (p) => expect(p.getByTestId('focus-last-tool')).toBeVisible(),
+    open: openFirstFile,
+  },
+  {
+    name: 'embedded-dashboard',
+    route: '/?view=board',
+    embedded: true,
+    scenario: focusScenario,
+    beforeNavigate: installRunContextData,
+    ready: heading('Autonomous agentic harness'),
+  },
+  {
+    name: 'embedded-more-menu',
+    route: '/settings',
+    embedded: true,
+    viewportOnly: true,
+    scenario: settingsMatrixScenario,
+    beforeNavigate: installTourData,
+    ready: heading('Settings'),
+    open: async (p) => {
+      await p.getByRole('button', { name: 'More' }).click();
+      await expect(p.getByRole('menu', { name: 'All pages' })).toBeVisible();
+    },
   },
 ];
 
@@ -311,10 +373,15 @@ for (const theme of THEMES) {
       await page.addInitScript((t) => window.localStorage.setItem('theme', t), theme);
     });
 
-    for (const stop of [...pages, ...overlays]) {
+    for (const stop of [...pages, ...issueView, ...overlays]) {
       test(`${stop.name} renders`, async ({ page }, info) => {
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(e.message));
+        if (stop.embedded) {
+          await page.addInitScript(() => {
+            window.__ITERVOX_SHELL__ = 'desktop';
+          });
+        }
         await bootApp(page, {
           scenario: stop.scenario,
           route: stop.route,

@@ -272,6 +272,14 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     dash::install_app_menu(app)?;
     let rail_shared = Arc::clone(&shared);
     app.on_menu_event(move |app, event| {
+        // The Go menu: a page of the focused dashboard, in place.
+        if let Some(path) = crate::go_menu::go_menu_path(event.id().as_ref()) {
+            let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
+            let _ = std::thread::Builder::new()
+                .name("itervox-go".into())
+                .spawn(move || dash::go(&app, &shared, path));
+            return;
+        }
         if let Some(cmd) = crate::rail::menu_command(event.id().as_ref()) {
             let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
             let _ = std::thread::Builder::new()

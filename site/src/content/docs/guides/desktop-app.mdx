@@ -166,6 +166,16 @@ The rail is keyboard and screen-reader accessible: <kbd>Tab</kbd> reaches it, th
 
 The rail is a page of the app itself, shown beside the dashboard in the same window but kept apart from it: it has no access to the network or to the app's internals, it never sees a token, and the dashboard gets no new permissions from it.
 
+### Embedded dashboard
+
+In an app window the dashboard drops its own sidebar, since the rail and the menu bar already do that job. It opens on the [issue view](/guides/now-and-changes/#issue-view): what the issue that needs you most is doing now, and its changes. The top bar reads `project · ISSUE` and has **Board**, **Sessions**, **+ New task**, **Commands** (<kbd>⌘K</kbd>) and **More**, a menu of every page; the status chips show when the window is wide enough. **Board** goes to the full board and stays there; a notification's issue link still opens on the board with the issue's detail panel.
+
+The window's initialization script, the one that hands over the token, also marks the page as the app's (only on the daemon's own address). The same dashboard in a browser keeps its sidebar.
+
+### Go menu
+
+The **Go** menu (in the menu bar while a window is open; in each window's menu bar on Linux and Windows) opens a page of the dashboard in the window in front, in place: **Board**, **Issue View**, **Sessions**, **Timeline**, **Logs**, **Agents**, **Automations**, **Rules**, **Repo Analysis**, **Memory**, **Settings**, and **New Task…** (the board with the [New task](/guides/new-task/) form open). The app asks the page to navigate; the page accepts only paths of the dashboard itself. A dashboard served by an older daemon ignores the menu.
+
 ## Sessions window
 
 **Sessions…** in the menu opens one window listing every running agent session of every daemon the app can read — local projects and remote daemons through their tunnels — grouped by daemon. A session waiting for input is badged **needs input** and listed first, and the daemon groups with a waiting session come first; the menu item shows how many are waiting, for example **Sessions… (2 waiting)**. Each daemon reports the sessions on its own host: the app reads its `GET /api/v1/sessions` with the same token it uses for the daemon's state, every few seconds while the window is open. A daemon the app cannot read shows why (for example **token required**); a daemon from a release without the Sessions API says so.

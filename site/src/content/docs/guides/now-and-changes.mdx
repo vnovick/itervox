@@ -52,6 +52,27 @@ unified diff. The diff viewer loads only when you open the tab.
 Diffs are computed by `git` on request, never on the orchestrator's event
 loop, under a 15-second timeout, so a large worktree cannot slow dispatch.
 
+## Issue view
+
+The **issue view** (`/focus`) shows one issue on a page of its own: **Now**
+on the left and **Changes** on the right (stacked on a phone).
+
+- **Now** has the issue's run state and tracker state, its title, the
+  agent's latest step, the last tool call, counters (tool calls, turns, the
+  playbook), the question it waits on with the reply box, and **Steer the
+  run** while it is live.
+- **Changes** is the same file list and diff viewer as the issue detail's
+  Changes tab, with the same comment and review actions.
+
+`/focus` on its own follows the issue that needs you most: an issue
+waiting for your input (the one waiting longest), else the most recently
+started running issue, else the most recently finished run. It says so
+when there is none of these. `/focus/<identifier>` shows that issue. Open
+it from an issue's detail panel with **Open full view**, from the command
+palette (**Issue view**, or <kbd>g</kbd> <kbd>i</kbd>), or the desktop
+app's **Go** menu, where a project's window opens on it (see
+[Dashboard windows](/guides/desktop-app/#embedded-dashboard)).
+
 ## From the API
 
 ```bash
