@@ -14,7 +14,7 @@ describe('plainButtonClass', () => {
   });
 
   it('appends layout extras and the pill shape', () => {
-    const cls = plainButtonClass('primary', 'md', 'w-full', true);
+    const cls = plainButtonClass('primary', 'md', { extra: 'w-full', pill: true });
     expect(cls).toContain('w-full');
     expect(cls).toContain('rounded-full');
     expect(cls).not.toContain('rounded-[var(--radius-sm)]');

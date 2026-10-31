@@ -19,15 +19,21 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
     return null;
   return (
     <section
-      className="border-theme-line bg-theme-bg-soft space-y-2 rounded-[var(--radius-sm)] border p-3"
+      className="glass-card space-y-2 rounded-[22px] px-4 py-3.5"
       data-testid="issue-now-panel"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-theme-text text-xs font-medium tracking-wider uppercase">
+        <h4 className="text-theme-text flex items-center gap-2 text-sm font-semibold">
+          {run?.live && (
+            <span
+              aria-hidden="true"
+              className="status-dot dot-ok ring-theme-success-soft ring-[3px]"
+            />
+          )}
           {run?.live ? 'Now' : 'Last run'}
         </h4>
         {run && (
-          <span className="text-theme-muted text-xs">
+          <span className="text-theme-text-secondary text-xs">
             {[
               run.profile,
               run.backend,
@@ -47,17 +53,17 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           <span className="text-theme-muted"> (ITERVOX_PORT)</span>
         </p>
       ) : null}
-      {run?.currentStep && <p className="text-theme-text text-sm">{run.currentStep}</p>}
+      {run?.currentStep && (
+        <p className="text-theme-text text-sm leading-[1.45]">{run.currentStep}</p>
+      )}
       {run?.lastToolCall && (
-        <p className="text-xs" data-testid="now-last-tool">
-          <span className="text-theme-muted">Last tool: </span>
-          <span className="text-theme-text font-medium">{run.lastToolCall.name}</span>
+        <p className="code-line" data-testid="now-last-tool">
+          <span className="sr-only">Last tool: </span>
+          <span className="font-semibold">{run.lastToolCall.name}</span>
           {run.lastToolCall.target && (
-            <code className="text-theme-text-secondary ml-1 font-mono break-all">
-              {run.lastToolCall.target}
-            </code>
+            <code className="ml-1 break-all">· {run.lastToolCall.target}</code>
           )}
-          <span className="text-theme-muted"> · {run.toolCalls} calls</span>
+          <span className="opacity-75"> · {run.toolCalls} calls</span>
         </p>
       )}
       {run?.pendingInput && (
@@ -67,7 +73,7 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
         </p>
       )}
       {run && (run.queuedSteers > 0 || run.steers.length > 0) && (
-        <p className="text-theme-muted text-xs">
+        <p className="text-theme-text-secondary text-xs">
           Steering: {run.steers.length} delivered
           {run.queuedSteers > 0 ? `, ${String(run.queuedSteers)} queued` : ''}
         </p>

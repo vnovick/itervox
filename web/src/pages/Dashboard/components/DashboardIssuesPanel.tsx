@@ -160,7 +160,10 @@ export function DashboardIssuesPanel({
   );
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
+    <section
+      aria-label="Issues"
+      className="glass-panel flex flex-col gap-3 overflow-hidden rounded-[var(--radius-shell)] p-3 sm:p-4"
+    >
       <DashboardIssuesHeader
         filteredCount={filtered.length}
         availableProfileCount={availableProfiles.length}
@@ -197,6 +200,6 @@ export function DashboardIssuesPanel({
         onProfileChange={onProfileChange}
         onEditProfile={handleEditProfile}
       />
-    </div>
+    </section>
   );
 }

@@ -32,6 +32,7 @@ import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants'
 import { RUN_CONTEXT_CAPABILITY } from '../../queries/changes';
 import { IssueNowPanel } from './changes/IssueNowPanel';
 import { IssueDetailTabs, type IssueDetailTab } from './changes/IssueDetailTabs';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
 
 // #215 — the diff viewer is only loaded when the Changes tab opens.
 const IssueChangesTab = lazy(() => import('./changes/IssueChangesTab'));
@@ -41,6 +42,10 @@ const IssueTaskInstructions = lazy(() => import('./IssueTaskInstructions'));
 // CORE-070 — tracker.working_state default (internal/config/config.go), used
 // only when the snapshot does not publish workingState (older daemons).
 export const DEFAULT_WORKING_STATE = 'In Progress';
+
+// Plain recipe classes: this slide loads with the app shell.
+const SMALL_BUTTON = plainButtonClass('secondary', 'sm', { pill: true });
+const FOOTER_BUTTON = plainButtonClass('secondary', 'lg', { pill: true, extra: 'min-h-11' });
 
 export default function IssueDetailSlide() {
   const selectedIdentifier = useItervoxStore((s) => s.selectedIdentifier);
@@ -122,7 +127,14 @@ export default function IssueDetailSlide() {
     issue.orchestratorState === 'paused';
 
   return (
-    <SlidePanel isOpen direction="right" title={issue.identifier} onClose={close}>
+    <SlidePanel
+      isOpen
+      direction="right"
+      size="medium"
+      monoTitle
+      title={issue.identifier}
+      onClose={close}
+    >
       {/* Sub-header: badges + title (extracted to IssueDetailHeader, T-20) */}
       <IssueDetailHeader
         issue={issue}
@@ -138,7 +150,7 @@ export default function IssueDetailSlide() {
 
       {runContextSupported && tab === 'changes' ? (
         <div
-          className="flex-1 overflow-y-auto px-5 py-4"
+          className="flex-1 overflow-y-auto px-6 py-4"
           role="tabpanel"
           aria-labelledby="issue-tab-changes"
         >
@@ -151,7 +163,7 @@ export default function IssueDetailSlide() {
         </div>
       ) : (
         /* Scrollable body */
-        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 pt-3 pb-5">
           {runContextSupported && (
             <IssueNowPanel
               identifier={issue.identifier}
@@ -178,7 +190,7 @@ export default function IssueDetailSlide() {
                   triggerAIReviewMutation.mutate(issue.identifier);
                 }}
                 disabled={triggerAIReviewMutation.isPending}
-                className="bg-theme-purple-soft text-theme-purple-text rounded-[var(--radius-sm)] px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80"
+                className={SMALL_BUTTON}
                 title={`Dispatch reviewer (${reviewerProfile} profile)`}
               >
                 {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
@@ -205,15 +217,10 @@ export default function IssueDetailSlide() {
           {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
             <div className="flex flex-wrap items-center gap-2">
               {issue.priority != null && (
-                <span className="bg-theme-warning-soft text-theme-warning-text inline-flex items-center rounded px-2 py-0.5 text-xs font-medium">
-                  P{issue.priority}
-                </span>
+                <span className="pill pill-neutral py-0.5 text-xs">P{issue.priority}</span>
               )}
               {issue.labels?.map((label) => (
-                <span
-                  key={label}
-                  className="bg-theme-bg-soft text-theme-text-secondary inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
-                >
+                <span key={label} className="pill pill-neutral py-0.5 text-xs">
                   {label}
                 </span>
               ))}
@@ -235,28 +242,27 @@ export default function IssueDetailSlide() {
           />
           {/* Branch */}
           {issue.branchName && (
-            <div>
-              <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Branch</h4>
-              <div className="flex items-center gap-2">
-                <code className="bg-theme-bg-soft text-theme-text rounded px-2 py-1 font-mono text-xs">
-                  {issue.branchName}
-                </code>
-                <button
-                  onClick={() => {
-                    void navigator.clipboard.writeText(issue.branchName ?? '').catch(() => {});
-                  }}
-                  className="text-xs"
-                  title="Copy branch name"
-                >
-                  Copy
-                </button>
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="field-label">Branch</h4>
+              <code className="glass-chip text-theme-text rounded-lg px-2 py-1 font-mono text-xs">
+                {issue.branchName}
+              </code>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(issue.branchName ?? '').catch(() => {});
+                }}
+                className={SMALL_BUTTON}
+                title="Copy branch name"
+              >
+                Copy
+              </button>
             </div>
           )}
           <IssueBlockerDetails issue={issue} attention={issueAttention} />
           {/* Description */}
           <div>
-            <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">Description</h4>
+            <h4 className="field-label mb-1.5">Description</h4>
             {issue.description ? (
               <MarkdownPanel>{issue.description}</MarkdownPanel>
             ) : (
@@ -299,27 +305,24 @@ export default function IssueDetailSlide() {
                 issue.orchestratorState === 'pending_input_resume';
               return (
                 <div>
-                  <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">
+                  <h4 className="text-theme-text mb-2 text-[13px] font-semibold">
                     Comments ({sortedComments.length})
                   </h4>
-                  <div className="space-y-4">
+                  <div className="space-y-2">
                     {sortedComments.map((c, i) => (
                       <div
                         key={`${c.author}-${c.createdAt ?? String(i)}`}
-                        className="border-theme-line bg-theme-bg-soft space-y-2 rounded-lg border p-3"
+                        className="glass-card space-y-1.5 px-3 py-2.5 text-[13px]"
                       >
                         <div className="flex items-center gap-2">
-                          <span
-                            className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                            style={{ background: 'var(--gradient-accent)' }}
-                          >
+                          <span className="bg-theme-accent flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white">
                             {(c.author || '?').charAt(0).toUpperCase()}
                           </span>
-                          <span className="text-theme-text text-sm font-medium">
+                          <span className="text-theme-text text-[13px] font-semibold">
                             {c.author || 'Unknown'}
                           </span>
                           {showQuestionMarker && i === latestBotCommentIdx && (
-                            <span className="bg-theme-warning-soft text-theme-warning-text rounded-full px-1.5 py-0.5 text-[10px] font-medium">
+                            <span className="tag pill-warn">
                               {issue.orchestratorState === 'input_required'
                                 ? 'agent question'
                                 : 'reply received'}
@@ -362,7 +365,7 @@ export default function IssueDetailSlide() {
       {hasFooterActions && (
         <div
           data-testid="issue-detail-footer"
-          className="border-theme-line flex flex-shrink-0 items-center justify-end gap-3 border-t px-5 py-4"
+          className="border-theme-line mx-6 flex flex-shrink-0 items-center gap-3 border-t py-3.5"
         >
           <div className="flex items-center gap-2">
             {/* Paused state */}
@@ -376,11 +379,12 @@ export default function IssueDetailSlide() {
                     resumeIssueMutation.mutate(issue.identifier, { onSuccess: close });
                   }}
                   disabled={resumeIssueMutation.isPending}
-                  className="bg-theme-success-soft text-theme-success-text rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                  className={FOOTER_BUTTON}
                 >
                   {resumeIssueMutation.isPending ? 'Resuming…' : '▶ Resume'}
                 </button>
                 <ConfirmButton
+                  size="lg"
                   label="✕ Discard"
                   confirmLabel="Yes, discard"
                   pendingLabel="Discarding…"
@@ -400,11 +404,12 @@ export default function IssueDetailSlide() {
                     cancelIssueMutation.mutate(issue.identifier);
                   }}
                   disabled={cancelIssueMutation.isPending || terminateIssueMutation.isPending}
-                  className="bg-theme-warning-soft text-theme-warning-text rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                  className={FOOTER_BUTTON}
                 >
                   {cancelIssueMutation.isPending ? 'Pausing…' : '⏸ Pause'}
                 </button>
                 <ConfirmButton
+                  size="lg"
                   label="✕ Discard"
                   confirmLabel="Yes, discard"
                   pendingLabel="Discarding…"
@@ -423,7 +428,7 @@ export default function IssueDetailSlide() {
                   cancelRetryMutation.mutate(issue.identifier);
                 }}
                 disabled={cancelRetryMutation.isPending}
-                className="bg-theme-warning-soft text-theme-warning-text rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                className={FOOTER_BUTTON}
               >
                 {cancelRetryMutation.isPending ? 'Cancelling retry…' : '✕ Cancel retry'}
               </button>

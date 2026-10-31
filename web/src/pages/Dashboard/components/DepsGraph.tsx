@@ -288,16 +288,14 @@ function DepsCycleBanner({ cycles }: { cycles: readonly DependencyCycleRow[] }) 
   return (
     <div
       data-testid="deps-cycle-banner"
-      className="border-theme-danger-soft bg-theme-danger-soft text-theme-danger-text flex flex-col gap-1.5 rounded-[var(--radius-md)] border px-3 py-2 text-xs"
+      className="banner-danger flex flex-col gap-1.5 px-3 py-2 text-xs"
     >
       {cycles.map((cycle, index) => (
         <div
           key={`${cycle.kind}:${cycle.members.join(',')}:${String(index)}`}
           className="flex flex-wrap items-start gap-1.5"
         >
-          <span className="bg-theme-bg-elevated text-theme-text-secondary flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
-            {cycle.kind} cycle
-          </span>
+          <span className="tag flex-shrink-0 uppercase">{cycle.kind} cycle</span>
           <span>{describeCycle(cycle)}</span>
         </div>
       ))}
@@ -340,7 +338,7 @@ function DepsOverridePanel({
   return (
     <div
       data-testid="deps-override-panel"
-      className="border-theme-line bg-theme-panel flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border px-3 py-2"
+      className="glass-card flex flex-wrap items-center justify-between gap-3 px-3 py-2"
     >
       <div className="flex items-center gap-2">
         <span className="text-theme-text-secondary text-[11px]">
@@ -363,7 +361,7 @@ function DepsOverridePanel({
             ? `Restore inferred blockers for ${selectedIdentifier}`
             : `Dismiss inferred blockers for ${selectedIdentifier}`
         }
-        className="bg-theme-accent rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        className="bg-theme-accent rounded-full px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
         aria-label={isOverridden ? 'Restore inferred blockers' : 'Dismiss inferred blockers'}
       >
         {isOverridden ? 'Restore inferred blockers' : 'Dismiss inferred blockers'}
@@ -391,7 +389,7 @@ function DepsGraphCanvas({
   // graph did not include) and gets a different message + console.warn.
   if (graphEdges.length === 0) {
     return (
-      <div className="border-theme-line bg-theme-bg-soft text-theme-muted flex min-h-[280px] items-center justify-center rounded-[var(--radius-md)] border px-4 py-8 text-sm">
+      <div className="glass-card text-theme-muted flex min-h-[280px] items-center justify-center px-4 py-8 text-sm">
         No dependency edges found.
       </div>
     );
@@ -399,7 +397,7 @@ function DepsGraphCanvas({
   if (graphNodes.length === 0) {
     console.warn('DepsGraph: edges present but node metadata is empty — likely a server bug');
     return (
-      <div className="border-theme-line bg-theme-bg-soft text-theme-warning-text flex min-h-[280px] items-center justify-center rounded-[var(--radius-md)] border px-4 py-8 text-sm">
+      <div className="glass-card text-theme-warning-text flex min-h-[280px] items-center justify-center px-4 py-8 text-sm">
         Dependency edges present but no node metadata — likely a server bug.
       </div>
     );
@@ -414,7 +412,7 @@ function DepsGraphCanvas({
       data-testid="deps-graph-canvas"
       role="img"
       aria-label={ariaSummary}
-      className="border-theme-line bg-theme-bg-soft relative h-[520px] min-h-[320px] w-full overflow-hidden rounded-[var(--radius-md)] border md:h-[620px]"
+      className="glass-card relative h-[520px] min-h-[320px] w-full overflow-hidden md:h-[620px]"
     >
       <ReactFlow
         nodes={layout.nodes}
@@ -569,7 +567,7 @@ function DepsToolbar({
   return (
     <div
       data-testid="deps-graph-toolbar"
-      className="border-theme-line bg-theme-panel flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border px-3 py-2"
+      className="glass-card flex flex-wrap items-center justify-between gap-3 px-3 py-2"
     >
       <div className="flex items-center gap-3">
         <button
@@ -585,7 +583,7 @@ function DepsToolbar({
             });
           }}
           title={disabledReason || `Run the ${selectedProfile ?? 'analyzer'} pass`}
-          className="bg-theme-accent rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="bg-theme-accent rounded-full px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           aria-label="Analyze dependencies"
         >
           {isRunning ? 'Analyzing…' : 'Analyze dependencies'}
@@ -593,7 +591,7 @@ function DepsToolbar({
         {depsAnalysisMode === 'manual' && (
           <span
             data-testid="deps-analysis-mode-manual"
-            className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px] font-medium"
+            className="tag pill-warn"
             title="Automatic dependency analysis is off (dependencies.analysis_mode: manual). Use the button to run it."
           >
             manual
@@ -618,7 +616,7 @@ function DepsToolbar({
               cancelDeps.mutate({ jobId: effectiveJob.jobId });
             }}
             title="Stop the running analysis pass"
-            className="bg-theme-danger rounded-md px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="bg-theme-danger rounded-full px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Cancel dependency analysis"
           >
             {cancelDeps.isPending ? 'Cancelling…' : 'Cancel'}
@@ -645,7 +643,7 @@ function DepsToolbar({
               onChange={(event) => {
                 setPickedProfile(event.target.value);
               }}
-              className="border-theme-line bg-theme-bg-soft text-theme-text rounded-md border px-1.5 py-0.5 font-mono text-[11px]"
+              className="glass-chip text-theme-text px-2 py-0.5 font-mono text-[11px]"
             >
               {profileOptions.map((name) => (
                 <option key={name} value={name}>
@@ -665,26 +663,21 @@ function DepsToolbar({
 
 function DepsEdgeLegend() {
   return (
-    <div className="border-theme-line bg-theme-bg-elevated text-theme-text-secondary absolute right-3 bottom-3 z-10 flex flex-col gap-1 rounded-md border px-2 py-1.5 text-[10px] leading-tight shadow-sm">
+    <div className="glass-chip text-theme-text-secondary absolute right-3 bottom-3 z-10 flex flex-col gap-1 rounded-[var(--radius-sm)] px-2.5 py-2 text-[10px] leading-tight">
       <div className="flex items-center gap-1.5">
         <span className="bg-theme-accent inline-block h-0.5 w-6" aria-hidden />
         <span>tracker</span>
       </div>
       <div className="flex items-center gap-1.5">
         <span
-          className="inline-block h-0.5 w-6 border-t-2 border-dashed"
-          style={{ borderColor: 'var(--accent)' }}
+          className="border-theme-accent inline-block h-0.5 w-6 border-t-2 border-dashed"
           aria-hidden
         />
         <span>inferred</span>
       </div>
       {/* critical-path-ordering Task 6 */}
       <div className="flex items-center gap-1.5">
-        <span
-          className="inline-block h-[3px] w-6"
-          style={{ background: 'var(--danger)' }}
-          aria-hidden
-        />
+        <span className="bg-theme-danger inline-block h-[3px] w-6" aria-hidden />
         <span>cycle</span>
       </div>
     </div>
@@ -754,5 +747,5 @@ function GraphBadge({
         : tone === 'muted'
           ? 'bg-theme-bg-elevated text-theme-muted'
           : 'bg-theme-panel text-theme-text-secondary';
-  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>{children}</span>;
+  return <span className={`tag ${cls}`}>{children}</span>;
 }

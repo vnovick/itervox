@@ -120,7 +120,7 @@ export function TokenEntryScreen() {
           <button
             type="submit"
             disabled={submitting}
-            className={plainButtonClass('primary', 'lg', 'w-full')}
+            className={plainButtonClass('primary', 'lg', { extra: 'w-full' })}
           >
             {submitting ? 'Validating…' : 'Sign in'}
           </button>

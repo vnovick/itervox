@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import type { DraggableAttributes } from '@dnd-kit/core';
 import { GripVertical } from 'lucide-react';
-import { fmtMs, EMPTY_PROFILE_LABEL } from '../../utils/format';
+import { fmtMs, EMPTY_PROFILE_LABEL, orchStatusDotClass } from '../../utils/format';
 import type { TrackerIssue, ProfileDef } from '../../types/schemas';
 import { WhyIdleChip } from './WhyIdleChip';
 
@@ -67,24 +67,6 @@ function resolveBackend(
   return /codex/i.test(fallback) ? 'codex' : 'claude';
 }
 
-// Status dot color per orchestrator state
-function statusDotClass(state: string): string {
-  switch (state) {
-    case 'running':
-      return 'bg-theme-success';
-    case 'paused':
-      return 'bg-theme-warning';
-    case 'retrying':
-      return 'bg-theme-danger';
-    case 'input_required':
-      return 'bg-theme-dot-warn';
-    case 'pending_input_resume':
-      return 'bg-theme-dot-warn';
-    default:
-      return 'bg-theme-muted';
-  }
-}
-
 export default memo(function IssueCard({
   issue,
   isDragging,
@@ -133,15 +115,15 @@ export default memo(function IssueCard({
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the title button is the keyboard/AT way to open the issue (CORE-068)
     <div
-      className={`issue-card group border-theme-line bg-theme-bg-elevated focus-within:border-theme-accent cursor-pointer rounded-lg border p-3 transition-all select-none ${
+      className={`issue-card group glass-card focus-within:border-theme-accent flex cursor-pointer flex-col gap-1.5 px-3 py-2.5 transition-all select-none ${
         isDragging ? 'rotate-1 opacity-90 shadow-lg' : ''
       }`}
       onClick={() => {
         onSelect(issue.identifier);
       }}
     >
-      {/* Row 1: Status dot + Identifier + profile/dispatch (right) */}
-      <div className="flex items-center gap-2">
+      {/* Row 1: drag handle + status dot + identifier, profile/dispatch (right) */}
+      <div className="flex min-h-5 items-center gap-1.5">
         {dragHandleAttributes && (
           <button
             type="button"
@@ -158,12 +140,13 @@ export default memo(function IssueCard({
             <GripVertical size={14} aria-hidden="true" />
           </button>
         )}
-        {/* Status dot — Linear-style */}
-        <span
-          className={`border-theme-line h-3.5 w-3.5 flex-shrink-0 rounded-full border-2 ${
-            hasActivity ? statusDotClass(issue.orchestratorState) : 'bg-transparent'
-          }`}
-        />
+        {/* Status dot — only while the orchestrator holds the issue */}
+        {hasActivity && (
+          <span
+            aria-hidden="true"
+            className={`status-dot ${orchStatusDotClass(issue.orchestratorState)}`}
+          />
+        )}
 
         {/* Identifier */}
         {issue.url ? (
@@ -171,7 +154,7 @@ export default memo(function IssueCard({
             href={issue.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-theme-text-secondary font-mono text-xs font-medium hover:underline"
+            className="text-theme-muted font-mono text-[11px] hover:underline"
             onClick={(e) => {
               e.stopPropagation();
             }}
@@ -179,9 +162,7 @@ export default memo(function IssueCard({
             {issue.identifier}
           </a>
         ) : (
-          <span className="text-theme-text-secondary font-mono text-xs font-medium">
-            {issue.identifier}
-          </span>
+          <span className="text-theme-muted font-mono text-[11px]">{issue.identifier}</span>
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
@@ -200,7 +181,8 @@ export default memo(function IssueCard({
                   onProfileChange(issue.identifier, e.target.value);
                 }}
                 disabled={isRunning}
-                className="border-theme-line bg-theme-panel-strong text-theme-text-secondary focus:border-theme-accent max-w-[100px] rounded border px-1.5 py-0.5 text-[10px] font-medium focus:outline-none disabled:opacity-40"
+                aria-label={`Agent profile for ${issue.identifier}`}
+                className="subtle-fill text-theme-text-secondary focus-visible:ring-theme-accent max-w-[110px] rounded-full border-0 px-2 py-0.5 text-[11px] font-medium focus:outline-none focus-visible:ring-2 disabled:opacity-40"
               >
                 <option value="">{EMPTY_PROFILE_LABEL}</option>
                 {availableProfiles.map((p) => (
@@ -210,121 +192,6 @@ export default memo(function IssueCard({
                 ))}
               </select>
             </div>
-          )}
-
-          {/* Read-only profile badge for non-editable cards */}
-          {!isEditable && availableProfiles && availableProfiles.length > 0 && (
-            <span className="border-theme-line text-theme-text-secondary flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium">
-              {issue.agentProfile || EMPTY_PROFILE_LABEL}
-            </span>
-          )}
-
-          {/* Gap A: stale-input-required badge. Renders only when the
-              issue is currently input_required AND the snapshot row's
-              `stale` flag is set (orchestrator picks a threshold based on
-              the longest configured max_age_minutes across input_required
-              automations). Tooltip shows the wall-clock age. */}
-          {isInputRequired && inputRequiredStale && (
-            <span
-              data-testid="issue-card-stale-badge"
-              title={
-                inputRequiredAgeMinutes
-                  ? `Input requested ${formatAge(inputRequiredAgeMinutes)} ago — likely abandoned`
-                  : 'Input request is stale — likely abandoned'
-              }
-              className="bg-theme-warning-soft text-theme-warning-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              ⚠ Stale
-            </span>
-          )}
-
-          {/* G: retry-in-flight badge. Visible only while the orchestrator
-              is actually backing off this issue. The "M" denominator falls
-              back to ∞ when max_retries=0 (unlimited). */}
-          {issue.orchestratorState === 'retrying' && retryAttempt !== undefined && (
-            <span
-              data-testid="issue-card-retry-badge"
-              title={`Retry attempt ${String(retryAttempt)}${
-                maxRetries && maxRetries > 0 ? ` of ${String(maxRetries)}` : ' (unlimited)'
-              }`}
-              className="bg-theme-warning-soft text-theme-warning-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              {`↻ retry ${String(retryAttempt)}${
-                maxRetries && maxRetries > 0 ? `/${String(maxRetries)}` : ''
-              }`}
-            </span>
-          )}
-
-          {/* T-6: review-comment badge. Renders when the latest run was a
-              reviewer that posted at least one comment. Click bubbles up
-              to onSelect — the issue detail slide opens with the run
-              section in scroll. */}
-          {runningKind === 'reviewer' && (commentCount ?? 0) > 0 && (
-            <button
-              type="button"
-              data-testid="issue-card-review-badge"
-              title={`Reviewer posted ${String(commentCount)} comment${(commentCount ?? 0) === 1 ? '' : 's'} on this issue`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(issue.identifier);
-              }}
-              className="bg-theme-success-soft text-theme-success-text hover:bg-theme-success-soft flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              📝 {commentCount} {commentCount === 1 ? 'review' : 'reviews'}
-            </button>
-          )}
-
-          {/* outbox Task 4: a pending write-ahead-outbox transition for
-              this issue. Distinct from the retry/stale badges above — this
-              isn't an agent-side condition, it's "the daemon has a durable
-              write queued for this issue that hasn't reached the tracker
-              yet". */}
-          {syncing && (
-            <span
-              data-testid="issue-card-syncing-badge"
-              title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-              className="bg-theme-accent-soft text-theme-accent-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              ⟳ Syncing
-            </span>
-          )}
-
-          {/* CORE-055: the next run uses an automatic override (a
-              rate_limited automation or backend_fallback), not a pin. */}
-          {issue.autoSwitch && (
-            <span
-              data-testid="issue-card-auto-switch-badge"
-              title={`Auto-switched from ${issue.autoSwitch.fromBackend ?? 'unknown'} by ${issue.autoSwitch.source}${
-                issue.autoSwitch.reason ? `: ${issue.autoSwitch.reason}` : ''
-              }`}
-              className="bg-theme-warning-soft text-theme-warning-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              {issue.autoSwitch.toBackend ?? issue.agentBackend ?? 'switched'} (auto)
-            </span>
-          )}
-
-          {/* #218 — the task-type playbook the issue's run gets. */}
-          {issue.playbook && (
-            <span
-              data-testid="issue-card-playbook-badge"
-              title={`Playbook: ${issue.playbook}${issue.playbookSource ? ` (${issue.playbookSource})` : ''}`}
-              className="bg-theme-bg-soft text-theme-text-secondary flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              {issue.playbook}
-            </span>
-          )}
-
-          {/* CORE-080 — why this idle issue is not dispatching. */}
-          <WhyIdleChip reason={issue.ineligibleReason} />
-
-          {blockerCount > 0 && (
-            <span
-              data-testid="issue-card-blocked-badge"
-              title={`Blocked by ${String(blockerCount)} issue${blockerCount === 1 ? '' : 's'}`}
-              className="bg-theme-danger-soft text-theme-danger-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            >
-              Blocked {blockerCount}
-            </span>
           )}
 
           {/* Dispatch button — visible on hover OR keyboard focus (CORE-024) */}
@@ -342,7 +209,7 @@ export default memo(function IssueCard({
                 setDispatchFocused(false);
               }}
               style={dispatchFocused ? { opacity: 1 } : undefined}
-              className="text-theme-accent-text bg-theme-accent-soft flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+              className="tag pill-accent flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
             >
               ▶
             </button>
@@ -350,7 +217,7 @@ export default memo(function IssueCard({
         </div>
       </div>
 
-      {/* Row 2: Title — Linear-style: single line, truncated */}
+      {/* Row 2: Title — wraps to two lines */}
       {/* CORE-068: a real button, so the card opens from the keyboard (Enter
           or Space) without going through the drag handle. */}
       <button
@@ -359,44 +226,135 @@ export default memo(function IssueCard({
           e.stopPropagation();
           onSelect(issue.identifier);
         }}
-        className="text-theme-text mt-1.5 block w-full cursor-pointer truncate rounded-sm text-left text-sm font-medium focus-visible:underline"
+        className="text-theme-text line-clamp-2 block w-full cursor-pointer rounded-sm text-left text-[13px] leading-[1.35] font-medium focus-visible:underline"
       >
         {issue.title}
       </button>
 
-      {/* Row 3: Bottom metadata — compact badges */}
-      <div className="mt-2 flex items-center gap-1.5">
-        {/* Backend badge */}
-        <span
-          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-            backend === 'codex'
-              ? 'bg-theme-teal-soft text-theme-teal'
-              : 'bg-theme-accent-soft text-theme-accent-strong'
-          }`}
-        >
-          {backend === 'codex' ? 'Codex' : 'Claude'}
-        </span>
+      {/* Row 3: tags — profile, backend, run state and every condition badge */}
+      <div className="flex flex-wrap items-center gap-[5px]">
+        {/* Read-only profile tag for non-editable cards */}
+        {!isEditable && availableProfiles && availableProfiles.length > 0 && (
+          <span className="tag">{issue.agentProfile || EMPTY_PROFILE_LABEL}</span>
+        )}
 
-        {/* State badge — only when active */}
-        {isInputRequired && (
-          <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px] font-medium">
-            Needs Input
-          </span>
-        )}
-        {isPendingInputResume && (
-          <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px] font-medium">
-            Resuming
-          </span>
-        )}
+        {/* Backend tag */}
+        <span className="tag">{backend === 'codex' ? 'Codex' : 'Claude'}</span>
+
+        {/* State tag — only when active */}
+        {isInputRequired && <span className="tag pill-warn">Needs Input</span>}
+        {isPendingInputResume && <span className="tag pill-warn">Resuming</span>}
         {hasActivity && !isInputRequired && !isPendingInputResume && (
-          <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${
-              isRunning
-                ? 'bg-theme-success-soft text-theme-success-text'
-                : 'bg-theme-warning-soft text-theme-warning-text'
-            }`}
-          >
+          <span className={`tag capitalize ${isRunning ? 'pill-ok' : 'pill-warn'}`}>
             {issue.orchestratorState}
+          </span>
+        )}
+
+        {/* Gap A: stale-input-required badge. Renders only when the
+            issue is currently input_required AND the snapshot row's
+            `stale` flag is set (orchestrator picks a threshold based on
+            the longest configured max_age_minutes across input_required
+            automations). Tooltip shows the wall-clock age. */}
+        {isInputRequired && inputRequiredStale && (
+          <span
+            data-testid="issue-card-stale-badge"
+            title={
+              inputRequiredAgeMinutes
+                ? `Input requested ${formatAge(inputRequiredAgeMinutes)} ago — likely abandoned`
+                : 'Input request is stale — likely abandoned'
+            }
+            className="tag pill-warn"
+          >
+            ⚠ Stale
+          </span>
+        )}
+
+        {/* G: retry-in-flight badge. Visible only while the orchestrator
+            is actually backing off this issue. The "M" denominator falls
+            back to ∞ when max_retries=0 (unlimited). */}
+        {issue.orchestratorState === 'retrying' && retryAttempt !== undefined && (
+          <span
+            data-testid="issue-card-retry-badge"
+            title={`Retry attempt ${String(retryAttempt)}${
+              maxRetries && maxRetries > 0 ? ` of ${String(maxRetries)}` : ' (unlimited)'
+            }`}
+            className="tag pill-warn"
+          >
+            {`↻ retry ${String(retryAttempt)}${
+              maxRetries && maxRetries > 0 ? `/${String(maxRetries)}` : ''
+            }`}
+          </span>
+        )}
+
+        {/* T-6: review-comment badge. Renders when the latest run was a
+            reviewer that posted at least one comment. Click bubbles up
+            to onSelect — the issue detail slide opens with the run
+            section in scroll. */}
+        {runningKind === 'reviewer' && (commentCount ?? 0) > 0 && (
+          <button
+            type="button"
+            data-testid="issue-card-review-badge"
+            title={`Reviewer posted ${String(commentCount)} comment${(commentCount ?? 0) === 1 ? '' : 's'} on this issue`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(issue.identifier);
+            }}
+            className="tag pill-warn"
+          >
+            📝 {commentCount} {commentCount === 1 ? 'review' : 'reviews'}
+          </button>
+        )}
+
+        {/* outbox Task 4: a pending write-ahead-outbox transition for
+            this issue. Distinct from the retry/stale badges above — this
+            isn't an agent-side condition, it's "the daemon has a durable
+            write queued for this issue that hasn't reached the tracker
+            yet". */}
+        {syncing && (
+          <span
+            data-testid="issue-card-syncing-badge"
+            title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+            className="tag pill-accent"
+          >
+            ⟳ Syncing
+          </span>
+        )}
+
+        {/* CORE-055: the next run uses an automatic override (a
+            rate_limited automation or backend_fallback), not a pin. */}
+        {issue.autoSwitch && (
+          <span
+            data-testid="issue-card-auto-switch-badge"
+            title={`Auto-switched from ${issue.autoSwitch.fromBackend ?? 'unknown'} by ${issue.autoSwitch.source}${
+              issue.autoSwitch.reason ? `: ${issue.autoSwitch.reason}` : ''
+            }`}
+            className="tag pill-warn"
+          >
+            {issue.autoSwitch.toBackend ?? issue.agentBackend ?? 'switched'} (auto)
+          </span>
+        )}
+
+        {/* #218 — the task-type playbook the issue's run gets. */}
+        {issue.playbook && (
+          <span
+            data-testid="issue-card-playbook-badge"
+            title={`Playbook: ${issue.playbook}${issue.playbookSource ? ` (${issue.playbookSource})` : ''}`}
+            className="tag"
+          >
+            {issue.playbook}
+          </span>
+        )}
+
+        {/* CORE-080 — why this idle issue is not dispatching. */}
+        <WhyIdleChip reason={issue.ineligibleReason} />
+
+        {blockerCount > 0 && (
+          <span
+            data-testid="issue-card-blocked-badge"
+            title={`Blocked by ${String(blockerCount)} issue${blockerCount === 1 ? '' : 's'}`}
+            className="tag pill-warn"
+          >
+            Blocked {blockerCount}
           </span>
         )}
 

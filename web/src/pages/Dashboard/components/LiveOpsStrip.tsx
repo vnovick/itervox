@@ -414,9 +414,8 @@ export function LiveOpsStrip() {
 
   return (
     <section
-      className={`border-theme-line bg-theme-bg-elevated rounded-[var(--radius-md)] border px-3 py-2.5 ${
-        model.queueSaturated ? 'border-theme-danger bg-theme-danger-soft' : ''
-      }`}
+      aria-label="Live operations"
+      className={model.queueSaturated ? 'banner-danger px-3 py-2.5' : undefined}
       data-testid="live-ops-strip"
     >
       <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="live-ops-chip-row">
@@ -424,12 +423,16 @@ export function LiveOpsStrip() {
           <span
             role="status"
             aria-label="Automation queue full"
-            className="bg-theme-danger inline-flex min-h-9 max-w-full items-center rounded-[var(--radius-sm)] px-2.5 py-1 text-[12px] leading-snug font-semibold whitespace-normal text-white"
+            className="bg-theme-danger inline-flex min-h-9 max-w-full items-center rounded-full px-3.5 py-1 text-[13px] leading-snug font-semibold whitespace-normal text-white"
           >
             Automation queue full {model.queueLabel} · new automation triggers paused
           </span>
         )}
-        <span className="text-theme-text inline-flex min-h-9 items-center rounded-[var(--radius-sm)] px-2 text-[12px] font-semibold">
+        <span
+          className={`glass-chip inline-flex min-h-9 items-center px-3.5 text-[13px] font-semibold ${
+            model.status === 'active' ? 'text-theme-success-text' : 'text-theme-text'
+          }`}
+        >
           <LiveIndicator status={indicatorStatus} size="sm" label={statusLabel} />
         </span>
         {/* #213 — pause/resume all dispatch, with a confirm. */}

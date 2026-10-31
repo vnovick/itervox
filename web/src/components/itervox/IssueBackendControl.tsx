@@ -31,7 +31,7 @@ export function IssueBackendControl({
 
   return (
     <div>
-      <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Agent Backend</h4>
+      <h4 className="field-label mb-1.5">Agent Backend</h4>
       <div className="flex flex-wrap items-center gap-2">
         <BackendSelector
           value={issue.agentBackend ?? ''}
@@ -44,11 +44,7 @@ export function IssueBackendControl({
             setIssueBackend.mutate({ identifier: issue.identifier, backend });
           }}
         />
-        {isRunning && (
-          <span className="bg-theme-bg-soft text-theme-text-secondary rounded px-1.5 py-0.5 text-[10px]">
-            Applies on next run
-          </span>
-        )}
+        {isRunning && <span className="tag">Applies on next run</span>}
       </div>
       <p id={helpId} className="text-theme-muted mt-1 text-[11px]">
         {auto

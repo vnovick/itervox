@@ -41,11 +41,9 @@ export function IssueStatusChanges({ changes }: IssueStatusChangesProps) {
   if (!changes || changes.length === 0) return null;
 
   return (
-    <section className="border-theme-line bg-theme-bg-soft rounded-[var(--radius-sm)] border p-3">
+    <section className="glass-card rounded-[18px] px-3.5 py-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-theme-text text-xs font-medium tracking-wider uppercase">
-          Status changes
-        </h4>
+        <h4 className="text-theme-text text-[13px] font-semibold">Status changes</h4>
         <span className="text-theme-muted text-xs">{changes.length} changes</span>
       </div>
       <ol className="space-y-3">
@@ -80,10 +78,7 @@ export function IssueStatusChanges({ changes }: IssueStatusChangesProps) {
                     {change.source}
                   </span>
                   {chips.map((chip) => (
-                    <span
-                      key={chip}
-                      className="bg-theme-bg text-theme-text-secondary max-w-full min-w-0 rounded-full px-2 py-0.5 text-[10px] font-medium break-all"
-                    >
+                    <span key={chip} className="tag max-w-full min-w-0 break-all whitespace-normal">
                       {chip}
                     </span>
                   ))}

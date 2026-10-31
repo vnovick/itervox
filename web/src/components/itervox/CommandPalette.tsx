@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Search } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { Modal } from '../ui/modal';
 import { Button } from '../ui/button';
@@ -17,9 +18,22 @@ import { PAGES } from './commandPalettePages';
  * palette first.
  */
 
+type CommandGroup = 'pages' | 'issues' | 'runs';
+
+const GROUP_LABEL: Record<CommandGroup, string> = {
+  pages: 'Go to',
+  issues: 'Issues',
+  runs: 'Running',
+};
+
 interface Command {
   id: string;
+  group: CommandGroup;
   label: string;
+  /** A leading identifier, shown in the mono face. */
+  tag?: string;
+  /** Destructive commands read in the danger tone. */
+  danger?: boolean;
   hint?: string;
   run: () => void;
   confirm?: { prompt: string; confirmLabel: string };
@@ -32,7 +46,7 @@ export function CommandPalette({ isOpen, onClose }: { isOpen: boolean; onClose: 
       onClose={onClose}
       showCloseButton={false}
       ariaLabel="Command palette"
-      className="max-w-lg"
+      className="max-w-[560px] overflow-hidden"
     >
       {isOpen && <PaletteBody onClose={onClose} />}
     </Modal>
@@ -56,6 +70,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const commands = useMemo<Command[]>(() => {
     const out: Command[] = PAGES.map((p) => ({
       id: `page:${p.path}`,
+      group: 'pages',
       label: `Go to ${p.label}`,
       hint: p.keys,
       run: () => {
@@ -65,6 +80,8 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     for (const issue of issues ?? []) {
       out.push({
         id: `issue:${issue.identifier}`,
+        group: 'issues',
+        tag: issue.identifier,
         label: `Open ${issue.identifier} — ${issue.title}`,
         run: () => {
           setSelected(issue.identifier);
@@ -74,6 +91,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     for (const row of running) {
       out.push({
         id: `pause:${row.identifier}`,
+        group: 'runs',
         label: `Pause ${row.identifier}`,
         run: () => {
           pause.mutate(row.identifier);
@@ -85,6 +103,8 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       });
       out.push({
         id: `discard:${row.identifier}`,
+        group: 'runs',
+        danger: true,
         label: `Discard ${row.identifier}`,
         run: () => {
           discard.mutate(row.identifier);
@@ -121,12 +141,12 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
 
   if (pending?.confirm) {
     return (
-      <div className="space-y-3 p-4">
-        <p className="text-theme-text text-sm">{pending.confirm.prompt}</p>
+      <div className="space-y-4 px-5 py-5">
+        <p className="text-theme-text text-[15px] leading-relaxed">{pending.confirm.prompt}</p>
         <div className="flex justify-end gap-2">
           <Button
             variant="ghost"
-            size="sm"
+            size="lg"
             onClick={() => {
               setPending(null);
             }}
@@ -136,7 +156,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           <Button
             ref={confirmRef}
             variant="destructive"
-            size="sm"
+            size="lg"
             onClick={() => {
               pending.run();
               onClose();
@@ -150,41 +170,47 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="p-2">
-      <input
-        ref={inputRef}
-        role="combobox"
-        aria-label="Search commands and issues"
-        aria-expanded="true"
-        aria-controls={listId}
-        aria-activedescendant={matches.length > 0 ? optionId(activeIndex) : undefined}
-        aria-autocomplete="list"
-        value={query}
-        placeholder="Type a command or an issue id…"
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setActive(0);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            setActive((i) => Math.min(i + 1, matches.length - 1));
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            setActive((i) => Math.max(i - 1, 0));
-          } else if (e.key === 'Enter') {
-            e.preventDefault();
-            const hit = matches[activeIndex] as Command | undefined;
-            if (hit) execute(hit);
-          }
-        }}
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:border-theme-accent w-full rounded-[var(--radius-sm)] border px-3 py-2 text-sm focus:outline-none"
-      />
+    <div>
+      <div className="border-theme-line flex items-center gap-3 border-b px-5 py-3.5">
+        <Search aria-hidden="true" className="text-theme-text-secondary h-4 w-4 flex-shrink-0" />
+        <input
+          ref={inputRef}
+          role="combobox"
+          aria-label="Search commands and issues"
+          aria-expanded="true"
+          aria-controls={listId}
+          aria-activedescendant={matches.length > 0 ? optionId(activeIndex) : undefined}
+          aria-autocomplete="list"
+          value={query}
+          placeholder="Type a command or an issue id…"
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setActive((i) => Math.min(i + 1, matches.length - 1));
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setActive((i) => Math.max(i - 1, 0));
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              const hit = matches[activeIndex] as Command | undefined;
+              if (hit) execute(hit);
+            }
+          }}
+          className="text-theme-text placeholder:text-theme-muted min-w-0 flex-1 rounded-md bg-transparent text-base"
+        />
+        <kbd aria-hidden="true" className="tag font-mono">
+          esc
+        </kbd>
+      </div>
       <ul
         id={listId}
         role="listbox"
         aria-label="Commands"
-        className="mt-2 max-h-80 overflow-y-auto"
+        className="max-h-[420px] overflow-y-auto px-2 py-2"
       >
         {matches.length === 0 && (
           <li role="presentation" className="text-theme-muted px-3 py-2 text-xs">
@@ -192,32 +218,71 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           </li>
         )}
         {matches.map((c, i) => (
-          // Options are picked with the keyboard via the combobox (arrow keys
-          // + Enter); the click is the mouse path to the same action.
-          // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- keyboard handled on the combobox (aria-activedescendant pattern)
-          <li
-            key={c.id}
-            id={optionId(i)}
-            role="option"
-            aria-selected={i === activeIndex}
-            onMouseEnter={() => {
-              setActive(i);
-            }}
-            onClick={() => {
-              execute(c);
-            }}
-            className={cn(
-              'flex cursor-pointer items-center justify-between gap-3 rounded px-3 py-2 text-sm',
-              i === activeIndex
-                ? 'bg-theme-accent-soft text-theme-accent-strong'
-                : 'text-theme-text',
+          <Fragment key={c.id}>
+            {(i === 0 || matches[i - 1].group !== c.group) && (
+              <li role="presentation" aria-hidden="true" className="eyebrow px-3 pt-2.5 pb-1.5">
+                {GROUP_LABEL[c.group]}
+              </li>
             )}
-          >
-            <span className="truncate">{c.label}</span>
-            {c.hint && <kbd className="font-mono text-[11px] text-current">{c.hint}</kbd>}
-          </li>
+            {/* Options are picked with the keyboard via the combobox (arrow
+                keys + Enter); the click is the mouse path to the same action. */}
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events -- keyboard handled on the combobox (aria-activedescendant pattern) */}
+            <li
+              id={optionId(i)}
+              role="option"
+              aria-selected={i === activeIndex}
+              onMouseEnter={() => {
+                setActive(i);
+              }}
+              onClick={() => {
+                execute(c);
+              }}
+              className={cn(
+                'flex min-h-11 cursor-pointer items-center gap-3 rounded-[var(--radius-sm)] px-3 text-sm',
+                i === activeIndex
+                  ? 'bg-theme-accent-soft text-theme-accent-strong font-medium'
+                  : c.danger
+                    ? 'text-theme-danger-text'
+                    : 'text-theme-text',
+              )}
+            >
+              {c.tag && (
+                <span
+                  className={cn(
+                    'flex-shrink-0 font-mono text-xs',
+                    i === activeIndex ? 'font-semibold' : 'text-theme-text-secondary',
+                  )}
+                >
+                  {c.tag}
+                </span>
+              )}
+              <span className="min-w-0 flex-1 truncate">{c.label}</span>
+              {c.hint && (
+                <kbd className="text-theme-text-secondary font-mono text-[11px]">{c.hint}</kbd>
+              )}
+              {i === activeIndex && !c.hint && (
+                <kbd aria-hidden="true" className="font-mono text-[11px]">
+                  ↵
+                </kbd>
+              )}
+            </li>
+          </Fragment>
         ))}
       </ul>
+      <div
+        aria-hidden="true"
+        className="border-theme-line text-theme-text-secondary flex items-center gap-4 border-t px-5 py-2.5 text-xs"
+      >
+        <span className="flex items-center gap-1.5">
+          <kbd className="tag font-mono">↑↓</kbd> move
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className="tag font-mono">↵</kbd> run
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className="tag font-mono">esc</kbd> close
+        </span>
+      </div>
     </div>
   );
 }

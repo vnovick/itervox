@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { usePostIssueComment } from '../../queries/issues';
+import { FIELD_CLASS } from '../ui/Input/fieldClass';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
 
 interface IssueCommentComposerProps {
   identifier: string;
@@ -26,7 +28,7 @@ export function IssueCommentComposer({ identifier }: IssueCommentComposerProps) 
         }}
         placeholder="Post a comment on this issue…"
         rows={3}
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-accent w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
+        className={`${FIELD_CLASS} rounded-[14px] py-2.5`}
       />
       <div className="flex justify-end">
         <button
@@ -42,7 +44,7 @@ export function IssueCommentComposer({ identifier }: IssueCommentComposerProps) 
               },
             );
           }}
-          className="bg-theme-accent rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          className={plainButtonClass('primary', 'lg', { pill: true })}
         >
           {post.isPending ? 'Posting…' : 'Post comment'}
         </button>

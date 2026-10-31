@@ -8,6 +8,8 @@ interface ConfirmButtonProps {
   onConfirm: () => void;
   /** Accessible name for the trigger when `label` alone is ambiguous (e.g. one per row). */
   ariaLabel?: string;
+  /** `sm` (default) for rows; `lg` matches 44px footer buttons. */
+  size?: 'sm' | 'lg';
 }
 
 /**
@@ -30,6 +32,7 @@ export function ConfirmButton({
   isPending,
   onConfirm,
   ariaLabel,
+  size = 'sm',
 }: ConfirmButtonProps) {
   const [confirming, setConfirming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -103,7 +106,9 @@ export function ConfirmButton({
         setConfirming(true);
       }}
       disabled={isPending}
-      className="bg-theme-danger-soft text-theme-danger-text rounded-full px-3.5 py-1.5 text-xs font-medium hover:brightness-105 disabled:cursor-wait disabled:opacity-50"
+      className={`bg-theme-danger-soft text-theme-danger-text rounded-full font-medium hover:brightness-105 disabled:cursor-wait disabled:opacity-50 ${
+        size === 'lg' ? 'min-h-11 px-4 text-[15px]' : 'px-3.5 py-1.5 text-xs'
+      }`}
     >
       {label}
     </button>

@@ -3,6 +3,8 @@ import { useRunContext } from '../../queries/changes';
 import { useSendSessionMessage } from '../../queries/sessions';
 import { RequireScope } from './RequireScope';
 import { SteeringChips } from './SteeringChips';
+import { FIELD_CLASS } from '../ui/Input/fieldClass';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
 
 /**
  * #218 — the issue detail's steer box for a running issue: a message, or a
@@ -33,7 +35,7 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
   return (
     <RequireScope scope="operator">
       <section data-testid="issue-steer-box" className="space-y-2">
-        <h4 className="text-xs font-medium tracking-wider uppercase">Steer the run</h4>
+        <h4 className="field-label">Steer the run</h4>
         <SteeringChips onSend={submit} disabled={send.isPending} />
         <textarea
           aria-label={`Message to the agent on ${identifier}`}
@@ -43,7 +45,7 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
           }}
           rows={2}
           placeholder="Message the running agent…"
-          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
+          className={`${FIELD_CLASS} rounded-[14px] py-2.5`}
         />
         <div className="flex justify-end">
           <button
@@ -52,7 +54,9 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
             onClick={() => {
               submit(draft);
             }}
-            className="bg-theme-accent rounded-lg px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className={plainButtonClass('primary', 'lg', {
+              extra: 'min-h-11 px-[18px] font-semibold',
+            })}
           >
             {send.isPending ? 'Sending…' : 'Send'}
           </button>

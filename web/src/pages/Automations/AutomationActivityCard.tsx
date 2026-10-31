@@ -121,8 +121,8 @@ export function AutomationActivityCard({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="metric-label">{label}</dt>
-      <dd className="metric-value">{value}</dd>
+      <dt className="stat-tile-label">{label}</dt>
+      <dd className="stat-tile-value text-lg">{value}</dd>
     </div>
   );
 }

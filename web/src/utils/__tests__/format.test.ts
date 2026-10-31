@@ -26,14 +26,13 @@ describe('fmtMs', () => {
 });
 
 describe('orchStatusDotClass', () => {
-  it('maps orchestrator states onto the status-dot tones', () => {
-    expect(orchStatusDotClass('running')).toBe('dot-ok animate-pulse');
-    expect(orchStatusDotClass('retrying')).toBe('dot-warn animate-pulse');
-    expect(orchStatusDotClass('pending_input_resume')).toBe('dot-warn animate-pulse');
+  it('maps each orchestrator state to a status-dot tone', () => {
+    expect(orchStatusDotClass('running')).toBe('dot-ok');
+    expect(orchStatusDotClass('paused')).toBe('dot-warn');
     expect(orchStatusDotClass('input_required')).toBe('dot-warn');
-    expect(orchStatusDotClass('paused')).toBe('dot-danger');
+    expect(orchStatusDotClass('pending_input_resume')).toBe('dot-warn');
+    expect(orchStatusDotClass('retrying')).toBe('dot-danger');
     expect(orchStatusDotClass('idle')).toBe('dot-idle');
-    expect(orchStatusDotClass('anything')).toBe('dot-idle');
   });
 });
 

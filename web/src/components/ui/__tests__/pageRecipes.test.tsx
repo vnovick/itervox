@@ -122,14 +122,71 @@ describe('Modal portal', () => {
 });
 
 describe('shared recipe classes', () => {
+  // One definition per recipe: three page groups once each added their own
+  // .stat-tile / .data-table / .choice-card. A second base rule for the same
+  // class means two looks for one thing, so this fails it.
+  it('defines each shared class base rule exactly once', () => {
+    // Walk the rules with a brace stack so overrides inside @media /
+    // @supports (theme fallbacks, breakpoints) are not counted, and only a
+    // rule whose whole selector is the bare class is a base definition.
+    const counts = new Map<string, number>();
+    const stack: string[] = [];
+    const src = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    let prelude = '';
+    for (const ch of src) {
+      if (ch === '{') {
+        const sel = prelude.trim();
+        const conditional = stack.some((s) => /^@(media|supports)/.test(s));
+        const bare = /^\.([a-z][a-z0-9-]*)$/.exec(sel);
+        if (bare && !conditional) counts.set(bare[1], (counts.get(bare[1]) ?? 0) + 1);
+        stack.push(sel);
+        prelude = '';
+      } else if (ch === '}') {
+        stack.pop();
+        prelude = '';
+      } else if (ch === ';') {
+        prelude = '';
+      } else {
+        prelude += ch;
+      }
+    }
+    const duplicated = [...counts].filter(([, n]) => n > 1).map(([name]) => name);
+    expect(duplicated).toEqual([]);
+    // And each shared recipe has its base rule outside any @media block, so
+    // it applies to everyone, not only under a fallback preference.
+    const required = [
+      'glass-card',
+      'glass-chip',
+      'glass-sheet',
+      'pill',
+      'count-pill',
+      'stat-tile',
+      'data-table',
+      'board-column',
+      'kv-grid',
+      'code-line',
+      'code-block',
+      'choice-card',
+      'tag-chip',
+      'switch',
+      'field-label',
+      'field-help',
+      'field-group',
+      'list-row',
+      'glass-tile',
+      'console-surface',
+    ];
+    expect(required.filter((name) => counts.get(name) !== 1)).toEqual([]);
+  });
+
   it.each([
     'field-label',
     'field-help',
     'field-group',
     'list-row',
     'glass-tile',
-    'metric-label',
-    'metric-value',
+    'stat-tile-label',
+    'stat-tile-value',
     'console-bar',
   ])('index.css defines .%s', (name) => {
     expect(css).toMatch(new RegExp(`\\.${name} \\{`));

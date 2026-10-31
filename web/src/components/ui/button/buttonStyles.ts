@@ -8,9 +8,10 @@ import {
   type ButtonVariant,
 } from './buttonRecipe';
 
-// The recipes live in buttonRecipe.ts (no class-merge dependency); this
-// module adds tailwind-merge so a caller's className overrides cleanly.
-export { FOCUS_RING, type ButtonSize, type ButtonVariant };
+// The recipe (variants, sizes, focus ring) lives in ./buttonRecipe so shell
+// modules can use it without tailwind-merge; this adds the merge.
+export { FOCUS_RING };
+export type { ButtonSize, ButtonVariant };
 
 export function buttonClass(
   variant: ButtonVariant,
@@ -20,6 +21,7 @@ export function buttonClass(
 ): string {
   return cn(
     BUTTON_BASE,
+    'rounded-[var(--radius-sm)]',
     FOCUS_RING,
     BUTTON_VARIANT[variant],
     BUTTON_SIZE[size],

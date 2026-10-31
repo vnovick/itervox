@@ -1,8 +1,11 @@
 /**
- * Button looks (visual refresh), as plain class strings with no class-merge
- * dependency, so screens in the initial bundle (sign in, daemon unreachable,
- * error boundaries) can share them without pulling tailwind-merge in.
- * `buttonClass` (buttonStyles.ts) composes the same pieces with `cn`.
+ * Button looks (visual refresh), as plain class strings with no
+ * tailwind-merge: screens in the initial bundle (sign in, daemon unreachable,
+ * error boundaries) and modules that load with the app shell (the issue
+ * slide, confirm dialogs) compose these directly so the merge library stays
+ * out of the initial bundle. `buttonClass` in ./buttonStyles layers merging
+ * on top.
+ *
  * - `primary`     accent fill, white text
  * - `secondary`   the glass chip: translucent white, hairline rim (alias `glass`)
  * - `glass-danger` the glass chip with red text (a quiet destructive trigger)
@@ -44,25 +47,20 @@ export const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-theme-accent focus-visible:ring-offset-1 focus-visible:ring-offset-theme-bg';
 
 export const BUTTON_BASE =
-  'inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-sm)] font-medium whitespace-nowrap transition-[background-color,filter,opacity] disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex items-center justify-center gap-1.5 font-medium whitespace-nowrap transition-[background-color,filter,opacity] disabled:cursor-not-allowed disabled:opacity-50';
 
 /**
- * The button classes joined without merging: pass only layout extras
- * (width, margins), never a utility that competes with the recipe.
+ * A button class without tailwind-merge. Pass only classes that do not
+ * clash with the recipe (layout, margins, widths); use `buttonClass` when a
+ * caller needs to override a recipe utility.
  */
 export function plainButtonClass(
   variant: ButtonVariant,
   size: ButtonSize,
-  extra = '',
-  pill = false,
+  { pill = false, extra = '' }: { pill?: boolean; extra?: string } = {},
 ): string {
-  return [
-    pill ? BUTTON_BASE.replace('rounded-[var(--radius-sm)]', 'rounded-full') : BUTTON_BASE,
-    FOCUS_RING,
-    BUTTON_VARIANT[variant],
-    BUTTON_SIZE[size],
-    extra,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const radius = pill ? 'rounded-full' : 'rounded-[var(--radius-sm)]';
+  return `${BUTTON_BASE} ${FOCUS_RING} ${radius} ${BUTTON_VARIANT[variant]} ${BUTTON_SIZE[size]}${
+    extra ? ` ${extra}` : ''
+  }`;
 }

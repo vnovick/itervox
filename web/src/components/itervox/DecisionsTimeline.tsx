@@ -30,7 +30,7 @@ export function DecisionsTimeline({ identifier, live }: { identifier: string; li
   if (runs.length === 0) return null;
   return (
     <section data-testid="decisions-timeline" aria-label="Decisions">
-      <h4 className="mb-2 text-xs font-medium tracking-wider uppercase">Decisions</h4>
+      <h4 className="text-theme-text mb-2 text-[13px] font-semibold">Decisions</h4>
       <ol className="space-y-3">
         {runs.map((run) => (
           <li key={run.path}>

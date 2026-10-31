@@ -5,14 +5,17 @@ import { useSetDispatchPause } from '../../../queries/dispatch';
 import { OpsChip } from './OpsChip';
 import { DISPATCH_PAUSE_CAPABILITY, dispatchPausedLabel } from './dispatchPauseModel';
 import { useScopeAllows } from '../../../hooks/useCallerScope';
+import { plainButtonClass } from '../../../components/ui/button/buttonRecipe';
 
 // #213 — the daemon-wide dispatch pause on the LiveOps strip: a "Pause
 // dispatch" button while dispatch runs, a danger chip plus "Resume" while it
 // is paused. Both ask for confirmation first. Hidden on daemons that do not
 // advertise the dispatch_pause capability.
 
-const BUTTON_CLASS =
-  'border-theme-line text-theme-text-secondary hover:text-theme-text inline-flex min-h-9 flex-shrink-0 items-center rounded-[var(--radius-sm)] border px-2.5 py-1 text-[12px] font-medium whitespace-nowrap transition-colors disabled:opacity-50';
+const BUTTON_CLASS = plainButtonClass('secondary', 'md', {
+  pill: true,
+  extra: 'min-h-9 flex-shrink-0 text-[13px]',
+});
 
 export function DispatchPauseToggle() {
   const supported = useItervoxStore(

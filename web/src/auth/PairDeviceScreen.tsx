@@ -87,7 +87,7 @@ export function PairDeviceScreen({ onPaired }: { onPaired?: () => void }) {
             <button
               type="submit"
               disabled={busy || name.trim() === ''}
-              className={plainButtonClass('primary', 'lg', 'self-start')}
+              className={plainButtonClass('primary', 'lg', { extra: 'self-start' })}
             >
               {busy ? 'Pairing…' : 'Pair'}
             </button>

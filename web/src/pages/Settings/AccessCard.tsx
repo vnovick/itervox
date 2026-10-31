@@ -30,9 +30,12 @@ function NewSecret({ issued, onDone }: { issued: ApiTokenSecret; onDone: () => v
       className="choice-card flex-col gap-2"
       data-active="true"
     >
-      <p className="text-theme-text text-sm font-medium">
+      <p className="text-theme-text text-[13px]">
         Token “{issued.token.name}” ({issued.token.scope}) — copy it now, it is shown only once.
       </p>
+      <code className="subtle-fill text-theme-text block overflow-x-auto rounded-[10px] px-2.5 py-2 font-mono text-xs">
+        {issued.secret}
+      </code>
       <div className="flex items-center gap-2">
         <code className="code-block flex-1 px-3 py-1.5">{issued.secret}</code>
         <CopyButton text={issued.secret} label="Copy token" />

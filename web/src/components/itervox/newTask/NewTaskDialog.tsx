@@ -17,12 +17,13 @@ export function NewTaskDialog() {
       className="max-w-[640px]"
       padded
     >
-      <h2 id="new-task-title" className="text-theme-text mb-1 text-base font-semibold">
+      <h2 id="new-task-title" className="text-theme-text mb-1 pr-12 text-xl font-bold">
         New task
       </h2>
-      <p className="text-theme-muted mb-4 text-[12px]">
-        A one-off task with its own instructions. A local issue lives in .itervox/issues/ and never
-        reaches the tracker.
+      <p className="text-theme-text-secondary mb-4 pr-12 text-xs leading-relaxed">
+        A one-off task with its own instructions. A local issue lives in{' '}
+        <code className="text-theme-text font-mono">.itervox/issues/</code> and never reaches the
+        tracker.
       </p>
       {open && <NewTaskForm onDone={close} />}
     </Modal>

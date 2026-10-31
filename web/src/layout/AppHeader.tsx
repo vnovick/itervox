@@ -11,6 +11,7 @@ import { DemoModeBadge } from '../components/itervox/DemoModeBadge';
 import { HubProjectSwitcher } from '../components/itervox/HubProjectSwitcher';
 import { useDashboardHref } from '../hooks/useDashboardHref';
 import { useUIStore } from '../store/uiStore';
+import { NewTaskButton } from '../components/itervox/newTask/NewTaskButton';
 
 // CORE-076 — pill colour per status-model tone (one palette for all pills).
 // The `.pill-*` classes live in index.css (tokens.contrast.test.ts measures
@@ -261,6 +262,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         >
           Commands <kbd className="text-theme-muted font-sans">Ctrl/⌘ K</kbd>
         </button>
+
+        {/* #251 — New task, from every page (operator scope). */}
+        <NewTaskButton />
       </header>
     </div>
   );

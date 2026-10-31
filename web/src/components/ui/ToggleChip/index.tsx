@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, Ref } from 'react';
 import { cn } from '../cn';
-import { FOCUS_RING } from '../button/buttonStyles';
+import { FOCUS_RING } from '../button/buttonRecipe';
 
 export interface ToggleChipProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,

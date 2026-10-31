@@ -10,7 +10,7 @@ import { useUIStore } from '../../../../store/uiStore';
 import { useNewTaskUrlOpen } from '../../../../hooks/useUrlState';
 import { NewTaskForm } from '../NewTaskForm';
 import { NewTaskDialog } from '../NewTaskDialog';
-import { DashboardIssuesHeader } from '../../../../pages/Dashboard/components/DashboardIssuesHeader';
+import { NewTaskButton } from '../NewTaskButton';
 import { buildTaskRequest, EMPTY_DRAFT, fillVars, templateVars } from '../newTaskModel';
 
 vi.mock('../../../../auth/authedFetch', () => ({ authedFetch: vi.fn() }));
@@ -227,20 +227,7 @@ describe('NewTaskForm (#251)', () => {
 
     render(
       <>
-        <DashboardIssuesHeader
-          filteredCount={0}
-          availableProfileCount={0}
-          notificationsTotal={0}
-          viewMode="board"
-          setViewMode={vi.fn()}
-          loading={false}
-          onRefresh={vi.fn()}
-          filterPills={[]}
-          stateFilter="all"
-          setStateFilter={vi.fn()}
-          search=""
-          setSearch={vi.fn()}
-        />
+        <NewTaskButton />
         <NewTaskDialog />
       </>,
       { snapshot },
@@ -250,24 +237,26 @@ describe('NewTaskForm (#251)', () => {
     expect(await screen.findByRole('dialog', { name: 'New task' })).toBeInTheDocument();
   });
 
+  it('the top-bar button goes to the Dashboard with ?newTask=1 from another page', async () => {
+    useUIStore.getState().setNewTaskOpen(false);
+    function Host() {
+      useNewTaskUrlOpen();
+      return (
+        <>
+          <NewTaskButton />
+          <NewTaskDialog />
+        </>
+      );
+    }
+    render(<Host />, { snapshot, route: '/timeline' });
+    fireEvent.click(screen.getByRole('button', { name: '+ New task' }));
+    // Off the Dashboard the button navigates instead of opening in place;
+    // the URL hook (mounted here) then opens the dialog.
+    expect(await screen.findByRole('dialog', { name: 'New task' })).toBeInTheDocument();
+  });
+
   it('hides the New task button from a viewer', () => {
-    render(
-      <DashboardIssuesHeader
-        filteredCount={0}
-        availableProfileCount={0}
-        notificationsTotal={0}
-        viewMode="board"
-        setViewMode={vi.fn()}
-        loading={false}
-        onRefresh={vi.fn()}
-        filterPills={[]}
-        stateFilter="all"
-        setStateFilter={vi.fn()}
-        search=""
-        setSearch={vi.fn()}
-      />,
-      { snapshot: makeSnapshot({ callerScope: 'viewer' }) },
-    );
+    render(<NewTaskButton />, { snapshot: makeSnapshot({ callerScope: 'viewer' }) });
     expect(screen.queryByRole('button', { name: '+ New task' })).not.toBeInTheDocument();
   });
 });

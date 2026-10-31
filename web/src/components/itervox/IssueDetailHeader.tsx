@@ -83,7 +83,7 @@ export default function IssueDetailHeader({
   };
 
   return (
-    <div className="border-theme-line flex-shrink-0 space-y-1 border-b px-5 py-3">
+    <div className="flex-shrink-0 space-y-3 px-6 pb-3">
       <div className="flex flex-wrap items-center gap-2">
         <Badge color={stateBadgeColor(issue.state)} size="sm">
           {issue.state}
@@ -140,11 +140,11 @@ export default function IssueDetailHeader({
             Sandboxed ({runningRow.isolation})
           </span>
         )}
-        <span className="bg-theme-bg-soft text-theme-text-secondary ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium">
-          {backend}
-        </span>
+        <span className="tag ml-auto">{backend}</span>
       </div>
-      <p className="text-theme-text text-xl leading-tight font-semibold">{issue.title}</p>
+      <p className="text-theme-text text-xl leading-tight font-semibold tracking-[-0.01em]">
+        {issue.title}
+      </p>
     </div>
   );
 }
