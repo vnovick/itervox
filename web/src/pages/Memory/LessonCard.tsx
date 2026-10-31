@@ -93,7 +93,7 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
         </Button>
         {editing ? (
           <Button
-            variant="ghost"
+            variant="glass"
             pill
             onClick={() => {
               setEditing(false);
@@ -104,7 +104,7 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
           </Button>
         ) : (
           <Button
-            variant="ghost"
+            variant="glass"
             pill
             onClick={() => {
               setEditing(true);
@@ -114,9 +114,8 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
           </Button>
         )}
         <Button
-          variant="ghost"
+          variant="glass-danger"
           pill
-          className="text-theme-danger-text"
           disabled={busy}
           onClick={() => {
             reject.mutate(entry.id);

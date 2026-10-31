@@ -35,7 +35,7 @@ export default function MobileIssuePage() {
       <MobileIssueDecision identifier={identifier} />
       <IssueNowPanel identifier={identifier} live />
       <IssueSteerBox identifier={identifier} />
-      <section aria-label="Project dispatch" className="flex flex-wrap items-center gap-2">
+      <section aria-label="Project dispatch" className="grid">
         <DispatchPauseToggle />
       </section>
       {project && (

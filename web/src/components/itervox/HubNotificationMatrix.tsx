@@ -97,7 +97,7 @@ export function HubNotificationMatrix({
                     <td key={ch.name} className="text-center">
                       <input
                         type="checkbox"
-                        className="accent-theme-accent h-4 w-4"
+                        className="switch align-middle"
                         aria-label={`${project} ${KIND_LABELS[k.name] ?? k.name} via ${CHANNEL_LABELS[ch.name] ?? ch.name}`}
                         checked={route.includes(ch.name)}
                         onChange={(e) => {

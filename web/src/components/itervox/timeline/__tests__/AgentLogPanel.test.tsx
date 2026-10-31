@@ -9,18 +9,21 @@ vi.mock('../../../../queries/logs', () => ({
   useIssueLogs: () => ({ data: [] as IssueLogEntry[] }),
 }));
 
-// CORE-024 fix round 1 — scrollIntoView's `behavior` is an explicit
+// CORE-024 fix round 1 — scrollTo's `behavior` is an explicit
 // argument, so the CSS `scroll-behavior: auto !important` under
 // prefers-reduced-motion (index.css) cannot override it; the component must
-// pass 'auto' itself. Independently testable via a spied scrollIntoView —
+// pass 'auto' itself. Independently testable via a spied scrollTo —
 // no computed styles involved. AgentLogPanel.tsx is excluded from the
 // coverage gate (extracted timeline presentational component, per
 // vitest.config.ts), but the behavior still needs a real, passing test.
 describe('AgentLogPanel — reduced-motion scroll (CORE-024)', () => {
+  const scrollToSpy = vi.fn();
   const scrollIntoViewSpy = vi.fn();
 
   beforeEach(() => {
+    scrollToSpy.mockClear();
     scrollIntoViewSpy.mockClear();
+    Element.prototype.scrollTo = scrollToSpy as unknown as typeof Element.prototype.scrollTo;
     Element.prototype.scrollIntoView = scrollIntoViewSpy;
     useItervoxStore.setState({ snapshot: makeSnapshot() });
   });
@@ -36,7 +39,7 @@ describe('AgentLogPanel — reduced-motion scroll (CORE-024)', () => {
         logSlice={[{ event: 'text', message: 'hello', level: 'INFO', tool: '', time: '' }]}
       />,
     );
-    expect(scrollIntoViewSpy).toHaveBeenCalledWith({ behavior: 'smooth' });
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: expect.any(Number), behavior: 'smooth' });
   });
 
   it('scrolls without animation when the user prefers reduced motion', () => {
@@ -55,6 +58,20 @@ describe('AgentLogPanel — reduced-motion scroll (CORE-024)', () => {
         logSlice={[{ event: 'text', message: 'hello', level: 'INFO', tool: '', time: '' }]}
       />,
     );
-    expect(scrollIntoViewSpy).toHaveBeenCalledWith({ behavior: 'auto' });
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: expect.any(Number), behavior: 'auto' });
+  });
+
+  // Following the tail must scroll only the log box: scrollIntoView also
+  // scrolls every scrollable ancestor (the page), which slid the Timeline
+  // filter row under the sticky top bar on phones.
+  it('keeps the page still while following the log tail', () => {
+    render(
+      <AgentLogPanel
+        identifier="ENG-1"
+        logSlice={[{ event: 'text', message: 'hello', level: 'INFO', tool: '', time: '' }]}
+      />,
+    );
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
   });
 });

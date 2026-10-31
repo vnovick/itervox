@@ -90,8 +90,10 @@ export function CronPicker({
       className="field-group space-y-3"
     >
       {title}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
-        <div className="col-span-2 sm:col-span-1">
+      {/* The preset menu takes its own row so a label such as
+          "Weekdays at 09:00 (0 9 * * 1-5)" is never clipped. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="col-span-2 sm:col-span-5">
           <label htmlFor={presetId} className={subLabelCls}>
             Preset
           </label>
@@ -137,9 +139,9 @@ export function CronPicker({
                 placeholder="*"
                 spellCheck={false}
                 autoComplete="off"
-                className={`${inputCls} px-2 text-center font-mono text-[13px]`}
+                className={`${inputCls} px-2.5 font-mono text-[13px]`}
               />
-              <p className="text-theme-muted mt-0.5 text-center text-[11px]">
+              <p className="text-theme-muted mt-0.5 text-[11px]">
                 {String(spec.min)}–{String(spec.max)}
               </p>
             </div>

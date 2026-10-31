@@ -68,14 +68,17 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
 
       {/* Host type selector */}
       <div className="mb-5 flex gap-2">
-        <div className="choice-card flex-1 flex-col gap-0.5 rounded-[14px]" data-active="true">
+        <div
+          className="choice-card flex-1 flex-col items-start gap-0.5 rounded-[14px]"
+          data-active="true"
+        >
           <div className="text-theme-text text-[15px] font-semibold">SSH</div>
           <div className="text-theme-text-secondary text-xs">Remote host via SSH</div>
         </div>
         <button
           type="button"
           disabled
-          className="choice-card flex-1 flex-col gap-0.5 rounded-[14px]"
+          className="choice-card flex-1 flex-col items-start gap-0.5 rounded-[14px]"
           title="Coming in a future release"
         >
           <div className="flex items-center gap-1.5">

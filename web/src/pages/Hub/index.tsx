@@ -53,7 +53,7 @@ export default function HubPage() {
               onClick={() => {
                 setView(v.id);
               }}
-              className="text-sm"
+              className="text-[15px]"
             >
               {v.label}
             </button>

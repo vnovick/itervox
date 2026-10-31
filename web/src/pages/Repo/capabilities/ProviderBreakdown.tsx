@@ -3,7 +3,7 @@
 
 import { useMemo } from 'react';
 import type { Skill, SkillsInventory } from '../../../types/schemas';
-import { classifyProvider, fmtTokens } from './skillsFormat';
+import { PROVIDER_FILL, classifyProvider, fmtTokens } from './skillsFormat';
 
 const PROVIDERS = ['claude', 'codex', 'shared'] as const;
 
@@ -39,11 +39,15 @@ export function ProviderBreakdown({ inventory }: { inventory: SkillsInventory })
           const pct = Math.round((s.tokens / max) * 100);
           return (
             <div key={p} className="flex items-center gap-2 text-xs">
-              <span className="text-theme-muted w-24 flex-shrink-0 capitalize">{p}</span>
+              <span className="text-theme-muted flex w-24 flex-shrink-0 items-center gap-1.5 capitalize">
+                <span aria-hidden="true" className={`size-2 rounded-sm ${PROVIDER_FILL[p]}`} />
+                {p}
+              </span>
               <span className="text-theme-text w-10 flex-shrink-0 tabular-nums">{s.count}</span>
               <div className="subtle-fill relative h-2.5 flex-1 overflow-hidden rounded-full">
                 <div
-                  className="bg-theme-accent absolute inset-y-0 left-0"
+                  data-testid={`provider-bar-${p}`}
+                  className={`absolute inset-y-0 left-0 rounded-full ${PROVIDER_FILL[p]}`}
                   style={{ width: `${String(pct)}%` }}
                 />
               </div>

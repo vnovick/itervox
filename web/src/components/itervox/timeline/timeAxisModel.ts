@@ -23,8 +23,19 @@ const TIME_STEPS = [
   7 * DAY,
 ] as const;
 
-export function timeAxisStep(spanMs: number): number {
-  const rawStep = spanMs / 6;
+/** Ticks the axis aims for when its width is unknown or wide enough. */
+export const DEFAULT_TICK_TARGET = 6;
+/** Horizontal room one tick label needs (an `HH:mm` label plus breathing space). */
+export const MIN_TICK_SPACING_PX = 56;
+
+/** How many ticks fit an axis `widthPx` wide (at least 2, at most the default). */
+export function tickTargetForWidth(widthPx: number): number {
+  if (!(widthPx > 0)) return DEFAULT_TICK_TARGET;
+  return Math.max(2, Math.min(DEFAULT_TICK_TARGET, Math.floor(widthPx / MIN_TICK_SPACING_PX)));
+}
+
+export function timeAxisStep(spanMs: number, targetTicks: number = DEFAULT_TICK_TARGET): number {
+  const rawStep = spanMs / Math.max(1, targetTicks);
   if (spanMs >= DAY_SCALE_SPAN && rawStep < DAY) return DAY;
   const predefined = TIME_STEPS.find((step) => step >= rawStep);
   if (predefined) return predefined;
@@ -43,11 +54,15 @@ function addLocalDays(ms: number, days: number): number {
   return d.getTime();
 }
 
-export function buildTimeAxisTicks(viewStart: number, viewEnd: number): number[] {
+export function buildTimeAxisTicks(
+  viewStart: number,
+  viewEnd: number,
+  targetTicks: number = DEFAULT_TICK_TARGET,
+): number[] {
   const span = viewEnd - viewStart;
   if (span <= 0) return [];
 
-  const step = timeAxisStep(span);
+  const step = timeAxisStep(span, targetTicks);
   const ticks: number[] = [];
   if (step >= DAY) {
     const stepDays = Math.max(1, Math.round(step / DAY));

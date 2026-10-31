@@ -22,7 +22,7 @@ export function MemoryList({
             <button
               type="button"
               aria-pressed={active}
-              className="choice-card w-full flex-col gap-0.5 rounded-[var(--radius-md)] px-3.5 py-2.5 text-sm"
+              className="choice-card w-full flex-col items-start gap-1.5 rounded-[var(--radius-md)] px-3.5 py-2.5 text-sm"
               onClick={() => {
                 select(active ? null : e.id);
               }}
@@ -35,16 +35,23 @@ export function MemoryList({
                 )}
                 {e.text}
               </span>
-              <span className="text-theme-text-secondary flex flex-wrap gap-x-3 text-xs">
-                <span>{TYPE_LABELS[e.type]}</span>
-                <span>{SCOPE_INFO[e.scope].label}</span>
-                {e.status === 'archived' && <span>Archived</span>}
-                <span>
+              <span
+                className="flex flex-wrap justify-start gap-1.5"
+                data-testid="memory-entry-meta"
+              >
+                <span className="tag">{TYPE_LABELS[e.type]}</span>
+                <span className="tag">{SCOPE_INFO[e.scope].label}</span>
+                {e.status === 'archived' && <span className="tag pill-warn">Archived</span>}
+                <span className="tag">
                   {e.useCount === 0
                     ? 'never used'
                     : `used by ${String(e.useCount)} run${e.useCount === 1 ? '' : 's'}`}
                 </span>
-                {e.tags.length > 0 && <span>#{e.tags.join(' #')}</span>}
+                {e.tags.map((t) => (
+                  <span key={t} className="tag">
+                    #{t}
+                  </span>
+                ))}
               </span>
             </button>
           </li>

@@ -57,7 +57,7 @@ export function TimelineDetailPanel({
   return (
     <section
       aria-label="Run timeline"
-      className="glass-panel flex min-h-0 flex-1 flex-col self-stretch overflow-hidden rounded-[26px]"
+      className="glass-panel flex max-h-full min-h-0 flex-col self-stretch overflow-hidden rounded-[26px] md:min-w-0 md:flex-1 md:self-start"
     >
       <div className="flex flex-shrink-0 flex-wrap items-start gap-3 px-5 pt-[18px] pb-3">
         <div className="min-w-0 flex-1">
@@ -87,7 +87,7 @@ export function TimelineDetailPanel({
         )}
       </div>
 
-      <div className="max-h-[50%] min-h-0 shrink-0 overflow-y-auto px-5 pb-3">
+      <div className="@container max-h-[45dvh] min-h-0 shrink-0 overflow-y-auto px-5 pb-3">
         {!selectedGroup ? (
           <div className="text-theme-muted flex h-12 items-center justify-center text-sm">
             Select an issue from the sidebar
@@ -109,14 +109,17 @@ export function TimelineDetailPanel({
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 pb-5">
+      <div className="flex min-h-0 flex-col gap-3 px-5 pb-5">
         {selectedId ? (
           <>
             {selectedSession && selectedSession.status !== 'live' && (
               <RunProvenance run={selectedSession} />
             )}
 
-            <ConsoleSurface className="flex min-h-0 flex-1 flex-col rounded-[18px]">
+            <ConsoleSurface
+              data-testid="timeline-log-console"
+              className="flex min-h-0 flex-col rounded-[18px]"
+            >
               <div className="console-bar flex flex-shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2.5">
                 <div className="text-theme-muted flex flex-wrap items-center gap-1.5 font-mono text-xs">
                   <span>Logs — {selectedId}</span>
@@ -160,9 +163,9 @@ export function TimelineDetailPanel({
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-hidden">
+              <div className="flex min-h-0 flex-col overflow-hidden">
                 {expandedRunAt == null ? (
-                  <div className="text-theme-muted flex h-full min-h-24 items-center justify-center font-mono text-xs italic">
+                  <div className="text-theme-muted flex min-h-24 items-center justify-center font-mono text-xs italic">
                     Select a run to show logs per run
                   </div>
                 ) : (

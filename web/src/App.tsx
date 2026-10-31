@@ -174,7 +174,7 @@ export function AppShell() {
         }`}
       >
         <div
-          className="glass-scrim absolute inset-0"
+          className="glass-scrim absolute inset-0 backdrop-blur-[10px] backdrop-brightness-[.85]"
           aria-label="Close navigation"
           role="button"
           tabIndex={0}
@@ -184,7 +184,8 @@ export function AppShell() {
           }}
         />
         <aside
-          className={`glass-sheet absolute top-2.5 bottom-2.5 left-2.5 flex w-[250px] max-w-[calc(100vw-40px)] flex-col overflow-y-auto px-2.5 py-5 transition-transform duration-200 ${
+          data-testid="mobile-drawer-panel"
+          className={`glass-sheet absolute top-2.5 bottom-2.5 left-2.5 flex w-[250px] max-w-[calc(100vw-40px)] flex-col overflow-y-auto px-2.5 py-5 transition-transform duration-200 [&_.nav-item]:min-h-12 [&_.nav-item]:gap-3 [&_.nav-item]:text-[15px] ${
             mobileNavOpen ? 'translate-x-0' : '-translate-x-[110%]'
           }`}
         >

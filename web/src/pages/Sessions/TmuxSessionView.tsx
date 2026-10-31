@@ -11,6 +11,7 @@ import {
 } from '../../queries/sessionsTmux';
 import type { SessionRow } from '../../types/schemas';
 import { CopyButton } from '../../components/ui/CopyButton';
+import { SCREEN_TONE_CLASS, screenLineTone } from './screenLineTone';
 
 // #178 tmux control: the live screen of a session running in a tmux pane,
 // a composer that pastes text (and presses Enter), a row of keys, and — for
@@ -25,6 +26,27 @@ const KEYS: { key: SessionKey; label: string; title: string }[] = [
   { key: '2', label: '2', title: 'Answer 2' },
   { key: '3', label: '3', title: 'Answer 3' },
 ];
+
+/** The pane's lines, each tinted when its leading glyph says what it is. */
+function ScreenLines({ text }: { text: string }) {
+  const lines = text.split('\n');
+  return lines.map((line, i) => {
+    const tone = screenLineTone(line);
+    const end = i < lines.length - 1 ? '\n' : '';
+    // Lines are positional (a redraw replaces the whole pane), so the
+    // index is the identity here.
+    return (
+      <span
+        key={i}
+        data-tone={tone ?? undefined}
+        className={tone ? SCREEN_TONE_CLASS[tone] : undefined}
+      >
+        {line}
+        {end}
+      </span>
+    );
+  });
+}
 
 /** The pane's text, polled while the tab is visible. Plain text only. */
 export function TmuxScreen({ id }: { id: string }) {
@@ -42,7 +64,7 @@ export function TmuxScreen({ id }: { id: string }) {
       aria-label="Session screen"
       className="text-theme-text min-h-[240px] flex-1 overflow-auto px-4 py-3.5 font-mono text-[12.5px] leading-relaxed whitespace-pre"
     >
-      {data?.text ?? 'Reading the screen…'}
+      {data ? <ScreenLines text={data.text} /> : 'Reading the screen…'}
     </pre>
   );
 }

@@ -351,6 +351,27 @@ for (const theme of THEMES) {
       );
     });
 
+    // The same page inside a project through the hub (/hub/p/{project}/m/…):
+    // only there does it link back to the full dashboard, and the project's
+    // dispatch pause shows when the daemon advertises it.
+    test('hub project mobile issue page renders', async ({ page }, info) => {
+      await bootApp(page, {
+        scenario: {
+          ...mobileShellScenario,
+          snapshot: {
+            ...mobileShellScenario.snapshot,
+            capabilities: [...(mobileShellScenario.snapshot.capabilities ?? []), 'dispatch_pause'],
+          },
+        },
+        route: '/hub/p/web-app/m/DEMO-1',
+        beforeNavigate: installTourData,
+      });
+      await expect(page.getByRole('link', { name: 'Open in the full dashboard' })).toBeVisible();
+      await expect(page.getByTestId('dispatch-pause-toggle')).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      await shoot(page, theme, 'mobile-issue-hub', viewportOf(info.project.name));
+    });
+
     test('server-down screen renders', async ({ page }, info) => {
       const api = await installMockApi(page, quickstartScenario);
       await installMockSse(page, quickstartScenario);
