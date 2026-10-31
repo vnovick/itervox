@@ -73,17 +73,15 @@ export function SchemaSettingsForm({
         }}
       />
       {sections.map((section) => (
-        <details key={section} open className="border-theme-line rounded-[var(--radius-sm)] border">
-          <summary className="text-theme-text cursor-pointer px-3 py-2 text-sm font-semibold">
+        <details key={section} open className="glass-card">
+          <summary className="text-theme-text cursor-pointer px-4 py-3 text-sm font-semibold">
             {SECTION_TITLES[section] ?? section}
           </summary>
-          <div className="space-y-5 px-3 pb-3">
+          <div className="space-y-5 px-4 pb-4">
             {groupSettingsFields(visible.filter((f) => f.section === section)).map(
               ([group, list]) => (
                 <fieldset key={`${section}-${group}`} className="space-y-3">
-                  <legend className="text-theme-text-secondary mb-1 text-xs font-semibold tracking-wider uppercase">
-                    {group}
-                  </legend>
+                  <legend className="eyebrow text-theme-text-secondary mb-1">{group}</legend>
                   {list.map((def) => {
                     const inDraft = def.key in draft;
                     const inLayer = def.key in layer.values;

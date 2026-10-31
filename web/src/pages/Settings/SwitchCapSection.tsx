@@ -9,6 +9,8 @@
 // the four near-identical commit-on-blur handlers from the original card.
 
 import { useDebouncedCommit } from '../../hooks/useDebouncedCommit';
+import { inputCls } from './formStyles';
+import { cn } from '../../components/ui/cn';
 
 interface SwitchCapSectionProps {
   maxSwitchesPerIssuePerWindow: number;
@@ -83,7 +85,7 @@ export function SwitchCapSection({
               e.currentTarget.blur();
             }
           }}
-          className="border-theme-line bg-theme-bg-soft text-theme-text w-32 rounded-md border px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)] focus:outline-none"
+          className={cn(inputCls, 'w-32')}
         />
         <span className="text-theme-text-secondary text-xs">switches per</span>
         <input
@@ -105,7 +107,7 @@ export function SwitchCapSection({
               e.currentTarget.blur();
             }
           }}
-          className="border-theme-line bg-theme-bg-soft text-theme-text w-24 rounded-md border px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)] focus:outline-none"
+          className={cn(inputCls, 'w-24')}
         />
         <span className="text-theme-text-secondary text-xs">hours</span>
       </div>

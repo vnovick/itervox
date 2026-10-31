@@ -67,7 +67,7 @@ const NAV_ITEMS = [
   { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
-function SidebarContent() {
+function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   // CORE-078 — same count as the attention inbox and the page title.
   const attention = useAttentionCount();
   // #178 — sessions waiting for input badge the Sessions tab.
@@ -101,6 +101,7 @@ function SidebarContent() {
             label={item.label}
             badge={badgeFor(item.to)}
             badgeLabel={item.to === '/memory' ? 'lessons to review' : undefined}
+            onNavigate={onNavigate}
           />
         ))}
       </nav>
@@ -187,7 +188,7 @@ export function AppShell() {
             mobileNavOpen ? 'translate-x-0' : '-translate-x-[110%]'
           }`}
         >
-          <SidebarContent />
+          <SidebarContent onNavigate={closeMobileNav} />
         </aside>
       </div>
 

@@ -5,6 +5,7 @@
 import { RequireScope } from '../../../components/itervox/RequireScope';
 import { useCreateVerifySkillIssue, useRepoReadiness } from '../../../queries/repo';
 import type { RepoReadinessCheck } from '../../../types/schemas';
+import { buttonClass } from '../../../components/ui/button/buttonStyles';
 
 /** #218 — the check the "Generate verify skill" action answers. */
 const VERIFY_SKILL_CHECK = 'verify_skill';
@@ -20,7 +21,7 @@ function GenerateVerifySkill() {
         onClick={() => {
           create.mutate();
         }}
-        className="border-theme-line text-theme-text mt-2 rounded border px-3 py-1 text-xs font-semibold hover:bg-[var(--bg-soft)] disabled:opacity-50"
+        className={buttonClass('secondary', 'sm', 'mt-2', true)}
       >
         {create.isPending
           ? 'Creating issue…'
@@ -33,20 +34,16 @@ function GenerateVerifySkill() {
 }
 
 const STATUS_STYLE: Record<RepoReadinessCheck['status'], string> = {
-  pass: 'border-theme-success/40 bg-theme-success-soft text-theme-success-text',
-  warn: 'border-theme-warning/40 bg-theme-warning-soft text-theme-warning-text',
-  fail: 'border-theme-danger/40 bg-theme-danger-soft text-theme-danger-text',
+  pass: 'pill-ok',
+  warn: 'pill-warn',
+  fail: 'pill-danger',
 };
 
 function ReadinessRow({ check }: { check: RepoReadinessCheck }) {
   return (
-    <li className="border-theme-line rounded border p-3" data-check-id={check.id}>
+    <li className="glass-card px-3.5 py-3" data-check-id={check.id}>
       <div className="flex flex-wrap items-center gap-2">
-        <span
-          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase ${STATUS_STYLE[check.status]}`}
-        >
-          {check.status}
-        </span>
+        <span className={`pill pill-sm ${STATUS_STYLE[check.status]}`}>{check.status}</span>
         <span className="text-theme-text text-xs font-semibold">{check.title}</span>
         <code className="text-theme-muted ml-auto font-mono text-[10px]">{check.id}</code>
       </div>
@@ -69,10 +66,10 @@ export function ReadinessSection() {
   const warning = checks.filter((c) => c.status === 'warn').length;
 
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
+    <div className="glass-panel px-5 py-[18px]">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <p className="text-theme-text text-sm font-medium">Agent readiness</p>
+          <p className="section-title">Agent readiness</p>
           <p className="text-theme-muted text-[11px]">
             The repository checks <code className="font-mono">itervox doctor</code> runs.
             {data && ` ${String(failing)} failing · ${String(warning)} warnings.`}
@@ -84,7 +81,7 @@ export function ReadinessSection() {
             void refetch();
           }}
           disabled={isFetching}
-          className="border-theme-line text-theme-text rounded border px-3 py-1.5 text-xs font-semibold hover:bg-[var(--bg-soft)] disabled:opacity-50"
+          className={buttonClass('secondary', 'sm', undefined, true)}
         >
           {isFetching ? 'Checking…' : 'Re-run checks'}
         </button>

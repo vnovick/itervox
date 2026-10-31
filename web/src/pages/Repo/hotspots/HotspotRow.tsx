@@ -11,7 +11,7 @@ export function HotspotRow({ row }: { row: Row }) {
   const runs = row.runs ?? [];
   const issues = row.issues ?? [];
   return (
-    <li className="border-theme-line rounded border p-3" data-path={row.path}>
+    <li className="glass-card px-3.5 py-3" data-path={row.path}>
       <div className="flex flex-wrap items-center gap-2">
         <code className="text-theme-text font-mono text-xs font-semibold break-all">
           {row.path}
@@ -20,10 +20,7 @@ export function HotspotRow({ row }: { row: Row }) {
       </div>
       <div className="mt-1 flex flex-wrap gap-1.5">
         {rowCounts(row).map((c) => (
-          <span
-            key={c.key}
-            className="border-theme-line text-theme-text rounded border px-1.5 py-0.5 text-[10px]"
-          >
+          <span key={c.key} className="tag-chip text-[11px]">
             {c.n} {c.label}
           </span>
         ))}

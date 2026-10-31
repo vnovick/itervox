@@ -6,10 +6,9 @@ import type { RepoEvalCase } from '../../../types/schemas';
 import { shortDigest } from '../../../utils/promptVersions';
 import { fmtSeen } from '../prompts/promptVersionGroups';
 
-const BADGE =
-  'inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase';
-const PASS_STYLE = 'border-theme-success/40 bg-theme-success-soft text-theme-success-text';
-const FAIL_STYLE = 'border-theme-danger/40 bg-theme-danger-soft text-theme-danger-text';
+const BADGE = 'pill pill-sm';
+const PASS_STYLE = 'pill-ok';
+const FAIL_STYLE = 'pill-danger';
 
 const DIGEST_SOURCE_LABEL: Record<string, string> = {
   live: 'computed by the live run',
@@ -19,18 +18,12 @@ const DIGEST_SOURCE_LABEL: Record<string, string> = {
 export function EvalCaseRow({ c }: { c: RepoEvalCase }) {
   const failures = c.failures ?? [];
   return (
-    <li className="border-theme-line rounded border p-3" data-case={`${c.profile}/${c.scenario}`}>
+    <li className="glass-card px-3.5 py-3" data-case={`${c.profile}/${c.scenario}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={`${BADGE} ${c.pass ? PASS_STYLE : FAIL_STYLE}`}>
           {c.pass ? 'pass' : 'fail'}
         </span>
-        {c.regression && (
-          <span
-            className={`${BADGE} border-theme-warning/40 bg-theme-warning-soft text-theme-warning-text`}
-          >
-            regression
-          </span>
-        )}
+        {c.regression && <span className={`${BADGE} pill-warn`}>regression</span>}
         <span className="text-theme-text font-mono text-xs font-semibold">{c.scenario}</span>
         {c.stale && <span className="text-theme-muted text-[10px]">(stale recording)</span>}
         <span className="text-theme-muted ml-auto text-[11px]">

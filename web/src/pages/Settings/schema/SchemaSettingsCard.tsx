@@ -66,11 +66,11 @@ export function SchemaSettingsCard() {
   const draftKey = `${current}-${layer?.version ?? ''}`;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated space-y-4 rounded-[var(--radius-md)] border p-5">
+    <div className="space-y-4">
       <div
         role="tablist"
         aria-label="Settings layers"
-        className="border-theme-line flex gap-1 border-b"
+        className="segmented max-w-full overflow-x-auto"
       >
         {SETTINGS_LAYER_NAMES.map((n, i) => {
           const active = n === current;
@@ -83,11 +83,7 @@ export function SchemaSettingsCard() {
               aria-selected={active}
               aria-controls="settings-layer-panel"
               tabIndex={active ? 0 : -1}
-              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
-                active
-                  ? 'border-theme-accent text-theme-text'
-                  : 'text-theme-muted hover:text-theme-text border-transparent'
-              }`}
+              className="text-sm whitespace-nowrap"
               onClick={() => {
                 setCurrent(n);
               }}
@@ -130,17 +126,13 @@ export function SchemaSettingsCard() {
           <p className="text-theme-muted text-sm">This layer is turned off.</p>
         ) : (
           <>
-            <div role="group" aria-label="Settings view" className="flex gap-1">
+            <div role="group" aria-label="Settings view" className="segmented">
               {VIEWS.map((v) => (
                 <button
                   key={v.id}
                   type="button"
                   aria-pressed={view === v.id}
-                  className={`rounded-[var(--radius-sm)] px-3 py-1 text-xs font-medium ${
-                    view === v.id
-                      ? 'bg-theme-accent text-white'
-                      : 'text-theme-text-secondary hover:bg-theme-panel-strong'
-                  }`}
+                  className="text-sm"
                   onClick={() => {
                     setView(v.id);
                   }}

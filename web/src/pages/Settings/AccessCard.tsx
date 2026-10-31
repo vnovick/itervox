@@ -14,6 +14,7 @@ import {
 } from '../../queries/tokens';
 import type { ApiToken, ApiTokenSecret } from '../../types/schemas';
 import { AccessTokenForm } from './AccessTokenForm';
+import { buttonClass } from '../../components/ui/button/buttonStyles';
 
 const EMPTY_TOKENS: readonly ApiToken[] = [];
 
@@ -26,17 +27,20 @@ function NewSecret({ issued, onDone }: { issued: ApiTokenSecret; onDone: () => v
     <div
       role="status"
       data-testid="access-new-secret"
-      className="border-theme-accent bg-theme-bg-soft space-y-2 rounded-[var(--radius-sm)] border p-3"
+      className="choice-card flex-col gap-2"
+      data-active="true"
     >
       <p className="text-theme-text text-sm font-medium">
         Token “{issued.token.name}” ({issued.token.scope}) — copy it now, it is shown only once.
       </p>
       <div className="flex items-center gap-2">
-        <code className="bg-theme-panel-strong flex-1 overflow-x-auto rounded px-2 py-1 font-mono text-xs">
-          {issued.secret}
-        </code>
+        <code className="code-block flex-1 px-3 py-1.5">{issued.secret}</code>
         <CopyButton text={issued.secret} label="Copy token" />
-        <button type="button" className="text-theme-muted text-xs underline" onClick={onDone}>
+        <button
+          type="button"
+          className={buttonClass('secondary', 'xs', undefined, true)}
+          onClick={onDone}
+        >
           Done
         </button>
       </div>
@@ -53,16 +57,17 @@ export function AccessCard() {
   const list = tokens.data ?? EMPTY_TOKENS;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">API tokens</h2>
-        <p className="text-theme-muted mt-1 text-xs">
-          Named viewer, operator and admin tokens, stored as hashes in .itervox/tokens.json.
-          Revoking or rotating takes effect within a second, without a restart. The
-          ITERVOX_API_TOKEN / auto-generated token is always admin and is not listed.
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-theme-text text-sm font-semibold">API tokens</h3>
+        <p className="text-theme-text-secondary mt-1 text-[13px]">
+          Named viewer, operator and admin tokens, stored as hashes in{' '}
+          <code className="font-mono">.itervox/tokens.json</code>. Revoking or rotating takes effect
+          within a second, without a restart. The ITERVOX_API_TOKEN / auto-generated token is always
+          admin and is not listed.
         </p>
       </div>
-      <div className="space-y-4 px-5 py-5">
+      <div className="space-y-3">
         {issued && (
           <NewSecret
             issued={issued}
@@ -86,61 +91,56 @@ export function AccessCard() {
           <p className="text-theme-muted text-sm">No stored tokens yet.</p>
         )}
         {list.length > 0 && (
-          <table className="w-full text-left text-[13px]" aria-label="API tokens">
-            <thead className="text-theme-muted text-xs">
-              <tr>
-                <th className="py-1 font-medium">Name</th>
-                <th className="py-1 font-medium">Scope</th>
-                <th className="py-1 font-medium">Created</th>
-                <th className="py-1 font-medium">Last used</th>
-                <th className="py-1 font-medium">Expires</th>
-                <th className="py-1" />
-              </tr>
-            </thead>
-            <tbody>
-              {list.map((t) => (
-                <tr
-                  key={t.id}
-                  className="border-theme-line border-t"
-                  data-testid="access-token-row"
-                >
-                  <td className="py-2">
-                    <span className="text-theme-text">{t.name}</span>{' '}
-                    <span className="text-theme-muted font-mono text-[11px]">{t.id}</span>
-                  </td>
-                  <td className="py-2">{t.scope}</td>
-                  <td className="py-2">{day(t.created)}</td>
-                  <td className="py-2">{day(t.lastUsed)}</td>
-                  <td className="py-2">
-                    {t.expires ? day(t.expires) : 'never'}
+          <ul className="space-y-2" aria-label="API tokens">
+            {list.map((t) => (
+              <li
+                key={t.id}
+                className="glass-card flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[14px] px-3 py-2.5 text-[13px]"
+                data-testid="access-token-row"
+              >
+                <span className="text-theme-text font-semibold">{t.name}</span>
+                <span className="text-theme-muted font-mono text-[11px]">{t.id}</span>
+                <span className="text-theme-text-secondary flex flex-wrap gap-x-1.5">
+                  <span>{t.scope}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    created <span>{day(t.created)}</span>
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    last used <span>{day(t.lastUsed)}</span>
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    expires <span>{t.expires ? day(t.expires) : 'never'}</span>
                     {t.expired ? ' (expired)' : ''}
-                  </td>
-                  <td className="flex justify-end gap-2 py-2">
-                    <ConfirmButton
-                      label="Rotate"
-                      ariaLabel={`Rotate ${t.name}`}
-                      confirmLabel="Yes, rotate"
-                      pendingLabel="Rotating…"
-                      isPending={rotate.isPending && rotate.variables === t.id}
-                      onConfirm={() => {
-                        rotate.mutate(t.id, { onSuccess: setIssued });
-                      }}
-                    />
-                    <ConfirmButton
-                      label="Revoke"
-                      ariaLabel={`Revoke ${t.name}`}
-                      confirmLabel="Yes, revoke"
-                      pendingLabel="Revoking…"
-                      isPending={revoke.isPending && revoke.variables === t.id}
-                      onConfirm={() => {
-                        revoke.mutate(t.id);
-                      }}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </span>
+                </span>
+                <span className="ml-auto flex gap-1.5">
+                  <ConfirmButton
+                    label="Rotate"
+                    ariaLabel={`Rotate ${t.name}`}
+                    confirmLabel="Yes, rotate"
+                    pendingLabel="Rotating…"
+                    isPending={rotate.isPending && rotate.variables === t.id}
+                    onConfirm={() => {
+                      rotate.mutate(t.id, { onSuccess: setIssued });
+                    }}
+                  />
+                  <ConfirmButton
+                    label="Revoke"
+                    ariaLabel={`Revoke ${t.name}`}
+                    confirmLabel="Yes, revoke"
+                    pendingLabel="Revoking…"
+                    isPending={revoke.isPending && revoke.variables === t.id}
+                    onConfirm={() => {
+                      revoke.mutate(t.id);
+                    }}
+                  />
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>

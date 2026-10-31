@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../../ui/button';
+import { FIELD_CLASS } from '../../ui/Input';
 import { defaultDeviceName, pushSupported } from '../../../lib/pwa';
 import {
   useHubPushDevices,
@@ -20,22 +21,23 @@ export function PushDevicePanel() {
 
   return (
     <section aria-label="Push notifications" className="flex flex-col gap-3">
-      <h2 className="text-theme-text text-sm font-semibold">Push notifications</h2>
+      <h2 className="section-title">Push notifications</h2>
       {supported ? (
         <div className="flex flex-col gap-2">
-          <label className="text-theme-text-secondary flex flex-col gap-1 text-xs">
-            Device name
+          <label className="flex flex-col">
+            <span className="field-label">Device name</span>
             <input
               value={name}
               maxLength={48}
               onChange={(e) => {
                 setName(e.target.value);
               }}
-              className="border-theme-line bg-theme-bg-elevated text-theme-text h-10 rounded-[var(--radius-sm)] border px-3 text-sm"
+              className={`${FIELD_CLASS} h-11 text-base`}
             />
           </label>
           <Button
             variant="primary"
+            size="lg"
             disabled={subscribe.isPending || name.trim() === ''}
             onClick={() => {
               subscribe.mutate(name.trim());
@@ -50,9 +52,9 @@ export function PushDevicePanel() {
           Screen first (Share → Add to Home Screen) and open it from there; push also needs https.
         </p>
       )}
-      <ul aria-label="Devices notified" className="flex flex-col gap-1">
+      <ul aria-label="Devices notified" className="flex flex-col gap-2">
         {(devices.data ?? []).map((d) => (
-          <li key={d.id} className="flex items-center gap-2 text-sm">
+          <li key={d.id} className="glass-card flex items-center gap-2 px-3 py-2 text-sm">
             <span className="text-theme-text truncate">{d.name}</span>
             <span className="text-theme-muted truncate text-xs">{d.service}</span>
             <Button
