@@ -1,4 +1,5 @@
 import { Search, X } from 'lucide-react';
+import { cn } from '../ui/cn';
 
 interface SearchInputProps {
   value: string;
@@ -36,7 +37,10 @@ export function SearchInput({
         onChange={(e) => {
           onChange(e.target.value);
         }}
-        className={`border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:border-theme-accent h-8 w-full rounded-lg border py-1.5 pr-8 pl-8 text-sm focus:outline-none ${inputClassName}`}
+        className={cn(
+          'border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:border-theme-accent h-8 w-full rounded-lg border py-1.5 pr-8 pl-8 text-sm focus:outline-none',
+          inputClassName,
+        )}
       />
       {value.trim() !== '' && (
         <button

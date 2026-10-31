@@ -1,18 +1,19 @@
-export const fieldLabelCls =
-  'mb-2 block text-xs font-medium tracking-wider uppercase text-theme-text-secondary';
+// Shared form recipes for settings, profile, automation, rule and memory
+// forms. Surfaces and colours come from index.css (`.field-label`,
+// `.field-help`, `.field-group`) and the Input primitive's FIELD_CLASS, so
+// every form in the app reads the same.
+import { FIELD_CLASS } from '../../components/ui/Input';
 
-export const inputCls =
-  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:border-theme-accent focus:outline-none bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
+export const fieldLabelCls = 'field-label';
+
+export const inputCls = `${FIELD_CLASS} min-h-10 py-2`;
 
 export const selectCls = `${inputCls} cursor-pointer`;
 
-export const textareaCls =
-  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-xs font-mono focus:border-theme-accent focus:outline-none resize-y min-h-[72px] bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
+export const textareaCls = `${FIELD_CLASS} min-h-[72px] resize-y py-2.5 font-mono text-xs leading-relaxed`;
 
-export const helperTextCls = 'text-theme-muted mt-1 text-[11px]';
+export const helperTextCls = 'field-help mt-1';
 
-export const fieldSurfaceCls =
-  'border-theme-line bg-theme-bg-soft space-y-2 rounded-[var(--radius-sm)] border p-3';
+export const fieldSurfaceCls = 'field-group space-y-2';
 
-export const checkboxCls =
-  'mt-0.5 h-3.5 w-3.5 rounded border-[var(--line)] bg-[var(--panel-strong)]';
+export const checkboxCls = 'accent-theme-accent mt-0.5 h-4 w-4 shrink-0 rounded';

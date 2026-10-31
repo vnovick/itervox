@@ -25,7 +25,7 @@ export function RateLimitedFieldsBlock({
   onCooldownMinutesChange,
 }: RateLimitedFieldsBlockProps) {
   return (
-    <div className="border-theme-line bg-theme-bg-soft space-y-3 rounded-[var(--radius-sm)] border px-3 py-3">
+    <div className="field-group space-y-3">
       <div>
         <label htmlFor="automation-switch-to-profile" className={fieldLabelCls}>
           Switch to profile
@@ -107,7 +107,7 @@ export function RateLimitedFieldsBlock({
         </p>
       </div>
 
-      <label className="border-theme-line bg-theme-bg-elevated flex items-start gap-3 rounded-[var(--radius-sm)] border px-3 py-3">
+      <label className="flex items-start gap-3">
         <input
           type="checkbox"
           checked={values.autoResume}

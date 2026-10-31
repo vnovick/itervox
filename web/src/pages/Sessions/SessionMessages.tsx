@@ -24,7 +24,7 @@ export function SessionMessages({
           key={m.id}
           data-testid="session-message"
           data-status={m.status}
-          className="border-theme-line flex items-start justify-between gap-3 rounded border px-2 py-1"
+          className="glass-card flex items-start justify-between gap-3 rounded-[var(--radius-sm)] px-3 py-1.5"
         >
           <span className="text-theme-text whitespace-pre-wrap">{m.text}</span>
           <span

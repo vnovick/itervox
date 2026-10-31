@@ -8,6 +8,8 @@ import type {
   SubagentSegment,
 } from '../../../components/itervox/timeline/types';
 import type { IssueLogEntry } from '../../../types/schemas';
+import { Button } from '../../../components/ui/button';
+import { ConsoleSurface } from '../../../components/ui/Console/ConsoleSurface';
 
 interface TimelineDetailPanelProps {
   selectedId: string | null;
@@ -50,38 +52,42 @@ export function TimelineDetailPanel({
   validSubagentIdx,
   logPanelSlice,
 }: TimelineDetailPanelProps) {
+  const runCount = selectedGroup?.runs.length ?? 0;
+  const groupLive = selectedGroup?.runs.some((r) => r.status === 'live') ?? false;
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="border-theme-line flex flex-shrink-0 items-center justify-between border-b px-4 py-3">
-        <div>
-          <h2 className="text-theme-text text-base font-semibold">
-            {selectedId ? `Timeline: ${selectedId}` : 'Timeline'}
+    <section
+      aria-label="Run timeline"
+      className="glass-panel flex min-h-0 flex-1 flex-col self-stretch overflow-hidden rounded-[26px]"
+    >
+      <div className="flex flex-shrink-0 flex-wrap items-start gap-3 px-5 pt-[18px] pb-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-theme-text text-lg font-bold">
+            {selectedId ? (
+              <>
+                Timeline: <span className="font-mono">{selectedId}</span>
+              </>
+            ) : (
+              'Timeline'
+            )}
           </h2>
-          <p className="text-theme-text-secondary mt-1 text-[12px]">
+          <p className="text-theme-text-secondary text-[13px]">
             {anyLive
               ? 'Running \u00b7 click a run bar to expand subagents'
               : 'Completed sessions \u00b7 click a run to drill down'}
+            {currentAppSessionId && (
+              <span className="font-mono"> · Session {currentAppSessionId.slice(0, 8)}</span>
+            )}
           </p>
-          {currentAppSessionId && (
-            <p className="text-theme-muted mt-0.5 font-mono text-[10px]">
-              Session {currentAppSessionId.slice(0, 8)}
-            </p>
-          )}
         </div>
         {selectedGroup && (
-          <span className="bg-theme-accent-soft text-theme-accent-strong inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-semibold">
-            {selectedGroup.runs.some((r) => r.status === 'live') && (
-              <span
-                className="bg-theme-success inline-block animate-pulse rounded-full"
-                style={{ width: 6, height: 6 }}
-              />
-            )}
-            {selectedGroup.runs.length} run{selectedGroup.runs.length !== 1 ? 's' : ''}
+          <span className="pill pill-accent">
+            {groupLive && <span aria-hidden="true" className="status-dot dot-ok animate-pulse" />}
+            {runCount} run{runCount !== 1 ? 's' : ''}
           </span>
         )}
       </div>
 
-      <div className="border-theme-line flex-1 overflow-y-auto border-b" style={{ padding: 16 }}>
+      <div className="max-h-[50%] min-h-0 shrink-0 overflow-y-auto px-5 pb-3">
         {!selectedGroup ? (
           <div className="text-theme-muted flex h-12 items-center justify-center text-sm">
             Select an issue from the sidebar
@@ -103,85 +109,71 @@ export function TimelineDetailPanel({
         )}
       </div>
 
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 pb-5">
         {selectedId ? (
           <>
-            <div className="border-theme-line bg-theme-panel-strong flex flex-shrink-0 items-center justify-between border-b px-3 py-2">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-bold tracking-[0.08em] uppercase">
-                  Logs — {selectedId}
-                </span>
-                {!isSelectedLive && sublogs.length > 0 && (
-                  <span
-                    className="bg-theme-bg-soft text-theme-text-secondary rounded px-1.5 py-0.5 text-[9px] font-medium"
-                    title="Full session logs from CLAUDE_CODE_LOG_DIR (includes all subagents)"
-                  >
-                    session logs \u00b7 {sublogs.length} events
-                  </span>
-                )}
-                {validSubagentIdx !== null && subagentsForExpanded[validSubagentIdx] && (
-                  <span className="bg-theme-accent-soft text-theme-accent-strong rounded px-1.5 py-0.5 text-[9px] font-medium">
-                    {subagentsForExpanded[validSubagentIdx].name.slice(0, 8)}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {validSubagentIdx !== null && (
-                  <button
-                    onClick={() => {
-                      onSelectSubagent(null);
-                    }}
-                    className="text-[10px] transition-opacity hover:opacity-70"
-                    style={{
-                      color: 'var(--muted)',
-                      background: 'transparent',
-                      border: '1px solid var(--line)',
-                      padding: '4px 8px',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    show all logs
-                  </button>
-                )}
-                {selectedSession?.status === 'live' ? (
-                  <span className="bg-theme-success-soft text-theme-success-text rounded px-1.5 py-0.5 text-[9px] font-medium">
-                    live
-                  </span>
-                ) : (
-                  selectedSession && (
-                    <span
-                      className="rounded px-1.5 py-0.5 text-[9px] font-medium"
-                      style={
-                        selectedSession.status === 'succeeded'
-                          ? { background: 'var(--success-soft)', color: 'var(--success-text)' }
-                          : { background: 'var(--danger-soft)', color: 'var(--danger-text)' }
-                      }
-                    >
-                      {selectedSession.status}
-                    </span>
-                  )
-                )}
-              </div>
-            </div>
-
             {selectedSession && selectedSession.status !== 'live' && (
               <RunProvenance run={selectedSession} />
             )}
 
-            <div className="flex-1 overflow-hidden">
-              {expandedRunAt == null ? (
-                <div className="text-theme-muted bg-theme-panel-dark flex h-full items-center justify-center font-mono text-[12px] italic">
-                  Select a run to show logs per run
+            <ConsoleSurface className="flex min-h-0 flex-1 flex-col rounded-[18px]">
+              <div className="console-bar flex flex-shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                <div className="text-theme-muted flex flex-wrap items-center gap-1.5 font-mono text-xs">
+                  <span>Logs — {selectedId}</span>
+                  {!isSelectedLive && sublogs.length > 0 && (
+                    <span title="Full session logs from CLAUDE_CODE_LOG_DIR (includes all subagents)">
+                      · session logs · {sublogs.length} events
+                    </span>
+                  )}
+                  {validSubagentIdx !== null && subagentsForExpanded[validSubagentIdx] && (
+                    <span className="pill pill-accent px-2 py-0 text-[11px]">
+                      {subagentsForExpanded[validSubagentIdx].name.slice(0, 8)}
+                    </span>
+                  )}
                 </div>
-              ) : (
-                <AgentLogPanel
-                  key={expandedRunAt}
-                  identifier={selectedId}
-                  logSlice={logPanelSlice}
-                />
-              )}
-            </div>
+                <div className="flex items-center gap-2">
+                  {validSubagentIdx !== null && (
+                    <Button
+                      variant="glass"
+                      size="xs"
+                      pill
+                      onClick={() => {
+                        onSelectSubagent(null);
+                      }}
+                    >
+                      show all logs
+                    </Button>
+                  )}
+                  {selectedSession?.status === 'live' ? (
+                    <span className="pill pill-ok px-2 py-0 text-[11px]">live</span>
+                  ) : (
+                    selectedSession && (
+                      <span
+                        className={`pill px-2 py-0 text-[11px] ${
+                          selectedSession.status === 'succeeded' ? 'pill-ok' : 'pill-danger'
+                        }`}
+                      >
+                        {selectedSession.status}
+                      </span>
+                    )
+                  )}
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {expandedRunAt == null ? (
+                  <div className="text-theme-muted flex h-full min-h-24 items-center justify-center font-mono text-xs italic">
+                    Select a run to show logs per run
+                  </div>
+                ) : (
+                  <AgentLogPanel
+                    key={expandedRunAt}
+                    identifier={selectedId}
+                    logSlice={logPanelSlice}
+                  />
+                )}
+              </div>
+            </ConsoleSurface>
           </>
         ) : (
           <div className="text-theme-muted flex flex-1 items-center justify-center text-sm">
@@ -189,6 +181,6 @@ export function TimelineDetailPanel({
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

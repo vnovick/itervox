@@ -169,7 +169,7 @@ export function Terminal({
       onTouchStart={endJump}
       onKeyDown={endJump}
       className={['overflow-y-auto font-mono text-xs', className ?? ''].join(' ')}
-      style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
+      style={{ background: 'var(--terminal-bg, var(--bg))', color: 'var(--text-secondary)' }}
     >
       {entries.map((entry, i) => (
         <div

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   fmtMs,
   orchDotClass,
+  orchStatusDotClass,
   priorityDotClass,
   stateBadgeColor,
   formatOrchestratorState,
@@ -21,6 +22,18 @@ describe('fmtMs', () => {
 
   it('handles 0ms', () => {
     expect(fmtMs(0)).toBe('0s');
+  });
+});
+
+describe('orchStatusDotClass', () => {
+  it('maps orchestrator states onto the status-dot tones', () => {
+    expect(orchStatusDotClass('running')).toBe('dot-ok animate-pulse');
+    expect(orchStatusDotClass('retrying')).toBe('dot-warn animate-pulse');
+    expect(orchStatusDotClass('pending_input_resume')).toBe('dot-warn animate-pulse');
+    expect(orchStatusDotClass('input_required')).toBe('dot-warn');
+    expect(orchStatusDotClass('paused')).toBe('dot-danger');
+    expect(orchStatusDotClass('idle')).toBe('dot-idle');
+    expect(orchStatusDotClass('anything')).toBe('dot-idle');
   });
 });
 

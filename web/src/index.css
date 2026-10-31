@@ -1046,6 +1046,158 @@ body::before {
     text-transform: uppercase;
     color: var(--muted);
   }
+
+  /* --- Form fields: label, help text and a hairline field group --- */
+  .field-label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+  .field-help {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--muted);
+  }
+  .field-group {
+    min-width: 0;
+    margin: 0;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    padding: 10px 14px 12px;
+  }
+  .field-group > legend {
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  /* --- Selectable list rows (issue / session sidebars) --- */
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    text-align: left;
+    transition: background-color var(--duration-fast) ease;
+  }
+  .list-row:hover {
+    background: var(--subtle);
+  }
+  .list-row:is(
+    [aria-current='true'],
+    [aria-current='page'],
+    [aria-selected='true'],
+    [data-active='true']
+  ) {
+    background: var(--card);
+    border-color: var(--card-border);
+    box-shadow: var(--card-shadow);
+  }
+
+  /* --- Tiles: compact option / template cards on the chip surface --- */
+  .glass-tile {
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--chip-highlight);
+  }
+
+  /* --- Metrics: a small label over a large value --- */
+  .metric-label {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .metric-value {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--text);
+  }
+
+  /* --- Console: the dark log / terminal surface, dark in both themes.
+     Pair it with data-theme="dark" (ConsoleSurface does) so everything
+     inside resolves the dark tokens. --- */
+  .console-surface {
+    background: rgba(14, 19, 34, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius-lg);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 16px 40px rgba(14, 19, 34, 0.3);
+    color: var(--text);
+    overflow: hidden;
+    /* The Terminal inside paints on the console, not the page colour. */
+    --terminal-bg: transparent;
+  }
+  .console-bar {
+    background: rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* --- Scoped themes: a subtree with its own data-theme (the console) re-reads
+     the colour utilities, since the @theme mappings resolve once on :root. --- */
+  [data-theme] [data-theme] {
+    --color-theme-bg: var(--bg);
+    --color-theme-bg-soft: var(--bg-soft);
+    --color-theme-bg-elevated: var(--bg-elevated);
+    --color-theme-panel: var(--panel);
+    --color-theme-panel-strong: var(--panel-strong);
+    --color-theme-panel-dark: var(--panel-dark);
+    --color-theme-text: var(--text);
+    --color-theme-text-secondary: var(--text-secondary);
+    --color-theme-muted: var(--muted);
+    --color-theme-line: var(--line);
+    --color-theme-line-strong: var(--line-strong);
+    --color-theme-accent: var(--accent);
+    --color-theme-accent-soft: var(--accent-soft);
+    --color-theme-accent-strong: var(--accent-strong);
+    --color-theme-accent-text: var(--accent-text);
+    --color-theme-teal: var(--teal);
+    --color-theme-teal-soft: var(--teal-soft);
+    --color-theme-purple: var(--purple);
+    --color-theme-purple-soft: var(--purple-soft);
+    --color-theme-purple-text: var(--purple-text);
+    --color-theme-glass: var(--glass);
+    --color-theme-card: var(--card);
+    --color-theme-chip: var(--chip);
+    --color-theme-sheet: var(--sheet);
+    --color-theme-subtle: var(--subtle);
+    --color-theme-hairline: var(--hairline);
+    --color-theme-surface: var(--surface);
+    --color-theme-dot-ok: var(--dot-ok);
+    --color-theme-dot-warn: var(--dot-warn);
+    --color-theme-dot-idle: var(--dot-idle);
+    --color-theme-success: var(--success);
+    --color-theme-success-soft: var(--success-soft);
+    --color-theme-success-strong: var(--success-strong);
+    --color-theme-warning: var(--warning);
+    --color-theme-warning-soft: var(--warning-soft);
+    --color-theme-danger: var(--danger);
+    --color-theme-danger-soft: var(--danger-soft);
+    --color-theme-success-text: var(--success-text);
+    --color-theme-warning-text: var(--warning-text);
+    --color-theme-danger-text: var(--danger-text);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .console-surface {
+    background: #141a2a;
+  }
+  .console-surface[data-theme] {
+    --glass: var(--glass-solid);
+    --card: var(--card-solid);
+    --chip: var(--chip-solid);
+    --sheet: var(--sheet-solid);
+  }
 }
 
 /* Transitional bridge: the dashboard's existing top-level sections are

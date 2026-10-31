@@ -10,7 +10,8 @@ import {
   normalizeAllowedActions,
   normalizeCommandForSave,
 } from '../profileCommands';
-import { checkboxCls, helperTextCls, inputCls } from '../formStyles';
+import { checkboxCls, fieldLabelCls, helperTextCls, inputCls } from '../formStyles';
+import { Button } from '../../../components/ui/button';
 import { ProfileEditorFields } from './ProfileEditorFields';
 import { UnknownValueNotice } from '../../../components/itervox/UnknownValueNotice';
 import { type ProfileFormValues, profileFormSchema } from './profileForm';
@@ -132,16 +133,15 @@ export function ProfileFormModal({
       isOpen={isOpen}
       onClose={onClose}
       showCloseButton
-      padded
-      className="mx-4 my-6 max-w-5xl"
+      className="mx-4 my-6 max-w-[1024px] rounded-[26px]"
       ariaLabelledBy={headingId}
     >
-      <div className="space-y-5">
-        <div>
-          <h2 id={headingId} className="text-theme-text text-lg font-semibold">
+      <div className="space-y-4 px-6 py-[22px]">
+        <div className="pr-12">
+          <h2 id={headingId} className="text-theme-text text-xl font-bold">
             {title}
           </h2>
-          {subtitle && <p className="text-theme-text-secondary mt-1 text-sm">{subtitle}</p>}
+          {subtitle && <p className="field-help mt-1">{subtitle}</p>}
         </div>
 
         <form
@@ -150,49 +150,6 @@ export function ProfileFormModal({
           }}
           className="space-y-4"
         >
-          <div>
-            <label
-              htmlFor="profile-name-input"
-              className="text-theme-text-secondary mb-2 block text-xs font-medium tracking-wider uppercase"
-            >
-              Profile Name
-            </label>
-            <input
-              id="profile-name-input"
-              {...register('name')}
-              // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer restores focus to the opener on close (M5-close)
-              autoFocus
-              placeholder="profile-name"
-              className={`${inputCls} font-mono text-sm`}
-            />
-            {errors.name && (
-              <p role="alert" className="text-theme-danger-text mt-1 text-xs">
-                {errors.name.message}
-              </p>
-            )}
-            {mode === 'edit' && (
-              <p className={helperTextCls}>Renaming updates the stored profile key.</p>
-            )}
-          </div>
-
-          <label className="border-theme-line bg-theme-bg-soft flex items-start gap-3 rounded-[var(--radius-sm)] border px-3 py-3">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(event) => {
-                setValue('enabled', event.target.checked, { shouldValidate: true });
-              }}
-              className={checkboxCls}
-            />
-            <span className="min-w-0">
-              <span className="text-theme-text block text-sm font-medium">Active profile</span>
-              <span className="text-theme-text-secondary block text-xs">
-                Inactive profiles stay in settings but are hidden from dispatch selectors and
-                automations.
-              </span>
-            </span>
-          </label>
-
           <UnknownValueNotice
             items={(initialValues.unknownAllowedActions ?? []).map((raw) => ({
               what: 'action',
@@ -251,6 +208,46 @@ export function ProfileFormModal({
             onCreateIssueStateChange={(value) => {
               setValue('createIssueState', value, { shouldValidate: true });
             }}
+            afterFirstRow={
+              <label className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(event) => {
+                    setValue('enabled', event.target.checked, { shouldValidate: true });
+                  }}
+                  className={checkboxCls}
+                />
+                <span className="text-theme-text">Active profile</span>
+                <span className="field-help">
+                  Inactive profiles stay in settings but are hidden from dispatch selectors and
+                  automations.
+                </span>
+              </label>
+            }
+            leadingField={
+              <div>
+                <label htmlFor="profile-name-input" className={fieldLabelCls}>
+                  Profile Name
+                </label>
+                <input
+                  id="profile-name-input"
+                  {...register('name')}
+                  // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer restores focus to the opener on close (M5-close)
+                  autoFocus
+                  placeholder="profile-name"
+                  className={inputCls}
+                />
+                {errors.name && (
+                  <p role="alert" className="text-theme-danger-text mt-1 text-xs">
+                    {errors.name.message}
+                  </p>
+                )}
+                {mode === 'edit' && (
+                  <p className={helperTextCls}>Renaming updates the stored profile key.</p>
+                )}
+              </div>
+            }
             dynamicModels={availableModels}
             profileName={name}
           />
@@ -266,21 +263,13 @@ export function ProfileFormModal({
             </p>
           )}
 
-          <ModalFooter>
-            <button
-              type="button"
-              onClick={onClose}
-              className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm transition-colors hover:opacity-80"
-            >
+          <ModalFooter divider>
+            <Button variant="glass" size="lg" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
-            >
+            </Button>
+            <Button type="submit" variant="primary" size="lg" disabled={isSubmitting}>
               {isSubmitting ? 'Saving…' : submitLabel}
-            </button>
+            </Button>
           </ModalFooter>
         </form>
       </div>

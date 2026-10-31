@@ -6,7 +6,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useClearIssueLogs, useIssues } from '../../queries/issues';
 import { useIssueLogs, useLogIdentifiers } from '../../queries/logs';
 import { useLogsUrlSelection } from '../../hooks/useUrlState';
-import { orchDotClass, formatOrchestratorState } from '../../utils/format';
+import { orchStatusDotClass, formatOrchestratorState } from '../../utils/format';
 import { inputRequiredRowState } from '../../utils/inputRequired';
 import { Terminal } from '../../components/ui/Terminal/Terminal';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
@@ -20,6 +20,7 @@ import { ToggleChip } from '../../components/ui/ToggleChip';
 import { Banner } from '../../components/ui/Banner';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { cn } from '../../components/ui/cn';
+import { ConsoleSurface } from '../../components/ui/Console/ConsoleSurface';
 
 // Logs page filter chip (T-4) treats every entry whose .message starts with
 // this prefix as an automation event. The Go side writes the same prefix via
@@ -253,73 +254,64 @@ export default function Logs() {
       <PageMeta title="Itervox | Logs" description="Agent logs — all issues" />
       {/* CORE-087 — below md the sidebar becomes a select above the terminal;
           dvh so mobile browser chrome does not push the pane off-screen. */}
-      <div className="flex h-[calc(100dvh-64px)] min-h-0 flex-col md:flex-row">
+      <div className="flex h-[calc(100dvh-120px)] min-h-[480px] flex-col gap-4 md:flex-row md:items-start">
         {/* Sidebar (md and up) */}
-        <div
+        <aside
           data-testid="logs-sidebar"
-          className="bg-theme-panel border-theme-line hidden w-52 flex-shrink-0 flex-col border-r md:flex"
+          aria-label="Issues"
+          className="glass-panel hidden max-h-full w-60 flex-shrink-0 flex-col gap-1.5 p-3 md:flex"
         >
-          <div className="border-theme-line border-b px-3 py-3">
-            <p className="text-theme-text-secondary font-mono text-[10px] font-semibold tracking-widest uppercase">
-              Issues
-            </p>
-            <p className="text-theme-muted mt-0.5 font-mono text-[10px]">
+          <div className="px-1.5 pt-1">
+            <h2 className="section-title">Issues</h2>
+            <p className="text-theme-text-secondary text-xs">
               {activeCount} active · {sortedIssues.length} total
             </p>
-            <SearchInput
-              placeholder="Search issues…"
-              label="Search log issues"
-              value={issueSearch}
-              onChange={setIssueSearch}
-              className="mt-3"
-              inputClassName="h-7 font-mono text-xs"
-            />
-            {issueSearch.trim() !== '' && (
-              <p className="text-theme-muted mt-1 font-mono text-[10px]">
-                {visibleIssues.length} match{visibleIssues.length === 1 ? '' : 'es'}
-              </p>
-            )}
           </div>
-          <div className="flex-1 overflow-y-auto">
+          <SearchInput
+            placeholder="Search issues…"
+            label="Search log issues"
+            value={issueSearch}
+            onChange={setIssueSearch}
+            inputClassName="bg-theme-chip h-10 border-transparent rounded-full text-[13px]"
+          />
+          {issueSearch.trim() !== '' && (
+            <p className="text-theme-muted px-1.5 text-xs">
+              {visibleIssues.length} match{visibleIssues.length === 1 ? '' : 'es'}
+            </p>
+          )}
+          <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto font-mono text-xs">
             {sortedIssues.length === 0 && (
-              <p className="text-theme-muted px-3 py-4 font-mono text-xs">No issues loaded</p>
+              <p className="text-theme-muted px-2.5 py-3">No issues loaded</p>
             )}
             {sortedIssues.length > 0 && visibleIssues.length === 0 && (
-              <p className="text-theme-muted px-3 py-4 font-mono text-xs">No matching issues</p>
+              <p className="text-theme-muted px-2.5 py-3">No matching issues</p>
             )}
             {visibleIssues.map((issue) => {
               const active = selectedId === issue.identifier;
               return (
-                <Button
+                <button
                   key={issue.identifier}
-                  variant="ghost"
-                  size="sm"
+                  type="button"
                   aria-current={active ? 'true' : undefined}
                   onClick={() => {
                     selectIssue(issue.identifier);
                   }}
-                  className={cn(
-                    'border-theme-line h-auto w-full justify-start gap-2 rounded-none border-b px-3 py-2 text-left font-mono',
-                    active && 'bg-theme-accent-soft text-theme-accent-strong',
-                  )}
+                  className="list-row"
                 >
                   <span
                     aria-hidden="true"
-                    className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${orchDotClass(issue.orchestratorState)}`}
+                    className={`status-dot h-[7px] w-[7px] ${orchStatusDotClass(issue.orchestratorState)}`}
                   />
                   <span className="truncate">{issue.identifier}</span>
-                </Button>
+                </button>
               );
             })}
           </div>
-        </div>
+        </aside>
 
         {/* Issue picker (below md) */}
-        <div className="bg-theme-panel border-theme-line flex flex-shrink-0 items-center gap-2 border-b px-3 py-2 md:hidden">
-          <label
-            htmlFor="logs-issue-select"
-            className="text-theme-text-secondary font-mono text-[11px]"
-          >
+        <div className="glass-panel flex flex-shrink-0 items-center gap-2 px-3 py-2 md:hidden">
+          <label htmlFor="logs-issue-select" className="text-theme-text-secondary text-xs">
             Issue
           </label>
           <Select
@@ -329,7 +321,7 @@ export default function Logs() {
             onChange={(event) => {
               selectIssue(event.target.value);
             }}
-            className="h-8 min-w-0 flex-1 font-mono text-xs"
+            className="h-9 min-w-0 flex-1 font-mono text-xs"
           >
             {selectedId === '' && <option value="">Select an issue</option>}
             {sortedIssues.map((issue) => (
@@ -340,35 +332,34 @@ export default function Logs() {
           </Select>
         </div>
 
-        {/* Terminal panel */}
-        <div className="bg-theme-bg flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Log console */}
+        <ConsoleSurface
+          as="section"
+          aria-label="Log"
+          className="flex h-full min-h-0 min-w-0 flex-1 flex-col rounded-[26px]"
+        >
           {/* Title bar */}
-          <div className="bg-theme-panel border-theme-line flex flex-shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="text-theme-text-secondary truncate font-mono text-xs">
-                {selectedId ? (
-                  <>
-                    <span data-testid="logs-selected-id" className="text-theme-success-text">
-                      {selectedId}
+          <div className="console-bar flex flex-shrink-0 flex-wrap items-center gap-2.5 px-4 py-3 text-[13px]">
+            <span className="min-w-0 truncate font-mono">
+              {selectedId ? (
+                <>
+                  <span data-testid="logs-selected-id" className="font-semibold">
+                    {selectedId}
+                  </span>
+                  {selectedIssue && (
+                    <span className="font-semibold">
+                      {' '}
+                      — {formatOrchestratorState(selectedIssue.orchestratorState)}
                     </span>
-                    {selectedIssue && (
-                      <span className="text-theme-muted ml-2">
-                        — {formatOrchestratorState(selectedIssue.orchestratorState)}
-                        {loading && <span className="ml-2">· refreshing…</span>}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-theme-muted">select an issue</span>
-                )}
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              {entries.length > 0 && (
-                <span className="text-theme-muted font-mono text-[10px]">
-                  {entries.length} lines
-                </span>
+                  )}
+                  {loading && <span className="text-theme-muted ml-2">· refreshing…</span>}
+                </>
+              ) : (
+                <span className="text-theme-muted">select an issue</span>
               )}
+            </span>
+            {entries.length > 0 && <span className="text-theme-muted">{entries.length} lines</span>}
+            <span className="ml-auto flex items-center gap-1.5">
               {entries.length > 0 && (
                 <ConfirmButton
                   label="✕ clear"
@@ -379,18 +370,18 @@ export default function Logs() {
                 />
               )}
               {entries.length > 0 && (
-                <Button variant="ghost" size="xs" onClick={handleExport} className="font-mono">
+                <Button variant="glass" size="sm" pill onClick={handleExport}>
                   ↓ export
                 </Button>
               )}
-            </div>
+            </span>
           </div>
 
           {/* Contextual strip (5.1): state | branch | profile | host | session */}
           {selectedId && (
             <div
               data-testid="logs-context-strip"
-              className="bg-theme-panel border-theme-line text-theme-muted flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-1.5 font-mono text-[10px]"
+              className="border-theme-line text-theme-muted flex flex-shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b px-4 py-2.5 font-mono text-xs"
             >
               <span>
                 state{' '}
@@ -400,24 +391,24 @@ export default function Logs() {
               </span>
               {selectedIssue?.branchName && (
                 <span>
-                  branch{' '}
+                  · branch{' '}
                   <span className="text-theme-text-secondary">{selectedIssue.branchName}</span>
                 </span>
               )}
               {selectedIssue?.agentProfile && (
                 <span>
-                  profile{' '}
+                  · profile{' '}
                   <span className="text-theme-text-secondary">{selectedIssue.agentProfile}</span>
                 </span>
               )}
               {runningRow?.workerHost && (
                 <span>
-                  host <span className="text-theme-text-secondary">{runningRow.workerHost}</span>
+                  · host <span className="text-theme-text-secondary">{runningRow.workerHost}</span>
                 </span>
               )}
               {runningRow?.sessionId && (
                 <span>
-                  session{' '}
+                  · session{' '}
                   <span className="text-theme-text-secondary">
                     {runningRow.sessionId.slice(0, 8)}
                   </span>
@@ -430,7 +421,7 @@ export default function Logs() {
           {selectedId && (
             <div
               data-testid="logs-filter-chips"
-              className="bg-theme-panel border-theme-line flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5"
+              className="flex flex-shrink-0 flex-wrap items-center gap-1.5 px-4 py-2.5"
             >
               {FILTER_CHIPS.map((chip) => (
                 <ToggleChip
@@ -440,6 +431,7 @@ export default function Logs() {
                   onPressedChange={() => {
                     toggleChip(chip);
                   }}
+                  className="px-2.5 py-1 font-sans text-xs"
                 >
                   {chip}
                 </ToggleChip>
@@ -452,12 +444,15 @@ export default function Logs() {
                 data-testid="chip-automation-only"
                 pressed={automationOnly}
                 onPressedChange={setAutomationOnly}
-                className={cn(automationOnly && 'bg-theme-success-soft text-theme-success-text')}
+                className={cn(
+                  'px-2.5 py-1 font-sans text-xs',
+                  automationOnly && 'bg-theme-success-soft text-theme-success-text',
+                )}
                 title="Show only AUTOMATION FIRED entries"
               >
                 automation only
               </ToggleChip>
-              <span className="text-theme-muted ml-auto font-mono text-[10px]">
+              <span className="text-theme-muted ml-auto text-xs">
                 {filteredEntries.length} / {entries.length}
               </span>
             </div>
@@ -495,7 +490,7 @@ export default function Logs() {
               />
             )}
           </div>
-        </div>
+        </ConsoleSurface>
       </div>
     </>
   );

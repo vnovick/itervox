@@ -290,6 +290,41 @@ describe('tokens.contrast', () => {
     }
   });
 
+  it('the console surface (dark in both themes) keeps dark-token text at 4.5:1', () => {
+    // .console-surface is translucent: composite it over each theme's page
+    // colour, then measure the dark tokens it scopes (data-theme="dark") on
+    // the bare console, on a card inside it and on a soft pill fill.
+    const body = block('.console-surface {');
+    const fill = /background:\s*(rgba\([^)]+\))/.exec(body)?.[1] ?? '';
+    for (const page of [solid(light, '--bg'), solid(dark, '--bg')]) {
+      const consoleBg = over(parse(fill), page);
+      const onCard = over(parse(resolveToken(dark, '--card')), consoleBg);
+      for (const fg of [
+        '--text',
+        '--text-secondary',
+        '--muted',
+        '--accent-text',
+        '--warning-text',
+        '--danger-text',
+        '--success-text',
+        '--purple-text',
+      ]) {
+        expect(ratio(solid(dark, fg), consoleBg), `${fg} on console`).toBeGreaterThanOrEqual(4.5);
+        expect(ratio(solid(dark, fg), onCard), `${fg} on console card`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const [bg, fg] of [
+        ['--accent-soft', '--accent-strong'],
+        ['--danger-soft', '--danger-text'],
+        ['--success-soft', '--success-text'],
+      ] as const) {
+        const pill = over(parse(resolveToken(dark, bg)), consoleBg);
+        expect(ratio(solid(dark, fg), pill), `${fg} on ${bg} in console`).toBeGreaterThanOrEqual(
+          4.5,
+        );
+      }
+    }
+  });
+
   it('Logs page uses the tokens, not the failing hex literals', () => {
     const logs: string = readFileSync(resolve(SRC, 'pages/Logs/index.tsx'), 'utf8');
     expect(logs).not.toMatch(/#374151/);
