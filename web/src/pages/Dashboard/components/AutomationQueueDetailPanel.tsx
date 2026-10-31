@@ -93,13 +93,19 @@ export function AutomationQueueDetailPanel({
   const allowedActions = profileDef?.allowedActions ?? [];
 
   return (
-    <SlidePanel isOpen direction="left" title={`Automation ${row.automationId}`} onClose={onClose}>
+    <SlidePanel
+      isOpen
+      direction="left"
+      size="narrow"
+      title={`Automation ${row.automationId}`}
+      onClose={onClose}
+    >
       <div
         data-testid="automation-queue-detail-body"
-        className="flex-1 space-y-4 overflow-y-auto px-5 py-4"
+        className="flex-1 space-y-6 overflow-y-auto px-6 pt-1 pb-6"
       >
         <DetailSection title="Summary">
-          <DetailRow label="Issue" value={row.identifier} />
+          <DetailRow label="Issue" value={<span className="font-mono">{row.identifier}</span>} />
           <DetailRow label="Title" value={row.title} />
           <DetailRow label="Status" value={<DetailChip tone="accent">{row.status}</DetailChip>} />
           <DetailRow label="Reason" value={reasonLabel(row)} />

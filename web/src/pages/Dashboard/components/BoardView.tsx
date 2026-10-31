@@ -227,7 +227,7 @@ export const BoardView = memo(function BoardView({
       onDragEnd={handleDragEnd}
     >
       {/* Horizontal scroll — same as Linear on all screen sizes */}
-      <div className="flex min-h-[200px] gap-3 overflow-x-auto pb-2">
+      <div className="flex min-h-[200px] items-start gap-3 overflow-x-auto pb-2">
         {columns.map(([state, colIssues]) => (
           <BoardColumn
             key={state}

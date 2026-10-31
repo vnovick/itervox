@@ -1,5 +1,8 @@
 import type { AutomationQueueRow, DependencyAuditRow } from '../../../types/schemas';
+import { plainButtonClass } from '../../../components/ui/button/buttonRecipe';
 import { blockerLabel, queuedAge, reasonLabel, statusTone } from './automationQueueModel';
+
+const DETAILS_BUTTON = plainButtonClass('secondary', 'sm', { pill: true, extra: 'min-h-9' });
 
 export function AutomationQueueItem({
   row,
@@ -16,21 +19,17 @@ export function AutomationQueueItem({
   return (
     <div
       data-testid={`automation-queue-card-${row.identifier}`}
-      className="grid gap-2 px-4 py-3 lg:grid-cols-[1.1fr_0.8fr_1.1fr_1fr_0.9fr_1fr_0.7fr_0.6fr_0.7fr] lg:items-center lg:gap-3"
+      className="grid gap-2 px-2.5 py-2.5 text-[13px] lg:grid-cols-[1.1fr_0.8fr_1.1fr_1fr_0.9fr_1fr_0.7fr_0.6fr_0.7fr] lg:items-center lg:gap-3"
     >
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold">
+          <span className="text-theme-text min-w-0 truncate text-[13px] font-medium">
             {row.automationId}
           </span>
-          <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${statusTone(row.status)}`}
-          >
-            {row.status}
-          </span>
+          <span className={`tag ${statusTone(row.status)}`}>{row.status}</span>
         </div>
       </div>
-      <div className="text-theme-text-secondary font-mono text-[11px]">{row.triggerType}</div>
+      <div className="text-theme-text text-[13px]">{row.triggerType}</div>
       <div className="min-w-0">
         <button
           type="button"
@@ -38,7 +37,7 @@ export function AutomationQueueItem({
           onClick={() => {
             onSelectIssue(row.identifier);
           }}
-          className="text-theme-text hover:text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold"
+          className="text-theme-text hover:text-theme-text min-w-0 truncate text-[13px] font-medium"
         >
           {row.identifier}
         </button>
@@ -53,31 +52,28 @@ export function AutomationQueueItem({
           <span className="text-theme-muted text-[11px]">none</span>
         ) : (
           unresolved.map((blocker) => (
-            <span
-              key={blockerLabel(blocker)}
-              className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 font-mono text-[10px]"
-            >
+            <span key={blockerLabel(blocker)} className="tag pill-warn font-mono">
               {blockerLabel(blocker)}
             </span>
           ))
         )}
       </div>
-      <div className="text-theme-text-secondary flex min-w-0 flex-wrap gap-1 text-xs">
+      <div className="text-theme-text flex min-w-0 flex-wrap gap-1 text-[13px]">
         <span className="truncate">{row.profile}</span>
         {row.backend ? <span className="text-theme-muted truncate">{row.backend}</span> : null}
       </div>
       <div className="min-w-0">
-        <span className="text-theme-text-secondary text-xs">{reasonLabel(row)}</span>
+        <span className="text-theme-text">{reasonLabel(row)}</span>
         {row.reasonDetail && (
           <div className="text-theme-muted mt-0.5 truncate text-[11px]" title={row.reasonDetail}>
             {row.reasonDetail}
           </div>
         )}
       </div>
-      <div className="text-theme-muted font-mono text-[11px]" title={row.queuedAt}>
+      <div className="text-theme-text-secondary" title={row.queuedAt}>
         {queuedAge(row.queuedAt)}
       </div>
-      <div className="text-theme-text-secondary text-xs">
+      <div className="text-theme-text-secondary">
         {row.attemptCount === 1 ? '1 attempt' : `${String(row.attemptCount)} attempts`}
       </div>
       <div>
@@ -87,7 +83,7 @@ export function AutomationQueueItem({
           onClick={() => {
             onSelectQueue(row.id);
           }}
-          className="border-theme-line text-theme-accent-text min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80"
+          className={DETAILS_BUTTON}
         >
           Details
         </button>

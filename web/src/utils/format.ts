@@ -23,6 +23,25 @@ export function orchDotClass(state: string): string {
   return 'bg-gray-300 dark:bg-gray-600';
 }
 
+/**
+ * The `.status-dot` tone class for an orchestrator state (visual refresh):
+ * running ok, paused / waiting on input warn, retrying danger, else idle.
+ */
+export function orchStatusDotClass(state: string): string {
+  switch (state) {
+    case 'running':
+      return 'dot-ok';
+    case 'paused':
+    case 'input_required':
+    case 'pending_input_resume':
+      return 'dot-warn';
+    case 'retrying':
+      return 'dot-danger';
+    default:
+      return 'dot-idle';
+  }
+}
+
 export function formatOrchestratorState(state: string): string {
   if (state === 'pending_input_resume') return 'reply received';
   return state.replace(/_/g, ' ');

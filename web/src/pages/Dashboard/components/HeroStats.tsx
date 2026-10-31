@@ -3,7 +3,7 @@ import { useItervoxStore } from '../../../store/itervoxStore';
 import { useUIStore } from '../../../store/uiStore';
 import { EMPTY_HISTORY } from '../../../utils/constants';
 import { automationsFiredToday } from './dashboardMetrics';
-import { STATUS_META, toneColor, type StatusKey } from '../../../lib/statusModel';
+import { STATUS_META, toneTextClass, type StatusKey } from '../../../lib/statusModel';
 import { useStatusSummary } from '../../../hooks/useStatusSummary';
 import { fmtTokens } from '../../../utils/format';
 import type { Totals } from '../../../types/schemas';
@@ -17,7 +17,7 @@ function StatTile({
   label,
   value,
   sub,
-  valueColor,
+  valueClass,
   onClick,
   testId,
   statusKey,
@@ -26,7 +26,8 @@ function StatTile({
   label: string;
   value: string;
   sub: string;
-  valueColor?: string;
+  /** A text-colour class for the value (an alerting tone). */
+  valueClass?: string;
   onClick?: () => void;
   testId?: string;
   statusKey?: StatusKey;
@@ -51,20 +52,11 @@ function StatTile({
       data-testid={testId}
       data-status-key={statusKey}
       data-status-count={statusCount}
-      className={`flex flex-col items-center rounded-[var(--radius-md)] bg-white/[0.04] px-4 py-3 ${
-        isInteractive ? 'cursor-pointer hover:bg-white/[0.08]' : ''
-      }`}
+      className="stat-tile"
     >
-      <span className="text-theme-muted text-[10px] font-semibold tracking-[0.06em] uppercase">
-        {label}
-      </span>
-      <span
-        className="mt-1 text-lg font-bold tabular-nums"
-        style={{ color: valueColor ?? 'var(--text)' }}
-      >
-        {value}
-      </span>
-      <span className="text-theme-text-secondary text-[10px]">{sub}</span>
+      <span className="stat-tile-label">{label}</span>
+      <span className={`stat-tile-value ${valueClass ?? ''}`}>{value}</span>
+      <span className="stat-tile-sub">{sub}</span>
     </div>
   );
 }
@@ -85,15 +77,15 @@ export function HeroStats() {
       sub={sub}
       statusKey={key}
       statusCount={value}
-      valueColor={value > 0 ? toneColor(STATUS_META[key].tone) : undefined}
+      valueClass={value > 0 ? toneTextClass(STATUS_META[key].tone) : undefined}
     />
   );
   return (
     <div
       // CORE-091 / CORE-175 note — seven tiles keep one row on desktop (M5);
       // with the eighth (cost) tile, two rows of four until 2xl.
-      className={`grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:w-auto ${
-        totals ? 'lg:grid-cols-4 2xl:grid-cols-8' : 'lg:grid-cols-7'
+      className={`grid w-full grid-cols-2 gap-2.5 sm:grid-cols-4 ${
+        totals ? 'lg:grid-cols-4 xl:grid-cols-8' : 'lg:grid-cols-7'
       }`}
       data-testid="hero-stats"
     >
@@ -107,7 +99,6 @@ export function HeroStats() {
         label="Automations"
         value={String(automationsToday)}
         sub="fired today"
-        valueColor={automationsToday > 0 ? 'var(--success)' : undefined}
         onClick={() => {
           setTimelineAutomationOnly(true);
           void navigate('/timeline');
@@ -117,13 +108,7 @@ export function HeroStats() {
         label="Capacity"
         value={max > 0 ? `${String(running)}/${String(max)}` : '—'}
         sub={max > 0 ? `${String(Math.round((running / max) * 100))}% used` : 'No cap'}
-        valueColor={
-          max > 0 && running / max >= 0.9
-            ? 'var(--danger)'
-            : max > 0 && running > 0
-              ? 'var(--success)'
-              : undefined
-        }
+        valueClass={max > 0 && running / max >= 0.9 ? 'text-theme-danger-text' : undefined}
       />
       {totals && <CostTile totals={totals} />}
     </div>

@@ -1,5 +1,7 @@
 import { useRef } from 'react';
 import type { useDismissInput, useProvideInput } from '../../queries/issues';
+import { FIELD_CLASS } from '../ui/Input/fieldClass';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
 
 export interface InputReplyBoxProps {
   identifier: string;
@@ -67,7 +69,7 @@ export function InputReplyBox({
           placeholder="Type your reply… (will be posted as a comment to the tracker)"
           aria-label={`Reply to the agent${suffix}`}
           rows={4}
-          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-warning w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
+          className={`${FIELD_CLASS} rounded-[14px] py-2.5`}
         />
       )}
       <div className="flex items-center gap-2">
@@ -86,7 +88,7 @@ export function InputReplyBox({
               textareaRef.current?.focus();
             }}
             disabled={sending || !draft.trim()}
-            className="bg-theme-accent rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="bg-theme-accent focus-visible:ring-theme-accent inline-flex h-10 items-center justify-center rounded-full px-4 text-[15px] font-medium text-white hover:brightness-110 focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
           >
             {sending ? 'Sending…' : 'Reply & Resume Agent'}
           </button>
@@ -98,7 +100,7 @@ export function InputReplyBox({
             dismissInputMutation.mutate(identifier);
           }}
           disabled={dismissing}
-          className="text-theme-text-secondary bg-theme-bg-soft rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          className={plainButtonClass('secondary', 'lg', { pill: true })}
         >
           {dismissing ? 'Dismissing…' : 'Dismiss'}
         </button>

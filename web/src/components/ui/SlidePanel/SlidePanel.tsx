@@ -2,6 +2,9 @@ import { useId, useRef, type ReactNode } from 'react';
 import { useDialogLayer } from '../dialog/useDialogLayer';
 
 type Direction = 'left' | 'right' | 'bottom';
+/** Width of a left/right sheet from md up: `wide` (default) 75vw, `medium`
+ * up to 820px, `narrow` 520px. Phones always get the full width. */
+type Size = 'wide' | 'medium' | 'narrow';
 
 interface SlidePanelProps {
   isOpen: boolean;
@@ -9,13 +12,22 @@ interface SlidePanelProps {
   title: string;
   children: ReactNode;
   direction?: Direction;
+  size?: Size;
+  /** Render the title in the monospace face (identifiers). */
+  monoTitle?: boolean;
 }
 
 // A floating sheet (.glass-sheet), inset 12px from the window edges.
 const PANEL_CLASS: Record<Direction, string> = {
-  right: 'inset-y-3 right-3 left-3 md:left-auto md:w-[75vw] slide-panel-right',
-  left: 'inset-y-3 left-3 right-3 md:right-auto md:w-[75vw]',
+  right: 'inset-y-3 right-3 left-3 md:left-auto slide-panel-right',
+  left: 'inset-y-3 left-3 right-3 md:right-auto',
   bottom: 'inset-x-3 bottom-3 h-auto max-h-[90vh]',
+};
+
+const WIDTH_CLASS: Record<Size, string> = {
+  wide: 'md:w-[75vw]',
+  medium: 'md:w-[min(820px,75vw)]',
+  narrow: 'md:w-[min(520px,75vw)]',
 };
 
 export function SlidePanel({
@@ -24,6 +36,8 @@ export function SlidePanel({
   title,
   children,
   direction = 'right',
+  size = 'wide',
+  monoTitle = false,
 }: SlidePanelProps) {
   const titleId = useId();
 
@@ -51,10 +65,17 @@ export function SlidePanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`glass-sheet text-theme-text absolute flex flex-col overflow-hidden ${PANEL_CLASS[direction]}`}
+        className={`glass-sheet text-theme-text absolute flex flex-col overflow-hidden ${PANEL_CLASS[direction]} ${
+          direction === 'bottom' ? '' : WIDTH_CLASS[size]
+        }`}
       >
         <div className="flex items-center justify-between gap-3 px-6 pt-5 pb-3">
-          <h2 id={titleId} className="text-theme-text text-lg font-semibold tracking-[-0.01em]">
+          <h2
+            id={titleId}
+            className={`text-theme-text text-lg font-semibold ${
+              monoTitle ? 'font-mono' : 'tracking-[-0.01em]'
+            }`}
+          >
             {title}
           </h2>
           <button

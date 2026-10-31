@@ -23,18 +23,17 @@ export const FilterPills = memo(function FilterPills({
   onChange,
 }: FilterPillsProps) {
   return (
-    <div className="flex items-center gap-1.5 overflow-x-auto">
+    // The selected pill gets the chip surface (.segmented-plain).
+    <div role="group" aria-label="Filter issues by state" className="segmented segmented-plain">
       {pills.map((pill) => (
         <button
           key={pill.id}
+          type="button"
+          aria-pressed={activeId === pill.id}
           onClick={() => {
             onChange(pill.id);
           }}
-          className={`flex-shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-            activeId === pill.id
-              ? 'bg-theme-accent text-white'
-              : 'bg-theme-bg-soft text-theme-text-secondary hover:text-theme-text'
-          }`}
+          className="flex-shrink-0 py-1.5 text-[13px]"
         >
           {pill.label}
         </button>

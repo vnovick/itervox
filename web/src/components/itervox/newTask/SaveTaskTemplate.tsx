@@ -17,18 +17,18 @@ export function SaveTaskTemplate({ draft }: { draft: TaskDraft }) {
   const valid = NAME_RE.test(name) && draft.title.trim() !== '';
   return (
     <RequireScope scope="admin">
-      <div className="border-theme-line flex items-center gap-2 border-t pt-3">
+      <div className="border-theme-hairline flex items-center gap-2 border-t pt-3">
         <Input
           aria-label="Template name"
           placeholder="save as template: name"
           value={name}
-          className="max-w-[220px]"
+          className="h-10 min-w-0 flex-1"
           onChange={(e) => {
             setName(e.target.value.trim().toLowerCase());
           }}
         />
         <Button
-          size="sm"
+          size="lg"
           disabled={!valid || save.isPending}
           onClick={() => {
             save.mutate({

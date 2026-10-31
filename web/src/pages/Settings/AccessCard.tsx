@@ -26,17 +26,21 @@ function NewSecret({ issued, onDone }: { issued: ApiTokenSecret; onDone: () => v
     <div
       role="status"
       data-testid="access-new-secret"
-      className="border-theme-accent bg-theme-bg-soft space-y-2 rounded-[var(--radius-sm)] border p-3"
+      className="glass-card border-theme-accent space-y-2.5 px-4 py-3.5"
     >
-      <p className="text-theme-text text-sm font-medium">
+      <p className="text-theme-text text-[13px]">
         Token “{issued.token.name}” ({issued.token.scope}) — copy it now, it is shown only once.
       </p>
+      <code className="subtle-fill text-theme-text block overflow-x-auto rounded-[10px] px-2.5 py-2 font-mono text-xs">
+        {issued.secret}
+      </code>
       <div className="flex items-center gap-2">
-        <code className="bg-theme-panel-strong flex-1 overflow-x-auto rounded px-2 py-1 font-mono text-xs">
-          {issued.secret}
-        </code>
         <CopyButton text={issued.secret} label="Copy token" />
-        <button type="button" className="text-theme-muted text-xs underline" onClick={onDone}>
+        <button
+          type="button"
+          className="glass-chip text-theme-text hover:bg-theme-panel-strong px-2.5 py-0.5 text-xs font-medium"
+          onClick={onDone}
+        >
           Done
         </button>
       </div>

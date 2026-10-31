@@ -26,9 +26,9 @@ export function InputRequiredPanel({
 
   if (issue.orchestratorState === 'pending_input_resume') {
     return (
-      <div className="border-theme-warning/30 bg-theme-warning-soft space-y-3 rounded-lg border p-4">
+      <div className="border-theme-warning/30 bg-theme-warning-soft space-y-3 rounded-[18px] border p-4">
         <div className="flex items-center gap-2">
-          <span className="bg-theme-dot-warn h-2.5 w-2.5 rounded-full" />
+          <span aria-hidden="true" className="status-dot dot-warn" />
           <h4 className="text-theme-warning-text text-sm font-semibold">Reply received</h4>
         </div>
         <p className="text-theme-text-secondary text-sm">
@@ -42,9 +42,9 @@ export function InputRequiredPanel({
   if (issue.orchestratorState !== 'input_required') return null;
 
   return (
-    <div className="border-theme-warning/30 bg-theme-warning-soft space-y-3 rounded-lg border p-4">
+    <div className="border-theme-warning/30 bg-theme-warning-soft space-y-3 rounded-[18px] border p-4">
       <div className="flex items-center gap-2">
-        <span className="bg-theme-dot-warn h-2.5 w-2.5 rounded-full" />
+        <span aria-hidden="true" className="status-dot dot-warn" />
         <h4 className="text-theme-warning-text text-sm font-semibold">Agent needs your input</h4>
       </div>
       {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}

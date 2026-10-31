@@ -14,14 +14,12 @@ export function TaskTemplateVars({
 }) {
   if (names.length === 0) return null;
   return (
-    <fieldset data-testid="new-task-vars">
-      <legend className="text-theme-text-secondary mb-1 text-xs font-medium">
-        Template values
-      </legend>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+    <fieldset data-testid="new-task-vars" className="field-group">
+      <legend className="field-label">Template values</legend>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
         {names.map((name) => (
-          <label key={name} className="flex items-center gap-2 text-[13px]">
-            <code className="text-theme-muted w-24 shrink-0 truncate">{name}</code>
+          <label key={name} className="flex min-w-0 flex-col gap-1.5 text-[13px]">
+            <code className="text-theme-text-secondary truncate text-xs">{name}</code>
             <Input
               aria-label={`Value for ${name}`}
               value={values[name] ?? ''}

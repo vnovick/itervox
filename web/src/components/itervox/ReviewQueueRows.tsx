@@ -40,7 +40,7 @@ export function ReviewQueueRows({
               onTriggerReview(issue.identifier);
             }}
             disabled={reviewPending}
-            className="border-theme-line text-theme-accent-text flex-shrink-0 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[10px] font-medium transition-colors hover:opacity-80"
+            className="glass-chip text-theme-text hover:bg-theme-panel-strong flex-shrink-0 px-3 py-1 text-xs font-medium transition-colors"
           >
             {reviewPending ? '…' : '▶ Review'}
           </button>

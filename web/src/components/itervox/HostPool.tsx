@@ -12,10 +12,10 @@ interface HostEntry {
   disabled?: boolean;
 }
 
-function loadBarColor(pct: number): string {
-  if (pct >= 90) return 'var(--danger)';
-  if (pct >= 75) return 'var(--warning)';
-  return 'var(--accent)';
+function loadBarClass(pct: number): string {
+  if (pct >= 90) return 'bg-theme-danger';
+  if (pct >= 75) return 'bg-theme-warning';
+  return 'bg-theme-accent';
 }
 
 function HostTile({ host }: { host: HostEntry }) {
@@ -26,55 +26,45 @@ function HostTile({ host }: { host: HostEntry }) {
   const counter =
     showMax && host.max > 0 ? `${String(host.active)} / ${String(host.max)}` : String(host.active);
 
-  const kindStyle =
+  const kind =
     host.kind === 'local'
-      ? { bg: 'var(--success-soft)', color: 'var(--success-text)', label: 'Local' }
-      : { bg: 'var(--accent-soft)', color: 'var(--accent-text)', label: 'SSH' };
+      ? { tone: 'pill-ok', label: 'Local' }
+      : { tone: 'pill-accent', label: 'SSH' };
 
   return (
     <div className="glass-card overflow-hidden">
-      <div className="border-theme-line flex items-center gap-2.5 border-b px-3.5 py-3">
+      <div className="flex items-center gap-2.5 px-3.5 pt-3 pb-1.5">
         <span
-          className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0${host.disabled ? '' : 'animate-pulse'}`}
-          style={{ background: host.disabled ? 'var(--dot-idle)' : 'var(--dot-ok)' }}
+          aria-hidden="true"
+          className={`status-dot ${host.disabled ? 'dot-idle' : 'dot-ok animate-pulse'}`}
         />
         <span
-          className="min-w-0 flex-1 truncate font-mono text-[12px] font-semibold"
-          style={{ color: host.disabled ? 'var(--text-secondary)' : 'var(--text)' }}
+          className={`min-w-0 flex-1 truncate font-mono text-[12px] font-semibold ${
+            host.disabled ? 'text-theme-text-secondary' : 'text-theme-text'
+          }`}
           title={host.description ?? host.name}
         >
           {host.description ?? host.name}
         </span>
         {host.disabled ? (
-          <span
-            className="flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.04em] uppercase"
-            style={{ background: 'var(--danger-soft)', color: 'var(--danger-text)' }}
-          >
-            Disabled
-          </span>
+          <span className="tag pill-danger flex-shrink-0">Disabled</span>
         ) : (
-          <span
-            className="flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.04em] uppercase"
-            style={{ background: kindStyle.bg, color: kindStyle.color }}
-          >
-            {kindStyle.label}
-          </span>
+          <span className={`tag flex-shrink-0 ${kind.tone}`}>{kind.label}</span>
         )}
       </div>
 
-      <div className="px-3.5 py-3">
+      <div className="px-3.5 pt-1.5 pb-3">
         <div className="mb-1.5 flex items-center justify-between">
-          <span className="text-theme-text-secondary text-[11px]">Active agents</span>
+          <span className="text-theme-text-secondary text-xs">Active agents</span>
           <span className="text-theme-text font-mono text-[12px] font-semibold">{counter}</span>
         </div>
         {showMax && (
           <div className="bg-theme-bg-soft h-1 overflow-hidden rounded-full">
             <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${String(Math.min(pct, 100))}%`,
-                background: host.disabled ? 'var(--dot-idle)' : loadBarColor(pct),
-              }}
+              className={`h-full rounded-full transition-all ${
+                host.disabled ? 'bg-theme-dot-idle' : loadBarClass(pct)
+              }`}
+              style={{ width: `${String(Math.min(pct, 100))}%` }}
             />
           </div>
         )}
@@ -118,15 +108,21 @@ export function HostPool() {
   }, [running, sshHosts, maxConcurrentAgents]);
 
   return (
-    <div>
-      <span className="mb-2 block text-[11px] font-semibold tracking-[0.06em] uppercase">
-        Host Pool
-      </span>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+    <section
+      aria-labelledby="host-pool-heading"
+      className="glass-panel flex flex-col gap-3 px-3 py-4 sm:px-[18px]"
+    >
+      <div className="flex items-center gap-2 px-1">
+        <h3 id="host-pool-heading" className="section-title">
+          Host pool
+        </h3>
+        <span className="count-pill">{hosts.length}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
         {hosts.map((host) => (
           <HostTile key={host.id} host={host} />
         ))}
       </div>
-    </div>
+    </section>
   );
 }

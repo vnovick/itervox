@@ -19,6 +19,9 @@ import { SessionAccordion } from './SessionAccordion';
 import { AgentProfileSelector } from './selectors';
 import { RunningRowMeta } from './RunningRowMeta';
 import { useNow } from '../../hooks/useNow';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
+
+const ACTION_BUTTON = plainButtonClass('secondary', 'sm', { pill: true });
 const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
 
 export default function RunningSessionsTable() {
@@ -82,37 +85,32 @@ export default function RunningSessionsTable() {
 
   if (sorted.length === 0 && paused.length === 0) {
     return (
-      <div className="border-theme-line bg-theme-panel text-theme-muted rounded-[var(--radius-md)] border p-8 text-center text-sm">
-        No agents running
-      </div>
+      <div className="glass-panel text-theme-muted p-8 text-center text-sm">No agents running</div>
     );
   }
 
   return (
-    <div
+    <section
       id="running-sessions"
-      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 overflow-hidden rounded-[var(--radius-md)] border"
+      aria-labelledby={sorted.length > 0 ? 'running-sessions-heading' : undefined}
+      className="glass-panel flex scroll-mt-20 flex-col gap-2 px-3 py-4 sm:px-[18px]"
     >
-      {/* Header — visible whenever there are running or paused sessions */}
+      {/* Header — visible whenever there are running sessions */}
       {sorted.length > 0 && (
-        <div
-          className="flex items-center justify-between px-4 py-[14px]"
-          style={{
-            borderBottom: paused.length > 0 ? '1px solid var(--line)' : undefined,
-            borderColor: 'var(--line)',
-          }}
-        >
-          <h3 className="text-theme-text text-[15px] font-semibold">Running Sessions</h3>
-          <span className="bg-theme-success-soft text-theme-success-text inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+        <div className="flex items-center gap-2 px-1">
+          <h3 id="running-sessions-heading" className="section-title">
+            Running Sessions
+          </h3>
+          <span className="text-theme-text-secondary inline-flex items-center gap-1.5 text-xs">
+            <span aria-hidden="true" className="status-dot dot-ok h-1.5 w-1.5 animate-pulse" />
             {sorted.length} active
           </span>
         </div>
       )}
 
-      {/* Running session rows */}
+      {/* Running session rows — one card each */}
       {sorted.map((row) => (
-        <div key={row.identifier} className="border-theme-line border-t">
+        <div key={row.identifier} className="glass-card overflow-hidden">
           {/* Row — a mouse click anywhere toggles the log accordion; keyboard
               and assistive tech use the chevron button (M5-close: a
               role="button" row containing buttons was nested-interactive). */}
@@ -122,9 +120,10 @@ export default function RunningSessionsTable() {
             onClick={() => {
               toggle(row.identifier);
             }}
-            // CORE-087 — a wrapping card on phones (the last event takes its
-            // own line); the fixed seven-column grid from sm up.
-            className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-[14px] transition-colors select-none hover:bg-[var(--bg-soft)] sm:grid sm:grid-cols-[24px_100px_minmax(80px,auto)_56px_1fr_72px_auto] sm:gap-[14px]"
+            // CORE-087 — one wrapping card at every width: the header line
+            // (id, state, turn, actions) wraps on phones, and the last event
+            // and its meta line always take full rows below it.
+            className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2.5 select-none"
           >
             {/* Chevron — the accordion toggle */}
             <button
@@ -135,14 +134,15 @@ export default function RunningSessionsTable() {
                 e.stopPropagation();
                 toggle(row.identifier);
               }}
-              className="text-theme-muted inline-flex h-6 w-6 items-center justify-center rounded text-[10px]"
+              className="text-theme-text-secondary hover:bg-theme-bg-soft inline-flex h-6 w-6 items-center justify-center rounded-full text-sm"
             >
               <span
                 aria-hidden="true"
-                className="inline-block transition-transform duration-200"
-                style={{ transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none' }}
+                className={`inline-block transition-transform duration-200 ${
+                  expandedId === row.identifier ? 'rotate-90' : ''
+                }`}
               >
-                ▶
+                ›
               </span>
             </button>
 
@@ -150,7 +150,7 @@ export default function RunningSessionsTable() {
             <button
               type="button"
               aria-label={`View details for ${row.identifier}`}
-              className="text-theme-accent-text min-h-6 cursor-pointer truncate text-left font-mono text-sm font-semibold hover:underline"
+              className="text-theme-text min-h-6 cursor-pointer truncate text-left font-mono text-xs font-semibold hover:underline"
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedIdentifier(row.identifier);
@@ -161,39 +161,23 @@ export default function RunningSessionsTable() {
 
             {/* Kind + State badge */}
             <div className="flex items-center gap-1 whitespace-nowrap">
-              {row.kind === 'reviewer' && (
-                <span className="bg-theme-purple-soft text-theme-purple-text rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase">
-                  Review
-                </span>
-              )}
+              {row.kind === 'reviewer' && <span className="tag pill-accent">Review</span>}
               <Badge color={stateBadgeColor(row.state)} size="sm">
                 {row.state}
               </Badge>
             </div>
 
             {/* Turn count + subagent badge */}
-            <span className="text-theme-text-secondary flex items-center gap-1.5 text-sm">
-              {row.turnCount ?? '\u2014'}
+            <span className="text-theme-muted flex items-center gap-1.5 text-[13px]">
+              {row.turnCount != null ? `turn ${String(row.turnCount)}` : '—'}
               {(row.subagentCount ?? 0) > 0 && (
                 <span
-                  className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-semibold"
-                  style={{ background: 'var(--purple-soft)', color: 'var(--purple)' }}
+                  className="tag bg-theme-purple-soft text-theme-purple-text"
                   title={`${String(row.subagentCount)} subagent${row.subagentCount === 1 ? '' : 's'}`}
                 >
                   ↗ {row.subagentCount}
                 </span>
               )}
-            </span>
-
-            {/* Last event + CORE-090 backend/host/tokens/age/profile */}
-            <span className="order-last flex min-w-0 basis-full flex-col gap-0.5 sm:order-none sm:basis-auto">
-              <span
-                className="text-theme-text-secondary truncate font-mono text-xs"
-                title={row.lastEvent ?? undefined}
-              >
-                {row.lastEvent ? row.lastEvent.slice(0, 100) : '—'}
-              </span>
-              <RunningRowMeta row={row} profile={profileMap[row.identifier]} now={now} />
             </span>
 
             {/* Elapsed */}
@@ -202,21 +186,17 @@ export default function RunningSessionsTable() {
             {/* Actions */}
             <div
               role="presentation"
-              className="flex flex-shrink-0 gap-2"
+              className="ml-auto flex flex-shrink-0 gap-1.5"
               onClick={(e) => {
                 e.stopPropagation();
               }}
             >
               <button
+                type="button"
                 onClick={() => {
                   cancelIssueMutation.mutate(row.identifier);
                 }}
-                className="inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
-                style={{
-                  background: 'var(--warning-soft)',
-                  borderColor: 'var(--warning-soft)',
-                  color: 'var(--warning-text)',
-                }}
+                className={ACTION_BUTTON}
               >
                 ⏸ Pause
               </button>
@@ -230,6 +210,17 @@ export default function RunningSessionsTable() {
                 }}
               />
             </div>
+
+            {/* Last event + CORE-090 backend/host/tokens/age/profile */}
+            <span className="flex min-w-0 basis-full flex-col gap-0.5 pl-8">
+              <span
+                className="text-theme-text-secondary truncate text-[13px]"
+                title={row.lastEvent ?? undefined}
+              >
+                {row.lastEvent ? row.lastEvent.slice(0, 100) : '—'}
+              </span>
+              <RunningRowMeta row={row} profile={profileMap[row.identifier]} now={now} />
+            </span>
           </div>
 
           {/* Expandable log accordion */}
@@ -245,152 +236,142 @@ export default function RunningSessionsTable() {
 
       {/* Paused section — inside the same panel */}
       {paused.length > 0 && (
-        <div
-          style={{
-            borderTop: sorted.length > 0 ? '1px solid var(--line)' : undefined,
-            background: 'var(--warning-soft)',
-          }}
-        >
-          <div className="px-4 py-3">
-            <span className="text-theme-warning-text text-xs font-semibold tracking-[0.05em] uppercase">
-              ⏸ Paused ({paused.length})
-            </span>
-          </div>
+        <div className={`flex flex-col gap-2 ${sorted.length > 0 ? 'pt-2' : ''}`}>
+          <h4 className="text-theme-warning-text px-1 text-xs font-semibold">
+            ⏸ Paused ({paused.length})
+          </h4>
 
-          <div className="space-y-0 pb-3">
-            {paused.map((identifier) => {
-              const prURL = pausedWithPR[identifier];
-              const issueTitle = issues?.find((i) => i.identifier === identifier)?.title;
-              const isExpanded = expandedPausedId === identifier;
-              return (
-                <div key={identifier} className="border-theme-line border-b last:border-b-0">
-                  {/* Paused row — a mouse click toggles the accordion; the
-                      chevron button is the keyboard toggle (M5-close). */}
-                  {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the chevron button is the keyboard toggle (M5-close) */}
-                  <div
-                    data-testid={`paused-row-${identifier}`}
-                    onClick={() => {
+          {paused.map((identifier) => {
+            const prURL = pausedWithPR[identifier];
+            const issueTitle = issues?.find((i) => i.identifier === identifier)?.title;
+            const isExpanded = expandedPausedId === identifier;
+            return (
+              <div key={identifier} className="glass-card overflow-hidden">
+                {/* Paused row — a mouse click toggles the accordion; the
+                    chevron button is the keyboard toggle (M5-close). */}
+                {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- mouse shortcut only; the chevron button is the keyboard toggle (M5-close) */}
+                <div
+                  data-testid={`paused-row-${identifier}`}
+                  onClick={() => {
+                    togglePaused(identifier);
+                  }}
+                  className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2.5"
+                >
+                  {/* Chevron — the accordion toggle */}
+                  <button
+                    type="button"
+                    aria-label={`Toggle details for paused issue ${identifier}`}
+                    aria-expanded={isExpanded}
+                    onClick={(e) => {
+                      e.stopPropagation();
                       togglePaused(identifier);
                     }}
-                    className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 transition-colors hover:bg-[var(--bg-soft)]"
+                    className="text-theme-text-secondary hover:bg-theme-bg-soft inline-flex h-6 w-6 items-center justify-center rounded-full text-sm"
                   >
-                    {/* Chevron — the accordion toggle */}
-                    <button
-                      type="button"
-                      aria-label={`Toggle details for paused issue ${identifier}`}
-                      aria-expanded={isExpanded}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        togglePaused(identifier);
-                      }}
-                      className="text-theme-muted inline-flex h-6 w-6 items-center justify-center rounded text-[10px]"
+                    <span
+                      aria-hidden="true"
+                      className={`inline-block transition-transform duration-200 ${
+                        isExpanded ? 'rotate-90' : ''
+                      }`}
                     >
-                      <span
-                        aria-hidden="true"
-                        className="inline-block transition-transform duration-200"
-                        style={{ transform: isExpanded ? 'rotate(90deg)' : 'none' }}
+                      ›
+                    </span>
+                  </button>
+
+                  <span aria-hidden="true" className="status-dot dot-warn" />
+
+                  {/* Identifier — opens the detail slide */}
+                  <button
+                    type="button"
+                    aria-label={`View details for paused issue ${identifier}`}
+                    className="text-theme-text min-h-6 cursor-pointer font-mono text-xs font-semibold hover:underline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedIdentifier(identifier);
+                    }}
+                  >
+                    {identifier}
+                  </button>
+
+                  {/* Title — truncated, fills remaining space */}
+                  {issueTitle && (
+                    <span className="text-theme-text-secondary hidden min-w-0 flex-1 truncate text-[13px] sm:inline">
+                      {issueTitle}
+                    </span>
+                  )}
+
+                  {/* PR badge */}
+                  <div
+                    role="presentation"
+                    className="ml-auto flex items-center gap-2"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                  >
+                    {prURL && (
+                      <a
+                        href={prURL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="tag pill-accent flex-shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
                       >
-                        ▶
-                      </span>
-                    </button>
-
-                    {/* Identifier — opens the detail slide */}
-                    <button
-                      type="button"
-                      aria-label={`View details for paused issue ${identifier}`}
-                      className="text-theme-warning-text min-h-6 cursor-pointer font-mono text-sm font-semibold hover:underline"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedIdentifier(identifier);
-                      }}
-                    >
-                      {identifier}
-                    </button>
-
-                    {/* Title — truncated, fills remaining space */}
-                    {issueTitle && (
-                      <span className="text-theme-text-secondary hidden min-w-0 flex-1 truncate text-[13px] sm:inline">
-                        {issueTitle}
-                      </span>
+                        PR
+                      </a>
                     )}
-
-                    {/* PR badge */}
-                    <div
-                      role="presentation"
-                      className="ml-auto flex items-center gap-2"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    >
-                      {prURL && (
-                        <a
-                          href={prURL}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="bg-theme-accent-soft text-theme-accent-text inline-flex flex-shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                          }}
-                        >
-                          PR
-                        </a>
-                      )}
-                    </div>
-
-                    {/* Actions — wrap on mobile */}
-                    <div
-                      role="presentation"
-                      className="mt-1 flex w-full flex-shrink-0 items-center gap-1.5 sm:mt-0 sm:ml-0 sm:w-auto"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    >
-                      <AgentProfileSelector
-                        value={profileMap[identifier] ?? ''}
-                        availableProfiles={availableProfiles}
-                        onChange={(profile) => {
-                          setIssueProfileMutation.mutate({ identifier, profile });
-                        }}
-                      />
-                      <button
-                        onClick={() => {
-                          resumeIssueMutation.mutate(identifier);
-                        }}
-                        className="btn-action-resume inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
-                        style={{
-                          background: 'var(--success-soft)',
-                          borderColor: 'var(--success-soft)',
-                          color: 'var(--success-text)',
-                        }}
-                      >
-                        ▶ Resume
-                      </button>
-                      <ConfirmButton
-                        label="✕ Discard"
-                        confirmLabel="Yes, discard"
-                        pendingLabel="Discarding…"
-                        isPending={terminateIssueMutation.isPending}
-                        onConfirm={() => {
-                          terminateIssueMutation.mutate(identifier);
-                        }}
-                      />
-                    </div>
                   </div>
 
-                  {/* Expandable accordion — reuses SessionAccordion */}
-                  {isExpanded && (
-                    <SessionAccordion
-                      identifier={identifier}
-                      workerHost={undefined}
-                      sessionId={undefined}
+                  {/* Actions — wrap on mobile */}
+                  <div
+                    role="presentation"
+                    className="mt-1 flex w-full flex-shrink-0 flex-wrap items-center gap-1.5 sm:mt-0 sm:w-auto"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                  >
+                    <AgentProfileSelector
+                      value={profileMap[identifier] ?? ''}
+                      availableProfiles={availableProfiles}
+                      onChange={(profile) => {
+                        setIssueProfileMutation.mutate({ identifier, profile });
+                      }}
                     />
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resumeIssueMutation.mutate(identifier);
+                      }}
+                      className={ACTION_BUTTON}
+                    >
+                      ▶ Resume
+                    </button>
+                    <ConfirmButton
+                      label="✕ Discard"
+                      confirmLabel="Yes, discard"
+                      pendingLabel="Discarding…"
+                      isPending={terminateIssueMutation.isPending}
+                      onConfirm={() => {
+                        terminateIssueMutation.mutate(identifier);
+                      }}
+                    />
+                  </div>
                 </div>
-              );
-            })}
-          </div>
+
+                {/* Expandable accordion — reuses SessionAccordion */}
+                {isExpanded && (
+                  <SessionAccordion
+                    identifier={identifier}
+                    workerHost={undefined}
+                    sessionId={undefined}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
-    </div>
+    </section>
   );
 }

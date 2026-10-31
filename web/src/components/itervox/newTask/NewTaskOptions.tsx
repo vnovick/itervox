@@ -31,9 +31,9 @@ export function NewTaskOptions({
   return (
     <div className="flex flex-col gap-3">
       <fieldset>
-        <legend className="text-theme-text-secondary mb-1 text-xs font-medium">Create as</legend>
-        <div className="flex flex-wrap gap-4 text-[13px]">
-          <label className="flex items-center gap-1.5">
+        <legend className="field-label mb-1.5">Create as</legend>
+        <div className="grid grid-cols-1 gap-2.5 text-sm sm:grid-cols-2">
+          <label className="choice-card">
             <input
               type="radio"
               name="new-task-where"
@@ -46,7 +46,7 @@ export function NewTaskOptions({
             />
             Local issue (Itervox only)
           </label>
-          <label className="flex items-center gap-1.5">
+          <label className="choice-card">
             <input
               type="radio"
               name="new-task-where"
