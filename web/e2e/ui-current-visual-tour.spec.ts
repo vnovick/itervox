@@ -6,7 +6,6 @@ import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
 import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
-import type { MockApiHandle } from './fixtures/mockApi';
 import { installTourData } from './fixtures/tourData';
 import {
   activeRunScenario,
