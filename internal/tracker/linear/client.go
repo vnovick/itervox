@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -764,8 +765,14 @@ func parseCommentInto(comment *domain.Comment, raw map[string]any) {
 }
 
 // CreateIssue creates a follow-up issue in the same team/project context as
-// sourceIssueID and assigns it to the configured state/column.
-func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
+// sourceIssueID and assigns it to the configured state/column. in.Labels are
+// resolved among the source team's labels and the workspace labels; a name
+// that matches neither fails the create before anything is written, so a
+// routing label is never silently dropped. in.BlockedBySource adds a
+// "blocks" relation from the source issue, which normalizeIssue reads back
+// from the new issue's inverseRelations.
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	stateName := in.State
 	contextResp, err := c.graphql(ctx, QueryCreateIssueContext, map[string]any{"id": sourceIssueID})
 	if err != nil {
 		return nil, fmt.Errorf("linear_create_issue: resolve context: %w", err)
@@ -805,14 +812,30 @@ func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, st
 
 	input := map[string]any{
 		"teamId":      teamID,
-		"title":       title,
-		"description": body,
+		"title":       in.Title,
+		"description": in.Body,
 		"stateId":     stateID,
 	}
 	if project, ok := sourceIssue["project"].(map[string]any); ok {
 		if projectID, _ := project["id"].(string); projectID != "" {
 			input["projectId"] = projectID
 		}
+	}
+	if len(in.Labels) > 0 {
+		teamLabels, _ := nodesOf(team, "labels")
+		wsLabels, _ := nodesOf(data, "issueLabels")
+		known := slices.Concat(teamLabels, wsLabels)
+		ids := make([]string, 0, len(in.Labels))
+		for _, name := range in.Labels {
+			id := findByName(known, name)
+			if id == "" {
+				return nil, fmt.Errorf("linear_create_issue: label %q not found in the source issue's team or workspace", name)
+			}
+			if !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+		input["labelIds"] = ids
 	}
 
 	const mutation = `
@@ -851,6 +874,9 @@ mutation ItervoxCreateIssue($input: IssueCreateInput!) {
 				if issueNode, ok := created["issue"].(map[string]any); ok {
 					issue := normalizeIssue(issueNode)
 					if issue != nil {
+						if in.BlockedBySource {
+							return c.addSourceBlocker(ctx, issue, sourceIssueID, sourceIssue)
+						}
 						return issue, nil
 					}
 				}
@@ -858,6 +884,23 @@ mutation ItervoxCreateIssue($input: IssueCreateInput!) {
 		}
 	}
 	return nil, fmt.Errorf("linear_create_issue: unexpected response: %v", resp)
+}
+
+// addSourceBlocker records the source issue as a blocker of the created
+// issue and adds it to the returned issue's BlockedBy, as the next read of
+// the issue reports it. A failure returns the created issue with the error,
+// so the caller can say which issue exists without its blocker.
+func (c *Client) addSourceBlocker(ctx context.Context, issue *domain.Issue, sourceIssueID string, source map[string]any) (*domain.Issue, error) {
+	if err := c.createBlocksRelation(ctx, sourceIssueID, issue.ID); err != nil {
+		return issue, fmt.Errorf("linear_create_issue: %s was created but its blocked_by_source relation failed: %w", issue.Identifier, err)
+	}
+	ref := blockerRefFromNode(source)
+	if ref.ID == nil || *ref.ID == "" {
+		id := sourceIssueID
+		ref.ID = &id
+	}
+	issue.BlockedBy = append(issue.BlockedBy, ref)
+	return issue, nil
 }
 
 // SetIssueBranch updates the branchName field on the Linear issue so retried

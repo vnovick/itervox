@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/memory"
@@ -180,17 +181,21 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 	}
 	actions := filterAllowedActionsForAutomation(profile.AllowedActions, in.Automation)
 	rendered += profilePromptTail(profileTailInput{
-		Rules:         ruleSet,
-		Memory:        memSel,
-		Playbook:      pb.Playbook.Block(),
-		Template:      cfg.PromptTemplate,
-		ProfileName:   in.ProfileName,
-		Profiles:      profiles,
-		Automation:    in.Automation,
-		Issue:         in.Issue,
-		RunVars:       runVars,
-		ActionContext: buildAgentActionContext(actions, strings.TrimSpace(profile.CreateIssueState), moveState, false),
-		Backend:       backend,
+		Rules:       ruleSet,
+		Memory:      memSel,
+		Playbook:    pb.Playbook.Block(),
+		Template:    cfg.PromptTemplate,
+		ProfileName: in.ProfileName,
+		Profiles:    profiles,
+		Automation:  in.Automation,
+		Issue:       in.Issue,
+		RunVars:     runVars,
+		ActionContext: buildAgentActionContext(actions, agentactions.Scope{
+			CreateIssueState:  strings.TrimSpace(profile.CreateIssueState),
+			CreateIssueLabels: config.NormalizeCreateIssueLabels(profile.CreateIssueLabels),
+			MoveIssueState:    moveState,
+		}, false),
+		Backend: backend,
 	})
 	digest, _ := profilePromptComponents(cfg, in.ProfileName, false, ruleSet, memSel, pb.Playbook.Block()).digest()
 	return EvalPrompt{Text: rendered, Rules: ruleSet, Memory: memSel, Digest: digest}, nil

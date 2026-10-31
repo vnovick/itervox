@@ -17,6 +17,7 @@ import (
 	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
+	"github.com/vnovick/itervox/internal/tracker"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -520,7 +521,10 @@ type OrchestratorClient interface {
 	// agent — the dashboard's reply box / provide-input is the intended way to
 	// answer an agent.
 	PostOperatorComment(ctx context.Context, identifier, body string) (queued bool, err error)
-	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
+	// CreateIssue creates a follow-up of the issue identifier names; in
+	// carries the title, body, state, labels and blocked_by_source flag the
+	// tracker adapter applies (see tracker.NewIssue).
+	CreateIssue(ctx context.Context, identifier string, in tracker.NewIssue) (*domain.Issue, error)
 	UpdateIssueState(ctx context.Context, identifier, stateName string) error
 	SetWorkers(n int) error
 	BumpWorkers(delta int) (int, error)
@@ -633,7 +637,7 @@ func (noopClient) CommentOnIssue(context.Context, string, string) error { return
 func (noopClient) PostOperatorComment(context.Context, string, string) (bool, error) {
 	return false, errNotConfigured
 }
-func (noopClient) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
+func (noopClient) CreateIssue(context.Context, string, tracker.NewIssue) (*domain.Issue, error) {
 	return nil, errNotConfigured
 }
 func (noopClient) UpdateIssueState(context.Context, string, string) error { return errNotConfigured }

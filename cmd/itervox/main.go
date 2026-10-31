@@ -1613,12 +1613,12 @@ func runAction(args []string) {
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/comment"
 		body = map[string]string{"body": *commentBody}
 	case "create-issue":
-		fs := flag.NewFlagSet("action create-issue", flag.ExitOnError)
-		title := fs.String("title", "", "title for the follow-up issue")
-		issueBody := fs.String("body", "", "body/description for the follow-up issue")
-		_ = fs.Parse(args[1:])
-		if strings.TrimSpace(*title) == "" {
-			fmt.Fprintln(os.Stderr, "itervox action create-issue: --title is required")
+		createBody, err := createIssueActionBody(args[1:], os.Stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			fatalExit(0)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "itervox action create-issue:", err)
 			fatalExit(2)
 		}
 		if strings.TrimSpace(os.Getenv("ITERVOX_CREATE_ISSUE_STATE")) == "" {
@@ -1626,7 +1626,7 @@ func runAction(args []string) {
 			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/create-issue"
-		body = map[string]string{"title": *title, "body": *issueBody}
+		body = createBody
 	case "move-state":
 		fs := flag.NewFlagSet("action move-state", flag.ExitOnError)
 		state := fs.String("state", "", "target tracker state")
