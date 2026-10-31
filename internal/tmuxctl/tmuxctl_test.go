@@ -77,10 +77,18 @@ func TestTmuxSendTextAndCaptureRoundTrip(t *testing.T) {
 	if p.Session != "itervox-test1" || p.Label() != "itervox-test1:0.0" || !ValidPaneID(p.ID) || p.PID <= 0 {
 		t.Fatalf("pane = %+v", p)
 	}
-	if canonical(p.Cwd) != canonical(dir) {
-		t.Fatalf("pane cwd = %q, want %q", p.Cwd, dir)
-	}
+	// pane_current_path is read from /proc at query time. tmux forks the
+	// pane's process and only then changes into the -c directory, so a read
+	// straight after new-session can still see the server's own directory.
+	// Once the program has printed "ready" it runs in its directory.
 	waitScreen(t, c, p.ID, "ready")
+	panes, err = c.ListPanes(ctx)
+	if err != nil || len(panes) != 1 {
+		t.Fatalf("ListPanes after ready = %v, %v", panes, err)
+	}
+	if canonical(panes[0].Cwd) != canonical(dir) {
+		t.Fatalf("pane cwd = %q, want %q", panes[0].Cwd, dir)
+	}
 	if err := c.SendText(ctx, p.ID, "hello 'quoted' $HOME world", true); err != nil {
 		t.Fatalf("SendText: %v", err)
 	}
