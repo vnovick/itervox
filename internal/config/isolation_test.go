@@ -18,6 +18,9 @@ import (
 func TestIsolationConfigRoundtrip(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
+	// Absolute on every OS (a bare /opt/cache is not absolute on Windows).
+	cache := filepath.Join(t.TempDir(), "cache")
+	secrets := filepath.Join(t.TempDir(), "secrets")
 	path := workflowWithContent(t, minimalV2WithProfileFiles(t,
 		"agent:\n"+
 			"  isolation: process\n"+
@@ -27,9 +30,9 @@ func TestIsolationConfigRoundtrip(t *testing.T) {
 			"      isolation: process\n"+
 			"      isolation_extra_write:\n"+
 			"        - ~/.npm\n"+
-			"        - /opt/cache\n"+
+			"        - "+cache+"\n"+
 			"      isolation_extra_deny:\n"+
-			"        - /srv/secrets\n"+
+			"        - "+secrets+"\n"+
 			"    open:\n"+
 			"      command: claude\n"+
 			"      isolation: none\n"+
@@ -40,8 +43,8 @@ func TestIsolationConfigRoundtrip(t *testing.T) {
 	assert.Equal(t, config.IsolationProcess, cfg.Agent.Isolation)
 	boxed := cfg.Agent.Profiles["boxed"]
 	assert.Equal(t, config.IsolationProcess, boxed.Isolation)
-	assert.Equal(t, []string{filepath.Join(home, ".npm"), "/opt/cache"}, boxed.IsolationExtraWrite)
-	assert.Equal(t, []string{"/srv/secrets"}, boxed.IsolationExtraDeny)
+	assert.Equal(t, []string{filepath.Join(home, ".npm"), cache}, boxed.IsolationExtraWrite)
+	assert.Equal(t, []string{secrets}, boxed.IsolationExtraDeny)
 	assert.Equal(t, config.IsolationNone, cfg.Agent.Profiles["open"].Isolation)
 	assert.Empty(t, cfg.Agent.Profiles["inherits"].Isolation, "unset inherits agent.isolation")
 	assert.Equal(t, config.IsolationProcess, config.ResolveIsolation(cfg.Agent.Profiles["inherits"].Isolation, cfg.Agent.Isolation))
