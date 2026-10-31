@@ -145,6 +145,46 @@ itervox -verbose
 
 Enables DEBUG-level logging including agent output.
 
+## Workspace setup
+
+Each issue runs in its own git worktree, which holds only what git tracks.
+Two `workspace` settings get it ready for the agent:
+
+- **Files the project needs but does not commit.** List them in
+  `workspace.copy_files` (paths or globs from the repository root). They are
+  copied from your checkout into each new worktree before
+  `hooks.after_create` runs, and refreshed on later runs unless the
+  worktree's copy is newer. Only gitignored files are copied: a tracked or
+  unignored match is skipped with a warning, so a copied file can never be
+  committed from the worktree. `itervox init` suggests `.env` and
+  `.env.local` when they exist and are gitignored. Values from a copied
+  dotenv file are masked in Itervox's logs, but **the agent can read every
+  copied file** — copy only what you would hand it.
+- **A port per workspace.** Each issue's workspace gets its own TCP port
+  from `workspace.port_range` (default `41000-41999`) as `ITERVOX_PORT`, in
+  the agent's environment and every hook's, so several agents can run dev
+  servers at once. Prompts can use `{{ run.port }}`, and the issue's **Now**
+  panel shows it. The port stays with the issue while its worktree exists,
+  survives a daemon restart, and is released when the worktree is cleared.
+
+```yaml
+workspace:
+  worktree: true
+  copy_files: [".env", ".env.local"]
+  port_range: "41000-41999"
+```
+
+```bash
+# hooks.after_create — .env and ITERVOX_PORT are both there already
+pnpm install --frozen-lockfile
+pnpm run db:migrate
+# and in the prompt or a hook: pnpm dev --port "$ITERVOX_PORT"
+```
+
+With SSH workers nothing is copied over: the agent runs in the same
+workspace path on the worker host, which must be shared with this machine.
+See [Workspace setup](/configuration/#workspace-setup) for the full rules.
+
 ## What happens next
 
 1. Itervox polls your tracker for issues in active states (default: "Todo", "In Progress")

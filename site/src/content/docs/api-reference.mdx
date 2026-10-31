@@ -1135,11 +1135,14 @@ runs, this session only), plus the worktree's changed files and handoffs.
     "steers": [{"text": "use gitexec", "at": "2026-10-22T10:02:00Z", "delivery": "live"}],
     "guardrailBlocks": 1, "lastGuardrailKind": "push_protected"
   },
+  "port": 41000,
   "changedFiles": [{"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0}],
   "handoffs": [{"title": "Plan the endpoints", "path": ".itervox/handoff/2026-10-22T09-58-00Z_planner.md"}]
 }
 ```
 
+- `port` is the issue workspace's `ITERVOX_PORT` (from
+  `workspace.port_range`); omitted when the workspace has none.
 - `currentStep` is the run's last assistant message, redacted (the log
   redaction: known key shapes, bearer tokens, `NAME_TOKEN=…` assignments,
   URL credentials), whitespace-collapsed and cut to 500 bytes.

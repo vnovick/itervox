@@ -2057,6 +2057,7 @@ export type RunContextRun = z.infer<typeof RunContextRunSchema>;
 export const RunContextResponseSchema = z.object({
   identifier: z.string(),
   run: RunContextRunSchema.nullable(),
+  port: z.number().optional(), // #250: the workspace's ITERVOX_PORT
   changedFiles: z
     .array(DiffFileSchema)
     .nullish()

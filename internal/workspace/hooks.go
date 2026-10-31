@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	cmd.Stderr = out
 	// Scrubbed: a hook script that runs git must act on this workspace,
 	// not on a repository named by an inherited GIT_DIR.
-	cmd.Env = hookEnv(gitexec.Environ())
+	cmd.Env = append(hookEnv(gitexec.Environ()), HookEnvFrom(ctx)...)
 	setHookProcessGroup(cmd)
 
 	// Start + Track + Wait rather than Run so the hook's group is in the
@@ -91,6 +92,36 @@ func RunHook(ctx context.Context, script, workspacePath string, timeoutMs int, l
 	}
 	return nil
 }
+
+type hookEnvKey struct{}
+
+// WithHookEnv returns ctx carrying extra NAME=value entries for every hook
+// RunHook starts with it (#250: ITERVOX_PORT). They are applied after the
+// inherited environment, so they win over an inherited value.
+func WithHookEnv(ctx context.Context, vars ...string) context.Context {
+	if len(vars) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, hookEnvKey{}, append(HookEnvFrom(ctx), vars...))
+}
+
+// HookEnvFrom returns the extra hook environment ctx carries (nil when none).
+// A copy, so a caller may append to it.
+func HookEnvFrom(ctx context.Context) []string {
+	env, _ := ctx.Value(hookEnvKey{}).([]string)
+	return append([]string(nil), env...)
+}
+
+// PortEnv is the ITERVOX_PORT entry for port, or nil when port is 0.
+func PortEnv(port int) []string {
+	if port <= 0 {
+		return nil
+	}
+	return []string{PortEnvVar + "=" + strconv.Itoa(port)}
+}
+
+// PortEnvVar is the variable agents and hooks find their workspace port in.
+const PortEnvVar = "ITERVOX_PORT"
 
 type cappedOutput struct {
 	max       int

@@ -363,6 +363,19 @@ type WorkspaceConfig struct {
 	CloneURL string
 	// BaseBranch is the branch worktrees are created from (default: "main").
 	BaseBranch string
+	// CopyFiles are paths or globs, relative to the repository root that
+	// holds WORKFLOW.md, copied into each new worktree before
+	// hooks.after_create runs and refreshed on later runs (#250). Only
+	// gitignored files are copied. Empty (the default): nothing is copied.
+	CopyFiles []string
+	// CopyFilesMaxBytes caps the bytes CopyFiles copies into one worktree
+	// per run (default 10 MB); the rest is skipped and reported.
+	CopyFilesMaxBytes int
+	// PortRange is workspace.port_range as written ("41000-41999" by
+	// default); PortMin and PortMax are its bounds. Each issue's workspace
+	// gets one port from it as ITERVOX_PORT (#250).
+	PortRange        string
+	PortMin, PortMax int
 }
 
 // DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
@@ -1018,6 +1031,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
 	cfg.Workspace.CloneURL = strField(ws, "clone_url", "")
 	cfg.Workspace.BaseBranch = strField(ws, "base_branch", "main")
+	if err := parseWorkspaceSetup(ws, &cfg.Workspace); err != nil { // #250
+		return nil, err
+	}
 
 	// Agent
 	agent := nestedMap(raw, "agent")

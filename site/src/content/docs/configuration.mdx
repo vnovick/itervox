@@ -270,6 +270,9 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
 | `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. With `clone_url`, new worktrees start from `origin/<base_branch>` as last fetched. |
+| `copy_files` | string[] | `[]` | Gitignored files the project needs but does not commit (`.env`, `.env.local`, a local config), copied from the main checkout into each new worktree before `hooks.after_create` and refreshed on later runs. Paths or globs relative to the repository root; see [Workspace setup](#workspace-setup). **The agent can read these files.** |
+| `copy_files_max_bytes` | int | `10485760` | Most bytes `copy_files` copies into one worktree per run (10 MB). The rest is skipped and the cap hit is logged. |
+| `port_range` | string | `"41000-41999"` | `LOW-HIGH` range (within 1024–65535) each issue's workspace gets a TCP port from, as `ITERVOX_PORT` and `{{ run.port }}`. See [Workspace setup](#workspace-setup). |
 
 With `clone_url`, the bare clone at `<root>/.bare` fetches origin's branches into `refs/remotes/origin/*`, so a fetch never overwrites a local branch (an agent's unpushed commits are safe) and a branch checked out in a worktree cannot make it fail. New worktree branches are created with `--no-track`; their only upstream is their own name on origin. A clone made by an older version (fetch refspec `+refs/heads/*:refs/heads/*`) is migrated automatically on first use, and upstreams that point at a different branch are repaired. A failing fetch shows up once in recent failures, and `itervox doctor` reports the clone's last successful fetch.
 
@@ -298,6 +301,80 @@ dispatch finds the branch taken again and holds the issue without spending a
 retry. Itervox does not create a second branch from the PR branch instead: the
 agent's pushes would not reach the PR. Fetches into the shared clone are
 serialized, so parallel dispatches no longer fail with `cannot lock ref`.
+
+### Workspace setup
+
+Each issue runs in its own worktree, which starts with only what git tracks.
+Two settings prepare it for the work: `copy_files` brings in the files the
+project needs but does not commit, and `port_range` gives each workspace its
+own TCP port, so agents running dev servers in parallel do not collide.
+
+```yaml
+workspace:
+  worktree: true
+  copy_files: [".env", ".env.local", "config/local"]
+  port_range: "41000-41999"
+```
+
+**`copy_files`**
+
+- **Where from.** Entries are paths or `filepath.Match` globs (`*`, `?`,
+  `[…]`; no `**`), relative to the git top level of the directory that holds
+  `WORKFLOW.md` — the main checkout — and are read from there. An absolute
+  entry, or one with a `..` element, fails the load.
+- **Only gitignored files.** Every file is checked with `git check-ignore`
+  in the main checkout **and** in the new worktree. A tracked or unignored
+  match is skipped with a warning in the issue log, so a copied file can
+  never be committed from the worktree. `.git` is never copied.
+- **When.** After the worktree is created and before `hooks.after_create`,
+  so the hook can use the files. At the start of each later run of the
+  issue the files are refreshed: one is copied again when the worktree has
+  none or the main checkout's copy is newer, so an edit made in the worktree
+  is kept.
+- **How.** Directories are copied recursively, up to `copy_files_max_bytes`
+  per run (10 MB by default); a cap hit is reported in the issue log.
+  Symlinks are never followed — a match that is one, a match reached through
+  a symlinked directory, and a symlink inside a copied directory are all
+  skipped. File modes and modification times are kept.
+- **Secrets.** When a copied file is a dotenv file (`.env`, `.env.<name>`,
+  `<name>.env`), its values are registered with the log redactor, so they
+  are masked as `***` in the daemon log and in the text Itervox redacts
+  before showing it (the run context, recent failures).
+  Like every registered secret, values shorter than 8 characters are not
+  masked, and ordinary values such as `localhost:5432` are masked too.
+  **The agent can read every copied file**: copy only what you would hand
+  the agent yourself.
+- **SSH workers.** Nothing is transferred to a worker host. The copy is
+  made on the daemon's machine, and an SSH worker runs the agent in the same
+  workspace path, which must be shared with the worker host (as every SSH
+  run already requires). Without a shared workspace the files are not there
+  on the worker.
+- **Defaults.** Empty: projects that do not set it copy nothing. `itervox
+  init` writes `copy_files: [".env", ".env.local"]` for those of the two
+  that exist in the project and are gitignored. Worktree mode only
+  (`worktree: true`).
+
+**`ITERVOX_PORT`**
+
+- Each issue's workspace gets the lowest port of `port_range` that no other
+  workspace of this project holds and that can be bound on `127.0.0.1` when
+  it is first used.
+- It is `ITERVOX_PORT` in the agent's environment (an SSH run gets it as an
+  assignment in front of the agent command) and in every hook's:
+  `after_create`, `before_run`, `after_run` and `before_remove`. Prompts get
+  it as `{{ run.port }}` (an empty string without a port), and the issue's
+  **Now** panel shows it.
+- It stays with the issue while its workspace exists — across runs,
+  retries, reviewers and daemon restarts — and is released when the
+  workspace is removed (auto-clear, `itervox clear`, the dashboard). It is
+  recorded in `.itervox-ports.json` under `workspace.root` (under
+  `<root>/worktrees` in worktree mode).
+- The free-port check runs on the daemon's machine. On an SSH worker the
+  port is only guaranteed not to be shared with another workspace of this
+  daemon. Give each project its own `port_range` when several daemons run on
+  one machine.
+- A range with no free port leaves the run without `ITERVOX_PORT` (logged);
+  it never fails the run.
 
 ### Agent handoff (`.itervox/handoff/`)
 
