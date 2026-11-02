@@ -194,6 +194,15 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			CostCoverage: TotalsCoverageRow{ClaudeRuns: 3, CodexRuns: 1},
 		},
 		"TotalsCostUnknown.json": TotalsRow{InputTokens: 500, OutputTokens: 40, CostCoverage: TotalsCoverageRow{CodexRuns: 1}},
+		// Runs per backend and the backends that reported a cost: OpenCode did,
+		// Cursor did not (left out of the estimate).
+		"TotalsByBackend.json": TotalsRow{
+			InputTokens: 900, OutputTokens: 90, CostUSDEstimated: fptr(0.31),
+			CostCoverage: TotalsCoverageRow{
+				ClaudeRuns: 1, RunsByBackend: map[string]int{"claude": 1, "opencode": 2, "cursor": 1},
+				CostBackends: []string{"claude", "opencode"},
+			},
+		},
 		// CORE-175 — one acknowledgement row.
 		"FailureAckRow.json": FailureAckRow{Identifier: "ENG-1", UpTo: at},
 		"FailureRow.json": FailureRow{

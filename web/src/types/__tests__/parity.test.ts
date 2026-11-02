@@ -71,6 +71,7 @@ const schemas: Record<string, SchemaLike> = {
   // CORE-091 / CORE-175 (Go-emitted, M6-G4)
   'Totals.json': TotalsSchema,
   'TotalsCostUnknown.json': TotalsSchema,
+  'TotalsByBackend.json': TotalsSchema,
   'FailureAckRow.json': StateSnapshotSchema.shape.failureAcks.unwrap().element,
 };
 

@@ -698,7 +698,13 @@ Useful top-level fields include:
   client-side `total_cost_usd` estimates — counted per agent session, so a
   resumed session is not counted twice — and is `null` until a Claude run
   reports a cost. Codex reports no cost: `codexRuns > 0` means the estimate
-  covers Claude runs only.
+  covers Claude runs only. `costCoverage` also carries `runsByBackend` (runs
+  per backend name, e.g. `{ "claude": 1, "opencode": 2, "cursor": 1 }`) and
+  `costBackends` (the backends that reported a cost; OpenCode and custom
+  backends can report one). A backend with runs that is not in
+  `costBackends` is left out of the estimate. `claudeRuns` and `codexRuns`
+  count only their own backend; both new fields are omitted until a run has
+  counted.
 - `recentFailures` — always an array (possibly empty) on a current daemon:
   the last 100 operator-relevant failures, oldest recorded first. Each row is
   `{ "kind", "identifier"?, "source"?, "message", "occurredAt", "recordedAt",

@@ -1183,6 +1183,11 @@ type TotalsRow struct {
 type TotalsCoverageRow struct {
 	ClaudeRuns int `json:"claudeRuns"`
 	CodexRuns  int `json:"codexRuns"`
+	// RunsByBackend counts the runs per backend name; CostBackends lists the
+	// backends that reported a cost. A backend with runs but not listed is
+	// left out of CostUSDEstimated (Codex, and any that report no cost).
+	RunsByBackend map[string]int `json:"runsByBackend,omitempty"`
+	CostBackends  []string       `json:"costBackends,omitempty"`
 }
 
 // CapabilityFailureAck is advertised in StateSnapshot.Capabilities when the

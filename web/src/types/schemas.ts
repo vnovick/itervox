@@ -774,6 +774,11 @@ export const TotalsSchema = z.object({
     .object({
       claudeRuns: z.number().int().nonnegative(),
       codexRuns: z.number().int().nonnegative(),
+      // Runs per backend, and the backends that reported a cost; a backend
+      // with runs that is not listed is left out of the estimate. Optional:
+      // older daemons send only the two counts above.
+      runsByBackend: z.record(z.string(), z.number().int().nonnegative()).optional(),
+      costBackends: z.array(z.string()).optional(),
     })
     .optional(),
 });
