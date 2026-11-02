@@ -35,6 +35,7 @@ export default defineConfig({
             { label: 'Cross-review preset', slug: 'guides/cross-review' },
             { label: 'Agent Handoff', slug: 'guides/agent-handoff' },
             { label: 'Claude vs Codex Debate', slug: 'guides/claude-vs-codex-debate' },
+            { label: 'Agent backends (OpenCode, Cursor, custom)', slug: 'guides/backends' },
             { label: 'Backend health and fallback', slug: 'guides/backend-health' },
             { label: 'Automations', slug: 'guides/automations' },
             { label: 'Automation Queue', slug: 'guides/automation-queue' },

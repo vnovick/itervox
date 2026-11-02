@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import Badge from '../../../components/ui/badge/Badge';
+import { backendLabel, resolveIssueBackend } from '../../../lib/backends';
 import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
 import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
 import { useItervoxStore } from '../../../store/itervoxStore';
@@ -24,22 +25,6 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
       {active ? (dir === 'asc' ? '↑' : '↓') : '↕'}
     </span>
   );
-}
-
-function resolveBackend(
-  profile: string | undefined,
-  profileDefs: Record<string, ProfileDef> | undefined,
-  runningBackend: string | undefined,
-  defaultBackend: string | undefined,
-): 'claude' | 'codex' {
-  if (runningBackend) return /codex/i.test(runningBackend) ? 'codex' : 'claude';
-  if (profile && profileDefs?.[profile]) {
-    const def = profileDefs[profile];
-    const hint = def.backend || def.command || '';
-    if (hint) return /codex/i.test(hint) ? 'codex' : 'claude';
-  }
-  const fallback = defaultBackend || '';
-  return /codex/i.test(fallback) ? 'codex' : 'claude';
 }
 
 interface ListViewProps {
@@ -214,13 +199,13 @@ export function ListView({
                 </td>
                 <td className="whitespace-nowrap">
                   {(() => {
-                    const b = resolveBackend(
+                    const b = resolveIssueBackend(
                       issue.agentProfile,
                       profileDefs,
                       runningBackendByIdentifier?.[issue.identifier],
                       defaultBackend,
                     );
-                    return <span className="tag">{b === 'codex' ? 'Codex' : 'Claude'}</span>;
+                    return <span className="tag">{backendLabel(b)}</span>;
                   })()}
                 </td>
                 <td

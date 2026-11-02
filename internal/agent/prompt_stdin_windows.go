@@ -50,3 +50,8 @@ func setPromptFD3(cmd *exec.Cmd, f *os.File) {
 		cmd.Stdin = f
 	}
 }
+
+// localPromptArg is localPromptArg of prompt_stdin_unix.go for Windows:
+// the prompt file is the login shell's stdin here (setPromptFD3), so the
+// expansion reads stdin, and the CLI inherits it at EOF.
+const localPromptArg = ` "$(cat)"`

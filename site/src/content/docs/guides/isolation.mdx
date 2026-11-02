@@ -48,7 +48,8 @@ confined than what you asked for.
   `config`, `hooks`, `packed-refs` — stays readable);
 - the system temp directory;
 - the agent CLIs' own state: `~/.claude`, `~/.claude.json`, `~/.codex`,
-  `~/.cache`;
+  `~/.cache`, OpenCode's `~/.local/share/opencode`, `~/.local/state/opencode`
+  and `~/.config/opencode`, and Cursor's `~/.cursor` and `~/.config/cursor`;
 - Claude's per-run log directory;
 - anything in `isolation_extra_write`.
 
@@ -146,7 +147,7 @@ Isolation
   landlock: available
   profiles with isolation: process: coder
   sandbox: bubblewrap
-  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache (+ isolation_extra_write)
+  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache, ~/.local/share/opencode, ~/.local/state/opencode, ~/.config/opencode, ~/.cursor, ~/.config/cursor (+ isolation_extra_write)
   unreadable: ~/.ssh, ~/.aws, …, every other workspace under ~/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
   network: allowed; hooks: not sandboxed
 ```

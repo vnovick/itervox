@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { AGENT_BACKENDS, BACKEND_BINARIES, BACKEND_LABELS } from '../../../lib/backends';
 import {
   agentActionOptionsFor,
   normalizeAllowedActions,
@@ -80,10 +81,19 @@ function BackendSelect({
       }}
       className={selectCls}
     >
-      <option value="claude">Claude</option>
-      <option value="codex">Codex</option>
+      {AGENT_BACKENDS.map((b) => (
+        <option key={b} value={b}>
+          {BACKEND_LABELS[b]}
+        </option>
+      ))}
     </select>
   );
+}
+
+function commandPlaceholder(backend: SupportedBackend): string {
+  if (backend === 'custom') return './my-agent.sh — a command speaking the itervox agent protocol';
+  const bin = BACKEND_BINARIES[backend];
+  return `${bin}, /path/to/${bin}, or a wrapper command`;
 }
 
 const PROMPT_VARIABLES = [
@@ -155,7 +165,9 @@ export function ProfileEditorFields({
   leadingField,
   afterFirstRow,
 }: ProfileEditorFieldsProps) {
-  const isCustomCommand = !isSimpleBackendCommand(command, backend);
+  // A custom backend is always a hand-written command (the itervox agent
+  // protocol), so its command field is always shown.
+  const isCustomCommand = backend === 'custom' || !isSimpleBackendCommand(command, backend);
   const canCreateIssue = allowedActions.includes('create_issue');
   const actionOptions = agentActionOptionsFor(supportedAgentActions);
   const [advancedOpen, setAdvancedOpen] = useState(isCustomCommand);
@@ -355,20 +367,23 @@ export function ProfileEditorFields({
             onChange={(e) => {
               onCommandChange(e.target.value);
             }}
-            placeholder={
-              backend === 'codex'
-                ? 'codex, /path/to/codex, or a wrapper command'
-                : 'claude, /path/to/claude, or a wrapper command'
-            }
+            placeholder={commandPlaceholder(backend)}
             className={`${selectCls} font-mono text-xs`}
           />
           <p className={helperTextCls}>
             Leave this alone unless you need a wrapper command or a non-standard binary path.
           </p>
-          {isCustomCommand && (
+          {backend === 'custom' ? (
             <p className={helperTextCls}>
-              Custom command detected — model selection may not apply.
+              Custom backend: the command reads the prompt on stdin and prints itervox agent
+              protocol events (see the Backends guide).
             </p>
+          ) : (
+            isCustomCommand && (
+              <p className={helperTextCls}>
+                Custom command detected — model selection may not apply.
+              </p>
+            )
           )}
         </div>
       </details>

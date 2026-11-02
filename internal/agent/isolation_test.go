@@ -24,6 +24,18 @@ type isolationRunnerCase struct {
 	// direct and login-shell paths (first turn, bypass, no steering).
 	directArgs func(ws string) []string
 	shellCmd   func(command, ws string) string
+	// shellCommand is the login-shell path's configured command for exe
+	// (nil: "/bin/sh <exe>"). OpenCode puts its "run" subcommand after the
+	// program, so its case names the agent itself behind an env assignment.
+	shellCommand func(exe string) string
+}
+
+// loginShellCommand is rc's login-shell path command for exe.
+func (rc isolationRunnerCase) loginShellCommand(exe string) string {
+	if rc.shellCommand != nil {
+		return rc.shellCommand(exe)
+	}
+	return "/bin/sh " + exe
 }
 
 const isoPrompt = "do the thing"
@@ -42,6 +54,30 @@ func isolationRunnerCases() []isolationRunnerCase {
 			directArgs: func(ws string) []string { return buildCodexDirectArgs(nil, ws, PermissionBypass) },
 			shellCmd: func(command, ws string) string {
 				return buildCodexShellCmd(command, nil, ws, localPromptRedirect, PermissionBypass)
+			},
+		},
+		{
+			name: "opencode", runner: NewOpenCodeRunner(), firstLine: `{"type":"step_start","sessionID":"s1"}`,
+			directArgs: func(string) []string { return []string{"run", "--format", "json", "--auto"} },
+			shellCmd: func(command, _ string) string {
+				return openCodeTurn(command, nil, PermissionBypass, &openCodeStream{}).shellCmd(localPromptRedirect)
+			},
+			shellCommand: func(exe string) string { return "ITERVOX_ISO=1 " + exe },
+		},
+		{
+			name: "cursor", runner: NewCursorRunner(), firstLine: `{"type":"system","subtype":"init","session_id":"s1"}`,
+			directArgs: func(string) []string {
+				return []string{"-p", "--output-format", "stream-json", "--force", "--trust", "--", isoPrompt}
+			},
+			shellCmd: func(command, _ string) string {
+				return cursorTurn(command, nil, PermissionBypass).shellCmd(" --" + localPromptArg)
+			},
+		},
+		{
+			name: "custom", runner: NewCustomRunner(), firstLine: `{"type":"session","session_id":"s1"}`,
+			directArgs: func(string) []string { return nil },
+			shellCmd: func(command, _ string) string {
+				return customTurn(command, nil, PermissionBypass, &customStream{}).shellCmd(localPromptRedirect)
 			},
 		},
 	}
@@ -96,6 +132,9 @@ func readArgvLines(t *testing.T, path string) []string {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	require.NoError(t, err, "nothing was recorded at %s", path)
+	if string(data) == "\n" {
+		return nil // printf '%s\n' with no arguments: an empty argv
+	}
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
@@ -126,7 +165,7 @@ func TestIsolationNoneLeavesCommandUnchanged(t *testing.T) {
 					command := exe
 					if path == "login_shell" {
 						writeRecordingShell(t, bin, shellArgv)
-						command = "/bin/sh " + exe
+						command = rc.loginShellCommand(exe)
 					}
 					res, err := rc.runner.RunTurn(ctx, slog.Default(), nil, nil, isoPrompt, ws, command, "", "",
 						30000, 60000, PermissionBypass)
@@ -156,7 +195,8 @@ func TestIsolationNoneLeavesCommandUnchanged(t *testing.T) {
 }
 
 // TestIsolationProcessWrapsEveryLaunchPath: with process isolation every
-// local launch path — direct and login shell, for claude and codex — hands
+// local launch path — direct and login shell, for claude, codex, opencode,
+// cursor and custom — hands
 // its whole command to the sandbox (the tmux path is covered by the test of
 // the same name in cmd/itervox). Claude's log directory is added to the
 // writable list for the turn.
@@ -173,7 +213,7 @@ func TestIsolationProcessWrapsEveryLaunchPath(t *testing.T) {
 				command, shell := exe, ""
 				if path == "login_shell" {
 					shell = writeRecordingShell(t, bin, filepath.Join(bin, "shell.argv"))
-					command = "/bin/sh " + exe
+					command = rc.loginShellCommand(exe)
 				}
 				iso, err := PrepareIsolation("process", IsolationInputs{Workspace: ws},
 					func() (IsolationMechanism, error) { return m, nil })

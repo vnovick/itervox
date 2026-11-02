@@ -628,7 +628,7 @@ func (s *Server) handleSetIssueBackend(w http.ResponseWriter, r *http.Request) {
 	// a command into the runner's shell. Deliberately no TrimSpace.
 	if body.Backend != "" && !config.IsSupportedBackend(body.Backend) {
 		writeErrorWithField(w, http.StatusBadRequest, "bad_request",
-			fmt.Sprintf("backend must be \"claude\", \"codex\", or \"\" to clear, got %q", body.Backend), "backend")
+			fmt.Sprintf("backend must be one of %s, or \"\" to clear, got %q", config.SupportedBackendsText(), body.Backend), "backend")
 		return
 	}
 	// CORE-056: a pin the CORE-115 resolver would refuse is rejected here,
@@ -1042,7 +1042,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 // catalog and rewrites agent.available_models in WORKFLOW.md. The dashboard
 // model picker will pick up the change on the next snapshot refresh.
 // POST /api/v1/settings/models/refresh
-// Body: {"backend": "claude" | "codex" | "all"}  (default: "all")
+// Body: {"backend": "claude" | "codex" | "opencode" | "all"}  (default: "all")
 func (s *Server) handleRefreshModels(w http.ResponseWriter, r *http.Request) {
 	if refresher, ok := s.client.(ModelRefresher); ok {
 		var body struct {

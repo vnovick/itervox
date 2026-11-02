@@ -1529,12 +1529,7 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 // resumed by the runner for resolved (CORE-033). Only an exact match on a
 // backend MultiRunner routes explicitly counts.
 func resumeBackendMatches(stored, resolved string) bool {
-	switch stored {
-	case "claude", "codex":
-		return stored == resolved
-	default:
-		return false
-	}
+	return config.IsSupportedBackend(stored) && stored == resolved
 }
 
 func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {

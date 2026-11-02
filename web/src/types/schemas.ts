@@ -9,6 +9,7 @@
  * producing silent undefined values.
  */
 import { z } from 'zod';
+import { AGENT_BACKENDS } from '../lib/backends';
 import { AUTOMATION_TRIGGER_TYPES } from './automationTriggers';
 import {
   extraKeys,
@@ -370,13 +371,13 @@ export const AutomationPolicySchema = z.object({
   autoResume: z.boolean().optional(),
   // Gap E — rate_limited rules carry these. Server validator enforces:
   //  - switchToProfile required when triggerType === 'rate_limited'
-  //  - switchToBackend ∈ {'', 'claude', 'codex'}
+  //  - switchToBackend ∈ {'', ...AGENT_BACKENDS}
   //  - cooldownMinutes >= 0
   // and rejects all three on non-rate_limited triggers.
   switchToProfile: z.string().optional(),
   switchToBackend: tolerantEnum(
     'automations.policy.switchToBackend',
-    ['', 'claude', 'codex'],
+    ['', ...AGENT_BACKENDS],
     '',
   ).optional(),
   cooldownMinutes: z.number().int().nonnegative().optional(),
@@ -409,7 +410,7 @@ function captureAutomationUnknowns(input: unknown): unknown {
   }
   const policy = input.policy;
   if (isRecord(policy) && typeof policy.switchToBackend === 'string') {
-    if (!['', 'claude', 'codex'].includes(policy.switchToBackend)) {
+    if (!(['', ...AGENT_BACKENDS] as string[]).includes(policy.switchToBackend)) {
       unknown.switchToBackend = policy.switchToBackend;
     }
   }

@@ -37,11 +37,14 @@
         },
         "backend": {
           "default": "",
-          "description": "Runner backend for agent.command. Only needed when the command is a wrapper script whose backend Itervox cannot infer.",
+          "description": "Runner backend for agent.command. Needed when the command is a wrapper script whose backend Itervox cannot infer, and always for custom (a command speaking the itervox JSON-lines agent protocol).",
           "enum": [
             "",
             "claude",
-            "codex"
+            "codex",
+            "opencode",
+            "cursor",
+            "custom"
           ],
           "title": "Backend",
           "type": "string",

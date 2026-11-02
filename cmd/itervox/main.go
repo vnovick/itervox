@@ -125,6 +125,31 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		} else {
 			slog.Info("codex CLI validated successfully")
 		}
+	case config.BackendOpenCode, config.BackendCursor, config.BackendCustom:
+		resolvedCmd := cfg.Agent.Command
+		if profileName != "" {
+			if p, ok := cfg.Agent.Profiles[profileName]; ok && p.Command != "" {
+				resolvedCmd = p.Command
+			}
+		}
+		// A custom backend is one command per profile, so it is
+		// validated per command; the others once per backend.
+		key := backend
+		if backend == config.BackendCustom {
+			key = backend + ":" + resolvedCmd
+		}
+		if _, ok := validatedBackends[key]; ok {
+			return nil
+		}
+		validatedBackends[key] = struct{}{}
+		if err := validateExtraBackendCLI(backend, resolvedCmd); err != nil {
+			if profileName != "" {
+				slog.Warn(backend+" CLI validation failed for profile", "profile", profileName, "error", err)
+				return nil // profile failures are non-fatal
+			}
+			return fmt.Errorf("%s CLI not found or not executable: %w", backend, err)
+		}
+		slog.Info(backend+" CLI validated successfully", "profile", profileName)
 	default:
 		if profileName != "" {
 			slog.Warn("unsupported backend in profile, will fall back to default runner", "profile", profileName, "backend", backend)
@@ -133,6 +158,19 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		}
 	}
 	return nil
+}
+
+// validateExtraBackendCLI checks the CLI of an OpenCode, Cursor or custom
+// backend. A var so tests can stub the checks.
+var validateExtraBackendCLI = func(backend, command string) error {
+	switch backend {
+	case config.BackendOpenCode:
+		return agent.ValidateOpenCodeCLICommand(command)
+	case config.BackendCursor:
+		return agent.ValidateCursorCLICommand(command)
+	default:
+		return agent.ValidateCustomCommand(command, exec.LookPath)
+	}
 }
 
 // generateAPIToken returns a cryptographically random 32-byte hex token
@@ -740,12 +778,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		return fmt.Errorf("build tracker: %w", err)
 	}
 
-	var runner agent.Runner = agent.NewMultiRunner(
-		agent.NewClaudeRunner(),
-		map[string]agent.Runner{
-			"codex": agent.NewCodexRunner(),
-		},
-	)
+	var runner agent.Runner = agent.NewBackendMultiRunner()
 	runner = commandResolverRunner{inner: runner}
 	if demoSession != nil {
 		// `itervox demo` (#76): the session's memory tracker and scripted

@@ -1,0 +1,8 @@
+{"type":"session","session_id":"custom-sess-1"}
+{"type":"text","text":"Looking at the issue."}
+{"type":"tool_call","name":"bash","input":{"command":"make test"}}
+{"type":"tool_result","name":"bash","input":{"command":"make test"},"output":"PASS","is_error":false}
+{"type":"usage","input_tokens":700,"cached_input_tokens":50,"output_tokens":30,"cost_usd":0.004}
+{"type":"usage","input_tokens":300,"output_tokens":20,"cost_usd":0.002}
+{"type":"text","text":"All green."}
+{"type":"done","result":"Fixed the flaky test."}

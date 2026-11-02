@@ -1932,7 +1932,7 @@ message) when the tracker refuses.
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
-| `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
+| `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` (any of `claude`, `codex`, `opencode`, `cursor`, `custom`) or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true,"via"?:"slack"}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
@@ -2391,7 +2391,7 @@ fields.
 | `GET` | `/settings/reviewer` | `{"profile":"reviewer","auto_review":true}` |
 | `PUT` | `/settings/reviewer` | `{"ok":true}` |
 | `GET` | `/settings/models` | `{ "<backend>": [ModelOption] }` |
-| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "all"}` (default `all`); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
+| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "opencode" \| "all"}` (default `all`; `opencode` lists `opencode models` and is left out of `all` when that finds none); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
 
 `PUT /settings/reviewer` request body:
 
