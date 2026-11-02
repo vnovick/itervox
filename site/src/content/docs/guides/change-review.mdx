@@ -81,7 +81,11 @@ new side, which is how GitHub anchors review comments.
     Itervox dispatches it where it is once the usual gates admit it (a free
     slot, no dispatch pause, blockers, the backend breaker, the budget), the
     run does not move the issue to the working state, and it is not stopped
-    for being outside the active states.
+    for being outside the active states. It takes turns like any run, until
+    the agent is done, `agent.max_turns`, a question for you, a stall or turn
+    timeout, or you stop it, and at the end it leaves the issue where it is
+    (no move to `tracker.completion_state`). Moving the issue to a terminal
+    state other than `tracker.completion_state` stops it.
   - **Also post on the PR** (on by default; shown only when the issue has a
     PR): the comments are also posted as one GitHub review (**Comment**). If
     GitHub refuses, a separate error says so; the agent still gets the

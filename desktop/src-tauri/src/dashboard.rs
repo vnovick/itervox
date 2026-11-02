@@ -80,6 +80,18 @@ pub fn navigate_script(path: &str) -> String {
     format!("window.__itervoxNavigate&&window.__itervoxNavigate({p});")
 }
 
+/// The script the tray's "New Task…" evaluates in a dashboard webview that
+/// already shows the project: the in-app navigation of [`navigate_script`]
+/// when the page has the hook and accepts `path`; otherwise (an older
+/// daemon, a page the user followed a link out to) it loads `url`, the
+/// same page by its full address.
+pub fn navigate_or_load_script(path: &str, url: &str) -> String {
+    let (p, u) = (js(path), js(url));
+    format!(
+        "(function(){{try{{if(window.__itervoxNavigate&&window.__itervoxNavigate({p}))return;}}catch(e){{}}window.location.assign({u});}})();"
+    )
+}
+
 /// The window label for a project: stable, and only `[a-zA-Z0-9-]` as
 /// Tauri requires.
 pub fn window_label(project: &str) -> String {
@@ -142,6 +154,19 @@ mod tests {
         );
         let s = navigate_script("/x\");alert(1)//");
         assert!(s.contains(r#"("/x\");alert(1)//")"#), "{s}");
+    }
+
+    #[test]
+    fn navigate_or_load_prefers_the_hook_and_falls_back_to_the_url() {
+        let s = navigate_or_load_script("/?newTask=1", "http://127.0.0.1:8090/?newTask=1");
+        assert_eq!(
+            s,
+            r#"(function(){try{if(window.__itervoxNavigate&&window.__itervoxNavigate("/?newTask=1"))return;}catch(e){}window.location.assign("http://127.0.0.1:8090/?newTask=1");})();"#
+        );
+        // Both values are JSON-quoted, never spliced raw.
+        let s = navigate_or_load_script("/\");x(", "http://h/\");y(");
+        assert!(s.contains(r#"("/\");x(")"#), "{s}");
+        assert!(s.contains(r#"assign("http://h/\");y(")"#), "{s}");
     }
 
     /// Drift guard: the global, its value and the navigate hook are the

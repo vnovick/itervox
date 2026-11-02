@@ -24,7 +24,7 @@ const ITEMS: &[(&str, &str, &str)] = &[
     ("repo", "Repo Analysis", "/repo"),
     ("memory", "Memory", "/memory"),
     ("settings", "Settings", "/settings"),
-    ("new-task", "New Task…", "/?newTask=1"),
+    ("new-task", "New Task…", crate::menu::NEW_TASK_PATH),
 ];
 
 /// The id of the Go menu's New Task… item (a separator goes before it).

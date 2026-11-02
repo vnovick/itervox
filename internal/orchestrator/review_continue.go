@@ -266,6 +266,14 @@ func runNoTrackerMove(ctx context.Context) bool {
 	return h != nil && h.noTrackerMove
 }
 
+// inPlaceReviewRunContinues reports whether a run continuing an operator
+// review in place (NoTrackerMove) keeps running with its issue in s: any
+// state but a terminal one other than tracker.completion_state. The worker's
+// turn loop, reconciliation and the deferred-move check share it.
+func inPlaceReviewRunContinues(s string, state State) bool {
+	return !isTerminalState(s, state) || isReviewState(s, state)
+}
+
 // handleReviewDelivered drops a review its run has written into the
 // workspace. Event loop only.
 func (o *Orchestrator) handleReviewDelivered(state *State, d *reviewDelivery) {

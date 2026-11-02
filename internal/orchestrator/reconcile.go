@@ -215,7 +215,7 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 		// A run started to continue from an operator review without a
 		// tracker move runs outside the active states by design; only a
 		// terminal state other than completion_state stops it.
-		if entry.NoTrackerMove && (!isTerminalState(refreshedState, state) || isReviewState(refreshedState, state)) {
+		if entry.NoTrackerMove && inPlaceReviewRunContinues(refreshedState, state) {
 			entry.Issue.State = refreshedState
 			entry.LastEventAt = &now
 			continue
