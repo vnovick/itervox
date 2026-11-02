@@ -1,10 +1,15 @@
+import { lazy, Suspense } from 'react';
 import { useRunContext } from '../../../queries/changes';
 import { DiffFileList } from './DiffFileList';
 import { fmtTokens } from '../../../utils/format';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { SYSTEM_VISIBILITY_CAPABILITY } from '../../../queries/activity';
 import { RunResources } from '../resources/RunResources';
-import { IssueActivity } from '../resources/IssueActivity';
+// The activity section pulls in the field primitives (and their class
+// merger); this panel ships with the app shell, so load it on demand.
+const IssueActivity = lazy(() =>
+  import('../resources/IssueActivity').then((m) => ({ default: m.IssueActivity })),
+);
 
 const NOW_FILES_SHOWN = 8;
 
@@ -102,7 +107,11 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           <DiffFileList files={data.changedFiles} limit={NOW_FILES_SHOWN} />
         </div>
       )}
-      {systemVisibility && <IssueActivity identifier={identifier} live={live} />}
+      {systemVisibility && (
+        <Suspense fallback={null}>
+          <IssueActivity identifier={identifier} live={live} />
+        </Suspense>
+      )}
       {data.handoffs.length > 0 && (
         <div>
           <p className="text-theme-muted mb-1 text-xs">Prior handoffs</p>

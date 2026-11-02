@@ -124,7 +124,8 @@ describe('IssueNowPanel (#215)', () => {
     });
     render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
     expect(await screen.findByTestId('run-resources')).toHaveTextContent('700 MB');
-    expect(screen.getByTestId('issue-activity')).toBeInTheDocument();
+    // The activity section loads on demand (it is kept out of the shell chunk).
+    expect(await screen.findByTestId('issue-activity')).toBeInTheDocument();
     useItervoxStore.setState({ snapshot: null });
   });
 
