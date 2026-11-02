@@ -42,7 +42,7 @@ func TestRunSamplerTotalsAreMonotonic(t *testing.T) {
 	s := newRunSampler(t0)
 	var u RunUsage
 	a := procInfo{PID: 10, Start: 1, Comm: "node", Argv: []string{"/usr/bin/node", "cli.js"}, CPUSeconds: 1, RSSBytes: 100, ReadBytes: 10, WriteBytes: 20}
-	b := procInfo{PID: 11, Start: 1, Comm: "git", Argv: []string{"git", "status"}, CPUSeconds: 0.5, RSSBytes: 50, ReadBytes: 1, WriteBytes: 2,
+	b := procInfo{PID: 11, Start: 1, Comm: "rg", Argv: []string{"rg", "TODO"}, CPUSeconds: 0.5, RSSBytes: 50, ReadBytes: 1, WriteBytes: 2,
 		Conns: []NetConn{{Inode: 7, State: "ESTABLISHED"}, {Inode: 8, State: "LISTEN"}}}
 	s.observe(t0.Add(2*time.Second), []procInfo{a, b}, true, &u)
 	assert.InDelta(t, 75.0, u.CPUPercent, 0.01, "1.5 CPU-seconds over 2s")
