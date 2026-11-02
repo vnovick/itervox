@@ -1,0 +1,69 @@
+{
+  "identifier": "ENG-1",
+  "runId": "run-1",
+  "live": true,
+  "mode": "sampled",
+  "platform": "linux",
+  "supports": {
+    "commands": true,
+    "files": true,
+    "connections": true
+  },
+  "notes": [
+    "Sampled every 2s from /proc: short-lived processes, files and connections between two samples may be missed."
+  ],
+  "workspace": "/ws/ENG-1",
+  "startedAt": "2026-05-25T12:00:00Z",
+  "updatedAt": "2026-05-25T12:00:00Z",
+  "commands": [
+    {
+      "name": "git",
+      "args": "status --short",
+      "pid": 4300,
+      "count": 3,
+      "firstAt": "2026-05-25T12:00:00Z",
+      "lastAt": "2026-05-25T12:00:00Z"
+    }
+  ],
+  "files": [
+    {
+      "path": "/ws/ENG-1/main.go",
+      "write": true,
+      "command": "node",
+      "count": 2,
+      "firstAt": "2026-05-25T12:00:00Z",
+      "lastAt": "2026-05-25T12:00:00Z"
+    },
+    {
+      "path": "/home/me/.npmrc",
+      "write": true,
+      "outsideWorkspace": true,
+      "count": 1,
+      "firstAt": "2026-05-25T12:00:00Z",
+      "lastAt": "2026-05-25T12:00:00Z"
+    }
+  ],
+  "connections": [
+    {
+      "protocol": "tcp",
+      "remote": "140.82.112.3:443",
+      "state": "ESTABLISHED",
+      "command": "git",
+      "count": 1,
+      "firstAt": "2026-05-25T12:00:00Z",
+      "lastAt": "2026-05-25T12:00:00Z"
+    }
+  ],
+  "dropped": {
+    "commands": 0,
+    "files": 0,
+    "connections": 0
+  },
+  "runs": [
+    {
+      "runId": "run-1",
+      "startedAt": "2026-05-25T12:00:00Z",
+      "live": true
+    }
+  ]
+}

@@ -107,6 +107,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		slog.Debug("orchestrator: worker update event dropped (channel full)", "issue_id", issue.ID)
 	}
 
+	// System visibility: the run's process groups are its own from here.
+	o.attachRunMonitor(issue.Identifier, runIDFrom(ctx), "", workerHost)
+
 	// --- Workspace ---
 	automationRun := automation != nil && !automation.UseIssueLifecycle
 	hasResumeSession := resume != nil && resume.SessionID != ""
@@ -201,6 +204,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		o.attachRunMonitor(issue.Identifier, runIDFrom(ctx), wsPath, workerHost)
 		// #250: the workspace's port reaches every hook of this run (and,
 		// below, the agent); copy_files ran inside EnsureWorkspace, before
 		// after_create.

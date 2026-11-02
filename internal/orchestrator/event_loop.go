@@ -3121,6 +3121,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.StartedAt = finishedAt
 	}
 	run.BranchName = historyBranch(liveEntry, issue) // #201
+	run.Resources = o.endRunMonitor(issue.Identifier)
 	o.addCompletedRun(run)
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.

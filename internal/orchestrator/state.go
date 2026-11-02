@@ -8,6 +8,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/extsessions"
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // EventType identifies the kind of OrchestratorEvent.
@@ -532,6 +533,11 @@ type CompletedRun struct {
 	// review; ReviewComments counts the review's line comments.
 	ContinuedFromReview bool `json:"continuedFromReview,omitempty"`
 	ReviewComments      int  `json:"reviewComments,omitempty"`
+	// Resources is the run's resource use and activity counts from the
+	// run monitor (internal/sysmon): last and peak memory, CPU time, peak
+	// process count, disk I/O. Nil when no monitor was installed or the
+	// run started no local process.
+	Resources *sysmon.RunSummary `json:"resources,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.

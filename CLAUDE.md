@@ -408,6 +408,14 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
 auto-clear, startup cleanup, `itervox clear`), no dispatch decision reads the
 port, and the hooks that need it run on the same goroutines — so it is not
 event-loop state. Do not mirror it into `orchestrator.State`.
+- The run monitor (`internal/sysmon`, system visibility) is NOT `State`: a
+  separately locked store fed by `procgroup` (an added observer) and its own
+  sampler goroutine. The worker names a run (`RunMonitor.AttachRun`); the
+  event loop closes it in `recordHistory` (`EndRun`: a brief lock, no I/O)
+  and keeps the summary on `CompletedRun.Resources`. The snapshot builder,
+  the run context and `/metrics` read copies. The low-disk guard
+  (`cmd/itervox/sysmon_wire.go`) pauses through `PauseDispatch` with the
+  reason prefix `Low disk space` and only ever resumes that pause.
 
 ### `cfgMu` guards exactly these fields (and nothing else)
 
@@ -665,6 +673,13 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator, server and cmd/itervox)
 
+sysmon (system visibility: per-run resource sampling, activity audit,
+        machine status — imports atomicfs and logging, plus gopsutil
+        (non-Linux) and cilium/ebpf (Linux precise mode); a
+        procgroup.Observer that cmd/itervox adds, and a separately locked
+        store, NOT orchestrator State; imported by orchestrator
+        (RunMonitor), server and cmd/itervox)
+
 cors (stdlib only — the server.allowed_origins CORS allow-list, #231;
       imported by server, hub and config)
 
@@ -696,7 +711,7 @@ guardrails (agent shims, pre-push hook, approval broker — imports agent,
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, extsessions, guardrails,
               logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
-              procgroup, prompt, rules, tracker, workspace)
+              procgroup, prompt, rules, sysmon, tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)

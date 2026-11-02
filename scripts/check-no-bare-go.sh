@@ -36,6 +36,7 @@ internal/orchestrator/automation.go|go o.runWorker(|1|runWorker defers its own r
 internal/orchestrator/event_loop.go|go o.runWorker(|3|runWorker defers its own recover (worker.go) and sends EventWorkerExited as its reconcile
 internal/orchestrator/dependency_refresh.go|go o.runDependencyRefresh(|1|runDependencyRefresh defers its own recover and still sends its result event
 internal/depsanalysis/job.go|go m.execute(|1|execute recovers the analyzer run and records the job's terminal state
+internal/sysmon/ebpf_linux.go|go tr.read(|1|precise-mode ring-buffer reader: read defers its own recover (logged with the stack; precise events stop, sampling continues) and close joins it; sysmon must not import orchestrator
 internal/logbuffer/diskwriter.go|go b.runWriter()|1|per-Buffer disk writer (M0-close fix-F): runWriter defers recoverWriter, which logs the panic with its stack, closes the writer and fails every queued/in-flight op so no caller waits forever; logbuffer must not import orchestrator
 internal/agent/claude.go|go func() {|1|readLines stdout scanner: stdlib-only reads, no callbacks; file holds staged CORE-001 work
 internal/agent/steer.go|go func() {|1|live-steering stdin writer (#178): writes stream-json lines into the pipe of the claude turn RunTurn started; recovers its own panic (logged, stdin closed) and is joined by RunTurn after cmd.Wait, which closes the write end and so unblocks it

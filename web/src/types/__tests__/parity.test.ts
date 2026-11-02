@@ -21,6 +21,10 @@ import {
   TrackerIssueSchema,
   TrackerPollRowSchema,
   TotalsSchema,
+  RunUsageSchema,
+  RunSummarySchema,
+  SystemStatusSchema,
+  ActivityReportSchema,
 } from '../schemas';
 
 // v0.2.0 audit P1-14 — every Go DTO marshaled into the dashboard SSE stream
@@ -72,6 +76,11 @@ const schemas: Record<string, SchemaLike> = {
   'Totals.json': TotalsSchema,
   'TotalsCostUnknown.json': TotalsSchema,
   'FailureAckRow.json': StateSnapshotSchema.shape.failureAcks.unwrap().element,
+  // System visibility (Go-emitted)
+  'RunUsage.json': RunUsageSchema,
+  'RunSummary.json': RunSummarySchema,
+  'SystemStatus.json': SystemStatusSchema,
+  'ActivityReport.json': ActivityReportSchema,
 };
 
 describe('Go DTO ↔ Zod schema parity (v0.2.0 audit P1-14)', () => {

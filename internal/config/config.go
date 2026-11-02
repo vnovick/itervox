@@ -376,6 +376,14 @@ type WorkspaceConfig struct {
 	// gets one port from it as ITERVOX_PORT (#250).
 	PortRange        string
 	PortMin, PortMax int
+	// DiskWarnFreeGB: below this many GB free on the volume holding Root,
+	// the dashboard and the desktop tray warn (workspace.disk_warn_free_gb,
+	// default 5; 0 turns the warning off). Read-only after startup.
+	DiskWarnFreeGB int
+	// DiskPauseFreeGB: below this many GB free, all dispatch is paused
+	// until free space is back above it (workspace.disk_pause_free_gb,
+	// default 0 = never). Read-only after startup.
+	DiskPauseFreeGB int
 }
 
 // DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
@@ -644,6 +652,14 @@ type AgentConfig struct {
 	// wrapper script that reads its stdin to EOF before starting never sees
 	// EOF in streaming mode. Read-only after startup.
 	LiveSteering bool
+	// ResourceSampling samples each local run's process tree every 2s for
+	// CPU, memory, processes, disk I/O and connections
+	// (agent.resource_sampling, default true). Read-only after startup.
+	ResourceSampling bool
+	// ActivityAudit is the per-run activity recording mode
+	// (agent.activity_audit): ActivityAuditOff, ActivityAuditSampled (the
+	// default) or ActivityAuditPrecise. Read-only after startup.
+	ActivityAudit string
 	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
 	// automation can swap an issue to a different profile / backend within
 	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
@@ -1102,6 +1118,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
+	parseVisibilityConfig(agent, ws, cfg)                                     // system visibility
 	cfg.Agent.Playbooks = parsePlaybooksConfig(nestedMap(agent, "playbooks")) // #218
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")

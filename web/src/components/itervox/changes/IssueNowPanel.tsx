@@ -1,6 +1,10 @@
 import { useRunContext } from '../../../queries/changes';
 import { DiffFileList } from './DiffFileList';
 import { fmtTokens } from '../../../utils/format';
+import { useItervoxStore } from '../../../store/itervoxStore';
+import { SYSTEM_VISIBILITY_CAPABILITY } from '../../../queries/activity';
+import { RunResources } from '../resources/RunResources';
+import { IssueActivity } from '../resources/IssueActivity';
 
 const NOW_FILES_SHOWN = 8;
 
@@ -8,11 +12,15 @@ const NOW_FILES_SHOWN = 8;
  * #215 — the issue detail's "Now" panel: what the issue's run is doing
  * (its last step and tool call, never tool output), its counters, what is
  * waiting on a human, the workspace's port (#250) and the files changed so
- * far. Polls while the run is live; shows the last finished run otherwise.
+ * far, its resource use and activity audit (system visibility). Polls while
+ * the run is live; shows the last finished run otherwise.
  * Renders nothing when the issue has neither a run nor a worktree.
  */
 export function IssueNowPanel({ identifier, live }: { identifier: string; live: boolean }) {
   const { data } = useRunContext(identifier, { enabled: true, live });
+  const systemVisibility = useItervoxStore(
+    (s) => s.snapshot?.capabilities?.includes(SYSTEM_VISIBILITY_CAPABILITY) ?? false,
+  );
   if (!data) return null;
   const run = data.run;
   if (!run && !data.port && data.changedFiles.length === 0 && data.handoffs.length === 0)
@@ -66,6 +74,7 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           <span className="opacity-75"> · {run.toolCalls} calls</span>
         </p>
       )}
+      {run?.resources && <RunResources usage={run.resources} />}
       {run?.pendingInput && (
         <p className="text-theme-warning-text text-xs">
           {run.pendingApproval ? 'Waiting for approval: ' : 'Waiting for input: '}
@@ -93,6 +102,7 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           <DiffFileList files={data.changedFiles} limit={NOW_FILES_SHOWN} />
         </div>
       )}
+      {systemVisibility && <IssueActivity identifier={identifier} live={live} />}
       {data.handoffs.length > 0 && (
         <div>
           <p className="text-theme-muted mb-1 text-xs">Prior handoffs</p>

@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // TestOptionalTimeFieldsOmitWhenAbsent locks the v0.2.0 audit P1-5 contract:
@@ -196,6 +198,30 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 		"TotalsCostUnknown.json": TotalsRow{InputTokens: 500, OutputTokens: 40, CostCoverage: TotalsCoverageRow{CodexRuns: 1}},
 		// CORE-175 — one acknowledgement row.
 		"FailureAckRow.json": FailureAckRow{Identifier: "ENG-1", UpTo: at},
+		// System visibility: a live run's sample, a finished run's summary,
+		// the snapshot's system block and an activity report.
+		"RunUsage.json": sysmon.RunUsage{RunID: "run-1", Identifier: "ENG-1", Live: true, CPUPercent: 82.5, CPUSeconds: 41.2,
+			RSSBytes: 734003200, PeakRSSBytes: 912261120, Processes: 6, PeakProcesses: 9, DiskReadBytes: 1 << 20,
+			DiskWriteBytes: 3 << 20, DiskIOKnown: true, NetConnections: 2, Samples: 30, StartedAt: at, SampledAt: at,
+			TopCommands: []sysmon.ChildCommand{{PID: 4242, Name: "node", Args: "cli.js --print", CPUPercent: 61.2, RSSBytes: 512 << 20}}},
+		"RunSummary.json": sysmon.RunSummary{CPUSeconds: 120.5, PeakCPUPercent: 180, LastRSSBytes: 1 << 29, PeakRSSBytes: 1 << 30,
+			PeakProcesses: 12, DiskReadBytes: 1 << 20, DiskWriteBytes: 2 << 20, Commands: 41, FilesWritten: 12, Connections: 3,
+			ActivityMode: sysmon.ModeSampled, Samples: 300},
+		"SystemStatus.json": sysmon.SystemStatus{Platform: "linux", ActivityMode: sysmon.ModeSampled,
+			ActivityModeReason: "precise mode unavailable: tracefs is not mounted at /sys/kernel/tracing",
+			Machine: sysmon.MachineStatus{Load1: 1.5, Load5: 1.2, Load15: 0.9, LoadKnown: true, CPUCount: 8,
+				MemTotalBytes: 16 << 30, MemAvailableBytes: 6 << 30, MemPressure: sysmon.PressureOK,
+				Disk:          &sysmon.DiskStatus{Path: "/home/me/.itervox/workspaces/app", FreeBytes: 4 << 30, TotalBytes: 500 << 30},
+				DiskWarnBytes: 5 << 30, DiskLow: true, SampledAt: at},
+			Runs: sysmon.RunsTotal{Runs: 2, CPUPercent: 120.5, RSSBytes: 1 << 30, Processes: 11}},
+		"ActivityReport.json": sysmon.ActivityReport{Identifier: "ENG-1", RunID: "run-1", Live: true, Mode: sysmon.ModeSampled,
+			Platform: "linux", Supports: sysmon.ActivitySupport{Commands: true, Files: true, Connections: true},
+			Notes:     []string{"Sampled every 2s from /proc: short-lived processes, files and connections between two samples may be missed."},
+			Workspace: "/ws/ENG-1", StartedAt: at, UpdatedAt: at,
+			Commands:    []sysmon.CommandRecord{{Name: "git", Args: "status --short", PID: 4300, Count: 3, FirstAt: at, LastAt: at}},
+			Files:       []sysmon.FileRecord{{Path: "/ws/ENG-1/main.go", Write: true, Command: "node", Count: 2, FirstAt: at, LastAt: at}, {Path: "/home/me/.npmrc", Write: true, OutsideWorkspace: true, Count: 1, FirstAt: at, LastAt: at}},
+			Connections: []sysmon.ConnRecord{{Protocol: "tcp", Remote: "140.82.112.3:443", State: "ESTABLISHED", Command: "git", Count: 1, FirstAt: at, LastAt: at}},
+			Runs:        []sysmon.ActivityRunRef{{RunID: "run-1", StartedAt: at, Live: true}}},
 		"FailureRow.json": FailureRow{
 			Kind:       "outbox",
 			Identifier: "ENG-1",

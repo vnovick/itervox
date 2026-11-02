@@ -9,6 +9,9 @@ import { plainButtonClass } from '../../components/ui/button/buttonRecipe';
 import { useNow } from '../../hooks/useNow';
 import { fmtAge } from '../../utils/format';
 import type { TrackerIssue } from '../../types/schemas';
+import { SYSTEM_VISIBILITY_CAPABILITY } from '../../queries/activity';
+import { RunResources } from '../../components/itervox/resources/RunResources';
+import { IssueActivity } from '../../components/itervox/resources/IssueActivity';
 
 const LINK_BUTTON = plainButtonClass('secondary', 'sm', { pill: true });
 
@@ -37,6 +40,7 @@ export function FocusNowPanel({
       defaultBackend: s.snapshot?.defaultBackend ?? 'claude',
       automations: s.snapshot?.automations,
       inlineInput: s.snapshot?.inlineInput ?? false,
+      systemVisibility: s.snapshot?.capabilities?.includes(SYSTEM_VISIBILITY_CAPABILITY) ?? false,
     })),
   );
   const setSelected = useItervoxStore((s) => s.setSelectedIdentifier);
@@ -111,6 +115,8 @@ export function FocusNowPanel({
           ))}
         </ul>
       )}
+      {run?.resources && <RunResources usage={run.resources} />}
+      {snap.systemVisibility && <IssueActivity identifier={issue.identifier} live={live} />}
       {run?.pendingInput && !live && issue.orchestratorState !== 'input_required' && (
         <p className="text-theme-warning-text text-xs">Waiting for input: {run.pendingInput}</p>
       )}

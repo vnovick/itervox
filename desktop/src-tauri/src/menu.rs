@@ -177,6 +177,10 @@ pub fn build_menu<'a>(
     if let Some(e) = status_error {
         entries.push(b.label(format!("⚠ {e}")));
     }
+    // System visibility: a project whose workspace disk is low.
+    for line in views.iter().filter_map(ProjectView::disk_warning) {
+        entries.push(b.label(format!("⚠ {line}")));
+    }
     entries.push(MenuEntry::Separator);
 
     for v in views {
@@ -497,7 +501,7 @@ pub fn append_app_section(spec: &mut MenuSpec, items: Vec<(String, bool, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon_state::{InputRequired, StateSummary};
+    use crate::daemon_state::{DiskWarning, InputRequired, StateSummary};
     use crate::model::{Health, PendingOp};
     use crate::status::DaemonRecord;
 
@@ -932,6 +936,61 @@ mod tests {
             header(&build_menu(&[one], &[], [].iter(), None)),
             "1 project · 1 running · 2 need input"
         );
+    }
+
+    /// System visibility: a project's submenu label carries what its live
+    /// runs hold in memory ("2 agents · 1.2 GB"), and a low workspace disk
+    /// adds a warning line under the header (with the pause when critical).
+    #[test]
+    fn shows_run_memory_and_low_disk() {
+        let labels = |spec: &MenuSpec| -> Vec<String> {
+            spec.entries
+                .iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item { label, .. } | MenuEntry::Submenu { label, .. } => {
+                        Some(label.clone())
+                    }
+                    MenuEntry::Separator => None,
+                })
+                .collect()
+        };
+        let mut v = view("/a", true);
+        v.name = "web-app".into();
+        v.health = Health::Ok(StateSummary {
+            running: 2,
+            runs_rss_bytes: 1_288_490_188,
+            disk: Some(DiskWarning {
+                free_bytes: 3_435_973_836,
+                critical: false,
+            }),
+            ..Default::default()
+        });
+        let got = labels(&build_menu(&[v.clone()], &[], [].iter(), None));
+        assert_eq!(got[1], "⚠ web-app: low disk — 3.2 GB free");
+        assert!(
+            got.contains(&"▶ web-app — running · 2 agents · 1.2 GB".to_string()),
+            "{got:?}"
+        );
+
+        v.health = Health::Ok(StateSummary {
+            running: 0,
+            runs_rss_bytes: 0,
+            disk: Some(DiskWarning {
+                free_bytes: 1 << 30,
+                critical: true,
+            }),
+            ..Default::default()
+        });
+        let got = labels(&build_menu(&[v.clone()], &[], [].iter(), None));
+        assert_eq!(
+            got[1],
+            "⚠ web-app: disk almost full — 1.0 GB free, dispatch paused"
+        );
+        assert!(got.contains(&"▶ web-app — running · 0 agents".to_string()));
+
+        v.health = Health::Ok(StateSummary::default());
+        let got = labels(&build_menu(&[v], &[], [].iter(), None));
+        assert!(!got.iter().any(|l| l.contains("disk")), "{got:?}");
     }
 
     #[test]

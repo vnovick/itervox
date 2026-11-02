@@ -4,6 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { IssueNowPanel } from '../IssueNowPanel';
 import { routeFetch } from './fetchMock';
+import { useItervoxStore } from '../../../../store/itervoxStore';
+import { makeSnapshot } from '../../../../test/fixtures/snapshots';
+import { usage } from '../../resources/__tests__/fixtures';
 
 vi.mock('../../../../auth/authedFetch', () => ({ authedFetch: vi.fn() }));
 import { authedFetch } from '../../../../auth/authedFetch';
@@ -108,5 +111,30 @@ describe('IssueNowPanel (#215)', () => {
       expect(mockFetch).toHaveBeenCalled();
     });
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('shows the run resources and, with the capability, the Activity section', async () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({ capabilities: ['run_context', 'system_visibility'] }),
+    });
+    routeFetch(mockFetch, {
+      '/api/v1/issues/ENG-1/context': {
+        body: { ...liveContext, run: { ...liveContext.run, resources: usage } },
+      },
+    });
+    render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
+    expect(await screen.findByTestId('run-resources')).toHaveTextContent('700 MB');
+    expect(screen.getByTestId('issue-activity')).toBeInTheDocument();
+    useItervoxStore.setState({ snapshot: null });
+  });
+
+  it('hides Activity on a daemon without the run monitor', async () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ capabilities: ['run_context'] }) });
+    routeFetch(mockFetch, { '/api/v1/issues/ENG-1/context': { body: liveContext } });
+    render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
+    await screen.findByText('Now');
+    expect(screen.queryByTestId('issue-activity')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('run-resources')).not.toBeInTheDocument();
+    useItervoxStore.setState({ snapshot: null });
   });
 });
