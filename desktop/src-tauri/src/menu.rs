@@ -33,8 +33,14 @@ pub enum MenuAction {
     /// List the host's daemons again.
     Rediscover(String),
     RemoveRemote(String),
-    /// The Sessions window: every daemon's agent sessions (#178).
+    /// The Sessions window: every daemon's agent sessions (#178). The
+    /// window has no per-project filter, so a project's "Sessions…" item
+    /// opens it as the top-level item does.
     OpenSessions,
+    /// A project's "New Task…": its dashboard window, opened or focused,
+    /// navigated to [`NEW_TASK_PATH`] in place through the embedded
+    /// dashboard's navigate hook (the Go menu's mechanism).
+    NewTask(String),
     /// Pause / resume ALL dispatch on every reachable local daemon (#213).
     /// Running agents continue; nothing new starts until resumed.
     PauseAll,
@@ -61,6 +67,9 @@ pub enum MenuEntry {
         id: String,
         label: String,
         enabled: bool,
+        /// A platform-neutral accelerator (`CmdOrCtrl+Q`); `app.rs` shows
+        /// it as the platform spells it (`platform::accelerator`).
+        accelerator: Option<String>,
     },
     Submenu {
         label: String,
@@ -94,6 +103,7 @@ impl Builder {
             id,
             label: label.into(),
             enabled,
+            accelerator: None,
         }
     }
 
@@ -103,9 +113,20 @@ impl Builder {
             id: format!("itervox-{}", self.next),
             label: label.into(),
             enabled: false,
+            accelerator: None,
         }
     }
 }
+
+/// The in-app path of the dashboard's New task form (#251), which the
+/// tray's "New Task…" opens; the Go menu's New Task… uses the same path.
+pub const NEW_TASK_PATH: &str = "/?newTask=1";
+
+/// The Quit item's label: quitting the app leaves the daemons running.
+pub const QUIT_LABEL: &str = "Quit Itervox (daemons keep running)";
+
+/// The Quit item's accelerator: ⌘Q on macOS, Ctrl+Q on Linux and Windows.
+pub const QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
 
 /// The dashboard's Repo Analysis page (#200): `{base}repo`. A remote
 /// daemon's link is rebased onto its tunnel when it is opened.
@@ -214,13 +235,9 @@ pub fn build_menu<'a>(
             b.item(
                 "New Task…",
                 v.running() && !busy,
-                MenuAction::OpenUrl {
-                    project: v.key.clone(),
-                    url: new_task_link(
-                        &v.record.as_ref().map(|r| r.base_url()).unwrap_or_default(),
-                    ),
-                },
+                MenuAction::NewTask(v.key.clone()),
             ),
+            b.item("Sessions…", true, MenuAction::OpenSessions),
             MenuEntry::Separator,
             b.item(
                 "Start",
@@ -306,11 +323,11 @@ pub fn build_menu<'a>(
     entries.push(b.item("Add Remote…", true, MenuAction::AddRemote));
     entries.push(b.item("Refresh Now", true, MenuAction::RefreshNow));
     entries.push(MenuEntry::Separator);
-    entries.push(b.item(
-        "Quit Itervox (daemons keep running)",
-        true,
-        MenuAction::Quit,
-    ));
+    let mut quit = b.item(QUIT_LABEL, true, MenuAction::Quit);
+    if let MenuEntry::Item { accelerator, .. } = &mut quit {
+        *accelerator = Some(QUIT_ACCELERATOR.into());
+    }
+    entries.push(quit);
 
     MenuSpec {
         entries,
@@ -392,14 +409,8 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                     url: memory_link(&d.url().unwrap_or_default()),
                 },
             ),
-            b.item(
-                "New Task…",
-                up,
-                MenuAction::OpenUrl {
-                    project: d.key.clone(),
-                    url: new_task_link(&d.url().unwrap_or_default()),
-                },
-            ),
+            b.item("New Task…", up, MenuAction::NewTask(d.key.clone())),
+            b.item("Sessions…", true, MenuAction::OpenSessions),
             b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
             b.label(d.workflow.clone()),
         ];
@@ -452,6 +463,7 @@ pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
             id,
             label: label.into(),
             enabled: up,
+            accelerator: None,
         }
     };
     let section = vec![
@@ -460,6 +472,7 @@ pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
             id: "itervox-hub-0".into(),
             label: hub.line(),
             enabled: false,
+            accelerator: None,
         },
         item(1, "Open Hub Dashboard", HubPage::Dashboard, spec),
         item(2, "Phone…", HubPage::Phones, spec),
@@ -493,7 +506,12 @@ pub fn append_app_section(spec: &mut MenuSpec, items: Vec<(String, bool, Option<
         if let Some(a) = action {
             spec.actions.insert(id.clone(), a);
         }
-        section.push(MenuEntry::Item { id, label, enabled });
+        section.push(MenuEntry::Item {
+            id,
+            label,
+            enabled,
+            accelerator: None,
+        });
     }
     spec.entries.splice(at..at, section);
 }
@@ -534,6 +552,7 @@ mod tests {
                         id,
                         label: il,
                         enabled,
+                        ..
                     } if il == label => Some((id.as_str(), *enabled)),
                     _ => None,
                 })
@@ -548,6 +567,7 @@ mod tests {
                 id: i,
                 label,
                 enabled,
+                ..
             } if i == id => Some((label.clone(), *enabled)),
             _ => None,
         })
@@ -690,10 +710,10 @@ mod tests {
         );
     }
 
-    /// #251: each daemon's submenu has "New Task…", which opens its
-    /// dashboard with the New task form (`?newTask=1`) the same way as
-    /// Repo Analysis: OpenUrl with the project key, through the usual token
-    /// handoff — no IPC into the dashboard webview.
+    /// #251: each daemon's submenu has "New Task…". It routes to
+    /// `NewTask(key)`, which opens or focuses that project's dashboard window
+    /// and navigates it to the New task form in place (`NEW_TASK_PATH`, the
+    /// Go menu's path), enabled while the daemon runs.
     #[test]
     fn new_task_menu_opens_form() {
         let mut up = view("/up", true);
@@ -703,18 +723,120 @@ mod tests {
         let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
         let (id, enabled) = find(&spec, "New Task…", "up").unwrap();
         assert!(enabled);
-        assert_eq!(
-            spec.actions[id],
-            MenuAction::OpenUrl {
-                project: "/up".into(),
-                url: "http://127.0.0.1:8090/?newTask=1".into(),
-            }
-        );
+        assert_eq!(spec.actions[id], MenuAction::NewTask("/up".into()));
         assert!(!find(&spec, "New Task…", "down").unwrap().1);
+        assert_eq!(NEW_TASK_PATH, "/?newTask=1");
+        assert_eq!(
+            crate::go_menu::go_menu_path(crate::go_menu::GO_NEW_TASK_ID),
+            Some(NEW_TASK_PATH),
+            "the tray and the Go menu open the same page"
+        );
         assert_eq!(
             new_task_link("http://127.0.0.1:50001"),
             "http://127.0.0.1:50001/?newTask=1"
         );
+    }
+
+    /// Each project's submenu, in order: the status line, the pages (with
+    /// New Task… and Sessions…), the daemon controls, the log and the key.
+    /// Every item id routes to that project's action; Sessions… opens the
+    /// Sessions window (it has no per-project filter).
+    #[test]
+    fn project_submenu_lists_new_task_and_sessions() {
+        let spec = build_menu(&[view("/up", true)], &[], [].iter(), None);
+        let items = spec
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                MenuEntry::Submenu { label, items } if label.contains("up") => Some(items),
+                _ => None,
+            })
+            .unwrap();
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|e| match e {
+                MenuEntry::Item { label, .. } => label.as_str(),
+                MenuEntry::Separator => "-",
+                MenuEntry::Submenu { .. } => "submenu",
+            })
+            .collect();
+        assert_eq!(
+            labels[1..],
+            [
+                "-",
+                "Open Dashboard",
+                "Repo Analysis",
+                "Memory",
+                "New Task…",
+                "Sessions…",
+                "-",
+                "Start",
+                "Stop",
+                "Restart",
+                "-",
+                "Show Daemon Output",
+                "Remove from List",
+                "/up"
+            ]
+        );
+        let (new_task, _) = find(&spec, "New Task…", "up").unwrap();
+        let (sessions, enabled) = find(&spec, "Sessions…", "up").unwrap();
+        assert!(enabled, "the Sessions window lists stopped daemons too");
+        assert_ne!(new_task, sessions);
+        assert_eq!(spec.actions[new_task], MenuAction::NewTask("/up".into()));
+        assert_eq!(spec.actions[sessions], MenuAction::OpenSessions);
+        // A stopped project still offers Sessions…, not New Task….
+        let down = build_menu(&[view("/down", false)], &[], [].iter(), None);
+        assert!(!find(&down, "New Task…", "down").unwrap().1);
+        assert!(find(&down, "Sessions…", "down").unwrap().1);
+    }
+
+    /// Quit is the last item, keeps its "(daemons keep running)" wording
+    /// and is the only item with an accelerator: CmdOrCtrl+Q, shown as ⌘Q
+    /// on macOS and Ctrl+Q on Linux and Windows.
+    #[test]
+    fn quit_has_the_platform_accelerator_and_nothing_else_does() {
+        use crate::platform::{accelerator, Os};
+        let mut spec = build_menu(&[view("/up", true)], &[], [].iter(), None);
+        append_hub_section(
+            &mut spec,
+            &HubStatus::Serving {
+                members: 1,
+                version: "0.3.1".into(),
+            },
+        );
+        append_app_section(
+            &mut spec,
+            vec![("x".into(), true, Some(MenuAction::InstallCli))],
+        );
+        fn accelerated<'a>(entries: &'a [MenuEntry], out: &mut Vec<(&'a str, &'a str, &'a str)>) {
+            for e in entries {
+                match e {
+                    MenuEntry::Item {
+                        id,
+                        label,
+                        accelerator: Some(a),
+                        ..
+                    } => out.push((id, label, a)),
+                    MenuEntry::Submenu { items, .. } => accelerated(items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        accelerated(&spec.entries, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (id, label, accel) = found[0];
+        assert_eq!(label, QUIT_LABEL);
+        assert_eq!(label, "Quit Itervox (daemons keep running)");
+        assert_eq!(accel, QUIT_ACCELERATOR);
+        assert_eq!(spec.actions[id], MenuAction::Quit);
+        assert!(
+            matches!(spec.entries.last(), Some(MenuEntry::Item { id: last, .. }) if last == id)
+        );
+        assert_eq!(accelerator(Os::Mac, accel), "Cmd+Q");
+        assert_eq!(accelerator(Os::Linux, accel), "Ctrl+Q");
+        assert_eq!(accelerator(Os::Windows, accel), "Ctrl+Q");
     }
 
     /// Drift guard: the parameter is the one the dashboard reads.
@@ -829,11 +951,12 @@ mod tests {
             spec.entries
                 .iter()
                 .find_map(|e| match e {
-                    MenuEntry::Item { id, label, enabled }
-                        if matches!(
-                            spec.actions.get(id),
-                            Some(MenuAction::PauseAll | MenuAction::ResumeAll)
-                        ) =>
+                    MenuEntry::Item {
+                        id, label, enabled, ..
+                    } if matches!(
+                        spec.actions.get(id),
+                        Some(MenuAction::PauseAll | MenuAction::ResumeAll)
+                    ) =>
                     {
                         Some((label.clone(), *enabled, spec.actions[id].clone()))
                     }
@@ -1137,13 +1260,13 @@ mod tests {
                 "Itervox 0.2.6 (you have 0.2.5)",
                 "Install Command-Line Tool…",
                 "-",
-                "Quit Itervox (daemons keep running)"
+                QUIT_LABEL
             ]
         );
         let install = spec.entries.iter().find_map(|e| match e {
-            MenuEntry::Item { id, label, enabled } if label.starts_with("Update available") => {
-                Some((id.clone(), *enabled))
-            }
+            MenuEntry::Item {
+                id, label, enabled, ..
+            } if label.starts_with("Update available") => Some((id.clone(), *enabled)),
             _ => None,
         });
         let (id, enabled) = install.unwrap();

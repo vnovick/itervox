@@ -1467,11 +1467,14 @@ agent**). Operator scope; advertised as the `review_continue` capability.
     pause, no `pause_dispatch_when_any_in_state` hit, the per-state limit,
     tracker and gating inferred blockers, branch in use, then the backend
     breaker and `agent.budget` — and stays queued until then. That run does
-    not move the issue to the working state, reconciliation does not stop it
-    for being outside the active states (a terminal state other than
-    `tracker.completion_state` still does), and it skips the completion move
-    when the issue already sits in `tracker.completion_state`. An issue in
-    another terminal state is refused (`409 issue_closed`).
+    not move the issue to the working state, keeps taking turns like any run
+    although the issue is outside the active states (until the agent is done,
+    `agent.max_turns`, input required, a stall or turn timeout, or a stop),
+    reconciliation does not stop it for being outside the active states (a
+    terminal state other than `tracker.completion_state` still does, and so
+    does the turn loop), and it makes no completion move: the issue stays in
+    its state. An issue in another terminal state is refused
+    (`409 issue_closed`).
   - The run works on the issue's own branch (an open PR's branch, else the
     issue's branch). When `workspace.auto_clear_workspace` removed the
     worktree and its local branch after the last run, the worktree is

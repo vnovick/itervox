@@ -1102,9 +1102,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 
 		o.cfgMu.RLock()
-		activeStates := append([]string{}, o.cfg.Tracker.ActiveStates...)
+		turnStates := State{
+			ActiveStates:    append([]string{}, o.cfg.Tracker.ActiveStates...),
+			TerminalStates:  append([]string{}, o.cfg.Tracker.TerminalStates...),
+			CompletionState: o.cfg.Tracker.CompletionState,
+		}
 		o.cfgMu.RUnlock()
-		if !isActiveState(issue.State, State{ActiveStates: activeStates}) {
+		// A run continuing an operator review in place runs outside the
+		// active states by design: it keeps taking turns like a normal run
+		// until the agent finishes, max_turns, input required or a stop;
+		// only a terminal state other than completion_state ends it here
+		// (reconciliation stops it for the same state).
+		inPlace := runNoTrackerMove(ctx) && inPlaceReviewRunContinues(issue.State, turnStates)
+		if !inPlace && !isActiveState(issue.State, turnStates) {
 			break // issue left active states — clean exit
 		}
 		// #177: the issue was moved out of the active states by itervox
@@ -1370,10 +1380,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
-	// A run that continued an operator review in place leaves an issue that
-	// already sits in completion_state where it is: no tracker write.
-	alreadyComplete := runNoTrackerMove(ctx) && strings.EqualFold(issue.State, completionState)
-	if completionState != "" && ctx.Err() == nil && !automationRun && !alreadyComplete {
+	// A run that continued an operator review in place leaves its issue
+	// where it is: no completion move, as there was no working-state move.
+	if completionState != "" && ctx.Err() == nil && !automationRun && !runNoTrackerMove(ctx) {
 		// From here the run only finishes; mark it before the issue turns
 		// terminal in the tracker, so a reconcile tick between this move and
 		// the exit below leaves the run to that exit (#125).
