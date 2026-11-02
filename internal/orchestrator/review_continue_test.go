@@ -318,3 +318,95 @@ func TestRenderOperatorReview(t *testing.T) {
 	assert.Contains(t, out, "````diff\n+x := \"```\"\n````", "a fence longer than any in the quote")
 	assert.Contains(t, out, "## 2. b.go, lines 2 (base) to 9")
 }
+
+// inPlaceTurnsRunner answers every turn at once: turns 1..work produce
+// tokens and distinct text; the next one produces none, which is the agent
+// saying it has nothing more to do.
+type inPlaceTurnsRunner struct {
+	mu    sync.Mutex
+	turns int
+	work  int
+}
+
+func (r *inPlaceTurnsRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.turns++
+	if r.turns > r.work {
+		return agent.TurnResult{SessionID: "s"}, nil
+	}
+	return agent.TurnResult{SessionID: "s", ResultText: "worked on turn " + string(rune('0'+r.turns)), InputTokens: 10, OutputTokens: 5}, nil
+}
+
+func (r *inPlaceTurnsRunner) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.turns
+}
+
+// stateWriteRecordingTracker records every tracker state write.
+type stateWriteRecordingTracker struct {
+	*tracker.MemoryTracker
+	mu     sync.Mutex
+	writes []string
+}
+
+func (s *stateWriteRecordingTracker) UpdateIssueState(ctx context.Context, id, state string) error {
+	s.mu.Lock()
+	s.writes = append(s.writes, id+"→"+state)
+	s.mu.Unlock()
+	return s.MemoryTracker.UpdateIssueState(ctx, id, state)
+}
+
+func (s *stateWriteRecordingTracker) stateWrites() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.writes...)
+}
+
+// TestReviewContinueInPlaceRunKeepsTakingTurns: a run started in place from
+// an operator review (moveToActive=false) is not cut to one turn because its
+// issue sits outside the active states; it keeps taking turns like a normal
+// run until the agent finishes (here a 0-token turn after two working
+// turns), and it writes no tracker state at all — no working-state move and
+// no completion move — whether the issue sits in completion_state or in
+// another non-active state.
+func TestReviewContinueInPlaceRunKeepsTakingTurns(t *testing.T) {
+	for _, st := range []string{"In Review", "Backlog"} {
+		t.Run(st, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := reviewCfg(root)
+			cfg.Agent.MaxTurns = 5
+			issue := domain.Issue{ID: "id-1", Identifier: "ENG-1", Title: "T", State: st}
+			mt := &stateWriteRecordingTracker{MemoryTracker: tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+			rr := &inPlaceTurnsRunner{work: 2}
+			o := New(cfg, mt, rr, workspace.NewManager(cfg))
+			stop := startLoop(t, o)
+			defer stop()
+
+			_, err := o.QueueReviewContinuation(context.Background(), sampleReview(issue, false))
+			require.NoError(t, err)
+			var run *CompletedRun
+			require.Eventually(t, func() bool {
+				for _, h := range o.RunHistory() {
+					if h.Identifier == "ENG-1" {
+						run = &h
+						return true
+					}
+				}
+				return false
+			}, 5*time.Second, 5*time.Millisecond, "the run finishes")
+
+			assert.Equal(t, 3, rr.count(), "two working turns, then the agent's 0-token turn ends the run")
+			assert.Equal(t, "succeeded", run.Status)
+			assert.True(t, run.ContinuedFromReview)
+			assert.GreaterOrEqual(t, run.TurnCount, 2)
+			assert.Empty(t, mt.stateWrites(), "no tracker state write for an in-place run")
+			got, err := mt.FetchIssueDetail(context.Background(), "id-1")
+			require.NoError(t, err)
+			assert.Equal(t, st, got.State)
+			assert.Never(t, func() bool { return rr.count() > 3 }, 200*time.Millisecond, 10*time.Millisecond,
+				"not re-dispatched: the issue is still outside the active states")
+		})
+	}
+}
