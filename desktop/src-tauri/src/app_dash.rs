@@ -22,8 +22,9 @@ use crate::dashboard::origin_of;
 use crate::material::{self, Surface};
 use crate::model::token_for;
 use crate::rail::{
-    build_rail, move_before, nudge, push_script, rail_action, rail_page_allowed, rail_width,
-    switch_plan, DashTarget, RailAction, RailCommand, RailView, SwitchPlan, RAIL_PAGE,
+    build_rail, move_before, nudge, page_plan, page_url, push_script, rail_action,
+    rail_page_allowed, rail_width, switch_plan, DashTarget, PagePlan, RailAction, RailCommand,
+    RailView, SwitchPlan, RAIL_PAGE,
 };
 use crate::remote::is_remote_key;
 
@@ -510,6 +511,50 @@ fn open_new_task(app: &AppHandle, shared: &Arc<Shared>, key: &str, label: String
         ),
         Err(e) => error_dialog(app, &e),
     }
+}
+
+/// The tray's "New Task…" (and any in-app page of a project): opens or
+/// focuses the window showing `key` and navigates its dashboard to `path`
+/// in place through the embedded dashboard's navigate hook, the Go menu's
+/// mechanism ([`crate::rail::page_plan`]); without such a window, the
+/// dashboard opens at the page.
+pub(super) fn open_page(app: &AppHandle, shared: &Arc<Shared>, key: &str, path: &'static str) {
+    let t = match target(shared, key, None) {
+        Ok((t, _)) => t,
+        Err(e) => {
+            error_dialog(app, &e);
+            return;
+        }
+    };
+    let (app2, shared2, key) = (app.clone(), Arc::clone(shared), key.to_string());
+    let _ = app.run_on_main_thread(move || {
+        let held = {
+            let windows = lock(&shared2.dash.windows);
+            windows
+                .iter()
+                .find(|(_, w)| w.project == key)
+                .map(|(l, w)| (l.clone(), w.view.clone(), w.origin.clone(), w.token.clone()))
+        };
+        let plan = page_plan(
+            held.as_ref().map(|(_, _, origin, token)| (origin, token)),
+            &t,
+            path,
+        );
+        if let (PagePlan::InPlace { script }, Some((label, view, _, _))) = (&plan, &held) {
+            if let (Some(v), Some(w)) = (app2.get_webview(view), app2.get_window(label)) {
+                let _ = v.eval(script);
+                let _ = w.show();
+                let _ = w.set_focus();
+                let _ = v.set_focus();
+                return;
+            }
+        }
+        let url = match plan {
+            PagePlan::Open { url } => url,
+            PagePlan::InPlace { .. } => page_url(&t.url, path),
+        };
+        open(&app2, &shared2, &key, Some(url), Mode::Reuse);
+    });
 }
 
 /// A Go menu item: shows `path` in the dashboard webview of the window

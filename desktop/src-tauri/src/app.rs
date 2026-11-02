@@ -543,13 +543,24 @@ fn append_entry<R: Runtime>(
 ) -> tauri::Result<()> {
     match entry {
         MenuEntry::Separator => parent.add(&PredefinedMenuItem::separator(app)?),
-        MenuEntry::Item { id, label, enabled } => parent.add(&MenuItem::with_id(
-            app,
-            id.as_str(),
+        MenuEntry::Item {
+            id,
             label,
-            *enabled,
-            None::<&str>,
-        )?),
+            enabled,
+            accelerator,
+        } => {
+            // ⌘Q on macOS, Ctrl+Q on Linux and Windows (platform::accelerator).
+            let accel = accelerator
+                .as_deref()
+                .map(|a| crate::platform::accelerator(crate::platform::Os::current(), a));
+            parent.add(&MenuItem::with_id(
+                app,
+                id.as_str(),
+                label,
+                *enabled,
+                accel.as_deref(),
+            )?)
+        }
         MenuEntry::Submenu { label, items } => {
             let sub = Submenu::new(app, label, true)?;
             for i in items {
@@ -564,6 +575,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
     match action {
         MenuAction::OpenDashboard(key) => open_dashboard(app, shared, &key, None),
         MenuAction::OpenUrl { project, url } => open_dashboard(app, shared, &project, Some(url)),
+        MenuAction::NewTask(key) => dash::open_page(app, shared, &key, crate::menu::NEW_TASK_PATH),
         MenuAction::Start(key) => spawn_op(app, shared, key, PendingOp::Starting),
         MenuAction::Stop(key) => spawn_op(app, shared, key, PendingOp::Stopping),
         MenuAction::Restart(key) => spawn_op(app, shared, key, PendingOp::Restarting),

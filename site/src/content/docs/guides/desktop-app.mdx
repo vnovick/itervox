@@ -139,7 +139,11 @@ The first notification may ask for permission; you can change it later in **Syst
 
 **Memory** opens it at the dashboard's [Memory](/guides/memory/) page (`<dashboard>/memory`) the same way.
 
-**New Task…** opens it with the dashboard's [New task](/guides/new-task/) form open (`<dashboard>/?newTask=1`) the same way.
+**New Task…** opens the dashboard's [New task](/guides/new-task/) form (`/?newTask=1`). A window already showing the project comes forward and its dashboard opens the form in place, the way the **Go** menu navigates, without reloading the page; a dashboard from an older daemon without the in-app navigation loads `<dashboard>/?newTask=1` instead. Without such a window, a new one opens at `<dashboard>/?newTask=1`, with the token handed over the same way.
+
+**Sessions…** in a project's submenu opens the [Sessions window](#sessions-window). The window lists every daemon's sessions and has no per-project filter, so it opens as the top-level **Sessions…** does; that project's sessions are under its name.
+
+**Quit Itervox (daemons keep running)** is the menu's last item, with <kbd>⌘Q</kbd> on macOS and <kbd>Ctrl</kbd>+<kbd>Q</kbd> on Linux and Windows while the menu is open (on Linux, where the panel shows menu shortcuts; see [Platform differences](#platform-differences)). It quits the app only: the daemons it started keep running.
 
 ### Project rail
 
@@ -245,7 +249,8 @@ Each remote shows its state, for example `Prod VM — 2/2 connected · 1 needs i
 - **Open Dashboard** opens its dashboard through the tunnel (`http://127.0.0.1:<local>/`) in a window, with the token handed over exactly as for a local daemon.
 - **Repo Analysis** opens that dashboard's [Repo Analysis](/guides/repo-analysis/) page (`/repo`) through the tunnel, the same way.
 - **Memory** opens that dashboard's [Memory](/guides/memory/) page (`/memory`) through the tunnel, the same way.
-- **New Task…** opens that dashboard's [New task](/guides/new-task/) form (`/?newTask=1`) through the tunnel, the same way.
+- **New Task…** opens that dashboard's [New task](/guides/new-task/) form (`/?newTask=1`) through the tunnel, the same way (in place when a window already shows it).
+- **Sessions…** opens the Sessions window, which lists remote daemons' sessions too.
 - **Enter Token… / Update Token…** reads the token file again, or asks for the token. Use it after the remote daemon restarted with a new auto-generated token (it then shows **token required**).
 
 and for the remote:
@@ -368,6 +373,7 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
 | Liquid Glass (macOS 26) or vibrancy behind the rail and Sessions ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
+| Tray **Quit Itervox** with <kbd>⌘Q</kbd> | <kbd>Ctrl</kbd>+<kbd>Q</kbd>, shown and bound only where the panel's menu supports shortcuts (AppIndicator menus often do not) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
 
 ## Development
 
