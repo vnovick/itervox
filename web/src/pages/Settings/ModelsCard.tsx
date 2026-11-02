@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import { ApiError, apiRequest } from '../../auth/apiRequest';
-import { UnauthorizedError } from '../../auth/UnauthorizedError';
-import { useToastStore } from '../../store/toastStore';
+import { refreshModels, type ModelsBackend } from '../../queries/models';
 import { Button } from '../../components/ui/button';
 
 interface ModelsCardProps {
@@ -10,7 +8,7 @@ interface ModelsCardProps {
   headingId?: string;
 }
 
-type Backend = 'all' | 'claude' | 'codex';
+type Backend = ModelsBackend;
 
 /**
  * ModelsCard surfaces the agent.available_models block from WORKFLOW.md and
@@ -31,29 +29,7 @@ export function ModelsCard({
   const refresh = async (backend: Backend) => {
     setRefreshing(backend);
     try {
-      await apiRequest('/api/v1/settings/models/refresh', {
-        op: 'models refresh',
-        method: 'POST',
-        json: { backend },
-      });
-      useToastStore
-        .getState()
-        .addToast(
-          `Refreshed ${backend === 'all' ? 'all backends' : backend} — WORKFLOW.md updated`,
-          'success',
-        );
-    } catch (err) {
-      if (err instanceof UnauthorizedError) return; // AuthGate handles UI.
-      if (err instanceof ApiError && err.status === 501) {
-        useToastStore
-          .getState()
-          .addToast(
-            'This daemon build does not implement the refresh endpoint — run `itervox models refresh` from the CLI instead.',
-            'info',
-          );
-        return;
-      }
-      useToastStore.getState().addToast(`Refresh failed: ${(err as Error).message}`, 'error');
+      await refreshModels(backend);
     } finally {
       setRefreshing(null);
     }

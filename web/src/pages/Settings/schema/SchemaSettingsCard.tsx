@@ -4,7 +4,7 @@
 // local — and each layer has a form view and a JSON view of its file. Saves go
 // through the daemon's comment-preserving JSONC writer.
 
-import { useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Banner } from '../../../components/ui/Banner';
 import {
   flattenSettingsSchema,
@@ -24,6 +24,7 @@ import { inputCls } from '../formStyles';
 import { SchemaSettingsForm } from './SchemaSettingsForm';
 import { settingsSectionId, settingsSectionTitle } from './settingsSections';
 import { SettingsLayerJson } from './SettingsLayerJson';
+import { useSettingJump } from './useSettingJump';
 
 const VIEWS = [
   { id: 'form', label: 'Form' },
@@ -67,6 +68,18 @@ export function SchemaSettingsCard({ heading, help }: SchemaSettingsCardProps = 
     });
   };
   const formView = view !== 'json';
+
+  // ?setting=<key> (the command palette): clear the filter, show the form,
+  // open the field's section; the hook then focuses the field.
+  const reveal = useCallback(
+    (section: string) => {
+      setFilter('');
+      setView('form');
+      setOpenSections((prev) => new Set(prev).add(section));
+    },
+    [setView],
+  );
+  useSettingJump(fields, Boolean(layer?.writable && !layer.error), reveal);
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const n = SETTINGS_LAYER_NAMES.length;

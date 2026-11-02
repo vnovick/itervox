@@ -350,4 +350,15 @@ describe('schema-driven Settings section (#158)', () => {
     });
     expect(refreshSnapshot).not.toHaveBeenCalled();
   });
+
+  it('?setting=<key> (the command palette) opens the section and focuses the field', async () => {
+    useUIStore.setState({ settingsView: 'json' });
+    render(<SchemaSettingsCard />, { route: '/settings?setting=polling.interval_ms' });
+    const field = await screen.findByLabelText('Poll interval (ms)');
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    expect(field.closest('details')).toHaveAttribute('open');
+    expect(useUIStore.getState().settingsView).toBe('form');
+  });
 });
