@@ -188,6 +188,21 @@ A session running in a tmux pane carries a **tmux** badge (hover it for the pane
 
 The window only reads. It never types into a terminal or drives another app: messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
 
+### System material
+
+On a Mac and on Windows 11 the project rail and the Sessions window sit on the system's own material instead of the drawn translucent panels: the window is transparent there, the system draws the material behind the page, and the page lets it show through, with its panels lightly tinted. Only those two pages do this; the dashboard beside the rail stays opaque.
+
+| System | Material |
+|---|---|
+| macOS 26 and later | Liquid Glass (`NSGlassEffectView`) |
+| macOS 11 to 15 | Vibrancy (`NSVisualEffectView`): the *sidebar* material behind the rail, *HUD window* behind Sessions |
+| Windows 11 | Mica |
+| Windows 10, Linux | None: the drawn panels, as before |
+
+With **Reduce transparency** or **Increase contrast** on (System Settings → Accessibility → Display on a Mac), or with **Transparency effects** off or a contrast theme on Windows, the app uses no material and the pages draw opaque panels. The app reads these settings when it opens a window, so close and reopen the window after changing one; the page also follows them itself where the webview reports them. If the system refuses the material, the page falls back to its drawn look.
+
+Transparent windows on macOS use Tauri's `macOSPrivateApi` option (`macos-private-api`), which relies on a private AppKit setting. Apple does not accept apps that use private APIs in the Mac App Store; the app is distributed outside it (the signed DMG and Homebrew), where this does not apply. Liquid Glass needs an app built with the macOS 26 SDK (Xcode 26); built with an older SDK, the app uses vibrancy on macOS 26 too.
+
 ## Remote daemons
 
 A daemon on a cloud VM or another machine shows in the menu like a local one, under **Remotes**. The app runs one tunnel per remote daemon, health-checks it, and restarts it when it drops — also after your Mac sleeps or changes network — so you never run a tunnel command or keep a browser tab around. Agent credentials (the Claude or Codex login, tracker keys) stay on the remote machine: the app only holds each daemon's dashboard token.
@@ -352,10 +367,11 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Daemon bundled in the app; **Stop** sends `SIGTERM` | Same | No native daemon yet ([local projects](#windows-local-projects)); with `itervox.exe`, **Stop** runs `itervox stop` |
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
+| Liquid Glass (macOS 26) or vibrancy behind the rail and Sessions ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
 
 ## Development
 
-The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project rail of the dashboard windows (`rail.rs`, its page `desktop/dist/rail.html`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on macOS, Linux and Windows; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue. What differs per platform is in `platform.rs` and `autostart.rs`, keyed by the target OS so the tests check every platform's choice from any one. CI runs the tests and builds unsigned bundles on macOS, Linux (x86_64 and arm64) and Windows.
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project rail of the dashboard windows (`rail.rs`, its page `desktop/dist/rail.html`), which system material goes behind the rail and the Sessions window (`material.rs`, applied by `app_material.rs`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on macOS, Linux and Windows; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue. What differs per platform is in `platform.rs` and `autostart.rs`, keyed by the target OS so the tests check every platform's choice from any one. CI runs the tests and builds unsigned bundles on macOS, Linux (x86_64 and arm64) and Windows.
 
 ```bash
 make desktop-test   # fmt, clippy -D warnings, unit tests, end-to-end tests against a real daemon, and dry runs of the release scripts, the Homebrew cask's included (needs jq)

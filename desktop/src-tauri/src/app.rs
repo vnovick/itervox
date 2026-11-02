@@ -19,11 +19,13 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::app_hub;
+use crate::app_material;
 use crate::app_remote::RemoteShared;
 use crate::app_update;
 use crate::client;
 use crate::dashboard::{token_init_script, window_label};
 use crate::hub_source::{hub_page_url, read_local, HubPage, HubReader, HubStatus};
+use crate::material::{self, Surface};
 use crate::menu::{
     append_app_section, append_hub_section, build_menu, MenuAction, MenuEntry, MenuSpec,
 };
@@ -980,7 +982,8 @@ fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
         let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
         let nav_app = app2.clone();
         let nav_shared = Arc::clone(&shared2);
-        let built = WebviewWindowBuilder::new(
+        let material = app_material::material_for(Surface::Sessions);
+        let mut builder = WebviewWindowBuilder::new(
             &app2,
             SESSIONS_LABEL,
             WebviewUrl::App("sessions.html".into()),
@@ -994,10 +997,21 @@ fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
                 false
             }
             None => true,
-        })
-        .build();
-        match built {
+        });
+        // A system material behind the page: a transparent window and
+        // webview, and the page told before it loads (material.rs).
+        if let Some(m) = material {
+            builder = builder
+                .transparent(true)
+                .initialization_script(material::init_script(m));
+        }
+        match builder.build() {
             Ok(w) => {
+                if let Some(m) = material {
+                    app_material::apply_or_clear(&w.as_ref().window(), m, |js| {
+                        let _ = w.eval(js);
+                    });
+                }
                 let _ = w.set_focus();
                 wake(&shared2);
             }

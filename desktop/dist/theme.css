@@ -7,8 +7,12 @@
    with a backdrop blur where the webview supports it (WKWebView on macOS,
    WebView2 on Windows, WebKitGTK on Linux); without blur, or when the user
    asks for reduced transparency, they fall back to opaque colours. The
-   window itself is opaque on every platform, so the page draws its own
-   soft colour field behind the panels. */
+   window is opaque unless the app puts a system material behind the page
+   (macOS Liquid Glass or vibrancy, Windows 11 Mica: src-tauri/src/
+   material.rs); then <html> carries data-material, the page is
+   transparent and the panels are only tinted, so the material shows
+   through. Otherwise the page draws its own soft colour field behind the
+   panels. */
 
 :root {
   color-scheme: light;
@@ -49,6 +53,7 @@
   --glass-highlight: rgba(255, 255, 255, 0.95);
   --glass-lowlight: rgba(255, 255, 255, 0.28);
   --glass-solid: #f4f6fb;
+  --native-tint: rgba(255, 255, 255, 0.22);
   --chip: rgba(255, 255, 255, 0.55);
   --chip-hover: rgba(255, 255, 255, 0.82);
   --chip-border: rgba(255, 255, 255, 0.7);
@@ -115,6 +120,7 @@
     --glass-highlight: rgba(255, 255, 255, 0.16);
     --glass-lowlight: rgba(255, 255, 255, 0.05);
     --glass-solid: #141a2a;
+    --native-tint: rgba(18, 24, 40, 0.24);
     --chip: rgba(255, 255, 255, 0.094);
     --chip-hover: rgba(255, 255, 255, 0.14);
     --chip-border: rgba(255, 255, 255, 0.12);
@@ -180,6 +186,16 @@ button { font: inherit; color: inherit; }
 }
 .mono { font-family: var(--font-mono); }
 
+/* A system material behind the page (data-material on <html>, set before
+   the first paint): no colour field, transparent page, tinted panels with
+   no blur of their own (the material is the blur). */
+:root[data-material], :root[data-material] body { background: transparent; }
+:root[data-material] .page::before { display: none; }
+:root[data-material] .glass {
+  background: var(--native-tint);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .sr-only {
@@ -195,12 +211,23 @@ button { font: inherit; color: inherit; }
   .sheet { background: var(--sheet-solid); }
 }
 @media (prefers-reduced-transparency: reduce) {
+  :root[data-material], :root[data-material] body { background: var(--bg); }
+  :root[data-material] .glass { background: var(--glass-solid); }
   .page::before { background: var(--bg); }
   .glass { background: var(--glass-solid); }
   .chip, .card { background: var(--card-solid); }
   .sheet { background: var(--sheet-solid); }
   .glass, .chip, .sheet { -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
+/* More contrast: opaque surfaces whether or not a material is behind. */
+@media (prefers-contrast: more) {
+  :root[data-material], :root[data-material] body { background: var(--bg); }
+  :root[data-material] .glass, .glass { background: var(--glass-solid); }
+  .chip, .card { background: var(--card-solid); }
+  .sheet { background: var(--sheet-solid); }
+}
 @media (forced-colors: active) {
+  :root[data-material], :root[data-material] body { background: var(--bg); }
+  :root[data-material] .glass { background: var(--glass-solid); }
   .glass, .chip, .card, .sheet { border-color: CanvasText; }
 }
