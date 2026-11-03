@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { proseClass } from '../../../utils/format';
 import { fieldLabelCls, helperTextCls, textareaCls } from '../formStyles';
 import { PROFILE_VARIABLES, type Completion } from './promptCompletions';
+import type { PromptProfileContext } from './promptEditor/PromptCodeEditor';
 
 // CodeMirror lives in its own chunk, fetched the first time a prompt editor
 // opens (#122), so it stays out of the main bundle.
@@ -17,6 +18,8 @@ interface MarkdownPromptEditorProps {
   helperText?: ReactNode;
   /** Liquid variables the autocomplete offers after `{{` (#87). */
   variables?: readonly Completion[];
+  /** The profile this prompt belongs to: backend-aware suggestions and reference checks (#123). */
+  profile?: PromptProfileContext;
 }
 
 export function MarkdownPromptEditor({
@@ -26,6 +29,7 @@ export function MarkdownPromptEditor({
   placeholder = 'Write the profile instructions in Markdown. Liquid variables are rendered at runtime.',
   helperText,
   variables = PROFILE_VARIABLES,
+  profile,
 }: MarkdownPromptEditorProps) {
   const [tab, setTab] = useState<'write' | 'preview'>('write');
   const deferredValue = useDeferredValue(value);
@@ -75,6 +79,7 @@ export function MarkdownPromptEditor({
             label={label}
             variables={variables}
             placeholder={placeholder}
+            profile={profile}
           />
         </Suspense>
       ) : (
@@ -95,8 +100,8 @@ export function MarkdownPromptEditor({
             Profile prompts are rendered with Liquid before each run. Use plain Markdown for
             structure and <span className="font-mono">{'{{ issue.* }}'}</span> variables for
             issue-specific data. Type <span className="font-mono">{'{{'}</span> for variables,{' '}
-            <span className="font-mono">/</span> or <span className="font-mono">@</span> for skills
-            and subagents.
+            <span className="font-mono">/</span> or <span className="font-mono">@</span> for the
+            skills and subagents this profile&apos;s backend can use.
           </>
         )}
       </p>

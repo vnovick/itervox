@@ -163,43 +163,66 @@ func NewOutboxWriteSink(ob *outbox.Outbox) WriteSink {
 }
 
 // UpdateIssueState enqueues a durable update_state entry. It never calls
-// the tracker directly — ctx is accepted for interface parity with
-// directWriteSink but unused, since Enqueue is synchronous, in-process, and
-// does not itself make a tracker API call.
+// the tracker directly — ctx is read only for the urgent mark (urgentWrite),
+// since Enqueue is synchronous, in-process, and does not itself make a
+// tracker API call.
 // fromState is recorded on the entry as reconciliation's baseline — see
 // outbox.ReconcileVerdict. An empty fromState is safe but weaker: without a
 // baseline, reconciliation cannot tell a human's move from the outbox's own
 // UpdatedAt bump, so it keeps the entry rather than dropping it.
-func (s *outboxWriteSink) UpdateIssueState(_ context.Context, issueID, identifier, state, fromState string) error {
+func (s *outboxWriteSink) UpdateIssueState(ctx context.Context, issueID, identifier, state, fromState string) error {
 	return s.outbox.Enqueue(outbox.Entry{
 		Kind:        outbox.KindUpdateState,
 		IssueID:     issueID,
 		Identifier:  identifier,
 		TargetState: state,
 		FromState:   fromState,
+		Urgent:      isUrgentWrite(ctx),
 	})
 }
 
 // CreateComment enqueues a durable create_comment entry. See
-// UpdateIssueState for why ctx is unused.
-func (s *outboxWriteSink) CreateComment(_ context.Context, issueID, identifier, body string) error {
+// UpdateIssueState for what ctx is used for.
+func (s *outboxWriteSink) CreateComment(ctx context.Context, issueID, identifier, body string) error {
 	return s.outbox.Enqueue(outbox.Entry{
 		Kind:       outbox.KindCreateComment,
 		IssueID:    issueID,
 		Identifier: identifier,
 		Body:       body,
+		Urgent:     isUrgentWrite(ctx),
 	})
 }
 
 // CreateKeyedComment enqueues a durable create_comment entry carrying the
 // caller's key. Enqueue preserves a caller-supplied CommentKey and only
 // generates one when it is empty, so an empty key here is still safe.
-func (s *outboxWriteSink) CreateKeyedComment(_ context.Context, issueID, identifier, key, body string) error {
+func (s *outboxWriteSink) CreateKeyedComment(ctx context.Context, issueID, identifier, key, body string) error {
 	return s.outbox.Enqueue(outbox.Entry{
 		Kind:       outbox.KindCreateComment,
 		IssueID:    issueID,
 		Identifier: identifier,
 		Body:       body,
 		CommentKey: key,
+		Urgent:     isUrgentWrite(ctx),
 	})
+}
+
+// urgentWriteKey marks a context whose write a person is waiting on.
+type urgentWriteKey struct{}
+
+// urgentWrite marks ctx so the outbox-backed sink pushes the write at once
+// instead of batching it for the push interval (#115). The urgent list is
+// exactly the callers of this function: input-required questions and
+// replies, the max-retries-exhausted notice, the failed-state transition and
+// the rate-limit auto-switch budget-exhausted notice (operator comments from
+// the dashboard are enqueued as urgent by cmd/itervox). The direct sink
+// ignores the mark: it calls the tracker at once anyway.
+func urgentWrite(ctx context.Context) context.Context {
+	return context.WithValue(ctx, urgentWriteKey{}, true)
+}
+
+// isUrgentWrite reports whether ctx was marked by urgentWrite.
+func isUrgentWrite(ctx context.Context) bool {
+	urgent, _ := ctx.Value(urgentWriteKey{}).(bool)
+	return urgent
 }

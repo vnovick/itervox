@@ -215,19 +215,13 @@ func TestOutboxFlusherPerIssueOrderPreservedAcrossMarkFailed(t *testing.T) {
 	assert.Equal(t, []string{"update:id-a:Done"}, tr.CallOrder(),
 		"no re-attempt before NextAttemptAt elapses")
 
-	// Advance past the 10s backoff: head retries and succeeds this time.
+	// Advance past the 10s backoff: head retries and succeeds this time,
+	// and the successor — now the head and due — goes in the same tick
+	// (#115: a tick pushes the issue's whole due batch, in order).
 	afterBackoff := base.Add(11 * time.Second)
 	runOutboxFlusherTick(context.Background(), ob, tr, refresher, afterBackoff)
-	assert.Equal(t, []string{"update:id-a:Done", "update:id-a:Done"}, tr.CallOrder())
-	assert.EqualValues(t, 1, refresher.calls.Load(), "the successful update_state flush must trigger exactly one Refresh")
-	pending = ob.PendingFor("id-a")
-	require.Len(t, pending, 1, "the flushed head entry is gone; the successor remains")
-	assert.Equal(t, "Merged", pending[0].TargetState)
-
-	// Tick 3: the successor is now the head and immediately due.
-	runOutboxFlusherTick(context.Background(), ob, tr, refresher, afterBackoff)
 	assert.Equal(t, []string{"update:id-a:Done", "update:id-a:Done", "update:id-a:Merged"}, tr.CallOrder())
-	assert.EqualValues(t, 2, refresher.calls.Load())
+	assert.EqualValues(t, 2, refresher.calls.Load(), "each successful update_state flush triggers one Refresh")
 	assert.Empty(t, ob.PendingFor("id-a"), "both entries flushed")
 
 	issue, err := tr.FetchIssueDetail(context.Background(), "id-a")

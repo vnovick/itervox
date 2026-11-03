@@ -4,8 +4,10 @@
 // @codemirror/autocomplete (see promptEditor/promptAutocomplete.ts).
 
 import type { SkillsInventory } from '../../../types/schemas';
+import type { SupportedBackend } from '../profileCommands';
+import { backendItems } from './backendInventory';
 
-export type CompletionKind = 'skill' | 'subagent' | 'variable' | 'filter';
+export type CompletionKind = 'skill' | 'subagent' | 'prompt' | 'variable' | 'filter';
 
 export interface Completion {
   /** What is inserted, e.g. `tdd`, `issue.title`, `downcase`. */
@@ -126,38 +128,21 @@ export function completionContext(text: string, caret: number): CompletionContex
   return { kind: 'reference', query, start: caret - query.length, trigger: m[2] as '/' | '@' };
 }
 
-function firstLine(s?: string): string | undefined {
-  const line = s?.split('\n').find((l) => l.trim() !== '');
-  return line?.trim();
-}
-
-/** Skills and subagents from the inventory, deduplicated by kind and name. */
-export function referenceCompletions(inv: SkillsInventory | null | undefined): Completion[] {
-  if (!inv) return [];
-  const out: Completion[] = [];
-  const seen = new Set<string>();
-  const add = (c: Completion) => {
-    const key = `${c.kind}:${c.label}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(c);
-  };
-  for (const s of inv.Skills ?? []) {
-    add({ label: s.Name, kind: 'skill', detail: firstLine(s.Description), source: s.Source });
-  }
-  for (const a of inv.Subagents ?? []) {
-    add({ label: a.Name, kind: 'subagent', detail: firstLine(a.Description), source: a.Source });
-  }
-  for (const p of inv.Plugins ?? []) {
-    const source = `plugin:${p.Name}`;
-    for (const s of p.Skills ?? []) {
-      add({ label: s.Name, kind: 'skill', detail: firstLine(s.Description), source });
-    }
-    for (const a of p.Agents ?? []) {
-      add({ label: a.Name, kind: 'subagent', detail: firstLine(a.Description), source });
-    }
-  }
-  return out;
+/**
+ * Skills, subagents and Codex prompts from the inventory, deduplicated by
+ * kind and name. With a backend, only what that backend can use (#123; see
+ * backendInventory.ts); a Codex prompt is inserted as `prompts:<name>`.
+ */
+export function referenceCompletions(
+  inv: SkillsInventory | null | undefined,
+  backend?: SupportedBackend,
+): Completion[] {
+  return backendItems(inv, backend).map((item) => ({
+    label: item.kind === 'prompt' ? `prompts:${item.name}` : item.name,
+    kind: item.kind,
+    detail: item.description,
+    source: item.source,
+  }));
 }
 
 /** The candidates for a context. */

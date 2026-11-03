@@ -42,6 +42,7 @@ export function defaultSuggestionProvider(
 const KIND_LABEL: Record<Completion['kind'], string> = {
   skill: 'skill',
   subagent: 'subagent',
+  prompt: 'prompt',
   variable: 'variable',
   filter: 'filter',
 };
@@ -75,7 +76,12 @@ function toOption(item: Completion): CMCompletion {
     label: item.label,
     detail: KIND_LABEL[item.kind] + (item.source ? ` · ${item.source}` : ''),
     info: item.detail,
-    type: item.kind === 'subagent' ? 'class' : item.kind === 'skill' ? 'function' : 'variable',
+    type:
+      item.kind === 'subagent'
+        ? 'class'
+        : item.kind === 'skill' || item.kind === 'prompt'
+          ? 'function'
+          : 'variable',
     apply: (view, completion) => {
       insertSuggestion(view, item, completion);
     },

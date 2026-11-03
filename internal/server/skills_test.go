@@ -24,6 +24,9 @@ type fakeSkillsClient struct {
 	lastFix      skills.Fix
 	analytics    *skills.AnalyticsSnapshot
 	recs         []skills.Recommendation
+	refCheck     *PromptRefCheck
+	lastRefReq   PromptRefCheckRequest
+	backends     map[string]string
 }
 
 func (c *fakeSkillsClient) Inventory() *skills.Inventory { return c.inv }
@@ -44,6 +47,14 @@ func (c *fakeSkillsClient) ApplyFix(_ context.Context, _ string, fix skills.Fix)
 }
 func (c *fakeSkillsClient) Analytics() *skills.AnalyticsSnapshot              { return c.analytics }
 func (c *fakeSkillsClient) AnalyticsRecommendations() []skills.Recommendation { return c.recs }
+func (c *fakeSkillsClient) CheckPromptRefs(req PromptRefCheckRequest) (PromptRefCheck, bool) {
+	c.lastRefReq = req
+	if c.refCheck == nil {
+		return PromptRefCheck{}, false
+	}
+	return *c.refCheck, true
+}
+func (c *fakeSkillsClient) ProfileBackends() map[string]string { return c.backends }
 
 func newSkillsTestServer(t *testing.T, fake *fakeSkillsClient) *Server {
 	t.Helper()

@@ -19,6 +19,8 @@ loopback daemon behind a tunnel or reverse proxy is exactly as reachable as
 one bound to `0.0.0.0`.
 
 - If `ITERVOX_API_TOKEN` is set, that value is required.
+- If `ITERVOX_SUPERVISOR_TOKEN` is set, that value is required instead,
+  even with `server.allow_unauthenticated: true` (see below).
 - If `ITERVOX_API_TOKEN` is unset and `server.allow_unauthenticated` is
   `false` (the default), Itervox auto-generates an ephemeral token at
   startup and prints the tokened dashboard URL to stderr once — only when
@@ -52,6 +54,32 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
   http://localhost:8090/api/v1/state
 ```
 
+### Supervisor token (`ITERVOX_SUPERVISOR_TOKEN`)
+
+A supervisor that starts the daemon — the macOS menu-bar app, a process
+manager — passes its own token in `ITERVOX_SUPERVISOR_TOKEN`. The daemon
+requires it as the bearer token exactly as it would a pinned
+`ITERVOX_API_TOKEN`, with these differences:
+
+- It wins over `ITERVOX_API_TOKEN` from the environment or `.itervox/.env`
+  (a warning names the replacement, never a value), and over
+  `server.allow_unauthenticated: true`: auth stays on.
+- It is never printed: no tokenised dashboard URL on stderr, even on a
+  terminal or with `ITERVOX_PRINT_TOKEN=1`; the terminal UI's dashboard URL
+  carries no token; nothing is written to `<logs-dir>/api-token` (a stale
+  file from an earlier generated-token start is removed). The value is also
+  registered for exact-match log redaction, and it never reaches
+  `HEARTBEAT.md`, `dashboard_url` or the daemon registry. The startup log
+  line reads `dashboard URL (token withheld from logs)` with
+  `token_source=ITERVOX_SUPERVISOR_TOKEN`.
+- The daemon moves it into `ITERVOX_API_TOKEN` (which hooks and agents'
+  `itervox action` calls inherit) and removes `ITERVOX_SUPERVISOR_TOKEN`
+  from its environment.
+- It must be 16–512 printable ASCII characters without spaces (surrounding
+  whitespace is trimmed); anything else stops the process with exit code 2
+  and an error that does not quote the value. `openssl rand -hex 32` is a
+  good source.
+
 ### Agent-action bearer auth
 
 The daemon-backed agent-action routes use a **separate** bearer token model.
@@ -67,6 +95,65 @@ API token. These routes are:
 
 Profiles opt into these capabilities with `allowed_actions` and
 `create_issue_state` in `WORKFLOW.md`.
+
+## Supervisor contract
+
+What a supervisor (the macOS menu-bar app, #128) relies on to find, start and
+talk to daemons. Stable within `schema_version` 1: fields may be added, but a
+rename, removal or change of meaning bumps the version.
+
+**Start.** Run the `itervox` binary with `--workflow <path>` and
+`ITERVOX_SUPERVISOR_TOKEN=<token>` in its environment (see above). From
+Finder or launchd the inherited PATH is minimal; the daemon resolves PATH
+from the user's login shell itself (see
+[Login-shell PATH](https://itervox.dev/cli/#login-shell-path)), so the
+supervisor does not need to.
+
+**Discover.** `itervox status --all --json` prints a JSON array (`[]` when
+none) with one object per running daemon on the host, sorted by `workflow`,
+then `pid`; `itervox status --json [--workflow PATH]` only the daemons of
+that project. Exit code 0 unless the output cannot be written. Every object
+has every key:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `schema_version` | int | `1` |
+| `pid` | int | Daemon process id |
+| `workflow` | string | Absolute path of its `WORKFLOW.md` |
+| `project_dir` | string | Directory holding `WORKFLOW.md` (and `.itervox/`) |
+| `url` | string | Dashboard/API base URL, e.g. `http://127.0.0.1:8090/` (same as `.itervox/dashboard_url`) |
+| `host`, `port` | string, int | The bound address split out of `url` |
+| `version`, `commit` | string | Build of the daemon binary (`dev` / `none` for a local build) |
+| `started_at` | string | RFC 3339 UTC process start time |
+| `token_required` | bool | Whether `/api/v1/*` needs `Authorization: Bearer` |
+| `token_source` | string | `supervisor` (`ITERVOX_SUPERVISOR_TOKEN`), `env` (`ITERVOX_API_TOKEN`), `generated` (read it from `token_file`), `none` (`server.allow_unauthenticated: true`), `unknown` |
+| `token_file` | string | `<logs-dir>/api-token` for a `generated` token, else `""` |
+| `logs_dir` | string | The daemon's logs directory |
+| `heartbeat` | string | Path of its `.itervox/HEARTBEAT.md` |
+| `executable` | string | Path of the daemon binary |
+| `path_source` | string | `login_shell` or `inherited` (see Login-shell PATH) |
+| `source` | string | `registry`, or `process_scan` for a daemon started by a binary older than the registry |
+
+A token is never part of the output. Unknown values are `""` (or `0`).
+
+**Registry.** Each daemon writes `~/.itervox/daemons/<pid>.json` (directory
+`0700`, file `0600`, the same object without `source`) once its socket is
+bound, rewrites it on every `WORKFLOW.md` reload, and removes it on shutdown
+together with `daemon.pid`, `dashboard_url` and `HEARTBEAT.md`.
+`status --json` lists a record only while its pid is alive, the project's
+`.itervox/daemon.pid` still names it and — for a pid file written with the
+pid lock (every daemon since v0.2.1) — that lock is held, so a pid recycled
+by an unrelated process after a `SIGKILL` is not mistaken for the daemon.
+Records that fail the check are deleted (a daemon killed with `SIGKILL`
+cannot remove its own). All path fields are absolute; a relative
+`--logs-dir` is resolved against the daemon's working directory. `itervox demo` writes
+no record. Daemons started by an older binary are found by process scan:
+an `itervox` process whose working directory holds a `.itervox/daemon.pid`
+naming it (and, for a lock-marked pid file, whose lock is held); for those `version`, `commit` and `started_at` are `""`,
+`token_source` is `unknown` and `token_required` is `true`.
+
+**Talk.** `GET {url}api/v1/health` needs no token; everything else under
+`{url}api/v1/` takes `Authorization: Bearer <token>`.
 
 ## Error format
 
@@ -269,6 +356,37 @@ Useful top-level fields include:
   `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
+- `syncStatus` (#117) — the tracker sync status, absent on older daemons:
+  `{ "mode": "store" | "direct" | "local_sync", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
+  "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,
+  "lastError"?: { "at", "kind", "message" }, "pendingWrites",
+  "pendingUrgent", "pendingBatched", "pendingRetrying", "pendingDegraded",
+  "pendingRateLimited", "oldestPendingAt"?, "nextPushAt"?, "pushIntervalMs" }`.
+  `mode` is `store` when the local tracker store pulls in the background
+  (`tracker.store.enabled`), `direct` when each poll reads the tracker, and
+  `local_sync` (#118) when local issue files are synced with Linear or
+  GitHub (`tracker.sync`): `lastPullAt` is then the sync's last good cycle,
+  `syncIntervalMs` is `tracker.sync.interval_ms`, and the `pending*` counts
+  include the sync's queued remote writes.
+  `lastPullAt` is the last successful pull (store) or candidate poll
+  (direct), absent until one succeeds; `lagMs` is now − `lastPullAt` when the
+  snapshot was built (clients should recompute it on their own clock).
+  `stale` is `lagMs > lagWarnAfterMs`, or "never pulled and the last pull
+  failed". `lagWarnAfterMs` is three pull intervals and at least five
+  minutes (`syncIntervalMs`: `tracker.store.sync_interval_ms`, the webhook
+  safety net with `tracker.webhooks`, or `polling.interval_ms` in direct
+  mode). `cursorAt` is the newest tracker update the store has seen.
+  `lastError` is the newest failed pull while pulls keep failing (a good
+  pull clears it), classified: `kind` is `rate_limited`, `auth`,
+  `not_found`, `api_status`, `graphql`, `timeout`, `network`, `canceled` or
+  `unknown` (treat unknown values as opaque), and `message` is a fixed
+  summary, never the tracker's response. The `pending*` counts describe the
+  write-ahead outbox and overlap: `pendingBatched` waits for
+  `tracker.push_interval_ms` (`pushIntervalMs`, 0 with the outbox off),
+  `pendingRetrying` failed at least once, `pendingDegraded` failed five
+  times or more, `pendingRateLimited` waits for a tracker rate-limit reset.
+  `nextPushAt` is when the next queued write is due (at or before
+  `generatedAt` means now).
 - `outboxEntries[].lastFailedAt` — when that outbox entry last failed to
   deliver (rate-limit deferrals do not count).
 - `backendHealth` (CORE-055) — one row per agent backend, and per SSH host
@@ -524,6 +642,8 @@ surface. They use the same dashboard bearer token as the rest of `/api/v1`.
 | `POST` | `/skills/fix` | `{"issueID":"UNUSED_PROFILE","fix": Fix}` | `{"status":"ok"}` | v0.2.0 only applies the non-destructive `UNUSED_PROFILE` `edit-yaml` fix; unsafe actions such as `remove-mcp` are rejected |
 | `GET` | `/skills/analytics` | — | `AnalyticsSnapshot` | Includes `HasRuntimeEvidence`; `503 analytics_unavailable` only before analytics can be computed |
 | `GET` | `/skills/analytics/recommendations` | — | `Recommendation[]` | Runtime-side recommendations; empty until `HasRuntimeEvidence` is true |
+| `POST` | `/skills/check-refs` | `{"profile":"worker","command":"codex","backend":"codex","text":"…"}` | `{"backend":"codex","sshHosts":[],"refs":[{"kind":"skill","name":"tdd","from":9,"to":12,"status":"missing","severity":"warn","issueId":"MISSING_SKILL_REF","message":"…"}]}` | #123: runs the `itervox doctor` reference check over one draft prompt (SOUL.md or INSTRUCTIONS.md) for a profile with that command and backend. `backend` is the one the daemon resolves; each reference occurrence has `status` `ok`, `missing` or `outside_repo` (only with SSH hosts), and `from`/`to` are UTF-16 offsets into `text`. `503 inventory_unavailable` before the first scan; `413` over 256 KiB |
+| `GET` | `/skills/profile-backends` | — | `{"default":"claude","profiles":{"reviewer":"codex"}}` | #123: the backend each configured profile runs on, resolved like doctor and the dispatcher do; `default` is the workflow's |
 
 ### Dependency analyzer sidecar
 

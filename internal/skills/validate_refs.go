@@ -217,15 +217,19 @@ type PromptRef struct {
 	Name string
 }
 
-// ExtractPromptRefs returns the explicit references in text, de-duplicated,
-// in order of first appearance.
-func ExtractPromptRefs(text string) []PromptRef {
+// PromptRefSpan is one occurrence of a reference in a prompt with its byte
+// range: "@agent-<name>" for a mention, the name inside the backticks for a
+// named list. The editor underlines exactly this range (#123).
+type PromptRefSpan struct {
+	PromptRef
+	Start, End int
+}
+
+// FindPromptRefs returns every explicit reference in text, in order of
+// appearance, without de-duplication.
+func FindPromptRefs(text string) []PromptRefSpan {
 	text = blankFencedBlocks(text)
-	type hit struct {
-		pos        int
-		kind, name string
-	}
-	var hits []hit
+	var hits []PromptRefSpan
 	for _, m := range refAgentMentionRe.FindAllStringSubmatchIndex(text, -1) {
 		if mentionNameContinues(text[m[3]:]) || strings.HasSuffix(text[m[2]:m[3]], "-") {
 			continue // "@agent-foo_bar" / "@agent-fooBar" / "@agent-foo-" is not a valid name
@@ -233,7 +237,7 @@ func ExtractPromptRefs(text string) []PromptRef {
 		if m[0] > 0 && (text[m[0]] == '_' || text[m[0]] == '*') && isNameByte(text[m[0]-1]) {
 			continue // "ops_@agent-corp.com", ".../a_@agent-x": inside a word, not emphasis
 		}
-		hits = append(hits, hit{m[2], "subagent", text[m[2]:m[3]]})
+		hits = append(hits, PromptRefSpan{PromptRef{"subagent", text[m[2]:m[3]]}, m[2] - len("@agent-"), m[3]})
 	}
 	for _, m := range refNamedListRe.FindAllStringSubmatchIndex(text, -1) {
 		if refNounAfterRe.MatchString(text[m[5]:]) {
@@ -245,19 +249,25 @@ func ExtractPromptRefs(text string) []PromptRef {
 		}
 		list := text[m[2]:m[3]]
 		for _, n := range refBacktickedRe.FindAllStringSubmatchIndex(list, -1) {
-			hits = append(hits, hit{m[2] + n[2], kind, list[n[2]:n[3]]})
+			hits = append(hits, PromptRefSpan{PromptRef{kind, list[n[2]:n[3]]}, m[2] + n[2], m[2] + n[3]})
 		}
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].pos < hits[j].pos })
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Start < hits[j].Start })
+	return hits
+}
+
+// ExtractPromptRefs returns the explicit references in text, de-duplicated,
+// in order of first appearance.
+func ExtractPromptRefs(text string) []PromptRef {
 	var out []PromptRef
 	seen := map[string]bool{}
-	for _, h := range hits {
-		key := h.kind + "|" + strings.ToLower(h.name)
+	for _, h := range FindPromptRefs(text) {
+		key := h.Kind + "|" + strings.ToLower(h.Name)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		out = append(out, PromptRef{Kind: h.kind, Name: h.name})
+		out = append(out, h.PromptRef)
 	}
 	return out
 }
@@ -425,26 +435,10 @@ func ValidateProfileRefs(inv *Inventory, profiles map[string]config.AgentProfile
 	for _, name := range names {
 		p := profiles[name]
 		backend := ProfileBackend(p, defaults)
-		skillIdx, agentIdx := resolvableNames(inv, backend)
+		r := newRefResolver(inv, name, backend, sshHosts)
 		for _, ref := range ExtractPromptRefs(p.Soul + "\n" + p.Instructions) {
-			idx := skillIdx
-			if ref.Kind == "subagent" {
-				idx = agentIdx
-			}
-			target := idx[strings.ToLower(ref.Name)]
-			if target == nil {
-				issues = append(issues, missingRefIssue(name, backend, ref))
-				continue
-			}
-			if len(sshHosts) > 0 && target.onlyOutsideRepo() {
-				issues = append(issues, InventoryIssue{
-					ID:       "USER_SCOPE_REF_ON_SSH",
-					Severity: "info",
-					Title:    fmt.Sprintf("Profile %q references %s %q that only exists outside the repository", name, ref.Kind, ref.Name),
-					Description: fmt.Sprintf("%s %q was found only in user or plugin scope on this machine. Agents on SSH hosts (%s) see the repository but not this machine's home directory or plugins, so the %s may be missing there. %s",
-						capitalize(ref.Kind), ref.Name, strings.Join(sshHosts, ", "), ref.Kind, sshScopeRemedy(backend, ref.Kind)),
-					Affected: []string{name, ref.Name},
-				})
+			if _, issue := r.check(ref); issue != nil {
+				issues = append(issues, *issue)
 			}
 		}
 	}

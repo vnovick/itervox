@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +25,7 @@ func runStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md for the project to inspect")
 	all := fs.Bool("all", false, "list itervox daemons across all projects, not just this one")
+	asJSON := fs.Bool("json", false, "print a JSON array of daemon records (schema in docs/api.md, \"Supervisor contract\") instead of text")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: itervox status [flags]
 
@@ -35,6 +38,13 @@ Flags:
 	_ = fs.Parse(args)
 
 	projectDir, _ := resolveProjectDir(*workflowPath)
+	if *asJSON {
+		if err := writeStatusJSON(os.Stdout, projectDir, *all); err != nil {
+			fmt.Fprintf(os.Stderr, "itervox status: %v\n", err)
+			fatalExit(1)
+		}
+		return
+	}
 
 	// Local PID file (if present + alive).
 	var fromFile []int
@@ -91,4 +101,21 @@ Flags:
 // jumping files.
 func discoverAllItervoxDaemons() []int {
 	return discoverAllDaemons()
+}
+
+// writeStatusJSON prints the daemons as a JSON array (`[]` when none): every
+// daemon on the host with all=true, otherwise only those whose project
+// directory is projectDir. The registry lives under the home directory; a
+// home that cannot be resolved leaves only the process scan.
+func writeStatusJSON(w io.Writer, projectDir string, all bool) error {
+	dir, _ := daemonRegistryDir()
+	records := collectDaemons(dir, discoverAllDaemons, processCwd)
+	if !all {
+		records = slices.DeleteFunc(records, func(r daemonRecord) bool {
+			return !pathEquals(r.ProjectDir, projectDir)
+		})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(records)
 }

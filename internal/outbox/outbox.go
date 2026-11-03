@@ -12,7 +12,8 @@
 // See docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md for the
 // full design; this file implements Phase 1 ("internal/outbox core") only —
 // the flusher, orchestrator WriteSink integration, and overlay/reconciliation
-// logic land in later tasks.
+// logic land in later tasks. Coalesced push (#115: per-issue batches, the
+// last state move wins, urgent writes first) is in coalesce.go.
 package outbox
 
 import (
@@ -25,6 +26,7 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +42,14 @@ const (
 	KindUpdateState EntryKind = "update_state"
 	// KindCreateComment is a tracker comment post; Body is set.
 	KindCreateComment EntryKind = "create_comment"
+	// KindCreateIssue creates an issue on the remote tracker for the local
+	// issue sync (#118); Payload is the issue draft (JSON) and IssueID names
+	// the local issue it is created for.
+	KindCreateIssue EntryKind = "create_issue"
+	// KindUpdateFields edits an issue's fields (title, description, labels,
+	// priority, blockers) for the local issue sync (#118); Payload is the
+	// patch as a JSON object, one key per field.
+	KindUpdateFields EntryKind = "update_fields"
 )
 
 // outboxDegradedAttempts is the Attempts threshold at which an entry is
@@ -79,11 +89,19 @@ type Entry struct {
 	// KindCreateComment entries: a UUIDv4 sent to the tracker as the
 	// comment's own id (Linear) or embedded as a hidden marker in the body
 	// (GitHub), so a retry can ask "did my earlier attempt land?" instead
-	// of guessing. Empty for KindUpdateState.
+	// of guessing. KindCreateIssue entries (#118) carry one too, used as
+	// the new issue's own id where the tracker accepts one (Linear). Empty
+	// for the other kinds.
 	//
 	// Entry.ID is deliberately NOT reused: it is "<unixnano>-<hex>", which
 	// is not a UUIDv4 and Linear's CommentCreateInput.id rejects it.
 	CommentKey string `json:"comment_key,omitempty"`
+	// Payload is the JSON body of a KindCreateIssue or KindUpdateFields
+	// entry (#118). It is opaque to the outbox, except that waiting
+	// update_fields entries for one issue are merged key by key (see
+	// coalesce.go). A string, not a structured field, so Entry keeps no
+	// pointer or slice fields and a value copy stays a real copy.
+	Payload string `json:"payload,omitempty"`
 
 	EnqueuedAt    time.Time `json:"enqueued_at"`
 	Attempts      int       `json:"attempts"`
@@ -107,6 +125,17 @@ type Entry struct {
 	// it does not bump Attempts. HEARTBEAT's "Last error" uses it to pick the
 	// degraded entry that failed most recently. Zero until the first failure.
 	LastFailedAt time.Time `json:"last_failed_at,omitzero"`
+
+	// Urgent marks a write a person is waiting on (#115): an input-required
+	// question or reply, a failure notice, an operator comment. It is pushed
+	// at once instead of waiting for the push interval, and it pulls the
+	// issue's earlier queued writes forward with it so the per-issue order
+	// holds. See coalesce.go.
+	Urgent bool `json:"urgent,omitempty"`
+	// Coalesced counts the earlier queued state moves for this issue that
+	// this update_state entry replaced (#115). Zero for an entry that
+	// replaced nothing.
+	Coalesced int `json:"coalesced,omitempty"`
 }
 
 // Degraded reports whether this entry has failed enough consecutive times
@@ -122,6 +151,14 @@ type Outbox struct {
 	path    string
 	entries []Entry // enqueue order preserved; this IS the global order.
 	now     func() time.Time
+
+	// pushInterval is how long a non-urgent write waits in its issue's batch
+	// before it is due (#115, tracker.push_interval_ms). Zero: every write
+	// is due at once and nothing is coalesced.
+	pushInterval time.Duration
+	// wake is signalled (non-blocking, buffered 1) when an urgent write is
+	// enqueued, so the flusher pushes it without waiting for its next tick.
+	wake chan struct{}
 }
 
 // New loads durable state from path and returns a ready Outbox. A missing
@@ -134,6 +171,7 @@ func New(path string) (*Outbox, error) {
 	o := &Outbox{
 		path: path,
 		now:  time.Now,
+		wake: make(chan struct{}, 1),
 	}
 	if path == "" {
 		return o, nil
@@ -213,9 +251,11 @@ func legacyCommentKey(id string) string {
 }
 
 // Enqueue appends a new entry, assigning its ID/EnqueuedAt/NextAttemptAt
-// (immediately due) and resetting any caller-supplied Attempts/LastError —
-// every enqueued entry starts fresh. It persists atomically before
-// returning.
+// and resetting any caller-supplied Attempts/LastError — every enqueued
+// entry starts fresh. NextAttemptAt is now when batching is off (no push
+// interval) or e.Urgent is set; otherwise the entry joins its issue's batch
+// and an earlier waiting state move for the issue is replaced by it (#115,
+// see coalesce.go). It persists atomically before returning.
 //
 // Enqueue is atomic: the entry exists (durably, and visible to Due/
 // Snapshot/PendingFor) if and only if Enqueue returns a nil error. A
@@ -237,8 +277,9 @@ func (o *Outbox) Enqueue(e Entry) error {
 	e.Attempts = 0
 	e.LastError = ""
 	e.NextAttemptAt = now
+	e.Coalesced = 0
 
-	if e.Kind == KindCreateComment && e.CommentKey == "" {
+	if (e.Kind == KindCreateComment || e.Kind == KindCreateIssue) && e.CommentKey == "" {
 		key, err := NewCommentKey()
 		if err != nil {
 			return err
@@ -246,10 +287,18 @@ func (o *Outbox) Enqueue(e Entry) error {
 		e.CommentKey = key
 	}
 
+	// Batching (#115) may remove or reschedule earlier entries; keep the
+	// pre-call list so a persist failure restores it exactly. Entry has no
+	// pointer fields, so a slice clone is a deep copy.
+	saved := slices.Clone(o.entries)
+	o.batchLocked(&e, now)
 	o.entries = append(o.entries, e)
 	if err := o.persistLocked(); err != nil {
-		o.entries = o.entries[:len(o.entries)-1] // roll back: atomic contract
+		o.entries = saved // roll back: atomic contract
 		return err
+	}
+	if e.Urgent {
+		o.signalWake()
 	}
 	return nil
 }
@@ -267,6 +316,10 @@ func validateEntry(e Entry) error {
 	case KindCreateComment:
 		if e.Body == "" {
 			return fmt.Errorf("outbox: enqueue: %s entry requires non-empty Body", KindCreateComment)
+		}
+	case KindCreateIssue, KindUpdateFields:
+		if !json.Valid([]byte(e.Payload)) {
+			return fmt.Errorf("outbox: enqueue: %s entry requires a JSON Payload", e.Kind)
 		}
 	default:
 		return fmt.Errorf("outbox: enqueue: unknown entry kind %q", e.Kind)

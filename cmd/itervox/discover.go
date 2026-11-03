@@ -80,6 +80,11 @@ func findSelfPID() int {
 // macOS has no /proc, so we use `lsof -p <pid> -d cwd -Fn`; Linux can read
 // /proc/<pid>/cwd directly (faster, no fork), but lsof also works there.
 func processCwd(pid int) string {
+	if runtime.GOOS == "linux" {
+		if cwd, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd"); err == nil {
+			return cwd
+		}
+	}
 	out, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
 	if err != nil {
 		return ""
