@@ -1270,8 +1270,9 @@ type Config struct {
 	// the process-wide default, which survives the Server rebuild every
 	// WORKFLOW.md reload performs.
 	ClientErrorLimiter *ClientErrorLimiter
-	// Sessions backs GET /api/v1/sessions, POST /api/v1/sessions/{id}/message
-	// and GET /api/v1/sessions/{id}/transcript (#178). Nil answers 503.
+	// Sessions backs the /api/v1/sessions endpoints (#178): the list,
+	// messages, transcripts, tmux screen and keys, and New session / kill.
+	// Nil answers 503.
 	Sessions SessionsClient
 }
 
@@ -1460,6 +1461,10 @@ func (s *Server) routes() {
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)
 			r.Get("/sessions/{id}/transcript", s.handleSessionTranscript)
+			r.Post("/sessions", s.handleStartSession)
+			r.Delete("/sessions/{id}", s.handleKillSession)
+			r.Get("/sessions/{id}/screen", s.handleSessionScreen)
+			r.Post("/sessions/{id}/keys", s.handleSessionKeys)
 			r.Get("/issues", s.handleIssues)
 			r.Get("/issues/{identifier}", s.handleIssueDetail)
 			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)

@@ -57,6 +57,9 @@ func procProcesses(root string) ([]Process, error) {
 			continue
 		}
 		p := Process{PID: pid, Args: strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")}
+		if stat, err := os.ReadFile(filepath.Join(dir, "stat")); err == nil {
+			p.PPID = parseStatPPID(stat)
+		}
 		if comm, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
 			p.Name = strings.TrimSpace(string(comm))
 		}
@@ -80,6 +83,23 @@ func procProcesses(root string) ([]Process, error) {
 	return out, nil
 }
 
+// parseStatPPID reads the parent PID from /proc/<pid>/stat: the fourth
+// field, counted after the parenthesised command name (which may contain
+// spaces and parentheses itself).
+func parseStatPPID(stat []byte) int {
+	s := string(stat)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return 0
+	}
+	f := strings.Fields(s[i+1:])
+	if len(f) < 2 {
+		return 0
+	}
+	n, _ := atoiOK(f[1])
+	return n
+}
+
 // sameUID reports whether st (a /proc/<pid> directory) belongs to uid.
 // Unknown ownership counts as the same user (it is inspected, not skipped).
 func sameUID(st os.FileInfo, uid int) bool {
@@ -95,7 +115,7 @@ func sameUID(st os.FileInfo, uid int) bool {
 func psProcesses() ([]Process, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), inspectTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ps", "-x", "-ww", "-o", "pid=,args=", "-U", strconv.Itoa(os.Getuid()))
+	cmd := exec.CommandContext(ctx, "ps", "-x", "-ww", "-o", "pid=,ppid=,args=", "-U", strconv.Itoa(os.Getuid()))
 	raw, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("extsessions: ps: %w", err)
@@ -114,24 +134,25 @@ func psProcesses() ([]Process, error) {
 	return procs, nil
 }
 
-// parsePS parses `ps -o pid=,args=` output, skipping self. Arguments are
-// split on spaces (ps does not quote them), which is enough to recognise
-// the executable and a session ID argument.
+// parsePS parses `ps -o pid=,ppid=,args=` output, skipping self.
+// Arguments are split on spaces (ps does not quote them), which is enough
+// to recognise the executable and a session ID argument.
 func parsePS(raw []byte, self int) []Process {
 	var out []Process
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
-		pidText, args, ok := strings.Cut(strings.TrimSpace(sc.Text()), " ")
-		pid, isNum := atoiOK(pidText)
-		if !ok || !isNum || pid == self {
+		all := strings.Fields(sc.Text())
+		if len(all) < 3 {
 			continue
 		}
-		fields := strings.Fields(args)
-		if len(fields) == 0 {
+		pid, isNum := atoiOK(all[0])
+		ppid, ppidNum := atoiOK(all[1])
+		if !isNum || !ppidNum || pid == self {
 			continue
 		}
-		out = append(out, Process{PID: pid, Name: filepath.Base(fields[0]), Args: fields})
+		fields := all[2:]
+		out = append(out, Process{PID: pid, PPID: ppid, Name: filepath.Base(fields[0]), Args: fields})
 	}
 	return out
 }

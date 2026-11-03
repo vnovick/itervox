@@ -83,6 +83,7 @@ func TestProcProcessesReadsCwdAndOpenFiles(t *testing.T) {
 		}
 		_ = os.WriteFile(filepath.Join(dir, "cmdline"), []byte(strings.Join(args, "\x00")+"\x00"), 0o644)
 		_ = os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "stat"), []byte(strconv.Itoa(pid)+" ("+comm+" (x)) S 102 1 1 0"), 0o644)
 		_ = os.Symlink(cwd, filepath.Join(dir, "cwd"))
 		for fd, target := range fds {
 			_ = os.Symlink(target, filepath.Join(dir, "fd", fd))
@@ -100,6 +101,9 @@ func TestProcProcessesReadsCwdAndOpenFiles(t *testing.T) {
 		byPID[p.PID] = p
 	}
 	c := byPID[101]
+	if c.PPID != 102 {
+		t.Fatalf("PPID = %d, want 102 (read from stat after the command name)", c.PPID)
+	}
 	if c.Name != "claude" || c.Cwd != "/work/app" || len(c.Files) != 1 || c.Files[0] != "/home/u/.claude/projects/-work-app/s.jsonl" {
 		t.Fatalf("claude process = %+v", c)
 	}
@@ -109,8 +113,8 @@ func TestProcProcessesReadsCwdAndOpenFiles(t *testing.T) {
 }
 
 func TestParsePSAndLsof(t *testing.T) {
-	procs := parsePS([]byte("  1 /sbin/launchd\n 42 /usr/local/bin/claude --resume abc\n 99 ps -x\nbogus\n"), 99)
-	if len(procs) != 2 || procs[1].PID != 42 || procs[1].Name != "claude" || procs[1].Args[2] != "abc" {
+	procs := parsePS([]byte("  1     0 /sbin/launchd\n 42  7 /usr/local/bin/claude --resume abc\n 99 1 ps -x\nbogus\n"), 99)
+	if len(procs) != 2 || procs[1].PID != 42 || procs[1].PPID != 7 || procs[1].Name != "claude" || procs[1].Args[2] != "abc" {
 		t.Fatalf("parsePS = %+v", procs)
 	}
 	cwd, files := parseLsof([]byte("p42\nfcwd\ntDIR\nn/work/app\nftxt\ntREG\nn/usr/local/bin/claude\nf7w\ntREG\nn/Users/u/.claude/projects/x/s.jsonl\nf8u\ntIPv4\nnlocalhost:1\n"))
@@ -119,7 +123,7 @@ func TestParsePSAndLsof(t *testing.T) {
 	}
 }
 
-// Scanner.Discover attaches liveness to every discovered session.
+// Scanner.Scan attaches liveness to every discovered session.
 func TestScannerAttachesLiveness(t *testing.T) {
 	now := time.Now()
 	claude, _ := fixtures(t, now)
@@ -129,7 +133,7 @@ func TestScannerAttachesLiveness(t *testing.T) {
 			return []Process{{PID: 5, Name: "claude", Args: []string{"claude"}, Cwd: "/work/app/web"}}, nil
 		},
 	}
-	got, err := sc.Discover(now)
+	got, procs, err := sc.Scan(now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,5 +142,23 @@ func TestScannerAttachesLiveness(t *testing.T) {
 	}
 	if app := find(t, got, idClaudeApp); app.Running {
 		t.Fatalf("app session = %+v", app)
+	}
+	if web := find(t, got, idClaudeWeb); web.PID != 5 || len(procs) != 1 {
+		t.Fatalf("web session PID = %d, procs = %v: the process it rests on and the list are returned", web.PID, procs)
+	}
+}
+
+// The parent chain of a process, nearest first, stops at PID 1, an unknown
+// parent or a loop.
+func TestAncestorsWalksTheParentChain(t *testing.T) {
+	procs := []Process{{PID: 50, PPID: 40}, {PID: 40, PPID: 30}, {PID: 30, PPID: 1}, {PID: 7, PPID: 8}, {PID: 8, PPID: 7}}
+	if got := Ancestors(procs, 50); len(got) != 2 || got[0] != 40 || got[1] != 30 {
+		t.Fatalf("Ancestors(50) = %v", got)
+	}
+	if got := Ancestors(procs, 7); len(got) != 1 || got[0] != 8 {
+		t.Fatalf("Ancestors(7) = %v (a loop must stop)", got)
+	}
+	if got := Ancestors(procs, 99); len(got) != 0 {
+		t.Fatalf("Ancestors(unknown) = %v", got)
 	}
 }

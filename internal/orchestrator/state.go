@@ -115,8 +115,10 @@ type OrchestratorEvent struct { //nolint:revive
 	SessionMessage *SessionMessage
 	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
 	SessionDelivery *SessionDelivery
-	// ExternalSessions is a discovery pass (EventExternalSessionsDiscovered).
-	ExternalSessions []extsessions.Session
+	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
+	ExternalScan *ExternalScan
+	// Tmux is the payload of the tmux session events (#178).
+	Tmux *TmuxSessionEvent
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -761,6 +763,12 @@ type State struct {
 	// EventExternalSessionsDiscovered (discovery runs off the loop).
 	// Session-scoped, not persisted.
 	ExternalSessions []extsessions.Session
+	// TmuxSessions are the tmux sessions itervox started from the Sessions
+	// panel ("New session", #178), keyed by tmux session name. Event-loop
+	// state (sessions_tmux.go): reserved, started and ended by events, panes
+	// attached and ended sessions dropped by each discovery pass.
+	// Session-scoped, carried across WORKFLOW.md reloads, not persisted.
+	TmuxSessions map[string]*TmuxSession
 }
 
 // NewState initialises a State from a config snapshot.
@@ -813,5 +821,6 @@ func NewState(cfg *config.Config) State {
 		PendingReviews:     make(map[string]PendingReview),
 		OutboxSyncing:      make(map[string]struct{}),
 		SessionMessages:    make(map[string][]SessionMessage),
+		TmuxSessions:       make(map[string]*TmuxSession),
 	}
 }

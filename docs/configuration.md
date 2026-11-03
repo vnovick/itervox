@@ -557,7 +557,8 @@ hooks:
 Which Claude Code and Codex sessions **started by hand** on the daemon's host
 the [Sessions panel](https://itervox.dev/guides/sessions/#sessions-started-by-hand)
 lists (read-only, with their transcript and whether their CLI is still
-running). Read at startup.
+running), and whether the panel may control sessions running in tmux. Read at
+startup.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -565,6 +566,7 @@ running). Read at startup.
 | `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
 | `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
 
 ```yaml
 sessions:

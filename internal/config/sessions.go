@@ -35,6 +35,13 @@ type SessionsConfig struct {
 	// ExternalRoots are extra directories (besides the WORKFLOW.md
 	// directory) whose sessions the project scope lists.
 	ExternalRoots []string
+	// TmuxControl lets the Sessions panel type into hand-started sessions
+	// that run inside a tmux pane (sessions.tmux_control, #178): screen
+	// capture, text and allowlisted keys through internal/tmuxctl. Off by
+	// default: anyone holding the dashboard token could otherwise type
+	// into your terminals. Sessions itervox starts in tmux itself ("New
+	// session") are controllable either way.
+	TmuxControl bool
 }
 
 // parseSessionsConfig reads the sessions: block. An unknown scope falls
@@ -44,6 +51,7 @@ func parseSessionsConfig(m map[string]any) SessionsConfig {
 		External:            boolField(m, "external", true),
 		ExternalWindowHours: positiveIntField(m, "external_window_hours", DefaultSessionsExternalWindowHours),
 		ExternalScope:       strings.TrimSpace(strField(m, "external_scope", SessionsScopeProject)),
+		TmuxControl:         boolField(m, "tmux_control", false),
 	}
 	for _, r := range strSliceField(m, "external_roots", nil) {
 		if r = strings.TrimSpace(r); r != "" {

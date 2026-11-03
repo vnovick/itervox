@@ -25,7 +25,7 @@ type fakeExternalSource struct {
 	running  map[string]string
 }
 
-func (f *fakeExternalSource) Discover(time.Time) ([]extsessions.Session, error) {
+func (f *fakeExternalSource) Discover(time.Time) (orchestrator.ExternalScan, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := append([]extsessions.Session(nil), f.sessions...)
@@ -34,7 +34,7 @@ func (f *fakeExternalSource) Discover(time.Time) ([]extsessions.Session, error) 
 			out[i].Running, out[i].RunningReason = true, reason
 		}
 	}
-	return out, nil
+	return orchestrator.ExternalScan{Sessions: out}, nil
 }
 
 func extSession(id, backend, cwd string) extsessions.Session {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/extsessions"
 	"github.com/vnovick/itervox/internal/metrics"
 )
 
@@ -141,6 +142,10 @@ type AgentSession struct {
 	// InUseReason says why a hand-started session counts as still running
 	// (Status SessionStatusRunning, Owner external).
 	InUseReason string
+	// TmuxPane is the tmux pane the session runs in (a hand-started session
+	// matched by process ancestry, or a tmux session itervox started); zero
+	// when none.
+	TmuxPane extsessions.TmuxPane
 }
 
 // Key is the id clients address the session by: the CLI session ID, or the
@@ -210,13 +215,14 @@ func Sessions(snap State, liveSteering bool) []AgentSession {
 		}
 		row := AgentSession{
 			ID: e.ID, Owner: SessionOwnerExternal, Title: e.Title, Backend: e.Backend, Cwd: e.Cwd,
-			Status: SessionStatusExited, StartedAt: e.StartedAt, UpdatedAt: e.UpdatedAt,
+			Status: SessionStatusExited, StartedAt: e.StartedAt, UpdatedAt: e.UpdatedAt, TmuxPane: e.TmuxPane,
 		}
 		if e.Running {
 			row.Status, row.InUseReason = SessionStatusRunning, e.RunningReason
 		}
 		out = append(out, row)
 	}
+	out = append(out, tmuxSessionRows(snap)...)
 	SortSessions(out)
 	return out
 }

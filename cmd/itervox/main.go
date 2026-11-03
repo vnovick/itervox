@@ -870,7 +870,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
-	wireExternalSessions(orch, cfg, workflowPath, demoSession != nil) // #178 step 3
+	sessTmux := wireSessions(orch, cfg, workflowPath, demoSession != nil) // #178
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	// unified-dependency-graph Task 6 — operator deps-override dismissals live
 	// under the project's .itervox/ dir (not logDir) so they persist alongside
@@ -1215,7 +1215,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			ReportClientError: clientErrorReporter(orch),
 			Webhooks:          webhooks, // #131: signed tracker deliveries
 			// #178: the Sessions panel API.
-			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering},
+			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)
@@ -1291,7 +1291,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
 	<-commentCommandsDone
 	final := orch.Snapshot()
-	failureCarry.store(final.RecentFailures, final.FailureAcks)
+	carryRunState(final) // RecentFailures + acks (CORE-046), tmux sessions (#178)
 	return runErr
 }
 

@@ -83,6 +83,7 @@ var (
 	trackerRequests = newCounterVec("adapter", "outcome")
 	webhooks        = newCounterVec("tracker", "result")
 	storePulls      = newCounterVec("trigger")
+	tmuxSends       = newCounterVec("kind")
 	goroutinePanics atomic.Uint64
 	eventsDropped   atomic.Uint64
 )
@@ -161,6 +162,12 @@ func WebhookCount(tracker, result string) uint64 { return webhooks.get(tracker, 
 // StorePullCount reads one store pull counter. A cross-package test reader;
 // kept in production code (deadcode allowlist).
 func StorePullCount(trigger string) uint64 { return storePulls.get(trigger).Load() }
+
+// TmuxSend counts one write the Sessions panel made into a tmux pane (#178)
+// by kind: "text" (a paste, with or without Enter) or "key".
+func TmuxSend(kind string) {
+	tmuxSends.get(kind).Add(1)
+}
 
 // GoroutinePanic counts one panic recovered on a daemon goroutine. The site
 // is in the panic's own log line; the counter is unlabelled so an alert can
