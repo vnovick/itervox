@@ -41,7 +41,7 @@ The repository-level checks of [`itervox doctor`](/cli/#itervox-doctor--check-a-
 | Check | Passes when | Otherwise |
 |---|---|---|
 | WORKFLOW.md schema 2 marker | the workflow loads and declares `itervox_schema_version: 2` | **fail** — run `itervox init --update --workflow WORKFLOW.md` |
-| `.gitignore` carve-outs | the root `.gitignore` does not ignore `.itervox/`, or keeps `.itervox/agents/**` and `.itervox/handoff/**` committable | **warn** — profile files and agent handoffs are not committed; `itervox init --update` adds the lines |
+| `.gitignore` carve-outs | the root `.gitignore` does not ignore `.itervox/`, or keeps `.itervox/agents/**`, `.itervox/handoff/**` and `.itervox/memory.json` committable | **warn** — profile files, agent handoffs or the shared memory are not committed; `itervox init --update` adds the lines |
 | CLAUDE.md / AGENTS.md | each backend in use has its repository instruction file (Claude Code reads `CLAUDE.md`, Codex `AGENTS.md`) | **warn** — add the missing file at the repository root |
 | Shared bare clone fetch refspec | no shared bare clone, or its fetch works on the current refspec | **fail** when the last fetch failed; **warn** on the old refspec (migrated automatically) or a stale fetch |
 | Skill and subagent references | every skill and subagent a profile prompt names exists for its backend | **warn** — fix the name or add the skill / subagent |

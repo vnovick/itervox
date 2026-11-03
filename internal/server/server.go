@@ -111,6 +111,8 @@ type HistoryRow struct {
 	// RulesHash / RuleIDs name the rule set the run used (#157).
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// MemoryIDs are the memory entries the run's prompt carried (#202).
+	MemoryIDs []string `json:"memoryIds,omitempty"`
 	// RunID names the run (#125, #186); empty for runs recorded before it was kept.
 	RunID string `json:"runId,omitempty"`
 	// PromptDigest identifies the prompt version the run was dispatched with
@@ -131,7 +133,9 @@ type HistoryPromptParts struct {
 	Soul         string `json:"soul,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 	Rules        string `json:"rules,omitempty"`
-	Template     string `json:"template,omitempty"`
+	// Memory is the digest of the run's memory block (#202).
+	Memory   string `json:"memory,omitempty"`
+	Template string `json:"template,omitempty"`
 }
 
 // HistorySteer is one operator message delivered to a run (#178, #186).
@@ -901,6 +905,10 @@ type StateSnapshot struct {
 	// sorted by identifier. Describes the NEXT dispatch; the running
 	// session's backend stays on RunningRow.Backend.
 	AutoSwitches []AutoSwitchRow `json:"autoSwitches,omitempty"`
+	// ProposedLessons is how many proposed lessons wait in the Memory
+	// page's review queue (#203): the Memory nav item's count. Omitted when
+	// none.
+	ProposedLessons int `json:"proposedLessons,omitempty"`
 }
 
 // Backend health statuses carried by BackendHealthRow.Status.
@@ -1450,6 +1458,11 @@ type Config struct {
 	SkillsClient SkillsClient
 	// Rules backs the Rules editor endpoints (#157). Nil → 503.
 	Rules RulesClient
+	// Memory backs the Memory page endpoints (#202). Nil → 503.
+	Memory MemoryClient
+	// Guardrails backs the guardrail endpoints of agent shims and hooks
+	// (#204). Nil → 501.
+	Guardrails GuardrailsClient
 	// SettingsLayers backs the schema-driven Settings page's layer
 	// endpoints (#158). Nil → 503 (the schema endpoint always answers).
 	SettingsLayers SettingsLayersClient
@@ -1544,6 +1557,8 @@ type Server struct {
 	actionTokens *agentactions.Store
 	skills       SkillsClient
 	rules        RulesClient
+	memory       MemoryClient
+	guardrails   GuardrailsClient
 	// settingsLayers mirrors Config.SettingsLayers (#158).
 	settingsLayers SettingsLayersClient
 	depsAnalyzer   DepsAnalyzer
@@ -1605,6 +1620,8 @@ func New(cfg Config) *Server {
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
 		rules:          cfg.Rules,
+		memory:         cfg.Memory,
+		guardrails:     cfg.Guardrails,
 		settingsLayers: cfg.SettingsLayers,
 		depsAnalyzer:   cfg.DepsAnalyzer,
 
@@ -1705,6 +1722,10 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
+		// #204: guardrail shims and hooks, gated by the run's guardrail token.
+		r.Post("/agent-actions/{identifier}/guardrail/events", s.handleGuardrailEvent)
+		r.Post("/agent-actions/{identifier}/guardrail/approvals", s.handleGuardrailApprovalRequest)
+		r.Get("/agent-actions/{identifier}/guardrail/approvals/{id}", s.handleGuardrailApprovalStatus)
 		// Tracker webhooks (#131): signed by the webhook secret, not the
 		// bearer token.
 		r.Post("/webhooks/{tracker}", s.handleWebhook)
@@ -1815,6 +1836,15 @@ func (s *Server) routes() {
 			r.Get("/rules", s.handleGetRules)
 			r.Get("/rules/preview", s.handlePreviewRules)
 			r.Put("/rules/{layer}", s.handleSaveRules)
+			// Memory page (#202).
+			r.Get("/memory", s.handleListMemory)
+			r.Post("/memory", s.handleCreateMemory)
+			r.Put("/memory/{id}", s.handleUpdateMemory)
+			r.Delete("/memory/{id}", s.handleDeleteMemory)
+			r.Post("/memory/{id}/pin", s.handlePinMemory)
+			r.Post("/memory/{id}/promote", s.handlePromoteMemory)
+			r.Post("/memory/{id}/approve", s.handleApproveLesson) // #203
+			r.Post("/memory/{id}/reject", s.handleRejectLesson)   // #203
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)

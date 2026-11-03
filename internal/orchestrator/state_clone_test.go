@@ -30,8 +30,13 @@ var cloneAllowlist = map[string]string{
 	// (rules.Set.IDs) and never appended to or written through. Evidence:
 	// grep -rnE 'RuleIDs(\[[^]]*\])? *=|append\([^,]*RuleIDs' internal/orchestrator → only
 	// the startRun assignment and struct copies.
-	"RunEntry.RuleIDs":      "immutable []string (set once at dispatch, never written through)",
-	"RunRecord.RuleIDs":     "immutable []string (copied from RunEntry.RuleIDs, never written through)",
+	"RunEntry.RuleIDs":  "immutable []string (set once at dispatch, never written through)",
+	"RunRecord.RuleIDs": "immutable []string (copied from RunEntry.RuleIDs, never written through)",
+	// #202: a run's memory ids are set once by startRun from a fresh slice
+	// (memory.Selection.IDs). Evidence: grep -rnE
+	// 'MemoryIDs(\[[^]]*\])? *=|append\([^,]*MemoryIDs' internal/orchestrator →
+	// only the startRun assignment and the CompletedRun copy.
+	"RunEntry.MemoryIDs":    "immutable []string (set once at dispatch, never written through)",
 	"Issue.Priority":        "immutable *int from the tracker adapter",
 	"Issue.BranchName":      "immutable *string from the tracker adapter",
 	"Issue.Description":     "immutable *string from the tracker adapter",

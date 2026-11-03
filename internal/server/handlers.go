@@ -829,7 +829,13 @@ func (s *Server) handleAgentProvideInput(w http.ResponseWriter, r *http.Request)
 	// intentionally NOT gated on agent.inline_input (see handleProvideInput's
 	// comment) — that policy difference is preserved; only the busy/not-found
 	// mapping changes (CORE-005).
-	if err := s.client.ProvideInput(identifier, body.Message); err != nil {
+	// #204: an agent never answers a guardrail approval, so this route
+	// goes through the agent-flagged path when guardrails are wired.
+	provide := s.client.ProvideInput
+	if s.guardrails != nil {
+		provide = s.guardrails.ProvideAgentInput
+	}
+	if err := provide(identifier, body.Message); err != nil {
 		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}

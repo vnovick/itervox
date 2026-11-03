@@ -15,6 +15,7 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -328,6 +329,13 @@ type Orchestrator struct {
 	// Set via SetAgentActionTokens before Run.
 	agentActionTokens *agentactions.Store
 
+	// guardApprovals holds the guardrail approval requests of running
+	// agents (#204). Concurrency-safe on its own; not State.
+	guardApprovals *guardrails.Approvals
+	// guardrailExe overrides the binary guardrail shims run (tests).
+	// Set before Run.
+	guardrailExe string
+
 	// appSessionID is a unique ID for this daemon invocation, used to group
 	// all history entries produced during a single run of the binary.
 	// Set via SetAppSessionID before calling Run.
@@ -359,6 +367,17 @@ type Orchestrator struct {
 	// retarget a stacked pull request after its dependent was restacked onto
 	// workspace.base_branch (#73), so Run waits for them like the comments.
 	prRetargetWg sync.WaitGroup
+
+	// memoryWg tracks the goroutines that record memory usage (#202):
+	// EventMemoryUsed hands the lastUsed/useCount rewrite of the memory
+	// files to one, and Run waits for them before returning.
+	memoryWg sync.WaitGroup
+	// lessonWg tracks the lesson-drafting goroutines (#203): detection on
+	// the event loop hands drafting and the proposal write to a goroutine
+	// that reports back with EventLessonDrafted. Run joins it after the
+	// loop exits (the drafting call's context is Run's, so it ends
+	// promptly).
+	lessonWg sync.WaitGroup
 
 	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
 	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.
@@ -451,6 +470,7 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		commentCounts:     make(map[string]int),
 		sshHostDescs:      sshHostDescs,
 		daemonInstanceID:  newDaemonInstanceID(),
+		guardApprovals:    guardrails.NewApprovals(),
 	}
 }
 

@@ -97,11 +97,21 @@ impl Builder {
 /// The dashboard's Repo Analysis page (#200): `{base}repo`. A remote
 /// daemon's link is rebased onto its tunnel when it is opened.
 pub fn repo_analysis_link(base_url: &str) -> String {
+    page_link(base_url, "repo")
+}
+
+/// The dashboard's Memory page (#202): `{base}memory`. Rebased onto a remote
+/// daemon's tunnel like the Repo Analysis link.
+pub fn memory_link(base_url: &str) -> String {
+    page_link(base_url, "memory")
+}
+
+fn page_link(base_url: &str, page: &str) -> String {
     let mut b = base_url.to_string();
     if !b.ends_with('/') {
         b.push('/');
     }
-    format!("{b}repo")
+    format!("{b}{page}")
 }
 
 /// Builds the menu for the current projects and recent alerts.
@@ -154,6 +164,14 @@ pub fn build_menu<'a>(
                     url: repo_analysis_link(
                         &v.record.as_ref().map(|r| r.base_url()).unwrap_or_default(),
                     ),
+                },
+            ),
+            b.item(
+                "Memory",
+                v.running() && !busy,
+                MenuAction::OpenUrl {
+                    project: v.key.clone(),
+                    url: memory_link(&v.record.as_ref().map(|r| r.base_url()).unwrap_or_default()),
                 },
             ),
             MenuEntry::Separator,
@@ -296,6 +314,14 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                 MenuAction::OpenUrl {
                     project: d.key.clone(),
                     url: repo_analysis_link(&d.url().unwrap_or_default()),
+                },
+            ),
+            b.item(
+                "Memory",
+                up,
+                MenuAction::OpenUrl {
+                    project: d.key.clone(),
+                    url: memory_link(&d.url().unwrap_or_default()),
                 },
             ),
             b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
@@ -443,6 +469,32 @@ mod tests {
         );
     }
 
+    /// #202: each daemon's submenu opens its dashboard's Memory page, the
+    /// same way as Repo Analysis: OpenUrl with the project key, through the
+    /// usual token handoff.
+    #[test]
+    fn memory_item_opens_the_memory_route() {
+        let mut up = view("/up", true);
+        if let Some(r) = up.record.as_mut() {
+            r.url = "http://127.0.0.1:8090/".into();
+        }
+        let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
+        let (id, enabled) = find(&spec, "Memory", "up").unwrap();
+        assert!(enabled);
+        assert_eq!(
+            spec.actions[id],
+            MenuAction::OpenUrl {
+                project: "/up".into(),
+                url: "http://127.0.0.1:8090/memory".into(),
+            }
+        );
+        assert!(!find(&spec, "Memory", "down").unwrap().1);
+        assert_eq!(
+            memory_link("http://127.0.0.1:50001"),
+            "http://127.0.0.1:50001/memory"
+        );
+    }
+
     #[test]
     fn a_pending_operation_disables_the_controls() {
         let mut v = view("/up", true);
@@ -454,6 +506,7 @@ mod tests {
             "Restart",
             "Open Dashboard",
             "Repo Analysis",
+            "Memory",
         ] {
             assert!(!find(&spec, l, "up").unwrap().1, "{l}");
         }
@@ -621,6 +674,12 @@ mod tests {
             })
             .collect();
         assert_eq!(repo.len(), 2, "a Repo Analysis item per remote daemon");
+        let memory = spec
+            .actions
+            .values()
+            .filter(|a| matches!(a, MenuAction::OpenUrl { url, .. } if url.ends_with("/memory")))
+            .count();
+        assert_eq!(memory, 2, "a Memory item per remote daemon");
         assert!(spec
             .actions
             .values()
