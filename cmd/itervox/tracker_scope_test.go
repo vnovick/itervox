@@ -74,8 +74,8 @@ func validWorkflow(t *testing.T, path string) *config.Config {
 }
 
 // TestTrackerScopeSaveCombinations (#182): the dashboard's combined scope
-// filter saves any combination of projects, assignee and labels to
-// WORKFLOW.md — what the file then loads is what memory holds — resolving
+// filter saves any combination of projects, assignee and labels (#239: to
+// the settings file) — what the config then loads is what memory holds — resolving
 // the assignee first; an unknown user is refused (422) with file and memory
 // unchanged.
 func TestTrackerScopeSaveCombinations(t *testing.T) {
@@ -113,33 +113,28 @@ func TestTrackerScopeSaveCombinations(t *testing.T) {
 			}
 		})
 	}
+	// #239: the scope keys live in the settings file; WORKFLOW.md no longer
+	// holds them, and a cleared key is removed (it used to be commented out).
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, 1, strings.Count(string(data), "assignee:"), "the assignee line is reused, not repeated")
-	assert.Contains(t, string(data), `# labels: ["agent"]`, "cleared keys are commented out with their last value")
+	assert.NotContains(t, string(data), "project_slug:")
+	assert.NotContains(t, string(data), "assignee:")
+	settingsPath := config.ProjectSettingsPath(path)
+	settings, err := config.ReadSettingsFile(settingsPath)
+	require.NoError(t, err)
+	tr, _ := settings["tracker"].(map[string]any)
+	assert.NotContains(t, tr, "assignee", "a cleared key is removed")
+	assert.NotContains(t, tr, "labels")
 
-	before := string(data)
+	before, settingsBefore := string(data), readString(t, settingsPath)
 	fsm.resolveErr = tracker.ErrAssigneeNotFound
 	err = m.SetScope(t.Context(), server.TrackerScope{Assignee: "nobody@example.com"})
 	require.ErrorIs(t, err, server.ErrScopeAssigneeNotFound)
 	data, err = os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, before, string(data), "an unresolvable assignee writes nothing")
+	assert.Equal(t, settingsBefore, readString(t, settingsPath))
 	assert.Empty(t, fsm.Scope().Assignee, "and changes nothing in memory")
-}
-
-// TestTUIPickerScope (#182): the TUI picker's "assigned to" row ANDs with
-// the selected projects and keeps the labels.
-func TestTUIPickerScope(t *testing.T) {
-	cfg := &config.Config{}
-	fsm := &fakeScopeManager{scope: tracker.Scope{Labels: []string{"agent"}}}
-	assert.Equal(t, tracker.Scope{Projects: []string{"alpha"}, Assignee: "me", Labels: []string{"agent"}},
-		tuiPickerScope(fsm, cfg, []string{"alpha", "__assignee__"}))
-	fsm.scope.Assignee = "ada@example.com"
-	assert.Equal(t, tracker.Scope{Projects: []string{}, Assignee: "ada@example.com", Labels: []string{"agent"}},
-		tuiPickerScope(fsm, cfg, []string{"__assignee__"}), "the current assignee is kept")
-	assert.Equal(t, tracker.Scope{Projects: []string{"alpha"}, Labels: []string{"agent"}},
-		tuiPickerScope(fsm, cfg, []string{"alpha"}), "unchecked: anyone")
 }
 
 // scopePollFake is a poll tracker with a combined scope: only the issues

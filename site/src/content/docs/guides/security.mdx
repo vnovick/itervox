@@ -33,7 +33,7 @@ below it.
 | Scope | Can |
 |---|---|
 | `viewer` | Watch: every `GET` route and the live SSE streams (board, logs, sessions, history, settings values). Secrets are redacted: inline env-assignment values in agent and profile commands (`ANTHROPIC_API_KEY=*** claude`), credentials in URLs, known key shapes, and the raw text of settings files. |
-| `operator` | Run the fleet: dispatch and issue control (cancel, resume, terminate, move state, profile and backend overrides), steering messages, input replies and approvals, pause/resume all dispatch, memory edits, clearing logs, outbox retries. Same redaction as viewer. |
+| `operator` | Run the fleet: dispatch and issue control (cancel, resume, terminate, move state, profile and backend overrides), steering messages, line comments and PR reviews from the Changes tab (#238), input replies and approvals, pause/resume all dispatch, memory edits, clearing logs, outbox retries. Same redaction as viewer. |
 | `admin` | Everything: settings, tokens, tmux control (New session, keys, kill), workspace reset, the automations configuration and the rules editor. Sees secrets as written. |
 
 Tracker API keys and webhook secrets are never served by any route at any
@@ -205,7 +205,9 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/issues/{identifier}/dismiss-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/failures/ack` | operator |
 | `DELETE` | `/api/v1/issues/{identifier}/logs` | operator |
+| `POST` | `/api/v1/issues/{identifier}/pr-review` | operator (one GitHub review, never merges, #238) |
 | `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
+| `POST` | `/api/v1/issues/{identifier}/review-comments` | operator (to the running agent or the PR, #238) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |

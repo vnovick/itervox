@@ -41,7 +41,6 @@ func TestListenAcceptsIPv4IPv6AndNames(t *testing.T) {
 	assert.Equal(t, "[::]:0", bindAddr("::", 0))
 	assert.Equal(t, "127.0.0.1:8090", bindAddr("127.0.0.1", 8090))
 	assert.Equal(t, "localhost:8090", bindAddr("localhost", 8090))
-	assert.Equal(t, "http://[::1]:8090/", dashboardBaseURL("[::1]", 8090))
 }
 
 func isIPv6Form(h string) bool { return len(h) > 0 && (h[0] == '[' || h[0] == ':' || h == "::1") }

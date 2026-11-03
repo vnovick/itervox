@@ -4,19 +4,17 @@ import (
 	"os"
 )
 
-// fatalExit terminates the process with the given exit code, restoring the
-// terminal to a sane mode if stdin is a TTY. This is the SAFE alternative to
-// raw os.Exit for any code path that may run AFTER `go statusui.Run` puts the
-// terminal into alt-screen / raw mode — without the cooked-mode restore, the
-// shell prompt comes back garbled (no echo, broken line discipline).
+// fatalExit terminates the process with the given exit code after running
+// onFatalExit. It is the only way cmd/itervox exits explicitly
+// (`make no-os-exit`).
 //
-// The main()-level `defer recover()` in main.go (T-12) handles the panic case;
-// fatalExit covers the explicit-exit case. Callers that exit BEFORE statusui
-// has been launched are equally safe to use this — the stty call is a no-op
-// when the TTY is already in cooked mode.
+// It used to also run `stty sane`, for exits after the terminal UI had put
+// the terminal into raw mode. The terminal UI is gone (#240) and nothing in
+// cmd/itervox changes terminal modes any more (`itervox watch` never does;
+// the hidden-input prompts of `itervox secret` and `itervox hub slack setup`
+// restore echo themselves before they return), so fatalExit no longer
+// touches the terminal. It stays for the runtime-file cleanup below.
 //
-// Pair with the CLAUDE.md invariant: any new os.Exit() outside this file is
-// a regression candidate (see scripts/check-no-os-exit.sh).
 // onFatalExit, when set, runs immediately before the process exits.
 //
 // os.Exit does not run deferred functions, so the runtime-file cleanup
@@ -39,14 +37,13 @@ func fatalExit(code int) {
 		// deferred copy on the normal path is harmless.
 		onFatalExit()
 	}
-	restoreTerminal()
 	os.Exit(code)
 }
 
-// exitWithoutTerminalRestore exits with code and nothing else: no cleanup
-// hook, no `stty sane`. Only for the guardrail shim and hook entrypoints
-// (#204), which run inside an agent's terminal — often a raw-mode
-// interactive CLI in tmux — and must leave it exactly as they found it.
-func exitWithoutTerminalRestore(code int) {
+// exitWithoutCleanup exits with code and nothing else: no cleanup hook.
+// Only for the guardrail shim and hook entrypoints (#204), which run inside
+// an agent's terminal and must leave everything exactly as they found it,
+// whatever fatalExit does in the future.
+func exitWithoutCleanup(code int) {
 	os.Exit(code)
 }

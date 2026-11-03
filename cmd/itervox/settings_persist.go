@@ -17,14 +17,18 @@ import (
 type setting = config.SettingAssignment
 
 // persistSettings is the one persistence step of a dashboard/TUI save of
-// layered settings (#129: agent.*, polling.*, server.*, workspace.*). Every
-// key goes to the PROJECT settings file, .itervox/settings.jsonc next to
-// WORKFLOW.md, with config.SetSettings, which keeps the file's comments and
-// creates it when missing. WORKFLOW.md outranks that file, so the same save
-// then removes each key, and its deprecated alias spelling, from WORKFLOW.md's
-// front matter: left there, it would override the saved value at the next
-// load. extra mutators (the profiles block, automations) ride in that same
-// single WORKFLOW.md write.
+// layered settings (#129, #239: every config.LayeredSections key — agent,
+// automations, dependencies, hooks, hub, polling, server, tracker,
+// workspace). Every key goes to one settings file with config.SetSettings,
+// which keeps the file's comments and creates it when missing: the
+// project-local file (.itervox/settings.local.jsonc) when it already sets one
+// of the keys — the layer the operator chose for them, which a project-file
+// value would not override — else the PROJECT settings file,
+// .itervox/settings.jsonc next to WORKFLOW.md (settingsSaveLayer). The same
+// save then removes each key, and its deprecated alias spelling, from
+// WORKFLOW.md's front matter: the settings file wins over it (#239), so a
+// copy left there would only be reported as a conflict. extra mutators (the
+// profiles block) ride in that same single WORKFLOW.md write.
 //
 // The two files move together: JSONC first, then WORKFLOW.md. When the
 // WORKFLOW.md step fails, the JSONC file is put back to its previous bytes,
@@ -33,11 +37,13 @@ type setting = config.SettingAssignment
 // returned alongside the WORKFLOW.md error. Callers change memory only after
 // this returns nil, so a failed save leaves memory untouched.
 //
-// Neither write reloads the daemon (CORE-116). The watcher watches only
-// WORKFLOW.md, and the key removal is a registered self-write; when no key
-// is present in WORKFLOW.md and there is no extra mutator, nothing is written
-// to it at all. A later reload (an operator edit of WORKFLOW.md) re-reads the
-// settings layers through config.Load, so the saved value survives it.
+// Neither write reloads the daemon (CORE-116, #245). The watcher watches
+// WORKFLOW.md and the settings files, and both writes are registered
+// self-writes (the settings file by config.SetSettings, the key removal by
+// the workflow patcher); when no key is present in WORKFLOW.md and there is
+// no extra mutator, nothing is written to it at all. A later reload (an
+// operator edit of either file) re-reads the settings layers through
+// config.Load, so the saved value survives it.
 //
 // The caller holds beginSettingsSave, which serializes it against every
 // other save and fences it against a reload.
@@ -46,8 +52,29 @@ func persistSettings(workflowPath string, settings []setting, extra ...workflow.
 	for _, s := range settings {
 		remove = append(remove, s.Key)
 	}
-	return persistLayer(workflowPath, config.ProjectSettingsPath(workflowPath),
+	for _, s := range settings {
+		if s.Key == "automations" {
+			remove = append(remove, "schedules") // the legacy spelling; automations replace it
+		}
+	}
+	return persistLayer(workflowPath, settingsSaveLayer(workflowPath, settings),
 		func(path string) error { return config.SetSettings(path, settings...) }, nil, remove, extra...)
+}
+
+// settingsSaveLayer is the file a dashboard/TUI save of settings writes: the
+// project-local file when it already sets one of their keys, else the project
+// file. A local file that does not parse is left alone (the project file is
+// written, and the load reports the broken file).
+func settingsSaveLayer(workflowPath string, settings []setting) string {
+	local := config.LocalSettingsPath(workflowPath)
+	if data, err := config.ReadSettingsFile(local); err == nil && data != nil {
+		for _, s := range settings {
+			if config.SettingsDataSets(data, s.Key) {
+				return local
+			}
+		}
+	}
+	return config.ProjectSettingsPath(workflowPath)
 }
 
 // persistLayer is persistSettings for any settings layer file (#158): write
@@ -106,14 +133,24 @@ func persistLayer(workflowPath, jsonc string, write func(path string) error, che
 }
 
 // restoreProjectSettings puts a settings layer file back the way
-// persistLayer found it.
+// persistLayer found it. The restore is registered as this process's own
+// write (#245), like the save it undoes, so the watcher reloads for neither.
+// It is registered from the bytes on disk just before the restore: if those
+// are not what the save wrote (something else wrote the file in between),
+// the chain breaks and the watcher reloads, which is the safe outcome.
 func restoreProjectSettings(path string, before []byte, existed, dirExisted bool) error {
+	cur, curErr := os.ReadFile(path)
 	if existed {
-		return atomicfs.WriteFile(path, before, 0o644)
+		if err := atomicfs.WriteFile(path, before, 0o644); err != nil {
+			return err
+		}
+		workflow.RecordSelfWrite(path, cur, curErr == nil, before, true)
+		return nil
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	workflow.RecordSelfWrite(path, cur, curErr == nil, nil, false)
 	if !dirExisted {
 		_ = os.Remove(filepath.Dir(path)) // only if empty; a leftover empty dir is harmless
 	}

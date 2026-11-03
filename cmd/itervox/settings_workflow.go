@@ -129,8 +129,8 @@ func removeAutomationsForProfile(
 // to .itervox/settings.jsonc (#129, see persistSettings). Both are written
 // explicitly, "" and false included, so a value in the user settings file
 // cannot show through a cleared reviewer.
-func persistReviewerConfig(path, profile string, autoReview bool, extra ...workflow.Mutator) error {
-	return persistSettings(path, reviewerSettings(profile, autoReview), extra...)
+func persistReviewerConfig(path, profile string, autoReview bool) error {
+	return persistSettings(path, reviewerSettings(profile, autoReview))
 }
 
 func reviewerSettings(profile string, autoReview bool) []setting {
@@ -143,14 +143,21 @@ func reviewerSettings(profile string, autoReview bool) []setting {
 // persistTrackerStates is a self-write (CORE-116/CORE-160): the caller
 // applies the lists in memory through SetTrackerStatesCfg AND the tracker
 // client's tracker.StateListSetter, so the save needs no reload and never
-// stops an in-flight turn. tracker.* is not a layered section, so it stays in
-// WORKFLOW.md.
+// stops an in-flight turn. tracker.* is a layered section (#239): the lists
+// go to the settings file (persistSettings) and leave WORKFLOW.md.
 func persistTrackerStates(path string, active, terminal []string, completion string) error {
-	return workflow.SetFrontMatterKeys(path,
-		workflow.KeyValue{Key: "tracker.active_states", Value: active},
-		workflow.KeyValue{Key: "tracker.terminal_states", Value: terminal},
-		workflow.KeyValue{Key: "tracker.completion_state", Value: completion},
-	)
+	return persistSettings(path, []setting{
+		{Key: "tracker.active_states", Value: nonNilStrings(active)},
+		{Key: "tracker.terminal_states", Value: nonNilStrings(terminal)},
+		{Key: "tracker.completion_state", Value: completion},
+	})
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // persistMaxWorkers saves agent.max_concurrent_agents (dashboard SetWorkers,
@@ -180,16 +187,17 @@ func persistMaxRetries(path string, n int) error {
 	return persistSettings(path, []setting{{Key: "agent.max_retries", Value: n}})
 }
 
-// persistFailedState writes WORKFLOW.md: tracker.* is not layered. An empty
-// name ("pause, do not move") removes the key.
+// persistFailedState saves tracker.failed_state to the settings file
+// (#239: tracker.* is layered). An empty name ("pause, do not move")
+// removes the key.
 func persistFailedState(path, stateName string) error {
-	return workflow.SetFrontMatterKeys(path, workflow.KeyValue{Key: "tracker.failed_state", Value: nonEmpty(stateName)})
+	return persistSettings(path, []setting{{Key: "tracker.failed_state", Value: nonEmpty(stateName)}})
 }
 
-// persistDepsAnalysisMode writes dependencies.analysis_mode to WORKFLOW.md
-// (dependencies.* is not layered); "" removes it.
+// persistDepsAnalysisMode saves dependencies.analysis_mode to the settings
+// file (#239: dependencies.* is layered); "" removes it.
 func persistDepsAnalysisMode(path, mode string) error {
-	return workflow.SetFrontMatterKeys(path, workflow.KeyValue{Key: "dependencies.analysis_mode", Value: nonEmpty(mode)})
+	return persistSettings(path, []setting{{Key: "dependencies.analysis_mode", Value: nonEmpty(mode)}})
 }
 
 // nonEmpty is s, or nil (remove the key) when s is empty.

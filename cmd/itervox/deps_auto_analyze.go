@@ -287,8 +287,8 @@ func (s *depsAnalyzerService) jobInFlight() bool {
 // evaluates evaluateAutoAnalyze, and enqueues an "auto"-triggered analysis
 // pass when it fires. Started from run() in main.go beside startAutomations.
 //
-// snapshot mirrors the heartbeat/TUI wiring pattern
-// (newHeartbeatWriter/statusui.Run both take the same `func()
+// snapshot mirrors the heartbeat wiring pattern
+// (newHeartbeatWriter takes the same `func()
 // server.StateSnapshot` closure buildSnapFunc returns) rather than reading
 // orch.Snapshot() directly, because evaluateAutoAnalyze's signal rules need
 // the server-shaped CandidateSeen rows, not raw orchestrator.State.

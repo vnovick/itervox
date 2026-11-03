@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # check-no-os-exit.sh — guard against new os.Exit() calls outside cmd/itervox/exit.go.
 #
-# Use fatalExit(code) instead. fatalExit restores the terminal to a sane mode
-# before exiting, which is required for any code path that might run after
-# `go statusui.Run` puts the terminal into raw mode. Pre-statusui exit sites
-# also use fatalExit for consistency (the stty call is a no-op in cooked mode).
+# Use fatalExit(code) instead. fatalExit runs the runtime-file cleanup
+# (onFatalExit: daemon.pid, dashboard_url, HEARTBEAT.md) that os.Exit would
+# skip, so every explicit exit leaves no stale evidence of a live daemon.
 #
 # CLAUDE.md invariant: no `os.Exit` in cmd/itervox/ outside exit.go.
 #
@@ -27,7 +26,7 @@ if [ -n "$violations" ]; then
   echo "" >&2
   echo "$violations" >&2
   echo "" >&2
-  echo "See cmd/itervox/exit.go for rationale (TTY-recovery for post-statusui-Run paths)." >&2
+  echo "See cmd/itervox/exit.go for rationale (the runtime-file cleanup os.Exit skips)." >&2
   exit 1
 fi
 

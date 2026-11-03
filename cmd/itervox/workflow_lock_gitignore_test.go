@@ -47,7 +47,7 @@ func TestRewriteServerPortSerializesWithLockedPatchers(t *testing.T) {
 				<-release
 				return front, nil
 			},
-			workflow.MutateSetKey("agent.max_concurrent_agents", 9))
+			replaceFrontLine("  max_concurrent_agents: 3", "  max_concurrent_agents: 9"))
 	}()
 	<-holding
 

@@ -98,17 +98,4 @@ func TestSupervisedAnnounceNeverPrintsToken(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(logsDir, apiTokenFileName)); !os.IsNotExist(err) {
 		t.Fatalf("a supervisor token must never be written to api-token, stat err=%v", err)
 	}
-
-	// The terminal UI's dashboard URL carries no token either.
-	t.Setenv("ITERVOX_API_TOKEN", sentinelToken)
-	prev := supervisorTokenActive
-	t.Cleanup(func() { supervisorTokenActive = prev })
-	supervisorTokenActive = true
-	if got := dashboardURLToken(); got != "" {
-		t.Fatalf("dashboardURLToken() under a supervisor = %q, want empty", got)
-	}
-	supervisorTokenActive = false
-	if got := dashboardURLToken(); got != sentinelToken {
-		t.Fatalf("dashboardURLToken() without a supervisor = %q, want the API token", got)
-	}
 }

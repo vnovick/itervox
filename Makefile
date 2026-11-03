@@ -1,4 +1,4 @@
-.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode dco-test e2e
+.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -32,7 +32,7 @@ build: web-deps web-build
 # internal/server/web/dist (gitignored), so on a fresh checkout every Go
 # compile step fails with "pattern web/dist: no matching files found" until
 # the frontend is built. Order is load-bearing — verify runs serially.
-verify: web-deps web-build web-bundle-budget fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test dco-test
+verify: web-deps web-build web-bundle-budget fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs check-changelog-split deploy-test dco-test
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
@@ -133,8 +133,6 @@ size-budget:
 	  "cmd/itervox/main.go 2000" \
 	  "cmd/itervox/adapter_settings.go 400" \
 	  "cmd/itervox/init.go 600" \
-	  "internal/statusui/model.go 3010" \
-	  "internal/statusui/keys.go 200" \
 	  "internal/server/handlers.go 1500" \
 	  "web/src/components/itervox/IssueDetailSlide.tsx 460" \
 	  "web/src/components/itervox/BoardColumn.tsx 360" \
@@ -194,10 +192,6 @@ clean:
 # fails when the published file is stale.
 settings-schema:
 	go generate ./cmd/itervox/
-
-# Regenerate catwalk golden files after intentional TUI render changes.
-tui-golden:
-	go test ./internal/statusui/... -args -rewrite
 
 # Run benchmarks with memory allocation stats.
 benchmark:
@@ -265,17 +259,25 @@ verify-track-b-docs:
 		exit 1; \
 	fi
 
+# The per-release CHANGELOG split (#246) must keep every entry of the old
+# [Unreleased] section (testdata/changelog/unreleased-pre-split.txt) exactly
+# once in the 0.2.2-0.3.0 sections, and no release section may be empty.
+check-changelog-split:
+	@bash scripts/check-changelog-split.sh
+
 dev:
 	cd web && pnpm dev
 
 # Shell tests for the deploy/ scripts (CORE-061 fetch-secrets, CORE-062
 # bootstrap data disk + HOME relocation, CORE-107 upgrade rollback + cleanup
 # retention, CORE-113 heartbeat exporter, watchdog and alert-rule family
-# names). Cloud CLIs, curl, blkid/mount/mkfs and systemctl are stubbed on
+# names), and the CHANGELOG split check (#246). Cloud CLIs, curl,
+# blkid/mount/mkfs and systemctl are stubbed on
 # PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
 .PHONY: deploy-test
 deploy-test:
 	bash scripts/chaos_test.sh
+	bash scripts/check-changelog-split_test.sh
 	bash deploy/lib/fetch-secrets_test.sh
 	bash deploy/bootstrap_test.sh
 	bash deploy/aws/provision_test.sh

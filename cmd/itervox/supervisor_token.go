@@ -17,8 +17,7 @@ import (
 // bearer token on every /api/v1/* route except /api/v1/health, even with
 // server.allow_unauthenticated: true — with one difference: the daemon NEVER
 // prints it. The tokenised dashboard URL is not written to stderr even on a
-// terminal or with ITERVOX_PRINT_TOKEN=1, the terminal UI's dashboard URL
-// carries no token, and the value is never written to <logs-dir>/api-token,
+// terminal or with ITERVOX_PRINT_TOKEN=1, and the value is never written to <logs-dir>/api-token,
 // HEARTBEAT.md, dashboard_url or the daemon registry. The supervisor already
 // holds the value; anything the daemon printed would only be a second copy
 // in a place (a log file, a terminal scrollback) the supervisor does not
@@ -111,13 +110,4 @@ func installSupervisorToken() {
 	if replaced {
 		slog.Warn("server: " + supervisorTokenEnv + " replaces the ITERVOX_API_TOKEN from the environment or .itervox/.env")
 	}
-}
-
-// dashboardURLToken is the token the terminal UI may embed in its dashboard
-// URL: the active API token, or "" when a supervisor owns it.
-func dashboardURLToken() string {
-	if supervisorTokenActive {
-		return ""
-	}
-	return os.Getenv("ITERVOX_API_TOKEN")
 }

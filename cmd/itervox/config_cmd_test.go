@@ -55,7 +55,11 @@ func TestConfigSetWritesTheProjectFileAndWarnsWhenAHigherLayerWins(t *testing.T)
 	data, err := config.ReadSettingsFile(config.ProjectSettingsPath(wf))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"agent": map[string]any{"max_turns": 4}}, data)
-	assert.Contains(t, errOut.String(), "the workflow layer also sets agent.max_turns (2), and it wins")
+	// #239: the settings file wins over WORKFLOW.md now; the copy left there is named.
+	assert.Contains(t, errOut.String(), "WORKFLOW.md's front matter also sets agent.max_turns; this file wins over it")
+	cfg, err := config.Load(wf)
+	require.NoError(t, err)
+	assert.Equal(t, 4, cfg.Agent.MaxTurns)
 
 	out.Reset()
 	errOut.Reset()
@@ -64,7 +68,7 @@ func TestConfigSetWritesTheProjectFileAndWarnsWhenAHigherLayerWins(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"polling": map[string]any{"interval_ms": 9000}}, data)
 	assert.Empty(t, errOut.String(), "nothing above the user layer sets it")
-	cfg, err := config.Load(wf)
+	cfg, err = config.Load(wf)
 	require.NoError(t, err)
 	assert.Equal(t, 9000, cfg.Polling.IntervalMs)
 }
@@ -92,7 +96,8 @@ func TestConfigSetRefusesAWrongTypeAndChangesNothing(t *testing.T) {
 	assert.Equal(t, original, string(got))
 
 	errOut.Reset()
-	assert.Equal(t, 1, configCmd([]string{"set", "tracker.kind", "github", "--workflow", wf}, &out, &errOut))
+	// #239: tracker is layered now; guardrails is not.
+	assert.Equal(t, 1, configCmd([]string{"set", "guardrails.enabled", "false", "--workflow", wf}, &out, &errOut))
 	assert.Contains(t, errOut.String(), "cannot be set in a settings file")
 
 	errOut.Reset()

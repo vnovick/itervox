@@ -11,6 +11,7 @@ import { RetriesCard } from './RetriesCard';
 import { CapacityCard } from './CapacityCard';
 import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
 import { BrowserNotificationsCard } from './BrowserNotificationsCard';
+import { EditorCard } from './EditorCard';
 import { SchemaSettingsCard } from './schema/SchemaSettingsCard';
 import { useSettingsPageData } from './useSettingsPageData';
 import { RequireScope } from '../../components/itervox/RequireScope';
@@ -104,6 +105,13 @@ export default function Settings() {
             Browser notifications
           </h2>
           <BrowserNotificationsCard />
+        </section>
+
+        <section aria-labelledby="section-editor">
+          <h2 id="section-editor" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+            Editor
+          </h2>
+          <EditorCard />
         </section>
 
         {isAdmin && (
@@ -233,9 +241,11 @@ export default function Settings() {
                 All settings
               </h2>
               <p className="text-theme-muted mb-3 text-xs">
-                Every agent, polling, server and workspace setting, from the settings schema. Pick
-                the layer a save writes: your user file, the project file (committed) or the
-                project-local file (gitignored). WORKFLOW.md still wins over all three.
+                Every agent, automations, dependencies, hooks, hub, polling, server, tracker and
+                workspace setting, from the settings schema. Pick the layer a save writes: your user
+                file, the project file (committed) or the project-local file (gitignored). The
+                project and local files win over the same key in WORKFLOW.md (whose front matter is
+                deprecated for them), and WORKFLOW.md wins over your user file.
               </p>
               <SchemaSettingsCard />
             </section>

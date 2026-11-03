@@ -1,0 +1,106 @@
+---
+title: Review changes — line comments, PR reviews, open in editor
+description: Comment on lines of an agent's diff for the running agent or the pull request, review the PR from the issue detail view, and open files in VS Code or Cursor.
+---
+
+The **Changes** tab ([Now & Changes](/guides/now-and-changes/)) shows what
+an agent changed. Since #238 you can act on it there: comment on a line or
+a range, send the comment to the agent that is still working or post it on
+the pull request, review the PR, and jump to the file in your editor.
+
+## Which diff you see
+
+- **Before a PR exists** the tab shows the issue's worktree against the
+  merge base with its base branch, as before.
+- **Once the issue has a GitHub pull request**, it shows the PR's files as
+  GitHub compares them (`base...head`) — what a merge would apply.
+- **While a run is live** a toggle offers **PR files** and **Live
+  worktree**: the worktree can be ahead of what the agent has pushed.
+
+If GitHub cannot be read, the tab says so and shows the worktree.
+
+## Comment on a line or a range
+
+Open a file, click a line number to select that line, and shift-click
+another line in the same hunk to select a range. A comment box opens under
+the diff. Choose where the comment goes:
+
+- **Send to the agent** — available while a run is live. The comment
+  becomes a steering message, the same path as **Steer the run**, that
+  names the file and the lines and quotes the selected diff lines:
+
+  ````
+  Review comment on internal/server/changes.go, lines 12-14:
+
+  ```diff
+  +	writeError(w, 500, …)
+  ```
+
+  This should return 404, not 500.
+  ````
+
+- **Post on the PR** — available while the tab shows the PR's files, so the
+  line numbers are GitHub's. **Post now** posts it as a review comment on
+  that file and line; **Add to review** keeps it as a pending comment for
+  the review below.
+
+A deleted line comments on the base side of the diff, any other line on the
+new side, which is how GitHub anchors review comments.
+
+## Review the PR
+
+Under the diff, **Review the PR** lists the pending comments (remove any
+you no longer want) and takes an optional summary. **Comment**, **Request
+changes** and **Approve** each submit **one** GitHub review that carries
+every pending comment. Request changes and Comment need a summary or at
+least one comment.
+
+Itervox never merges from here. After a review the tab says what still
+governs the merge:
+
+- the [merge policy](/guides/agent-profiles/#what-gates-a-merge_pr-merge) of the `merge_pr` action —
+  required checks, `agent.merge_block_labels` (the PR's matching labels are
+  listed) and the merge strategy;
+- the agent reviewers' quorum (`agent.review_quorum`), which your review
+  does not change: it is not recorded as a reviewer verdict.
+
+GitHub does not let an account approve its own pull request. If the
+daemon's GitHub credentials opened the PR, **Approve** is refused with
+GitHub's message; Comment and Request changes still work.
+
+## Open in editor
+
+Each open file has an **Open in VS Code** (or **Open in Cursor**) link, and
+it follows the selected line. Pick the editor under **Settings → Editor**;
+the choice is stored in your browser. The link opens the worktree on the
+daemon's machine, so it appears only when the dashboard runs on that
+machine (`localhost`). For a remote daemon the tab shows the file's path to
+copy instead.
+
+## Credentials and permissions
+
+- Reading the diff needs a **viewer** token; a file's lines, comments and
+  reviews need an **operator** token. See
+  [Security & access tokens](/guides/security/).
+- GitHub is reached with the credentials the daemon already uses for PR
+  events: `tracker.api_key` when the tracker is GitHub, else `GH_TOKEN` or
+  `GITHUB_TOKEN`, else the `gh` CLI's login. There is nothing to configure.
+- Every comment and review is recorded on the [event
+  feed](/guides/pause-and-feed/) as `review_comment_posted` or
+  `pr_review_submitted_by_operator`, with the issue and the PR but never
+  the comment text. The daemon does not log comment text either.
+
+## From the API
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8090/api/v1/issues/ENG-12/diff?source=pr"
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"destination":"agent","path":"a.go","line":14,"startLine":12,"body":"Use gitexec here."}' \
+  http://127.0.0.1:8090/api/v1/issues/ENG-12/review-comments
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"event":"request_changes","body":"Split this.","comments":[{"path":"a.go","line":6,"body":"nit"}]}' \
+  http://127.0.0.1:8090/api/v1/issues/ENG-12/pr-review
+```
+
+The routes and their fields are in the
+[API reference](/api-reference/#change-review-238).

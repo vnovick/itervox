@@ -46,6 +46,8 @@ type FeedPayload struct {
 	MemoryID string    `json:"memoryId,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
 	Until    time.Time `json:"until,omitzero"`
+	// Count is the line comments of an operator PR review (#238).
+	Count int `json:"count,omitempty"`
 }
 
 // FeedEvent is one feed entry of GET /api/v1/feed.

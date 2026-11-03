@@ -91,6 +91,29 @@ struct Fixture {
     pool: ClientPool,
 }
 
+/// Sets the value of the one line `"key": …` in a settings.jsonc text
+/// written by `itervox init`, keeping its indentation and trailing comma.
+fn set_settings_value(text: &str, key: &str, json: &str) -> String {
+    let prefix = format!("\"{key}\":");
+    let mut hits = 0;
+    let out: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with(&prefix) {
+                return line.to_string();
+            }
+            hits += 1;
+            let indent = &line[..line.len() - trimmed.len()];
+            let value = trimmed.split(" //").next().unwrap_or(trimmed).trim_end();
+            let comma = if value.ends_with(',') { "," } else { "" };
+            format!("{indent}{prefix} {json}{comma}")
+        })
+        .collect();
+    assert_eq!(hits, 1, "expected one {prefix} line in settings.jsonc");
+    out.join("\n") + "\n"
+}
+
 fn run(cmd: &mut Command) {
     let out = cmd.stdin(Stdio::null()).output().unwrap();
     assert!(
@@ -151,6 +174,24 @@ impl Fixture {
             )
             .replace("base_branch: main", "base_branch: e2e");
         std::fs::write(&workflow, wf).unwrap();
+        // `itervox init` writes the layered sections to the project's
+        // settings file (#239), which wins over WORKFLOW.md front matter.
+        let settings = proj.join(".itervox").join("settings.jsonc");
+        let mut s = std::fs::read_to_string(&settings).unwrap();
+        let command = if bare_command {
+            "claude".to_string()
+        } else {
+            fake.display().to_string()
+        };
+        s = set_settings_value(&s, "command", &serde_json::to_string(&command).unwrap());
+        s = set_settings_value(&s, "interval_ms", "2000");
+        s = set_settings_value(
+            &s,
+            "clone_url",
+            &serde_json::to_string(&proj.display().to_string()).unwrap(),
+        );
+        s = set_settings_value(&s, "base_branch", "\"e2e\"");
+        std::fs::write(&settings, s).unwrap();
         let git = |args: &[&str]| {
             run(Command::new("git")
                 .args(args)

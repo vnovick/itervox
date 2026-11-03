@@ -73,32 +73,19 @@ func TestNewFileLogHandlerText(t *testing.T) {
 	}
 }
 
+// TestPostStartupHandler: after start-up every record reaches both stderr
+// and the file (the terminal UI that sent logs to the file only is gone,
+// #240).
 func TestPostStartupHandler(t *testing.T) {
-	cases := []struct {
-		name         string
-		ttyAvailable bool
-		wantStderr   bool
-	}{
-		{name: "tty available redirects to file only", ttyAvailable: true, wantStderr: false},
-		{name: "no tty keeps stderr+file fanout", ttyAvailable: false, wantStderr: true},
+	var fileBuf, stderrBuf bytes.Buffer
+	stderrHandler := slog.NewTextHandler(&stderrBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	log := slog.New(postStartupHandler(&fileBuf, slog.LevelInfo, "text", stderrHandler))
+	log.Info("post-startup line", "issue", "ENG-1")
+	if !strings.Contains(fileBuf.String(), "post-startup line") {
+		t.Errorf("file sink missing post-startup line; got %q", fileBuf.String())
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var fileBuf, stderrBuf bytes.Buffer
-			stderrHandler := slog.NewTextHandler(&stderrBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
-
-			h := postStartupHandler(&fileBuf, slog.LevelInfo, "text", stderrHandler, tc.ttyAvailable)
-			log := slog.New(h)
-			log.Info("post-startup line", "issue", "ENG-1")
-
-			if !strings.Contains(fileBuf.String(), "post-startup line") {
-				t.Errorf("file sink missing post-startup line in both modes; got %q", fileBuf.String())
-			}
-			gotStderr := strings.Contains(stderrBuf.String(), "post-startup line")
-			if gotStderr != tc.wantStderr {
-				t.Errorf("ttyAvailable=%v: stderr got line=%v; want %v (stderr=%q)", tc.ttyAvailable, gotStderr, tc.wantStderr, stderrBuf.String())
-			}
-		})
+	if !strings.Contains(stderrBuf.String(), "post-startup line") {
+		t.Errorf("stderr missing post-startup line; got %q", stderrBuf.String())
 	}
 }
 
@@ -106,7 +93,7 @@ func TestPostStartupHandler_RedactsBothSinksWhenHeadless(t *testing.T) {
 	var fileBuf, stderrBuf bytes.Buffer
 	stderrHandler := slog.NewTextHandler(&stderrBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
 
-	h := postStartupHandler(&fileBuf, slog.LevelInfo, "text", stderrHandler, false)
+	h := postStartupHandler(&fileBuf, slog.LevelInfo, "text", stderrHandler)
 	log := slog.New(h)
 	log.Info("saw token sk-ant-supersecret-1234567890XYZABCD0123456789 in env")
 
