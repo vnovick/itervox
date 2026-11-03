@@ -81,7 +81,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-bundle-budget` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-bundle-budget` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` + `check-changelog-split` — mirrors CI |
 | `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
 | `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
@@ -90,6 +90,8 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make benchmark` | `go test -bench=. -benchmem ./cmd/... ./internal/...` |
 | `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
 | `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
+| `make check-changelog-split` | Check that every entry of the pre-split `[Unreleased]` section (`testdata/changelog/unreleased-pre-split.txt`) appears exactly once in the `0.2.2`–`0.3.0` sections of `CHANGELOG.md`, and that none of those sections is empty (#246). Its own tests run in `make deploy-test` |
+| `make chaos` | Run the orchestrator and tracker tests over and over (`-race -count -cpu 1,2,4`) while busy loops saturate every CPU (#126). Takes tens of minutes, so it is not part of `verify`; CI runs it nightly and on a pull request labelled `ci:chaos`. Tune with `CHAOS_COUNT`, `CHAOS_RUN`, `CHAOS_PACKAGES`, `CHAOS_CPU`, `CHAOS_HOGS`, `CHAOS_TIMEOUT`, `CHAOS_OUT` (see `scripts/chaos.sh`) |
 | `make fmt` | `gofmt -l -w cmd internal` |
 | `make vet` | `go vet ./cmd/... ./internal/...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
@@ -111,6 +113,17 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 > **Release preflight:** `make release-check` is intentionally stricter than `make verify`. It requires `govulncheck` and GoReleaser to be installed, reruns the release hooks (`go mod tidy` and web build), then fails if tracked files or the index are dirty. Use it after the release-prep diff is committed, not as the everyday edit loop.
 
 > **Release checks:** before tagging, run the checks in [docs/release-checks.md](docs/release-checks.md): a self-hosted issue run and a cloud deploy smoke test (manual `Release acceptance` workflow; they need real accounts), and confirm the upgrade test is green.
+
+> **Release secrets:** a `vX.Y.Z` tag runs `release.yml` (GoReleaser) and then `desktop-release.yml` (the Mac app), which read these repository secrets. Only the maintainer's release needs them; contributors and users never need an Apple ID — a build from source (`make desktop`) is not quarantined and opens without signing.
+>
+> | Secret | Used for |
+> |---|---|
+> | `HOMEBREW_TAP_GITHUB_TOKEN` | Writing to `vnovick/homebrew-tap`: the CLI formula (GoReleaser) and the app's cask `Casks/itervox-app.rb` (`desktop/scripts/homebrew-cask.sh`) |
+> | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | Signing the app, the disk image and the CLI with the Developer ID certificate |
+> | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_API_PRIVATE_KEY` (or `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) | Notarization |
+> | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Signing the updater archive behind `latest.json` |
+>
+> Without the Apple secrets the Mac build is unsigned, publishes no `latest.json` and does not touch the cask; with only some of them set the job fails. How to create each one: [docs/release-mac.md](docs/release-mac.md#one-time-setup).
 
 > **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 

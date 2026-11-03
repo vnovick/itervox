@@ -41,7 +41,6 @@ import (
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 	"github.com/vnovick/itervox/internal/tracker/local"
-	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -637,19 +636,21 @@ func main() {
 		dc := newDrainControl()
 		reloadReq := make(chan struct{}, 1)
 
-		// Watch WORKFLOW.md; request a drain-then-reload on change.
+		// Watch WORKFLOW.md and the settings files (#245); request a
+		// drain-then-reload on a change that loads. An edit that does not
+		// load keeps this generation running and shows on the banner.
 		go func() {
 			defer failFastOnPanic("workflow-watcher")
-			// Baseline = the bytes cfg was parsed from, not the watcher's own
-			// first reading: an edit between the load above and this start
-			// still reloads (M1-close C2).
+			// Baselines = the bytes cfg was parsed from, not the watcher's
+			// own first readings: an edit between the load above and this
+			// start still reloads (M1-close C2).
 			onChange := func() {
 				select {
 				case reloadReq <- struct{}{}:
-				default: // a reload is already pending; it re-reads the file
+				default: // a reload is already pending; it re-reads the files
 				}
 			}
-			if err := workflow.WatchFrom(runCtx, *workflowPath, cfg.WorkflowHash, onChange); err != nil && runCtx.Err() == nil {
+			if err := watchConfigFiles(runCtx, *workflowPath, cfg, onChange, configWatchOptions{}); err != nil && runCtx.Err() == nil {
 				slog.Warn("workflow watcher stopped", "error", err)
 			}
 		}()

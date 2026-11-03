@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -144,6 +145,10 @@ type DoctorReport struct {
 	// moves, and each key a settings file also sets (the file wins).
 	// Notices only: they never fail doctor.
 	FrontMatter config.FrontMatterReport
+	// WatchedFiles are the files a running daemon watches for its config
+	// (#245): WORKFLOW.md and the settings files that are not off, present
+	// or not (creating one is picked up).
+	WatchedFiles []watchedConfigFile
 	// PortInUseWarning is the operator-facing diagnostic when WORKFLOW.md's
 	// configured server.port is currently held by another process. Empty when
 	// the port is free OR when no `lsof`-style probe could be performed.
@@ -249,7 +254,7 @@ func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writ
 // collectDoctorReport runs every check and returns the report with the
 // loaded config (nil when the workflow did not load).
 func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
-	report := DoctorReport{Workflow: workflowPath}
+	report := DoctorReport{Workflow: workflowPath, WatchedFiles: configWatchFiles(workflowPath)}
 
 	cfg, err := config.Load(workflowPath)
 	loadErr := err
@@ -525,6 +530,7 @@ func renderDoctorReport(r DoctorReport) string {
 		}
 	}
 	renderFrontMatterReport(&b, r.FrontMatter)
+	renderWatchedFiles(&b, r.WatchedFiles)
 	if r.StartupErrorPath != "" {
 		fmt.Fprintf(&b, "last startup error: %s — investigate the file, then `itervox doctor --clear-startup-error` once resolved\n", r.StartupErrorPath)
 	}
@@ -572,6 +578,24 @@ func renderFrontMatterReport(b *strings.Builder, r config.FrontMatterReport) {
 	}
 	for _, c := range r.Conflicts {
 		fmt.Fprintf(b, "WARNING: %s\n", c.Message())
+	}
+}
+
+// renderWatchedFiles lists the files a running daemon reloads on (#245).
+func renderWatchedFiles(b *strings.Builder, files []watchedConfigFile) {
+	for _, f := range files {
+		label := f.Layer + " settings"
+		if f.Layer == config.LayerWorkflow {
+			label = "workflow"
+		}
+		state := ""
+		if !f.Exists {
+			state = " (not present; creating it is picked up)"
+		}
+		fmt.Fprintf(b, "watched: %s %s%s\n", label, f.Path, state)
+	}
+	if !slices.ContainsFunc(files, func(f watchedConfigFile) bool { return f.Layer == config.LayerUser }) {
+		fmt.Fprintf(b, "watched: user settings off (%s=off, or no home directory)\n", config.UserSettingsEnv)
 	}
 }
 
