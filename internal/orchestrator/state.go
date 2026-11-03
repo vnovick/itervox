@@ -171,6 +171,9 @@ const (
 	// completion-state tracker write failed after its retries. Distinct from
 	// user_cancelled precisely because it is recoverable: the work is done.
 	PauseReasonTransitionFailed = "transition_failed"
+	// PauseReasonBudgetExceeded: the issue reached agent.budget (#136); it
+	// runs again once the budget is raised and it is resumed.
+	PauseReasonBudgetExceeded = "budget_exceeded"
 )
 
 // ResumeContext, when non-nil, configures a worker to continue an existing
@@ -204,6 +207,7 @@ type InputRequiredEntry struct {
 	Command     string // agent command (for resume on same runner)
 	WorkerHost  string // SSH host (for resume on same host)
 	ProfileName string // active profile
+	Reviewer    bool   // the waiting run is a reviewer (#127)
 	// QuestionCommentKey is the idempotency key the agent's question was (or
 	// will be) posted under. It identifies the question BEFORE delivery: on
 	// Linear it is the comment's id, on GitHub a hidden body marker. When set
@@ -241,6 +245,7 @@ type PendingInputResumeEntry struct {
 	Command     string
 	WorkerHost  string
 	ProfileName string
+	Reviewer    bool // the resumed run is a reviewer (#127)
 	// QuestionCommentKey is the idempotency key the agent's question was (or
 	// will be) posted under. It identifies the question BEFORE delivery: on
 	// Linear it is the comment's id, on GitHub a hidden body marker. When set
@@ -363,6 +368,10 @@ type RetryEntry struct {
 	Attempt    int
 	DueAt      time.Time
 	Error      *string
+	// ReviewerProfile is set when the retry re-runs a reviewer (#127): the
+	// retry dispatches a reviewer run under this profile instead of the
+	// issue's implementer profile.
+	ReviewerProfile string
 }
 
 // PausedSessionInfo captures the runtime context of a paused worker so that
@@ -378,6 +387,9 @@ type PausedSessionInfo struct {
 	Backend     string
 	Command     string
 	ProfileName string
+	// Reviewer is set when the paused run was a reviewer, so the resumed run
+	// is the same reviewer under ProfileName (#127).
+	Reviewer bool
 }
 
 // State is the single in-memory authority for all orchestrator runtime data.
@@ -398,11 +410,13 @@ type State struct {
 	// case-folded copies. Empty disables the guard.
 	PauseDispatchWhenAnyInState []string
 	Running                     map[string]*RunEntry
-	// LatestRunID is, per issue ID, the run most recently dispatched for it
-	// (#125). It outlives the Running entry, so the late exit of a run that
-	// was replaced is recognised even after its replacement has exited.
-	// Event-loop state, one entry per issue dispatched this session.
-	LatestRunID   map[string]string
+	// LatestRun is, per issue ID, the record of the run most recently
+	// dispatched for it (#125, #127). It outlives the Running entry, so the
+	// late exit of a run that was replaced is recognised even after its
+	// replacement has exited, and the exit of a run whose entry reconcile
+	// deleted still says what that run was. Event-loop state, one entry per
+	// issue dispatched this session.
+	LatestRun     map[string]RunRecord
 	Claimed       map[string]struct{}
 	RetryAttempts map[string]*RetryEntry
 	// PausedIdentifiers tracks issues paused by user kill.
@@ -673,6 +687,14 @@ type State struct {
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
+	// Spend is the per-issue spend ledger behind agent.budget and the cost
+	// report (#136), persisted to issue_spend.json.
+	Spend SpendLedger
+	// BudgetStops maps an issue to the run being stopped for reaching the
+	// budget, so that run's exit pauses it with budget_exceeded. Keyed by run
+	// so a mark a lost exit left behind never shields a later run.
+	// Session-only.
+	BudgetStops map[string]string
 
 	// DependencyCycles holds this tick's strongly-connected-component cycle
 	// alerts over the tick graph (sorted by first member). Recomputed every
@@ -728,7 +750,7 @@ func NewState(cfg *config.Config) State {
 		TerminalStates:              append([]string{}, cfg.Tracker.TerminalStates...),
 		PauseDispatchWhenAnyInState: normalizePauseStates(cfg.Agent.PauseDispatchWhenAnyInState),
 		Running:                     make(map[string]*RunEntry),
-		LatestRunID:                 make(map[string]string),
+		LatestRun:                   make(map[string]RunRecord),
 		Claimed:                     make(map[string]struct{}),
 		RetryAttempts:               make(map[string]*RetryEntry),
 		PausedIdentifiers:           make(map[string]string),

@@ -62,8 +62,8 @@ Azure: add a custom-text-log data collection rule pointed at the same glob.
 Pass `--log-format=json` (or `ITERVOX_LOG_FORMAT=json`) to switch **both** headless sinks
 to structured JSON (CORE-059, `cmd/itervox/logformat.go`): the rotating file
 (`itervox.log`) and stderr — so under systemd `journalctl -u itervox -o cat` and any
-journald or container log shipper receive one redacted JSON object per line. With a
-controlling terminal stderr stays human-readable text whatever the flag says. The
+journald or container log shipper receive one redacted JSON object per line. Only with
+`--tui` on a controlling terminal (the deprecated terminal UI) do logs go to the file alone. The
 official container image sets `ITERVOX_LOG_FORMAT=json`; the systemd unit leaves the
 default (logfmt file, charm stderr) — add `--log-format json` to its `ExecStart` to opt in.
 

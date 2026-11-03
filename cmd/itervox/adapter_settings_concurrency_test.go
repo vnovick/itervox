@@ -18,7 +18,6 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 )
 
 const settingsConcurrencyFixture = `---
@@ -118,12 +117,21 @@ func TestSettingsSaveWriteFailureLeavesMemoryUntouched(t *testing.T) {
 // V4: when a save's in-memory apply fails and the rollback write ALSO fails,
 // the file now holds a value memory does not. That used to be discarded
 // (`_ = persist(prev)`); it must be logged at ERROR and returned.
+//
+// #129: workspace.auto_clear is saved through persistSettings (the project
+// settings file, then WORKFLOW.md). The rollback's failure is injected at its
+// WORKFLOW.md step through the settingsWorkflowStep seam: a read-only
+// workflow directory no longer stops the settings-file write in .itervox/,
+// and root ignores permission bits anyway.
 func TestSettingsRollbackFailureIsLoggedAndReturned(t *testing.T) {
 	_, path := newSettingsTestAdapter(t)
-	require.NoError(t, workflow.PatchWorkspaceBoolField(path, "auto_clear", true)) // the forward write landed
-	dir := filepath.Dir(path)
-	require.NoError(t, os.Chmod(dir, 0o500)) // ...and the rollback write cannot
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	require.NoError(t, persistSettings(path, []setting{{Key: "workspace.auto_clear", Value: true}})) // the forward write landed
+	t.Cleanup(setSettingsWorkflowStep(func(workflowPath string) error {                              // ...and the rollback write cannot
+		if workflowPath == path {
+			return errors.New("injected: WORKFLOW.md is not writable")
+		}
+		return nil
+	}))
 
 	var logs bytes.Buffer
 	prev := slog.Default()
@@ -132,7 +140,7 @@ func TestSettingsRollbackFailureIsLoggedAndReturned(t *testing.T) {
 
 	applyErr := errors.New("apply rejected")
 	err := rollbackSettingsWrite("workspace.auto_clear", applyErr, func() error {
-		return workflow.PatchWorkspaceBoolField(path, "auto_clear", false)
+		return persistSettings(path, []setting{{Key: "workspace.auto_clear", Value: false}})
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, applyErr)

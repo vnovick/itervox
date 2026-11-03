@@ -353,5 +353,5 @@ func TestStaleExitAfterTheReplacementExitedKeepsItsRetry(t *testing.T) {
 
 	exit(a.RunID, 0)
 	assert.Equal(t, 4, state.RetryAttempts[issue.ID].Attempt, "A's late exit leaves B's retry alone")
-	assert.Equal(t, b.RunID, state.LatestRunID[issue.ID])
+	assert.Equal(t, b.RunID, state.LatestRun[issue.ID].ID)
 }
