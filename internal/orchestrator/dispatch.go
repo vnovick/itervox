@@ -28,6 +28,11 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if !isActiveState(issue.State, state) {
 		return "not_active_state"
 	}
+	// #177: the issue's last run left a state move to apply; starting it
+	// again before that lands would redo finished work.
+	if _, pending := state.DeferredStateMoves[issue.Identifier]; pending {
+		return IneligibleStateMovePending
+	}
 	return ineligibleReasonShared(issue, state, cfg, false)
 }
 

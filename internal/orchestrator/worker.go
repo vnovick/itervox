@@ -962,6 +962,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if !isActiveState(issue.State, State{ActiveStates: activeStates}) {
 			break // issue left active states — clean exit
 		}
+		// #177: the issue was moved out of the active states by itervox
+		// (the agent's move_state) and the move waits for this run's exit.
+		// End the turn loop exactly as the landed move would have.
+		if runStateMoveDeferred(ctx) {
+			break
+		}
 	}
 
 	// F3 — per-unit gate. When hooks.after_run_required is set, a failing
@@ -1255,6 +1261,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			o.userCancelledIDs[issue.Identifier] = struct{}{}
 			o.userCancelledMu.Unlock()
 		} else {
+			markCompletionApplied(ctx) // #177
 			slog.Info("worker: issue moved to completion state",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "state", completionState)
 			o.RecordIssueStatusChange(IssueStatusChange{
@@ -1861,7 +1868,12 @@ func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Con
 	if o.cfg != nil {
 		baseBranch = o.cfg.Agent.BaseBranch
 	}
-	o.DispatchPROpenedAutomations(ctx, issue, resolvedURL, cmp.Or(openedPRBranch, branchName), baseBranch)
+	// Detached from the worker's context: the event loop cancels that context
+	// while it handles the exit just sent (cancelAndCleanupWorker), so a
+	// dispatch bound to it was silently dropped whenever the loop got to the
+	// exit before this goroutine got here (#177 CI). The send stays bounded by
+	// DispatchPROpenedAutomations' own timeout and by the loop's exit.
+	o.DispatchPROpenedAutomations(context.WithoutCancel(ctx), issue, resolvedURL, cmp.Or(openedPRBranch, branchName), baseBranch)
 }
 
 func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *RunEntry, entry *InputRequiredEntry) {

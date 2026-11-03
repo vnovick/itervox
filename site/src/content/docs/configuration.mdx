@@ -716,7 +716,7 @@ until the queue falls below the low-water mark.
 | `filter.states_any` | string[] | Alias for `filter.states`; recommended for `blockers_resolved` examples to make the source-state policy explicit. |
 | `filter.labels_any` | string[] | Match issues with at least one of the listed labels. |
 | `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42`. |
-| `filter.limit` | int | Maximum number of issues to queue from one cron tick or event poll batch. |
+| `filter.limit` | int | Maximum number of issues to queue from one cron tick or event poll batch. On `cron` rules the selection rotates between ticks from a persisted per-rule cursor (see the automations guide). |
 | `filter.input_context_regex` | string | Only meaningful for `input_required`; matched against the blocked-agent question text. |
 | `filter.max_age_minutes` | int | Only meaningful for `input_required`; skips blocked entries older than this many minutes. |
 | `filter.check_names` | string[] | Only for `pr_check_completed`: check run names or commit status contexts (case-insensitive). Empty = every check. |
