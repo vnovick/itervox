@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -17,8 +18,9 @@ import (
 // poll and FetchIssuesByStates (and with them the store's views, the
 // dependency analyzer's issue set and the automation poll), the incremental
 // pull, and the by-ID scope check the webhook refresh uses — builds its
-// filter from Scope(), so they cannot disagree about which issues are in
-// scope. A scope with neither an assignee nor labels takes the original
+// filter from the effective filter (filter.go, #198), of which this scope is
+// the legacy one-group form, so they cannot disagree about which issues are
+// in scope. A scope with neither an assignee nor labels takes the original
 // project-only queries unchanged.
 
 var _ tracker.ScopeManager = (*Client)(nil)
@@ -70,6 +72,9 @@ func (c *Client) SetScope(sc tracker.Scope) {
 	c.projectFilter = &projects
 	c.assigneeOverride = &assignee
 	c.labelsOverride = &labels
+	// #198: a legacy scope save replaces any filter (the save comments
+	// tracker.filter out).
+	c.filterOverride = &issuefilter.Filter{}
 }
 
 // narrowed reports whether the scope filters beyond projects.
@@ -223,116 +228,11 @@ func (c *Client) FetchLabels(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// scopeBucket is one request of a narrowed read: its extra parameter
-// declarations, its filter fragment (ending in ", ") and its variables.
-type scopeBucket struct {
-	params string
-	filter string
-	vars   map[string]any
-}
-
-// scopeBuckets builds a narrowed scope's requests: one per project in the
-// filter (one in total for every project), each ANDed with the assignee
-// (resolved first; a scope whose user cannot be resolved fails the read and
-// never widens) and the labels.
-func (c *Client) scopeBuckets(ctx context.Context, sc tracker.Scope) ([]scopeBucket, error) {
-	params, filter, vars := "", "", map[string]any{}
-	if sc.Assignee != "" {
-		u, err := c.ResolveUser(ctx, sc.Assignee)
-		if err != nil {
-			return nil, err
-		}
-		params += ", $assigneeId: ID!"
-		filter += "assignee: {id: {eq: $assigneeId}}, "
-		vars["assigneeId"] = u.ID
-		if team := strings.TrimSpace(c.cfg.Team); team != "" {
-			if uuidRe.MatchString(team) {
-				params += ", $team: ID!"
-				filter += "team: {id: {eq: $team}}, "
-			} else {
-				params += ", $team: String!"
-				filter += "team: {key: {eq: $team}}, "
-			}
-			vars["team"] = team
-		}
-	}
-	if len(sc.Labels) > 0 {
-		params += ", $labels: [String!]!"
-		filter += "labels: {some: {name: {in: $labels}}}, "
-		vars["labels"] = slices.Clone(sc.Labels)
-	}
-	if len(sc.Projects) == 0 {
-		return []scopeBucket{{params: params, filter: filter, vars: vars}}, nil
-	}
-	out := make([]scopeBucket, 0, len(sc.Projects))
-	for _, slug := range sc.Projects {
-		b := scopeBucket{params: params, filter: filter, vars: map[string]any{}}
-		for k, v := range vars {
-			b.vars[k] = v
-		}
-		if slug == noProjectSentinel {
-			b.filter = "project: {null: true}, " + b.filter
-		} else {
-			b.params += ", $projectSlug: String!"
-			b.filter = "project: {slugId: {eq: $projectSlug}}, " + b.filter
-			b.vars["projectSlug"] = slug
-		}
-		out = append(out, b)
-	}
-	return out, nil
-}
-
-// scopeCheck reports whether a raw issue node (read with its project,
-// assignee, team and labels) is covered by the current scope.
-func (c *Client) scopeCheck(ctx context.Context) (func(node map[string]any) bool, error) {
-	sc := c.Scope()
-	var user tracker.AssigneeUser
-	if sc.Assignee != "" {
-		u, err := c.ResolveUser(ctx, sc.Assignee)
-		if err != nil {
-			return nil, err
-		}
-		user = u
-	}
-	team := strings.TrimSpace(c.cfg.Team)
-	return func(node map[string]any) bool {
-		if len(sc.Projects) > 0 {
-			slug := ""
-			if p, ok := node["project"].(map[string]any); ok {
-				slug, _ = p["slugId"].(string)
-			}
-			if !slices.ContainsFunc(sc.Projects, func(f string) bool {
-				return f == slug || (f == noProjectSentinel && slug == "")
-			}) {
-				return false
-			}
-		}
-		if sc.Assignee != "" {
-			a, _ := node["assignee"].(map[string]any)
-			if a == nil || stringValue(a["id"]) != user.ID {
-				return false
-			}
-			if team != "" {
-				t, _ := node["team"].(map[string]any)
-				if t == nil || (stringValue(t["id"]) != team && !strings.EqualFold(stringValue(t["key"]), team)) {
-					return false
-				}
-			}
-		}
-		if len(sc.Labels) > 0 {
-			labels, _ := nodesOf(node, "labels")
-			if !slices.ContainsFunc(labels, func(l map[string]any) bool {
-				return slices.ContainsFunc(sc.Labels, func(want string) bool { return strings.EqualFold(want, stringValue(l["name"])) })
-			}) {
-				return false
-			}
-		}
-		return true
-	}, nil
-}
-
 // ScopeKey implements tracker.ScopeManager.
 func (c *Client) ScopeKey() string {
+	if f, mode := c.effectiveFilter(); mode {
+		return c.filterScopeKey(f)
+	}
 	sc := c.Scope()
 	key := sc.Key()
 	if sc.Assignee != "" {
@@ -347,6 +247,9 @@ func (c *Client) ScopeKey() string {
 // ScopeLabel implements tracker.ScopeManager, e.g.
 // "ENG · assigned to me · label: agent".
 func (c *Client) ScopeLabel() string {
+	if f, mode := c.effectiveFilter(); mode {
+		return f.Label()
+	}
 	sc := c.Scope()
 	var parts []string
 	switch {

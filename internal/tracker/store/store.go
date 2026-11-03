@@ -189,7 +189,8 @@ type baseUpstream interface {
 // Wrap returns a store over up, loading cfg.Path when it holds this scope.
 // The result also implements tracker.DetailBatcher and
 // tracker.ProjectManager exactly when up does (Linear does, GitHub does not),
-// and tracker.ScopeManager when up also does (#182).
+// and tracker.ScopeManager when up also does (#182), and
+// tracker.FilterManager when up does (#198: Linear and GitHub).
 // It fails for an adapter without the base optional interfaces (the local
 // and memory trackers, which need no store).
 func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
@@ -231,11 +232,16 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 	}
 	_, batches := up.(tracker.DetailBatcher)
 	_, projects := up.(tracker.ProjectManager)
+	_, filtered := up.(tracker.FilterManager)
 	if batches && projects {
-		if _, scoped := up.(tracker.ScopeManager); scoped {
-			return &scopedStore{&linearStore{s}}, s, nil
+		if _, scoped := up.(tracker.ScopeManager); scoped && filtered {
+			return &scopedStore{&linearStore{s}, filterForward{s}}, s, nil
 		}
 		return &linearStore{s}, s, nil
+	}
+	if filtered {
+		// #198: GitHub's tracker filter.
+		return &filteredStore{s, filterForward{s}}, s, nil
 	}
 	return s, s, nil
 }
@@ -1212,7 +1218,10 @@ func (l *linearStore) SetProjectFilter(slugs []string) {
 // project, an assignee and labels (#182). The scope itself lives in the
 // adapter; another scope means other issues, so SetScope makes the store
 // pull again, like SetProjectFilter.
-type scopedStore struct{ *linearStore }
+type scopedStore struct {
+	*linearStore
+	filterForward
+}
 
 var _ tracker.ScopeManager = (*scopedStore)(nil)
 

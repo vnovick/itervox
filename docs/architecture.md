@@ -422,6 +422,8 @@ state changes at a bounded interval (default 15 s) via
 - tracker sync status (`## Sync`, #117): mode, last pull, lag and its warn
   threshold, pending writes, next push, last sync error. Also rewritten when
   the sync status changes, so `itervox doctor` reads a current last pull
+- the off-loop tracker poll (`- Poll:` under `## Tracker`, #187): ok with the
+  last duration, running for Xs, slow, or degraded by the tracker breaker
 - agent capacity (running / max)
 - automation queue pressure (length / max, paused producers, recent rejects)
 - dependency audit summary (blocked / unknown / unblocked counts)

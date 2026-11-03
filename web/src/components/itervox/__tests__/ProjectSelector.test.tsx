@@ -92,3 +92,23 @@ describe('ProjectSelector — tracker scope (#182)', () => {
     );
   });
 });
+
+describe('ProjectSelector — tracker filter (#198)', () => {
+  it('summarises the filter as one chip per group, joined by OR', () => {
+    mockStore.mockImplementation((selector: (s: unknown) => unknown) =>
+      selector({
+        snapshot: {
+          trackerKind: 'github',
+          activeProjectFilter: [],
+          trackerScope: 'agent|ai · ¬blocked  OR  me · urgent',
+        },
+      }),
+    );
+    render(<ProjectSelector />);
+    const chip = screen.getByTestId('tracker-scope');
+    expect(chip).toHaveTextContent('agent|ai · ¬blocked');
+    expect(chip).toHaveTextContent('me · urgent');
+    expect(screen.getByText('OR')).toBeInTheDocument();
+    expect(screen.queryByText(/No GitHub projects are selected/)).toBeNull();
+  });
+});

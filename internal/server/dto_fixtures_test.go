@@ -262,6 +262,21 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			PushIntervalMs:      10000,
 		},
 		"SyncStatusRowDirect.json": SyncStatusRow{Mode: SyncModeDirect, LagWarnAfterMs: 300000, SyncIntervalMs: 30000},
+		// #187 — a slow in-flight poll under an open tracker breaker, and an
+		// idle healthy one with nothing optional set.
+		"TrackerPollRow.json": TrackerPollRow{
+			InFlight:                     true,
+			StartedAt:                    tptr(at.Add(-50 * time.Second)),
+			RunningForMs:                 50000,
+			LastFinishedAt:               tptr(at.Add(-2 * time.Minute)),
+			LastDurationMs:               1200,
+			SlowAfterMs:                  45000,
+			Slow:                         true,
+			Degraded:                     true,
+			BreakerOpenUntil:             tptr(at.Add(time.Minute)),
+			ConsecutiveTransportFailures: 3,
+		},
+		"TrackerPollRowIdle.json": TrackerPollRow{SlowAfterMs: 45000},
 	}
 
 	for name, value := range fixtures {

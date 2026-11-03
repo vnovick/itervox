@@ -297,6 +297,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:         entry.Filter.MatchMode,
 				States:            entry.Filter.States,
 				LabelsAny:         entry.Filter.LabelsAny,
+				Groups:            entry.Filter.Groups,
 				IdentifierRegex:   identifierRe,
 				InputContextRegex: inputContextRe,
 				AutoResume:        entry.Policy.AutoResume,
@@ -330,6 +331,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 					MatchMode:       entry.Filter.MatchMode,
 					States:          entry.Filter.States,
 					LabelsAny:       entry.Filter.LabelsAny,
+					Groups:          entry.Filter.Groups,
 					IdentifierRegex: identifierRe,
 					BodyContainsAny: entry.Filter.BodyContains,
 					BodyRegex:       bodyRe,
@@ -343,6 +345,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:       entry.Filter.MatchMode,
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
+				Groups:          entry.Filter.Groups,
 				IdentifierRegex: identifierRe,
 			})
 		case config.AutomationTriggerPROpened:
@@ -353,6 +356,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:       entry.Filter.MatchMode,
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
+				Groups:          entry.Filter.Groups,
 				IdentifierRegex: identifierRe,
 			})
 		case config.AutomationTriggerPRMerged:
@@ -365,6 +369,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:       entry.Filter.MatchMode,
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
+				Groups:          entry.Filter.Groups,
 				IdentifierRegex: identifierRe,
 			})
 		case config.AutomationTriggerPRCheckCompleted, config.AutomationTriggerPRSynchronized,
@@ -378,6 +383,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:       entry.Filter.MatchMode,
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
+				Groups:          entry.Filter.Groups,
 				IdentifierRegex: identifierRe,
 				CheckNames:      entry.Filter.CheckNames,
 				Conclusions:     entry.Filter.Conclusions,
@@ -408,6 +414,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:       entry.Filter.MatchMode,
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
+				Groups:          entry.Filter.Groups,
 				IdentifierRegex: identifierRe,
 				AutoResume:      entry.Policy.AutoResume,
 				SwitchToProfile: entry.Policy.SwitchToProfile,
@@ -422,6 +429,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				MatchMode:       entry.Filter.MatchMode,
 				States:          entry.Filter.States,
 				LabelsAny:       entry.Filter.LabelsAny,
+				Groups:          entry.Filter.Groups,
 				IdentifierRegex: identifierRe,
 				MoveToState:     entry.Policy.MoveToState,
 			})
@@ -517,7 +525,7 @@ func runCronAutomation(
 // (CORE-111) to a compiled automation entry.
 func automationEntryMatches(issue domain.Issue, entry compiledAutomation, inputContext string) bool {
 	f := entry.cfg.Filter
-	return orchestrator.MatchesAutomationFilter(issue, f.MatchMode, f.States, f.LabelsAny,
+	return orchestrator.MatchesAutomationFilter(issue, f.MatchMode, f.States, f.LabelsAny, f.Groups,
 		entry.identifierRe, entry.inputContextRe, inputContext)
 }
 
@@ -852,6 +860,11 @@ func automationPollScope(tr tracker.Tracker) string {
 	// filter, assignee, team, labels), so changing any part rebaselines.
 	if sm, ok := tr.(tracker.ScopeManager); ok {
 		return "scope:" + sm.ScopeKey()
+	}
+	// #198: a tracker filter (GitHub) — its key covers the whole filter,
+	// so a filter change rebaselines instead of firing triggers.
+	if fm, ok := tr.(tracker.FilterManager); ok {
+		return "scope:" + fm.ScopeKey()
 	}
 	pm, ok := tr.(tracker.ProjectManager)
 	if !ok {
