@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.3] — 2026-11-03
+
 ### Added
 
 - **Terminal commands that replace the TUI: `itervox watch`, `logs -f`, quick actions and `--headless`** (#120). `itervox watch` is a read-only, plain-text view of a running daemon (issues waiting for a slot, running, retrying, waiting-for-input, queued automation runs and paused issues) that works over SSH and without a terminal: it redraws on a terminal and otherwise prints only when something other than the ticking run times and token counts changes. `itervox logs [-f] <issue>` prints, and follows, an issue's run log, finding the daemon again (address and token) when it restarts on another port. `itervox pause|resume|dispatch <issue>`, `itervox workers <n>` and `itervox reply <issue> <text>` act through the API and report the result or the daemon's reason for refusing (`reply` says the reply is queued: the daemon applies it only to an issue waiting for input). They find the daemon from `.itervox/dashboard_url` and its token from `ITERVOX_API_TOKEN`, `.itervox/.env` or `<logs-dir>/api-token`. `itervox --headless` starts no terminal UI even on a terminal, logs to stderr and never prints the tokenised dashboard URL; the token-withheld hint now names `--headless` and survives the log redactor. The terminal UI stays the default and now shows a notice pointing to `itervox watch` and `--headless`.
@@ -32,6 +36,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`make chaos` and a nightly chaos CI job** (#126). The orchestrator and tracker tests run over and over (`-race -count -cpu 1,2,4`) while busy loops saturate every CPU, which is how the ordering races fixed in v0.2.2 were reproduced. Every night on the default branch, on demand, and on a pull request labelled `ci:chaos`; a failing package uploads its verbose log, where a hung test's timeout panic carries every goroutine's stack. The tests get a throwaway git config, so a developer's commit signing is never asked to sign their commits. Settings: `CHAOS_COUNT`, `CHAOS_RUN`, `CHAOS_PACKAGES`, `CHAOS_CPU`, `CHAOS_HOGS`, `CHAOS_TIMEOUT`, `CHAOS_OUT`.
 
 - **Local tracker store** (#113). With `tracker.store.enabled: true`, Itervox keeps the tracked Linear or GitHub issues in `.itervox/tracker_store.json` and serves the orchestrator's and dashboard's list reads from it; ticks no longer call the tracker's list endpoints, and the board keeps working through a tracker outage. A background sync re-pulls every `tracker.store.sync_interval_ms` (default 60s). A restart serves from the file; a cold start pulls exactly once. On by default since #132.
+
+---
+
+## [0.2.2] — 2026-11-03
+
+### Added
 
 - **Deploy skill and `itervox secret`** (#88). `.claude/skills/deploy/SKILL.md` walks an agent through deploying to AWS, GCP or Azure with the shipped kit: it asks for cloud, region, size and access method, provisions with `provision.sh` or the OpenTofu modules (confirming before anything billable), bootstraps the VM, sets secrets, runs `itervox doctor --deploy`, starts the service and prints the tunnel command and dashboard URL. `itervox secret set KEY` writes a value to `.itervox/.env` without it ever appearing on a command line or in output (hidden prompt or stdin; written in a form the daemon's loader reads back exactly, or refused; atomic, `0600`, keeps a symlink and the file's owner; `--replace` to rotate), and `itervox secret list` shows which values are set without printing them. The deploy README's bootstrap example now pins the current release, and a test keeps the deploy docs' `--version` examples on the newest release in this changelog.
 
@@ -61,6 +71,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Security
 
 - **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
+- **Go toolchain bumped to 1.26.10.** `govulncheck` flagged GO-2026-6809 (`crypto/x509` now distrusts a set of compromised intermediate certificates), reachable from the GitHub tracker's HTTPS calls. The release binaries and the Docker image are built with go1.26.10.
 
 ### Fixed
 
