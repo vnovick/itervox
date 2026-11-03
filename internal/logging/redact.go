@@ -50,6 +50,8 @@ var secretValuePatterns = []secretPattern{
 	// server-to-server / Actions (ghs_), refresh (ghr_), and fine-grained.
 	{regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`), secretMask},
 	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{82,}`), secretMask},
+	// Itervox stored API tokens (#214): "itx_" + 43 base64url characters.
+	{regexp.MustCompile(`itx_[A-Za-z0-9_-]{32,}`), secretMask},
 	// Authorization: Bearer <token> (any token shape).
 	{regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+[^\s"',]+`), secretMask},
 	{regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{16,}`), secretMask},

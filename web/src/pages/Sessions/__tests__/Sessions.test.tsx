@@ -19,12 +19,14 @@ const mocks = vi.hoisted(() => ({
   transcript: [] as TranscriptEntry[],
   hasNextPage: false,
   inlineInput: false,
+  phrases: [] as Array<{ label: string; message: string }>,
 }));
 
 vi.mock('../../../queries/sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof SessionsQueries>()),
   useSessions: () => ({ sessions: mocks.sessions, isLoading: false }),
   useSendSessionMessage: () => ({ mutate: mocks.sendMutate, isPending: false }),
+  useSteeringPhrases: () => mocks.phrases,
   useSessionTranscript: (id: string) => ({
     entries: mocks.transcript.map((e) => ({ ...e, text: `${e.text} (${id})` })),
     isLoading: false,
@@ -145,6 +147,7 @@ const HAND_BUSY: SessionRow = {
 beforeEach(() => {
   mocks.sessions = [WAITING, RUNNING, STARTING];
   mocks.inlineInput = false;
+  mocks.phrases = [];
   mocks.fetchNextPage.mockReset();
   mocks.transcript = [
     { role: 'user', kind: 'text', text: 'Add a health check' },
@@ -228,6 +231,26 @@ describe('Sessions page', () => {
       expect.anything(),
     );
     expect(mocks.provideMutate).not.toHaveBeenCalled();
+  });
+
+  it('sends a steering phrase with one click (#218)', async () => {
+    mocks.phrases = [
+      { label: 'Prove it works', message: 'Prove it works: show me the test output.' },
+      { label: 'Smallest change', message: 'Make the smallest change.' },
+    ];
+    const user = userEvent.setup();
+    renderAt('?id=sess-run');
+    const chips = screen.getByRole('group', { name: 'Steering phrases' });
+    expect(
+      within(chips)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Prove it works', 'Smallest change']);
+    await user.click(within(chips).getByRole('button', { name: 'Prove it works' }));
+    expect(mocks.sendMutate).toHaveBeenCalledWith(
+      { id: 'sess-run', message: 'Prove it works: show me the test output.' },
+      expect.anything(),
+    );
   });
 
   it('addresses a session by its run id until the CLI reports one, and says Codex waits for resume', async () => {

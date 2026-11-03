@@ -16,6 +16,7 @@ vi.mock('../../../queries/issues', () => ({
   useTriggerAIReview: vi.fn(),
   useSetIssueProfile: vi.fn(),
   useSetIssueBackend: vi.fn(),
+  useSetIssuePlaybook: vi.fn(() => ({ mutate: vi.fn(), isPending: false })), // #218
   useProvideInput: vi.fn(),
   useDismissInput: vi.fn(),
   usePostIssueComment: vi.fn(),

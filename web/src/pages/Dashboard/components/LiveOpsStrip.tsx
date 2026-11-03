@@ -12,6 +12,7 @@ import { DispatchPressureChip } from './DispatchPressureChip';
 import { BackendHealthChips } from './BackendHealthChips';
 import { SyncStatusChip } from './SyncStatusChip';
 import { TrackerPollChip } from './TrackerPollChip';
+import { DispatchPauseToggle } from './DispatchPauseToggle';
 import { useDashboardHref } from '../../../hooks/useDashboardHref';
 import {
   ACTIVITY_LABEL,
@@ -431,6 +432,8 @@ export function LiveOpsStrip() {
         <span className="text-theme-text inline-flex min-h-9 items-center rounded-[var(--radius-sm)] px-2 text-[12px] font-semibold">
           <LiveIndicator status={indicatorStatus} size="sm" label={statusLabel} />
         </span>
+        {/* #213 — pause/resume all dispatch, with a confirm. */}
+        <DispatchPauseToggle />
         <OpsChip
           label={`Capacity ${model.capacityLabel}`}
           title={`${String(model.runningCount)} ${STATUS_META.running.noun}`}

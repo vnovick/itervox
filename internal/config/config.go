@@ -671,6 +671,9 @@ type AgentConfig struct {
 	// model dropdown. When empty, the frontend falls back to a built-in default
 	// list.
 	AvailableModels map[string][]ModelOption
+	// Playbooks is agent.playbooks (#218): per-task-type playbooks chosen by
+	// label, then by a keyword classifier. Load-time config.
+	Playbooks PlaybooksConfig
 }
 
 // ModelOption represents an available model for a backend. Matches the
@@ -1041,6 +1044,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
+	cfg.Agent.Playbooks = parsePlaybooksConfig(nestedMap(agent, "playbooks")) // #218
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")
 	cfg.Agent.Budget = BudgetConfig{

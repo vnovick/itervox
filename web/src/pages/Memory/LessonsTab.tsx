@@ -1,14 +1,24 @@
 // Memory page, Lessons tab (#203): the review queue for the lessons Itervox
-// proposes from corrections and failed-then-succeeded runs (approve into a
-// scope, edit then approve, reject), and the approved lessons that are not
-// helping. Proposed entries are never used by a run until approved.
+// proposes from corrections, failed-then-succeeded runs and (#217) repeated
+// reviewer asks, reverted agent PRs and hard-won successes (approve into a
+// scope, edit then approve, reject); the approved lessons with their
+// analytics, enforcement suggestions and promotion to a rule (#217); and the
+// approved lessons that are not helping. Proposed entries are never used by
+// a run until approved.
 
 import { EmptyState } from '../../components/ui/EmptyState';
 import { ToggleChip } from '../../components/ui/ToggleChip';
 import { useUIStore } from '../../store/uiStore';
 import type { MemoryView } from '../../types/schemas';
+import { ApprovedLessonCard } from './ApprovedLessonCard';
 import { LessonCard } from './LessonCard';
-import { SCOPE_INFO, notHelpingEntries, proposedEntries } from './memoryModel';
+import {
+  NOT_HELPING_LABELS,
+  SCOPE_INFO,
+  approvedLessons,
+  notHelpingEntries,
+  proposedEntries,
+} from './memoryModel';
 
 function LessonsConfigNote({ view }: { view: MemoryView }) {
   const l = view.lessons;
@@ -31,6 +41,9 @@ function LessonsConfigNote({ view }: { view: MemoryView }) {
       issue every {l.rateWindowHours}h ·{' '}
       {auto.length > 0 ? `auto-approved: ${auto.join(', ')}` : 'every lesson waits for review'} ·{' '}
       {l.rejected} rejected
+      {l.enforceThreshold
+        ? ` · enforcement suggested after ${String(l.enforceThreshold)} sightings`
+        : ''}
     </p>
   );
 }
@@ -39,6 +52,7 @@ export function LessonsTab({ view }: { view: MemoryView }) {
   const mode = useUIStore((s) => s.memoryLessonsView);
   const setMode = useUIStore((s) => s.setMemoryLessonsView);
   const proposed = proposedEntries(view.entries);
+  const approved = approvedLessons(view.entries);
   const stale = notHelpingEntries(view.entries);
 
   return (
@@ -51,6 +65,14 @@ export function LessonsTab({ view }: { view: MemoryView }) {
           }}
         >
           Review queue ({proposed.length})
+        </ToggleChip>
+        <ToggleChip
+          pressed={mode === 'approved'}
+          onPressedChange={() => {
+            setMode('approved');
+          }}
+        >
+          Approved ({approved.length})
         </ToggleChip>
         <ToggleChip
           pressed={mode === 'not-helping'}
@@ -79,12 +101,29 @@ export function LessonsTab({ view }: { view: MemoryView }) {
             ))}
           </ul>
         ))}
+      {mode === 'approved' &&
+        (approved.length === 0 ? (
+          <EmptyState
+            data-testid="lessons-approved-empty"
+            title="No approved lessons"
+            description="Approved lessons show how often runs used them, the enforcement Itervox suggests for lessons that keep coming back, and can be promoted to a rule."
+          />
+        ) : (
+          <ul
+            className="divide-theme-line border-theme-line divide-y rounded border"
+            data-testid="lessons-approved"
+          >
+            {approved.map((e) => (
+              <ApprovedLessonCard key={`${e.scope}-${e.id}`} entry={e} />
+            ))}
+          </ul>
+        ))}
       {mode === 'not-helping' &&
         (stale.length === 0 ? (
           <EmptyState
             data-testid="lessons-helping"
             title="Every approved lesson is helping"
-            description={`Approved lessons that none of the last ${String(view.lessons?.staleAfterRuns ?? 20)} runs used, or whose runs mostly failed, are listed here so you can edit or archive them in Entries.`}
+            description={`Approved lessons that none of the last ${String(view.lessons?.staleAfterRuns ?? 20)} runs used, whose runs mostly failed, or that are now enforced by an issue are listed here so you can edit or archive them in Entries.`}
           />
         ) : (
           <ul
@@ -95,7 +134,7 @@ export function LessonsTab({ view }: { view: MemoryView }) {
               <li key={`${e.scope}-${e.id}`} className="px-3 py-2 text-sm">
                 <p className="text-theme-text">{e.text}</p>
                 <p className="text-theme-warning-text mt-0.5 text-xs">
-                  {e.notHelping === 'failing' ? 'Failing' : 'Unused'}: {e.notHelpingReason}
+                  {NOT_HELPING_LABELS[e.notHelping ?? ''] ?? e.notHelping}: {e.notHelpingReason}
                 </p>
               </li>
             ))}

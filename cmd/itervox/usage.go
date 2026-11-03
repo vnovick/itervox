@@ -65,6 +65,24 @@ Commands:
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --replace  (set) replace a value that is already set
 
+  token   Manage stored API tokens (.itervox/tokens.json, hashes only):
+          viewer, operator or admin scope. A running daemon picks up a
+          change within a second; no restart. New tokens print once.
+             create --name NAME --scope viewer|operator|admin [--expires 90d]
+             list   [--json]
+             revoke ID
+             rotate [ID]  (no ID: the only stored admin token)
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+
+  mcp     Serve the board and memory of this project's running daemon to
+          an MCP client over stdio (claude mcp add itervox -- itervox mcp).
+          Uses a stored "mcp" token created on first use (viewer; remembered
+          in .itervox/mcp-token.json), or --token / ITERVOX_TOKEN
+             --token-scope operator  also offer dispatch, pause, replies,
+                        steering and remember
+             --project  the project directory (default: the --workflow dir)
+             --url      the daemon's address (default: discovered)
+
   config  Show the effective settings and the layer each came from
           (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
           .itervox/settings.local.jsonc, WORKFLOW.md), or edit a
@@ -104,6 +122,10 @@ Commands:
              itervox logs [-f] <issue>
   pause    <issue>         stop the issue's agent and pause the issue
   resume   <issue>         resume a paused issue
+  pause    [--reason r] [--for 2h]
+                           pause ALL dispatch: running agents continue,
+                           nothing new starts (until resume, or --for)
+  resume                   resume all dispatch
   dispatch <issue>         move the issue to the first active state
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question

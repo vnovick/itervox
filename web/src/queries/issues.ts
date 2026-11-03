@@ -268,6 +268,43 @@ export function useSetIssueBackend() {
   });
 }
 
+/**
+ * #218 — POST /issues/{id}/playbook: the operator's playbook for the issue
+ * (a name, 'none', or '' for automatic). Optimistic, with rollback; the
+ * daemon applies it on its event loop, so the issue is refetched after.
+ */
+export function useSetIssuePlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    onMutate: async ({ identifier, playbook }: { identifier: string; playbook: string }) => {
+      await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
+      await queryClient.cancelQueries({ queryKey: ISSUE_KEY(identifier) });
+      const { prevIssue, prevIssues } = updateIssueCaches(queryClient, identifier, (issue) => {
+        if (playbook === '') return { ...issue, playbookOverride: undefined };
+        const none = playbook === 'none';
+        return {
+          ...issue,
+          playbookOverride: playbook,
+          playbook: none ? undefined : playbook,
+          playbookSource: none ? undefined : 'override',
+        };
+      });
+      return { prevIssue, prevIssueIdentifier: identifier, prevIssues };
+    },
+    mutationFn: async ({ identifier, playbook }: { identifier: string; playbook: string }) => {
+      await apiRequest(`/api/v1/issues/${encodeURIComponent(identifier)}/playbook`, {
+        op: 'setIssuePlaybook',
+        method: 'POST',
+        json: { playbook },
+      });
+    },
+    onError: makeRollbackHandler(queryClient),
+    onSuccess: (_data, { identifier }) => {
+      invalidateIssueQueries(queryClient, identifier);
+    },
+  });
+}
+
 /** POST /cancel. Pauses a running issue; on a retrying issue it cancels the retry. */
 export function useCancelIssue({ verb = 'Pause' }: IssueActionOptions = {}) {
   const queryClient = useQueryClient();

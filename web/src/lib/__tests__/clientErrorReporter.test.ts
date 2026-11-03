@@ -15,6 +15,8 @@ import {
 } from '../clientErrorReporter';
 import { useAuthStore } from '../../auth/authStore';
 import { StateSnapshotSchema } from '../../types/schemas';
+import { useItervoxStore } from '../../store/itervoxStore';
+import { makeSnapshot } from '../../test/fixtures/snapshots';
 
 function sentBodies(): Record<string, unknown>[] {
   return authedFetch.mock.calls.map(
@@ -28,6 +30,7 @@ beforeEach(() => {
   authedFetch.mockReset();
   authedFetch.mockResolvedValue(new Response('{"accepted":true}', { status: 202 }));
   useAuthStore.setState({ status: 'authorized' });
+  useItervoxStore.setState({ snapshot: null });
   window.history.replaceState(null, '', '/settings');
 });
 
@@ -78,6 +81,16 @@ describe('clientErrorReporter', () => {
     // allow_unauthenticated sessions sit at 'authorized' with no token and still report.
     useAuthStore.setState({ status: 'authorized' });
     reportClientError({ kind: 'error', message: 'c' });
+    expect(authedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // #214 — POST /client-errors is operator scope: a viewer does not send.
+  it('does not report from a viewer token, and does from an operator', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'viewer' }) });
+    reportClientError({ kind: 'error', message: 'viewer' });
+    expect(authedFetch).not.toHaveBeenCalled();
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'operator' }) });
+    reportClientError({ kind: 'error', message: 'operator' });
     expect(authedFetch).toHaveBeenCalledTimes(1);
   });
 

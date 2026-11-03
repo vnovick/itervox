@@ -14,6 +14,7 @@ import type { OperatorQueueGroupResult, OperatorQueueItem } from '../../../lib/o
 import { ConfirmButton } from '../../../components/ui/button/ConfirmButton';
 import { InputReplyBox } from '../../../components/itervox/InputReplyBox';
 import { ReviewSourcePill } from '../../../components/itervox/ReviewSourcePill';
+import { RequireScope } from '../../../components/itervox/RequireScope';
 
 // CORE-077 — the attention inbox, pinned at the top of the Dashboard. One
 // list of everything that needs the operator (lib/operatorQueue), with the
@@ -244,19 +245,28 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
                 </div>
                 {replyOpen && (
                   <div id={`attention-reply-${id}`} className="mt-2 space-y-2">
-                    <InputReplyBox
-                      identifier={id}
-                      inlineInput={inlineInput}
-                      draft={drafts[id] ?? ''}
-                      onDraftChange={(draft) => {
-                        setDrafts((prev) => ({ ...prev, [id]: draft }));
-                      }}
-                      provideInputMutation={provideInput}
-                      dismissInputMutation={dismissInput}
-                      sending={sendingIds.has(id)}
-                      dismissing={dismissingIds.has(id)}
-                      nameWithIdentifier
-                    />
+                    <RequireScope
+                      scope="operator"
+                      fallback={
+                        <p className="text-theme-muted text-xs">
+                          Replying needs an operator token.
+                        </p>
+                      }
+                    >
+                      <InputReplyBox
+                        identifier={id}
+                        inlineInput={inlineInput}
+                        draft={drafts[id] ?? ''}
+                        onDraftChange={(draft) => {
+                          setDrafts((prev) => ({ ...prev, [id]: draft }));
+                        }}
+                        provideInputMutation={provideInput}
+                        dismissInputMutation={dismissInput}
+                        sending={sendingIds.has(id)}
+                        dismissing={dismissingIds.has(id)}
+                        nameWithIdentifier
+                      />
+                    </RequireScope>
                   </div>
                 )}
               </li>

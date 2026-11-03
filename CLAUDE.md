@@ -204,6 +204,10 @@ only the event loop mutates them.
   worker run (bounded, redacted) and the rate-limit stamps. Event-loop state,
   session-scoped, not persisted; a proposal that wrote nothing new gives its
   stamp back through `EventLessonDrafted`.
+- `PlaybookOverrides` (#218) holds the operator's per-issue playbook choice
+  (a name or `none`). Event-loop state set only through
+  `SetPlaybookOverride` → `EventSetPlaybookOverride`, persisted to
+  `.itervox/playbook_overrides.json` by the ledger writer.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
@@ -276,6 +280,29 @@ only the event loop mutates them.
   iteration). `TrackerBreaker` opens after 3 polls in a row with a transport
   failure and skips tracker reads for a cooldown. Session-scoped, not
   persisted.
+- `Feed` / `FeedSeq` (#213) are the event feed: a bounded (5000 events,
+  7 days) append-only ring persisted to `feed.jsonl` via the ledger writer.
+  Only the loop assigns `seq` (`appendFeed`); in-loop handlers that already
+  observe a transition call `emitFeed`, off-loop producers call
+  `Orchestrator.RecordFeedEvent`, a NON-blocking send of `EventFeedRecorded`.
+  Payloads are structured and redacted — never agent output or prompt text.
+  The ring is trimmed only by re-slicing from the front, so `State.Clone`
+  shares it (allowlisted); never write through an index or reslice to `[:0]`.
+- `DispatchPaused` (#213) is the daemon-wide dispatch pause, set only by
+  `EventSetDispatchPause` (`PauseDispatch` / `ResumeDispatch`, a loop
+  round-trip) and cleared at its `Until` by `expireDispatchPause` (tick and
+  event). While active `AvailableSlots` is 0, `fireRetries` keeps retries
+  due, `dispatchRun` holds the issue as a retry and `dispatchReviewer` records
+  a `PendingReview` (reason `dispatch_paused`); running agents continue.
+  Persisted to `dispatch_paused.json` via the ledger writer.
+- `RunContexts` (#215) is event-loop state keyed by run ID: what a run is
+  doing (last step, last tool call — never tool output — counts). Workers
+  send the debounced `EventRunContext` (at most 1/s per run plus one per
+  turn, non-blocking); the loop publishes it into `lastSnap` without a full
+  store/announce, so it is not in the SSE frame. Bounded to running runs
+  plus 32 finished; session-scoped. The worktree diff
+  (`Orchestrator.WorktreeDiff`) runs git on the caller's goroutine, never the
+  loop.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -389,12 +416,25 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   template (WORKFLOW.md body, or `agent.reviewer_prompt` for a reviewer) and
   the daemon's blocks (reply envelope, handoffs, run context), then the
   profile tail `profilePromptTail` shares with the eval composer: `## Rules`
-  → `## Memory` (#202) → SOUL.md → INSTRUCTIONS.md → automation
-  instructions / action notice / sub-agent roster. Concatenated and passed to
-  the agent subprocess via stdin/argv depending on backend. SOUL is the
-  compact identity ("who you are"); INSTRUCTIONS is the
-  operational/behavioural rules. `TestPromptAssemblyOrderRulesMemorySoul`
-  pins the tail order.
+  → `## Memory` (#202) → SOUL.md → INSTRUCTIONS.md → `## Playbook: <name>`
+  (#218, worker runs only) → automation instructions / action notice /
+  sub-agent roster. Concatenated and passed to the agent subprocess via
+  stdin/argv depending on backend. SOUL is the compact identity ("who you
+  are"); INSTRUCTIONS is the operational/behavioural rules; the playbook is
+  how to approach this kind of task. `TestPromptAssemblyOrderRulesMemorySoul`
+  pins the tail order; `TestPlaybookInPromptAfterInstructionsAndInDigest`
+  pins the playbook's place.
+- **Playbooks (#218)** live in `.itervox/playbooks/<name>.md` (committable;
+  `itervox init` scaffolds six, `init --update` adds the missing ones,
+  `!.itervox/playbooks/` carve-out). `startRun` reads them again for every
+  run and chooses one (operator override in `State.PlaybookOverrides`, else
+  label via `agent.playbooks.labels`, else the keyword classifier, else none)
+  onto `runHandle.playbook`. The block is a prompt-digest component only when
+  present (existing digests unchanged); `ComposeEvalPrompt` and
+  `profilePromptComponents` take the same block. A playbook's
+  `require_evidence` joins the profile's in the one #80 evidence gate
+  (`runEvidenceChecks`). `agent.playbooks` is load-time config, NOT in the
+  cfgMu allowlist.
 - **Rules (#157)** go in a `## Rules` block immediately ahead of the profile's
   SOUL.md/INSTRUCTIONS.md blocks (workers, reviewers, automation runs; the
   dependency analyzer gets it at the top of its prompt). `internal/rules` reads
@@ -458,7 +498,9 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   chronologically by filename prefix, budget-truncated oldest-first) into every
   subsequent worker's prompt as a `## Prior Agent Handoffs` block. Liquid bindings
   `{{ run.timestamp }}` and `{{ run.handoff_path }}` expose the current run's
-  metadata to the agent. The directory is committable via a `.gitignore`
+  metadata to the agent; `{{ run.decisions_path }}` (#218) names the run's
+  decision log, `<ISO8601>_<role>.decisions.tsv` next to the handoff, read
+  defensively (bounded, redacted) by `GET /api/v1/issues/{identifier}/decisions`. The directory is committable via a `.gitignore`
   carve-out (`!.itervox/handoff/`, `!.itervox/handoff/**`, added alongside the
   agents carve-out by `itervox init` and `itervox init --update`). Non-success
   worker exits (`TerminalFailed`, `TerminalStalled`) rename the in-flight file
@@ -510,7 +552,10 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
          View is injected by cmd/itervox from Snapshot(), never cfgMu)
 
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
-         orchestrator and cmd/itervox)
+         orchestrator, server and cmd/itervox)
+
+apitokens (stored API tokens + scopes, #214 — imports atomicfs only;
+           used by server and cmd/itervox)
 
 memory (managed memory files, selection and the `## Memory` block — imports
         atomicfs, config, logging; imported by orchestrator, server and
@@ -524,6 +569,9 @@ workflow ──── config ──── workspace (hooks — also imports proc
 rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
        server and cmd/itervox)
 
+playbook (task-type playbooks, #218 — imports config only; used by
+          orchestrator, app and cmd/itervox)
+
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
@@ -532,17 +580,20 @@ guardrails (agent shims, pre-push hook, approval broker — imports agent,
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, extsessions, guardrails,
-              logbuffer, logging, memory, metrics, outbox, prdetector,
+              logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
               procgroup, prompt, rules, tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)
 
-app (EnrichIssue business logic — imports domain, tracker)
+app (EnrichIssue business logic — imports domain, tracker; playbook for the card, #218)
 
-server (HTTP API — imports domain, config, guardrails, memory, rules)
+server (HTTP API — imports domain, config, apitokens, guardrails, logging, memory, rules)
 
 statusui (Bubbletea TUI — imports domain)
+
+mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
+           API; imports apitokens and logging only, never orchestrator)
 
 templates (WORKFLOW.md scaffolding)
 
@@ -558,6 +609,7 @@ cmd/itervox (wires everything)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
 - **Real-time**: SSE via `@microsoft/fetch-event-source` (NOT native `EventSource`) — needed so the connection can carry an `Authorization: Bearer` header. Single seam is `web/src/auth/authedEventStream.ts`, consumed by `useItervoxSSE`, `useLogStream`, and the per-issue log-stream in `queries/logs.ts`.
 - **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on **every** bind — including loopback — unless `server.allow_unauthenticated: true` (renamed from `server.allow_unauthenticated_lan`, which still parses as a deprecated alias). All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
+- **Auth model — scopes (#214)**: every authenticated request becomes a `Principal` (`internal/server/auth.go`) with a scope `viewer` < `operator` < `admin`. The bootstrap token (`ITERVOX_API_TOKEN`, the auto-generated token, `ITERVOX_SUPERVISOR_TOKEN`) is always admin; stored tokens in `.itervox/tokens.json` (`internal/apitokens`: SHA-256 hashes only, 0600, gitignored, flock-serialized atomic writes, in-memory index refreshed on own writes and by an mtime/inode check every 200 ms for `itervox token` writes from another process) carry their own scope; `server.allow_unauthenticated` makes every caller admin and ignores the store. `scopeMiddleware` enforces **one** table, `internal/server/route_scopes.go::routeScopes` (method + full chi pattern → scope, plus `public` / `agent_grant` entries for routes outside the bearer group); an undeclared route is refused (fail closed) and `TestEveryRouteDeclaresAScope` walks the chi router, so **every new route needs a line there**. Viewer is GET/SSE only; below admin, `snapshotForScope` / `profileDefsForScope` / `settingsLayersForScope` redact secrets (SSE frames are cached per scope). Agent-action/guardrail grants are a separate mechanism and unchanged. The dashboard reads `callerScope` from the snapshot (`useCallerScope`, `RequireScope`) only to hide controls; `authedFetch` toasts a `403 insufficient_scope` (header `X-Itervox-Required-Scope`).
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results
@@ -588,6 +640,8 @@ cmd/itervox (wires everything)
 | `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |
 | `web/src/auth/tokenStore.ts` | Token storage (sessionStorage default, localStorage opt-in via "Remember"), cross-tab `storage` event sync |
 | `web/src/auth/authStore.ts` | Auth state machine: `unknown` / `serverDown` / `needsToken` / `authorized` |
+| `web/src/auth/scope.ts` | Token scopes (#214): `Scope`, `scopeAllows`, `normalizeScope`; `hooks/useCallerScope.ts` + `components/itervox/RequireScope.tsx` hide controls by scope |
+| `web/src/pages/Settings/AccessCard.tsx` | Settings → Access (admin): stored API tokens — list, create, rotate, revoke via `queries/tokens.ts` |
 | `web/src/auth/AuthGate.tsx` | Root wrapper — captures `?token=` from URL once, probes `/api/v1/health` then `/api/v1/state`, routes to app / login / error screen |
 | `web/src/auth/UnauthorizedError.ts` | Typed error used by TanStack Query retry guards to skip retrying auth failures |
 

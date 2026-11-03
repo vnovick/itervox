@@ -144,7 +144,9 @@ export function useItervoxSSE() {
           setSseConnected(true);
           stopPoll();
         }
-        if (msg.event === 'keepalive') return;
+        // #213: `feed` announces a new event-feed seq; the snapshot that
+        // precedes it already carries feedSeq, so there is nothing to parse.
+        if (msg.event === 'keepalive' || msg.event === 'feed') return;
         try {
           const snap: StateSnapshot = StateSnapshotSchema.parse(JSON.parse(msg.data));
           setSnapshot(snap);
