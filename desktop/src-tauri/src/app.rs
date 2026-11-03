@@ -1,6 +1,10 @@
 //! Tauri glue: the tray icon and menu, the refresh thread, start/stop
 //! threads, notifications and dashboard windows. The decisions live in the
-//! plain modules; this file only wires them to the window system.
+//! plain modules; this file only wires them to the window system. The
+//! dashboard windows and their project rail (#244) are in `app_dash.rs`.
+
+#[path = "app_dash.rs"]
+mod dash;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,12 +22,12 @@ use crate::app_hub;
 use crate::app_remote::RemoteShared;
 use crate::app_update;
 use crate::client;
-use crate::dashboard::{origin_of, token_init_script, window_label};
+use crate::dashboard::{token_init_script, window_label};
 use crate::hub_source::{hub_page_url, read_local, HubPage, HubReader, HubStatus};
 use crate::menu::{
     append_app_section, append_hub_section, build_menu, MenuAction, MenuEntry, MenuSpec,
 };
-use crate::model::{refresh_interval, token_for, Core, NotificationTargets, PendingOp};
+use crate::model::{refresh_interval, Core, NotificationTargets, PendingOp};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
 use crate::registry::{registry_dir, DaemonLister};
 use crate::remote::is_remote_key;
@@ -46,9 +50,11 @@ struct Shared {
     output_dir: PathBuf,
     menu_actions: Mutex<HashMap<String, MenuAction>>,
     targets: Mutex<NotificationTargets>,
-    /// Per project: the label of its dashboard window and the token and
-    /// origin that window was created with.
-    windows: Mutex<HashMap<String, WindowEntry>>,
+    /// The dashboard windows and their rails (#244).
+    dash: dash::Dash,
+    /// The hub window: its label and the token and origin it was created
+    /// with.
+    hub_window: Mutex<Option<WindowEntry>>,
     window_generation: std::sync::atomic::AtomicU32,
     status_error: Mutex<Option<String>>,
     wake: Mutex<Sender<()>>,
@@ -71,7 +77,7 @@ struct Shared {
     hub_covered: Mutex<std::collections::HashSet<String>>,
 }
 
-/// A dashboard window: label, token, origin.
+/// A hub window: label, token, origin.
 type WindowEntry = (String, Option<String>, Option<String>);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -109,10 +115,12 @@ pub fn run() {
         // A focused window shows fresh state at once, whatever the
         // (adaptive) refresh interval (#212).
         RunEvent::WindowEvent {
+            label,
             event: tauri::WindowEvent::Focused(true),
             ..
         } => {
             if let Some(shared) = app.try_state::<Arc<Shared>>() {
+                shared.dash.note_focus(&label);
                 wake(&shared);
             }
         }
@@ -122,10 +130,14 @@ pub fn run() {
             ..
         } => {
             if let Some(shared) = app.try_state::<Arc<Shared>>() {
-                lock(&shared.windows).retain(|_, (l, _, _)| *l != label);
+                shared.dash.forget(&label);
+                let mut hub = lock(&shared.hub_window);
+                if hub.as_ref().is_some_and(|(l, _, _)| *l == label) {
+                    *hub = None;
+                }
             }
             #[cfg(target_os = "macos")]
-            if app.webview_windows().is_empty() {
+            if app.windows().keys().all(|l| *l == label) {
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
         }
@@ -176,7 +188,8 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         output_dir: log_dir.join("daemons"),
         menu_actions: Mutex::default(),
         targets: Mutex::default(),
-        windows: Mutex::default(),
+        dash: dash::Dash::default(),
+        hub_window: Mutex::default(),
         window_generation: std::sync::atomic::AtomicU32::new(0),
         status_error: Mutex::new(None),
         wake: Mutex::new(wake_tx),
@@ -240,6 +253,20 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
     update_menu(app, &shared);
+
+    // #244: the Projects menu's shortcuts act on the focused dashboard
+    // window's rail.
+    #[cfg(target_os = "macos")]
+    dash::install_app_menu(app)?;
+    let rail_shared = Arc::clone(&shared);
+    app.on_menu_event(move |app, event| {
+        if let Some(cmd) = crate::rail::menu_command(event.id().as_ref()) {
+            let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
+            let _ = std::thread::Builder::new()
+                .name("itervox-rail".into())
+                .spawn(move || dash::command(&app, &shared, cmd));
+        }
+    });
 
     let notify_shared = Arc::clone(&shared);
     let notify_app = app.clone();
@@ -394,6 +421,8 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
         update_menu(app, shared);
     }
     push_sessions(app, shared);
+    // #244: the rails show this refresh; they read nothing themselves.
+    dash::push_all(app, shared, false);
     for alert in &outcome.alerts {
         let id = lock(&shared.targets).register(&alert.project, &alert.url);
         let _ = app
@@ -518,6 +547,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
                 error_dialog(app, &format!("Could not save the project list: {e}"));
             }
             update_menu(app, shared);
+            dash::push_all(app, shared, false);
         }
         MenuAction::RevealLog(key) => {
             let log = shared.output_dir.join(output_log_name(&key));
@@ -644,6 +674,7 @@ fn add_project(app: &AppHandle, shared: &Arc<Shared>) {
                 error_dialog(&app2, &format!("Could not save the project list: {e}"));
             }
             update_menu(&app2, &shared2);
+            dash::push_all(&app2, &shared2, false);
             wake(&shared2);
         });
 }
@@ -785,41 +816,11 @@ fn stop_daemon(shared: &Shared, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Opens (or focuses and navigates) the dashboard window of a project.
+/// Opens (or focuses and navigates) the dashboard window of a project:
+/// the window already showing it, else a new window with the project rail
+/// (#244).
 fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<String>) {
-    if is_remote_key(key) {
-        // Through the daemon's tunnel, with the same token handoff.
-        match shared.remote.dashboard(key, url.as_deref()) {
-            Ok((t, title)) => {
-                if let Ok(parsed) = tauri::Url::parse(&t.url) {
-                    let origin = Some(t.origin);
-                    open_window(app, shared, key, parsed, origin, t.token, title);
-                }
-            }
-            Err(e) => error_dialog(app, &e),
-        }
-        return;
-    }
-    let rec = lock(&shared.core)
-        .last_records()
-        .iter()
-        .find(|r| r.workflow == key)
-        .cloned();
-    let Some(rec) = rec else {
-        error_dialog(app, "That project's daemon is not running.");
-        return;
-    };
-    let base = rec.base_url();
-    let target = url.unwrap_or_else(|| base.clone());
-    let Ok(parsed) = tauri::Url::parse(&target) else {
-        return;
-    };
-    let token = token_for(&rec, shared.tokens.as_ref(), &read_token_file).flatten();
-    let title = lock(&shared.core)
-        .view(key)
-        .map(|v| format!("{} — Itervox", v.name))
-        .unwrap_or_else(|| "Itervox".into());
-    open_window(app, shared, key, parsed, origin_of(&base), token, title);
+    dash::open(app, shared, key, url, dash::Mode::Reuse);
 }
 
 /// Opens a hub link (#229 notifications, #232 tray items) in the hub
@@ -844,15 +845,7 @@ fn open_hub(app: &AppHandle, shared: &Arc<Shared>, url: &str) {
         .spawn(move || {
             let token = app_hub::admin_token(shared2.tokens.as_ref(), &shared2.sidecar, &origin)
                 .unwrap_or(viewer);
-            open_window(
-                &app2,
-                &shared2,
-                "hub",
-                parsed,
-                Some(origin),
-                Some(token),
-                "Itervox hub".into(),
-            );
+            open_hub_window(&app2, &shared2, parsed, Some(origin), Some(token));
         });
 }
 
@@ -866,23 +859,21 @@ fn open_hub_page(app: &AppHandle, shared: &Arc<Shared>, page: HubPage) {
     }
 }
 
-/// Shows a dashboard window for `key` at `url`, handing it `token` on
-/// `origin` through the initialization script.
-fn open_window(
+/// Shows the hub window at `parsed`, handing it `token` on `origin`
+/// through the initialization script. The hub is its own project switcher,
+/// so its window has no rail.
+fn open_hub_window(
     app: &AppHandle,
     shared: &Arc<Shared>,
-    key: &str,
     parsed: tauri::Url,
     origin: Option<String>,
     token: Option<String>,
-    title: String,
 ) {
     let app2 = app.clone();
     let shared2 = Arc::clone(shared);
-    let key = key.to_string();
     let _ = app.run_on_main_thread(move || {
-        let mut windows = lock(&shared2.windows);
-        if let Some((label, held, held_origin)) = windows.get(&key) {
+        let mut hub = lock(&shared2.hub_window);
+        if let Some((label, held, held_origin)) = hub.as_ref() {
             if let Some(w) = app2.get_webview_window(label) {
                 if *held == token && *held_origin == origin {
                     let _ = w.navigate(parsed);
@@ -890,20 +881,19 @@ fn open_window(
                     let _ = w.set_focus();
                     return;
                 }
-                // The daemon restarted with a new token, or its tunnel
-                // moved to another port: the window's initialization script
-                // is stale, so replace the window.
+                // The hub restarted with a new token or port: the window's
+                // initialization script is stale, so replace the window.
                 let _ = w.destroy();
             }
         }
         let generation = shared2
             .window_generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let label = format!("{}-{generation}", window_label(&key));
+        let label = format!("{}-{generation}", window_label("hub"));
         #[cfg(target_os = "macos")]
         let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
         let mut b = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(parsed))
-            .title(&title)
+            .title("Itervox hub")
             .inner_size(1280.0, 860.0)
             .min_inner_size(720.0, 480.0);
         if let (Some(t), Some(origin)) = (&token, origin.as_deref()) {
@@ -911,10 +901,10 @@ fn open_window(
         }
         match b.build() {
             Ok(w) => {
-                windows.insert(key, (label, token, origin));
+                *hub = Some((label, token, origin));
                 let _ = w.set_focus();
             }
-            Err(e) => eprintln!("itervox desktop: could not open the dashboard: {e}"),
+            Err(e) => eprintln!("itervox desktop: could not open the hub: {e}"),
         }
     });
 }

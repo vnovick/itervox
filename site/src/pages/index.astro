@@ -1426,7 +1426,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="12" height="12" rx="2"/><line x1="7" y1="6" x2="7" y2="12"/><line x1="11" y1="6" x2="11" y2="12"/></svg>
         </div>
         <h4>Pause &amp; Resume</h4>
-        <p>Pause any running agent from the dashboard or TUI to free up a slot. Resume when ready &mdash; the agent picks up the same session via <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">--resume</code>, continuing the conversation from exactly where it left off.</p>
+        <p>Pause any running agent from the dashboard or with <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">itervox pause</code> to free up a slot. Resume when ready &mdash; the agent picks up the same session via <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">--resume</code>, continuing the conversation from exactly where it left off.</p>
       </div>
       <div class="int-card">
         <div class="int-icon" style="color: var(--danger);">
@@ -1566,7 +1566,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
     <div class="split">
       <div class="split-text">
         <h3>Then just run it</h3>
-        <p>Itervox polls your tracker, claims new issues, spawns agents in isolated Git worktrees, and submits PRs when the work is done. Every step is logged and visible in the dashboard or terminal UI.</p>
+        <p>Itervox polls your tracker, claims new issues, spawns agents in isolated Git worktrees, and submits PRs when the work is done. Every step is logged and visible in the dashboard or with <code>itervox watch</code>.</p>
         <ul>
           <li>Polls Linear or GitHub Issues on a configurable interval</li>
           <li>Spawns one agent per issue in isolated worktrees</li>
@@ -2104,130 +2104,43 @@ const githubUrl = 'https://github.com/vnovick/itervox';
   </div>
 </section>
 
-<!-- ===== 8. Terminal UI (split layouts) ===== -->
+<!-- ===== 8. Terminal (itervox watch) ===== -->
 <section class="section">
   <div class="container">
     <div class="section-header">
-      <div class="section-label">Terminal UI</div>
+      <div class="section-label">Terminal</div>
       <h2 class="section-heading">Or stay in the terminal</h2>
-      <p class="section-sub">Full-featured Bubbletea TUI with the same real-time data</p>
+      <p class="section-sub"><code class="mono">itervox watch</code>: a read-only live panel that works over SSH, in tmux and in a pipe</p>
     </div>
 
-    <!-- Row 1: Issues + Logs (mockup LEFT, text RIGHT) -->
     <div class="feature-row">
       <div>
-        <Screenshot src="tui-issues-logs-timeline.png" alt="Bubbletea TUI default view: issues left, logs right, Gantt timeline bottom" frame="terminal" />
+        <pre class="mono" style="font-size:11.5px; line-height:1.5; background:var(--bg-elevated); border:1px solid var(--line); border-radius:var(--radius-md); padding:16px; overflow-x:auto; white-space:pre;">itervox · 2/2 running · 0 queued · 0 retrying · 2 waiting for you · 1 waiting for a slot · 0 blocked by dependencies · 0 paused
+
+● ENG-142    Fix the login race in the session s… coder · claude    1m05s  turn 3   12.0k tok  $0.42
+    › [Bash] go test ./internal/auth/... — Running the auth tests
+● ENG-139    Add a response cache                 codex reviewer       5s  turn 1     900 tok
+
+NEEDS YOU
+  ! ENG-140    approval: Agent wants to run: `vercel --prod`
+      → itervox approve ENG-140
+  ? ENG-137    question: Which database should the migration target?
+      → itervox reply ENG-137 "&lt;your answer&gt;"
+
+EVENTS
+  14:01:58 #1840 ENG-131    finished: succeeded (coder · claude)
+  14:02:09 #1842 ENG-139    started (codex · reviewer)</pre>
       </div>
       <div class="split-text">
-        <h3>Issues and Live Logs</h3>
-        <p>The left panel shows all active sessions &mdash; running, retrying, paused &mdash; with subagent expansion. The right panel streams live logs with color-coded tool calls, text output, and subagent markers. Bottom panel is a proportional Gantt of every session.</p>
+        <h3>Lanes, events and what needs you</h3>
+        <p>One lane per running issue with its latest (redacted) activity, tokens and cost; events from the feed as they happen; and every question or guardrail approval waiting for you, with the exact <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">itervox reply</code> or <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">itervox approve</code> command to answer it.</p>
         <ul>
-          <li>Expand subagent trees inline</li>
-          <li>Color-coded log levels</li>
-          <li>Filter by issue selection</li>
+          <li>Never reads stdin or changes the terminal mode</li>
+          <li><code>--issue</code> follows one issue's full log</li>
+          <li><code>--events-only</code> and <code>--json</code> for scripts; <code>--since</code> resumes</li>
         </ul>
+        <p>&rarr; <a href="/guides/terminal/" style="color:var(--accent-strong); text-decoration:none; border-bottom:1px dashed var(--accent-strong);">Working from the terminal</a></p>
       </div>
-    </div>
-
-    <!-- Row 2: Session Details (text LEFT, mockup RIGHT) -->
-    <div class="feature-row">
-      <div class="split-text">
-        <h3>Session Details</h3>
-        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">d</code> for a slide-in details panel: turns, token breakdown, backend, and the full subagent list for the currently focused session.</p>
-        <ul>
-          <li>Token usage breakdown</li>
-          <li>Subagent list with branch names</li>
-          <li>Backend and profile shown inline</li>
-        </ul>
-      </div>
-      <div>
-        <Screenshot src="tui-session-details.png" alt="TUI details panel showing turns, tokens, backend, and subagents" frame="terminal" />
-      </div>
-    </div>
-
-    <!-- Row 3: Gantt Timeline (mockup LEFT, text RIGHT) -->
-    <div class="feature-row">
-      <div>
-        <Screenshot src="tui-gantt-timeline.png" alt="TUI Gantt timeline with subagent rows and per-run token counts" frame="terminal" size="small" />
-      </div>
-      <div class="split-text">
-        <h3>Gantt Timeline</h3>
-        <p>Every running and paused session as a proportional bar. Subagent rows appear underneath. Press Enter to drill into the phase breakdown for a single run.</p>
-        <ul>
-          <li>Proportional duration bars</li>
-          <li>Per-subagent rows with token counts</li>
-          <li>History mode shows completed runs</li>
-        </ul>
-      </div>
-    </div>
-
-    <!-- Row 4: Backlog (text LEFT, mockup RIGHT) -->
-    <div class="feature-row">
-      <div class="split-text">
-        <h3>Backlog</h3>
-        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">b</code> to open the backlog panel &mdash; see issues waiting for work, drill into details, and dispatch them with <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">d</code>.</p>
-        <ul>
-          <li>Priority-sorted issue list</li>
-          <li>Inline details on selection</li>
-          <li>One-key dispatch</li>
-        </ul>
-      </div>
-      <div>
-        <Screenshot src="tui-backlog.png" alt="TUI backlog panel with issue details on the right" frame="terminal" />
-      </div>
-    </div>
-
-    <!-- Row 5: History (mockup LEFT, text RIGHT) -->
-    <div class="feature-row">
-      <div>
-        <Screenshot src="tui-history.png" alt="TUI history view showing completed runs" frame="terminal" />
-      </div>
-      <div class="split-text">
-        <h3>History</h3>
-        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">h</code> to flip the issues panel into history mode: completed runs with their final status, turn counts, and elapsed time.</p>
-        <ul>
-          <li>Status glyphs per run</li>
-          <li>Elapsed and turn count at a glance</li>
-          <li>Scroll back through every session</li>
-        </ul>
-      </div>
-    </div>
-
-    <!-- Row 6: Project Picker (text LEFT, mockup RIGHT) -->
-    <div class="feature-row feature-row--side">
-      <div class="split-text">
-        <h3>Project Picker</h3>
-        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">p</code> to open the multi-select project filter. Check any combination of Linear projects; the daemon scopes polling to just those. Same filter also lives in the web settings page.</p>
-        <ul>
-          <li>Multi-select with keyboard</li>
-          <li>Filter scales across dozens of projects</li>
-          <li>Persisted via WORKFLOW.md</li>
-        </ul>
-      </div>
-      <div>
-        <Screenshot src="tui-project-picker.png" alt="TUI project picker overlay with multi-select checkboxes" frame="terminal" size="small" />
-      </div>
-    </div>
-
-    <!-- Keybinding pills -->
-    <div class="keybinds">
-      <span class="keybind"><kbd>tab</kbd> focus panel</span>
-      <span class="keybind"><kbd>j/k</kbd> navigate</span>
-      <span class="keybind"><kbd>space</kbd> expand</span>
-      <span class="keybind"><kbd>enter</kbd> drill down</span>
-      <span class="keybind"><kbd>esc</kbd> back</span>
-      <span class="keybind"><kbd>h</kbd> history</span>
-      <span class="keybind"><kbd>t</kbd> tools</span>
-      <span class="keybind"><kbd>d</kbd> details</span>
-      <span class="keybind"><kbd>b</kbd> backlog</span>
-      <span class="keybind"><kbd>p</kbd> projects</span>
-      <span class="keybind"><kbd>x</kbd> pause</span>
-      <span class="keybind"><kbd>r</kbd> resume</span>
-      <span class="keybind"><kbd>D</kbd> discard</span>
-      <span class="keybind"><kbd>+/-</kbd> workers</span>
-      <span class="keybind"><kbd>o</kbd> open PR</span>
-      <span class="keybind"><kbd>w</kbd> web UI</span>
-      <span class="keybind"><kbd>q</kbd> quit</span>
     </div>
   </div>
 </section>
@@ -2318,7 +2231,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       <div class="config-card">
         <Screenshot src="settings-project-filter.png" alt="Linear project filter" />
         <h4>Per-project scoping</h4>
-        <p>Restrict the daemon to one or many Linear projects, or leave it polling everything. Same filter works in the TUI.</p>
+        <p>Restrict the daemon to one or many Linear projects, or leave it polling everything. Set it from the dashboard or WORKFLOW.md.</p>
       </div>
       <div class="config-card">
         <Screenshot src="settings-tracker-states.png" alt="Tracker states configuration" />

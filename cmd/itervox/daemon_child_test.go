@@ -177,10 +177,9 @@ func (p *daemonProject) startHeadless(t *testing.T, flags []string, extraEnv ...
 	cmd.Env = env
 	cmd.Stdout = outf
 	cmd.Stderr = errf
-	// New session, no controlling terminal: redirected stdio alone is not
-	// headless, because statusui falls back to /dev/tty. Without this the
-	// child starts the TUI whenever `go test` runs from a terminal (e.g. the
-	// lefthook pre-push hook), as systemd/containers never would.
+	// New session, no controlling terminal: the systemd/container shape,
+	// even when `go test` runs from a terminal (e.g. the lefthook pre-push
+	// hook).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

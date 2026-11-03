@@ -1,9 +1,11 @@
 //! Dry runs of the release scripts (#130) with fake inputs: the manifest
-//! `gen-latest-json.sh` writes must be one the app's updater accepts, and
+//! `gen-latest-json.sh` writes must be one the app's updater accepts,
 //! `macos-release.sh mode` must pick signed/unsigned from the secrets that
-//! are present and refuse half-configured ones. Neither needs macOS or
-//! Apple credentials; both need bash and jq (skipped without jq unless
-//! ITERVOX_E2E_REQUIRE=1, as under `make desktop-test` and CI).
+//! are present and refuse half-configured ones, and `homebrew-cask.sh`
+//! (#244) must render the cask from a DMG and never publish an unsigned
+//! build. None needs macOS, Apple credentials or the network; all need bash
+//! and jq (skipped without jq unless ITERVOX_E2E_REQUIRE=1, as under `make
+//! desktop-test` and CI).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -230,4 +232,293 @@ fn signing_mode_refuses_half_configured_secrets() {
     let (ok, _, err, _) = mode(&env, "");
     assert!(!ok);
     assert!(err.contains("plugins.updater.pubkey"), "{err}");
+}
+
+// --- the Homebrew cask (#244) ----------------------------------------------
+
+/// The fixture "DMG": any bytes do, the cask only carries their checksum.
+const FIXTURE_DMG: &[u8] = b"not a real disk image: itervox cask fixture\n";
+
+/// SHA-256 of a file by a different tool than the script prefers, so the
+/// test does not just repeat the script's own computation.
+fn independent_sha256(path: &Path) -> String {
+    let o = Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .or_else(|_| {
+            Command::new("openssl")
+                .args(["dgst", "-sha256", "-r"])
+                .arg(path)
+                .output()
+        })
+        .expect("sha256sum or openssl");
+    assert!(o.status.success());
+    text(&o.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+fn cask_script() -> PathBuf {
+    scripts().join("homebrew-cask.sh")
+}
+
+#[test]
+fn cask_is_rendered_with_version_and_sha() {
+    if !have_jq() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let dmg = dir.path().join("Itervox_0.3.0_universal.dmg");
+    std::fs::write(&dmg, FIXTURE_DMG).unwrap();
+    let want_sha = independent_sha256(&dmg);
+    assert_eq!(want_sha.len(), 64);
+    let conf = dir.path().join("tauri.macos.conf.json");
+    std::fs::write(
+        &conf,
+        r#"{"bundle":{"macOS":{"minimumSystemVersion":"13.0"}}}"#,
+    )
+    .unwrap();
+    let out = dir.path().join("itervox-app.rb");
+    let o = run(Command::new("bash")
+        .arg(cask_script())
+        .args(["render", "--version", "v0.3.0", "--dmg"])
+        .arg(&dmg)
+        .arg("--conf")
+        .arg(&conf)
+        .arg("--out")
+        .arg(&out));
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let cask = std::fs::read_to_string(&out).unwrap();
+    for line in [
+        "cask \"itervox-app\" do",
+        "  version \"0.3.0\"",
+        &format!("  sha256 \"{want_sha}\""),
+        "  url \"https://github.com/vnovick/itervox/releases/download/v#{version}/Itervox_#{version}_universal.dmg\"",
+        "  name \"Itervox\"",
+        "  homepage \"https://github.com/vnovick/itervox\"",
+        "  auto_updates true",
+        "  depends_on macos: \">= :ventura\"",
+        "  app \"Itervox.app\"",
+        "  caveats <<~EOS",
+        "    CLI formula with: brew install vnovick/tap/itervox",
+        "end",
+    ] {
+        assert!(cask.lines().any(|l| l == line), "missing {line:?} in\n{cask}");
+    }
+    // macOS runs this script with bash 3.2, which misparses a here-document
+    // inside command substitution (the release job failed with "unexpected
+    // EOF while looking for matching" on such a script), so the cask is
+    // printed by a function, never captured from `$(cat <<…)`.
+    let script = std::fs::read_to_string(cask_script()).unwrap();
+    assert!(
+        !script.contains("$(cat <<"),
+        "homebrew-cask.sh builds text with a here-document inside $( )"
+    );
+    // The cask's token is not the CLI formula's name: a plain
+    // `brew install vnovick/tap/itervox` stays the command-line tool.
+    let goreleaser = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.goreleaser.yaml"),
+    )
+    .unwrap();
+    let formula = goreleaser
+        .split("brews:")
+        .nth(1)
+        .and_then(|b| b.lines().find_map(|l| l.trim().strip_prefix("- name: ")))
+        .expect("the CLI formula in .goreleaser.yaml");
+    assert_eq!(formula, "itervox");
+    assert!(
+        !cask.contains(&format!("cask \"{formula}\" do")),
+        "the cask must not share the formula's name\n{cask}"
+    );
+
+    // The app's real minimum macOS has a Homebrew name; --sha256 works
+    // without a DMG.
+    let sha = "0123456789abcdef".repeat(4);
+    let o = run(Command::new("bash").arg(cask_script()).args([
+        "render",
+        "--version",
+        "0.3.1",
+        "--sha256",
+        &sha,
+    ]));
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let cask = text(&o.stdout);
+    assert!(cask.contains(&format!("sha256 \"{sha}\"")));
+    assert!(cask.contains("depends_on macos: \">= :big_sur\""), "{cask}");
+
+    // Bad inputs are refused.
+    let cases: [(&[&str], &str); 4] = [
+        (
+            &["--version", "0.3", "--sha256", &sha],
+            "is not MAJOR.MINOR.PATCH",
+        ),
+        (
+            &["--version", "0.3.0", "--sha256", "abc"],
+            "64 lowercase hex",
+        ),
+        (&["--version", "0.3.0"], "64 lowercase hex"),
+        (
+            &["--version", "0.3.0", "--dmg", "/nonexistent.dmg"],
+            "missing or empty",
+        ),
+    ];
+    for (args, want) in cases {
+        let o = run(Command::new("bash")
+            .arg(cask_script())
+            .arg("render")
+            .args(args));
+        assert!(!o.status.success(), "{args:?} accepted");
+        assert!(
+            text(&o.stderr).contains(want),
+            "{args:?}: {}",
+            text(&o.stderr)
+        );
+    }
+
+    // Drift guard: the URL names the DMG the release workflow uploads.
+    let wf = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/desktop-release.yml"),
+    )
+    .unwrap();
+    assert!(wf.contains(r#"dmg="$OUT/Itervox_${VERSION}_universal${suffix}.dmg""#));
+}
+
+/// A fake `gh` on PATH that records its arguments and the token it got
+/// (as "set"/"unset", never the value) to `log`.
+fn fake_gh(dir: &Path) -> (PathBuf, PathBuf) {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = dir.join("gh.log");
+    let gh = bin.join("gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/usr/bin/env bash\n\
+             echo \"gh token=${{GH_TOKEN:+set}} $*\" >> '{}'\n\
+             case \"$*\" in *'--jq .sha'*) echo blobsha1 ;; esac\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    (bin, log)
+}
+
+fn publish(dir: &Path, notarized: &str, version: &str, token: Option<&str>) -> (Output, String) {
+    let (bin, log) = fake_gh(dir);
+    let cask = dir.join("itervox-app.rb");
+    std::fs::write(
+        &cask,
+        format!("cask \"itervox-app\" do\n  version \"{version}\"\nend\n"),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = Command::new("bash");
+    cmd.env_clear()
+        .env("PATH", path)
+        .arg(cask_script())
+        .args(["publish", "--cask"])
+        .arg(&cask)
+        .args(["--version", version, "--notarized", notarized]);
+    if let Some(t) = token {
+        cmd.env("HOMEBREW_TAP_GITHUB_TOKEN", t);
+    }
+    let o = run(&mut cmd);
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    (o, calls)
+}
+
+#[test]
+fn cask_step_is_skipped_without_signing_secrets() {
+    let secret = "tap-secret-value";
+
+    // No signing secrets: `mode` says notarize=false, and the step does not
+    // run; run anyway, the script refuses to touch the tap, even with the
+    // tap token present.
+    let dir = tempfile::tempdir().unwrap();
+    let (o, calls) = publish(dir.path(), "false", "0.3.0", Some(secret));
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("::notice title=Homebrew cask skipped::"));
+    assert!(calls.is_empty(), "gh was called: {calls}");
+
+    // Notarized but no tap token: skipped with a warning.
+    let dir = tempfile::tempdir().unwrap();
+    let (o, calls) = publish(dir.path(), "true", "0.3.0", None);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("HOMEBREW_TAP_GITHUB_TOKEN is not set"));
+    assert!(calls.is_empty(), "gh was called: {calls}");
+
+    // A pre-release: skipped.
+    let dir = tempfile::tempdir().unwrap();
+    let (o, calls) = publish(dir.path(), "true", "0.3.0-rc.1", Some(secret));
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    assert!(calls.is_empty(), "gh was called: {calls}");
+
+    // Notarized with the token: the cask is committed to the tap, with
+    // the token only in gh's environment.
+    let dir = tempfile::tempdir().unwrap();
+    let (o, calls) = publish(dir.path(), "true", "0.3.0", Some(secret));
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let put = calls
+        .lines()
+        .find(|l| l.contains("-X PUT"))
+        .unwrap_or_else(|| panic!("no PUT: {calls}"));
+    assert!(
+        put.starts_with(
+            "gh token=set api -X PUT repos/vnovick/homebrew-tap/contents/Casks/itervox-app.rb"
+        ),
+        "{put}"
+    );
+    assert!(put.contains("message=itervox-app 0.3.0 (cask)"), "{put}");
+    assert!(
+        put.contains("sha=blobsha1"),
+        "updates the existing file: {put}"
+    );
+    for out in [text(&o.stdout), text(&o.stderr), calls.clone()] {
+        assert!(!out.contains(secret), "the tap token was printed");
+    }
+
+    // The workflow runs the step only for a notarized build, after the
+    // notarization and the release upload.
+    let wf = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/desktop-release.yml"),
+    )
+    .unwrap();
+    let step = wf
+        .find("- name: Update the Homebrew cask")
+        .expect("cask step");
+    let tail = &wf[step..];
+    let cond = tail.lines().nth(1).unwrap().trim();
+    assert_eq!(
+        cond,
+        "if: inputs.tag != '' && steps.mode.outputs.notarize == 'true'"
+    );
+    for earlier in [
+        "- name: Notarize, staple and verify the disk image",
+        "- name: Upload to the GitHub release",
+    ] {
+        assert!(
+            wf.find(earlier).expect(earlier) < step,
+            "{earlier} must come first"
+        );
+    }
+    assert!(tail.contains("HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}"));
+    assert!(tail.contains("--notarized \"$NOTARIZED\""));
+    // The same tap and token secret as the CLI formula.
+    let goreleaser = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.goreleaser.yaml"),
+    )
+    .unwrap();
+    assert!(goreleaser.contains("name: homebrew-tap"));
+    assert!(goreleaser.contains("{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"));
 }

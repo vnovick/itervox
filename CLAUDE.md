@@ -5,7 +5,8 @@
 **Itervox** is a long-running daemon (Go 1.26.9) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
-provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
+provides a live Kanban web dashboard (React/Vite) and terminal client commands
+(`itervox watch`, a read-only live panel, and the quick actions) over its API.
 
 Config lives in one `WORKFLOW.md` file per project (YAML front matter +
 Liquid prompt template). Since #129 the `agent`, `polling`, `workspace` and
@@ -49,9 +50,12 @@ Git hooks (lefthook) run `go vet`, `golangci-lint`, `tsc --noEmit`, ESLint,
 Prettier on pre-commit; full test + build suites on pre-push.
 
 Testing specifics not obvious from the commands above:
-- **TUI tests** use `charmbracelet/x/exp/teatest` (e.g. `model_teatest_test.go`)
-  with catwalk golden files. Regenerate golden files via `make tui-golden`
-  after intentional render changes.
+- **Terminal command tests** (`itervox watch`, quick actions) run against a
+  fake daemon (`newFakeDaemon`, `fakeFeed`) and assert on printed text or JSON
+  lines; there are no golden files. The terminal UI (`internal/statusui`,
+  `--tui`, `make tui-golden`) was removed in #240: `--tui` prints a pointer to
+  `itervox watch` and exits 2. `TestWatchNeverChangesTerminalMode` (Linux,
+  real pseudo-terminal) fails if watch changes the terminal mode or reads stdin.
 - **Integration tests** that hit a real tracker API are gated behind a build
   tag; they are NOT run by default with `go test ./...`.
 - **Frontend tests** use Vitest + Testing Library. Coverage gates live in
@@ -212,7 +216,7 @@ only the event loop mutates them.
   scope itself (projects AND assignee AND labels) lives in the Linear
   client under its own `projectFilterMu`, not `cfg`:
   `tracker.assignee`/`team`/`labels` are load-time fields, and the dashboard
-  scope card and TUI picker change the client's runtime scope
+  scope card changes the client's runtime scope
   (`SetScope`/`SetProjectFilter`), so there is no new `cfgMu` field.
 - `CronCursors` (#176) is the per-cron-rule `filter.limit` rotation cursor
   (automation ID → last identifier served). A limited cron tick is handed to
@@ -378,7 +382,7 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   `State`.
 - **Shim entrypoints run first in `main()`** (`runGuardrailEntrypoint`),
   before dotenv / GIT_DIR scrubbing, forward the agent's env untouched and
-  exit via `exitWithoutTerminalRestore` (no `stty sane` on the agent's TTY).
+  exit via `exitWithoutCleanup` (no `onFatalExit` cleanup in the agent's process).
   Itervox's own git still goes only through `gitexec` (which scrubs
   `GIT_CONFIG_PARAMETERS`, so the guardrail hooks never apply to it); the
   shim's forward is a `syscall.Exec` of the agent's own command and the
@@ -664,8 +668,6 @@ prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
 app (EnrichIssue business logic — imports domain, tracker; playbook for the card, #218)
 
 server (HTTP API — imports domain, config, apitokens, guardrails, logging, memory, rules)
-
-statusui (Bubbletea TUI — imports domain)
 
 mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
            API; imports apitokens and logging only, never orchestrator)
@@ -994,6 +996,6 @@ the canonical text.
 - **Do not mock `orchestrator.State`** in tests that check state transitions — pass real State values
 - **Do not call `patchSnapshot` from settings mutations** — they must call `refreshSnapshot()` to get the authoritative server state
 - **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored.
-- **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It restores the terminal to a sane mode (`stty sane`) before exiting, which is required for any code path that may run after `go statusui.Run` puts the terminal into raw mode. The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.
+- **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It runs the `onFatalExit` runtime-file cleanup (`daemon.pid`, `dashboard_url`, `HEARTBEAT.md`) that `os.Exit` would skip. (It no longer runs `stty sane`: since the terminal UI was removed in #240 nothing in `cmd/itervox` puts the terminal into raw mode — keep it that way; `itervox watch` must never read stdin or change a terminal mode.) The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.
 - **Do not declare anything done by inference.** See "Verification before completion — MANDATORY" above. Every named test, counter, field, CLI subcommand, route, and UI surface in an acceptance section MUST be grepped or run, and the result MUST appear in a `Verified by:` annotation. Marking an item done without that annotation is a contract violation, not a style preference. The common evasions enumerated above (symbol-exists-but-callless, one-sub-criterion-of-N, test-body-is-skip, counter-declared-never-incremented, component-imported-never-rendered, route-registered-handler-is-501) are explicitly refused.
 - **Do not move agent guidance into AGENTS.md if it is not codex-specific.** AGENTS.md is a thin pointer at CLAUDE.md plus a small "Codex-specific notes" section. Architecture invariants, the `cfgMu` allowlist, verification rules, conventions, false-positive patterns, the Never-do list — all of those live ONLY in CLAUDE.md and AGENTS.md tells codex to read them there. If you find yourself duplicating a CLAUDE.md section into AGENTS.md, stop: either the content belongs in CLAUDE.md (where it already is) or it's genuinely codex-specific (in which case it shouldn't be in CLAUDE.md). Picking only one home is the contract.

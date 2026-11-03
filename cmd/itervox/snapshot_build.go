@@ -9,6 +9,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/server"
@@ -39,10 +40,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 
 		running := make([]server.RunningRow, 0, len(s.Running))
 		for _, r := range s.Running {
-			msg := r.LastMessage
-			if len(msg) > 120 {
-				msg = msg[:120] + "…"
-			}
+			// #240: redacted like every other log surface, before the cut
+			// (a cut secret no longer matches its pattern).
+			msg := clip(logging.RedactString(r.LastMessage), 121)
 			var lastEvAt string
 			if r.LastEventAt != nil {
 				lastEvAt = r.LastEventAt.Format(time.RFC3339)
@@ -64,27 +64,30 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				liveComments = c
 			}
 			running = append(running, server.RunningRow{
-				Identifier:    r.Issue.Identifier,
-				State:         r.Issue.State,
-				TurnCount:     r.TurnCount,
-				Tokens:        r.TotalTokens,
-				InputTokens:   r.InputTokens,
-				OutputTokens:  r.OutputTokens,
-				LastEvent:     msg,
-				LastEventAt:   lastEvAt,
-				SessionID:     r.SessionID,
-				WorkerHost:    r.WorkerHost,
-				Backend:       r.Backend,
-				Kind:          r.Kind,
-				AutomationID:  r.AutomationID,
-				TriggerType:   r.TriggerType,
-				CommentCount:  liveComments,
-				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
-				StartedAt:     r.StartedAt,
-				SubagentCount: subCount,
-				OutOfScope:    isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
-				RulesHash:     r.RulesHash,
-				RuleIDs:       r.RuleIDs,
+				Identifier:       r.Issue.Identifier,
+				State:            r.Issue.State,
+				TurnCount:        r.TurnCount,
+				Tokens:           r.TotalTokens,
+				InputTokens:      r.InputTokens,
+				OutputTokens:     r.OutputTokens,
+				LastEvent:        msg,
+				LastEventAt:      lastEvAt,
+				SessionID:        r.SessionID,
+				WorkerHost:       r.WorkerHost,
+				Backend:          r.Backend,
+				Kind:             r.Kind,
+				AutomationID:     r.AutomationID,
+				TriggerType:      r.TriggerType,
+				CommentCount:     liveComments,
+				ElapsedMs:        now.Sub(r.StartedAt).Milliseconds(),
+				StartedAt:        r.StartedAt,
+				SubagentCount:    subCount,
+				OutOfScope:       isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
+				RulesHash:        r.RulesHash,
+				RuleIDs:          r.RuleIDs,
+				Title:            r.Issue.Title, // #240
+				Profile:          r.ProfileName, // #240
+				CostUSDEstimated: r.CostUSD,     // #240
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {

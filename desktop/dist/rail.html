@@ -1,0 +1,390 @@
+<!doctype html>
+<!-- The project rail of a dashboard window (#244): every project the app
+     knows — hub members, daemons outside the hub, remote daemons by host —
+     with a health dot, the running count and a "needs you" badge. The app
+     pushes the rail after each refresh (src-tauri/src/rail.rs push_script);
+     the page has no IPC and no network access of its own. Choosing a row
+     navigates to /__itervox/rail/switch, which the window intercepts and
+     shows that project's dashboard beside the rail; the row menu, pins,
+     drag-and-drop and the collapse button work the same way. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects — Itervox</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f4f2ef; --panel:#fff; --line:#e4e1dc; --text:#1d1b19;
+    --muted:#77716a; --accent:#d9480f; --active:#ffffff; --badge-bg:#c2410c; --badge:#fff;
+    --ok:#16a34a; --stopped:#a8a29e; --down:#dc2626; --token:#d97706; --pending:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#121110; --panel:#1d1b19; --line:#33302c; --text:#eeeae4; --muted:#9a938a;
+      --accent:#fb923c; --active:#26231f; --badge-bg:#fb923c; --badge:#1d1b19;
+      --ok:#4ade80; --stopped:#78716c; --down:#f87171; --token:#fbbf24; --pending:#60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height:100%; }
+  body { margin:0; font:13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:var(--bg); color:var(--text); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; overflow:hidden; user-select:none; -webkit-user-select:none; }
+  header { display:flex; align-items:center; gap:6px; padding:10px 8px 6px 12px; }
+  h1 { margin:0; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--muted); flex:1; }
+  button { font:inherit; color:inherit; }
+  #toggle { background:none; border:1px solid transparent; border-radius:6px; padding:2px 6px;
+    cursor:pointer; color:var(--muted); font-size:14px; }
+  #toggle:hover { border-color:var(--line); }
+  nav { flex:1; overflow-y:auto; padding:0 6px 12px; }
+  h2 { margin:12px 6px 4px; font-size:11px; font-weight:600; color:var(--muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { position:relative; }
+  button.row { display:flex; align-items:center; gap:8px; width:100%; text-align:left; cursor:pointer;
+    background:none; border:1px solid transparent; border-radius:7px; padding:5px 6px; margin:1px 0; }
+  button.row:hover { background:var(--panel); }
+  button.row[aria-current="page"] { background:var(--active); border-color:var(--line); font-weight:600; }
+  button.row.closed { color:var(--muted); cursor:default; }
+  button.row:focus-visible, #toggle:focus-visible, .menu button:focus-visible {
+    outline:2px solid var(--accent); outline-offset:1px; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--stopped); }
+  .dot.running { background:var(--ok); }
+  .dot.unreachable { background:var(--down); }
+  .dot.token_required { background:var(--token); }
+  .dot.pending { background:var(--pending); }
+  .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .initials { display:none; width:24px; text-align:center; font-weight:600; font-size:12px; }
+  .count { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+  .badge { border-radius:999px; padding:0 6px; font-size:11px; font-weight:700; line-height:17px;
+    background:var(--badge-bg); color:var(--badge); font-variant-numeric:tabular-nums; }
+  .pin { color:var(--muted); font-size:10px; }
+  li.drop-before::before, li.drop-after::after { content:""; position:absolute; left:4px; right:4px;
+    height:2px; background:var(--accent); border-radius:1px; }
+  li.drop-before::before { top:-1px; }
+  li.drop-after::after { bottom:-1px; }
+  .empty { color:var(--muted); margin:8px 6px; }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
+    clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  .menu { position:fixed; z-index:10; min-width:180px; background:var(--panel); border:1px solid var(--line);
+    border-radius:8px; padding:4px; box-shadow:0 6px 24px rgba(0,0,0,.18); }
+  .menu[hidden] { display:none; }
+  .menu button { display:block; width:100%; text-align:left; background:none; border:0; border-radius:5px;
+    padding:5px 8px; cursor:pointer; }
+  .menu button:hover, .menu button:focus { background:var(--bg); }
+  .menu button[disabled] { color:var(--muted); cursor:default; }
+  /* Collapsed: initials, dot and badge only; names stay for screen readers. */
+  body.collapsed header { justify-content:center; padding:10px 0 6px; }
+  body.collapsed h1, body.collapsed h2 .title, body.collapsed .count, body.collapsed .pin { display:none; }
+  body.collapsed h2 { margin:8px 4px 2px; border-top:1px solid var(--line); height:0; }
+  body.collapsed nav { padding:0 4px 12px; }
+  body.collapsed button.row { justify-content:center; gap:2px; padding:5px 2px; position:relative; }
+  body.collapsed .name { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+  body.collapsed .initials { display:block; }
+  body.collapsed .dot { position:absolute; left:6px; top:6px; width:7px; height:7px; }
+  body.collapsed .badge { position:absolute; right:0; top:0; padding:0 4px; font-size:10px; line-height:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Projects</h1>
+  <button id="toggle" type="button" aria-controls="rail" aria-expanded="true"
+    title="Hide project names (⌥⌘S)" aria-label="Hide project names">⟨</button>
+</header>
+<nav id="rail" aria-labelledby="title"></nav>
+<div id="menu" class="menu" role="menu" hidden></div>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<script>
+(function () {
+  var BASE = '/__itervox/rail/';
+  var railEl = document.getElementById('rail');
+  var toggleEl = document.getElementById('toggle');
+  var menuEl = document.getElementById('menu');
+  var liveEl = document.getElementById('live');
+  var view = { collapsed: false, sections: [] };
+  var active = null;
+  var dragKey = null;
+
+  function go(action, params) {
+    var q = Object.keys(params || {}).map(function (k) {
+      return k + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+    window.location.href = BASE + action + (q ? '?' + q : '');
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function img(cls, label, text) {
+    var e = el('span', cls, text);
+    e.setAttribute('role', 'img');
+    e.setAttribute('aria-label', label);
+    return e;
+  }
+
+  function initials(name) {
+    var words = name.split(/[\s_\-.]+/).filter(Boolean);
+    var s = words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2);
+    return s.toUpperCase();
+  }
+
+  function rows() {
+    return Array.prototype.slice.call(document.querySelectorAll('button.row'));
+  }
+
+  function rowData(key) {
+    for (var i = 0; i < view.sections.length; i++) {
+      var s = view.sections[i];
+      for (var j = 0; j < s.rows.length; j++) {
+        if (s.rows[j].key === key) return { section: s, index: j, row: s.rows[j] };
+      }
+    }
+    return null;
+  }
+
+  function healthText(h) {
+    return { running: 'running', stopped: 'stopped', unreachable: 'unreachable',
+      token_required: 'token required', pending: 'changing state' }[h] || h;
+  }
+
+  function announce(text) {
+    liveEl.textContent = '';
+    setTimeout(function () { liveEl.textContent = text; }, 30);
+  }
+
+  function render() {
+    var focused = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.key : null;
+    document.body.classList.toggle('collapsed', !!view.collapsed);
+    toggleEl.setAttribute('aria-expanded', view.collapsed ? 'false' : 'true');
+    var tlabel = view.collapsed ? 'Show project names' : 'Hide project names';
+    toggleEl.setAttribute('aria-label', tlabel);
+    toggleEl.title = tlabel + ' (⌥⌘S)';
+    toggleEl.textContent = view.collapsed ? '⟩' : '⟨';
+    railEl.textContent = '';
+    if (view.sections.length === 0) {
+      railEl.appendChild(el('p', 'empty', 'No projects yet. Add one from the menu bar.'));
+    }
+    view.sections.forEach(function (s) {
+      var h = el('h2');
+      h.id = 'sec-' + s.id;
+      h.appendChild(el('span', 'title', s.title));
+      h.title = s.title;
+      railEl.appendChild(h);
+      var ul = el('ul');
+      ul.setAttribute('aria-labelledby', h.id);
+      s.rows.forEach(function (r) {
+        var li = el('li');
+        li.dataset.key = r.key;
+        var b = el('button', r.openable ? 'row' : 'row closed');
+        b.type = 'button';
+        b.dataset.key = r.key;
+        b.draggable = true;
+        b.tabIndex = -1;
+        if (r.key === active) b.setAttribute('aria-current', 'page');
+        if (!r.openable) b.setAttribute('aria-disabled', 'true');
+        b.title = r.name + ' — ' + r.detail + (r.shortcut ? ' (⌘' + r.shortcut + ')' : '');
+        if (r.shortcut) b.setAttribute('aria-keyshortcuts', 'Meta+' + r.shortcut);
+        b.appendChild(img('dot ' + r.health, healthText(r.health)));
+        b.appendChild(el('span', 'initials', initials(r.name))).setAttribute('aria-hidden', 'true');
+        b.appendChild(el('span', 'name', r.name));
+        if (r.pinned) b.appendChild(img('pin', 'pinned', '●'));
+        if (r.running > 0) {
+          b.appendChild(img('count', r.running + (r.running === 1 ? ' agent running' : ' agents running'),
+            String(r.running)));
+        }
+        if (r.needsYou > 0) {
+          b.appendChild(img('badge', r.needsYou + ' waiting for you (input or approval)', String(r.needsYou)));
+        }
+        b.addEventListener('click', function () { choose(r); });
+        b.addEventListener('contextmenu', function (e) {
+          e.preventDefault();
+          openMenu(r, e.clientX, e.clientY);
+        });
+        b.addEventListener('dragstart', function (e) {
+          dragKey = r.key;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', r.name);
+        });
+        b.addEventListener('dragend', function () { dragKey = null; clearDrop(); });
+        li.addEventListener('dragover', function (e) { dragOver(e, li, s); });
+        li.addEventListener('drop', function (e) { drop(e, li, s); });
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
+      railEl.appendChild(ul);
+    });
+    // Roving focus: one row is in the tab order.
+    var list = rows();
+    var again = list.filter(function (b) { return b.dataset.key === focused; })[0];
+    var current = list.filter(function (b) { return b.dataset.key === active; })[0];
+    var tab = again || current || list[0];
+    if (tab) tab.tabIndex = 0;
+    if (again) again.focus();
+  }
+
+  function choose(r) {
+    if (!r.openable) {
+      announce(r.name + ' is ' + healthText(r.health) + '; it has no dashboard to show.');
+      return;
+    }
+    if (r.key !== active) go('switch', { key: r.key });
+  }
+
+  // --- drag and drop (within a group) ------------------------------------
+
+  function clearDrop() {
+    Array.prototype.forEach.call(document.querySelectorAll('.drop-before, .drop-after'), function (n) {
+      n.classList.remove('drop-before', 'drop-after');
+    });
+  }
+
+  function dropPlace(e, li, s) {
+    var from = dragKey && rowData(dragKey);
+    if (!from || from.section.id !== s.id || li.dataset.key === dragKey) return null;
+    var rect = li.getBoundingClientRect();
+    return e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+  }
+
+  function dragOver(e, li, s) {
+    var place = dropPlace(e, li, s);
+    if (!place) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearDrop();
+    li.classList.add(place === 'before' ? 'drop-before' : 'drop-after');
+  }
+
+  function drop(e, li, s) {
+    var place = dropPlace(e, li, s);
+    clearDrop();
+    if (!place) return;
+    e.preventDefault();
+    var key = dragKey;
+    var target = rowData(li.dataset.key);
+    var before = place === 'before' ? li.dataset.key
+      : (s.rows[target.index + 1] ? s.rows[target.index + 1].key : '');
+    if (before === key) return;
+    go('move', { key: key, before: before });
+  }
+
+  // --- row menu ----------------------------------------------------------
+
+  var menuFor = null;
+
+  function menuItems() {
+    return Array.prototype.slice.call(menuEl.querySelectorAll('button:not([disabled])'));
+  }
+
+  function openMenu(r, x, y) {
+    var d = rowData(r.key);
+    menuFor = r.key;
+    menuEl.textContent = '';
+    function item(label, enabled, run) {
+      var b = el('button', null, label);
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      b.tabIndex = -1;
+      if (!enabled) b.disabled = true;
+      b.addEventListener('click', function () { closeMenu(); run(); });
+      menuEl.appendChild(b);
+    }
+    item('Open in New Window', r.openable, function () { go('open-new', { key: r.key }); });
+    item(r.pinned ? 'Unpin' : 'Pin to Top', true, function () {
+      announce((r.pinned ? 'Unpinned ' : 'Pinned ') + r.name);
+      go(r.pinned ? 'unpin' : 'pin', { key: r.key });
+    });
+    item('Move Up', d && d.index > 0, function () { nudge(r, -1); });
+    item('Move Down', d && d.index < d.section.rows.length - 1, function () { nudge(r, 1); });
+    menuEl.setAttribute('aria-label', r.name);
+    menuEl.hidden = false;
+    var w = menuEl.offsetWidth, h = menuEl.offsetHeight;
+    menuEl.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+    menuEl.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+    var first = menuItems()[0];
+    if (first) first.focus();
+  }
+
+  function closeMenu(refocus) {
+    if (menuEl.hidden) return;
+    menuEl.hidden = true;
+    var key = menuFor;
+    menuFor = null;
+    if (refocus) {
+      var b = rows().filter(function (x) { return x.dataset.key === key; })[0];
+      if (b) b.focus();
+    }
+  }
+
+  function nudge(r, delta) {
+    announce('Moved ' + r.name + (delta < 0 ? ' up' : ' down'));
+    go('nudge', { key: r.key, delta: String(delta) });
+  }
+
+  menuEl.addEventListener('keydown', function (e) {
+    var list = menuItems();
+    var i = list.indexOf(document.activeElement);
+    if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); closeMenu(true); return; }
+    var next = -1;
+    if (e.key === 'ArrowDown') next = (i + 1) % list.length;
+    else if (e.key === 'ArrowUp') next = (i - 1 + list.length) % list.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = list.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    list[next].focus();
+  });
+
+  document.addEventListener('mousedown', function (e) {
+    if (!menuEl.hidden && !menuEl.contains(e.target)) closeMenu(false);
+  });
+  window.addEventListener('blur', function () { closeMenu(false); });
+
+  // --- keyboard ----------------------------------------------------------
+
+  railEl.addEventListener('keydown', function (e) {
+    var list = rows();
+    var i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    var key = list[i].dataset.key;
+    var d = rowData(key);
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      if (d) nudge(d.row, e.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+    if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault();
+      var rect = list[i].getBoundingClientRect();
+      if (d) openMenu(d.row, rect.left + 12, rect.bottom);
+      return;
+    }
+    var next = -1;
+    if (e.key === 'ArrowDown') next = Math.min(i + 1, list.length - 1);
+    else if (e.key === 'ArrowUp') next = Math.max(i - 1, 0);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = list.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    list.forEach(function (b) { b.tabIndex = -1; });
+    list[next].tabIndex = 0;
+    list[next].focus();
+  });
+
+  toggleEl.addEventListener('click', function () {
+    go('collapse', { value: view.collapsed ? '0' : '1' });
+  });
+
+  window.__itervoxRail = function (next, current) {
+    view = next;
+    active = current;
+    if (!menuEl.hidden && !rowData(menuFor)) closeMenu(false);
+    render();
+  };
+  // Ask the app for the rail (the navigation is intercepted).
+  go('ready');
+})();
+</script>
+</body>
+</html>

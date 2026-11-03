@@ -50,39 +50,17 @@ func newFileLogHandler(w io.Writer, level slog.Level, format string) slog.Handle
 	return slog.NewTextHandler(w, opts)
 }
 
-// postStartupHandler builds the slog handler installed as the default right
-// before statusui.Run is called — the point where, historically, slog was
-// unconditionally redirected to the file sink only, on the theory that the
-// TUI is about to take the alt-screen and concurrent stderr writes would
-// corrupt it.
+// postStartupHandler builds the slog handler run() installs once the
+// daemon has started: stderr (stderrHandler, main's stderrOnly leg, so it is
+// configured exactly like the one-time dashboard-URL line) fanned out with
+// the file sink. The terminal UI that used to send logs to the file only
+// is gone (#240), so stderr keeps every record (journalctl et al.).
 //
-// That theory only holds when the TUI actually starts. ttyAvailable is the
-// caller's terminalUI() result: --tui was given (the TUI is off by default
-// since #134), --headless was not, and statusui.TerminalAvailable() holds,
-// which mirrors (via the same underlying TTY-ownership check) whether
-// statusui.Run will start the TUI or refuse immediately for lack of a
-// controlling terminal (systemd, container, CI, detached stdio — issue #49-2).
-//
-//   - ttyAvailable == true: the TUI is about to start. File-only, exactly as
-//     before this seam existed — the TUI log pane reads from logBuf, not
-//     stderr, so nothing is lost.
-//   - ttyAvailable == false: statusui.Run will refuse to start. Keep the
-//     startup stderr+file fanout alive so post-startup logs still reach
-//     stderr (journalctl et al.) instead of going dark for nothing.
-//
-// stderrHandler is reused from the caller's existing stderr handler (main's
-// stderrOnly logger) rather than constructed fresh, so the headless fanout's
-// stderr leg is identical to the one used for the one-time dashboard-URL
-// line — no risk of a second, divergently-configured charmlog instance.
-//
-// Both branches are wrapped in logging.NewRedactingHandler: the file sink
-// must never receive raw secrets, and in headless mode neither does stderr.
-func postStartupHandler(fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrHandler slog.Handler, ttyAvailable bool) slog.Handler {
+// Wrapped in logging.NewRedactingHandler: neither the file sink nor stderr
+// ever receives raw secrets.
+func postStartupHandler(fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrHandler slog.Handler) slog.Handler {
 	fileHandler := newFileLogHandler(fileWriter, logLevel, logFormat)
-	if !ttyAvailable {
-		return logging.NewRedactingHandler(logging.NewFanoutHandler(stderrHandler, fileHandler))
-	}
-	return logging.NewRedactingHandler(fileHandler)
+	return logging.NewRedactingHandler(logging.NewFanoutHandler(stderrHandler, fileHandler))
 }
 
 // bootLogHandlers builds main's startup logging (CORE-059):
@@ -91,17 +69,14 @@ func postStartupHandler(fileWriter io.Writer, logLevel slog.Level, logFormat str
 //     sink, behind logging.NewRedactingHandler.
 //   - stderrOnly is the bare stderr leg. main wraps it in the stderr-only
 //     logger (the one explicit secret-display path, CORE-012) and
-//     postStartupHandler reuses it for the headless fanout.
+//     postStartupHandler reuses it.
 //
-// headless is "the terminal UI does not run" (!terminalUI(), or before
-// flag.Parse !argsTerminalUI: the default since #134, or no terminal). Then
 // stderr honours format exactly like the file sink — "json" gives one JSON
 // object per slog record, which is what container platforms and journald
-// ingest, on a terminal too. Once the TUI starts, slog goes to the file
-// only. Output written with fmt.Fprint* before or outside slog (usage,
-// fatal startup errors) is never JSON.
-func newStderrLogHandler(w io.Writer, level slog.Level, format string, headless bool) slog.Handler {
-	if headless && format == "json" {
+// ingest, on a terminal too. Output written with fmt.Fprint* before or
+// outside slog (usage, fatal startup errors) is never JSON.
+func newStderrLogHandler(w io.Writer, level slog.Level, format string) slog.Handler {
+	if format == "json" {
 		return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
 	}
 	charmLevel := charmlog.InfoLevel
@@ -115,8 +90,8 @@ func newStderrLogHandler(w io.Writer, level slog.Level, format string, headless 
 	})
 }
 
-func bootLogHandlers(stderr, file io.Writer, level slog.Level, format string, headless bool) (boot, stderrOnly slog.Handler) {
-	stderrOnly = newStderrLogHandler(stderr, level, format, headless)
+func bootLogHandlers(stderr, file io.Writer, level slog.Level, format string) (boot, stderrOnly slog.Handler) {
+	stderrOnly = newStderrLogHandler(stderr, level, format)
 	fileHandler := newFileLogHandler(file, level, format)
 	return logging.NewRedactingHandler(logging.NewFanoutHandler(stderrOnly, fileHandler)), stderrOnly
 }
@@ -131,9 +106,9 @@ func bootLogHandlers(stderr, file io.Writer, level slog.Level, format string, he
 // format is pre-scanned from args (the --log-format flag, which wins) and
 // env (ITERVOX_LOG_FORMAT), because flag.Parse has not run yet; the level is
 // INFO (--verbose is not known yet either).
-func earlyLogHandler(w io.Writer, args []string, env string, headless bool) slog.Handler {
+func earlyLogHandler(w io.Writer, args []string, env string) slog.Handler {
 	format := resolveLogFormat(scanLogFormatFlag(args), env)
-	return logging.NewRedactingHandler(newStderrLogHandler(w, slog.LevelInfo, format, headless))
+	return logging.NewRedactingHandler(newStderrLogHandler(w, slog.LevelInfo, format))
 }
 
 // scanLogFormatFlag returns the value of the last -log-format / --log-format

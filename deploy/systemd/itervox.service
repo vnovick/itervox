@@ -44,8 +44,7 @@ KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=300
 
-# No controlling terminal. The Bubbletea TUI's TTY-ownership guard detects this,
-# logs "statusui: refusing to start TUI", and the daemon continues headless.
+# The daemon reads nothing from stdin and always runs headless.
 StandardInput=null
 StandardOutput=journal
 StandardError=journal

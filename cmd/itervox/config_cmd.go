@@ -222,7 +222,9 @@ func configSet(workflow, layer string, key string, value any, out, errOut io.Wri
 		// #239: the settings file wins over WORKFLOW.md's front matter.
 		_, _ = fmt.Fprintf(errOut, "note: WORKFLOW.md's front matter also sets %s; this file wins over it — remove it from WORKFLOW.md (or run `itervox init --update`)\n", key)
 	}
-	_, _ = fmt.Fprintln(out, "A running daemon picks it up when it next loads WORKFLOW.md: restart it, or save WORKFLOW.md.")
+	// #245: the daemon watches the settings files, so it reloads once for
+	// this write (another process's write is never one of its own).
+	_, _ = fmt.Fprintln(out, "A running daemon reloads it within a few seconds (it watches the settings files).")
 	return 0
 }
 

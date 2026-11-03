@@ -31,10 +31,10 @@ import (
 // runGuardrailEntrypoint runs a guardrail shim or hook and exits when args
 // name one. It is the first thing main does: a shim forwards the agent's
 // environment untouched (no dotenv load, no GIT_DIR scrub) and must never
-// reset the agent's terminal, so it exits without the stty restore.
+// touch anything else on the way out, so it exits without fatalExit's cleanup.
 func runGuardrailEntrypoint(args []string) {
 	if len(args) > 1 && guardrails.IsEntrypoint(args[1]) {
-		exitWithoutTerminalRestore(guardrails.Main(args[1:], os.Stdin, os.Stdout, os.Stderr))
+		exitWithoutCleanup(guardrails.Main(args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 }
 

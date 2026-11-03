@@ -9,15 +9,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/hub"
 )
 
 // daemonClient talks to a running daemon's API for the terminal commands
-// that replace the TUI (#120): watch, logs, pause, resume, dispatch,
-// workers, reply.
+// (#120, #240): watch, logs, pause, resume, dispatch, workers, reply,
+// approve.
 type daemonClient struct {
 	base  string // e.g. http://127.0.0.1:8090 (no trailing slash)
 	token string
@@ -46,12 +49,66 @@ type daemonFlags struct {
 	workflow string
 	logsDir  string
 	url      string
+	// project (#240) reaches one project through the machine's hub
+	// (/hub/p/{project}/api/v1/...) with a hub token; url is then the hub's
+	// address.
+	project string
 }
 
 func (f *daemonFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.workflow, "workflow", "WORKFLOW.md", "path to WORKFLOW.md")
 	fs.StringVar(&f.logsDir, "logs-dir", "", "the daemon's logs directory (default: the per-project dir under ~/.itervox/logs)")
-	fs.StringVar(&f.url, "url", "", "the daemon's address (default: .itervox/dashboard_url)")
+	fs.StringVar(&f.url, "url", "", "the daemon's address (default: .itervox/dashboard_url); with --project, the hub's")
+	fs.StringVar(&f.project, "project", "", "reach this hub project (itervox hub lists them) through the machine's hub, with the hub token in "+hubTokenEnv)
+}
+
+// hubTokenEnv names the hub token the client commands send with --project
+// (#240; create one with itervox token create --hub).
+const hubTokenEnv = "ITERVOX_HUB_TOKEN"
+
+// targetArgs are the flags that make another client command reach the same
+// daemon or hub project, for the commands watch prints. Never a token.
+func (f *daemonFlags) targetArgs() []string {
+	var args []string
+	if f.workflow != "" && f.workflow != "WORKFLOW.md" {
+		args = append(args, "--workflow", f.workflow)
+	}
+	if f.url != "" {
+		args = append(args, "--url", f.url)
+	}
+	if f.project != "" {
+		args = append(args, "--project", f.project)
+	}
+	return args
+}
+
+var errNoHub = errors.New("no itervox hub is running on this machine (itervox hub shows why), or pass the hub's address with --url")
+
+// hubClient reaches project through the hub: --url, else the hub lock's
+// address; the token is $ITERVOX_HUB_TOKEN.
+func (f *daemonFlags) hubClient() (*daemonClient, error) {
+	base := f.url
+	if base == "" {
+		dir, err := daemonRegistryDir()
+		if err != nil {
+			return nil, err
+		}
+		info, ok, _ := hub.ReadLockInfo(dir)
+		if !ok {
+			return nil, errNoHub
+		}
+		base = info.URL
+	}
+	if i := strings.Index(base, "?"); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSuffix(strings.TrimSuffix(base, "/"), "/hub")
+	c := &daemonClient{base: base + "/hub/p/" + url.PathEscape(f.project), token: os.Getenv(hubTokenEnv), http: &http.Client{}}
+	if f.url == "" {
+		again := *f
+		c.discover = again.hubClient // a hub failover moves the hub
+	}
+	return c, nil
 }
 
 var errNoDaemon = errors.New("no running daemon found here: .itervox/dashboard_url is missing (start itervox, or pass --url)")
@@ -60,6 +117,9 @@ var errNoDaemon = errors.New("no running daemon found here: .itervox/dashboard_u
 // ITERVOX_API_TOKEN, then .itervox/.env, then <logs-dir>/api-token. A token
 // is not required (server.allow_unauthenticated).
 func (f *daemonFlags) client() (*daemonClient, error) {
+	if f.project != "" {
+		return f.hubClient()
+	}
 	base := f.url
 	if base == "" {
 		raw, err := os.ReadFile(dashboardURLFilePath(f.workflow))
