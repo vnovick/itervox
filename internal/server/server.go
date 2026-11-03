@@ -1086,7 +1086,10 @@ type TrackerIssue struct {
 	BlockedByDetails []BlockerDetail        `json:"blockedByDetails,omitempty"`
 	Comments         []CommentRow           `json:"comments,omitempty"`
 	StatusChanges    []IssueStatusChangeRow `json:"statusChanges,omitempty"`
-	IneligibleReason string                 `json:"ineligibleReason,omitempty"`
+	// Review is the issue's latest review (#135): each reviewer's verdict
+	// and, once every reviewer has run, the quorum result.
+	Review           *IssueReviewRow `json:"review,omitempty"`
+	IneligibleReason string          `json:"ineligibleReason,omitempty"`
 	// AgentProfile is the name of the per-issue agent profile override, if any.
 	AgentProfile string `json:"agentProfile,omitempty"`
 	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").
