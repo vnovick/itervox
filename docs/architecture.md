@@ -381,6 +381,9 @@ state changes at a bounded interval (default 15 s) via
 
 - active workflow path and `itervox_schema_version`
 - dashboard URL and tracker/project
+- tracker sync status (`## Sync`, #117): mode, last pull, lag and its warn
+  threshold, pending writes, next push, last sync error. Also rewritten when
+  the sync status changes, so `itervox doctor` reads a current last pull
 - agent capacity (running / max)
 - automation queue pressure (length / max, paused producers, recent rejects)
 - dependency audit summary (blocked / unknown / unblocked counts)

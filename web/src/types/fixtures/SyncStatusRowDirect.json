@@ -1,0 +1,13 @@
+{
+  "mode": "direct",
+  "lagWarnAfterMs": 300000,
+  "stale": false,
+  "syncIntervalMs": 30000,
+  "pendingWrites": 0,
+  "pendingUrgent": 0,
+  "pendingBatched": 0,
+  "pendingRetrying": 0,
+  "pendingDegraded": 0,
+  "pendingRateLimited": 0,
+  "pushIntervalMs": 0
+}
