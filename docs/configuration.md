@@ -235,8 +235,10 @@ agent:
 | `min_dwell_minutes` | int | `30` | Minimum time a switched issue stays on the fallback before it may switch back. It never blocks a further hop when the fallback itself becomes limited |
 | `switch_back` | string | `at_reset` | `at_reset`: the override is cleared once the dwell has passed AND the original backend is no longer limited (its reset, or the cooldown, has passed); the next dispatch goes back through the breaker. `on_success`: cleared by the first successful run after the dwell. `manual`: never cleared automatically (pin a backend, or use `switch_revert_hours`) |
 
-The block is read at load time: edit `WORKFLOW.md` to change it (the normal
-reload applies it). There is no settings API for it.
+The block is read at load time: set it in `.itervox/settings.jsonc` (or,
+deprecated since v0.3, in `WORKFLOW.md`'s front matter); a hand edit of
+either file reloads the daemon, which applies it. It has no runtime setter,
+and the Settings page shows it read-only outside its JSON view.
 
 A switched implementer issue keeps its new profile and backend for later
 runs (a sticky override, shown on the card as `codex (auto)` and in the

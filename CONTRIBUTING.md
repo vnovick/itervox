@@ -81,7 +81,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-bundle-budget` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-bundle-budget` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` + `check-changelog-split` — mirrors CI |
 | `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
 | `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
@@ -90,6 +90,8 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make benchmark` | `go test -bench=. -benchmem ./cmd/... ./internal/...` |
 | `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
 | `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
+| `make check-changelog-split` | Check that every entry of the pre-split `[Unreleased]` section (`testdata/changelog/unreleased-pre-split.txt`) appears exactly once in the `0.2.2`–`0.3.0` sections of `CHANGELOG.md`, and that none of those sections is empty (#246). Its own tests run in `make deploy-test` |
+| `make chaos` | Run the orchestrator and tracker tests over and over (`-race -count -cpu 1,2,4`) while busy loops saturate every CPU (#126). Takes tens of minutes, so it is not part of `verify`; CI runs it nightly and on a pull request labelled `ci:chaos`. Tune with `CHAOS_COUNT`, `CHAOS_RUN`, `CHAOS_PACKAGES`, `CHAOS_CPU`, `CHAOS_HOGS`, `CHAOS_TIMEOUT`, `CHAOS_OUT` (see `scripts/chaos.sh`) |
 | `make fmt` | `gofmt -l -w cmd internal` |
 | `make vet` | `go vet ./cmd/... ./internal/...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
