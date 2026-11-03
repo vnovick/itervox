@@ -19,6 +19,7 @@ use tauri::{
 
 use super::{error_dialog, lock, read_token_file, Shared};
 use crate::dashboard::origin_of;
+use crate::material::{self, Surface};
 use crate::model::token_for;
 use crate::rail::{
     build_rail, move_before, nudge, page_plan, page_url, push_script, rail_action,
@@ -291,15 +292,31 @@ fn create(
     let label = format!("dashboard-{n}");
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    // A system material behind the rail (material.rs) needs a transparent
+    // window; the dashboard's webview stays opaque over it.
+    let material = crate::app_material::material_for(Surface::Rail);
     let builder = tauri::window::WindowBuilder::new(app, &label)
         .title(title)
         .inner_size(1280.0, 860.0)
-        .min_inner_size(720.0, 480.0);
+        .min_inner_size(720.0, 480.0)
+        .transparent(material.is_some());
     // Linux and Windows have no app menu bar: the window carries the
     // Projects menu, with Ctrl accelerators (#260).
     #[cfg(not(target_os = "macos"))]
     let builder = builder.menu(window_menu(app)?);
     let window = builder.build()?;
+    // Applied before the rail exists: when it fails, the rail is built
+    // without the flag and draws its CSS look.
+    let material = material.filter(|m| match crate::app_material::apply(&window, *m) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "itervox desktop: no {} material behind the rail: {e}",
+                m.attr()
+            );
+            false
+        }
+    });
     let (x, w, h) = bounds(&window, collapsed(shared));
 
     let (nav_app, nav_shared, nav_label) = (app.clone(), Arc::clone(shared), label.clone());
@@ -316,6 +333,12 @@ fn create(
             }
             None => rail_page_allowed(url.as_str()),
         });
+    let rail = match material {
+        Some(m) => rail
+            .transparent(true)
+            .initialization_script(material::init_script(m)),
+        None => rail,
+    };
     window.add_child(rail, LogicalPosition::new(0.0, 0.0), LogicalSize::new(x, h))?;
 
     let view = format!("{label}-view-{n}");

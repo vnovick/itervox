@@ -14,6 +14,7 @@ pub mod events;
 pub mod go_menu;
 pub mod hub_notify;
 pub mod hub_source;
+pub mod material;
 pub mod menu;
 pub mod model;
 pub mod platform;
@@ -35,6 +36,7 @@ pub mod update;
 
 mod app;
 mod app_hub;
+mod app_material;
 mod app_remote;
 mod app_update;
 
