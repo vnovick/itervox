@@ -287,6 +287,50 @@ only the event loop mutates them.
   and would otherwise mask every dependency reason as `no_slots` on exactly
   the saturated ticks the metric exists to explain.
 
+### Guardrails (#204) — scope and known limit
+
+`internal/guardrails` limits what agents Itervox starts may do: pushes only to
+the issue branch (pre-push hook via `core.hooksPath` in
+`GIT_CONFIG_PARAMETERS`, chaining to the repo's own hooks dir), no force
+push / delete unless `guardrails.allow_force_push`, never a tag push, no
+self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
+`guardrails.approval_commands` (shims for those programs). Rules to keep:
+
+- **Scope**: dispatched runs on the daemon's host (`prepareRunGuardrails` in
+  the worker, applied before the action bridge so the shims stay first on
+  PATH) and tmux sessions started with **New session**
+  (`cmd/itervox/guardrails.go`). Never hand-started sessions (read-only
+  invariant). SSH worker hosts are NOT guarded in v1 — a warning at startup
+  and per run; do not claim otherwise.
+- **Known limit**: guidance, not a sandbox. An agent calling git by absolute
+  path, rewriting PATH/env, or using another channel bypasses it. Branch
+  protection on the remote is the real control; docs must keep saying so.
+- **No daemon-side execution**: the shim↔daemon channel is the token-gated
+  `/api/v1/agent-actions/{id}/guardrail/*` routes (grant action
+  `guardrail`, scoped to issue + run). They record reports and raise/read
+  approvals; the approved command runs in the shim, exactly once
+  (`guardrails.Approvals` spends an approval on the first read). Commands
+  reach the daemon only redacted (`displayCommand`); a pre-push report never
+  carries the remote URL.
+- **Approvals are input-required entries** of the *running* issue
+  (`InputRequiredEntry.GuardrailApprovalID`): the event loop creates them
+  (`EventGuardrailApproval`), a dashboard/Mac/tracker reply decides them
+  (`resolveGuardrailApproval`; nothing is resumed), the agent-actions
+  `provide-input` route (`FromAgent`) never answers them, they are never
+  persisted nor fed to input-required automations, and they are dropped when
+  the run exits. `guardrails.Approvals` is concurrency-safe and is not
+  `State`.
+- **Shim entrypoints run first in `main()`** (`runGuardrailEntrypoint`),
+  before dotenv / GIT_DIR scrubbing, forward the agent's env untouched and
+  exit via `exitWithoutTerminalRestore` (no `stty sane` on the agent's TTY).
+  Itervox's own git still goes only through `gitexec` (which scrubs
+  `GIT_CONFIG_PARAMETERS`, so the guardrail hooks never apply to it); the
+  shim's forward is a `syscall.Exec` of the agent's own command and the
+  pre-push hook's ancestry checks use `gitexec`, so
+  `TestNoRawGitExecOutsideGitexec` stays green. Test binaries that host
+  shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
+  dispatch the entrypoints in `TestMain`.
+
 ### `cfgMu` guards exactly these fields (and nothing else)
 
 > **Canonical source for codex too** — AGENTS.md is a thin pointer that tells
@@ -483,17 +527,20 @@ rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
+guardrails (agent shims, pre-push hook, approval broker — imports agent,
+            atomicfs, gitexec, logging; never orchestrator or server)
+
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
-              memory, metrics, outbox, prdetector, procgroup, prompt, rules,
-              tracker, workspace)
+              atomicfs, config, depsanalysis, domain, extsessions, guardrails,
+              logbuffer, logging, memory, metrics, outbox, prdetector,
+              procgroup, prompt, rules, tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)
 
 app (EnrichIssue business logic — imports domain, tracker)
 
-server (HTTP API — imports domain, config, memory, rules)
+server (HTTP API — imports domain, config, guardrails, memory, rules)
 
 statusui (Bubbletea TUI — imports domain)
 

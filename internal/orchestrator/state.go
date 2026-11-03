@@ -154,6 +154,12 @@ type OrchestratorEvent struct { //nolint:revive
 	// DeferredMove is the move of an EventDeferStateMove or
 	// EventDeferredStateMoveSettled (#177).
 	DeferredMove *DeferredStateMove
+	// FromAgent marks an EventProvideInput sent by an agent through the
+	// token-gated agent-actions route: it never answers a guardrail
+	// approval (#204).
+	FromAgent bool
+	// guardrail is the payload of EventGuardrailApproval (#204).
+	guardrail *guardrailApprovalEvent
 	// deferReply receives the loop's decision on an EventDeferStateMove.
 	deferReply chan bool
 	// deferFromState is the tracker state a deferred-move apply observed.
@@ -283,6 +289,11 @@ type InputRequiredEntry struct {
 	// question has been logged, so it fires once per entry rather than on
 	// every tick (CORE-123). Event-loop owned; session-scoped.
 	QuestionStuckWarned bool
+	// GuardrailApprovalID marks an entry that asks a human to approve a
+	// command a running agent is blocked on (#204): the run keeps going, a
+	// reply decides the request instead of resuming a session, and the
+	// entry is never persisted (it dies with the run).
+	GuardrailApprovalID string
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not

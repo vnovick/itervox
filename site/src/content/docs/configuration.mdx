@@ -1090,6 +1090,35 @@ A remote daemon lists the sessions on its own host. Transcripts are served only 
 
 ---
 
+## guardrails
+
+Limits on what agents Itervox starts may do with git, the GitHub and GitLab CLIs and deploy commands. They apply to dispatched runs on the daemon's host and to tmux sessions started with **New session**; never to sessions you started by hand. See the [Guardrails guide](/guides/guardrails/) for how they work and what they cannot stop. Read at startup.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Turn the guardrails on. On, an agent may push only to its issue branch (no tag pushes, no pushes to `main`, `master`, `develop` or the base branch), never runs `gh pr merge`, `glab mr merge` or a merge API call, never merges into the default branch, and waits for a human approval before a command in `approval_commands` runs. |
+| `allow_force_push` | bool | `false` | Let an agent force-push (`--force`, `--force-with-lease`) and delete its own issue branch. Pushes to other branches and tags stay refused. |
+| `approval_commands` | []string | `vercel --prod`, `fly deploy`, `kubectl apply`, `terraform apply`, `gcloud deploy`, `npm publish`, `cargo publish` | Commands that need a human approval. Each is a sequence of glob tokens (`*` matches anything, `/` included): the first matches the program name, the rest must each match an argument, in order, with other arguments allowed between them — `kubectl apply` matches `kubectl -n prod apply -f k8s/`, `gcloud deploy` matches `gcloud run deploy`, and a flag token also matches the flag with a value (`--prod` matches `--prod=true`). A list **replaces** the defaults, so write them out to keep them; `[]` turns approvals off. The program must be a bare name: a path or glob in the first token cannot be intercepted (a warning is logged). |
+
+```yaml
+guardrails:
+  enabled: true
+  allow_force_push: false
+  approval_commands:
+    - "vercel --prod"
+    - "fly deploy"
+    - "kubectl apply"
+    - "terraform apply"
+    - "gcloud deploy"
+    - "npm publish"
+    - "cargo publish"
+    - "helm upgrade *-prod"   # your own
+```
+
+`itervox init` writes this block; `itervox init --update` adds it, with the defaults, to a workflow that has none. An approval reply whose first word is `approve`, `approved`, `yes`, `y`, `ok`, `okay` or `allow` approves the command once; any other reply rejects it and is passed to the agent as the reason. Runs on SSH worker hosts are not guarded in v1 (a warning is logged at startup and per run).
+
+---
+
 ## memory
 
 How much [managed memory](#memory-files) each run gets. Read at startup (changing it needs a restart; the memory files themselves are read again for every run).
