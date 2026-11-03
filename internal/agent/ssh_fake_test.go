@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -102,6 +103,12 @@ func TestMain(m *testing.M) {
 	// real-process isolation tests (it re-executes itself, as itervox does).
 	if code, ok := agent.RunIsolationHelper(os.Args); ok {
 		os.Exit(code)
+	}
+	if runtime.GOOS == "windows" {
+		// fakesshd is a Unix fixture (Setsid, SIGPIPE); the SSH tests that
+		// use it do not build on Windows.
+		goleak.VerifyTestMain(m)
+		return
 	}
 	dir, err := os.MkdirTemp("", "itervox-fakesshd-")
 	if err != nil {

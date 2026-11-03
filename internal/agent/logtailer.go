@@ -188,7 +188,7 @@ func sshFetchRemoteJSONL(ctx context.Context, host, dir, findPredicate string, p
 	if err != nil {
 		return nil, fmt.Errorf("logtailer: ssh %s (%s logs): stdout pipe: %w", host, label, err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return nil, fmt.Errorf("logtailer: ssh %s (%s logs): start: %w", host, label, err)
 	}
 	stdinFeed.start()

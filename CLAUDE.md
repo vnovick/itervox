@@ -619,8 +619,13 @@ tmuxctl (stdlib only — the tmux CLI: list/capture panes, paste text, an
          allowlist of keys, new/kill session; the ONLY package that writes to
          processes itervox did not start; imported by cmd/itervox)
 
-procgroup (stdlib only — own process group + group SIGKILL re-sent until
-           ESRCH; the one shared kill path for agent runners and hooks)
+procgroup (stdlib, plus golang.org/x/sys/windows on Windows — own process
+           group + group SIGKILL re-sent until ESRCH on Unix, a kill-on-close
+           Job Object on Windows; the one shared kill path for agent runners
+           and hooks, and the Windows shell resolver)
+
+winflock (Windows only, golang.org/x/sys/windows — LockFileEx behind the
+          pid, WORKFLOW.md, API-token and hub locks; imports no internal package)
 
 metrics (stdlib only — process-wide counters + hand-written Prometheus text
          exposition; a leaf imported by tracker, orchestrator, server,
