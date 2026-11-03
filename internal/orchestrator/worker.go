@@ -172,6 +172,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// a provider that cannot stack, or a blocker branch that does not
 		// exist here, falls back to workspace.base_branch unchanged.
 		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
+		if errors.Is(err, workspace.ErrBranchInUse) {
+			// #193: deterministic — git refuses the branch until the other
+			// worktree frees it. The event loop holds the issue with
+			// branch_in_use instead of scheduling a retry.
+			slog.Warn("worker: worktree branch is checked out in another worktree; not retrying",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "branch", branchName, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
+					fmt.Sprintf("worker: workspace setup held (branch_in_use): %v", err), runLogID))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalBranchInUse, err)
+			return
+		}
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -183,6 +196,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		if ws.BareFetchFailure != "" {
+			// #195: a failing shared-clone fetch used to be a WARN line only,
+			// so a base that stopped moving went unnoticed. The workspace
+			// reports each distinct failure once until a fetch succeeds.
+			o.RecordFailure(FailureRecord{
+				Kind:       FailureKindWorkspaceFetch,
+				Identifier: issue.Identifier,
+				Source:     "bare_fetch",
+				Message:    ws.BareFetchFailure,
+			})
+		}
 		// #73 follow-up: an issue whose only blocker is in review is admitted
 		// so it can start stacked on that blocker's branch. If its worktree
 		// is not stacked on it (the branch is not here, or a reused worktree
@@ -561,54 +585,22 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 
-		// #157: the rules block, ahead of SOUL.md and INSTRUCTIONS.md, unless
-		// one of the run's templates places the rules itself.
-		ruleTemplates := []string{promptTemplate}
-		if p, ok := profilesSnap[profileName]; ok && profileName != "" {
-			ruleTemplates = append(ruleTemplates, p.Soul, p.Instructions, p.Prompt)
-		}
-		if automation != nil {
-			ruleTemplates = append(ruleTemplates, automation.Instructions)
-		}
-		if block := rulesPromptBlock(ruleSet, ruleTemplates...); block != "" {
-			renderedPrompt += "\n\n" + block
-		}
-
-		// Append the active profile's prompt (role context) whenever a named
-		// profile is selected. The pre-removal `agent_mode == "teams"` gate
-		// has been deleted (agent_mode is gone — see CHANGELOG); the
-		// subagent roster context below also injects unconditionally so
-		// multi-profile setups always tell the agent who its peers are.
-		if profileName != "" {
-			if profile, ok := profilesSnap[profileName]; ok {
-				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, runVars) {
-					if block != "" {
-						renderedPrompt += "\n\n" + block
-					}
-				}
-			}
-		}
-		if automation != nil && automation.Instructions != "" {
-			bindings := automationTriggerBindings(automation)
-			maps.Copy(bindings, runVars)
-			renderedPrompt += "\n\n" + prompt.RenderPromptOverlay(
-				automation.Instructions,
-				issue,
-				attemptPtr,
-				bindings,
-			)
-		}
-		if actionContext != "" {
-			renderedPrompt += "\n\n" + actionContext
-		}
-		// Append sub-agent roster context whenever the inventory has more than
-		// one profile — gives the active backend the names + descriptions of
-		// peer agents it can spawn via its delegation tool. `buildSubAgentContext`
-		// returns "" when there's nothing to say, so single-profile setups
-		// see no change.
-		if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
-			renderedPrompt += "\n\n" + subCtx
-		}
+		// #157 rules, the profile's SOUL/INSTRUCTIONS, the automation's
+		// instructions, the daemon action notice and the sub-agent roster.
+		// Shared with ComposeEvalPrompt (#189) so a live eval renders exactly
+		// the profile sections a dispatched worker sees.
+		renderedPrompt += profilePromptTail(profileTailInput{
+			Rules:         ruleSet,
+			Template:      promptTemplate,
+			ProfileName:   profileName,
+			Profiles:      profilesSnap,
+			Automation:    automation,
+			Issue:         issue,
+			Attempt:       attemptPtr,
+			RunVars:       runVars,
+			ActionContext: actionContext,
+			Backend:       backend,
+		})
 
 		// On the first turn, inject open PR context if detected.
 		if turn == 1 {

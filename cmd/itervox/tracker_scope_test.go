@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,7 +83,7 @@ func TestTrackerScopeSaveCombinations(t *testing.T) {
 	_, gen, err := loadSettingsGeneration(path)
 	require.NoError(t, err)
 	fsm := &fakeScopeManager{}
-	m := &linearScopeManager{sm: fsm, workflowPath: path, settingsGen: gen}
+	m := &trackerScopeManager{sm: fsm, workflowPath: path, settingsGen: gen}
 
 	for _, tc := range []struct {
 		name string
@@ -218,7 +219,7 @@ func fakeLinearDoctor(t *testing.T) *httptest.Server {
 		case strings.Contains(req.Query, "ItervoxAssigneeByEmail"):
 			data = map[string]any{"users": map[string]any{"nodes": []any{}}}
 		case strings.Contains(req.Query, "ItervoxDoctorAssigneeReads"):
-			assert.Equal(t, "u-bot", req.Variables["assigneeId"])
+			assert.Contains(t, fmt.Sprint(req.Variables["filter"]), "u-bot", "the read check filters by the resolved user")
 			data = map[string]any{
 				"teams": map[string]any{"nodes": []any{
 					map[string]any{"id": "t-1", "key": "ENG"}, map[string]any{"id": "t-2", "key": "OPS"},

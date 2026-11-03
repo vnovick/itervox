@@ -48,3 +48,6 @@ WORKFLOW.md.bak
 
 # make chaos logs (#126)
 /chaos-out/
+
+# #189 eval re-recordings awaiting review (promote with `make evals-promote`)
+internal/evals/fixtures/**/recording.candidate.jsonl

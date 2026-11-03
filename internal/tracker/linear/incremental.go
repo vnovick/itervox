@@ -27,6 +27,11 @@ const updatedSinceNodeFields = `
       trashed
       archivedAt
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -74,21 +79,19 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 		vars  map[string]any
 	}
 	var reqs []request
+	// #182/#198: a filter (or a legacy scope narrowed by an assignee or
+	// labels) is one request over the compiled IssueFilter. An issue that
+	// left the scope (reassigned, label changed) does not appear; the
+	// store's full pull catches it, as it catches a move to another project.
+	groups, compiled, err := c.compiledScope(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	switch {
-	case narrowed(sc):
-		// #182: the project filter ANDed with the assignee and labels. An
-		// issue that left the scope (reassigned, label removed) does not
-		// appear; the store's full pull catches it, as it catches a move to
-		// another project.
-		bs, err := c.scopeBuckets(ctx, sc)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, b := range bs {
-			vars := maps.Clone(b.vars)
-			maps.Copy(vars, base)
-			reqs = append(reqs, request{updatedSinceQuery("ItervoxLinearChangesScoped", b.params, b.filter), vars})
-		}
+	case compiled:
+		filter := map[string]any{"and": []any{map[string]any{"updatedAt": map[string]any{"gte": base["since"]}}, groups}}
+		return c.fetchUpdatedPages(ctx, filteredChangesQuery("ItervoxLinearChangesScoped"),
+			map[string]any{"filter": filter, "relationFirst": pageSize})
 	case len(sc.Projects) == 0:
 		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSinceAll, base)
 	case len(sc.Projects) == 1 && sc.Projects[0] != noProjectSentinel:

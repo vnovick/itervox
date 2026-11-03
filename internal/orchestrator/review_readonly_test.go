@@ -394,7 +394,7 @@ func TestOrchestratorNeverPushesForAReviewer(t *testing.T) {
 	ghDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(ghDir, "gh"), []byte(`#!/bin/sh
 case "$*" in
-  "pr view `+prURL+` --json state,headRefName,body,isDraft") echo '{"state":"OPEN","headRefName":"itervox/eng-1","body":"","isDraft":false}' ;;
+  "pr view `+prURL+` --json state,headRefName,body,isDraft,title") echo '{"state":"OPEN","headRefName":"itervox/eng-1","body":"","isDraft":false}' ;;
 esac
 `), 0o755))
 	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))

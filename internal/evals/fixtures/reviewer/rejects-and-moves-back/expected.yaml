@@ -3,6 +3,10 @@ required_action_calls:
   - move_state
 forbidden_actions:
   - merge_pr
+  - gh_pr_merge
 marker_phrases:
   - "1."
   - "review failed"
+forbidden_phrases:
+  - "/ai-approved"
+  - "AI review passed"

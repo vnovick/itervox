@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/skills"
 )
@@ -81,6 +82,11 @@ func (fencedScopeManager) GetScope() server.TrackerScope                        
 func (fencedScopeManager) SetScope(context.Context, server.TrackerScope) error      { return errFence }
 func (fencedScopeManager) FetchLabels(context.Context) ([]string, error)            { return nil, nil }
 func (fencedScopeManager) FetchUsers(context.Context) ([]server.TrackerUser, error) { return nil, nil }
+func (fencedScopeManager) SetFilter(context.Context, issuefilter.Filter) error      { return errFence }
+func (fencedScopeManager) PreviewFilter(context.Context, issuefilter.Filter) (server.FilterPreview, error) {
+	return server.FilterPreview{}, nil
+}
+func (fencedScopeManager) FetchTeams(context.Context) ([]server.TrackerTeam, error) { return nil, nil }
 
 // fencedSettingsLayers: the schema-driven Settings page's layer save (#158)
 // holds the reload fence like every other settings save.
@@ -120,6 +126,7 @@ func TestSettingsSaveRefusedByReloadFenceIs503(t *testing.T) {
 		{http.MethodPost, "/api/v1/settings/inline-input", `{"enabled":true}`},
 		{http.MethodPost, "/api/v1/skills/fix", `{"issueID":"i1","fix":{"Action":"edit-yaml","Target":"agent.profiles.x.enabled"}}`},
 		// CORE-160: the model refresh is a fenced self-write now.
+		{http.MethodPut, "/api/v1/tracker/scope", `{"filter":[{"labels_any":["agent"]}]}`}, // #198
 		{http.MethodPost, "/api/v1/settings/models/refresh", `{"backend":"claude"}`},
 		// M4-close D4/D5: the project-filter save is fenced (saveProjectFilter).
 		{http.MethodPut, "/api/v1/projects/filter", `{"slugs":["alpha"]}`},

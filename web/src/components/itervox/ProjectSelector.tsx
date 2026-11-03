@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { EMPTY_STATES as EMPTY_PROJECT_FILTER } from '../../utils/constants';
@@ -53,7 +54,8 @@ export function ProjectSelector() {
 
   if (!trackerKind) return null;
 
-  const showGitHubNotice = trackerKind === 'github' && activeProjectFilter.length === 0;
+  const showGitHubNotice =
+    trackerKind === 'github' && !trackerScope && activeProjectFilter.length === 0;
 
   return (
     <div className="flex flex-col gap-2">
@@ -80,13 +82,22 @@ export function ProjectSelector() {
           {TRACKER_LABEL[trackerKind] ?? trackerKind}
         </span>
 
-        {/* #182 — the adapter names its scope (assigned to …, project …). */}
+        {/* #182 — the adapter names its scope (assigned to …, project …);
+            #198 — a tracker filter's groups, one chip each, joined by OR. */}
         {trackerScope && (
-          <span
-            data-testid="tracker-scope"
-            className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2.5 py-0.5 text-xs font-medium"
-          >
-            {trackerScope}
+          <span data-testid="tracker-scope" className="flex flex-wrap items-center gap-1.5">
+            {trackerScope.split('  OR  ').map((group, i) => (
+              <Fragment key={group}>
+                {i > 0 && (
+                  <span className="text-theme-muted text-[10px] font-semibold tracking-widest">
+                    OR
+                  </span>
+                )}
+                <span className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2.5 py-0.5 text-xs font-medium">
+                  {group}
+                </span>
+              </Fragment>
+            ))}
           </span>
         )}
 

@@ -4,13 +4,29 @@ import (
 	"log/slog"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
+
+// leftTrackerScope reports whether a fresh by-ID read of an issue no longer
+// matches the tracker's filter (#198), evaluated in memory with the same
+// predicate the scoped reads compile. Only a definitive no counts: a
+// tracker without a filter, or an answer that waits on an unresolved
+// assignee, keeps the issue.
+func leftTrackerScope(tr tracker.Tracker, issue domain.Issue) bool {
+	m, ok := tr.(tracker.ScopeMatcher)
+	if !ok {
+		return false
+	}
+	in, known := m.MatchesFilter(issue)
+	return known && !in
+}
 
 // observeOutOfScope records, from a successful candidate poll, the running
 // issues that left the tracker's scope (#182): still in an active state
 // (ReconcileTrackerStates reads them by ID, unscoped) but absent from the
-// scoped poll — reassigned away from an assignee scope, or moved to a
-// project outside the project filter.
+// scoped poll — reassigned away from an assignee scope, moved to a project
+// outside the project filter, or no longer matching the tracker filter
+// (#198: the poll is that filter compiled by the tracker).
 //
 // Leaving the scope is not a cancel: the running worker finishes. The marker
 // keeps a new run from starting — the poll no longer offers the issue, and
