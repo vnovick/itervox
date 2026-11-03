@@ -295,7 +295,10 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 	defer cancel()
 	now := time.Now()
 	for _, rule := range rules {
-		if sendCtx.Err() != nil {
+		if err := sendCtx.Err(); err != nil {
+			metrics.EventDropped() // CORE-045
+			slog.Warn("orchestrator: pr_opened dispatch skipped: context done before send",
+				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL, "error", err)
 			return
 		}
 		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
@@ -324,6 +327,10 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 			Issue:      &issue,
 			Automation: &dispatch,
 		}:
+		case <-o.loopExitedCh(): // nil before Run: never ready
+			slog.Warn("orchestrator: pr_opened dispatch event dropped (orchestrator exited)",
+				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL)
+			return
 		case <-sendCtx.Done():
 			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: pr_opened dispatch event not accepted before context done",
