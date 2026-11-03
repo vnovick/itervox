@@ -77,8 +77,10 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 	snap := a.orch.Snapshot()
 	now := time.Now()
 	result := make([]server.TrackerIssue, len(issues))
+	choose := a.orch.PlaybookChooser() // #218: reads the playbooks once per request
 	for i, issue := range issues {
 		result[i] = app.EnrichIssue(issue, snap, now, a.cfg)
+		app.ApplyPlaybook(&result[i], issue, snap, choose)
 	}
 	return result, nil
 }

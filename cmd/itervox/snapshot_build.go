@@ -167,6 +167,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				RunID:         r.RunID,
 				PromptDigest:  r.PromptDigest,
 				PromptParts:   historyPromptParts(r.PromptParts),
+				Playbook:      r.Playbook, // #218
 				Steers:        historySteers(r.Steers),
 				SteersDropped: r.SteersDropped,
 			})
@@ -288,7 +289,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// CORE-175 — operator acks of worker failures + the capability
 			// that makes the dashboard offer the action.
 			FailureAcks:  failureAckRows(s),
-			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause},
+			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause, server.CapabilityRunContext},
 			// #213 — the daemon-wide dispatch pause and the feed head.
 			DispatchPaused: dispatchPauseRow(s.DispatchPaused),
 			FeedSeq:        s.FeedSeq,
@@ -325,7 +326,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

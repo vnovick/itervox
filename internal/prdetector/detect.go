@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -74,6 +75,21 @@ func ParsePRURLs(text string) []string {
 		}
 	}
 	return out
+}
+
+// prNumberInURL reads the number off a GitHub pull or GitLab merge request
+// URL.
+var prNumberInURL = regexp.MustCompile(`/(?:pull|pulls|merge_requests)/(\d+)(?:[/?#]|$)`)
+
+// PRNumber is the PR number in a PR URL; 0 when there is none. Shared by
+// Repo Analysis hotspots (#201) and reverted-PR lessons (#217).
+func PRNumber(url string) int {
+	m := prNumberInURL.FindStringSubmatch(url)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
 }
 
 // prViewJSON is the JSON shape returned by `gh pr view --json state,headRefName,body,isDraft,title`.

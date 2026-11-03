@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vnovick/itervox/internal/apitokens"
 )
 
 // disableNotifyCoalescing makes every Notify a delivery, so tests and the
@@ -53,7 +55,9 @@ func TestSSEClientsShareOneEncodingPerVersion(t *testing.T) {
 			assert.Same(t, &frame[0], &got[0], "client %d got its own copy instead of the shared encoding", i)
 		}
 	}
-	assert.Equal(t, uint64(4), s.frames.encodes)
+	// The handler runs without the auth middleware here, so there is no
+	// principal and every client gets the most redacted (viewer) frame (#214).
+	assert.Equal(t, uint64(4), s.frames[0].encodes)
 	assert.True(t, bytes.HasPrefix(first, []byte("data: {")) && bytes.HasSuffix(first, []byte("}\n\n")), "an SSE data frame")
 
 	// A frame handed out stays as it was: a later version is a new slice.
@@ -68,16 +72,16 @@ func TestSSEFrameCacheExpiresForLateJoiners(t *testing.T) {
 		Snapshot:    func() StateSnapshot { builds.Add(1); return StateSnapshot{} },
 		RefreshChan: make(chan struct{}, 1),
 	})
-	_, _, err := s.sseFrame()
+	_, _, err := s.sseFrame(apitokens.ScopeAdmin)
 	require.NoError(t, err)
-	_, _, err = s.sseFrame()
+	_, _, err = s.sseFrame(apitokens.ScopeAdmin)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), builds.Load(), "same version, fresh frame: reused")
 
-	s.frames.mu.Lock()
-	s.frames.builtAt = time.Now().Add(-2 * frameMaxAge)
-	s.frames.mu.Unlock()
-	_, _, err = s.sseFrame()
+	s.frames[2].mu.Lock()
+	s.frames[2].builtAt = time.Now().Add(-2 * frameMaxAge)
+	s.frames[2].mu.Unlock()
+	_, _, err = s.sseFrame(apitokens.ScopeAdmin)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), builds.Load(), "an old frame is rebuilt")
 }

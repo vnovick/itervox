@@ -30,6 +30,7 @@ vi.mock('../../lib/clientErrorReporter', () => ({
   reportClientError: (...args: unknown[]) => {
     reportClientError(...args);
   },
+  setClientErrorReportGate: () => {},
 }));
 
 import { useItervoxSSE } from '../useItervoxSSE';

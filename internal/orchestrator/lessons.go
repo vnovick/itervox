@@ -51,7 +51,11 @@ type LessonReport struct {
 	// ReservedAt is the rate-limit stamp the proposal took; a proposal that
 	// wrote nothing new gives it back.
 	ReservedAt time.Time
-	Err        error
+	// Enforcement is the enforcement suggestion the proposal's lesson got
+	// when its evidence reached memory.lessons.enforce_threshold (#217); nil
+	// when none was suggested.
+	Enforcement *memory.Enforcement
+	Err         error
 }
 
 // Bounds of the lesson ledgers in State.
@@ -179,9 +183,19 @@ func (o *Orchestrator) observeRunSucceeded(state *State, entry *RunEntry, issue 
 		return
 	}
 	failed, success, ok := failedBeforeSuccess(o.RunHistory(), issue.Identifier, entry.RunID)
-	if !ok {
-		return
+	if !ok || !o.proposeFailedThenSucceeded(state, entry, issue, failed, success, corrections) {
+		// #217: a hard-won success no failed-then-succeeded lesson explains
+		// proposes a recipe.
+		if success.Identifier != "" {
+			o.observeRecipe(state, entry, issue, success, failed)
+		}
 	}
+}
+
+// proposeFailedThenSucceeded proposes a failed_then_succeeded lesson from
+// the changes recorded since the first failure; false when there were none.
+// Event loop only.
+func (o *Orchestrator) proposeFailedThenSucceeded(state *State, entry *RunEntry, issue domain.Issue, failed []CompletedRun, success CompletedRun, corrections []LessonCorrection) bool {
 	since := failed[0].StartedAt
 	var changes []string
 	for _, c := range corrections {
@@ -198,7 +212,7 @@ func (o *Orchestrator) observeRunSucceeded(state *State, entry *RunEntry, issue 
 		// A retry that simply worked the second time teaches nothing.
 		slog.Debug("orchestrator: failed-then-succeeded run with no recorded change; no lesson",
 			"issue_identifier", issue.Identifier)
-		return
+		return false
 	}
 	statuses := make([]string, 0, len(failed))
 	runIDs := make([]string, 0, len(failed)+1)
@@ -221,6 +235,7 @@ func (o *Orchestrator) observeRunSucceeded(state *State, entry *RunEntry, issue 
 		WentWrong:   fmt.Sprintf("the earlier run %s", strings.Join(slices.Compact(statuses), " / ")),
 		Corrections: changes, RunIDs: runIDs, Links: links,
 	}, time.Now())
+	return true
 }
 
 // failedBeforeSuccess finds, in history (oldest first), the successful run
@@ -338,6 +353,10 @@ func (o *Orchestrator) applyLessonDrafted(state *State, ev OrchestratorEvent) {
 	}
 	slog.Info("orchestrator: lesson drafted", "issue_identifier", rep.Identifier,
 		"outcome", rep.Outcome, "memory_id", rep.EntryID, "drafted_by", rep.DraftedBy)
+	if rep.Enforcement != nil { // #217
+		slog.Info("orchestrator: lesson enforcement suggested", "issue_identifier", rep.Identifier,
+			"memory_id", rep.EntryID, "kind", rep.Enforcement.Kind, "drafted_by", rep.Enforcement.DraftedBy)
+	}
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}

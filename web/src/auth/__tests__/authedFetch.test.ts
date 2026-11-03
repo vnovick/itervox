@@ -3,6 +3,7 @@ import { authedFetch } from '../authedFetch';
 import { UnauthorizedError } from '../UnauthorizedError';
 import { useTokenStore } from '../tokenStore';
 import { useAuthStore } from '../authStore';
+import { useToastStore } from '../../store/toastStore';
 
 beforeEach(() => {
   useTokenStore.setState({ token: null });
@@ -81,5 +82,37 @@ describe('authedFetch', () => {
 
     const res = await authedFetch('/api/v1/state');
     expect(res.status).toBe(500);
+  });
+
+  it('toasts the scope a 403 insufficient_scope needed and returns the response (#214)', async () => {
+    useToastStore.setState({ toasts: [] });
+    const body = JSON.stringify({
+      error: { code: 'insufficient_scope', message: 'needs admin', required_scope: 'admin' },
+    });
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(body, { status: 403, headers: { 'X-Itervox-Required-Scope': 'admin' } }),
+      ) as unknown as typeof fetch;
+
+    const res = await authedFetch('/api/v1/settings/workers', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]?.message).toContain('needs the admin scope');
+    expect(toasts[0]?.variant).toBe('error');
+  });
+
+  it('does not toast a 403 without the required-scope header', async () => {
+    useToastStore.setState({ toasts: [] });
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('{}', { status: 403 })) as unknown as typeof fetch;
+
+    const res = await authedFetch('/api/v1/state', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
   });
 });

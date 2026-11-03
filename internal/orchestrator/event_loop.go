@@ -46,6 +46,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadInputRequiredFromDisk(state)
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
+	state = o.loadPlaybookOverridesFromDisk(state) // #218
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
@@ -224,6 +225,7 @@ func (o *Orchestrator) tickPrelude(ctx context.Context, state State, now time.Ti
 	// workerCancels-map entry even if the EventWorkerExited send drops under
 	// load (T-09).
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
+	o.maybeScanReverts(&state, now) // #217: off the loop, paced
 	return state
 }
 
@@ -2051,6 +2053,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventSetDepsOverride:
 		state = o.applyDepsOverrideEvent(state, ev)
 
+	case EventSetPlaybookOverride: // #218
+		o.applyPlaybookOverrideEvent(&state, ev)
+
 	case EventDrain:
 		o.applyDrain(&state)
 
@@ -2060,11 +2065,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			appendRecentFailure(&state, *ev.Failure, time.Now())
 			if ev.Failure.Kind == FailureKindGuardrail { // #213: a shim or hook refused
 				o.emitFeed(&state, FeedGuardrailBlocked, ev.Failure.Identifier, FeedPayload{Kind: ev.Failure.Source})
+				noteRunContextGuardrail(&state, ev.Failure.Identifier, ev.Failure.Source, time.Now()) // #215
 			}
 		}
 
 	case EventFeedRecorded: // #213
 		o.applyFeedRecorded(&state, ev)
+
+	case EventRunContext: // #215
+		o.applyRunContext(&state, ev.runContext)
 
 	case EventSetDispatchPause: // #213
 		o.applySetDispatchPause(ctx, &state, ev.dispatchPause, time.Now())
@@ -2096,6 +2105,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 	case EventLessonDrafted: // #203
 		o.applyLessonDrafted(&state, ev)
+
+	case EventRevertsScanned: // #217
+		o.applyRevertsScanned(&state, ev.Reverts)
 
 	case EventTrackerPolled: // #187
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
@@ -2209,6 +2221,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.userTerminatedMu.Unlock()
 		// #213: the run's exit, from its identity and terminal reason only.
 		o.emitRunExitFeed(&state, liveEntry, ev.RunEntry, wasCancelledByUser || wasTerminatedByUser)
+		finishRunContext(&state, liveEntry, ev.RunEntry, ev.RunID, now) // #215
 
 		if wasCancelledByUser {
 			state.PausedIdentifiers[issue.Identifier] = issue.ID
@@ -2318,6 +2331,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// the next reviewer in the chain or close the quorum.
 				state = o.advanceReviewChainForIssue(ctx, state, issue, finished.ProfileName, now)
 				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName) // #201
+				o.observeReviewerAsk(&state, liveEntry, issue, finished.ProfileName)        // #217
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -3046,6 +3060,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.RunID = liveEntry.RunID                 // #186
 		run.PromptDigest = liveEntry.PromptDigest   // #186
 		run.PromptParts = liveEntry.PromptParts     // #186
+		run.Playbook = liveEntry.Playbook           // #218
 		run.Steers = slices.Clone(liveEntry.Steers) // #186
 		run.SteersDropped = liveEntry.SteersDropped
 		run.PRURL = liveEntry.PRURL                 // #201

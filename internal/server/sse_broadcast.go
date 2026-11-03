@@ -3,9 +3,12 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/vnovick/itervox/internal/apitokens"
 )
 
 // sse_broadcast.go — the dashboard stream's fan-out (#210): the broadcaster
@@ -142,19 +145,30 @@ type sseFrameCache struct {
 	encodes uint64
 }
 
-// sseFrame returns the current version's encoded snapshot frame and that
-// snapshot's feed seq (#213), building the frame when this version has none
-// yet or the cached one is older than frameMaxAge. Concurrent callers of a
-// new version wait for the one encode.
-func (s *Server) sseFrame() ([]byte, int64, error) {
+// frameScopes are the caller scopes with their own frame cache, in the
+// order of Server.frames.
+var frameScopes = [...]apitokens.Scope{apitokens.ScopeViewer, apitokens.ScopeOperator, apitokens.ScopeAdmin}
+
+// sseFrame returns the current version's encoded snapshot frame for a
+// caller of scope, and that snapshot's feed seq (#213), building the frame
+// when this version has none yet or the cached one is older than
+// frameMaxAge. Concurrent callers of a new version wait for the one encode.
+// Each scope has its own cache (#214): the frame names the caller's scope,
+// and below admin it is the redacted snapshot. An invalid scope gets the
+// viewer frame (the most redacted).
+func (s *Server) sseFrame(scope apitokens.Scope) ([]byte, int64, error) {
+	idx := slices.Index(frameScopes[:], scope)
+	if idx < 0 {
+		idx, scope = 0, apitokens.ScopeViewer
+	}
 	version := s.bc.currentVersion()
-	c := &s.frames
+	c := &s.frames[idx]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.frame != nil && c.version == version && time.Since(c.builtAt) < frameMaxAge {
 		return c.frame, c.feedSeq, nil
 	}
-	snap := s.snapshot()
+	snap := snapshotForScope(s.snapshot(), scope)
 	frame, err := encodeSSEFrame(snap)
 	if err != nil {
 		return nil, 0, err
