@@ -15,7 +15,6 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -65,9 +64,8 @@ func (p tempWorkspaceProvider) ResolvePath(identifier string) string {
 }
 
 // TestSettingsSaveDoesNotCancelRunContext (CORE-116) wires the daemon's
-// reload chain the way main() does — workflow.WatchFrom(runCtx, path,
-// cfg.WorkflowHash, runCancel)
-// alongside orch.Run(runCtx) — with a real config.Load'ed WORKFLOW.md, a
+// reload chain the way main() does — watchConfigFiles(runCtx, path, cfg,
+// runCancel, ...) (workflow.WatchFrom before #245) alongside orch.Run(runCtx) — with a real config.Load'ed WORKFLOW.md, a
 // real Orchestrator and the real orchestratorAdapter, and an agent turn held
 // in flight by a fake runner. A dashboard settings save (SetWorkers →
 // persistSettings: .itervox/settings.jsonc, then the key's removal from
@@ -112,7 +110,7 @@ You are working on {{ issue.identifier }}.
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		_ = workflow.WatchFrom(runCtx, path, cfg.WorkflowHash, runCancel)
+		_ = watchConfigFiles(runCtx, path, cfg, runCancel, configWatchOptions{})
 	}()
 	runDone := make(chan struct{})
 	go func() {

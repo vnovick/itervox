@@ -5,7 +5,8 @@
 **Itervox** is a long-running daemon (Go 1.26.9) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
-provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
+provides a live Kanban web dashboard (React/Vite) and terminal client commands
+(`itervox watch`, a read-only live panel, and the quick actions) over its API.
 
 Config lives in one `WORKFLOW.md` file per project (YAML front matter +
 Liquid prompt template). Since #129 the `agent`, `polling`, `workspace` and
@@ -49,9 +50,12 @@ Git hooks (lefthook) run `go vet`, `golangci-lint`, `tsc --noEmit`, ESLint,
 Prettier on pre-commit; full test + build suites on pre-push.
 
 Testing specifics not obvious from the commands above:
-- **TUI tests** use `charmbracelet/x/exp/teatest` (e.g. `model_teatest_test.go`)
-  with catwalk golden files. Regenerate golden files via `make tui-golden`
-  after intentional render changes.
+- **Terminal command tests** (`itervox watch`, quick actions) run against a
+  fake daemon (`newFakeDaemon`, `fakeFeed`) and assert on printed text or JSON
+  lines; there are no golden files. The terminal UI (`internal/statusui`,
+  `--tui`, `make tui-golden`) was removed in #240: `--tui` prints a pointer to
+  `itervox watch` and exits 2. `TestWatchNeverChangesTerminalMode` (Linux,
+  real pseudo-terminal) fails if watch changes the terminal mode or reads stdin.
 - **Integration tests** that hit a real tracker API are gated behind a build
   tag; they are NOT run by default with `go test ./...`.
 - **Frontend tests** use Vitest + Testing Library. Coverage gates live in
@@ -212,7 +216,7 @@ only the event loop mutates them.
   scope itself (projects AND assignee AND labels) lives in the Linear
   client under its own `projectFilterMu`, not `cfg`:
   `tracker.assignee`/`team`/`labels` are load-time fields, and the dashboard
-  scope card and TUI picker change the client's runtime scope
+  scope card changes the client's runtime scope
   (`SetScope`/`SetProjectFilter`), so there is no new `cfgMu` field.
 - `CronCursors` (#176) is the per-cron-rule `filter.limit` rotation cursor
   (automation ID → last identifier served). A limited cron tick is handed to
@@ -378,7 +382,7 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   `State`.
 - **Shim entrypoints run first in `main()`** (`runGuardrailEntrypoint`),
   before dotenv / GIT_DIR scrubbing, forward the agent's env untouched and
-  exit via `exitWithoutTerminalRestore` (no `stty sane` on the agent's TTY).
+  exit via `exitWithoutCleanup` (no `onFatalExit` cleanup in the agent's process).
   Itervox's own git still goes only through `gitexec` (which scrubs
   `GIT_CONFIG_PARAMETERS`, so the guardrail hooks never apply to it); the
   shim's forward is a `syscall.Exec` of the agent's own command and the
@@ -424,6 +428,47 @@ section stay easy to diff.
 
 The canonical allowlist is `internal/orchestrator/cfg_mu_audit_test.go::AllowedMutableCfgFields`;
 keep this section in sync with that test. All **other** `cfg` fields are read-only after startup — no lock needed for them.
+
+### Settings layers — one config format (#239)
+
+Config comes from layered JSONC files plus `WORKFLOW.md`, merged in
+`internal/config/layers.go`: defaults < user (`~/.itervox/settings.jsonc`,
+personal defaults) < `WORKFLOW.md` front matter < project
+(`.itervox/settings.jsonc`, committed) < local (`.itervox/settings.local.jsonc`,
+gitignored). The project and local files win over the front matter; the front
+matter wins over the user file, and only a project/local value over a
+front-matter key is reported as a conflict.
+
+- **Layered sections** (`config.LayeredSections`): `agent`, `automations`
+  (a list section, `config.ListSections`: a file sets the whole list),
+  `dependencies`, `hooks`, `hub`, `polling`, `server`, `tracker`, `workspace`.
+  Every key the loader reads in them has a `config.SettingFields` entry (the
+  published schema and the Settings page come from it; the schema tests fail
+  otherwise — regenerate with `make settings-schema`).
+- **WORKFLOW.md holds the prompt** (its body), the schema marker, the
+  non-layered sections, and `config.FrontMatterKeptKeys` (`agent.profiles`,
+  `agent.available_models`, `agent.reviewer_prompt`), which their editors write
+  there. Front-matter keys still apply; `config.Load` reports them in
+  `cfg.FrontMatter` (deprecated keys, and conflicts with a settings file), which
+  `itervox doctor` and the startup log (`logFrontMatterReport`, once per process)
+  print. Do not add a new layered key that only WORKFLOW.md can hold.
+- **Saves** of layered keys go through `persistSettings` (project file, or the
+  local file when it already sets the key) / `SaveSettingsLayer` (the layer the
+  Settings page picks), both via `config.SetSettings`, and remove the key from
+  WORKFLOW.md. There is no per-key WORKFLOW.md writer for these sections.
+- **Secrets** in a settings file are `$VAR` references only:
+  `config.ValidateSettingValue` refuses an inline secret, and
+  `itervox init --update` (`cmd/itervox/init_settings_move.go`) leaves a key
+  holding one in WORKFLOW.md. Never resolve a `$VAR` into a settings file.
+- **Fresh projects**: `itervox init` / `quickstart` (`scaffoldWorkflow` →
+  `moveScaffoldSettings`) write the layered sections to
+  `.itervox/settings.jsonc`, so a new project has nothing deprecated.
+- **Migration**: `itervox init --update` moves the layered front-matter keys
+  to `.itervox/settings.jsonc` (WORKFLOW.md.bak first, YAML comments carried as
+  `//` comments, refused if the merged config would change; `--dry-run`).
+- The `cfgMu` allowlist and reload behaviour did not change: the Live tracker
+  state, failed-state and analysis-mode settings apply through their existing
+  setters; the watcher still watches only WORKFLOW.md.
 
 ### Snapshot access
 
@@ -515,7 +560,9 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
 - **Migration entry point** is `itervox init --update --workflow WORKFLOW.md`.
   It writes a `WORKFLOW.md.bak` next to the workflow, extracts each profile's
   inline `prompt:` into `INSTRUCTIONS.md`, generates a starter `SOUL.md`, patches
-  the root `.gitignore`, and stamps `itervox_schema_version: 2`.
+  the root `.gitignore`, and stamps `itervox_schema_version: 2`. Then (#239) it
+  moves the layered front-matter keys to `.itervox/settings.jsonc` (see
+  "Settings layers" above); `--dry-run` previews that move and writes nothing.
 - **`.itervox/HEARTBEAT.md`** is the daemon liveness file. Written on startup by
   `cmd/itervox/heartbeat.go` and refreshed after state changes at a bounded
   interval (15s by default). Atomic write via `atomicfs.WriteFile`. The dashboard
@@ -621,8 +668,6 @@ prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
 app (EnrichIssue business logic — imports domain, tracker; playbook for the card, #218)
 
 server (HTTP API — imports domain, config, apitokens, guardrails, logging, memory, rules)
-
-statusui (Bubbletea TUI — imports domain)
 
 mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
            API; imports apitokens and logging only, never orchestrator)
@@ -951,6 +996,6 @@ the canonical text.
 - **Do not mock `orchestrator.State`** in tests that check state transitions — pass real State values
 - **Do not call `patchSnapshot` from settings mutations** — they must call `refreshSnapshot()` to get the authoritative server state
 - **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored.
-- **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It restores the terminal to a sane mode (`stty sane`) before exiting, which is required for any code path that may run after `go statusui.Run` puts the terminal into raw mode. The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.
+- **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It runs the `onFatalExit` runtime-file cleanup (`daemon.pid`, `dashboard_url`, `HEARTBEAT.md`) that `os.Exit` would skip. (It no longer runs `stty sane`: since the terminal UI was removed in #240 nothing in `cmd/itervox` puts the terminal into raw mode — keep it that way; `itervox watch` must never read stdin or change a terminal mode.) The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.
 - **Do not declare anything done by inference.** See "Verification before completion — MANDATORY" above. Every named test, counter, field, CLI subcommand, route, and UI surface in an acceptance section MUST be grepped or run, and the result MUST appear in a `Verified by:` annotation. Marking an item done without that annotation is a contract violation, not a style preference. The common evasions enumerated above (symbol-exists-but-callless, one-sub-criterion-of-N, test-body-is-skip, counter-declared-never-incremented, component-imported-never-rendered, route-registered-handler-is-501) are explicitly refused.
 - **Do not move agent guidance into AGENTS.md if it is not codex-specific.** AGENTS.md is a thin pointer at CLAUDE.md plus a small "Codex-specific notes" section. Architecture invariants, the `cfgMu` allowlist, verification rules, conventions, false-positive patterns, the Never-do list — all of those live ONLY in CLAUDE.md and AGENTS.md tells codex to read them there. If you find yourself duplicating a CLAUDE.md section into AGENTS.md, stop: either the content belongs in CLAUDE.md (where it already is) or it's genuinely codex-specific (in which case it shouldn't be in CLAUDE.md). Picking only one home is the contract.

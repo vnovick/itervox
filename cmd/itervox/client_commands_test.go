@@ -68,8 +68,9 @@ func writeJSONBody(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// TestWatchRendersRunningAndQueuedIssues: watch shows the running, retrying,
-// queued, input-required and paused issues of a live daemon's state.
+// TestWatchRendersRunningAndQueuedIssues: watch --once shows the running,
+// retrying, queued, input-required and paused issues of a live daemon's
+// state (#120; the #240 layout).
 func TestWatchRendersRunningAndQueuedIssues(t *testing.T) {
 	state := map[string]any{
 		"maxConcurrentAgents": 3,
@@ -91,10 +92,10 @@ func TestWatchRendersRunningAndQueuedIssues(t *testing.T) {
 	code, out, errOut := runClient(t, t.Context(), d, "watch", "--once")
 	require.Equal(t, 0, code, errOut)
 	for _, want := range []string{
-		"1/3 agents · 2 waiting for a slot · 1 retrying · 1 waiting for input · 1 queued automations · 1 paused",
-		"RUNNING", "ENG-1", "In Progress", "claude reviewer", "12m34s", "turn 4", "48.2k tok", "running tests ok",
+		"1/3 running · 1 queued · 1 retrying · 1 waiting for you · 2 waiting for a slot · 0 blocked by dependencies · 1 paused",
+		"ENG-1", "In Progress", "claude reviewer", "12m34s", "turn 4", "48.2k tok", "› running tests ok",
 		"RETRYING", "ENG-2", "attempt 2", "in 1m",
-		"WAITING FOR INPUT", "ENG-3", "Which database?",
+		"NEEDS YOU", "ENG-3", "question: Which database?",
 		"QUEUED AUTOMATIONS", "ENG-4", "nightly-triage", "no slots",
 		"PAUSED", "ENG-5", "retries exhausted",
 	} {
@@ -316,12 +317,14 @@ func TestClientFindsTheDaemonAndItsToken(t *testing.T) {
 	assert.Equal(t, "from-environment", c.token, "the environment wins")
 }
 
-// altScreen is the escape sequence the terminal UI starts with.
+// altScreen is the escape sequence a full-screen terminal UI starts with;
+// nothing itervox runs may print it (#240).
 const altScreen = "\x1b[?1049h"
 
 // TestHeadlessOnATTYDoesNotStartTheTUIOrPrintTheToken: with --headless the
-// daemon, on a real terminal, starts no terminal UI and prints the dashboard
-// URL without the token; without it (the control) the UI starts.
+// daemon, on a real terminal, switches to no alternate screen and prints
+// the dashboard URL without the token (TestDefaultStartIsHeadless is the
+// control: without --headless the URL carries the token).
 func TestHeadlessOnATTYDoesNotStartTheTUIOrPrintTheToken(t *testing.T) {
 	const announced = "dashboard URL ("
 	t.Run("--headless", func(t *testing.T) {
@@ -339,13 +342,6 @@ func TestHeadlessOnATTYDoesNotStartTheTUIOrPrintTheToken(t *testing.T) {
 		assert.NotContains(t, got, "***", "the hint survives the log redactor")
 		assert.NotContains(t, got, altScreen, "no terminal UI")
 		assert.Contains(t, got, "orchestrator", "the logs go to stderr")
-	})
-	t.Run("control: with --tui the UI starts", func(t *testing.T) {
-		p := newDaemonProject(t)
-		ptyOut, _, _ := p.startUnderPTY(t, `exec "$ITERVOX_TEST_EXE" >"$ITERVOX_TEST_OUT"`, []string{"--tui"})
-		waitFor(t, 30*time.Second, "the terminal UI on the terminal", func() bool {
-			return countFileOccurrences(ptyOut, altScreen) >= 1
-		})
 	})
 }
 
@@ -365,67 +361,6 @@ func TestDefaultStartIsHeadless(t *testing.T) {
 	assert.Contains(t, got, "?token="+token, "the dashboard URL is printed")
 	assert.Contains(t, got, "orchestrator", "the logs go to stderr")
 	assert.NotContains(t, got, "terminal UI is deprecated", "no deprecation warning without --tui")
-}
-
-// TestTUIFlagStartsTheTUI (#134): --tui starts the terminal UI on a
-// terminal, which shows the deprecation notice in its header, and logs that
-// it is deprecated; without a terminal it warns and runs headless.
-func TestTUIFlagStartsTheTUI(t *testing.T) {
-	t.Run("on a terminal", func(t *testing.T) {
-		p := newDaemonProject(t)
-		// A sized terminal: script(1)'s is 0x0, where the UI never draws.
-		ptyOut, _, _ := p.startUnderPTY(t, `stty cols 200 rows 50; exec "$ITERVOX_TEST_EXE" >"$ITERVOX_TEST_OUT"`, []string{"--tui"})
-		waitFor(t, 30*time.Second, "the terminal UI on the terminal", func() bool {
-			return countFileOccurrences(ptyOut, altScreen) >= 1
-		})
-		waitFor(t, 30*time.Second, "the deprecation notice in the UI's header", func() bool {
-			return countFileOccurrences(ptyOut, "deprecated and will be removed in v0.3") >= 1
-		})
-		waitFor(t, 10*time.Second, "the deprecation warning in the log file", func() bool {
-			return countFileOccurrences(filepath.Join(p.LogsDir, "itervox.log"), "the terminal UI is deprecated") >= 1
-		})
-	})
-	t.Run("--headless wins", func(t *testing.T) {
-		p := newDaemonProject(t)
-		ptyOut, _, _ := p.startUnderPTY(t, `stty cols 200 rows 50; exec "$ITERVOX_TEST_EXE" >"$ITERVOX_TEST_OUT"`, []string{"--tui", "--headless"})
-		waitFor(t, 30*time.Second, "the dashboard announcement on the terminal", func() bool {
-			return countFileOccurrences(ptyOut, "dashboard URL (") >= 1
-		})
-		time.Sleep(time.Second) // time for a TUI to have started, if it were going to
-		got := readTrim(t, ptyOut)
-		assert.NotContains(t, got, altScreen, "no terminal UI")
-		assert.Contains(t, got, "token withheld")
-	})
-	t.Run("without a terminal", func(t *testing.T) {
-		p := newDaemonProject(t)
-		_, stderr := p.startHeadless(t, []string{"--tui"})
-		waitFor(t, 30*time.Second, "the warning on stderr", func() bool {
-			return countFileOccurrences(stderr, "--tui: no terminal is attached") >= 1
-		})
-		assert.Zero(t, countFileOccurrences(stderr, altScreen), "no terminal UI")
-	})
-}
-
-// TestArgsBool: the flags read before flag.Parse (#120, #134) parse as
-// flag.Parse would, so the early logger agrees with the terminal UI.
-func TestArgsBool(t *testing.T) {
-	for _, tc := range []struct {
-		args []string
-		want bool
-	}{
-		{[]string{"itervox"}, false},
-		{[]string{"itervox", "--tui"}, true},
-		{[]string{"itervox", "-tui"}, true},
-		{[]string{"itervox", "--tui=T"}, true},
-		{[]string{"itervox", "--tui=true"}, true},
-		{[]string{"itervox", "--tui=0"}, false},
-		{[]string{"itervox", "--tui=false"}, false},
-		{[]string{"itervox", "--tui", "--tui=false"}, false},
-		{[]string{"itervox", "--tuix"}, false},
-		{[]string{"itervox", "--", "--tui"}, false},
-	} {
-		assert.Equal(t, tc.want, argsBool(tc.args, "tui"), "%v", tc.args)
-	}
 }
 
 // syncBuffer is a strings.Builder safe to read while a command writes it.

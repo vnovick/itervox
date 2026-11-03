@@ -65,8 +65,7 @@ requires it as the bearer token exactly as it would a pinned
   (a warning names the replacement, never a value), and over
   `server.allow_unauthenticated: true`: auth stays on.
 - It is never printed: no tokenised dashboard URL on stderr, even on a
-  terminal or with `ITERVOX_PRINT_TOKEN=1`; the terminal UI's dashboard URL
-  carries no token; nothing is written to `<logs-dir>/api-token` (a stale
+  terminal or with `ITERVOX_PRINT_TOKEN=1`; nothing is written to `<logs-dir>/api-token` (a stale
   file from an earlier generated-token start is removed). The value is also
   registered for exact-match log redaction, and it never reaches
   `HEARTBEAT.md`, `dashboard_url` or the daemon registry. The startup log
@@ -652,6 +651,14 @@ Useful top-level fields include:
   (the reset, or the cooldown end). This is the AGENT backend, unrelated to
   `rateLimits` (tracker API budget) and `outboxEntries[].rateLimitedUntil`
   (tracker writes). Absent on older daemons.
+- `running[]` rows carry `title` (the issue's title), `profile` (the run's
+  resolved profile, omitted for the default) and `costUsdEstimated` (the run's
+  estimated cost as its backend reports it; omitted until reported, always for
+  Codex) (#240). `lastEvent` is redacted like every log surface.
+- `inputRequired[]` rows carry `guardrailApproval: true` for a
+  [guardrail approval](/guides/guardrails/) request (#240): `approve` (or
+  `itervox approve <issue>`) runs the held command once, any other reply
+  rejects it.
 - `proposedLessons` (#203) — how many proposed lessons wait in the Memory
   page's review queue (the Memory nav item's count); omitted when none.
 - `autoSwitches` (CORE-055) — issues whose next run uses an automatic
@@ -2407,7 +2414,7 @@ filter"). Keys are the `WORKFLOW.md` condition names: `projects`, `teams`,
   uses, and lists the first 10 identifiers. Nothing is saved.
 - While a filter is in effect, `PUT /projects/filter` answers `409
   tracker_filter_in_effect` (project_slug and tracker.filter cannot both be
-  set) and the TUI picker does not save.
+  set).
 - The snapshot's `trackerScope` is the filter's summary (e.g.
   `ENG · agent|ai · ¬blocked  OR  me · urgent`) and `filterConditions` the
   supported conditions (present when the tracker has a filter).

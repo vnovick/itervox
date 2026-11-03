@@ -13,7 +13,6 @@ import (
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // adapter_settings.go houses the settings/config-mutating methods of
@@ -23,10 +22,10 @@ import (
 // every setter that writes its settings holds beginSettingsSave for the whole
 // write-then-apply so the files and memory cannot diverge (V4).
 //
-// Where a save goes (#129): keys in the layered sections (agent, polling,
-// server, workspace) go to .itervox/settings.jsonc through persistSettings,
-// which also moves the key out of WORKFLOW.md. Everything else (automations,
-// tracker.*, dependencies.*) and the file-backed profiles stay in WORKFLOW.md.
+// Where a save goes (#129, #239): keys in the layered sections (agent,
+// automations, dependencies, hooks, hub, polling, server, tracker, workspace)
+// go to the settings file through persistSettings, which also moves the key
+// out of WORKFLOW.md. Only the file-backed profiles stay in WORKFLOW.md.
 
 // SetWorkers persists agent.max_concurrent_agents FIRST, then
 // applies the change to the orchestrator. Persist-then-mutate matches the
@@ -156,7 +155,9 @@ func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef)
 	if err := config.ValidateAutomationsWithDefaults(compiled, a.orch.ProfilesCfg(), a.cfg.Agent.Command); err != nil {
 		return err
 	}
-	if err := workflow.PatchAutomationsBlock(a.workflowPath, automations); err != nil {
+	// #239: automations is a layered section; the list goes to the settings
+	// file and leaves WORKFLOW.md (with the legacy schedules block).
+	if err := persistSettings(a.workflowPath, []setting{{Key: "automations", Value: automationsSetting(automations)}}); err != nil {
 		return err
 	}
 	// no rollback needed: SetAutomationsCfg is infallible (slice assignment under cfgMu).
@@ -217,7 +218,7 @@ func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
 	return nil
 }
 
-// SetDepsAnalysisMode persists dependencies.analysis_mode to WORKFLOW.md and
+// SetDepsAnalysisMode persists dependencies.analysis_mode to the settings file (#239) and
 // then updates the running config, rolling the file back if the runtime
 // update is rejected — same two-phase shape as SetAutoClearWorkspace.
 func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {

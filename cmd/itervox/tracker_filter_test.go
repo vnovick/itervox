@@ -123,14 +123,14 @@ func (m *memFilterManager) FetchUsers(context.Context) ([]tracker.AssigneeUser, 
 func (m *memFilterManager) ScopeKey() string   { return m.filter.Key() }
 func (m *memFilterManager) ScopeLabel() string { return m.filter.Label() }
 
-// TestFilterSaveWritesWorkflow (#198): the dashboard's group builder save
-// writes tracker.filter to WORKFLOW.md — replacing a block-style filter,
-// commenting the legacy keys out — so the file loads (and validates) as
-// exactly the filter memory holds; the preview counts without saving; an
-// unsupported condition is refused with file and memory unchanged; an empty
-// filter comments tracker.filter out; a legacy scope save comments it out
-// too.
-func TestFilterSaveWritesWorkflow(t *testing.T) {
+// TestFilterSaveWritesTheSettingsFile (#198, #239; was
+// TestFilterSaveWritesWorkflow): the dashboard's group builder save writes
+// tracker.filter to the settings file — removing it and the legacy keys from
+// WORKFLOW.md — so the config loads (and validates) as exactly the filter
+// memory holds; the preview counts without saving; an unsupported condition
+// is refused with files and memory unchanged; an empty filter removes
+// tracker.filter; a legacy scope save removes it too.
+func TestFilterSaveWritesTheSettingsFile(t *testing.T) {
 	path := writeFixture(t, "---\nitervox_schema_version: 2\ntracker:\n  kind: linear\n  api_key: k\n  # project_slug: old\n  labels: [agent]\n  filter:\n    - labels_any: [old]\n      priority: [3]\n  active_states: [Todo]\n---\n\nPrompt.\n")
 	_, gen, err := loadSettingsGeneration(path)
 	require.NoError(t, err)
@@ -150,10 +150,17 @@ func TestFilterSaveWritesWorkflow(t *testing.T) {
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	text := string(raw)
-	assert.Contains(t, text, `  filter: [{labels_any: ["agent", "ai"], labels_none: ["blocked"]}, {assignee: "me", labels_all: ["urgent"]}]`)
-	assert.NotContains(t, text, "priority: [3]", "the old block is replaced, not left behind")
-	assert.Contains(t, text, "  # labels: [agent]", "the legacy keys are commented out")
+	assert.NotContains(t, text, "filter:", "the old block leaves WORKFLOW.md")
+	assert.NotContains(t, text, "labels: [agent]", "the legacy keys leave WORKFLOW.md")
 	assert.Contains(t, text, "  active_states: [Todo]")
+	settings, err := config.ReadSettingsFile(config.ProjectSettingsPath(path))
+	require.NoError(t, err)
+	tr := settings["tracker"].(map[string]any)
+	assert.Equal(t, []any{
+		map[string]any{"labels_any": []any{"agent", "ai"}, "labels_none": []any{"blocked"}},
+		map[string]any{"assignee": "me", "labels_all": []any{"urgent"}},
+	}, tr["filter"])
+	settingsText := readString(t, config.ProjectSettingsPath(path))
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, want, cfg.Tracker.Filter, "the file loads as what memory holds")
@@ -163,35 +170,23 @@ func TestFilterSaveWritesWorkflow(t *testing.T) {
 	require.ErrorIs(t, err, server.ErrFilterInvalid)
 	assert.Equal(t, want, fm.filter, "refused: memory unchanged")
 	after, _ := os.ReadFile(path)
-	assert.Equal(t, text, string(after), "refused: file unchanged")
+	assert.Equal(t, text, string(after), "refused: WORKFLOW.md unchanged")
+	assert.Equal(t, settingsText, readString(t, config.ProjectSettingsPath(path)), "refused: settings file unchanged")
 
 	require.NoError(t, m.SetFilter(t.Context(), nil))
 	cfg, err = config.Load(path)
 	require.NoError(t, err)
-	assert.Nil(t, cfg.Tracker.Filter, "an empty filter comments tracker.filter out")
+	assert.Nil(t, cfg.Tracker.Filter, "an empty filter removes tracker.filter")
 	assert.Nil(t, cfg.Tracker.EffectiveFilter(), "and reads every issue")
 
-	// Back to a block-style filter commented out, then a legacy scope save.
+	// A filter again, then a legacy scope save.
 	require.NoError(t, m.SetFilter(t.Context(), want))
 	fsm := &fakeScopeManager{}
 	legacy := &trackerScopeManager{sm: fsm, fm: fm, workflowPath: path, settingsGen: gen}
 	require.NoError(t, legacy.SetScope(t.Context(), server.TrackerScope{Projects: []string{"alpha"}, Labels: []string{"agent"}}))
 	cfg, err = config.Load(path)
 	require.NoError(t, err)
-	assert.Nil(t, cfg.Tracker.Filter, "a legacy save comments tracker.filter out")
+	assert.Nil(t, cfg.Tracker.Filter, "a legacy save removes tracker.filter")
 	assert.Equal(t, "alpha", cfg.Tracker.ProjectSlug)
 	require.NoError(t, config.ValidateDispatch(cfg))
-}
-
-// TestSetTrackerBlock (#198): a block-style key and its continuation lines
-// are replaced or commented out as one; a commented-out block is found
-// again and replaced whole.
-func TestSetTrackerBlock(t *testing.T) {
-	lines := []string{"tracker:", "  kind: linear", "  filter:", "  - projects: [a]", "    labels_any: [b]", "  active_states: [Todo]"}
-	out, err := setTrackerBlock(append([]string{}, lines...), "filter", "")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"tracker:", "  kind: linear", "  # filter:", "  # - projects: [a]", "  #   labels_any: [b]", "  active_states: [Todo]"}, out)
-	out, err = setTrackerBlock(out, "filter", "[{projects: [c]}]")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"tracker:", "  kind: linear", "  filter: [{projects: [c]}]", "  active_states: [Todo]"}, out)
 }

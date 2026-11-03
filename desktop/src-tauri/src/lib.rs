@@ -14,6 +14,7 @@ pub mod menu;
 pub mod model;
 pub mod projects;
 pub mod prompt;
+pub mod rail;
 pub mod registry;
 pub mod remote;
 pub mod remote_model;

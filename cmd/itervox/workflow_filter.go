@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // #198 — the tracker filter: groups of conditions, ANDed inside a group and
@@ -46,9 +47,9 @@ func resolveFilterAssignees(ctx context.Context, fm tracker.FilterManager, f iss
 
 // saveTrackerFilter is the one save path for the tracker filter, with
 // saveTrackerScope's discipline: validated and resolved first (a refused
-// filter changes nothing), then WORKFLOW.md is written as a fenced
-// self-write (no reload), then the filter is applied in memory. The legacy
-// scope keys are commented out, since they and tracker.filter cannot both
+// filter changes nothing), then the settings file is written as a fenced
+// save (no reload; #239), then the filter is applied in memory. The legacy
+// scope keys are removed, since they and tracker.filter cannot both
 // be set; legacyProjectSlug says whether project_slug is one of them (it is
 // the repository on GitHub).
 func saveTrackerFilter(ctx context.Context, fm tracker.FilterManager, path string, gen uint64, f issuefilter.Filter, legacyProjectSlug bool, who string) error {
@@ -76,79 +77,37 @@ func saveTrackerFilter(ctx context.Context, fm tracker.FilterManager, path strin
 	return nil
 }
 
-// updateWorkflowFilter writes tracker.filter as one flow-style line (or
-// comments it out when empty) and comments the legacy scope keys out, in
-// one locked read-modify-write.
+// updateWorkflowFilter saves tracker.filter to the settings file (#239:
+// tracker.* is layered; persistSettings, which also removes the keys from
+// WORKFLOW.md) and removes the legacy scope keys, since they and
+// tracker.filter cannot both be set. An empty filter removes the key.
 func updateWorkflowFilter(path string, f issuefilter.Filter, legacyProjectSlug bool) error {
-	err := workflow.ApplyAndWriteFrontMatter(path, func(frontLines []string) ([]string, error) {
-		var err error
-		value := ""
-		if len(f) > 0 {
-			value = f.YAMLFlow()
-		}
-		if frontLines, err = setTrackerBlock(frontLines, "filter", value); err != nil {
-			return nil, err
-		}
-		if legacyProjectSlug {
-			if frontLines, err = setProjectSlugLine(frontLines, nil); err != nil {
-				return nil, err
-			}
-		}
-		for _, key := range []string{"assignee", "team", "labels"} {
-			if frontLines, err = setTrackerKey(frontLines, key, ""); err != nil {
-				return nil, err
-			}
-		}
-		return frontLines, nil
-	})
-	if err != nil {
+	saved := []setting{{Key: "tracker.filter", Value: filterSetting(f)}}
+	if legacyProjectSlug {
+		saved = append(saved, setting{Key: "tracker.project_slug"})
+	}
+	for _, key := range []string{"assignee", "team", "labels"} {
+		saved = append(saved, setting{Key: "tracker." + key})
+	}
+	if err := persistSettings(path, saved); err != nil {
 		return fmt.Errorf("tracker filter: update %s: %w", path, err)
 	}
 	return nil
 }
 
-// setTrackerBlock is setTrackerKey for a key whose value may span lines
-// (tracker.filter written in block style): the key line and its
-// continuation lines are replaced by "key: value", or all commented out
-// when value is empty. A commented-out block's continuation lines are the
-// following commented lines whose text is indented or a "- " list item.
-func setTrackerBlock(frontLines []string, key, value string) ([]string, error) {
-	i, indent := trackerKeyLine(frontLines, key)
-	if i < 0 {
-		if value == "" {
-			return frontLines, nil
-		}
-		return insertTrackerKey(frontLines, key+": "+value)
+// filterSetting is tracker.filter as a settings file holds it (the list of
+// groups its parser reads), nil for an empty filter.
+func filterSetting(f issuefilter.Filter) any {
+	if len(f) == 0 {
+		return nil
 	}
-	commented := strings.HasPrefix(strings.TrimSpace(frontLines[i]), "#")
-	end := i + 1
-	for ; end < len(frontLines); end++ {
-		line := frontLines[end]
-		if strings.TrimSpace(line) == "" || !strings.HasPrefix(line, indent) {
-			break
-		}
-		rest := line[len(indent):]
-		if commented {
-			body, ok := strings.CutPrefix(rest, "# ")
-			if !ok || (!strings.HasPrefix(body, " ") && !strings.HasPrefix(body, "-")) {
-				break
-			}
-			continue
-		}
-		if !strings.HasPrefix(rest, " ") && !strings.HasPrefix(rest, "\t") && !strings.HasPrefix(rest, "- ") {
-			break
-		}
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil
 	}
-	out := append([]string{}, frontLines[:i]...)
-	switch {
-	case value != "":
-		out = append(out, indent+key+": "+value)
-	case commented:
-		out = append(out, frontLines[i:end]...)
-	default:
-		for _, line := range frontLines[i:end] {
-			out = append(out, indent+"# "+line[len(indent):])
-		}
+	v, err := config.ParseJSONC(b)
+	if err != nil {
+		return nil
 	}
-	return append(out, frontLines[end:]...), nil
+	return v
 }
