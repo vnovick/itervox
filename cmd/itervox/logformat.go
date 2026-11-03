@@ -57,10 +57,11 @@ func newFileLogHandler(w io.Writer, level slog.Level, format string) slog.Handle
 // corrupt it.
 //
 // That theory only holds when the TUI actually starts. ttyAvailable is the
-// caller's statusui.TerminalAvailable() result: it mirrors (via the same
-// underlying TTY-ownership check) whether statusui.Run will start the TUI or
-// refuse immediately for lack of a controlling terminal (systemd, container,
-// CI, detached stdio — issue #49-2).
+// caller's terminalUI() result: --tui was given (the TUI is off by default
+// since #134), --headless was not, and statusui.TerminalAvailable() holds,
+// which mirrors (via the same underlying TTY-ownership check) whether
+// statusui.Run will start the TUI or refuse immediately for lack of a
+// controlling terminal (systemd, container, CI, detached stdio — issue #49-2).
 //
 //   - ttyAvailable == true: the TUI is about to start. File-only, exactly as
 //     before this seam existed — the TUI log pane reads from logBuf, not
@@ -92,12 +93,13 @@ func postStartupHandler(fileWriter io.Writer, logLevel slog.Level, logFormat str
 //     logger (the one explicit secret-display path, CORE-012) and
 //     postStartupHandler reuses it for the headless fanout.
 //
-// headless is "no terminal attached" (!statusui.TerminalAvailable()). Then
+// headless is "the terminal UI does not run" (!terminalUI(), or before
+// flag.Parse !argsTerminalUI: the default since #134, or no terminal). Then
 // stderr honours format exactly like the file sink — "json" gives one JSON
 // object per slog record, which is what container platforms and journald
-// ingest. With a terminal stderr stays the human charmlog text (and once the
-// TUI starts, slog goes to the file only). Output written with fmt.Fprint*
-// before or outside slog (usage, fatal startup errors) is never JSON.
+// ingest, on a terminal too. Once the TUI starts, slog goes to the file
+// only. Output written with fmt.Fprint* before or outside slog (usage,
+// fatal startup errors) is never JSON.
 func newStderrLogHandler(w io.Writer, level slog.Level, format string, headless bool) slog.Handler {
 	if headless && format == "json" {
 		return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})

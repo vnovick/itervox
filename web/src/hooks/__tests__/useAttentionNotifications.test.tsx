@@ -159,6 +159,23 @@ describe('useAttentionNotifications', () => {
     },
   );
 
+  it('a budget pause (budget_exceeded) notifies with a budget-specific message', () => {
+    const bodies: (string | undefined)[] = [];
+    FakeNotification.mockImplementationOnce(function (
+      this: unknown,
+      title: string,
+      opts?: NotificationOptions,
+    ) {
+      shown.push({ title, tag: opts?.tag });
+      bodies.push(opts?.body);
+    });
+    renderHook(() => useAttentionNotifications());
+    push(makeSnapshot());
+    push(withReasons(makeSnapshot({ paused: ['ENG-7'] }), { 'ENG-7': 'budget_exceeded' }));
+    expect(shown).toHaveLength(1);
+    expect(bodies[0]).toMatch(/agent\.budget/);
+  });
+
   it.each(['max_retries', 'stalled', 'something_new'])(
     'a reason the daemon does not define as a failure (%s) triggers no notification',
     (reason) => {
@@ -208,7 +225,7 @@ describe('useAttentionNotifications', () => {
 
   it('clicking a notification focuses the tab and opens the issue; disable turns it off', () => {
     const instances: { onclick: (() => void) | null }[] = [];
-    FakeNotification.mockImplementation(function (this: { onclick: (() => void) | null }) {
+    FakeNotification.mockImplementationOnce(function (this: { onclick: (() => void) | null }) {
       instances.push(this);
       shown.push({ title: 'x' });
     });

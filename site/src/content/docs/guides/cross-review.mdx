@@ -140,3 +140,7 @@ To spend less:
   the issues that need it.
 - Point a reviewer at a cheaper model in its `command`, for example
   `claude --model <a smaller model>`.
+
+## Verdicts in the dashboard
+
+The issue detail panel shows the issue's latest review: each reviewer's verdict (approved or changes requested), its reasons and line comments, and, once every reviewer has run, the quorum result (for example "Blocked — 1 approve / 1 block (any_block)"). While the reviewers are still running it shows "Reviewing…". **Re-run review** starts a fresh review by the configured reviewers, from the first one in `reviewer_profiles`; the previous round's verdicts are cleared. A single `reviewer_profile` setup shows its one verdict the same way.

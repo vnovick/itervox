@@ -4,9 +4,10 @@
 //
 // The directory is the source of truth. Every call rescans it, re-reading
 // only files whose size or modification time changed, so edits made in an
-// editor are picked up on the next poll without a restart. A file that does
-// not parse is reported (Problems, and a log line when it changes) and its
-// last good version keeps being served; it is never fatal.
+// editor are picked up without a restart; Watch (#133) also wakes the
+// orchestrator as soon as a file changes instead of at the next poll. A file
+// that does not parse is reported (Problems, and a log line when it changes)
+// and its last good version keeps being served; it is never fatal.
 package local
 
 import (
@@ -60,6 +61,18 @@ type Tracker struct {
 	active   []string
 	terminal []string
 	entries  map[string]*entry // identifier → entry
+	// changes counts rescans that found a file changed outside Itervox
+	// (added, edited or removed); Watch wakes the orchestrator when it moves
+	// (#133). Itervox's own writes record their stamp and do not count.
+	changes uint64
+	// watched is set while Watch holds a healthy watch on the directory:
+	// reads are then served from the entries the watch keeps current, and
+	// only writes rescan first (#133).
+	watched bool
+	// scanErr is the last directory scan's error, nil after a good scan. A
+	// watch serves reads from the entries only while it is nil: a directory
+	// that cannot be read is reported, never served as current.
+	scanErr error
 }
 
 type entry struct {
@@ -118,7 +131,7 @@ func (t *Tracker) Problems() []Problem {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var out []Problem
-	if err := t.refreshLocked(); err != nil {
+	if err := t.syncLocked(); err != nil {
 		out = append(out, Problem{Path: t.dir, Err: err.Error()})
 	}
 	for _, e := range t.entries {
@@ -138,13 +151,20 @@ func (t *Tracker) refreshLocked() error {
 	dirEntries, err := os.ReadDir(t.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if len(t.entries) > 0 {
+				t.changes++ // the directory, and every issue in it, is gone
+			}
 			t.entries = map[string]*entry{}
+			t.scanErr = nil
 			return nil
 		}
 		slog.Warn("local tracker: cannot read the issues directory", "dir", t.dir, "error", err)
-		return fmt.Errorf("local tracker: read %s: %w", t.dir, err)
+		t.scanErr = fmt.Errorf("local tracker: read %s: %w", t.dir, err)
+		return t.scanErr
 	}
+	t.scanErr = nil
 	seen := map[string]bool{}
+	changed := false
 	for _, de := range dirEntries {
 		name := de.Name()
 		if de.IsDir() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".md") {
@@ -169,15 +189,32 @@ func (t *Tracker) refreshLocked() error {
 			e = &entry{path: path}
 			t.entries[ident] = e
 		}
+		// A racy re-read of an unchanged stamp is not a change.
+		changed = changed || e.stamp != st
 		e.stamp = st
 		t.readLocked(e)
 	}
 	for ident := range t.entries {
 		if !seen[ident] {
 			delete(t.entries, ident)
+			changed = true
 		}
 	}
+	if changed {
+		t.changes++
+	}
 	return nil
+}
+
+// syncLocked brings the entries up to date before a read: a rescan, unless
+// a healthy watch keeps them current. A watch is healthy only while the last
+// scan succeeded; otherwise the read rescans and returns the error. Caller
+// holds mu.
+func (t *Tracker) syncLocked() error {
+	if t.watched && t.scanErr == nil {
+		return nil
+	}
+	return t.refreshLocked()
 }
 
 // readLocked reads and parses e's file. On failure the last good version
@@ -262,7 +299,7 @@ func matchesState(state string, states []string) bool {
 func (t *Tracker) issuesWhere(keep func(domain.Issue) bool) ([]domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.refreshLocked(); err != nil {
+	if err := t.syncLocked(); err != nil {
 		return nil, err
 	}
 	var out []domain.Issue
@@ -313,7 +350,7 @@ func (t *Tracker) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string)
 func (t *Tracker) FetchIssueDetail(_ context.Context, issueID string) (*domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.refreshLocked(); err != nil {
+	if err := t.syncLocked(); err != nil {
 		return nil, err
 	}
 	is, ok := t.issueLocked(issueID)

@@ -226,6 +226,26 @@ func TestMaxRetriesZeroMeansUnlimited(t *testing.T) {
 	assert.Equal(t, 0, cfg.Agent.MaxRetries)
 }
 
+func TestAgentBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want config.BudgetConfig
+	}{
+		{"absent means no limit", "", config.BudgetConfig{}},
+		{"tokens and cost", "agent:\n  budget:\n    tokens: 500000\n    cost_usd: 2.5\n", config.BudgetConfig{Tokens: 500000, CostUSD: 2.5}},
+		{"negative is no limit", "agent:\n  budget:\n    tokens: -1\n    cost_usd: -3\n", config.BudgetConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, minimal(tc.yaml)))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Agent.Budget)
+			assert.Equal(t, tc.want != config.BudgetConfig{}, cfg.Agent.Budget.Enabled())
+		})
+	}
+}
+
 func TestDefaultAutomationQueueLength(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
@@ -290,13 +310,19 @@ func TestTrackerOutboxExplicitTrue(t *testing.T) {
 func TestTrackerStoreConfig(t *testing.T) {
 	cfg, err := config.Load(workflowWithContent(t, minimal("")))
 	require.NoError(t, err)
-	assert.False(t, cfg.Tracker.Store.Enabled)
+	assert.True(t, cfg.Tracker.Store.Enabled, "#132: on by default")
 	assert.Equal(t, 60000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 3600000, cfg.Tracker.Store.FullSyncIntervalMs, "#114: a full pull hourly by default")
 
-	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n")))
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n    full_sync_interval_ms: 900000\n")))
 	require.NoError(t, err)
 	assert.True(t, cfg.Tracker.Store.Enabled)
 	assert.Equal(t, 120000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 900000, cfg.Tracker.Store.FullSyncIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: false\n")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Store.Enabled, "the opt-out")
 }
 
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
@@ -1769,4 +1795,31 @@ func TestCommentCommandsConfig(t *testing.T) {
 	err = config.ValidateDispatch(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tracker.comment_commands is only supported with tracker.kind: github")
+}
+
+// TestTrackerWebhooksConfig (#131): off by default; on, it needs the store
+// (on by default since #132) and a secret, which resolves from the environment.
+func TestTrackerWebhooksConfig(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, 600000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	t.Setenv("ITERVOX_TEST_WEBHOOK_SECRET", "s3cret-0123456789abcdef")
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n    safety_net_interval_ms: 900000\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, "s3cret-0123456789abcdef", cfg.Tracker.Webhooks.Secret)
+	assert.Equal(t, 900000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: false\n  webhooks:\n    enabled: true\n    secret: x\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks needs tracker.store.enabled")
+	// #132: the store is on by default, so webhooks need no store block.
+	cfg, err = config.Load(workflowWithContent(t, minimal("  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_UNSET_SECRET\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks.secret is empty")
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: short\n")))
+	assert.ErrorContains(t, err, "shorter than 16 characters")
 }

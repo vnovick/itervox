@@ -1,5 +1,10 @@
 package workflow
 
+// Test-only since #129: the dashboard's SSH-host saves (the Doc's only
+// production caller) now go to .itervox/settings.jsonc through
+// cmd/itervox persistSettings. This package's tests still use Doc as a
+// batched, locked, self-registering writer.
+
 // Doc is a typed builder for batched WORKFLOW.md edits. It collects multiple
 // front-matter mutations (each a typed setter call) and writes them all in
 // one atomic ApplyAndWriteFrontMatter call when Save is invoked. Use it for

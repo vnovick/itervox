@@ -18,8 +18,18 @@
 //     applied to the store and saved at once, so the next tick, and a
 //     restart, see it; the next sync is authoritative.
 //
-// A sync is a full pull: FetchCandidateIssues plus FetchIssuesByStates for
-// each view. Incremental pulls are #114. The store is written atomically after
+// A full pull is FetchCandidateIssues plus FetchIssuesByStates for each
+// view. Between full pulls, an adapter that implements
+// tracker.IncrementalFetcher is asked only for the issues updated since the
+// last pull (#114): one paginated request, whose results are placed by state
+// (an issue closed or moved out of the active states leaves the candidate
+// list; one that was trashed, archived or lost its tracked state leaves the
+// store). The cursor is the newest update time the tracker reported, so
+// clocks never need to agree; it is saved with the store, and a failed pull
+// keeps it and retries with backoff. A full pull still runs every
+// Config.FullSyncInterval to catch what an update listing cannot show (an
+// issue moved to another project or repository, a deleted GitHub issue).
+// The store is written atomically after
 // every successful sync and loaded at startup, so a restart serves at once;
 // only a cold start (no file, or one for another tracker scope) pulls before
 // the first read is answered, and it pulls exactly once however many readers
@@ -34,6 +44,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +52,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/metrics"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -68,8 +80,16 @@ type Config struct {
 	// dashboard's backlog+active+terminal list, so a cold start's one pull
 	// covers them.
 	Views [][]string
-	// SyncInterval is how often Run re-pulls.
+	// SyncInterval is how often Run re-pulls: tracker.store.sync_interval_ms,
+	// or the webhook safety-net interval when webhooks are on (#131).
 	SyncInterval time.Duration
+	// FullSyncInterval is how often a pull is a full one even when the
+	// adapter can pull incrementally (#114): tracker.store.full_sync_interval_ms
+	// (zero: DefaultFullSyncInterval).
+	FullSyncInterval time.Duration
+	// NudgeDelay is how long Run waits after RequestSync before pulling
+	// (zero: DefaultNudgeDelay).
+	NudgeDelay time.Duration
 	// Now is the clock (tests); nil means time.Now.
 	Now func() time.Time
 }
@@ -92,6 +112,10 @@ type storeFile struct {
 	Candidates []string
 	Views      []*view
 	Issues     map[string]domain.Issue
+	// Cursor and FullAt (#114): the newest update time seen and when the
+	// last full pull ran. A file without them makes the next pull full.
+	Cursor time.Time `json:",omitzero"`
+	FullAt time.Time `json:",omitzero"`
 }
 
 // Store is the local tracker store. Build it with Wrap.
@@ -113,15 +137,33 @@ type Store struct {
 	active     []string
 	issues     map[string]domain.Issue
 	candidates []string
-	views      map[string]*view
+	// fullNext makes the next pull a full one (RequestSync).
+	fullNext bool
+	views    map[string]*view
 	// gen counts local changes; touched records the gen of each issue's last
 	// local change, so a pull that started before it does not undo it.
 	gen     int64
 	touched map[string]int64
+	// removed marks touched issues that were removed locally (#131), so a
+	// pull that read one before the removal leaves it out.
+	removed map[string]struct{}
 	// scope counts runtime scope changes (active states, project filter): a
 	// pull that started under an older scope is discarded, not committed.
 	scope int64
+
+	// nudge asks Run for a pull soon (RequestSync, #131); buffered so a
+	// request made while one is pending coalesces with it.
+	nudge chan struct{}
+
+	// cursor is the newest UpdatedAt the tracker reported (#114): the next
+	// incremental pull asks for the issues updated since. Zero means the
+	// next pull is full. fullAt is when the last full pull committed.
+	cursor time.Time
+	fullAt time.Time
 }
+
+// DefaultFullSyncInterval is Config.FullSyncInterval when unset.
+const DefaultFullSyncInterval = time.Hour
 
 // The adapters' optional interfaces the base Store forwards. Wrap refuses an
 // adapter without them, so a type assertion on the store answers exactly as
@@ -157,6 +199,8 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 		issues:  map[string]domain.Issue{},
 		views:   map[string]*view{},
 		touched: map[string]int64{},
+		removed: map[string]struct{}{},
+		nudge:   make(chan struct{}, 1),
 	}
 	s.load()
 	for _, states := range cfg.Views {
@@ -207,6 +251,7 @@ func (s *Store) load() {
 		}
 	}
 	s.syncedAt = f.SyncedAt
+	s.cursor, s.fullAt = f.Cursor, f.FullAt
 	s.synced = true
 }
 
@@ -237,20 +282,221 @@ func (s *Store) Run(ctx context.Context) {
 	wait = max(wait, 0)
 	t := time.NewTimer(wait)
 	defer t.Stop()
+	var lastNudged time.Time
+	failures := 0
 	for {
+		trigger := metrics.StorePullInterval
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if cold {
+				trigger = metrics.StorePullCold
+			}
+		case <-s.nudge:
+			// A webhook named an issue the store cannot place on its own.
+			// Wait a moment so a burst of deliveries costs one pull.
+			// Pulls a webhook asks for are at least MinNudgeGap apart, so
+			// a busy team's deliveries for issues outside the project
+			// cannot spend the rate limit on pulls.
+			trigger = metrics.StorePullWebhook
+			delay := max(s.nudgeDelay(), MinNudgeGap-time.Since(lastNudged))
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			lastNudged = time.Now()
+			select { // a nudge made during the wait is covered by this pull
+			case <-s.nudge:
+			default:
+			}
 		}
 		// A cold pull may already have been made by a reader that got
 		// there first; it is the one full pull a cold start makes.
-		err := s.sync(ctx, cold)
-		cold = false
+		err := s.sync(ctx, cold, trigger)
+		next := s.cfg.SyncInterval
 		if err != nil && ctx.Err() == nil {
-			slog.Warn("tracker store: sync failed, serving the last pull", "error", err)
+			failures++
+			next = retryDelay(failures, s.cfg.SyncInterval)
+			slog.Warn("tracker store: sync failed, serving the last pull", "error", err, "retry_in", next)
+		} else {
+			cold = false
+			failures = 0
 		}
-		t.Reset(s.cfg.SyncInterval)
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+		t.Reset(next)
+	}
+}
+
+// RetryBase is the wait before the first retry of a failed pull (#114);
+// each further failure doubles it, up to the sync interval. The cursor is
+// kept, so the retry asks for everything since the last good pull.
+var RetryBase = 5 * time.Second
+
+func retryDelay(failures int, interval time.Duration) time.Duration {
+	return min(RetryBase<<min(failures-1, 16), interval)
+}
+
+// MinNudgeGap is the least time between two pulls RequestSync asks for.
+var MinNudgeGap = 30 * time.Second
+
+// DefaultNudgeDelay is how long Run waits after RequestSync before pulling,
+// so a burst of webhook deliveries costs one pull.
+const DefaultNudgeDelay = 2 * time.Second
+
+func (s *Store) nudgeDelay() time.Duration {
+	if s.cfg.NudgeDelay > 0 {
+		return s.cfg.NudgeDelay
+	}
+	return DefaultNudgeDelay
+}
+
+// RequestSync asks Run for a full pull soon (#131): a webhook named an
+// issue the store does not hold, so it cannot tell on its own whether the
+// issue belongs to the tracked project, or the webhook queue overflowed and
+// its removals were dropped. The pull is a full one even when an
+// incremental pull is due (#114): a changes listing does not show a
+// deleted or transferred GitHub issue. Requests made before the pull
+// coalesce.
+func (s *Store) RequestSync() {
+	s.mu.Lock()
+	s.fullNext = true
+	s.mu.Unlock()
+	select {
+	case s.nudge <- struct{}{}:
+	default:
+	}
+}
+
+// RefreshIssues re-reads the issues with ids by ID, with no list request,
+// and applies them (#131): a webhook said they changed. Through an adapter
+// that can check its own scope (tracker.ScopedFetcher) an in-scope issue is
+// placed whether or not the store held it, and a held issue that is no
+// longer in scope (moved to another project, deleted) is dropped; an issue
+// out of scope costs nothing more. Otherwise held issues are re-read one by
+// one and the others are returned as unknown, for a full pull to place. A
+// failed read is returned after everything else is applied.
+//
+// A read is older than any local change made while it was in flight (a
+// state write through the store, a Forget): such an issue is left as the
+// local change made it, and a read made under a scope since replaced is
+// discarded.
+func (s *Store) RefreshIssues(ctx context.Context, ids []string) (unknown []string, err error) {
+	if sf, ok := s.up.(tracker.ScopedFetcher); ok {
+		startGen, startScope := s.generation()
+		got, ferr := sf.FetchIssuesInScope(ctx, ids)
+		if ferr != nil {
+			return nil, ferr
+		}
+		inScope := make(map[string]bool, len(got))
+		s.mu.Lock()
+		if s.scope != startScope {
+			s.mu.Unlock()
+			return nil, nil
+		}
+		for _, iss := range got {
+			inScope[iss.ID] = true
+			if s.touched[iss.ID] <= startGen {
+				s.upsertLocked(iss)
+			}
+		}
+		for _, id := range ids {
+			if !inScope[id] && s.touched[id] <= startGen {
+				s.removeLocked(id)
+			}
+		}
+		s.mu.Unlock()
+		s.persist()
+		return nil, nil
+	}
+	var known []string
+	s.mu.Lock()
+	for _, id := range ids {
+		if _, ok := s.issues[id]; ok {
+			known = append(known, id)
+		} else {
+			unknown = append(unknown, id)
+		}
+	}
+	s.mu.Unlock()
+	changed := false
+	for _, id := range known {
+		startGen, startScope := s.generation()
+		iss, ferr := s.up.FetchIssueDetail(ctx, id)
+		if ferr != nil {
+			err = errors.Join(err, ferr)
+			continue
+		}
+		if iss == nil {
+			continue
+		}
+		s.mu.Lock()
+		if s.scope == startScope && s.touched[id] <= startGen {
+			s.upsertLocked(*iss)
+			changed = true
+		}
+		s.mu.Unlock()
+	}
+	if changed {
+		s.persist()
+	}
+	return unknown, err
+}
+
+// generation is the local-change generation and the scope now: a read that
+// started at them is older than any local change with a higher generation.
+func (s *Store) generation() (gen, scope int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gen, s.scope
+}
+
+// upsertLocked records iss as a local change: a pull that started before it
+// does not undo it. Caller holds mu.
+func (s *Store) upsertLocked(iss domain.Issue) {
+	s.gen++
+	s.touched[iss.ID] = s.gen
+	delete(s.removed, iss.ID)
+	s.placeLocked(iss)
+}
+
+// removeLocked drops the issue with id as a local change, remembered so a
+// pull that read it before the removal does not bring it back. The removal
+// is remembered even when the store does not hold the issue yet: a pull in
+// flight (the first one, or one that finds a new issue) may be about to add
+// it. Caller holds mu.
+func (s *Store) removeLocked(id string) {
+	s.gen++
+	s.touched[id] = s.gen
+	s.removed[id] = struct{}{}
+	s.dropLocked(id)
+}
+
+// dropLocked takes id out of the issues, the candidates and every view.
+// Caller holds mu.
+func (s *Store) dropLocked(id string) {
+	delete(s.issues, id)
+	s.candidates = setMember(s.candidates, id, false)
+	for _, v := range s.views {
+		v.IDs = setMember(v.IDs, id, false)
+	}
+}
+
+// Forget removes the issue with id from the store: it was deleted or moved
+// out of the tracked repository (#131).
+func (s *Store) Forget(id string) {
+	s.mu.Lock()
+	_, ok := s.issues[id]
+	s.removeLocked(id)
+	s.mu.Unlock()
+	if ok {
+		s.persist()
 	}
 }
 
@@ -275,7 +521,7 @@ func (s *Store) ensureSynced(ctx context.Context) error {
 	if ok {
 		return nil
 	}
-	return s.sync(ctx, true)
+	return s.sync(ctx, true, metrics.StorePullCold)
 }
 
 // scopeRetries bounds how often a pull is redone because the scope changed
@@ -289,11 +535,11 @@ var errScopeChanged = errors.New("store: tracker scope changed during the pull; 
 // caller pulled while this one waited, which is what makes a cold start one
 // pull however many readers race it. A pull overtaken by a scope change is
 // discarded and redone under the new scope.
-func (s *Store) sync(ctx context.Context, onlyIfUnsynced bool) error {
+func (s *Store) sync(ctx context.Context, onlyIfUnsynced bool, trigger string) error {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 	for range scopeRetries {
-		done, err := s.pullOnce(ctx, onlyIfUnsynced)
+		done, err := s.pullOnce(ctx, onlyIfUnsynced, trigger)
 		if done || err != nil {
 			return err
 		}
@@ -303,13 +549,21 @@ func (s *Store) sync(ctx context.Context, onlyIfUnsynced bool) error {
 
 // pullOnce is one pull; done is false when the scope changed while it ran
 // and nothing was committed. Caller holds syncMu.
-func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool) (done bool, err error) {
+func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger string) (done bool, err error) {
 	s.mu.Lock()
 	if onlyIfUnsynced && s.synced {
 		s.mu.Unlock()
 		return true, nil
 	}
+	metrics.StorePull(trigger)
 	startGen, startScope := s.gen, s.scope
+	if inc, ok := s.up.(tracker.IncrementalFetcher); ok && s.incrementalDueLocked() {
+		since := s.cursor.Add(-CursorOverlap)
+		s.mu.Unlock()
+		return s.pullChanges(ctx, inc, since, startGen, startScope)
+	}
+	forced := s.fullNext
+	s.fullNext = false // a request made while this pull runs asks for another
 	ttl := viewTTLSyncs * s.cfg.SyncInterval
 	type pull struct {
 		key    string
@@ -336,6 +590,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool) (done bool, e
 	if err != nil {
 		s.mu.Lock()
 		s.lastErr = err
+		s.fullNext = s.fullNext || forced
 		s.mu.Unlock()
 		return false, err
 	}
@@ -346,10 +601,20 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool) (done bool, e
 		return false, nil
 	}
 	issues := make(map[string]domain.Issue, len(cands))
+	var mixed []string // listed twice, in two states
 	ids := func(list []domain.Issue) []string {
 		out := make([]string, 0, len(list))
 		for _, iss := range list {
-			issues[iss.ID] = iss
+			// An issue edited between two of this pull's requests is listed
+			// twice: keep the newer copy, or the cursor would move past an
+			// update the store does not hold.
+			prev, ok := issues[iss.ID]
+			if ok && !strings.EqualFold(prev.State, iss.State) {
+				mixed = append(mixed, iss.ID)
+			}
+			if !ok || newer(iss, prev) {
+				issues[iss.ID] = iss
+			}
 			out = append(out, iss.ID)
 		}
 		return out
@@ -373,14 +638,21 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool) (done bool, e
 	}
 	old := s.issues
 	s.issues, s.candidates = issues, candidates
+	for _, id := range mixed {
+		s.memberLocked(issues[id]) // the lists the newer copy's state belongs to
+	}
+	s.cursor, s.fullAt = newestUpdate(issues), s.now()
 	// A local change made after this pull began is newer than what it
 	// read: put it back.
 	for id, g := range s.touched {
 		if g <= startGen {
 			delete(s.touched, id)
+			delete(s.removed, id)
 			continue
 		}
-		if iss, ok := old[id]; ok {
+		if _, gone := s.removed[id]; gone {
+			s.dropLocked(id)
+		} else if iss, ok := old[id]; ok {
 			s.placeLocked(iss)
 		}
 	}
@@ -391,6 +663,144 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool) (done bool, e
 	return true, nil
 }
 
+// CursorOverlap is how far before the cursor an incremental pull asks from:
+// an update the tracker commits late, or stamps with a time a little before
+// one already seen, is still listed. Issues listed again unchanged cost
+// nothing (sameListing).
+var CursorOverlap = time.Minute
+
+// incrementalDueLocked reports whether the next pull may be incremental
+// (#114): the store holds a full pull with a cursor, and the last full pull
+// is less than FullSyncInterval old. Caller holds mu.
+func (s *Store) incrementalDueLocked() bool {
+	full := s.cfg.FullSyncInterval
+	if full <= 0 {
+		full = DefaultFullSyncInterval
+	}
+	return s.synced && !s.fullNext && !s.cursor.IsZero() && s.now().Sub(s.fullAt) < full
+}
+
+// pullChanges is an incremental pull (#114): the issues updated since the
+// cursor are placed by state, the ones gone from the scope are dropped, and
+// the cursor moves to the newest update seen. A local change made after the
+// pull began is newer than what it read and is kept. Nothing is written when
+// nothing changed. Caller holds syncMu.
+func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher, since time.Time, startGen, startScope int64) (bool, error) {
+	changed, gone, err := inc.FetchIssuesUpdatedSince(ctx, since)
+	if err != nil {
+		s.mu.Lock()
+		s.lastErr = err
+		s.mu.Unlock()
+		return false, err
+	}
+	s.mu.Lock()
+	if s.scope != startScope {
+		s.mu.Unlock()
+		return false, nil
+	}
+	dirty := false
+	cursor := s.cursor
+	for _, iss := range changed {
+		if iss.UpdatedAt != nil && iss.UpdatedAt.After(cursor) {
+			cursor = *iss.UpdatedAt
+		}
+		if s.touched[iss.ID] > startGen {
+			continue
+		}
+		if cur, ok := s.issues[iss.ID]; ok && sameListing(cur, iss) {
+			continue
+		}
+		s.placeLocked(iss)
+		dirty = true
+	}
+	// After every issue is placed, so a blocked issue listed in the same
+	// pull does not overwrite its blocker's newer state. Dependents follow
+	// the blocker as the store now holds it: a blocker changed locally while
+	// the pull ran keeps its newer state, and so do references to it.
+	for _, iss := range changed {
+		cur, ok := s.issues[iss.ID]
+		if !ok {
+			continue
+		}
+		if s.patchBlockersLocked(cur) {
+			dirty = true
+		}
+	}
+	for _, id := range gone {
+		if s.touched[id] > startGen {
+			continue
+		}
+		if _, ok := s.issues[id]; ok {
+			s.dropLocked(id)
+			dirty = true
+		}
+	}
+	for id, g := range s.touched {
+		if g <= startGen {
+			delete(s.touched, id)
+			delete(s.removed, id)
+		}
+	}
+	moved := !cursor.Equal(s.cursor)
+	s.cursor = cursor
+	s.synced, s.syncedAt, s.lastErr = true, s.now(), nil
+	s.mu.Unlock()
+	if dirty || moved {
+		s.persist()
+	}
+	return true, nil
+}
+
+// sameListing reports whether a listing of an issue matches the stored copy.
+// Comments are left out: a detail read stores them, a listing never has them.
+func sameListing(stored, listed domain.Issue) bool {
+	stored.Comments, listed.Comments = nil, nil
+	return reflect.DeepEqual(stored, listed)
+}
+
+// patchBlockersLocked updates the blocker state other stored issues record
+// for changed: an incremental pull returns the blocker, not the issues it
+// blocks, whose own update time did not move. Reports whether it changed
+// any. Caller holds mu.
+func (s *Store) patchBlockersLocked(changed domain.Issue) (any bool) {
+	for id, other := range s.issues {
+		patched := false
+		for i, b := range other.BlockedBy {
+			if b.ID == nil || *b.ID != changed.ID || (b.State != nil && *b.State == changed.State) {
+				continue
+			}
+			if !patched {
+				other.BlockedBy = slices.Clone(other.BlockedBy)
+				patched = true
+			}
+			st := changed.State
+			other.BlockedBy[i].State = &st
+		}
+		if patched {
+			s.issues[id] = other
+			any = true
+		}
+	}
+	return any
+}
+
+// newer reports whether a was updated after b; an issue without an update
+// time is not newer.
+func newer(a, b domain.Issue) bool {
+	return a.UpdatedAt != nil && (b.UpdatedAt == nil || a.UpdatedAt.After(*b.UpdatedAt))
+}
+
+// newestUpdate is the latest UpdatedAt among issues, or zero.
+func newestUpdate(issues map[string]domain.Issue) time.Time {
+	var newest time.Time
+	for _, iss := range issues {
+		if iss.UpdatedAt != nil && iss.UpdatedAt.After(newest) {
+			newest = *iss.UpdatedAt
+		}
+	}
+	return newest
+}
+
 // fileLocked is the persisted form of the current data. Caller holds mu.
 func (s *Store) fileLocked() []byte {
 	f := storeFile{
@@ -399,6 +809,8 @@ func (s *Store) fileLocked() []byte {
 		SyncedAt:   s.syncedAt,
 		Candidates: s.candidates,
 		Issues:     s.issues,
+		Cursor:     s.cursor,
+		FullAt:     s.fullAt,
 	}
 	for _, v := range s.views {
 		f.Views = append(f.Views, v)
@@ -451,6 +863,12 @@ func (s *Store) placeLocked(iss domain.Issue) {
 	if known && strings.EqualFold(old.State, iss.State) {
 		return
 	}
+	s.memberLocked(iss)
+}
+
+// memberLocked puts iss in the candidate list and the views its state
+// belongs to and out of the others. Caller holds mu.
+func (s *Store) memberLocked(iss domain.Issue) {
 	s.candidates = setMember(s.candidates, iss.ID, containsFold(s.active, iss.State))
 	for _, v := range s.views {
 		v.IDs = setMember(v.IDs, iss.ID, containsFold(v.States, iss.State))
@@ -524,6 +942,7 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 	s.mu.Lock()
 	startGen, startScope := s.gen, s.scope
 	s.mu.Unlock()
+	metrics.StorePull(metrics.StorePullView)
 	issues, err := s.up.FetchIssuesByStates(ctx, stateNames)
 	if err != nil {
 		return nil, err
@@ -696,6 +1115,7 @@ func (s *Store) invalidate(active []string) {
 	}
 	s.synced = false
 	s.scope++
+	s.cursor = time.Time{} // another scope: the next pull is full
 }
 
 // linearStore is a Store over an adapter that also batches detail reads and

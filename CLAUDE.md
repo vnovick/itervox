@@ -7,8 +7,13 @@
 It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
 
-Config lives entirely in one `WORKFLOW.md` file per project (YAML front matter +
-Liquid prompt template). The binary is a single static Go executable.
+Config lives in one `WORKFLOW.md` file per project (YAML front matter +
+Liquid prompt template). Since #129 the `agent`, `polling`, `workspace` and
+`server` sections can also come from JSONC settings layers
+(`~/.itervox/settings.jsonc` < `.itervox/settings.jsonc` < `WORKFLOW.md`),
+merged in `config.Load` (`internal/config/layers.go`); `itervox config show`
+explains where each value came from. The binary is a single static Go
+executable.
 
 ---
 
@@ -281,7 +286,10 @@ gate the change.
 ## Package dependency order (no circular deps)
 
 ```
-domain ─────┬── tracker (interface + adapters: linear, github, local, memory)
+domain ─────┬── tracker (interface + adapters: linear, github, local, memory;
+            │            tracker/store is the local store, tracker/webhook the
+            │            signed Linear/GitHub webhook receiver that refreshes
+            │            it by issue — imports metrics, not store; #131)
             │     └── tracker/store (local tracker store, #113: wraps a Linear
             │         or GitHub adapter; imports tracker, domain, atomicfs)
             ├── prompt (Liquid template rendering)
