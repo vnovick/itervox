@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.2] — 2026-11-03
+
 ### Added
 
 - **Deploy skill and `itervox secret`** (#88). `.claude/skills/deploy/SKILL.md` walks an agent through deploying to AWS, GCP or Azure with the shipped kit: it asks for cloud, region, size and access method, provisions with `provision.sh` or the OpenTofu modules (confirming before anything billable), bootstraps the VM, sets secrets, runs `itervox doctor --deploy`, starts the service and prints the tunnel command and dashboard URL. `itervox secret set KEY` writes a value to `.itervox/.env` without it ever appearing on a command line or in output (hidden prompt or stdin; written in a form the daemon's loader reads back exactly, or refused; atomic, `0600`, keeps a symlink and the file's owner; `--replace` to rotate), and `itervox secret list` shows which values are set without printing them. The deploy README's bootstrap example now pins the current release, and a test keeps the deploy docs' `--version` examples on the newest release in this changelog.
@@ -31,6 +35,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Security
 
 - **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
+- **Go toolchain bumped to 1.26.10.** `govulncheck` flagged GO-2026-6809 (`crypto/x509` now distrusts a set of compromised intermediate certificates), reachable from the GitHub tracker's HTTPS calls. The release binaries and the Docker image are built with go1.26.10.
 
 ### Fixed
 
