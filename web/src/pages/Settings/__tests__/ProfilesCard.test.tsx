@@ -130,4 +130,17 @@ describe('ProfilesCard', () => {
     expect(call[10]).toBeUndefined();
     expect(call[11]).toBe('qa');
   });
+
+  it('focusProfileName (the command palette) opens that profile editor; rows carry an anchor', async () => {
+    render(
+      <ProfilesCard
+        profileDefs={{ qa: { command: 'claude', backend: 'claude', enabled: true } }}
+        onUpsert={vi.fn().mockResolvedValue(true)}
+        onDelete={vi.fn().mockResolvedValue(true)}
+        focusProfileName="qa"
+      />,
+    );
+    expect(await screen.findByRole('dialog', { name: /Edit "qa"/ })).toBeInTheDocument();
+    expect(document.getElementById('profile-qa')).not.toBeNull();
+  });
 });

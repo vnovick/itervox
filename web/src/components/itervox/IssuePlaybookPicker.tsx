@@ -39,7 +39,7 @@ export function IssuePlaybookPicker({ issue }: { issue: TrackerIssue }) {
 
   return (
     <div data-testid="issue-playbook">
-      <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Playbook</h4>
+      <h4 className="field-label mb-1.5">Playbook</h4>
       <RequireScope scope="operator">
         <select
           aria-label="Playbook"
@@ -48,7 +48,7 @@ export function IssuePlaybookPicker({ issue }: { issue: TrackerIssue }) {
           onChange={(e) => {
             setPlaybook.mutate({ identifier: issue.identifier, playbook: e.target.value });
           }}
-          className="focus:border-theme-accent border-theme-line bg-theme-panel-strong text-theme-text min-w-[160px] cursor-pointer rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
+          className="glass-chip text-theme-text focus-visible:ring-theme-accent min-h-10 w-full min-w-0 cursor-pointer rounded-[var(--radius-sm)] px-3 text-[13px] focus:outline-none focus-visible:ring-2"
         >
           <option value={AUTO}>Automatic</option>
           <option value={NONE}>None</option>

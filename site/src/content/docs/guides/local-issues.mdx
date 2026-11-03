@@ -135,6 +135,10 @@ Notes:
 - With Linear, labels are matched by name (ignoring case) to the project team's and the workspace's labels; a label the remote does not have is left out there. With GitHub, labels are created by GitHub as needed.
 - Run one synced daemon per issues directory and remote.
 
+## Tasks next to Linear or GitHub
+
+A project whose tracker is Linear or GitHub can also hold Itervox-only tasks in this directory: [New task](/guides/new-task/) writes them as `TASK-1.md`, `TASK-2.md`, … in the format above, and Itervox reads them next to the tracker. They are dispatched, moved and commented on like tracker issues, but never reach the tracker.
+
 ## Commit them or keep them private
 
 Issue files are meant to be committed with the code: `itervox init` adds `!.itervox/issues/` and `!.itervox/issues/**` to a root `.gitignore` that ignores `.itervox/`. To keep them private, add this line after those:

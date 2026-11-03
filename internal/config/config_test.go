@@ -772,6 +772,32 @@ func TestAgentProfileCreateIssueStateField(t *testing.T) {
 	assert.Equal(t, "Todo", cfg.Agent.Profiles["triage"].CreateIssueState)
 }
 
+// TestAgentProfileCreateIssueLabelsField (#253): create_issue_labels round-
+// trips from WORKFLOW.md (trimmed, blanks and case-insensitive duplicates
+// dropped, first spelling and order kept) and is empty when absent.
+func TestAgentProfileCreateIssueLabelsField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    splitter:
+      command: claude
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+      create_issue_labels:
+        - repo:web
+        - " needs-design "
+        - Repo:Web
+        - ""
+    plain:
+      command: claude
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+`)
+	cfg, err := config.Load(workflowWithContent(t, content))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo:web", "needs-design"}, cfg.Agent.Profiles["splitter"].CreateIssueLabels)
+	assert.Empty(t, cfg.Agent.Profiles["plain"].CreateIssueLabels, "absent key: no labels allowed")
+}
+
 func TestAgentProfileEnabledField(t *testing.T) {
 	content := minimal(`agent:
   profiles:

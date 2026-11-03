@@ -1,3 +1,4 @@
+import { Button } from '../../../components/ui/button';
 import type { AutomationDef } from '../../../types/schemas';
 import { automationTriggerSummary } from '../../../types/automationTriggers';
 import { unknownValueLabel } from '../../../types/configRoundTrip';
@@ -31,57 +32,47 @@ export function AutomationRow({
   onEdit: () => void;
   onDelete: () => Promise<void>;
 }) {
+  const triggerText = automation.unknownFields?.trigger
+    ? unknownValueLabel('trigger', automation.unknownFields.trigger.type)
+    : automationTriggerSummary(automation.trigger);
   return (
     <div
       data-automation-row={automation.id}
       tabIndex={-1}
-      className="border-theme-line flex items-start justify-between gap-4 border-t px-5 py-4 first:border-t-0 focus-within:bg-[var(--accent-soft)]/30 focus:bg-[var(--accent-soft)]/30 focus:outline-none"
+      className="glass-card focus:ring-theme-accent flex w-full flex-col gap-1.5 rounded-[18px] px-3.5 py-3 focus:ring-2 focus:outline-none"
     >
-      <div className="min-w-0 space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-theme-text font-mono text-sm font-semibold">{automation.id}</span>
-          <span
-            className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-              automation.enabled
-                ? 'bg-[var(--success-soft)] text-[var(--success-strong)]'
-                : 'bg-theme-panel text-theme-text-secondary'
-            }`}
-          >
-            {automation.enabled ? 'Enabled' : 'Disabled'}
-          </span>
-          <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent-strong)]">
-            {automation.profile}
-          </span>
-        </div>
-        <p className="text-theme-text-secondary text-xs">
-          {automation.unknownFields?.trigger
-            ? unknownValueLabel('trigger', automation.unknownFields.trigger.type)
-            : automationTriggerSummary(automation.trigger)}
-        </p>
-        <p className="text-theme-muted text-xs">{filterSummary(automation)}</p>
+      <div className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-2">
+        <span className="text-theme-text font-mono text-sm font-semibold">{automation.id}</span>
+        <span
+          className={`pill px-2 py-0 text-xs ${automation.enabled ? 'pill-ok' : 'pill-neutral'}`}
+        >
+          {automation.enabled ? 'Enabled' : 'Disabled'}
+        </span>
+        <span className="pill pill-accent px-2 py-0 text-xs">{triggerText}</span>
+        <span className="text-theme-muted text-xs">
+          profile <span className="text-theme-text-secondary">{automation.profile}</span>
+        </span>
         {automation.instructions && (
-          <p className="text-theme-text-secondary line-clamp-2 text-xs leading-relaxed">
+          <span className="text-theme-muted min-w-0 flex-1 basis-48 truncate text-xs">
             {automation.instructions}
-          </p>
+          </span>
         )}
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <Button variant="glass" size="md" onClick={onEdit}>
+            Edit
+          </Button>
+          <Button
+            variant="glass-danger"
+            size="md"
+            onClick={() => {
+              void onDelete();
+            }}
+          >
+            Delete
+          </Button>
+        </div>
       </div>
-
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          onClick={onEdit}
-          className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80"
-        >
-          Edit
-        </button>
-        <button
-          onClick={() => {
-            void onDelete();
-          }}
-          className="border-theme-danger text-theme-danger-text rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80"
-        >
-          Delete
-        </button>
-      </div>
+      <p className="text-theme-muted text-xs">{filterSummary(automation)}</p>
     </div>
   );
 }

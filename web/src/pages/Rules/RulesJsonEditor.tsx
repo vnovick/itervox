@@ -50,7 +50,7 @@ export function RulesJsonEditor({ initialText, schemaUrl, saving, onSave }: Rule
       </p>
       <Button
         variant="primary"
-        size="sm"
+        pill
         disabled={saving || !result.ok || text === initialText}
         onClick={() => {
           onSave(text);

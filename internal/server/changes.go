@@ -10,6 +10,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // changes.go — #215: the run context (GET /api/v1/issues/{identifier}/context)
@@ -90,6 +91,9 @@ type RunContextRow struct {
 	LastGuardrailKind string        `json:"lastGuardrailKind,omitempty"`
 	// Playbook is the live run's task-type playbook (#218).
 	Playbook string `json:"playbook,omitempty"`
+	// Resources is the run's resource use (system visibility): the latest
+	// sample of a live run, the final one of a finished run.
+	Resources *sysmon.RunUsage `json:"resources,omitempty"`
 }
 
 // DiffFileRow is one changed file.
@@ -145,6 +149,9 @@ type FileDiffResponse struct {
 type RunContextResponse struct {
 	Identifier string         `json:"identifier"`
 	Run        *RunContextRow `json:"run"`
+	// Port is the issue workspace's ITERVOX_PORT (#250); omitted when the
+	// workspace has none.
+	Port int `json:"port,omitempty"`
 	// ChangedFiles are the worktree's changed files (nil when it has none
 	// or no worktree); ChangedFilesError says why they are missing.
 	ChangedFiles      []DiffFileRow `json:"changedFiles"`
@@ -160,6 +167,8 @@ type ChangesClient interface {
 	Diff(ctx context.Context, identifier, base string) (DiffResponse, error)
 	FileDiff(ctx context.Context, identifier, base, file string) (FileDiffResponse, error)
 	Handoffs(identifier string) []HandoffRow
+	// WorkspacePort is the issue workspace's ITERVOX_PORT, or 0 (#250).
+	WorkspacePort(identifier string) int
 }
 
 // writeChangesError maps a ChangesClient error to its response.
@@ -187,8 +196,9 @@ func (s *Server) handleIssueContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "identifier")
-	resp := RunContextResponse{Identifier: id, Handoffs: s.changes.Handoffs(id)}
+	resp := RunContextResponse{Identifier: id, Handoffs: s.changes.Handoffs(id), Port: s.changes.WorkspacePort(id)}
 	if run, ok := s.changes.RunContext(id); ok {
+		run.Resources = usageForScope(run.Resources, callerScope(r))
 		resp.Run = &run
 	}
 	diff, err := s.changes.Diff(r.Context(), id, "")

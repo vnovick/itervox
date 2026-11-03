@@ -7,11 +7,16 @@ export interface IconButtonProps extends Omit<ButtonProps, 'aria-label'> {
   label: string;
 }
 
-/** CORE-094 — square icon-only button with a mandatory accessible name. */
+/**
+ * CORE-094 — square icon-only button with a mandatory accessible name.
+ * Round by default (`pill`); pass `variant="secondary"` for the glass close
+ * button used on sheets.
+ */
 export function IconButton({
   label,
   variant = 'ghost',
   size = 'sm',
+  pill = true,
   className,
   ...rest
 }: IconButtonProps) {
@@ -21,6 +26,7 @@ export function IconButton({
       title={rest.title ?? label}
       variant={variant}
       size={size}
+      pill={pill}
       className={cn('aspect-square px-0', className)}
       {...rest}
     />

@@ -34,3 +34,37 @@ export function parseUnifiedDiff(patch: string): DiffLine[] {
     return { kind: 'ctx', text, n, hunk, oldLine: oldNo++, newLine: newNo++ };
   });
 }
+
+/** One row of a side-by-side diff. */
+export type SplitRow =
+  | { kind: 'full'; line: DiffLine }
+  | { kind: 'pair'; left?: DiffLine; right?: DiffLine };
+
+/**
+ * Pairs a unified diff's lines for a side-by-side view: context lines sit
+ * on both sides, a run of deletions is paired line by line with the run of
+ * additions that follows it, and headers and hunk markers span the row.
+ */
+export function splitRows(lines: readonly DiffLine[]): SplitRow[] {
+  const rows: SplitRow[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (l.kind === 'meta' || l.kind === 'hunk') {
+      rows.push({ kind: 'full', line: l });
+      i += 1;
+    } else if (l.kind === 'ctx') {
+      rows.push({ kind: 'pair', left: l, right: l });
+      i += 1;
+    } else {
+      const dels: DiffLine[] = [];
+      const adds: DiffLine[] = [];
+      while (i < lines.length && lines[i].kind === 'del') dels.push(lines[i++]);
+      while (i < lines.length && lines[i].kind === 'add') adds.push(lines[i++]);
+      for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+        rows.push({ kind: 'pair', left: dels[k], right: adds[k] });
+      }
+    }
+  }
+  return rows;
+}

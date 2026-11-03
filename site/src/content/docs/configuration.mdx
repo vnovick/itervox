@@ -270,6 +270,11 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
 | `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. With `clone_url`, new worktrees start from `origin/<base_branch>` as last fetched. |
+| `copy_files` | string[] | `[]` | Gitignored files the project needs but does not commit (`.env`, `.env.local`, a local config), copied from the main checkout into each new worktree before `hooks.after_create` and refreshed on later runs. Paths or globs relative to the repository root; see [Workspace setup](#workspace-setup). **The agent can read these files.** |
+| `copy_files_max_bytes` | int | `10485760` | Most bytes `copy_files` copies into one worktree per run (10 MB). The rest is skipped and the cap hit is logged. |
+| `disk_warn_free_gb` | int | `5` | Warn on the dashboard and in the desktop tray while the volume holding `root` has less than this many GB free. `0` turns the warning off. See [System visibility](/guides/system-visibility/). Read at startup. |
+| `disk_pause_free_gb` | int | `0` | Pause all dispatch (the [dispatch pause](/guides/pause-and-feed/), reason `Low disk space: …`) while the volume holding `root` has less than this many GB free; dispatch resumes once free space is back above it plus 0.5 GB. Running agents continue. `0` (the default) never pauses. Read at startup. |
+| `port_range` | string | `"41000-41999"` | `LOW-HIGH` range (within 1024–65535) each issue's workspace gets a TCP port from, as `ITERVOX_PORT` and `{{ run.port }}`. See [Workspace setup](#workspace-setup). |
 
 With `clone_url`, the bare clone at `<root>/.bare` fetches origin's branches into `refs/remotes/origin/*`, so a fetch never overwrites a local branch (an agent's unpushed commits are safe) and a branch checked out in a worktree cannot make it fail. New worktree branches are created with `--no-track`; their only upstream is their own name on origin. A clone made by an older version (fetch refspec `+refs/heads/*:refs/heads/*`) is migrated automatically on first use, and upstreams that point at a different branch are repaired. A failing fetch shows up once in recent failures, and `itervox doctor` reports the clone's last successful fetch.
 
@@ -298,6 +303,80 @@ dispatch finds the branch taken again and holds the issue without spending a
 retry. Itervox does not create a second branch from the PR branch instead: the
 agent's pushes would not reach the PR. Fetches into the shared clone are
 serialized, so parallel dispatches no longer fail with `cannot lock ref`.
+
+### Workspace setup
+
+Each issue runs in its own worktree, which starts with only what git tracks.
+Two settings prepare it for the work: `copy_files` brings in the files the
+project needs but does not commit, and `port_range` gives each workspace its
+own TCP port, so agents running dev servers in parallel do not collide.
+
+```yaml
+workspace:
+  worktree: true
+  copy_files: [".env", ".env.local", "config/local"]
+  port_range: "41000-41999"
+```
+
+**`copy_files`**
+
+- **Where from.** Entries are paths or `filepath.Match` globs (`*`, `?`,
+  `[…]`; no `**`), relative to the git top level of the directory that holds
+  `WORKFLOW.md` — the main checkout — and are read from there. An absolute
+  entry, or one with a `..` element, fails the load.
+- **Only gitignored files.** Every file is checked with `git check-ignore`
+  in the main checkout **and** in the new worktree. A tracked or unignored
+  match is skipped with a warning in the issue log, so a copied file can
+  never be committed from the worktree. `.git` is never copied.
+- **When.** After the worktree is created and before `hooks.after_create`,
+  so the hook can use the files. At the start of each later run of the
+  issue the files are refreshed: one is copied again when the worktree has
+  none or the main checkout's copy is newer, so an edit made in the worktree
+  is kept.
+- **How.** Directories are copied recursively, up to `copy_files_max_bytes`
+  per run (10 MB by default); a cap hit is reported in the issue log.
+  Symlinks are never followed — a match that is one, a match reached through
+  a symlinked directory, and a symlink inside a copied directory are all
+  skipped. File modes and modification times are kept.
+- **Secrets.** When a copied file is a dotenv file (`.env`, `.env.<name>`,
+  `<name>.env`), its values are registered with the log redactor, so they
+  are masked as `***` in the daemon log and in the text Itervox redacts
+  before showing it (the run context, recent failures).
+  Like every registered secret, values shorter than 8 characters are not
+  masked, and ordinary values such as `localhost:5432` are masked too.
+  **The agent can read every copied file**: copy only what you would hand
+  the agent yourself.
+- **SSH workers.** Nothing is transferred to a worker host. The copy is
+  made on the daemon's machine, and an SSH worker runs the agent in the same
+  workspace path, which must be shared with the worker host (as every SSH
+  run already requires). Without a shared workspace the files are not there
+  on the worker.
+- **Defaults.** Empty: projects that do not set it copy nothing. `itervox
+  init` writes `copy_files: [".env", ".env.local"]` for those of the two
+  that exist in the project and are gitignored. Worktree mode only
+  (`worktree: true`).
+
+**`ITERVOX_PORT`**
+
+- Each issue's workspace gets the lowest port of `port_range` that no other
+  workspace of this project holds and that can be bound on `127.0.0.1` when
+  it is first used.
+- It is `ITERVOX_PORT` in the agent's environment (an SSH run gets it as an
+  assignment in front of the agent command) and in every hook's:
+  `after_create`, `before_run`, `after_run` and `before_remove`. Prompts get
+  it as `{{ run.port }}` (an empty string without a port), and the issue's
+  **Now** panel shows it.
+- It stays with the issue while its workspace exists — across runs,
+  retries, reviewers and daemon restarts — and is released when the
+  workspace is removed (auto-clear, `itervox clear`, the dashboard). It is
+  recorded in `.itervox-ports.json` under `workspace.root` (under
+  `<root>/worktrees` in worktree mode).
+- The free-port check runs on the daemon's machine. On an SSH worker the
+  port is only guaranteed not to be shared with another workspace of this
+  daemon. Give each project its own `port_range` when several daemons run on
+  one machine.
+- A range with no free port leaves the run without `ITERVOX_PORT` (logged);
+  it never fails the run.
 
 ### Agent handoff (`.itervox/handoff/`)
 
@@ -345,7 +424,7 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `command` | string | `"claude"` | CLI command used to launch the agent. Can include flags (e.g. `"claude --model claude-opus-4-6"`). |
-| `backend` | string | `""` | Explicitly sets the runner backend (`"claude"` or `"codex"`). Only needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name. A backend that disagrees with a command whose binary is `claude` or `codex` (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning. |
+| `backend` | string | `""` | Explicitly sets the runner backend: `"claude"`, `"codex"`, `"opencode"`, `"cursor"` or `"custom"` (see the [Backends guide](/guides/backends/)). Needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name (`claude`, `codex`, `opencode` and `cursor-agent` are recognised), and always for `custom`, a command speaking the itervox agent protocol. A backend that disagrees with a command whose binary is a recognised CLI (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning. |
 | `max_concurrent_agents` | int | `10` | Maximum number of agent workers running simultaneously across all issues. |
 | `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits that override `max_concurrent_agents`. Keys are lowercase state names. See example below. |
 | `max_automation_queue_length` | int | `100` | Maximum durable automation dispatch entries waiting for capacity or dependency resolution. `0`/negative values fall back to the default; the queue is never unlimited. |
@@ -424,6 +503,8 @@ Both are optional and off unless you add them.
 |---|---|---|---|
 | `inline_input` | bool | `false` | When an agent needs human input, its question is always posted as a comment on the tracker issue, and a comment on the issue resumes the agent — normally in the same session; after a daemon restart that had to rebuild the entry from tracker comments, a fresh session starts with the question and your reply as context. `false` (default): the dashboard also offers a reply box. `true`: the tracker is the only place to reply — the dashboard reply box is hidden and `POST /api/v1/issues/{id}/provide-input` returns `409 inline_input_enabled`. Automation replies (`itervox action provide-input`) are unaffected. A reply written before the agent's question has actually reached the tracker still counts: with the outbox enabled, any comment created after the question was queued resumes the agent. Runtime-editable from Settings → General. |
 | `live_steering` | bool | `false` | Lets a message typed in the [Sessions panel](/guides/sessions/) reach a running local Claude Code turn mid-turn: the turn runs with `--input-format stream-json`, the prompt is the first message on its stdin and an operator message is written as a further user message; stdin closes when the turn's result arrives. Off — and always for Codex and SSH workers — a message waits for the current turn to end and is delivered as the prompt of the next turn, which resumes the same session. Keep it off when `command` is a wrapper script that reads its stdin to the end before starting Claude. Read at startup. |
+| `resource_sampling` | bool | `true` | Samples each local run's processes every 2 seconds for CPU, memory, process count, disk I/O and network connections, shown on the issue's Now panel, in `/metrics` and in the desktop tray. See [System visibility](/guides/system-visibility/). Read at startup. |
+| `activity_audit` | string | `sampled` | Records what each run did (commands started, files written, network connections): `off`; `sampled` (what the 2-second sampler sees: may miss short-lived activity); or `precise` (Linux only, eBPF: every exec, open-for-write and connect of the run's process tree; needs `CAP_BPF` + `CAP_PERFMON` or root and a mounted tracefs, and falls back to `sampled` with the reason when unavailable). Read at startup. |
 | `isolation` | string | `"none"` | Default [process isolation](/guides/isolation/) for profiles that do not set `isolation`: `none` (no sandbox, the long-standing behaviour) or `process` (the agent runs in an OS sandbox that lets it write only to its workspace and hides credentials and other workspaces; the run does not start when no sandbox works on the machine). Any other value fails config load, as does `process` together with `agent.ssh_hosts`. Read at load time. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run opens on its own branch (after a successful worker run, not automation runs; PRs merely linked from the issue are left alone), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
@@ -513,7 +594,7 @@ agent:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` when the block is present | `false` keeps the block but turns rerouting off. Without the block there is no rerouting, but the breaker still holds issues on a limited backend. The whole block may also be a boolean: `backend_fallback: false` is off, `true` is on with the defaults. Any other shape (`"off"`, a number, a list, `enabled: "false"`) fails config loading |
-| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known, distinct backends only |
+| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only |
 | `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). The reverse direction is implied: a target profile maps back through its source row |
 | `on_unmapped` | string | `hold` | For a profile with no mapping: `hold` (wait with `backend_limited`) or `backend_hint` (request the chain backend for the issue's own command; works only for wrapper commands — a `claude ...` command is never paired with codex) |
 | `default_cooldown_minutes` | int | `15` | How long a breaker stays limited when the vendor published no reset time (1–1440). Also used by the breaker when the block is absent |
@@ -588,7 +669,7 @@ The `available_models` field stores the list of models available for each backen
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `available_models` | map | `{}` | Map of backend name (`"claude"`, `"codex"`) to a list of model options. Each entry has `id` (model ID string) and `label` (human-readable name). |
+| `available_models` | map | `{}` | Map of backend name (`"claude"`, `"codex"`, `"opencode"`, `"cursor"`) to a list of model options. `itervox models refresh` fills `claude` and `codex` from the vendor APIs and `opencode` from `opencode models`; a `cursor` list is written by hand. Each entry has `id` (model ID string) and `label` (human-readable name). |
 
 ```yaml
 agent:
@@ -615,10 +696,11 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `command` | string | CLI command for this profile (e.g. `"claude --model claude-haiku-4-5-20251001"`). |
 | `soul_file` | string | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute. Holds identity, purpose, boundaries, and collaboration style. |
 | `instructions_file` | string | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds operational rules, checklists, and done criteria. |
-| `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field). |
+| `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field): `claude`, `codex`, `opencode`, `cursor` or `custom`. |
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
+| `create_issue_labels` | string[] | Optional, empty by default. The labels a `create_issue` call may put on the new issue (`itervox action create-issue --label …`); any other label is refused with `agent_action_denied`, and an empty list allows none. Use it to route follow-ups to another daemon whose `tracker.filter` selects the label. Kept as is when the profile is saved from the dashboard. See [Work across two repositories](/guides/automations/#9-work-across-two-repositories). |
 | `permission_mode` | string | `"bypass"` | Approval/sandbox flags this profile's agent turns launch with. `bypass` (default) keeps the long-standing `--dangerously-*` flags; `sandbox` uses `--permission-mode acceptEdits` (Claude) or `--sandbox workspace-write --ask-for-approval never` (Codex). Both stay non-interactive — itervox is headless, so a mode that can pause for approval hangs the turn. Unknown values warn and fall back to `bypass`. See [Agent Permissions](/guides/agent-permissions/). |
 | `isolation` | string | Optional. `process` runs this profile's agent (and every process it starts) in an OS sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS. `none` turns it off for this profile. Unset inherits `agent.isolation`. When no sandbox works the run does not start. Refused at load together with `agent.ssh_hosts`. Kept as is when the profile is saved from the dashboard. See [Process isolation](/guides/isolation/). |
 | `isolation_extra_write` | string[] | Optional. Absolute (or `~/`) paths a sandboxed run may also write, e.g. `~/.npm`. |

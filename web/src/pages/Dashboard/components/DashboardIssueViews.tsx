@@ -77,7 +77,7 @@ export function DashboardIssueViews({
   onEditProfile,
 }: DashboardIssueViewsProps) {
   return (
-    <div className="px-4 pt-3 pb-4 sm:px-[18px] sm:pt-[14px] sm:pb-[18px]">
+    <div>
       {viewMode === 'board' && (
         <BoardView
           issues={filteredIssues}
@@ -100,7 +100,7 @@ export function DashboardIssueViews({
         />
       )}
       {viewMode === 'agents' && (
-        <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
+        <div className="-mx-3 overflow-x-auto px-3 pb-2 sm:-mx-4 sm:px-4">
           <AgentQueueView
             issues={allIssues}
             backlogStates={backlogStates}

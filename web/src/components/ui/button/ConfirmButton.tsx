@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { plainButtonClass } from './buttonRecipe';
 
 interface ConfirmButtonProps {
   label: string;
@@ -8,6 +9,15 @@ interface ConfirmButtonProps {
   onConfirm: () => void;
   /** Accessible name for the trigger when `label` alone is ambiguous (e.g. one per row). */
   ariaLabel?: string;
+  /** `sm` (default) for rows; `lg` matches 44px footer buttons. */
+  size?: 'sm' | 'lg';
+  /**
+   * The trigger's look. `danger` (default): red text on the neutral glass
+   * chip, the one destructive-trigger style. `neutral`: the plain chip, for
+   * a guarded action that is not destructive (e.g. rotating a token). The
+   * confirming "Yes" step is solid red either way.
+   */
+  tone?: 'danger' | 'neutral';
 }
 
 /**
@@ -30,6 +40,8 @@ export function ConfirmButton({
   isPending,
   onConfirm,
   ariaLabel,
+  size = 'sm',
+  tone = 'danger',
 }: ConfirmButtonProps) {
   const [confirming, setConfirming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -67,41 +79,29 @@ export function ConfirmButton({
 
   if (confirming) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="text-theme-muted text-xs">Are you sure?</span>
+      <div className="glass-card inline-flex items-center gap-2 rounded-[14px] py-1 pr-1 pl-3">
+        <span className="text-theme-text-secondary text-xs">Are you sure?</span>
         <button
           ref={confirmRef}
+          type="button"
           onClick={() => {
             if (isPending) return;
             onConfirm();
           }}
           disabled={isPending}
-          style={{
-            padding: '4px 10px',
-            borderRadius: 4,
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: isPending ? 'wait' : 'pointer',
-            background: 'var(--danger)',
-            color: '#fff',
-            border: 'none',
-          }}
+          className={plainButtonClass('destructive', 'xs', {
+            pill: true,
+            extra: 'font-semibold disabled:cursor-wait',
+          })}
         >
           {isPending ? pendingLabel : confirmLabel}
         </button>
         <button
+          type="button"
           onClick={() => {
             setConfirming(false);
           }}
-          style={{
-            padding: '4px 10px',
-            borderRadius: 4,
-            fontSize: 12,
-            cursor: 'pointer',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            border: '1px solid var(--line)',
-          }}
+          className={plainButtonClass('secondary', 'xs', { pill: true })}
         >
           Cancel
         </button>
@@ -112,22 +112,20 @@ export function ConfirmButton({
   return (
     <button
       ref={triggerRef}
+      type="button"
       aria-label={ariaLabel}
       onClick={() => {
         setConfirming(true);
       }}
       disabled={isPending}
-      style={{
-        padding: '6px 14px',
-        borderRadius: 4,
-        fontSize: 12,
-        fontWeight: 500,
-        cursor: isPending ? 'wait' : 'pointer',
-        background: 'transparent',
-        color: 'var(--danger-text)',
-        border: '1px solid var(--danger)',
-        opacity: isPending ? 0.5 : 1,
-      }}
+      className={plainButtonClass(
+        tone === 'danger' ? 'glass-danger' : 'secondary',
+        size === 'lg' ? 'lg' : 'xs',
+        {
+          pill: true,
+          extra: size === 'lg' ? 'min-h-11 disabled:cursor-wait' : 'disabled:cursor-wait',
+        },
+      )}
     >
       {label}
     </button>

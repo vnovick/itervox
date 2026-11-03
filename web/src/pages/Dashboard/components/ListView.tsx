@@ -1,42 +1,30 @@
 import { useState, useMemo } from 'react';
 import Badge from '../../../components/ui/badge/Badge';
+import { backendLabel, resolveIssueBackend } from '../../../lib/backends';
 import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
 import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { EMPTY_STATES } from '../../../utils/constants';
 import {
-  orchDotClass,
+  orchStatusDotClass,
   stateBadgeColor,
   EMPTY_PROFILE_LABEL,
   formatOrchestratorState,
 } from '../../../utils/format';
 import { WhyIdleChip } from '../../../components/itervox/WhyIdleChip';
+import { plainButtonClass } from '../../../components/ui/button/buttonRecipe';
+
+const ROW_ACTION = plainButtonClass('secondary', 'xs', { pill: true });
 
 type SortKey = 'identifier' | 'title' | 'state';
 type SortDir = 'asc' | 'desc';
 
 function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
   return (
-    <span className="ml-1" style={{ color: active ? 'var(--accent)' : 'var(--muted)' }}>
+    <span className={`ml-1 ${active ? 'text-theme-accent-text' : 'text-theme-muted'}`}>
       {active ? (dir === 'asc' ? '↑' : '↓') : '↕'}
     </span>
   );
-}
-
-function resolveBackend(
-  profile: string | undefined,
-  profileDefs: Record<string, ProfileDef> | undefined,
-  runningBackend: string | undefined,
-  defaultBackend: string | undefined,
-): 'claude' | 'codex' {
-  if (runningBackend) return /codex/i.test(runningBackend) ? 'codex' : 'claude';
-  if (profile && profileDefs?.[profile]) {
-    const def = profileDefs[profile];
-    const hint = def.backend || def.command || '';
-    if (hint) return /codex/i.test(hint) ? 'codex' : 'claude';
-  }
-  const fallback = defaultBackend || '';
-  return /codex/i.test(fallback) ? 'codex' : 'claude';
 }
 
 interface ListViewProps {
@@ -96,19 +84,16 @@ export function ListView({
     [issues, sortKey, sortDir],
   );
 
-  const thStyle: React.CSSProperties = { color: 'var(--text-secondary)' };
-  const thClass =
-    'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider select-none cursor-pointer';
+  const thClass = 'select-none cursor-pointer';
 
   return (
-    <div className="border-theme-line bg-theme-panel overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-sm">
-          <thead className="bg-theme-bg-soft">
+    <div className="glass-card overflow-hidden">
+      <div className="overflow-x-auto px-1.5">
+        <table className="data-table min-w-[640px]">
+          <thead>
             <tr>
               <th
                 className={thClass}
-                style={thStyle}
                 onClick={() => {
                   handleSort('identifier');
                 }}
@@ -117,7 +102,6 @@ export function ListView({
               </th>
               <th
                 className={thClass}
-                style={thStyle}
                 onClick={() => {
                   handleSort('title');
                 }}
@@ -126,28 +110,21 @@ export function ListView({
               </th>
               <th
                 className={thClass}
-                style={thStyle}
                 onClick={() => {
                   handleSort('state');
                 }}
               >
                 State <SortIcon active={sortKey === 'state'} dir={sortDir} />
               </th>
-              <th className={thClass} style={thStyle}>
-                Backend
-              </th>
-              <th className={thClass} style={thStyle}>
-                Agent
-              </th>
-              <th className={thClass} style={thStyle}>
-                Actions
-              </th>
+              <th className={thClass}>Backend</th>
+              <th className={thClass}>Agent</th>
+              <th className={thClass}>Actions</th>
             </tr>
           </thead>
-          <tbody className="border-theme-line border-t">
+          <tbody>
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-theme-muted px-4 py-10 text-center text-sm">
+                <td colSpan={6} className="text-theme-muted py-10 text-center">
                   No issues match the current filters
                 </td>
               </tr>
@@ -155,18 +132,18 @@ export function ListView({
             {sorted.map((issue) => (
               <tr
                 key={issue.identifier}
-                className="border-theme-line cursor-pointer border-t transition-colors hover:bg-[var(--bg-soft)]"
+                className="hover:bg-theme-bg-soft cursor-pointer transition-colors"
                 onClick={() => {
                   onSelect(issue.identifier);
                 }}
               >
-                <td className="px-4 py-3 whitespace-nowrap">
+                <td className="whitespace-nowrap">
                   {issue.url ? (
                     <a
                       href={issue.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-theme-accent-text font-mono text-sm font-medium hover:underline"
+                      className="text-theme-text font-mono text-xs font-medium hover:underline"
                       onClick={(e) => {
                         e.stopPropagation();
                       }}
@@ -174,12 +151,12 @@ export function ListView({
                       {issue.identifier}
                     </a>
                   ) : (
-                    <span className="text-theme-text font-mono text-sm font-medium">
+                    <span className="text-theme-text font-mono text-xs font-medium">
                       {issue.identifier}
                     </span>
                   )}
                 </td>
-                <td className="text-theme-text-secondary max-w-xs px-4 py-3">
+                <td className="max-w-xs">
                   <div className="flex min-w-0 items-center gap-2">
                     {/* CORE-068: the title is the row's keyboard entry point. */}
                     <button
@@ -188,7 +165,7 @@ export function ListView({
                         e.stopPropagation();
                         onSelect(issue.identifier);
                       }}
-                      className="text-theme-text-secondary hover:text-theme-text min-w-0 cursor-pointer truncate rounded-sm text-left focus-visible:underline"
+                      className="text-theme-text min-w-0 cursor-pointer truncate rounded-sm text-left font-medium focus-visible:underline"
                     >
                       {issue.title}
                     </button>
@@ -197,14 +174,14 @@ export function ListView({
                     {blockerCount(issue) > 0 && (
                       <span
                         title={`Blocked by ${String(blockerCount(issue))} issue${blockerCount(issue) === 1 ? '' : 's'}`}
-                        className="bg-theme-danger-soft text-theme-danger-text flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                        className="tag pill-warn flex-shrink-0"
                       >
                         Blocked {blockerCount(issue)}
                       </span>
                     )}
                   </div>
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap">
+                <td className="whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
                     <Badge size="sm" color={stateBadgeColor(issue.state)}>
                       {issue.state}
@@ -213,36 +190,26 @@ export function ListView({
                       <span
                         data-testid="issue-row-syncing-badge"
                         title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-                        className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
+                        className="tag pill-accent flex-shrink-0"
                       >
                         ⟳ Syncing
                       </span>
                     )}
                   </div>
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap">
+                <td className="whitespace-nowrap">
                   {(() => {
-                    const b = resolveBackend(
+                    const b = resolveIssueBackend(
                       issue.agentProfile,
                       profileDefs,
                       runningBackendByIdentifier?.[issue.identifier],
                       defaultBackend,
                     );
-                    return (
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          b === 'codex'
-                            ? 'bg-emerald-500/15 text-emerald-400'
-                            : 'bg-orange-500/15 text-orange-400'
-                        }`}
-                      >
-                        {b === 'codex' ? 'Codex' : 'Claude'}
-                      </span>
-                    );
+                    return <span className="tag">{backendLabel(b)}</span>;
                   })()}
                 </td>
                 <td
-                  className="px-4 py-3 whitespace-nowrap"
+                  className="whitespace-nowrap"
                   onClick={(e) => {
                     e.stopPropagation();
                   }}
@@ -256,7 +223,8 @@ export function ListView({
                           onChange={(e) => {
                             onProfileChange(issue.identifier, e.target.value);
                           }}
-                          className="border-theme-line bg-theme-bg-elevated text-theme-text-secondary focus:border-theme-accent rounded border px-1.5 py-0.5 text-xs focus:outline-none"
+                          aria-label={`Agent profile for ${issue.identifier}`}
+                          className="glass-chip text-theme-text-secondary focus-visible:ring-theme-accent px-2.5 py-1 text-xs focus:outline-none focus-visible:ring-2"
                         >
                           <option value="">{EMPTY_PROFILE_LABEL}</option>
                           {availableProfiles.map((p) => (
@@ -268,22 +236,21 @@ export function ListView({
                       );
                     }
                     return (
-                      <span className="text-theme-muted inline-flex items-center gap-1 text-xs">
+                      <span className="text-theme-text-secondary inline-flex items-center gap-1.5 text-xs">
                         <span
-                          className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`}
+                          aria-hidden="true"
+                          className={`status-dot ${orchStatusDotClass(issue.orchestratorState)}`}
                         />
                         {formatOrchestratorState(issue.orchestratorState)}
                         {issue.agentProfile && (
-                          <span className="border-theme-line ml-1 rounded border px-1 py-0.5 text-[10px]">
-                            {issue.agentProfile}
-                          </span>
+                          <span className="tag ml-1">{issue.agentProfile}</span>
                         )}
                       </span>
                     );
                   })()}
                 </td>
                 <td
-                  className="px-4 py-3 whitespace-nowrap"
+                  className="whitespace-nowrap"
                   onClick={(e) => {
                     e.stopPropagation();
                   }}
@@ -293,12 +260,7 @@ export function ListView({
                       onClick={() => {
                         cancelIssueMutation.mutate(issue.identifier);
                       }}
-                      className="rounded px-2 py-1 text-xs transition-colors"
-                      style={{
-                        border: '1px solid var(--danger-soft)',
-                        color: 'var(--danger-text)',
-                        background: 'transparent',
-                      }}
+                      className={ROW_ACTION}
                     >
                       ⏸ Pause
                     </button>
@@ -308,12 +270,7 @@ export function ListView({
                       onClick={() => {
                         resumeIssueMutation.mutate(issue.identifier);
                       }}
-                      className="rounded px-2 py-1 text-xs transition-colors"
-                      style={{
-                        border: '1px solid var(--success-soft)',
-                        color: 'var(--success-text)',
-                        background: 'transparent',
-                      }}
+                      className={ROW_ACTION}
                     >
                       ▶ Resume
                     </button>

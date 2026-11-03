@@ -1,11 +1,17 @@
+import { backendLabel as labelFor } from '../../../lib/backends';
 import type { SupportedBackend } from '../profileCommands';
 
 export function backendLabel(backend: SupportedBackend): string {
-  return backend === 'codex' ? 'Codex' : 'Claude';
+  return labelFor(backend);
 }
 
 export function backendBadgeClass(backend: SupportedBackend): string {
-  return backend === 'codex'
-    ? 'bg-[var(--teal-soft)] text-[var(--teal)]'
-    : 'bg-[var(--accent-soft)] text-[var(--accent-strong)]';
+  switch (backend) {
+    case 'codex':
+      return 'bg-[var(--teal-soft)] text-[var(--teal)]';
+    case 'claude':
+      return 'bg-[var(--accent-soft)] text-[var(--accent-strong)]';
+    default:
+      return 'bg-theme-chip text-theme-text-secondary';
+  }
 }

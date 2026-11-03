@@ -1,7 +1,6 @@
 import { Link } from 'react-router';
 import { useMemo } from 'react';
 import { logsPath } from '../../hooks/useUrlState';
-import { Card } from '../../components/ui/Card/Card';
 import { Sparkline } from '../../components/itervox/Sparkline';
 import type { AutomationDef, HistoryRow, RunningRow } from '../../types/schemas';
 
@@ -52,12 +51,14 @@ export function AutomationActivityCard({
   );
 
   return (
-    <div data-testid={`automation-activity-${automation.id}`}>
-      <Card variant="elevated" className="space-y-3">
+    <section
+      data-testid={`automation-activity-${automation.id}`}
+      aria-label={`${automation.id} activity`}
+      className="glass-panel grid gap-3 rounded-[26px] p-5 md:grid-cols-2"
+    >
+      <div className="glass-card flex min-w-0 flex-col gap-3 px-3.5 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-theme-text text-base font-semibold tracking-tight">
-            {automation.id}
-          </h2>
+          <h2 className="text-theme-text font-mono text-sm font-semibold">{automation.id}</h2>
           <TriggerChip type={automation.trigger.type} />
           <EnabledChip enabled={automation.enabled} />
           <span className="text-theme-muted ml-auto text-xs">profile: {automation.profile}</span>
@@ -66,16 +67,19 @@ export function AutomationActivityCard({
         <Sparkline
           values={data.sparkValues}
           height={32}
-          color="var(--accent-color, #4f46e5)"
+          color="var(--accent)"
           ariaLabel={`Last ${String(SPARKLINE_DAYS)} days of fires for ${automation.id}`}
         />
 
-        <div className="grid grid-cols-3 gap-2 text-xs">
+        <dl className="grid grid-cols-3 gap-2">
           <Stat label="Success rate" value={formatSuccessRate(data.stats)} />
           <Stat label="Avg elapsed" value={formatElapsed(data.stats.meanElapsedMs)} />
           <Stat label="Last fire" value={formatLastFire(data.stats.lastFireMs)} />
-        </div>
+        </dl>
+      </div>
 
+      <div className="glass-card flex min-w-0 flex-col gap-2 px-3.5 py-3">
+        <h3 className="text-theme-text text-[13px] font-semibold">Recent runs</h3>
         {data.runs.length === 0 ? (
           <p className="text-theme-muted text-xs italic">Never fired yet.</p>
         ) : (
@@ -89,16 +93,18 @@ export function AutomationActivityCard({
                   // brief window between live exit and history index update.
                   `${run.sessionId ?? `${run.identifier}-${run.timestamp}`}-${run.isLive ? 'live' : 'done'}`
                 }
-                className="flex items-center gap-2 text-xs"
+                className="flex items-center gap-2 text-[13px]"
               >
-                <span className="text-theme-text font-mono">{run.identifier}</span>
                 <StatusDot status={run.status} live={run.isLive} />
-                <span className="text-theme-muted">{run.status}</span>
-                <span className="text-theme-muted">{formatElapsed(run.elapsedMs)}</span>
-                <span className="text-theme-muted ml-auto">{formatTimestamp(run.timestamp)}</span>
+                <span className="text-theme-text font-mono text-xs">{run.identifier}</span>
+                <span className="text-theme-text-secondary">{run.status}</span>
+                <span className="text-theme-muted text-xs">{formatElapsed(run.elapsedMs)}</span>
+                <span className="text-theme-muted ml-auto text-xs">
+                  {formatTimestamp(run.timestamp)}
+                </span>
                 <Link
                   to={logsPath(run.identifier)}
-                  className="text-theme-accent-text text-xs hover:underline"
+                  className="text-theme-accent-text text-xs underline underline-offset-2"
                   data-testid="automation-run-logs-link"
                 >
                   View
@@ -107,35 +113,27 @@ export function AutomationActivityCard({
             ))}
           </ul>
         )}
-      </Card>
-    </div>
+      </div>
+    </section>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-theme-bg-soft border-theme-line rounded-md border px-2 py-1.5">
-      <p className="text-theme-muted text-[10px] tracking-wide uppercase">{label}</p>
-      <p className="text-theme-text text-sm font-semibold">{value}</p>
+    <div>
+      <dt className="stat-tile-label">{label}</dt>
+      <dd className="stat-tile-value text-lg">{value}</dd>
     </div>
   );
 }
 
 function TriggerChip({ type }: { type: string }) {
-  return (
-    <span className="bg-theme-bg-soft text-theme-muted border-theme-line rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase">
-      {type}
-    </span>
-  );
+  return <span className="pill pill-accent px-2 py-0 text-xs">{type}</span>;
 }
 
 function EnabledChip({ enabled }: { enabled: boolean }) {
   return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
-        enabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
-      }`}
-    >
+    <span className={`pill px-2 py-0 text-xs ${enabled ? 'pill-ok' : 'pill-warn'}`}>
       {enabled ? 'enabled' : 'disabled'}
     </span>
   );
@@ -143,15 +141,15 @@ function EnabledChip({ enabled }: { enabled: boolean }) {
 
 function StatusDot({ status, live }: { status: string; live: boolean }) {
   const color = live
-    ? 'bg-sky-400 animate-pulse'
+    ? 'bg-theme-accent animate-pulse'
     : status === 'succeeded'
-      ? 'bg-emerald-400'
+      ? 'bg-theme-dot-ok'
       : status === 'failed'
-        ? 'bg-rose-500'
+        ? 'bg-theme-danger'
         : status === 'cancelled'
-          ? 'bg-zinc-400'
-          : 'bg-amber-400';
-  return <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />;
+          ? 'bg-theme-dot-idle'
+          : 'bg-theme-dot-warn';
+  return <span aria-hidden className={`status-dot ${color}`} />;
 }
 
 function buildCardData(

@@ -52,8 +52,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
 	state = o.loadDeferredStateMovesFromDisk(state) // #177
-	state = o.loadFeedFromDisk(state)               // #213
-	state = o.loadDispatchPauseFromDisk(state)      // #213
+	state = o.loadReviewContinuationsFromDisk(state)
+	state = o.loadFeedFromDisk(state)          // #213
+	state = o.loadDispatchPauseFromDisk(state) // #213
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -420,6 +421,9 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 	state = o.processPendingInputResumes(ctx, state, now)
 	// M4-close BH-M4-2: reviews refused by a drain run before new work.
 	o.resumePendingReviews(ctx, &state, now)
+	// An operator review continued without a tracker move starts its run
+	// here, under the same gates, before new work.
+	o.resumeReviewContinuations(ctx, &state)
 	// #177: moves deferred for a worker that has exited (or loaded after a
 	// restart) are applied before new work.
 	o.applyPendingDeferredStateMoves(&state, now)
@@ -481,6 +485,13 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 		// made before it ended; the next poll decides on a fresh list.
 		if _, ended := endedDuringPoll[issue.ID]; ended {
 			slog.Info("orchestrator: issue's run ended while the poll was in flight; not dispatching from its list",
+				"identifier", issue.Identifier)
+			continue
+		}
+		// #251: a New task with this title is still being created; its
+		// instructions are recorded before any run of it starts.
+		if o.taskCreationPending(issue.Title) {
+			slog.Info("orchestrator: a task with this title is being created; dispatching it on a later tick",
 				"identifier", issue.Identifier)
 			continue
 		}
@@ -1505,6 +1516,9 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 		// needed (the worker now owns the session via its RunEntry).
 		delete(state.PausedSessions, issue.Identifier)
 	}
+	if resumeCtx == nil { // #252: `itervox run --answer/--approve` continues the previous run
+		resumeCtx = o.takeOneShotResume(reviewerRun)
+	}
 	o.workersWg.Add(issue.Identifier)
 	switchNotice := o.backendSwitchNotice(&state, issue.Identifier, backend, profileName, nil) // CORE-101
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil, switchNotice)
@@ -1515,12 +1529,7 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 // resumed by the runner for resolved (CORE-033). Only an exact match on a
 // backend MultiRunner routes explicitly counts.
 func resumeBackendMatches(stored, resolved string) bool {
-	switch stored {
-	case "claude", "codex":
-		return stored == resolved
-	default:
-		return false
-	}
+	return config.IsSupportedBackend(stored) && stored == resolved
 }
 
 func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
@@ -1947,6 +1956,21 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventInputQuestionFallback:
 		state = o.handleInputQuestionFallback(state, ev)
 
+	case EventReviewContinue:
+		if req := ev.reviewContinue; req != nil {
+			err := o.handleReviewContinue(&state, req)
+			if req.reply != nil {
+				req.reply <- err
+			}
+		}
+		return state
+
+	case EventReviewContinueDelivered:
+		if ev.reviewDelivered != nil {
+			o.handleReviewDelivered(&state, ev.reviewDelivered)
+		}
+		return state
+
 	case EventDeferStateMove: // #177
 		deferred := o.handleDeferStateMove(&state, ev, time.Now())
 		if ev.deferReply != nil {
@@ -2152,6 +2176,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		delete(state.Running, ev.IssueID)
 		// #177: a state move deferred for this run is settled by its exit.
 		o.settleDeferredMoveOnExit(&state, ev, liveEntry)
+		// A review this run took but never wrote goes to the next run.
+		releaseReviewContinuation(&state, exitIdentifier(liveEntry, ev), cmpRunID(ev.RunID, liveEntry))
 
 		if ev.RunEntry == nil {
 			// Emitted by ReconcileTrackerStates (not-found/non-active path);
@@ -2493,7 +2519,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// reply detection can find the question by key no matter when
 			// the outbox delivers it.
 			entry.QuestionCommentKey = o.newInputRequiredCommentKey(issue.Identifier)
-			questionBody := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))
+			questionBody := tracker.MarkManagedComment(o.inputRequiredCommentBody(entry))
 			if err := o.postInputRequiredComment(entry.IssueID, issue.Identifier, entry.QuestionCommentKey,
 				questionBody, "question"); err != nil {
 				// CORE-121: the key stays until a keyless direct post is
@@ -3073,6 +3099,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.SteersDropped = liveEntry.SteersDropped
 		run.PRURL = liveEntry.PRURL                 // #201
 		run.ReviewVerdict = liveEntry.reviewVerdict // #201
+		run.ContinuedFromReview = liveEntry.ContinuedFromReview
+		run.ReviewComments = liveEntry.ReviewComments
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the
@@ -3088,6 +3116,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.StartedAt = finishedAt
 	}
 	run.BranchName = historyBranch(liveEntry, issue) // #201
+	run.Resources = o.endRunMonitor(issue.Identifier)
 	o.addCompletedRun(run)
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.

@@ -12,6 +12,18 @@
       "additionalProperties": false,
       "description": "The agent runner: command, capacity, retries, timeouts, review, SSH and rate limits.",
       "properties": {
+        "activity_audit": {
+          "default": "sampled",
+          "description": "What each run did (commands, files written, network connections): off; sampled (every 2s, may miss short-lived activity); or precise (Linux eBPF; needs CAP_BPF + CAP_PERFMON or root, falls back to sampled). Read at startup.",
+          "enum": [
+            "off",
+            "sampled",
+            "precise"
+          ],
+          "title": "Activity audit",
+          "type": "string",
+          "x-itervox-group": "System visibility"
+        },
         "allow_unchecked_merge": {
           "default": false,
           "description": "When off, the merge_pr action refuses to merge on a repository with no required checks. On: merge anyway (a warning is logged).",
@@ -37,11 +49,14 @@
         },
         "backend": {
           "default": "",
-          "description": "Runner backend for agent.command. Only needed when the command is a wrapper script whose backend Itervox cannot infer.",
+          "description": "Runner backend for agent.command. Needed when the command is a wrapper script whose backend Itervox cannot infer, and always for custom (a command speaking the itervox JSON-lines agent protocol).",
           "enum": [
             "",
             "claude",
-            "codex"
+            "codex",
+            "opencode",
+            "cursor",
+            "custom"
           ],
           "title": "Backend",
           "type": "string",
@@ -353,6 +368,13 @@
           "title": "Read timeout (ms)",
           "type": "integer",
           "x-itervox-group": "Timeouts"
+        },
+        "resource_sampling": {
+          "default": true,
+          "description": "Sample each local run's processes every 2s for CPU, memory, process count, disk I/O and connections, shown on the issue's Now panel. Read at startup.",
+          "title": "Resource sampling",
+          "type": "boolean",
+          "x-itervox-group": "System visibility"
         },
         "review_quorum": {
           "default": "any_block",
@@ -1100,6 +1122,47 @@
           "title": "Clone URL",
           "type": "string",
           "x-itervox-group": "Workspace"
+        },
+        "copy_files": {
+          "default": [],
+          "description": "Gitignored paths or globs (relative to the repository root) copied from the main checkout into each new worktree before hooks.after_create, and refreshed on later runs. Tracked or unignored matches are skipped. The agent can read these files.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Copy files into worktrees",
+          "type": "array",
+          "x-itervox-group": "Workspace setup"
+        },
+        "copy_files_max_bytes": {
+          "default": 10485760,
+          "description": "Most bytes copy_files copies into one worktree per run; the rest is skipped and reported.",
+          "minimum": 1,
+          "title": "Copy files size cap (bytes)",
+          "type": "integer",
+          "x-itervox-group": "Workspace setup"
+        },
+        "disk_pause_free_gb": {
+          "default": 0,
+          "description": "Pause all dispatch while the volume holding workspace.root has less than this many GB free; dispatch resumes once it is back above. 0: never. Read at startup.",
+          "minimum": 0,
+          "title": "Pause dispatch below free disk (GB)",
+          "type": "integer",
+          "x-itervox-group": "System visibility"
+        },
+        "disk_warn_free_gb": {
+          "default": 5,
+          "description": "Warn on the dashboard and in the desktop tray when the volume holding workspace.root has less than this many GB free. 0: no warning. Read at startup.",
+          "minimum": 0,
+          "title": "Warn below free disk (GB)",
+          "type": "integer",
+          "x-itervox-group": "System visibility"
+        },
+        "port_range": {
+          "default": "41000-41999",
+          "description": "LOW-HIGH range each issue's workspace gets a TCP port from, as ITERVOX_PORT and {{ run.port }}. Stable while the workspace exists.",
+          "title": "Workspace port range",
+          "type": "string",
+          "x-itervox-group": "Workspace setup"
         },
         "root": {
           "description": "Directory per-issue workspaces are created in. Default: ~/.itervox/workspaces/<project>. ~ and $VAR are expanded.",

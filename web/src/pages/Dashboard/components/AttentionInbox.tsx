@@ -10,11 +10,16 @@ import {
   useTerminateIssue,
 } from '../../../queries/issues';
 import { useAttentionCount, useOperatorQueue } from '../../../hooks/useOperatorQueue';
-import type { OperatorQueueGroupResult, OperatorQueueItem } from '../../../lib/operatorQueue';
+import {
+  operatorToneDotClass,
+  type OperatorQueueGroupResult,
+  type OperatorQueueItem,
+} from '../../../lib/operatorQueue';
 import { ConfirmButton } from '../../../components/ui/button/ConfirmButton';
 import { InputReplyBox } from '../../../components/itervox/InputReplyBox';
 import { ReviewSourcePill } from '../../../components/itervox/ReviewSourcePill';
 import { RequireScope } from '../../../components/itervox/RequireScope';
+import { plainButtonClass } from '../../../components/ui/button/buttonRecipe';
 
 // CORE-077 — the attention inbox, pinned at the top of the Dashboard. One
 // list of everything that needs the operator (lib/operatorQueue), with the
@@ -28,14 +33,14 @@ import { RequireScope } from '../../../components/itervox/RequireScope';
 // Deliberately not a live region — snapshot pushes would re-announce it; the
 // count reaches assistive tech through the heading and the nav link name.
 
-const TONE_STRIPE: Record<OperatorQueueItem['tone'], string> = {
-  danger: 'bg-theme-danger',
-  warning: 'bg-theme-warning',
-  info: 'bg-theme-accent',
+// The group label carries the group's tone; quieter groups stay secondary.
+const GROUP_LABEL_TONE: Partial<Record<OperatorQueueGroupResult['group'], string>> = {
+  needs_input: 'text-theme-warning-text',
+  failed: 'text-theme-danger-text',
 };
 
-const ACTION_BUTTON =
-  'border-theme-line text-theme-text hover:bg-theme-bg-soft rounded-[var(--radius-sm)] border px-2.5 py-1 text-xs font-medium disabled:opacity-50';
+const ACTION_BUTTON = plainButtonClass('secondary', 'md', { pill: true });
+const PRIMARY_ACTION_BUTTON = plainButtonClass('primary', 'md', { pill: true });
 
 function itemTestKey(item: OperatorQueueItem): string {
   // Stable, human-readable: group + identifier (or the backend / outbox id).
@@ -100,7 +105,7 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
         }}
         tabIndex={-1}
         data-testid="attention-inbox-empty"
-        className="text-theme-text-secondary border-theme-line bg-theme-bg-elevated rounded-[var(--radius-md)] border px-4 py-2 text-xs"
+        className="glass-chip text-theme-text-secondary w-fit px-4 py-2 text-[13px]"
       >
         All caught up — nothing needs you right now.
       </p>
@@ -133,7 +138,7 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
           <>
             <button
               type="button"
-              className={ACTION_BUTTON}
+              className={PRIMARY_ACTION_BUTTON}
               aria-label={`Reply to ${id}`}
               aria-expanded={expanded}
               aria-controls={`attention-reply-${id}`}
@@ -205,38 +210,35 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
       <div key={group.group}>
         <h3
           id={headingId}
-          className="text-theme-text-secondary mb-1 text-[11px] font-semibold tracking-[0.06em] uppercase"
+          className={`mb-1.5 text-xs font-semibold ${
+            GROUP_LABEL_TONE[group.group] ?? 'text-theme-text-secondary'
+          }`}
         >
           {group.label} · {group.items.length}
         </h3>
-        <ul
-          aria-labelledby={headingId}
-          className="divide-theme-line border-theme-line divide-y rounded-[var(--radius-md)] border"
-        >
+        <ul aria-labelledby={headingId} className="space-y-2">
           {group.items.map((item) => {
             const id = item.identifier ?? '';
             const replyOpen = item.group === 'needs_input' && replyOpenFor === id;
             return (
-              <li key={item.id} data-testid={itemTestKey(item)} className="px-3 py-2">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <li key={item.id} data-testid={itemTestKey(item)} className="glass-card px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                   <span
                     aria-hidden="true"
-                    className={`block h-6 w-1 flex-shrink-0 rounded-full ${TONE_STRIPE[item.tone]}`}
+                    className={`status-dot ${operatorToneDotClass(item.tone)}`}
                   />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-theme-text font-mono text-sm font-medium">
-                        {item.title}
-                      </span>
-                      {item.reviewSource && <ReviewSourcePill source={item.reviewSource} />}
-                      {item.meta && !item.reviewSource && (
-                        <span className="text-theme-text-secondary text-xs">{item.meta}</span>
-                      )}
-                    </div>
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                    <span className="text-theme-text font-mono text-xs font-medium">
+                      {item.title}
+                    </span>
                     {item.subtitle && (
-                      <p className="text-theme-text-secondary mt-0.5 truncate text-xs">
+                      <span className="text-theme-text min-w-0 truncate text-sm font-medium">
                         {item.subtitle}
-                      </p>
+                      </span>
+                    )}
+                    {item.reviewSource && <ReviewSourcePill source={item.reviewSource} />}
+                    {item.meta && !item.reviewSource && (
+                      <span className="text-theme-muted text-xs">{item.meta}</span>
                     )}
                   </div>
                   <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5">
@@ -282,7 +284,7 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
       id="attention-inbox"
       aria-labelledby="attention-inbox-heading"
       data-testid="attention-inbox"
-      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 rounded-[var(--radius-lg)] border px-4 py-3"
+      className="glass-panel scroll-mt-20 px-4 py-4 sm:px-[18px]"
     >
       <h2
         ref={(el) => {
@@ -290,17 +292,14 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
         }}
         tabIndex={-1}
         id="attention-inbox-heading"
-        className="text-theme-text mb-2 flex items-center gap-2 text-sm font-semibold"
+        className="text-theme-text mb-2.5 flex items-center gap-2 text-base font-semibold"
       >
         Needs attention
-        <span
-          data-testid="attention-inbox-count"
-          className="bg-theme-warning-soft text-theme-warning-text rounded-full px-1.5 py-0.5 text-[10px] font-bold"
-        >
+        <span data-testid="attention-inbox-count" className="count-pill">
           {attention}
         </span>
       </h2>
-      <div className="space-y-3">{queue.groups.map(renderGroup)}</div>
+      <div className="space-y-2.5">{queue.groups.map(renderGroup)}</div>
     </section>
   );
 }

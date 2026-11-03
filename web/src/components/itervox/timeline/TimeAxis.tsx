@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useState } from 'react';
-import { AXIS_MARGIN_LEFT, AXIS_MARGIN_RIGHT } from './styles';
-import { buildTimeAxisTicks, formatTimeAxisLabel } from './timeAxisModel';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { AXIS_INSET } from './styles';
+import { buildTimeAxisTicks, formatTimeAxisLabel, tickTargetForWidth } from './timeAxisModel';
 
 function NowMarker({ viewStart, viewEnd }: { viewStart: number; viewEnd: number }) {
   const [now, setNow] = useState(Date.now);
@@ -22,17 +22,37 @@ function NowMarker({ viewStart, viewEnd }: { viewStart: number; viewEnd: number 
   );
 }
 
+/** Tracks an element's rendered width (0 until measured, or without ResizeObserver). */
+function useElementWidth<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      setWidth(entries[0]?.contentRect.width ?? 0);
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  return [ref, width] as const;
+}
+
 export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: number }) {
+  // Fewer ticks on a narrow axis, so HH:mm labels never collide.
+  const [ref, width] = useElementWidth<HTMLDivElement>();
   const span = viewEnd - viewStart;
-  if (span <= 0) return null;
-  const ticks = buildTimeAxisTicks(viewStart, viewEnd);
+  const ticks = span > 0 ? buildTimeAxisTicks(viewStart, viewEnd, tickTargetForWidth(width)) : [];
   const labels = ticks.map((t) => formatTimeAxisLabel(t, span));
 
   return (
     <div
-      className="border-theme-line relative h-6 border-b"
+      ref={ref}
+      data-testid="timeline-axis"
+      className={`border-theme-line relative h-6 border-b ${AXIS_INSET}`}
       aria-label={labels.join(' ')}
-      style={{ marginLeft: AXIS_MARGIN_LEFT, marginRight: AXIS_MARGIN_RIGHT }}
     >
       {ticks.map((t, idx) => {
         const pct = ((t - viewStart) / span) * 100;
@@ -48,7 +68,7 @@ export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: n
               </span>
             )}
             <span
-              className="text-theme-muted bg-theme-bg absolute rounded-sm px-1 font-mono text-[10px] leading-4 whitespace-nowrap"
+              className="text-theme-muted absolute px-1 font-mono text-[10px] leading-4 whitespace-nowrap"
               style={{ left: `${String(pct)}%`, transform: edgeTransform }}
             >
               {label}
@@ -56,7 +76,7 @@ export function TimeAxis({ viewStart, viewEnd }: { viewStart: number; viewEnd: n
           </Fragment>
         );
       })}
-      <NowMarker viewStart={viewStart} viewEnd={viewEnd} />
+      {span > 0 && <NowMarker viewStart={viewStart} viewEnd={viewEnd} />}
     </div>
   );
 }

@@ -80,6 +80,8 @@ describe('HubNotificationSettings', () => {
     expect((runFailedSlack as HTMLInputElement).checked).toBe(true);
     expect((prDesktop as HTMLInputElement).checked).toBe(false);
     expect(within(table).getAllByText('(urgent)')).toHaveLength(2);
+    // Each route is the shared switch: still a native checkbox (role, label, keyboard).
+    expect(runFailedSlack).toHaveClass('switch');
 
     const save = screen.getByRole('button', { name: 'Save' });
     expect((save as HTMLButtonElement).disabled).toBe(true);

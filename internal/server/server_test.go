@@ -2350,12 +2350,12 @@ func TestHandleAgentCreateIssue_Success(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
 	cfg.ActionTokenStore = store
 	cfg.Client = &server.FuncClient{
-		CreateIssueFn: func(_ context.Context, identifier, title, body, state string) (*domain.Issue, error) {
+		CreateIssueFn: func(_ context.Context, identifier string, in tracker.NewIssue) (*domain.Issue, error) {
 			gotIdentifier = identifier
-			gotTitle = title
-			gotBody = body
-			gotState = state
-			return &domain.Issue{Identifier: "ENG-2", Title: title, State: state}, nil
+			gotTitle = in.Title
+			gotBody = in.Body
+			gotState = in.State
+			return &domain.Issue{Identifier: "ENG-2", Title: in.Title, State: in.State}, nil
 		},
 	}
 	srv := server.New(cfg)

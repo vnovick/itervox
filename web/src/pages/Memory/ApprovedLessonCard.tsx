@@ -13,9 +13,9 @@ export function ApprovedLessonCard({ entry }: { entry: MemoryEntry }) {
     ? (TRIGGER_LABELS[entry.lesson.trigger] ?? entry.lesson.trigger)
     : '';
   return (
-    <li className="px-3 py-3 text-sm" data-testid={`approved-lesson-${entry.id}`}>
-      <p className="text-theme-text">{entry.text}</p>
-      <p className="text-theme-muted mt-0.5 text-xs">
+    <li className="glass-card px-4 py-3.5 text-sm" data-testid={`approved-lesson-${entry.id}`}>
+      <p className="text-theme-text text-[15px]">{entry.text}</p>
+      <p className="text-theme-text-secondary mt-1 text-xs">
         {SCOPE_INFO[entry.scope].label}
         {trigger ? ` · ${trigger}` : ''}
         {entry.notHelping ? ` · ${NOT_HELPING_LABELS[entry.notHelping] ?? entry.notHelping}` : ''}

@@ -352,3 +352,18 @@ export function classifyReviewSource(
 // Internal alias kept so the existing call site in buildOperatorQueueItems
 // continues to read naturally.
 const inferReviewSource = classifyReviewSource;
+
+/**
+ * The `.status-dot` tone class for an operator-queue row (visual refresh):
+ * shared by the attention inbox and the Notifications view.
+ */
+export function operatorToneDotClass(tone: OperatorQueueItem['tone']): string {
+  switch (tone) {
+    case 'danger':
+      return 'dot-danger';
+    case 'warning':
+      return 'dot-warn';
+    default:
+      return 'bg-theme-accent';
+  }
+}

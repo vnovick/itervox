@@ -56,4 +56,23 @@ describe('NavLink', () => {
     });
     expect(screen.getByRole('link')).not.toHaveAttribute('aria-current');
   });
+
+  // Visual refresh — labelled sidebar rows.
+  it('shows the label as visible text next to the icon', () => {
+    renderWithRouter(<NavLink to="/logs" icon="⌨" label="Logs" />);
+    const link = screen.getByRole('link', { name: 'Logs' });
+    expect(link).toHaveClass('nav-item');
+    expect(link).toHaveTextContent('Logs');
+  });
+
+  it('renders the count as a small pill and folds it into the name', () => {
+    renderWithRouter(
+      <NavLink to="/memory" icon="◷" label="Memory" badge={2} badgeLabel="lessons to review" />,
+    );
+    const link = screen.getByRole('link', { name: 'Memory, 2 lessons to review' });
+    const badge = screen.getByTestId('nav-badge');
+    expect(badge).toHaveClass('nav-count');
+    expect(badge).toHaveTextContent('2');
+    expect(link).toContainElement(badge);
+  });
 });

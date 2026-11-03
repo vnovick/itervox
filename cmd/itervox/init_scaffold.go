@@ -38,6 +38,9 @@ func scaffoldWorkflow(output, dir, trackerKind, runner string, opts initOptions,
 	if info.HasAgentsMD {
 		_, _ = fmt.Fprintf(out, "  AGENTS.md  : found — prompt will reference it\n")
 	}
+	if len(info.CopyFiles) > 0 {
+		_, _ = fmt.Fprintf(out, "  copy_files : %s (gitignored; copied into each worktree)\n", strings.Join(info.CopyFiles, ", "))
+	}
 	for _, s := range info.Stacks {
 		_, _ = fmt.Fprintf(out, "  stack      : %s (%s)\n", s.Name, strings.Join(s.Commands, ", "))
 	}

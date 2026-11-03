@@ -199,6 +199,14 @@ only the event loop mutates them.
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- `ReviewContinuations` holds operator reviews sent from the Changes tab while
+  no run was live (`POST /api/v1/issues/{identifier}/review-continue` →
+  `QueueReviewContinuation` → `EventReviewContinue`). It is event-loop state
+  persisted to `review_continuations.json` (ledger writer). The issue's next
+  worker run writes it as `.itervox/handoff/<ISO8601>_operator-review.md` before
+  its first prompt and only then deletes it; reviewer and automation runs never
+  take it. Without the tracker move, `resumeReviewContinuations` starts the
+  issue in place once every admission gate except "in an active state" allows.
 - `StackOnReviewState` (tick snapshot of `tracker.completion_state` when
   `dependencies.stacked_prs` is on) and `StackUnavailable` are event-loop
   state. An issue whose only unresolved blocker is in review is admitted
@@ -391,6 +399,24 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
   dispatch the entrypoints in `TestMain`.
 
+### Workspace port ledger is workspace state, not `State`
+
+`ITERVOX_PORT` (#250) is owned by `workspace.Manager`: assigned in
+`EnsureWorkspace`, released by `RemoveWorkspace`, persisted in
+`.itervox-ports.json` under `workspace.root` and guarded by the package-level
+`portsMu`. Those calls already run off the event loop (worker goroutines,
+auto-clear, startup cleanup, `itervox clear`), no dispatch decision reads the
+port, and the hooks that need it run on the same goroutines — so it is not
+event-loop state. Do not mirror it into `orchestrator.State`.
+- The run monitor (`internal/sysmon`, system visibility) is NOT `State`: a
+  separately locked store fed by `procgroup` (an added observer) and its own
+  sampler goroutine. The worker names a run (`RunMonitor.AttachRun`); the
+  event loop closes it in `recordHistory` (`EndRun`: a brief lock, no I/O)
+  and keeps the summary on `CompletedRun.Resources`. The snapshot builder,
+  the run context and `/metrics` read copies. The low-disk guard
+  (`cmd/itervox/sysmon_wire.go`) pauses through `PauseDispatch` with the
+  reason prefix `Low disk space` and only ever resumes that pause.
+
 ### `cfgMu` guards exactly these fields (and nothing else)
 
 > **Canonical source for codex too** — AGENTS.md is a thin pointer that tells
@@ -469,6 +495,18 @@ front-matter key is reported as a conflict.
 - The `cfgMu` allowlist and reload behaviour did not change: the Live tracker
   state, failed-state and analysis-mode settings apply through their existing
   setters; the watcher still watches only WORKFLOW.md.
+
+### `itervox run` is the same orchestrator in one-shot mode
+
+`itervox run --issue <id>` (#252, `cmd/itervox/run_cmd*.go`) does not
+re-implement the worker: it runs `orchestrator.New(...).Run` fed one candidate
+(`singleIssueTracker`), with `MaxConcurrentAgents = 1`, and stops it once
+`runSettled` sees the run (and its reviewers) over. Run-mode behaviour is
+confined to `orchestrator.OneShot` (`SetOneShot`, before `Run`; nil in the
+daemon): opening the PR, the `--answer`/`--approve` resume context (consumed
+by the event loop on the first dispatch), the question footer, and
+fail-closed guardrail approvals. No HTTP listener, hub, heartbeat or
+automation is started — `TestRunHasNoServerOrHub` pins that.
 
 ### Snapshot access
 
@@ -635,6 +673,13 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator, server and cmd/itervox)
 
+sysmon (system visibility: per-run resource sampling, activity audit,
+        machine status — imports atomicfs and logging, plus gopsutil
+        (non-Linux) and cilium/ebpf (Linux precise mode); a
+        procgroup.Observer that cmd/itervox adds, and a separately locked
+        store, NOT orchestrator State; imported by orchestrator
+        (RunMonitor), server and cmd/itervox)
+
 cors (stdlib only — the server.allowed_origins CORS allow-list, #231;
       imported by server, hub and config)
 
@@ -648,7 +693,8 @@ memory (managed memory files, selection and the `## Memory` block — imports
 gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
          & co. and requires a dir; audited by TestNoRawGitExecOutsideGitexec)
 
-workflow ──── config ──── workspace (hooks — also imports procgroup)
+workflow ──── config ──── workspace (hooks — also imports procgroup, gitexec,
+                                     atomicfs and logging)
 
 rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
        server and cmd/itervox)
@@ -665,7 +711,7 @@ guardrails (agent shims, pre-push hook, approval broker — imports agent,
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, extsessions, guardrails,
               logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
-              procgroup, prompt, rules, tracker, workspace)
+              procgroup, prompt, rules, sysmon, tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)

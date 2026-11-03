@@ -2,7 +2,8 @@ import { useId, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Modal, ModalFooter } from '../../../components/ui/modal';
-import { inputCls } from '../formStyles';
+import { fieldLabelCls, inputCls } from '../formStyles';
+import { Button } from '../../../components/ui/button';
 import { AutomationEditorFields } from './AutomationEditorFields';
 import { PR_EVENT_FILTER_FIELDS, PR_EVENT_FILTER_TRIGGER } from './prEventFilters';
 import { UnknownValueNotice } from '../../../components/itervox/UnknownValueNotice';
@@ -100,16 +101,15 @@ export function AutomationFormModal({
       isOpen={isOpen}
       onClose={onClose}
       showCloseButton
-      padded
-      className="mx-4 my-8 max-w-5xl"
+      className="mx-4 my-8 max-w-[1024px] rounded-[26px]"
       ariaLabelledBy={headingId}
     >
-      <div className="space-y-5">
-        <div>
-          <h2 id={headingId} className="text-theme-text text-lg font-semibold">
+      <div className="space-y-4 px-6 py-[22px]">
+        <div className="pr-12">
+          <h2 id={headingId} className="text-theme-text text-xl font-bold">
             {title}
           </h2>
-          {subtitle && <p className="text-theme-text-secondary mt-1 text-sm">{subtitle}</p>}
+          {subtitle && <p className="field-help mt-1">{subtitle}</p>}
         </div>
 
         <form
@@ -118,30 +118,28 @@ export function AutomationFormModal({
           }}
           className="space-y-4"
         >
-          <div>
-            <label
-              htmlFor="automation-id-input"
-              className="text-theme-text-secondary mb-2 block text-xs font-medium tracking-wider uppercase"
-            >
-              Automation ID
-            </label>
-            <input
-              id="automation-id-input"
-              {...register('id')}
-              // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer restores focus to the opener on close (M5-close)
-              autoFocus
-              placeholder="automation-name"
-              className={`${inputCls} font-mono text-sm`}
-            />
-            {errors.id && (
-              <p role="alert" className="text-theme-danger-text mt-1 text-xs">
-                {errors.id.message}
-              </p>
-            )}
-          </div>
-
           <UnknownValueNotice items={unknownAutomationItems(initialValues.unknownFields)} />
           <AutomationEditorFields
+            leadingField={
+              <div>
+                <label htmlFor="automation-id-input" className={fieldLabelCls}>
+                  Automation ID
+                </label>
+                <input
+                  id="automation-id-input"
+                  {...register('id')}
+                  // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog opens on its primary field; useDialogLayer restores focus to the opener on close (M5-close)
+                  autoFocus
+                  placeholder="automation-name"
+                  className={`${inputCls} font-mono`}
+                />
+                {errors.id && (
+                  <p role="alert" className="text-theme-danger-text mt-1 text-xs">
+                    {errors.id.message}
+                  </p>
+                )}
+              </div>
+            }
             values={values}
             availableProfiles={availableProfiles}
             availableStates={availableStates}
@@ -251,25 +249,17 @@ export function AutomationFormModal({
             </p>
           )}
 
-          <ModalFooter>
+          <ModalFooter divider>
             <TestFireControl
               automationId={values.id}
               disabled={isSubmitting || !values.id.trim()}
             />
-            <button
-              type="button"
-              onClick={onClose}
-              className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm transition-colors hover:opacity-80"
-            >
+            <Button variant="glass" size="lg" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
-            >
+            </Button>
+            <Button type="submit" variant="primary" size="lg" disabled={isSubmitting}>
               {isSubmitting ? 'Saving…' : submitLabel}
-            </button>
+            </Button>
           </ModalFooter>
         </form>
       </div>
@@ -293,10 +283,7 @@ function TestFireControl({ automationId, disabled }: { automationId: string; dis
     mutation.mutate({ automationId, identifier: trimmed });
   };
   return (
-    <div
-      data-testid="automation-test-fire"
-      className="border-theme-line mr-auto flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5"
-    >
+    <div data-testid="automation-test-fire" className="mr-auto flex items-center gap-2">
       <input
         type="text"
         placeholder="ENG-1"
@@ -304,12 +291,12 @@ function TestFireControl({ automationId, disabled }: { automationId: string; dis
         onChange={(e) => {
           setIdentifier(e.target.value);
         }}
-        className={`${inputCls} font-mono text-xs`}
-        style={{ minWidth: 96 }}
+        className={`${inputCls} w-40 font-mono text-[13px]`}
         aria-label="Issue identifier to test-fire against"
       />
-      <button
-        type="button"
+      <Button
+        variant="glass"
+        size="lg"
         onClick={onClick}
         disabled={disabled || mutation.isPending || !identifier.trim()}
         title={
@@ -317,10 +304,9 @@ function TestFireControl({ automationId, disabled }: { automationId: string; dis
             ? 'Save the rule first to enable test fire'
             : 'Dispatch a one-off run of this automation'
         }
-        className="text-theme-text-secondary border-theme-line rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-colors hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {mutation.isPending ? 'Firing…' : 'Test fire'}
-      </button>
+      </Button>
     </div>
   );
 }

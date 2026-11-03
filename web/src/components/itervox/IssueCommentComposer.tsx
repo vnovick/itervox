@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { usePostIssueComment } from '../../queries/issues';
+import { FIELD_CLASS } from '../ui/Input/fieldClass';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
 
 interface IssueCommentComposerProps {
   identifier: string;
@@ -17,7 +19,9 @@ export function IssueCommentComposer({ identifier }: IssueCommentComposerProps) 
   const trimmed = text.trim();
 
   return (
-    <div data-testid="issue-comment-composer" className="space-y-2">
+    // One line that grows with its text (multi-line comments still work),
+    // with the Post comment chip inline.
+    <div data-testid="issue-comment-composer" className="flex items-end gap-2">
       <textarea
         aria-label="Post a comment"
         value={text}
@@ -25,28 +29,26 @@ export function IssueCommentComposer({ identifier }: IssueCommentComposerProps) 
           setText(e.target.value);
         }}
         placeholder="Post a comment on this issue…"
-        rows={3}
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:ring-theme-accent w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:outline-none"
+        rows={1}
+        className={`${FIELD_CLASS} field-sizing-content max-h-48 min-h-10 resize-none rounded-[14px] py-2`}
       />
-      <div className="flex justify-end">
-        <button
-          type="button"
-          disabled={post.isPending || trimmed === ''}
-          onClick={() => {
-            post.mutate(
-              { identifier, body: trimmed },
-              {
-                onSuccess: () => {
-                  setText('');
-                },
+      <button
+        type="button"
+        disabled={post.isPending || trimmed === ''}
+        onClick={() => {
+          post.mutate(
+            { identifier, body: trimmed },
+            {
+              onSuccess: () => {
+                setText('');
               },
-            );
-          }}
-          className="bg-theme-accent rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-        >
-          {post.isPending ? 'Posting…' : 'Post comment'}
-        </button>
-      </div>
+            },
+          );
+        }}
+        className={plainButtonClass('secondary', 'lg', { pill: true, extra: 'shrink-0' })}
+      >
+        {post.isPending ? 'Posting…' : 'Post comment'}
+      </button>
     </div>
   );
 }

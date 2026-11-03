@@ -30,10 +30,10 @@ interface TerminalProps {
 
 const LEVEL_COLOR: Record<LogLevel, string> = {
   info: 'var(--text-secondary)',
-  action: '#818cf8', // indigo
+  action: 'var(--accent-text)',
   warn: 'var(--warning-text)',
   error: 'var(--danger-text)',
-  subagent: '#a855f7', // purple
+  subagent: 'var(--purple-text)',
 };
 
 // Within this many px of the bottom counts as "at the bottom" (sub-pixel
@@ -169,7 +169,7 @@ export function Terminal({
       onTouchStart={endJump}
       onKeyDown={endJump}
       className={['overflow-y-auto font-mono text-xs', className ?? ''].join(' ')}
-      style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
+      style={{ background: 'var(--terminal-bg, var(--bg))', color: 'var(--text-secondary)' }}
     >
       {entries.map((entry, i) => (
         <div

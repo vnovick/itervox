@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::platform::Os;
 use crate::status::{parse_status, DaemonRecord};
 
 /// Development override: an absolute path to an `itervox` binary to use
@@ -25,8 +26,13 @@ pub const DAEMON_OVERRIDE_ENV: &str = "ITERVOX_DESKTOP_DAEMON";
 /// The environment variable the daemon takes its supervisor token from.
 pub const SUPERVISOR_TOKEN_ENV: &str = "ITERVOX_SUPERVISOR_TOKEN";
 
-/// Name of the sidecar binary inside the bundle.
-pub const SIDECAR_NAME: &str = "itervox";
+/// Name of the sidecar binary inside the bundle (`itervox.exe` on
+/// Windows, where Tauri keeps the extension).
+pub const SIDECAR_NAME: &str = if cfg!(windows) {
+    "itervox.exe"
+} else {
+    "itervox"
+};
 
 /// How long `status --json` may take.
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -60,21 +66,39 @@ pub fn resolve_sidecar(candidates: &[PathBuf]) -> Result<PathBuf, String> {
             return Ok(c.clone());
         }
     }
-    Err(format!(
+    Err(missing_sidecar_message(Os::current(), candidates))
+}
+
+/// The full listing when there is no daemon binary to run it: an error,
+/// except on Windows without `itervox.exe` (#259), where no local daemon is
+/// expected and the registry alone is the listing (the tray shows the WSL
+/// notice instead of an error line).
+pub fn list_without_sidecar(os: Os, err: &str) -> Result<Vec<DaemonRecord>, String> {
+    if os == Os::Windows {
+        Ok(Vec::new())
+    } else {
+        Err(err.to_string())
+    }
+}
+
+/// Why there is no daemon to run. On Windows the native `itervox.exe` is
+/// not bundled yet (#259): say what works instead.
+pub fn missing_sidecar_message(os: Os, candidates: &[PathBuf]) -> String {
+    if os == Os::Windows {
+        return crate::platform::NO_LOCAL_DAEMON_MESSAGE.to_string();
+    }
+    format!(
         "the bundled itervox daemon was not found (looked at {})",
         candidates
             .iter()
             .map(|c| c.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
-    ))
+    )
 }
 
 fn is_executable_file(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    crate::platform::is_executable(p)
 }
 
 /// The command that lists every daemon on the host.
@@ -178,7 +202,6 @@ impl StartSpec {
     /// The detached command: its own process group, no stdin, output to
     /// `output_log` (truncated per start).
     pub fn command(&self) -> std::io::Result<Command> {
-        use std::os::unix::process::CommandExt;
         if let Some(dir) = self.output_log.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -188,8 +211,8 @@ impl StartSpec {
             .current_dir(&self.cwd)
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
-            .stderr(log)
-            .process_group(0);
+            .stderr(log);
+        crate::platform::own_process_group(&mut c);
         for k in &self.env_remove {
             c.env_remove(k);
         }
@@ -226,33 +249,44 @@ pub fn output_log_name(workflow: &str) -> String {
     format!("{safe}-{h:08x}.log")
 }
 
-/// Whether a process with `pid` exists (signal 0).
+/// Whether a process with `pid` exists (signal 0 on Unix).
 pub fn process_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    // SAFETY: kill(2) with signal 0 only checks for existence/permission.
-    let rc = unsafe { libc::kill(pid, 0) };
-    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    crate::platform::process_alive(pid)
 }
 
-/// Sends SIGTERM to `pid`, which starts the daemon's graceful drain.
+/// Sends SIGTERM to `pid`, which starts the daemon's graceful drain (Unix;
+/// Windows stops through [`stop_command`]).
 pub fn send_sigterm(pid: i32) -> Result<(), String> {
-    if pid <= 1 {
-        return Err(format!("refusing to signal pid {pid}"));
+    crate::platform::send_sigterm(pid)
+}
+
+/// `itervox stop --workflow <workflow>`: how the app asks a daemon to stop
+/// where there is no SIGTERM (Windows). The daemon's own `stop` command
+/// knows how its platform drains it.
+pub fn stop_command(sidecar: &Path, workflow: &Path) -> Command {
+    let mut c = Command::new(sidecar);
+    c.arg("stop")
+        .arg("--workflow")
+        .arg(workflow)
+        .current_dir(workflow.parent().unwrap_or(Path::new(".")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    crate::platform::no_console(&mut c);
+    c
+}
+
+/// Asks the daemon `pid` serving `workflow` to drain and exit, without
+/// waiting: SIGTERM on Unix, `itervox stop` on Windows.
+pub fn request_stop(sidecar: Option<&Path>, pid: i32, workflow: &str) -> Result<(), String> {
+    if Os::current() != Os::Windows {
+        return send_sigterm(pid);
     }
-    // SAFETY: plain kill(2) on a positive pid taken from the daemon registry.
-    let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            Ok(()) // already gone
-        } else {
-            Err(format!("could not stop pid {pid}: {err}"))
-        }
-    }
+    let sidecar = sidecar.ok_or(crate::platform::NO_LOCAL_DAEMON_MESSAGE)?;
+    stop_command(sidecar, Path::new(workflow))
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("could not run {} stop: {e}", sidecar.display()))
 }
 
 /// Polls `alive` until it reports false or `timeout` passes; true when the
@@ -279,8 +313,10 @@ pub fn record_for<'a>(records: &'a [DaemonRecord], workflow: &str) -> Option<&'a
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     #[test]
     fn sidecar_is_found_next_to_the_app_not_on_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -293,6 +329,7 @@ mod tests {
         assert_eq!(resolve_sidecar(&c).unwrap(), side);
     }
 
+    #[cfg(unix)]
     #[test]
     fn override_must_be_absolute_and_comes_first() {
         let exe = Path::new("/Applications/Itervox.app/Contents/MacOS/itervox-desktop");
@@ -306,6 +343,7 @@ mod tests {
         assert_eq!(rel.len(), 1, "a relative override would search cwd/PATH");
     }
 
+    #[cfg(unix)]
     #[test]
     fn non_executable_sidecar_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -316,6 +354,7 @@ mod tests {
         assert!(err.contains("not found"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn start_spec_runs_the_workflow_headless_with_the_token_in_env() {
         let tok = "0123456789abcdef0123";
@@ -347,6 +386,7 @@ mod tests {
         assert!(start_spec(p, Path::new("/x/WORKFLOW.md"), "short", l).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn detached_command_survives_in_its_own_group_and_logs_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -384,6 +424,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn stop_signals_and_waits_for_exit() {
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();
@@ -409,6 +450,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn list_daemons_runs_status_all_json() {
         let dir = tempfile::tempdir().unwrap();
@@ -436,6 +478,32 @@ mod tests {
         let b = output_log_name("/b/my proj/WORKFLOW.md");
         assert!(a.starts_with("my_proj-") && a.ends_with(".log"), "{a}");
         assert_ne!(a, b);
+    }
+
+    /// #260: Windows without itervox.exe says what works instead; the
+    /// stop there goes through the daemon's own `stop` command.
+    #[test]
+    fn windows_no_local_daemon_message_and_stop_command() {
+        let c = vec![PathBuf::from("/A/itervox")];
+        let win = missing_sidecar_message(Os::Windows, &c);
+        assert!(
+            win.contains("Local projects need WSL or a remote daemon"),
+            "{win}"
+        );
+        let mac = missing_sidecar_message(Os::Mac, &c);
+        assert!(
+            mac.contains("was not found (looked at /A/itervox)"),
+            "{mac}"
+        );
+        assert_eq!(missing_sidecar_message(Os::Linux, &c), mac);
+        // Without itervox.exe the tray lists no local daemons, without an
+        // error line; elsewhere a missing daemon is an error.
+        assert_eq!(list_without_sidecar(Os::Windows, &win), Ok(Vec::new()));
+        assert_eq!(list_without_sidecar(Os::Linux, &mac), Err(mac.clone()));
+        let cmd = stop_command(Path::new("/A/itervox"), Path::new("/p/WORKFLOW.md"));
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
+        assert_eq!(args, ["stop", "--workflow", "/p/WORKFLOW.md"]);
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/p")));
     }
 
     #[test]

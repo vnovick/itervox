@@ -29,7 +29,7 @@ export function ReviewQueueRows({
           data-testid="review-queue-row"
           className="hover:bg-theme-bg-soft flex min-h-[52px] items-center gap-3 px-4 py-2.5 transition-colors"
         >
-          <span className="text-xs text-amber-400">⏳</span>
+          <span className="text-theme-warning-text text-xs">⏳</span>
           <span className="text-theme-accent-text font-mono text-xs font-semibold">
             {issue.identifier}
           </span>
@@ -40,7 +40,7 @@ export function ReviewQueueRows({
               onTriggerReview(issue.identifier);
             }}
             disabled={reviewPending}
-            className="border-theme-line text-theme-accent-text flex-shrink-0 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[10px] font-medium transition-colors hover:opacity-80"
+            className="glass-chip text-theme-text hover:bg-theme-panel-strong flex-shrink-0 px-3 py-1 text-xs font-medium transition-colors"
           >
             {reviewPending ? '…' : '▶ Review'}
           </button>

@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { ApiError, apiRequest } from '../../auth/apiRequest';
-import { UnauthorizedError } from '../../auth/UnauthorizedError';
-import { useToastStore } from '../../store/toastStore';
+import { isRefreshable, refreshModels, type ModelsBackend } from '../../queries/models';
+import { Button } from '../../components/ui/button';
 
 interface ModelsCardProps {
   availableModels: Record<string, { id: string; label: string }[]>;
+  /** Id for the section heading, so a page can link or label it. */
+  headingId?: string;
 }
 
-type Backend = 'all' | 'claude' | 'codex';
+type Backend = ModelsBackend;
 
 /**
  * ModelsCard surfaces the agent.available_models block from WORKFLOW.md and
@@ -19,35 +20,16 @@ type Backend = 'all' | 'claude' | 'codex';
  * Recommended cadence: after a new Claude/Codex release ships, click
  * Refresh once. The CLI equivalent is `itervox models refresh`.
  */
-export function ModelsCard({ availableModels }: ModelsCardProps) {
+export function ModelsCard({
+  availableModels,
+  headingId = 'models-card-heading',
+}: ModelsCardProps) {
   const [refreshing, setRefreshing] = useState<Backend | null>(null);
 
   const refresh = async (backend: Backend) => {
     setRefreshing(backend);
     try {
-      await apiRequest('/api/v1/settings/models/refresh', {
-        op: 'models refresh',
-        method: 'POST',
-        json: { backend },
-      });
-      useToastStore
-        .getState()
-        .addToast(
-          `Refreshed ${backend === 'all' ? 'all backends' : backend} — WORKFLOW.md updated`,
-          'success',
-        );
-    } catch (err) {
-      if (err instanceof UnauthorizedError) return; // AuthGate handles UI.
-      if (err instanceof ApiError && err.status === 501) {
-        useToastStore
-          .getState()
-          .addToast(
-            'This daemon build does not implement the refresh endpoint — run `itervox models refresh` from the CLI instead.',
-            'info',
-          );
-        return;
-      }
-      useToastStore.getState().addToast(`Refresh failed: ${(err as Error).message}`, 'error');
+      await refreshModels(backend);
     } finally {
       setRefreshing(null);
     }
@@ -56,60 +38,63 @@ export function ModelsCard({ availableModels }: ModelsCardProps) {
   const backends = Object.keys(availableModels).sort();
 
   return (
-    <div
-      className="bg-theme-bg-card border-theme-line rounded-lg border p-4"
+    <section
+      aria-labelledby={headingId}
+      className="glass-panel flex flex-col gap-3 rounded-[26px] px-5 py-[18px]"
       data-testid="models-card"
     >
-      <div className="mb-3 flex items-start justify-between gap-2">
-        <div>
-          <h3 className="text-theme-text text-sm font-semibold">Available Models</h3>
-          <p className="text-theme-muted mt-0.5 text-xs">
-            Populated from WORKFLOW.md. Refresh to discover new releases via the Anthropic / OpenAI
-            model APIs.
-          </p>
-        </div>
-        <button
-          type="button"
+      <div className="flex flex-wrap items-center gap-2.5">
+        <h2 id={headingId} className="text-theme-text mr-auto text-base font-semibold">
+          Available Models
+        </h2>
+        <Button
+          variant="glass"
+          size="lg"
+          pill
           onClick={() => refresh('all')}
           disabled={refreshing !== null}
-          className="bg-theme-accent hover:bg-theme-accent/90 disabled:bg-theme-bg-soft text-theme-bg disabled:text-theme-muted rounded px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed"
           data-testid="models-refresh-all"
         >
           {refreshing === 'all' ? 'Refreshing…' : 'Refresh from APIs'}
-        </button>
+        </Button>
       </div>
+      <p className="text-theme-text-secondary text-[13px]">
+        Populated from WORKFLOW.md. Refresh to discover new releases via the Anthropic / OpenAI
+        model APIs and, when installed, <code>opencode models</code>.
+      </p>
 
       {backends.length === 0 ? (
-        <p className="text-theme-muted text-xs italic">
+        <p className="glass-card text-theme-muted px-3.5 py-3 text-[13px] italic">
           No models discovered yet. Click Refresh or run <code>itervox models refresh</code>.
         </p>
       ) : (
-        <ul className="space-y-3">
+        <ul className="flex flex-col gap-2">
           {backends.map((backend) => {
             const models = availableModels[backend];
             return (
-              <li key={backend}>
-                <div className="mb-1 flex items-center gap-2">
-                  <span className="text-theme-text font-mono text-xs font-semibold uppercase">
-                    {backend}
-                  </span>
-                  <span className="text-theme-muted text-[10px]">{models.length} model(s)</span>
-                  <button
-                    type="button"
-                    onClick={() => refresh(backend as Backend)}
-                    disabled={refreshing !== null}
-                    className="text-theme-accent-text disabled:text-theme-muted ml-auto text-[10px] hover:underline"
-                    data-testid={`models-refresh-${backend}`}
-                  >
-                    {refreshing === backend ? 'Refreshing…' : 'Refresh'}
-                  </button>
+              <li key={backend} className="glass-card px-3.5 py-2.5 text-[13px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-theme-text font-mono font-semibold">{backend}</span>
+                  <span className="text-theme-muted text-xs">{models.length} model(s)</span>
+                  {isRefreshable(backend) && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => refresh(backend)}
+                      disabled={refreshing !== null}
+                      className="text-theme-accent-text ml-auto"
+                      data-testid={`models-refresh-${backend}`}
+                    >
+                      {refreshing === backend ? 'Refreshing…' : 'Refresh'}
+                    </Button>
+                  )}
                 </div>
-                <ul className="text-theme-muted space-y-0.5 text-[11px]">
+                <ul className="text-theme-text-secondary mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
                   {models.map((m) => (
                     <li key={m.id} className="font-mono">
                       <span className="text-theme-text">{m.id}</span>
                       {m.label && m.label !== m.id ? (
-                        <span className="ml-2 italic">{m.label}</span>
+                        <span className="text-theme-muted ml-1.5 font-sans">{m.label}</span>
                       ) : null}
                     </li>
                   ))}
@@ -119,6 +104,6 @@ export function ModelsCard({ availableModels }: ModelsCardProps) {
           })}
         </ul>
       )}
-    </div>
+    </section>
   );
 }
