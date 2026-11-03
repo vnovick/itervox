@@ -160,6 +160,9 @@ type OrchestratorEvent struct { //nolint:revive
 	// token-gated agent-actions route: it never answers a guardrail
 	// approval (#204).
 	FromAgent bool
+	// Via names the human reply channel of an EventProvideInput when it is
+	// not the dashboard ("slack", #230); empty means the dashboard.
+	Via string
 	// guardrail is the payload of EventGuardrailApproval (#204).
 	guardrail *guardrailApprovalEvent
 	// deferReply receives the loop's decision on an EventDeferStateMove.

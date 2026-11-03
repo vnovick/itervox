@@ -69,6 +69,7 @@ func SettingFieldFor(key string) (SettingField, bool) {
 // sectionInfo titles and describes each layered section in the schema.
 var sectionInfo = map[string][2]string{
 	"agent":     {"Agent", "The agent runner: command, capacity, retries, timeouts, review, SSH and rate limits."},
+	"hub":       {"Hub", "The machine's itervox hub: one URL for every project (#228). Read at startup."},
 	"polling":   {"Polling", "How often the tracker is polled."},
 	"server":    {"Server", "The dashboard and API server."},
 	"workspace": {"Workspace", "Per-issue working directories."},

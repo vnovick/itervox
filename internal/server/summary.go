@@ -40,10 +40,13 @@ type Summary struct {
 	// every field below except GeneratedAt, plus the identity of each
 	// input-required entry and recent failure, so a new question or failure
 	// changes it even when the counts do not.
-	ETag        string        `json:"etag"`
-	Version     string        `json:"version"`
-	ProjectName string        `json:"projectName,omitempty"`
-	Counts      SummaryCounts `json:"counts"`
+	ETag        string `json:"etag"`
+	Version     string `json:"version"`
+	ProjectName string `json:"projectName,omitempty"`
+	// Capabilities are StateSnapshot.Capabilities: the optional features
+	// this daemon serves (#228: the hub lists them per project).
+	Capabilities []string      `json:"capabilities,omitempty"`
+	Counts       SummaryCounts `json:"counts"`
 	// Paused is the daemon-wide dispatch pause (#213): true while nothing
 	// new starts. PauseReason and PausedUntil describe it.
 	Paused      bool       `json:"paused"`
@@ -56,14 +59,15 @@ type Summary struct {
 // GeneratedAt or other wall-clock-derived values (AgeMinutes, Stale), which
 // would change the tag on every request.
 type summaryDigestInput struct {
-	Version     string
-	ProjectName string
-	Counts      SummaryCounts
-	Paused      bool
-	PauseReason string
-	PausedUntil *time.Time
-	Input       []summaryDigestInputRow
-	Failures    []summaryDigestFailure
+	Version      string
+	ProjectName  string
+	Capabilities []string
+	Counts       SummaryCounts
+	Paused       bool
+	PauseReason  string
+	PausedUntil  *time.Time
+	Input        []summaryDigestInputRow
+	Failures     []summaryDigestFailure
 }
 
 type summaryDigestInputRow struct {
@@ -79,8 +83,9 @@ type summaryDigestFailure struct {
 // buildSummary derives the summary of snap for a daemon at version.
 func buildSummary(snap StateSnapshot, version string) Summary {
 	sum := Summary{
-		Version:     version,
-		ProjectName: snap.ProjectName,
+		Version:      version,
+		ProjectName:  snap.ProjectName,
+		Capabilities: snap.Capabilities,
 		Counts: SummaryCounts{
 			Running:        snap.Counts.Running,
 			Retrying:       snap.Counts.Retrying,
@@ -92,7 +97,7 @@ func buildSummary(snap StateSnapshot, version string) Summary {
 	if p := snap.DispatchPaused; p != nil { // #213
 		sum.Paused, sum.PauseReason, sum.PausedUntil = true, p.Reason, p.Until
 	}
-	in := summaryDigestInput{Version: version, ProjectName: snap.ProjectName}
+	in := summaryDigestInput{Version: version, ProjectName: snap.ProjectName, Capabilities: snap.Capabilities}
 	for _, r := range snap.InputRequired {
 		if r.State == inputStateWaiting {
 			sum.Counts.InputRequired++

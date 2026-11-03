@@ -84,7 +84,7 @@ type FeedPayload struct {
 	// Kind is the guardrail kind (guardrail_blocked).
 	Kind string `json:"kind,omitempty"`
 	// Via is how an input or approval was answered ("dashboard",
-	// "tracker", "dismiss").
+	// "slack" (#230), "agent", "tracker", "dismiss").
 	Via string `json:"via,omitempty"`
 	// MemoryID is the proposed lesson's entry (lesson_proposed).
 	MemoryID string `json:"memoryId,omitempty"`

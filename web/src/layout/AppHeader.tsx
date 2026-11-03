@@ -9,6 +9,7 @@ import { useStatusSummary } from '../hooks/useStatusSummary';
 import { useConnectionState } from '../hooks/useConnectionState';
 import { SchemaDriftBanner } from '../components/itervox/SchemaDriftBanner';
 import { DemoModeBadge } from '../components/itervox/DemoModeBadge';
+import { HubProjectSwitcher } from '../components/itervox/HubProjectSwitcher';
 import { useDashboardHref } from '../hooks/useDashboardHref';
 import { useUIStore } from '../store/uiStore';
 
@@ -157,6 +158,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             {projectName}
           </span>
         )}
+
+        {/* #228 — through the hub: switch project. */}
+        <HubProjectSwitcher />
 
         {demoMode && <DemoModeBadge />}
 

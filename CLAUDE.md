@@ -110,6 +110,35 @@ the operator's per-issue profile override (`issueProfiles`). Do not add a
 per-issue side map to recover what a run was; put it on the run or on the
 entry that continues it.
 
+### The hub runs outside the event loop
+
+The itervox hub (`internal/hub`, #228) runs inside a daemon process on its own
+goroutines and listener, never inside the orchestrator event loop, and never
+reads or mutates the hosting project's `State` or `cfg`. It reaches its own
+project only over that project's HTTP API, exactly like any other member
+(`cmd/itervox/hub_wiring.go` starts it once, after the first config load;
+`hub.*` settings are load-time and NOT in the cfgMu allowlist). Its proxy
+checks a hub token against the member's own route scope table
+(`GET /api/v1/route-scopes`), so a new daemon route needs nothing in the hub —
+but an access class other than the four scopes, `public` and `agent_grant`
+is refused by the proxy (fail closed). Hub goroutines defer
+`recoverHubGoroutine` (`make no-bare-go` accepts it): a hub panic ends that
+goroutine, never the daemon. Notification routing (#229) is hub state too:
+`~/.itervox/hub/notifications.json` routes each kind per project to the
+`push`/`slack`/`desktop` channels; a channel implements `hub.Channel`
+(delivery only) and is registered through `hub.Config.Channels` — it never
+re-implements routing, snooze or digests (`NotificationSettings.Route`).
+Slack (#230, `internal/hub/slack`) is a channel that is also a
+`hub.InteractiveChannel`: the hub runs it only while serving (it holds the
+workspace's single Socket Mode connection) and hands it `hub.MemberActions`,
+which call a member's own API with the hub's member token behind the member's
+route table (viewer/operator routes only — fail closed). Every Slack action
+needs an allow-listed Slack user (`hub.slack.allowed_users`, empty = nobody),
+a value the hub signed (HMAC binding project, member, issue, run, kind), a
+still-pending request and a first use; a reply is provide-input with
+`via: "slack"`, never `fromAgent`. Slack tokens live in `~/.itervox/hub/.env`,
+never in settings or logs.
+
 ### `orchestrator.State` is a value type
 
 `State` is a plain struct passed by value into reconcile/dispatch functions.
@@ -554,8 +583,11 @@ metrics (stdlib only — process-wide counters + hand-written Prometheus text
 logging (stdlib only — RedactingHandler / RedactString; imported by agent,
          orchestrator, server and cmd/itervox)
 
+cors (stdlib only — the server.allowed_origins CORS allow-list, #231;
+      imported by server, hub and config)
+
 apitokens (stored API tokens + scopes, #214 — imports atomicfs only;
-           used by server and cmd/itervox)
+           used by server, hub and cmd/itervox)
 
 memory (managed memory files, selection and the `## Memory` block — imports
         atomicfs, config, logging; imported by orchestrator, server and
@@ -594,6 +626,15 @@ statusui (Bubbletea TUI — imports domain)
 
 mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
            API; imports apitokens and logging only, never orchestrator)
+
+hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
+     Notifier; #229 notification settings, channel registry, digests and
+     snooze, all hub-side state; imports apitokens, atomicfs, metrics, chi and fsnotify only,
+     never orchestrator, server or config: it reaches every member, its own
+     project included, over HTTP. Its tests import server for real members)
+     └── hub/slack (#230 Slack channel over Socket Mode — imports hub,
+         atomicfs, metrics, golang.org/x/net/websocket and yaml.v3; used by
+         cmd/itervox only)
 
 templates (WORKFLOW.md scaffolding)
 

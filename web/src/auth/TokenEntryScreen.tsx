@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTokenStore } from './tokenStore';
 import { useAuthStore } from './authStore';
+import { authProbeUrl, getApiContext } from './apiBase';
 
 /**
  * Shown when the server requires auth but we have no valid token.
@@ -31,11 +32,15 @@ export function TokenEntryScreen() {
       // Validate directly with fetch — we can't use authedFetch here because
       // the token isn't stored yet and we don't want to mutate global state
       // on a bad submission.
-      const res = await fetch('/api/v1/state', {
+      const res = await fetch(authProbeUrl(), {
         headers: { Authorization: `Bearer ${trimmed}` },
       });
       if (res.status === 401) {
-        setError('Token rejected by server (401). Check your ITERVOX_API_TOKEN.');
+        setError(
+          getApiContext().mode === 'daemon'
+            ? 'Token rejected by server (401). Check your ITERVOX_API_TOKEN.'
+            : 'Hub token rejected (401). Create one with: itervox token create --hub --name NAME --scope viewer',
+        );
         return;
       }
       if (!res.ok) {

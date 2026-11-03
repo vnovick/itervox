@@ -686,6 +686,29 @@ hosts are not guarded in v1.
 
 ---
 
+## `hub`
+
+The machine's itervox hub (#228): the first daemon started on a machine serves
+one URL, a scoped API proxy and a merged event feed for every project on it.
+Guide: [The itervox hub](../site/src/content/docs/guides/hub.mdx). Every key is read at startup (a
+`WORKFLOW.md` reload does not move the hub). The hub is machine-wide, so the
+natural home for them is the user settings file, `~/.itervox/settings.jsonc`;
+the daemon that wins the hub election uses its own values.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Take part in the hub: become it (the first daemon) or join it as a member. `false` is the same as `itervox --no-hub`. |
+| `port` | int | `8089` | The hub's port when this daemon serves it. A busy port moves to the next free one (up to 10 tried), recorded in `~/.itervox/daemons/hub.lock`. `0` lets the OS pick. |
+| `bind` | string | `"127.0.0.1"` | The hub's listen address: an IP address or `localhost`. Every hub route except the health probe needs a hub token (`itervox token create --hub`), so `0.0.0.0` or a Tailscale address is safe with tokens only; the hub serves plain HTTP, so put TLS in front of it on a network you do not control. |
+| `slack` | object | — | The hub's Slack channel (#230), through your own Slack app over Socket Mode: `enabled` (default `false`), `allowed_users` (Slack user IDs that may reply, approve, reject and steer; **empty: nobody**, alerts only), `channels` (hub project name → channel ID, or a user ID for a DM) and `default_channel`. IDs are checked at load. The app and bot tokens are not settings: `itervox hub slack setup` stores them in `~/.itervox/hub/.env`. Guide: [Slack](../site/src/content/docs/guides/slack.mdx). |
+
+```jsonc
+// ~/.itervox/settings.jsonc
+{
+  "hub": { "enabled": true, "port": 8089, "bind": "127.0.0.1" }
+}
+```
+
 ## `server`
 
 | Field | Type | Default | Description |
@@ -694,6 +717,7 @@ hosts are not guarded in v1.
 | `port` | int | `8090` | HTTP listen port. `0` = OS picks a free port (for running several daemons at once). If the configured port is in use, startup fails loudly naming the holder — no silent shifting. `ITERVOX_SERVER_PORT`, then `PORT`, override it |
 | `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback (`127.0.0.1`) — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set this flag to `true` to disable that gate entirely — **only** for trusted, fully local setups where the daemon is physically unreachable from anyone else. Has an effect on every bind, not just non-loopback ones: a loopback daemon behind a tunnel or reverse proxy is just as exposed as one bound to `0.0.0.0`, which is why the gate is no longer bind-address-scoped. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically, but logs a deprecation warning at startup — new configs should use `allow_unauthenticated`. State-changing requests from another origin are still refused with 403 (see Authentication below). |
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` header names the dashboard answers when `allow_unauthenticated: true` (DNS-rebinding protection). Without a token every route refuses a request whose `Host` is a DNS name other than `localhost`, the configured `host`, or one listed here, with 403 `host_not_allowed`; IP addresses are always accepted. List the reverse-proxy, tunnel, Tailscale MagicDNS or container service hostname you browse to, without scheme (a `:port` is ignored). Entries are lower-cased and a Unicode name is converted to its punycode (`xn--`) form, which is what browsers send. An entry that could never match — a URL (`https://proxy.example`), a path, userinfo, or a wildcard (`*.ts.net`; wildcards are not supported, list each full name) — fails config load with an error naming it. Ignored in token mode. |
+| `allowed_origins` | list of strings | `[]` | CORS allow-list (#231): origins (`https://host[:port]`, no path) whose pages may call this daemon's API — and the hub's, when this daemon serves it — cross-origin with a bearer token, such as a dashboard you host elsewhere (see the phone guide, "A dashboard hosted elsewhere"). A listed origin gets `Access-Control-Allow-Origin` for itself (never `*`, never credentials) and its preflights are answered; with the default, an empty list, every page is same-origin only: no CORS header is sent and every cross-origin preflight is refused with 403 `origin_not_allowed`. Entries are lower-cased and a default port is dropped; one that could never match (no scheme, a path, a wildcard, userinfo) fails config load. Read at startup. |
 | `metrics.enabled` | bool | `false` | Serve Prometheus metrics at `GET /metrics` (text format) on the dashboard listener. Requires the same bearer token as `/api/v1/*`; off, `/metrics` answers 404. Families, labels and semantics: API reference, "Metrics". Read at startup. |
 
 ### Bind overrides from the environment

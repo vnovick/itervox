@@ -2,6 +2,7 @@ import { fetchEventSource, type EventSourceMessage } from '@microsoft/fetch-even
 import { getToken, useTokenStore } from './tokenStore';
 import { useAuthStore } from './authStore';
 import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../utils/timings';
+import { apiUrl } from './apiBase';
 
 /**
  * Replaces native EventSource with a fetch-based SSE client that CAN send
@@ -55,7 +56,8 @@ export function openAuthedEventStream(url: string, opts: AuthedEventStreamOption
   const ctrl = new AbortController();
   let attempt = 0;
 
-  void fetchEventSource(url, {
+  // #228: `/api/v1/...` is mapped onto the configured API base.
+  void fetchEventSource(apiUrl(url), {
     signal: ctrl.signal,
     // Keep streaming when the tab is hidden (matches native EventSource).
     openWhenHidden: true,
