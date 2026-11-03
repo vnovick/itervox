@@ -14,9 +14,10 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuil
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::app_update;
 use crate::client;
 use crate::dashboard::{origin_of, token_init_script, window_label};
-use crate::menu::{build_menu, MenuAction, MenuEntry, MenuSpec};
+use crate::menu::{append_app_section, build_menu, MenuAction, MenuEntry, MenuSpec};
 use crate::model::{token_for, Core, NotificationTargets, PendingOp, REFRESH_INTERVAL};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
 use crate::supervisor::{self, last_line, output_log_name, record_for};
@@ -60,6 +61,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(app_update::plugin())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -130,6 +132,11 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         wake: Mutex::new(wake_tx),
     });
     app.manage(Arc::clone(&shared));
+    let (change_app, change_shared) = (app.clone(), Arc::clone(&shared));
+    app_update::setup(
+        app,
+        Arc::new(move || update_menu(&change_app, &change_shared)),
+    )?;
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     let tray_shared = Arc::clone(&shared);
@@ -259,11 +266,15 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
 
 /// Rebuilds the tray menu from the model, on the main thread.
 fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
-    let spec = {
+    let mut spec = {
         let core = lock(&shared.core);
         let status_error = lock(&shared.status_error).clone();
         build_menu(core.views(), core.recent_alerts(), status_error.as_deref())
     };
+    append_app_section(
+        &mut spec,
+        app_update::menu_items(app, shared.sidecar.as_deref().ok()),
+    );
     let app2 = app.clone();
     let shared2 = Arc::clone(shared);
     let _ = app.run_on_main_thread(move || {
@@ -372,6 +383,15 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
         }
         MenuAction::AddProject => add_project(app, shared),
         MenuAction::RefreshNow => wake(shared),
+        MenuAction::CheckForUpdates => app_update::check_now(app),
+        MenuAction::InstallUpdate => {
+            let (app2, shared2) = (app.clone(), Arc::clone(shared));
+            app_update::install(app, Arc::new(move || update_menu(&app2, &shared2)));
+        }
+        MenuAction::InstallCli => {
+            app_update::install_cli(app, shared.sidecar.as_deref().ok());
+            update_menu(app, shared);
+        }
         MenuAction::Quit => app.exit(0),
     }
 }

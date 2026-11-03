@@ -9,11 +9,27 @@ The Itervox Mac app lives in the menu bar. It lists every project with a running
 
 It is a thin [Tauri](https://tauri.app/) shell: the app bundle contains the same `itervox` binary you run from a terminal, and each dashboard window shows the dashboard that project's daemon serves. Nothing about a project's configuration lives in the app.
 
-:::note
-This first version is built from source and unsigned. Signed, notarized downloads come later (#130).
-:::
+## Install
 
-## Build it
+Download `Itervox_<version>_universal.dmg` from the [latest release](https://github.com/vnovick/itervox/releases/latest), open it and drag **Itervox** to **Applications**. The app is signed with a Developer ID and notarized by Apple, so it opens without a Gatekeeper warning, on Apple silicon and Intel Macs (macOS 11 or later). Open it from **Applications**: an app opened from the disk image or the Downloads folder runs from a read-only copy and cannot update itself or install the command-line tool.
+
+The app has no Dock icon: look for the **I//** mark in the menu bar.
+
+## Updates
+
+The app checks for a new release 10 seconds after it starts and every 6 hours; **Check for Updates…** in the menu checks at once. When one is available the menu shows **Update available — Install and Restart** with the new version; choosing it downloads the update, checks its signature, replaces the app and relaunches it.
+
+- The daemon bundled in the app is updated with it.
+- Daemons that are running keep running through the update — no agent is interrupted — on the version they were started with. **Restart** a project to move its daemon to the new version.
+- Pre-releases are never offered.
+
+## Command-line tool
+
+**Install Command-Line Tool…** in the menu makes the bundled daemon available as `itervox` in a terminal: it creates a symlink `/usr/local/bin/itervox` (or `~/.local/bin/itervox` when `/usr/local/bin` is not writable) that points into the app. That symlink is the command-line tool the app manages, and because it points into the app, it is updated whenever the app is. The menu then shows where it is installed. An `itervox` the app did not create — from Homebrew, or a binary you copied — is left alone; the app installs into the other location, or tells you both are taken. If you move the app, choose **Repair Command-Line Tool…**.
+
+A standalone, signed and notarized universal `itervox` is also on each release (`itervox_<version>_darwin_universal.zip`) for machines without the app; it does not update itself.
+
+## Build it from source
 
 You need, once:
 
@@ -28,9 +44,7 @@ make desktop
 open desktop/src-tauri/target/release/bundle/macos/Itervox.app
 ```
 
-`make desktop` builds the dashboard, the daemon for both Mac architectures (placed as the app's sidecar), installs the Tauri CLI on first use, and bundles `Itervox.app` and a `.dmg` for your Mac's architecture under `desktop/src-tauri/target/release/bundle/`. Copy the app to `/Applications` if you like.
-
-The app has no Dock icon: look for the **I//** mark in the menu bar.
+`make desktop` builds the dashboard, the daemon for both Mac architectures (placed as the app's sidecar), installs the Tauri CLI on first use, and bundles `Itervox.app` and a `.dmg` for your Mac's architecture under `desktop/src-tauri/target/release/bundle/`. Copy the app to `/Applications` if you like. A build from source is unsigned. It checks for updates like a release when `desktop/src-tauri/tauri.conf.json` carries the release update key (`plugins.updater.pubkey`), and offers the newer signed release; without the key its menu shows **Updates off** and it never checks. How releases are signed, notarized and published: [docs/release-mac.md](https://github.com/vnovick/itervox/blob/main/docs/release-mac.md).
 
 ## Projects
 
@@ -81,20 +95,22 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 | `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added |
 | `~/Library/Logs/dev.itervox.desktop/daemons/` | Output of daemons the app started (the daemons' own logs stay under `~/.itervox/logs/`) |
 | Login Keychain, `dev.itervox.desktop.supervisor-token` | One supervisor token per project |
+| `/usr/local/bin/itervox` or `~/.local/bin/itervox` | The command-line tool, when installed from the menu: a symlink into the app |
 
 ## Troubleshooting
 
 - **See what the app sees.** Quit it and run `ITERVOX_DESKTOP_DEBUG=1 /Applications/Itervox.app/Contents/MacOS/itervox-desktop` in a terminal: every refresh prints each project's state and every notification.
-- **Keychain prompt after a rebuild.** An unsigned app gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**.
-- **"Itervox" cannot be opened** (a build copied from another Mac or downloaded from CI): the app is unsigned. Right-click it and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Itervox.app`.
+- **Keychain prompt after a rebuild.** A build from source gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**. Signed releases keep their identity across updates.
+- **"Itervox" cannot be opened** (a build from source copied from another Mac, or an `-unsigned` file from CI): that build is unsigned. Right-click it and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Itervox.app`. Released `.dmg` files are notarized; `spctl --assess --type execute -vv /Applications/Itervox.app` should print `source=Notarized Developer ID`.
+- **Update failed.** The menu shows the reason and offers **Install and Restart** again. An app outside `/Applications` that you cannot write to (another user's, or a read-only volume) cannot replace itself; move it to `/Applications`. **Last update check failed** usually means the Mac is offline; the next check runs on schedule.
 - **A project says token required.** Its daemon was started outside the app with a pinned `ITERVOX_API_TOKEN`. Stop it and start it from the app.
 
 ## Development
 
-The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on Linux too; `app.rs` is the Tauri glue.
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store, the project-list file, update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on Linux too; `app.rs` is the Tauri glue.
 
 ```bash
-make desktop-test   # fmt, clippy -D warnings, unit tests, and end-to-end tests against a real daemon
+make desktop-test   # fmt, clippy -D warnings, unit tests, end-to-end tests against a real daemon, and dry runs of the release scripts (needs jq)
 ```
 
 The end-to-end tests start a real daemon the way the app does, list it, read its state with the supervisor token, restart and stop it, make a stand-in agent ask a question and check the notification link, and start a daemon with launchd's environment to check the login-shell `PATH`. To run the app against a daemon binary of your choice, set `ITERVOX_DESKTOP_DAEMON` to its absolute path.

@@ -1,8 +1,8 @@
 name: Desktop CI
 
 # The macOS menu-bar app (#128, desktop/): Rust gates, the end-to-end tests
-# against the real daemon, and an unsigned app bundle. Signing and
-# notarization come with #130.
+# against the real daemon, and an unsigned app bundle. Signed, notarized
+# releases are built by desktop-release.yml (#130).
 
 on:
   push:

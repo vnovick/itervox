@@ -24,5 +24,13 @@
       "icons/icon.icns",
       "icons/icon.png"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/vnovick/itervox/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

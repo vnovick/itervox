@@ -3,7 +3,9 @@
   "bundle": {
     "externalBin": ["binaries/itervox"],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist",
+      "hardenedRuntime": true
     }
   }
 }
