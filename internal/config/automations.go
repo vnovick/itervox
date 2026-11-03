@@ -1,5 +1,11 @@
 package config
 
+import (
+	"strings"
+
+	"github.com/vnovick/itervox/internal/issuefilter"
+)
+
 const (
 	AutomationTriggerCron              = "cron"
 	AutomationTriggerInputRequired     = "input_required"
@@ -26,9 +32,51 @@ const (
 	// instead of giving up.
 	AutomationTriggerRateLimited      = "rate_limited"
 	AutomationTriggerBlockersResolved = "blockers_resolved"
-	AutomationFilterMatchAll          = "all"
-	AutomationFilterMatchAny          = "any"
+	// The PR-event family (#173) fires on GitHub activity on an
+	// itervox-managed pull request: one an itervox run recorded through the
+	// worker's PR detection. Sources are GitHub webhooks (pr_events.
+	// webhook_secret) or a poll of the open managed PRs. Trigger context
+	// carries pr_url, pr_number, pr_branch and head_sha plus the per-type
+	// fields below.
+	//
+	// AutomationTriggerPRCheckCompleted: a check run or commit status on the
+	// PR's head SHA completed (check_name, check_conclusion).
+	AutomationTriggerPRCheckCompleted = "pr_check_completed"
+	// AutomationTriggerPRSynchronized: the PR's head SHA moved (a new push).
+	AutomationTriggerPRSynchronized = "pr_synchronized"
+	// AutomationTriggerPRReviewSubmitted: a review was submitted on the PR
+	// (review_author, review_state).
+	AutomationTriggerPRReviewSubmitted = "pr_review_submitted"
+	// AutomationTriggerPRMergeableChanged: the PR's mergeable_state changed
+	// (by default only into or out of "dirty", i.e. a merge conflict).
+	AutomationTriggerPRMergeableChanged = "pr_mergeable_changed"
+	AutomationFilterMatchAll            = "all"
+	AutomationFilterMatchAny            = "any"
 )
+
+// IsPREventTrigger reports whether triggerType is one of the #173 PR-event
+// triggers (pr_check_completed, pr_synchronized, pr_review_submitted,
+// pr_mergeable_changed).
+func IsPREventTrigger(triggerType string) bool {
+	switch triggerType {
+	case AutomationTriggerPRCheckCompleted, AutomationTriggerPRSynchronized,
+		AutomationTriggerPRReviewSubmitted, AutomationTriggerPRMergeableChanged:
+		return true
+	}
+	return false
+}
+
+// PRCheckConclusions are the values filter.conclusions accepts: GitHub check
+// run conclusions plus the completed commit-status states (success, failure,
+// error).
+var PRCheckConclusions = []string{"success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "error"}
+
+// PRReviewStates are the values filter.review_states accepts.
+var PRReviewStates = []string{"approved", "changes_requested", "commented", "dismissed"}
+
+// PRMergeableStates are the values filter.mergeable_states accepts (GitHub's
+// mergeable_state, without "unknown", which means "not computed yet").
+var PRMergeableStates = []string{"clean", "dirty", "blocked", "behind", "unstable", "has_hooks", "draft"}
 
 type AutomationTriggerConfig struct {
 	Type     string
@@ -38,9 +86,17 @@ type AutomationTriggerConfig struct {
 }
 
 type AutomationFilterConfig struct {
-	MatchMode         string
-	States            []string
-	LabelsAny         []string
+	MatchMode string
+	States    []string
+	LabelsAny []string
+	// Groups is the tracker-filter group syntax (#198): an issue passes
+	// when any group matches (conditions ANDed inside a group). It is one
+	// more check beside states / labels_any / identifier_regex, combined by
+	// match_mode. Written as `filter: [ {...}, ... ]` (groups only) or
+	// `filter: {groups: [...], ...}`.
+	Groups issuefilter.Filter
+	// GroupsError is why the groups did not parse; validation reports it.
+	GroupsError       string
 	IdentifierRegex   string
 	Limit             int
 	InputContextRegex string
@@ -58,6 +114,24 @@ type AutomationFilterConfig struct {
 	// given regular expression. Empty = no regex check. BodyContains and
 	// BodyRegex are AND-combined when both are set.
 	BodyRegex string
+	// CheckNames restricts pr_check_completed to checks whose name (check
+	// run name or commit status context) equals one of the entries,
+	// case-insensitively. Empty = every check.
+	CheckNames []string
+	// Conclusions restricts pr_check_completed to these conclusions
+	// (PRCheckConclusions, lower case). Empty = every conclusion.
+	Conclusions []string
+	// ReviewStates restricts pr_review_submitted to these review states
+	// (PRReviewStates, lower case). Empty = every state.
+	ReviewStates []string
+	// ReviewAuthors restricts pr_review_submitted to reviews by these GitHub
+	// logins, case-insensitively (e.g. "greptile-apps[bot]"). Empty = every
+	// author.
+	ReviewAuthors []string
+	// MergeableStates restricts pr_mergeable_changed to transitions into
+	// these states (PRMergeableStates). Empty = transitions into or out of
+	// "dirty" (a merge conflict appearing or clearing).
+	MergeableStates []string
 }
 
 type AutomationPolicyConfig struct {
@@ -134,6 +208,16 @@ func parseAutomations(raw any) []AutomationConfig {
 			continue
 		}
 		filter := nestedMap(m, "filter")
+		// #198: a list is the group syntax alone; a map may carry groups.
+		rawGroups := filter["groups"]
+		if list, ok := m["filter"].([]any); ok {
+			rawGroups = list
+		}
+		groups, groupsErr := issuefilter.Parse(rawGroups, "filter.groups")
+		groupsError := ""
+		if groupsErr != nil {
+			groupsError = groupsErr.Error()
+		}
 		policy := nestedMap(m, "policy")
 		limit := intField(filter, "limit", 0)
 		if limit < 0 {
@@ -162,12 +246,19 @@ func parseAutomations(raw any) []AutomationConfig {
 				MatchMode:         normalizeAutomationMatchMode(strField(filter, "match_mode", "")),
 				States:            states,
 				LabelsAny:         strSliceField(filter, "labels_any", nil),
+				Groups:            groups,
+				GroupsError:       groupsError,
 				IdentifierRegex:   strField(filter, "identifier_regex", ""),
 				Limit:             limit,
 				InputContextRegex: strField(filter, "input_context_regex", ""),
 				MaxAgeMinutes:     maxAge,
 				BodyContains:      strSliceField(filter, "body_contains", nil),
 				BodyRegex:         strField(filter, "body_regex", ""),
+				CheckNames:        strSliceField(filter, "check_names", nil),
+				Conclusions:       lowerAll(strSliceField(filter, "conclusions", nil)),
+				ReviewStates:      lowerAll(strSliceField(filter, "review_states", nil)),
+				ReviewAuthors:     strSliceField(filter, "review_authors", nil),
+				MergeableStates:   lowerAll(strSliceField(filter, "mergeable_states", nil)),
 			},
 			Policy: AutomationPolicyConfig{
 				// Gap §5.2 — `auto_switch` is the preferred YAML key for
@@ -186,6 +277,18 @@ func parseAutomations(raw any) []AutomationConfig {
 		return nil
 	}
 	return automations
+}
+
+// lowerAll lower-cases and trims every entry (nil stays nil).
+func lowerAll(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, strings.ToLower(strings.TrimSpace(v)))
+	}
+	return out
 }
 
 func normalizeAutomationMatchMode(value string) string {

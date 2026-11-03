@@ -99,7 +99,7 @@ Everything below lives under `--root` (the data disk mount) on a bootstrap insta
 
 | Path | Contents | Needed for |
 |---|---|---|
-| `/srv/itervox/home/.itervox/logs/<kind>/<project>/` | `history.json`, `paused.json`, `input_required.json` (incl. pending input resumes), `automation_queue.json`, `pending_reviews.json`, `auto_switched.json`, `backend_health.json`, `sessions/`, `api-token`, `itervox.log*` | paused work, input-required sessions, queued automations, run history, the dashboard token |
+| `/srv/itervox/home/.itervox/logs/<kind>/<project>/` | `history.json`, `paused.json`, `input_required.json` (incl. pending input resumes), `automation_queue.json`, `pending_reviews.json`, `auto_switched.json`, `backend_health.json`, `pr_events.json`, `sessions/`, `api-token`, `itervox.log*` | paused work, input-required sessions, queued automations, run history, the dashboard token |
 | `/srv/itervox/home/.itervox/workspaces/<project>/` | per-issue worktrees (`worktrees/<id>` or `<id>`) and the `.bare` clone | resuming paused/input-required issues on their branches |
 | `/srv/itervox/<repo>/.itervox/` | `.env` (secrets — see below), `outbox.json` (tracker writes not yet delivered), `deps_overrides.json`, `agents/**`, `handoff/**` | undelivered tracker comments, dependency overrides |
 | `/srv/itervox/home/.claude`, `.claude.json`, `.codex` | agent CLI logins (OAuth) | avoiding a re-login |

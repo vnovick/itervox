@@ -30,6 +30,8 @@ Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating ag
 | `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
 | `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
 | `-no-print-token` | bool | `false` | Never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal). An auto-generated token is still written to `<logs-dir>/api-token` (mode 0600) |
+| `-tui` | bool | `false` | Start the terminal UI (on a terminal; without one it warns and runs headless). **Deprecated**: the terminal UI will be removed in v0.3. Without `--tui`, Itervox runs headless (since v0.2.4): no terminal UI, logs on stderr (text, or JSON with `--log-format json`), and the dashboard URL printed there, with its token only when stderr is a terminal. Watch and act from another shell with [`itervox watch`](#itervox-watch--a-terminal-view-of-a-running-daemon) and the [quick actions](#quick-actions-pause-resume-dispatch-workers-reply) |
+| `-headless` | bool | `false` | Headless even with `--tui`, and the tokenised dashboard URL is never printed, even on a terminal (an auto-generated token is still in `<logs-dir>/api-token`) |
 
 > To try Itervox without a tracker account, API keys or an agent CLI, run
 > [`itervox demo`](#itervox-demo--try-it-in-30-seconds).
@@ -68,7 +70,7 @@ Within about a minute the board shows issues moving through **In Progress** (wit
 | `--no-open` | `false` | Do not open the dashboard in a browser; the URL is in `<dir>/.itervox/dashboard_url`. |
 | `--tracker` | `memory` | `memory` keeps the demo issues in memory (gone on exit). `local` writes them as [issue files](/guides/local-issues/) in `<dir>/.itervox/issues/`: edit one and watch the board, and a second demo in the same `--dir` continues where the first stopped. |
 
-Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `logs/`, `workspaces/` and `.itervox/`. Tools it runs (such as `gh` and `git`) get `XDG_*` and `GH_CONFIG_DIR` pointed at `.xdg/` there, so they write nothing in your home directory and do not use your own `gh` login. The dashboard listens on an OS-assigned port on `127.0.0.1` without a token. `ITERVOX_SERVER_PORT`, `ITERVOX_SERVER_HOST`, `PORT`, `ITERVOX_API_TOKEN` and `ITERVOX_DRY_RUN` are ignored for the demo. Stop it with `q` in the terminal UI, `Ctrl-C`, or `itervox stop -workflow <dir>/WORKFLOW.md`, then delete the directory.
+Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `logs/`, `workspaces/` and `.itervox/`. Tools it runs (such as `gh` and `git`) get `XDG_*` and `GH_CONFIG_DIR` pointed at `.xdg/` there, so they write nothing in your home directory and do not use your own `gh` login. The dashboard listens on an OS-assigned port on `127.0.0.1` without a token. `ITERVOX_SERVER_PORT`, `ITERVOX_SERVER_HOST`, `PORT`, `ITERVOX_API_TOKEN` and `ITERVOX_DRY_RUN` are ignored for the demo. Stop it with `Ctrl-C` or `itervox stop -workflow <dir>/WORKFLOW.md`, then delete the directory.
 
 ---
 
@@ -115,8 +117,37 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 | `--dir` | string | `.` | Directory to scan for repo metadata |
 | `--force` | bool | `false` | Overwrite output file if it already exists |
 | `--update` | bool | `false` | Migrate an existing workflow to the latest schema without requiring `--tracker` |
+| `--template` | string | `""` | Starter template: `minimal`, `full`, `rate-limit-fallback`, `pr-review` or `daily-qa` (see [Starter templates](#starter-templates)). Without it, init writes the standard scaffold: implementer, reviewer, input-responder and deps-analyzer profiles and no automations. Combines with `--preset cross-review` and works with every `--tracker` and `--runner`. |
 | `--preset` | string | `""` | `cross-review`: the runner writes, and two read-only reviewers, one on each backend, review every successful run (`reviewer_profiles`, `review_quorum: any_block`, `auto_review`). Without it, init offers the preset `[y/N]` in a terminal when both `claude` and `codex` are installed. See [Cross-review preset](/guides/cross-review/). |
 | `--issue-template` | bool | `false` | Add the agent-ready issue template without asking: `.github/ISSUE_TEMPLATE/agent-task.md` for GitHub (never over an existing file), printed for Linear. Without it, init asks `[y/N]` when run in a terminal and skips the question otherwise (it never waits on a pipe). With a workflow already at `--output` (and no `--force`), `init --issue-template` adds only the template and changes nothing else. See [Agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). |
+
+### Starter templates
+
+`--template` picks what the generated `WORKFLOW.md` and `.itervox/agents/` hold. Every template writes schema 2 (`itervox_schema_version: 2`), with each profile's `SOUL.md` and `INSTRUCTIONS.md` under `.itervox/agents/<name>/`, and passes the same startup validation as the standard scaffold.
+
+| Template | What it writes |
+|----------|----------------|
+| `minimal` | one implementer profile, no reviewer and no automations |
+| `full` | implementer, reviewer, input-responder and deps-analyzer; auto-review chain; input-required and failed-run automations |
+| `rate-limit-fallback` | implementer on each backend; agent.backend_fallback plus a rate_limited automation that switches to the other backend |
+| `pr-review` | implementer, a run reviewer and a pull-request reviewer; auto-review plus pr_opened and "/review" comment automations |
+| `daily-qa` | implementer and a qa profile; a daily cron automation runs QA on issues awaiting review |
+
+Details:
+
+- **`minimal`** — only `implementer`; no `reviewer_profile`, no `deps_analyzer_profile` (the dashboard's "Analyze dependencies" button is off) and no `automations:`.
+- **`full`** — the four standard profiles; `reviewer_profiles: [reviewer]`, `review_quorum: any_block` and `auto_review: true`; an `input_required` automation that lets `input-responder` answer narrow questions (`auto_resume: true`) and a `run_failed` automation that has `input-responder` explain a failure once Itervox stops retrying it.
+- **`rate-limit-fallback`** — `implementer` on the runner and `implementer-<other>` on the other backend; `agent.backend_fallback` with `chain: [<runner>, <other>]` that maps `implementer` and runs without a profile (`default`) to `implementer-<other>`, `switch_back: at_reset`; and a `rate_limited` automation that switches an issue to `implementer-<other>` (`auto_switch: true`, `cooldown_minutes: 30`) when a run exhausts its retries on a usage limit.
+- **`pr-review`** — `implementer`, `reviewer` (auto-review of every successful run) and a read-only `pr-reviewer` that posts one review comment on the pull request; it runs on `pr_opened` and when a tracker comment starts with `/review`.
+- **`daily-qa`** — `implementer` and a read-only `qa` profile; a `cron` automation (`0 9 * * *`, UTC) runs QA on up to 10 issues in the completion state (`In Review`, or `in-review` on GitHub) and comments pass or fail per acceptance criterion.
+
+With `--preset cross-review`, the template's profiles are kept and the preset adds `reviewer` (when the template has none) and the reviewer on the other backend, and replaces the review settings with the two-reviewer chain.
+
+```bash
+itervox init --tracker github --template pr-review
+itervox init --tracker local --runner codex --template rate-limit-fallback
+itervox init --tracker linear --template minimal --preset cross-review
+```
 
 ### Auto-detection
 
@@ -245,11 +276,52 @@ itervox secret list [--workflow WORKFLOW.md]
 
 ```bash
 itervox config show [--workflow WORKFLOW.md] [--json]
-itervox config set KEY VALUE [--user] [--workflow WORKFLOW.md]
-itervox config unset KEY [--user] [--workflow WORKFLOW.md]
+itervox config set KEY VALUE [--user|--local] [--workflow WORKFLOW.md]
+itervox config unset KEY [--user|--local] [--workflow WORKFLOW.md]
+itervox config schema
 ```
 
-`show` prints every setting Itervox reads with its effective value and the layer it came from: `default`, `user` (`~/.itervox/settings.jsonc`), `project` (`.itervox/settings.jsonc`), `workflow` (`WORKFLOW.md`) or `environment` (the server bind variables). Keys a layer sets that Itervox does not read, and wrong-typed values it ignored, carry a note. Secrets are hidden wherever they appear: in a note, and under any key of a map or list. `workspace.root` is the directory the daemon uses (the per-project default when unset, `~` and `$VAR` expanded). `set` and `unset` edit the project file, or the user file with `--user`, keeping its comments; a wrong-typed value, or a change the workflow does not load with, is refused and nothing changes. See [Settings files](/configuration/#settings-files-jsonc-layers).
+`show` prints every setting Itervox reads with its effective value and the layer it came from: `default`, `user` (`~/.itervox/settings.jsonc`), `project` (`.itervox/settings.jsonc`), `local` (`.itervox/settings.local.jsonc`), `workflow` (`WORKFLOW.md`) or `environment` (the server bind variables). Keys a layer sets that Itervox does not read, and wrong-typed values it ignored, carry a note. Secrets are hidden wherever they appear: in a note, and under any key of a map or list. `workspace.root` is the directory the daemon uses (the per-project default when unset, `~` and `$VAR` expanded). `set` and `unset` edit the project file, the user file with `--user`, or the gitignored project-local file with `--local` (which also makes sure `.itervox/.gitignore` ignores it), keeping its comments; a wrong-typed value, or a change the workflow does not load with, is refused and nothing changes. `schema` prints the settings JSON Schema, generated from the config registry; it is the file published at [`https://itervox.dev/schema/settings.schema.json`](https://itervox.dev/schema/settings.schema.json). See [Settings files](/configuration/#settings-files-jsonc-layers).
+
+---
+
+## `itervox import` — Convert a Symphony or older Itervox workflow
+
+```bash
+itervox import [--force] WORKFLOW.md
+```
+
+Converts the workflow in place into the current layout:
+
+- the agent, polling, server and workspace settings move to `.itervox/settings.jsonc` (written with the comment-preserving settings writer) and out of `WORKFLOW.md`;
+- for an **Itervox v0.x** workflow, inline profile prompts move to prompt files (`.itervox/agents/<name>/SOUL.md` and `INSTRUCTIONS.md`), exactly as `itervox init --update` does; the profiles themselves and `agent.available_models` stay in `WORKFLOW.md`, where the Agents page and `itervox models refresh` write them;
+- for a **Symphony** workflow, `codex.command`, `codex.turn_timeout_ms`, `codex.read_timeout_ms` and `codex.stall_timeout_ms` become `agent.command` (Symphony's `codex app-server` becomes `codex`, since Itervox runs `codex exec`), `agent.backend: codex` and the agent timeouts; `itervox_schema_version: 2` is stamped;
+- the tracker, hooks and the worker prompt (the body) stay in `WORKFLOW.md`, comments included.
+
+The original is kept as `WORKFLOW.md.bak` (an existing one is not overwritten without `--force`). The command prints every setting it wrote and every key it could not map: a key Itervox does not read is left in `WORKFLOW.md`, and Symphony's `codex.approval_policy`, `codex.thread_sandbox` and `codex.turn_sandbox_policy` (Itervox's Codex runner sets its own approval and sandbox flags; see a profile's `permission_mode`) are kept in the `codex:` block, which Itervox does not read, so `itervox export --symphony` can write them back.
+
+---
+
+## `itervox export --symphony` — Write a Symphony WORKFLOW.md
+
+```bash
+itervox export --symphony [--workflow WORKFLOW.md] [--out PATH|-] [--force]
+```
+
+Writes a Symphony `WORKFLOW.md` (default `WORKFLOW.symphony.md` next to the workflow; `--out -` prints it) with the Symphony core keys this project sets, wherever they live (`WORKFLOW.md` or a settings layer), and the worker prompt:
+
+| Symphony key | From |
+|---|---|
+| `tracker.kind`, `endpoint`, `api_key`, `project_slug`, `active_states`, `terminal_states` | the same `tracker.*` keys |
+| `polling.interval_ms`, `workspace.root` | the same keys |
+| `hooks.after_create`, `before_run`, `after_run`, `before_remove`, `timeout_ms` | the same `hooks.*` keys |
+| `agent.max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `max_concurrent_agents_by_state` | the same `agent.*` keys |
+| `codex.command` | `agent.command`, when it runs Codex (`codex` becomes `codex app-server`) |
+| `codex.turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms` | `agent.turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms` |
+| `codex.approval_policy`, `thread_sandbox`, `turn_sandbox_policy` | the `codex:` block an import kept |
+| `server.port` | `server.port` |
+
+A key no layer sets is left out, so Symphony applies its own default. A literal `tracker.api_key` is never written: `$LINEAR_API_KEY` stands in for it. The command then lists every Itervox-only feature it dropped (profiles and their prompt files, automations, dependencies, SSH hosts, reviewer settings, any other setting) and notes a Claude `agent.command`, a tracker other than Linear, and Itervox-only Liquid variables (`run.*`, `rules`) in the prompt. `itervox import` followed by `itervox export --symphony` gives back a Symphony workflow's core keys and prompt unchanged (pinned by `TestImportExportSymphonyRoundTrip`).
 
 ---
 
@@ -260,6 +332,42 @@ itervox report costs [--workflow WORKFLOW.md] [--logs-dir DIR] [--days N] [--jso
 ```
 
 Prints what each issue's agents have used: input and output tokens and estimated cost per issue (most tokens first), per day in UTC (newest first, the last `--days` days with usage, default 14, `0` for all kept), and the total. It reads `issue_spend.json` from the daemon's logs directory (the per-project directory under `~/.itervox/logs`, or `--logs-dir`); the daemon need not be running. Cost is estimated from Claude runs; a row with no Claude run shows `—` (`null` in `--json`). The daemon keeps 90 days of per-day history; per-issue totals are kept for as long as the file exists. The same totals are what [`agent.budget`](/configuration/#per-issue-budgets) is checked against.
+
+---
+
+## `itervox watch` — A terminal view of a running daemon
+
+```bash
+itervox watch [--interval 2s] [--once] [--workflow WORKFLOW.md] [--logs-dir DIR] [--url URL]
+```
+
+A read-only, plain-text view of the daemon running in this project: how many eligible issues are waiting for a free slot, the running agents (state, backend, worker host, run time, turns, tokens, last event), retries with their attempt and due time, issues waiting for input with the question, queued automation runs with the reason, and paused issues with the pause reason. On a terminal it redraws every `--interval`; without one (a pipe, a log file, `ssh host itervox watch`) it prints the view again, with a time stamp, only when something other than the ticking run times, token counts and retry countdowns changes. `--once` prints it once and exits.
+
+These commands, `itervox logs` and the quick actions below find the daemon from `.itervox/dashboard_url` (or `--url`) and its API token from `ITERVOX_API_TOKEN`, then `ITERVOX_API_TOKEN` in `.itervox/.env`, then `<logs-dir>/api-token`. They exit `1` when the daemon cannot be reached or refuses (its message is printed) and `2` on a usage error.
+
+---
+
+## `itervox logs` — An issue's run log
+
+```bash
+itervox logs [-f] <issue>
+```
+
+Prints the issue's run log, one line per event (`time LEVEL [tool] message`). With `-f` it keeps following new lines until Ctrl-C, resuming where it left off if the connection drops or the daemon restarts.
+
+---
+
+## Quick actions: pause, resume, dispatch, workers, reply
+
+```bash
+itervox pause <issue>          # stop the issue's agent and pause the issue
+itervox resume <issue>         # resume a paused issue
+itervox dispatch <issue>       # move the issue to the first active state; it starts when a slot is free
+itervox workers <n>            # set max_concurrent_agents (saved to WORKFLOW.md)
+itervox reply <issue> <text>   # answer an agent's question; queued, applied if the issue is waiting for input
+```
+
+The same actions as the dashboard and the (deprecated) terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
 
 ---
 

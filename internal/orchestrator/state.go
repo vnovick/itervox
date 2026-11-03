@@ -7,6 +7,7 @@ import (
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/extsessions"
 )
 
 // EventType identifies the kind of OrchestratorEvent.
@@ -77,6 +78,29 @@ const (
 	// EventAckFailures records an operator acknowledgement of an issue's
 	// worker failures up to a time (CORE-175).
 	EventAckFailures EventType = "AckFailures"
+	// EventDispatchCronBatch carries one tick of a cron automation whose
+	// filter.limit is set (#176). The loop picks the next `limit` issues
+	// from the rule's rotation cursor and dispatches them, so the selection
+	// and the cursor advance happen together in the event loop.
+	EventDispatchCronBatch EventType = "DispatchCronBatch"
+	// EventDeferStateMove is sent by DeferAgentStateMove (#177): an agent's
+	// move of its issue, which the loop defers while a worker runs on the
+	// issue that reconciliation would stop for it. The loop answers on the
+	// event's reply channel.
+	EventDeferStateMove EventType = "DeferStateMove"
+	// EventDeferredStateMoveSettled carries the outcome of one deferred-move
+	// apply (#177) from its tracker-write goroutine.
+	EventDeferredStateMoveSettled EventType = "DeferredStateMoveSettled"
+	// EventTrackerPolled carries the result of one off-loop tracker poll
+	// (#187): the running issues' states, the candidate list and the
+	// input-required reply reads. The poll goroutine does tracker I/O only;
+	// the loop applies the result with the state it has when the event
+	// arrives.
+	EventTrackerPolled EventType = "TrackerPolled"
+	// EventClaimChecked carries the off-loop #116 claim reads of one batch of
+	// dispatch picks (#187). The loop re-checks eligibility and starts the
+	// issues the tracker still admits.
+	EventClaimChecked EventType = "ClaimChecked"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -96,8 +120,11 @@ type OrchestratorEvent struct { //nolint:revive
 	InputRequiredEntry *InputRequiredEntry      // used by TerminalInputRequired
 	Issue              *domain.Issue            // used by EventDispatchAutomation
 	Automation         *AutomationDispatch      // used by EventDispatchAutomation
+	CronBatch          *CronAutomationBatch     // used by EventDispatchCronBatch
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
 	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
+	TrackerPoll        *trackerPollResult       // used by EventTrackerPolled (#187)
+	ClaimBatch         *claimBatchResult        // used by EventClaimChecked (#187)
 	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
 	Failure            *FailureRecord           // used by EventFailureRecorded
 	// Limit is the vendor limit signal of a failed turn (CORE-050/051):
@@ -114,6 +141,17 @@ type OrchestratorEvent struct { //nolint:revive
 	SessionMessage *SessionMessage
 	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
 	SessionDelivery *SessionDelivery
+	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
+	ExternalScan *ExternalScan
+	// Tmux is the payload of the tmux session events (#178).
+	Tmux *TmuxSessionEvent
+	// DeferredMove is the move of an EventDeferStateMove or
+	// EventDeferredStateMoveSettled (#177).
+	DeferredMove *DeferredStateMove
+	// deferReply receives the loop's decision on an EventDeferStateMove.
+	deferReply chan bool
+	// deferFromState is the tracker state a deferred-move apply observed.
+	deferFromState string
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -153,6 +191,12 @@ const (
 	// agent ran; the event loop records the miss in State.StackUnavailable
 	// so the issue waits for the blocker like any other.
 	TerminalStackUnavailable TerminalReason = "stack_unavailable"
+	// TerminalBranchInUse is used when the issue's worktree could not be
+	// created because its branch is checked out in another worktree (#193).
+	// Deterministic: no agent ran and a retry would fail the same way, so the
+	// event loop records State.BranchInUseHolds (ineligible reason
+	// branch_in_use) instead of scheduling a retry.
+	TerminalBranchInUse TerminalReason = "branch_in_use"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).
@@ -313,19 +357,41 @@ type RunEntry struct {
 	PendingInputResume bool
 	BranchName         string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
 	PRURL              string // URL of the PR created or continued during this run (empty if none)
-	TerminalReason     TerminalReason
-	LastEventAt        *time.Time // when last EventWorkerUpdate was received
-	LastMessage        string
-	InputTokens        int
-	OutputTokens       int
-	TotalTokens        int
-	TurnCount          int
-	RetryAttempt       *int
-	StartedAt          time.Time
-	WorkerCancel       context.CancelFunc
+	// HeadSHA is the PR branch head on the remote when the run exited (#173),
+	// set on a success exit that carries PRURL; empty when unknown.
+	HeadSHA        string
+	TerminalReason TerminalReason
+	LastEventAt    *time.Time // when last EventWorkerUpdate was received
+	LastMessage    string
+	InputTokens    int
+	OutputTokens   int
+	TotalTokens    int
+	TurnCount      int
+	RetryAttempt   *int
+	StartedAt      time.Time
+	WorkerCancel   context.CancelFunc
 	// CostUSD is the latest session-cumulative estimated cost reported by the
 	// run's result events (Claude total_cost_usd, CORE-091); nil when unknown.
 	CostUSD *float64
+	// RulesHash and RuleIDs name the rule set this run was given (#157):
+	// the hash of the rules' content and their ids in prompt order. Set
+	// once at dispatch (startRun) and never mutated; empty when no rule
+	// applied. RuleIDs is shared with snapshot copies: it is immutable.
+	RulesHash string
+	RuleIDs   []string
+	// PromptDigest / PromptParts identify the prompt version the run was
+	// dispatched with (#186): SHA-256 over SOUL.md, INSTRUCTIONS.md, the
+	// resolved rules and the prompt template (see run_provenance.go). Set
+	// once at dispatch (startRun) and never mutated. Hashes only.
+	PromptDigest string
+	PromptParts  PromptParts
+	// Steers are the operator messages delivered to this run (#186), redacted
+	// and bounded (maxRunSteers, maxRunSteerBytes); SteersDropped counts the
+	// older ones the bound let go. Appended by the event loop on
+	// EventSessionMessageDelivered (replacing the slice); snapshots deep-copy
+	// it (copyRunningMap).
+	Steers        []RunSteer
+	SteersDropped int
 	// totalsInput/totalsOutput/totalsCounted record what this run has
 	// already contributed to State.Totals (CORE-091). Unexported: event-loop
 	// bookkeeping, not part of the snapshot.
@@ -364,6 +430,23 @@ type CompletedRun struct {
 	TriggerType  string `json:"triggerType,omitempty"`
 	// CommentCount captures how many comment actions the run posted.
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run used (#157); empty when
+	// no rule applied.
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIDs,omitempty"`
+	// RunID is the run's ID (#125, #186); empty for entries written before
+	// it was recorded.
+	RunID string `json:"runID,omitempty"`
+	// PromptDigest identifies the prompt version the run was dispatched with
+	// (#186): 64 hex chars of SHA-256 over SOUL.md + INSTRUCTIONS.md + the
+	// resolved rules + the prompt template. PromptParts are the per-component
+	// digests. Hashes only: history never stores prompt text.
+	PromptDigest string      `json:"promptDigest,omitempty"`
+	PromptParts  PromptParts `json:"promptParts,omitzero"`
+	// Steers are the operator messages delivered to the run (#186), redacted
+	// and bounded; SteersDropped counts older ones the bound let go.
+	Steers        []RunSteer `json:"steers,omitempty"`
+	SteersDropped int        `json:"steersDropped,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -506,6 +589,12 @@ type State struct {
 	// run by the first dependency audit that finds the issue idle. Session
 	// state, not persisted.
 	PendingRestacks map[string]struct{}
+	// OutOfScope holds the identifiers of running issues that left the
+	// tracker's scope (#182): still active, but absent from the scoped
+	// candidate poll (reassigned away, moved to another project). The run
+	// finishes; no new run starts (observeOutOfScope, fireRetries). Derived
+	// each successful poll, event-loop owned, session-scoped, not persisted.
+	OutOfScope map[string]struct{}
 	// PrevActiveIdentifiers is the set of issue identifiers that were fetched
 	// as active on the previous tick. Used by the auto-resume guard to
 	// distinguish "issue came back to active after being absent" (safe to
@@ -572,6 +661,23 @@ type State struct {
 	// agent.max_concurrent_agents would actually buy throughput. Session-
 	// scoped and not persisted; see dispatch_pressure.go.
 	DispatchPressure DispatchPressure
+	// TrackerPoll is the off-loop tracker poll's single-flight latch and
+	// timing (#187): whether a poll is in flight, since when, and how long
+	// the last one took. Event-loop state (tracker_poll.go); session-scoped,
+	// not persisted.
+	TrackerPoll TrackerPollState
+	// TrackerBreaker is the tracker transport circuit breaker (#187): after
+	// TrackerBreakerThreshold consecutive polls with a transport failure
+	// (timeout, network error, 5xx) the loop skips tracker reads until
+	// OpenUntil and reports the poll degraded. Event-loop state
+	// (tracker_breaker.go); session-scoped, not persisted.
+	TrackerBreaker TrackerBreakerState
+	// ClaimChecks are dispatch picks whose #116 claim read runs off the loop
+	// (#187), keyed by issue ID. Each holds a dispatch slot (AvailableSlots)
+	// and makes its issue ineligible until EventClaimChecked settles it or
+	// the watchdog releases it. Event-loop state; session-scoped, not
+	// persisted.
+	ClaimChecks map[string]ClaimCheckPending
 	// LastTrackerError is the most recent tracker failure (CORE-044): a
 	// failed poll (op "poll", set in onTick) or a failed failed-state move
 	// (op "update_state", reported back on EventDiscardComplete). Written
@@ -635,6 +741,36 @@ type State struct {
 	// Key shape: `<issue.Identifier>|<prURL>|<automationID>`.
 	PRMergedDispatched map[string]struct{}
 
+	// ManagedPRs (#173) are the pull requests an itervox run recorded (the
+	// run's exit carried the PR URL its worker detected), keyed by PR URL.
+	// Only these PRs dispatch the PR-event triggers; an unmanaged PR never
+	// does. Persisted with PREventDispatched and PREventBaselines to
+	// pr_events.json; pruned when the issue reaches a terminal state.
+	ManagedPRs map[string]ManagedPR
+	// PREventDispatched (#173) dedups PR-event dispatches by
+	// `<automationID>|<event key>` (see prEventKey), value = when it fired.
+	// A re-delivered webhook or a repeated poll never dispatches twice.
+	PREventDispatched map[string]time.Time
+	// PREventBaselines (#173) holds, per `<prURL>|<automationID>|<kind>`,
+	// the last head SHA (pr_synchronized) or mergeable_state
+	// (pr_mergeable_changed) the rule was evaluated against, so only a
+	// change dispatches.
+	PREventBaselines map[string]string
+	// AutomationDispatchesPREventTotal / AutomationDroppedPREventDedupTotal /
+	// AutomationDroppedPREventUnmanagedTotal count PR-event (#173)
+	// dispatches, dedup drops and drops for PRs no itervox run recorded.
+	AutomationDispatchesPREventTotal       uint64
+	AutomationDroppedPREventDedupTotal     uint64
+	AutomationDroppedPREventUnmanagedTotal uint64
+
+	// CronCursors (#176) is the filter.limit rotation cursor of each cron
+	// automation: automation ID -> identifier of the last issue that rule's
+	// rotation served. The next tick starts after it (wrapping), so a rule
+	// with more matches than its limit reaches every issue instead of the
+	// first N every time. Event-loop state, persisted with the automation
+	// queue (automation_queue.json) so a restart resumes the rotation.
+	CronCursors map[string]string
+
 	// AutomationDropsSelfReentryTotal is a monotonic counter incremented every
 	// time an `input_required` automation dispatch is suppressed because the
 	// previous worker on this issue was itself an automation-driven run
@@ -686,12 +822,24 @@ type State struct {
 	// unchanged the dependent waits for it as before; a new blocker or state
 	// gives stacking another try. Event-loop state, not persisted.
 	StackUnavailable map[string]string
+	// BranchInUseHolds holds issues whose worktree branch is checked out in
+	// another worktree (#193), keyed by identifier: the branch_in_use
+	// ineligible reason. Set from a TerminalBranchInUse exit and released by
+	// releaseBranchInUseHolds once that worktree frees the branch. Event-loop
+	// state, not persisted: after a restart the first dispatch finds the
+	// branch still taken and holds the issue again without spending a retry.
+	BranchInUseHolds map[string]BranchInUseHold
 
 	// PendingReviews holds reviewer dispatches refused while draining
 	// (M4-close BH-M4-2), keyed by issue identifier. Persisted to
 	// pending_reviews.json and re-dispatched by resumePendingReviews once
 	// admission is open again (normally after the restart). Event loop only.
 	PendingReviews map[string]PendingReview
+	// DeferredStateMoves (#177) holds itervox-originated state moves (an
+	// agent's move_state) deferred until the issue's running worker exits,
+	// keyed by identifier. Persisted to deferred_state_moves.json; while one
+	// is pending, normal dispatch and retries of the issue are held.
+	DeferredStateMoves map[string]DeferredStateMove
 	// Spend is the per-issue spend ledger behind agent.budget and the cost
 	// report (#136), persisted to issue_spend.json.
 	Spend SpendLedger
@@ -751,6 +899,19 @@ type State struct {
 	// and dropped when the run exits without delivering them. Session-scoped,
 	// not persisted.
 	SessionMessages map[string][]SessionMessage
+
+	// ExternalSessions are the sessions started by hand that the latest
+	// discovery pass found (#178 step 3), newest first, minus every session
+	// itervox owns. Event-loop state: replaced by
+	// EventExternalSessionsDiscovered (discovery runs off the loop).
+	// Session-scoped, not persisted.
+	ExternalSessions []extsessions.Session
+	// TmuxSessions are the tmux sessions itervox started from the Sessions
+	// panel ("New session", #178), keyed by tmux session name. Event-loop
+	// state (sessions_tmux.go): reserved, started and ended by events, panes
+	// attached and ended sessions dropped by each discovery pass.
+	// Session-scoped, carried across WORKFLOW.md reloads, not persisted.
+	TmuxSessions map[string]*TmuxSession
 }
 
 // NewState initialises a State from a config snapshot.
@@ -796,12 +957,20 @@ func NewState(cfg *config.Config) State {
 		ReviewOutcomes:     make(map[string]ReviewOutcome),
 		PROpenedDispatched: make(map[string]struct{}),
 		PRMergedDispatched: make(map[string]struct{}),
+		ManagedPRs:         make(map[string]ManagedPR),
+		PREventDispatched:  make(map[string]time.Time),
+		PREventBaselines:   make(map[string]string),
+		CronCursors:        make(map[string]string),
 		InferredDeps:       make(map[string][]InferredDepEntry),
 		DepsOverrides:      make(map[string]time.Time),
 		StackOnReviewState: stackOnReviewState(cfg),
 		StackUnavailable:   make(map[string]string),
+		BranchInUseHolds:   make(map[string]BranchInUseHold),
 		PendingReviews:     make(map[string]PendingReview),
+		DeferredStateMoves: make(map[string]DeferredStateMove),
 		OutboxSyncing:      make(map[string]struct{}),
+		ClaimChecks:        make(map[string]ClaimCheckPending),
 		SessionMessages:    make(map[string][]SessionMessage),
+		TmuxSessions:       make(map[string]*TmuxSession),
 	}
 }

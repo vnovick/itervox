@@ -172,6 +172,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// a provider that cannot stack, or a blocker branch that does not
 		// exist here, falls back to workspace.base_branch unchanged.
 		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
+		if errors.Is(err, workspace.ErrBranchInUse) {
+			// #193: deterministic — git refuses the branch until the other
+			// worktree frees it. The event loop holds the issue with
+			// branch_in_use instead of scheduling a retry.
+			slog.Warn("worker: worktree branch is checked out in another worktree; not retrying",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "branch", branchName, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
+					fmt.Sprintf("worker: workspace setup held (branch_in_use): %v", err), runLogID))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalBranchInUse, err)
+			return
+		}
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -183,6 +196,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		if ws.BareFetchFailure != "" {
+			// #195: a failing shared-clone fetch used to be a WARN line only,
+			// so a base that stopped moving went unnoticed. The workspace
+			// reports each distinct failure once until a fetch succeeds.
+			o.RecordFailure(FailureRecord{
+				Kind:       FailureKindWorkspaceFetch,
+				Identifier: issue.Identifier,
+				Source:     "bare_fetch",
+				Message:    ws.BareFetchFailure,
+			})
+		}
 		// #73 follow-up: an issue whose only blocker is in review is admitted
 		// so it can start stacked on that blocker's branch. If its worktree
 		// is not stacked on it (the branch is not here, or a reused worktree
@@ -439,6 +463,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		evidenceBlock = buildEvidenceBlock(required, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(stackedOn), runEvidenceRelPath, switchNotice)
+	// #157: the rule set this run was dispatched with. `{{ rules }}` places
+	// it in any template; otherwise a `## Rules` block goes ahead of the
+	// profile's SOUL.md and INSTRUCTIONS.md.
+	ruleSet := o.runRules(ctx, profileName, backend)
+	runVars["rules"] = ruleSet.Binding()
+	o.reportRuleProblems(ruleSet, issue.Identifier, runLogID)
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -555,41 +585,22 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 
-		// Append the active profile's prompt (role context) whenever a named
-		// profile is selected. The pre-removal `agent_mode == "teams"` gate
-		// has been deleted (agent_mode is gone — see CHANGELOG); the
-		// subagent roster context below also injects unconditionally so
-		// multi-profile setups always tell the agent who its peers are.
-		if profileName != "" {
-			if profile, ok := profilesSnap[profileName]; ok {
-				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, runVars) {
-					if block != "" {
-						renderedPrompt += "\n\n" + block
-					}
-				}
-			}
-		}
-		if automation != nil && automation.Instructions != "" {
-			bindings := automationTriggerBindings(automation)
-			maps.Copy(bindings, runVars)
-			renderedPrompt += "\n\n" + prompt.RenderPromptOverlay(
-				automation.Instructions,
-				issue,
-				attemptPtr,
-				bindings,
-			)
-		}
-		if actionContext != "" {
-			renderedPrompt += "\n\n" + actionContext
-		}
-		// Append sub-agent roster context whenever the inventory has more than
-		// one profile — gives the active backend the names + descriptions of
-		// peer agents it can spawn via its delegation tool. `buildSubAgentContext`
-		// returns "" when there's nothing to say, so single-profile setups
-		// see no change.
-		if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
-			renderedPrompt += "\n\n" + subCtx
-		}
+		// #157 rules, the profile's SOUL/INSTRUCTIONS, the automation's
+		// instructions, the daemon action notice and the sub-agent roster.
+		// Shared with ComposeEvalPrompt (#189) so a live eval renders exactly
+		// the profile sections a dispatched worker sees.
+		renderedPrompt += profilePromptTail(profileTailInput{
+			Rules:         ruleSet,
+			Template:      promptTemplate,
+			ProfileName:   profileName,
+			Profiles:      profilesSnap,
+			Automation:    automation,
+			Issue:         issue,
+			Attempt:       attemptPtr,
+			RunVars:       runVars,
+			ActionContext: actionContext,
+			Backend:       backend,
+		})
 
 		// On the first turn, inject open PR context if detected.
 		if turn == 1 {
@@ -991,6 +1002,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if !isActiveState(issue.State, State{ActiveStates: activeStates}) {
 			break // issue left active states — clean exit
 		}
+		// #177: the issue was moved out of the active states by itervox
+		// (the agent's move_state) and the move waits for this run's exit.
+		// End the turn loop exactly as the landed move would have.
+		if runStateMoveDeferred(ctx) {
+			break
+		}
 		if turn == effectiveMaxTurns {
 			steerMore() // #178: the last turn; messages that came in extend the run
 		}
@@ -1287,6 +1304,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			o.userCancelledIDs[issue.Identifier] = struct{}{}
 			o.userCancelledMu.Unlock()
 		} else {
+			markCompletionApplied(ctx) // #177
 			slog.Info("worker: issue moved to completion state",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "state", completionState)
 			o.RecordIssueStatusChange(IssueStatusChange{
@@ -1330,7 +1348,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	// Pass branchName so the auto-clear handler uses the actual worktree branch
 	// (which may be prCtx.Branch on a PR-continuation run, not issue.BranchName).
-	o.sendExitWithBranchThenPROpenedAutomations(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL, openedPRURL, openedPRBranch)
+	// #173: the head this run left on the remote is the managed PR's
+	// pr_synchronized baseline (and, for a run a pr_synchronized rule
+	// dispatched, that rule's own push).
+	headSHA := ""
+	if detectedPRURL != "" && wsPath != "" {
+		headSHA = workspace.RemoteHeadSHA(ctx, wsPath, activeBranchName)
+	}
+	o.sendExitWithBranchThenPROpenedAutomations(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL, openedPRURL, openedPRBranch, headSHA)
 }
 
 // hookLogFn returns a function suitable for workspace.RunHook's logFn parameter.
@@ -1765,10 +1790,10 @@ func (e *turnFailure) Error() string { return e.msg }
 func (e *turnFailure) Unwrap() error { return e.err }
 
 func (o *Orchestrator) sendExit(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error) {
-	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "", "")
+	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "", "", "")
 }
 
-func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string) {
+func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName, prURL, headSHA string) {
 	o.deliverExit(ctx, issue, OrchestratorEvent{
 		Type:    EventWorkerExited,
 		IssueID: issue.ID,
@@ -1776,6 +1801,7 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 			Issue:          issue,
 			BranchName:     branchName,
 			PRURL:          prURL,
+			HeadSHA:        headSHA,
 			TerminalReason: reason,
 			RetryAttempt:   &attempt,
 		},
@@ -1853,8 +1879,8 @@ func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev O
 	}
 }
 
-func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string) {
-	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL)
+func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string, openedPRURL string, openedPRBranch string, headSHA string) {
+	o.sendExitWithBranch(ctx, issue, attempt, reason, err, branchName, prURL, headSHA)
 	// Dispatch when this completed run has a PR (any
 	// detected URL counts), not only when the tracker-comment write succeeded:
 	// `resolvedURL` below falls back to the detected prURL when openedPRURL is
@@ -1885,7 +1911,12 @@ func (o *Orchestrator) sendExitWithBranchThenPROpenedAutomations(ctx context.Con
 	if o.cfg != nil {
 		baseBranch = o.cfg.Agent.BaseBranch
 	}
-	o.DispatchPROpenedAutomations(ctx, issue, resolvedURL, cmp.Or(openedPRBranch, branchName), baseBranch)
+	// Detached from the worker's context: the event loop cancels that context
+	// while it handles the exit just sent (cancelAndCleanupWorker), so a
+	// dispatch bound to it was silently dropped whenever the loop got to the
+	// exit before this goroutine got here (#177 CI). The send stays bounded by
+	// DispatchPROpenedAutomations' own timeout and by the loop's exit.
+	o.DispatchPROpenedAutomations(context.WithoutCancel(ctx), issue, resolvedURL, cmp.Or(openedPRBranch, branchName), baseBranch)
 }
 
 func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *RunEntry, entry *InputRequiredEntry) {

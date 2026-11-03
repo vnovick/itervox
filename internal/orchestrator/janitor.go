@@ -273,6 +273,7 @@ func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]st
 	// re-opened issue starts with a fresh dispatch budget.
 	pruneMap(state.PROpenedDispatched, identOfPROpened, keep)
 	pruneMap(state.PRMergedDispatched, identOfPROpened, keep)
+	pruneManagedPRs(state, keep)                          // #173
 	pruneMap(state.BackendLimitedHolds, identOfKey, keep) // CORE-053
 	counts := LedgerJanitorCounts{
 		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keep),
@@ -487,8 +488,12 @@ func untrackedIdentifierPredicate(terminal, currentActive, prevActive map[string
 
 // reviewMidChainPredicate reports whether a review may still be in flight for
 // an identifier: a run (any kind) is live for it, a retry is pending for it,
-// or its latest run is a reviewer whose own exit has not been handled yet
-// (its run record, #127). The last signal matters because
+// its latest run is a reviewer whose own exit has not been handled yet
+// (its run record, #127), or a reviewer is suspended and will continue: it
+// waits for input, has a reply queued, is paused, or is pending while the
+// daemon drains. A suspended reviewer's run record is already Exited, so
+// without these its chain would be pruned while the issue sits outside the
+// active states, and the resumed reviewer would find no chain to advance. The last signal matters because
 // ReconcileTrackerStates can delete a reviewer's Running entry BEFORE the
 // reviewer's own success exit advances the chain (#58 defect 1) — pruning in
 // that window would strand the quorum.
@@ -508,6 +513,24 @@ func (o *Orchestrator) reviewMidChainPredicate(state *State) func(string) bool {
 		if rec.IsReviewer() && !rec.Exited && rec.Identifier != "" {
 			busy[rec.Identifier] = struct{}{}
 		}
+	}
+	for _, e := range state.InputRequiredIssues {
+		if e != nil && e.Reviewer {
+			busy[e.Identifier] = struct{}{}
+		}
+	}
+	for _, e := range state.PendingInputResumes {
+		if e != nil && e.Reviewer {
+			busy[e.Identifier] = struct{}{}
+		}
+	}
+	for ident, p := range state.PausedSessions {
+		if p != nil && p.Reviewer {
+			busy[ident] = struct{}{}
+		}
+	}
+	for ident := range state.PendingReviews {
+		busy[ident] = struct{}{}
 	}
 	return func(ident string) bool {
 		_, ok := busy[ident]

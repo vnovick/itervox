@@ -147,7 +147,9 @@ only the event loop mutates them.
   explicitly adds restart durability.
 - `RecentFailures` (CORE-046) is a bounded (100) event-loop ring. Off-loop
   producers (ledger writer, outbox flusher, recovered panics, the
-  `/api/v1/client-errors` handler) call `Orchestrator.RecordFailure`, a
+  `/api/v1/client-errors` handler, a worker whose shared bare-clone fetch
+  failed — #195, deduplicated in `internal/workspace` until a fetch
+  succeeds) call `Orchestrator.RecordFailure`, a
   NON-blocking send of `EventFailureRecorded`; a dropped failure is counted,
   never re-sent. Messages come from classified errors only (never agent
   output or prompt text) and are redacted before truncation. Not persisted;
@@ -172,6 +174,31 @@ only the event loop mutates them.
   runs, and the event loop records the blocker so the issue waits for it.
   `pruneStackUnavailable` drops a record each tick once it no longer
   matches the candidate's blocker. Session-scoped, not persisted.
+- `OutOfScope` (#182) marks running issues the scoped candidate poll no
+  longer offers while they are still active (reassigned away, a matching
+  label removed, moved out of the project). Derived by `observeOutOfScope`
+  on each successful poll; the run finishes (never cancelled), and
+  `fireRetries` releases a retry for a marked issue because its by-ID read is
+  unscoped. Event-loop state, session-scoped, not persisted. The tracker
+  scope itself (projects AND assignee AND labels) lives in the Linear
+  client under its own `projectFilterMu`, not `cfg`:
+  `tracker.assignee`/`team`/`labels` are load-time fields, and the dashboard
+  scope card and TUI picker change the client's runtime scope
+  (`SetScope`/`SetProjectFilter`), so there is no new `cfgMu` field.
+- `CronCursors` (#176) is the per-cron-rule `filter.limit` rotation cursor
+  (automation ID → last identifier served). A limited cron tick is handed to
+  the loop whole (`EventDispatchCronBatch`); the loop selects, skips issues
+  already running/queued for that rule, dispatches and advances the cursor.
+  Persisted as `cron_cursors` in `automation_queue.json`.
+- `DeferredStateMoves` (#177) holds itervox-originated state moves (an
+  agent's `move_state`, offered via `DeferAgentStateMove` from the adapter)
+  that would make reconciliation stop the issue's running worker. They are
+  deferred until that run's exit, then applied off-loop through the write
+  sink only while the tracker still shows the move's `FromState`. Event-loop
+  state persisted to `deferred_state_moves.json` (ledger writer); while one is
+  pending, dispatch and retries hold the issue (`state_move_pending`). A
+  person's move (dashboard/tracker) is never deferred and still stops the
+  worker.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
@@ -186,8 +213,63 @@ only the event loop mutates them.
   prompt, `--resume` / `exec resume`) — and the run's exit marks whatever it
   did not deliver `dropped`. Session-scoped, not persisted. Invariant:
   itervox writes only to agent processes it started (no TTY injection, no
-  Accessibility/AppleScript automation), enforced by
-  `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`.
+  Accessibility/AppleScript automation) — with ONE narrow exception,
+  `internal/tmuxctl`, which types into a CLI in a tmux pane through tmux's
+  paste buffer and key events (hand-started sessions only with
+  `sessions.tmux_control`, plus the tmux sessions itervox started). Enforced
+  by `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`:
+  no other package may run `tmux` or name its write commands, and tmuxctl
+  runs nothing but a literal `tmux`.
+- `ExternalSessions` (#178 step 3) is event-loop state.
+  Discovery of sessions started by hand (`internal/extsessions`, read-only:
+  transcript files, `/proc` or `ps`/`lsof`) runs on its own goroutine
+  (`startExternalSessionDiscovery`, joined via `extSessionsWg`) and only sends
+  `EventExternalSessionsDiscovered`; the loop drops every session itervox
+  owns. These sessions are read-only: status `running` (with the liveness
+  reason) or `exited`, transcript served, messages refused (`not_owned`) —
+  unless matched to a tmux pane (by process ancestry + cwd, in the discovery
+  pass, off the loop) with `sessions.tmux_control` on. Session-scoped, not
+  persisted.
+- `TmuxSessions` (#178 New session) are the tmux sessions itervox started,
+  event-loop state: HTTP goroutines run tmux (cmd/itervox/sessions_tmux.go)
+  and only send `EventTmuxSessionReserve` (cap 8, reply channel),
+  `EventTmuxSessionStarted` and `EventTmuxSessionEnded`; each discovery pass
+  (`EventExternalSessionsDiscovered`, carrying `ExternalScan` with the pane
+  list) attaches panes and drops sessions whose tmux session is gone. Not
+  counted toward `max_concurrent_agents`. Carried across `WORKFLOW.md`
+  reloads by cmd/itervox (`SeedTmuxSessions`), not persisted. `TestExternalSessionInspectionIsReadOnly`
+  keeps `internal/extsessions` free of writes, signals and commands other
+  than `ps`/`lsof`.
+- `ManagedPRs`, `PREventDispatched` and `PREventBaselines` (#173) back the
+  PR-event triggers (`pr_check_completed`, `pr_synchronized`,
+  `pr_review_submitted`, `pr_mergeable_changed`). A PR is *managed* only once
+  an itervox run's exit recorded its URL for that issue; `internal/prwatch`
+  (webhook handler and poller, off the loop) only sends
+  `EventDispatchAutomation`, and `claimPREventDedup` in the event loop decides
+  managed-ness, staleness and the once-per-event dedup. Persisted to
+  `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
+- Run provenance (#186) on `RunEntry` / `CompletedRun`: `PromptDigest` and
+  `PromptParts` are computed once in `startRun` (SHA-256 of SOUL.md +
+  INSTRUCTIONS.md + the resolved rules + the prompt template; hashes only,
+  never prompt text), and delivered steering messages are appended to the
+  running entry's `Steers` by the `EventSessionMessageDelivered` handler
+  (redacted, ≤ 20 × 1 KiB; snapshots deep-copy the slice). Both reach
+  `CompletedRun` (with `RunID`) only through `recordHistory` in the event
+  loop; the stall exit built by `ReconcileStalls` copies them.
+- `TrackerPoll`, `TrackerBreaker` and `ClaimChecks` (#187) are event-loop
+  state for the off-loop tracker poll. A tick's tracker reads (running-state
+  reconcile, candidate list, input-required reply checks) run on ONE
+  goroutine at a time (`TrackerPoll.InFlight` latch, generation-checked,
+  watchdog past deadline + 30 s) and come back as `EventTrackerPolled`;
+  dispatch picks' #116 claim reads run off-loop too, each pick holding a slot
+  in `ClaimChecks` until `EventClaimChecked`. The loop applies results with
+  the state it has at apply time: reconcile acts only on runs whose `RunID`
+  is unchanged since the read started, and an issue whose run ended during
+  the poll (`TrackerPoll.EndedDuringPoll`) is not dispatched from that list.
+  Reads still on the loop go through `loopReadCtx` (one 30 s deadline per
+  iteration). `TrackerBreaker` opens after 3 polls in a row with a transport
+  failure and skips tracker reads for a cooldown. Session-scoped, not
+  persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -257,6 +339,18 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   per-issue Liquid prompt template. Concatenated and passed to the agent
   subprocess via stdin/argv depending on backend. SOUL is the compact identity
   ("who you are"); INSTRUCTIONS is the operational/behavioural rules.
+- **Rules (#157)** go in a `## Rules` block immediately ahead of the profile's
+  SOUL.md/INSTRUCTIONS.md blocks (workers, reviewers, automation runs; the
+  dependency analyzer gets it at the top of its prompt). `internal/rules` reads
+  `~/.itervox/rules.json` < `.itervox/rules.json` < `.itervox/rules.local.json`
+  from disk on every dispatch (`startRun` → `runHandle.rules`; NOT a cfg field,
+  so nothing joins the cfgMu list), merges by id (a user `must` rule is
+  locked), filters by project/profile/backend scope, and records hash + ids on
+  `RunEntry`/`RunRecord`/`CompletedRun`. A template that prints `{{ rules }}`
+  (or a field of it) suppresses the automatic block. JSONC goes through
+  `config.ParseJSONC` / `config.PatchJSONC` / `config.WriteJSONCFile`, the same
+  reader/writer as the settings layers. `.itervox/rules.json` is committable;
+  `.itervox/rules.local.json` is gitignored by `itervox init` / `init --update`.
 - **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
   root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
   Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and
@@ -302,11 +396,22 @@ domain ─────┬── tracker (interface + adapters: linear, github, l
             │            tracker/store is the local store, tracker/webhook the
             │            signed Linear/GitHub webhook receiver that refreshes
             │            it by issue — imports metrics, not store; #131)
-            │     └── tracker/store (local tracker store, #113: wraps a Linear
-            │         or GitHub adapter; imports tracker, domain, atomicfs)
+            │     ├── tracker/store (local tracker store, #113: wraps a Linear
+            │     │   or GitHub adapter; imports tracker, domain, atomicfs)
+            │     └── tracker/localsync (#118: two-way sync of kind: local
+            │         files with Linear or GitHub, off the event loop;
+            │         imports tracker, tracker/local, outbox, atomicfs)
             ├── prompt (Liquid template rendering)
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
+
+extsessions (stdlib + logging — discovery, transcripts and read-only
+            liveness of agent sessions started by hand, #178; imported by
+            orchestrator and cmd/itervox)
+
+tmuxctl (stdlib only — the tmux CLI: list/capture panes, paste text, an
+         allowlist of keys, new/kill session; the ONLY package that writes to
+         processes itervox did not start; imported by cmd/itervox)
 
 procgroup (stdlib only — own process group + group SIGKILL re-sent until
            ESRCH; the one shared kill path for agent runners and hooks)
@@ -324,17 +429,23 @@ gitexec (stdlib only — the ONLY way to run `git`: scrubs GIT_DIR/GIT_WORK_TREE
 
 workflow ──── config ──── workspace (hooks — also imports procgroup)
 
+rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
+       server and cmd/itervox)
+
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, logbuffer, logging,
-              metrics, outbox, prdetector, procgroup, prompt, tracker,
+              atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
+              metrics, outbox, prdetector, procgroup, prompt, rules, tracker,
               workspace)
+
+prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
+         request poller — imports metrics, tracker; used by cmd/itervox)
 
 app (EnrichIssue business logic — imports domain, tracker)
 
-server (HTTP API — imports domain, config)
+server (HTTP API — imports domain, config, rules)
 
 statusui (Bubbletea TUI — imports domain)
 
@@ -373,9 +484,10 @@ cmd/itervox (wires everything)
 | `web/src/pages/Dashboard/components/AutomationQueueList.tsx` | Durable automation queue list and local search surface |
 | `web/src/pages/Dashboard/components/AutomationQueueDetailPanel.tsx` | Queue entry detail panel for trigger/profile/permission/dependency context |
 | `web/src/pages/Dashboard/components/DepsGraph.tsx` | Read-only React Flow dependency graph over blocker -> blocked issue rows |
-| `web/src/pages/Sessions/index.tsx` | Sessions panel (#178): one tab per agent session (input-required first), transcript from the issue log stream, composer (provide-input reply or `POST /api/v1/sessions/{id}/message`) |
+| `web/src/pages/Sessions/index.tsx` | Sessions panel (#178): one tab per agent session (input-required first, sessions started by hand last and read-only), transcript from the issue log stream or the CLI transcript (`SessionTranscript.tsx`), composer (provide-input reply or `POST /api/v1/sessions/{id}/message`); tmux: live screen + keys (`TmuxSessionView.tsx`), New session (`NewSessionForm.tsx`), tmux-missing banner/composer warning (`TmuxNotice.tsx`) |
 | `web/src/components/itervox/IssueStatusChanges.tsx` | Per-issue status-change timeline rendered inside issue detail |
 | `web/src/components/itervox/QueueSearchInput.tsx` | Shared local search input for queue-like dashboard panels |
+| `web/src/pages/Rules/index.tsx` | Rules editor (#157): a tab per rules layer, form and JSON views, effective-rules preview; queries in `web/src/queries/rules.ts` |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |
 | `web/src/auth/authedFetch.ts` | `fetch()` wrapper — injects `Authorization: Bearer`, throws `UnauthorizedError` on 401 |
 | `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |

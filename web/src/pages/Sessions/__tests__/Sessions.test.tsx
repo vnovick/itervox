@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import Sessions from '../index';
-import type { SessionRow } from '../../../types/schemas';
+import type { SessionRow, TranscriptEntry } from '../../../types/schemas';
 import type * as SessionsQueries from '../../../queries/sessions';
 
 // #178 Sessions panel: tabs (waiting-for-input first, badged, keyboard
@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   sendMutate: vi.fn(),
   provideMutate: vi.fn(),
   dismissMutate: vi.fn(),
+  fetchNextPage: vi.fn(),
+  transcript: [] as TranscriptEntry[],
+  hasNextPage: false,
   inlineInput: false,
 }));
 
@@ -22,6 +25,14 @@ vi.mock('../../../queries/sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof SessionsQueries>()),
   useSessions: () => ({ sessions: mocks.sessions, isLoading: false }),
   useSendSessionMessage: () => ({ mutate: mocks.sendMutate, isPending: false }),
+  useSessionTranscript: (id: string) => ({
+    entries: mocks.transcript.map((e) => ({ ...e, text: `${e.text} (${id})` })),
+    isLoading: false,
+    isError: false,
+    hasNextPage: mocks.hasNextPage,
+    fetchNextPage: mocks.fetchNextPage,
+    isFetchingNextPage: false,
+  }),
 }));
 
 vi.mock('../../../queries/issues', () => ({
@@ -112,9 +123,35 @@ function renderAt(search = '') {
   );
 }
 
+const HAND_EXITED: SessionRow = {
+  id: 'hand-exited',
+  owner: 'external',
+  identifier: '',
+  title: 'Add health check',
+  backend: 'claude',
+  status: 'exited',
+  cwd: '/work/app',
+  updatedAt: '2026-10-15T08:00:00Z',
+};
+const HAND_BUSY: SessionRow = {
+  id: 'hand-busy',
+  owner: 'external',
+  identifier: '',
+  backend: 'codex',
+  status: 'running',
+  cwd: '/work/app/svc',
+  inUseReason: 'codex process 42 has the transcript open',
+};
 beforeEach(() => {
   mocks.sessions = [WAITING, RUNNING, STARTING];
   mocks.inlineInput = false;
+  mocks.fetchNextPage.mockReset();
+  mocks.transcript = [
+    { role: 'user', kind: 'text', text: 'Add a health check' },
+    { role: 'assistant', kind: 'tool', text: 'Edit' },
+    { role: 'assistant', kind: 'text', text: 'Done', truncated: true },
+  ];
+  mocks.hasNextPage = false;
   mocks.sendMutate.mockReset();
   mocks.provideMutate.mockReset();
   mocks.dismissMutate.mockReset();
@@ -218,5 +255,60 @@ describe('Sessions page', () => {
     mocks.sessions = [];
     renderAt();
     expect(screen.getByTestId('sessions-empty')).toHaveTextContent('No agent sessions are running');
+  });
+
+  describe('sessions started outside itervox (#178 step 3)', () => {
+    it('lists them after itervox sessions, greyed and labeled, named by title or directory', () => {
+      mocks.sessions = [WAITING, RUNNING, HAND_EXITED, HAND_BUSY];
+      renderAt();
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs.map((t) => t.getAttribute('data-owner'))).toEqual([
+        'itervox',
+        'itervox',
+        'external',
+        'external',
+      ]);
+      expect(within(tabs[2]).getByText('Add health check')).toBeInTheDocument();
+      expect(within(tabs[3]).getByText('svc')).toBeInTheDocument();
+      expect(within(tabs[2]).getByTestId('session-tab-detail')).toHaveTextContent(
+        'started outside itervox',
+      );
+      expect(tabs[2].className).toContain('opacity-70');
+      expect(tabs[1].className).not.toContain('opacity-70');
+      expect(within(tabs[3]).getByTestId('session-tab-status')).toHaveTextContent('running');
+      expect(within(tabs[3]).getByTestId('session-tab-status')).toHaveAttribute(
+        'title',
+        'codex process 42 has the transcript open',
+      );
+      expect(within(tabs[2]).getByText('exited')).toBeInTheDocument();
+    });
+
+    it('shows the transcript read-only, with earlier messages on demand', async () => {
+      const user = userEvent.setup();
+      mocks.sessions = [HAND_EXITED];
+      mocks.hasNextPage = true;
+      renderAt();
+      expect(screen.getByTestId('session-cwd')).toHaveTextContent('/work/app');
+      const entries = screen.getAllByTestId('transcript-entry');
+      expect(entries.map((e) => e.getAttribute('data-kind'))).toEqual(['text', 'tool', 'text']);
+      expect(entries[0]).toHaveTextContent('Add a health check (hand-exited)');
+      expect(entries[2]).toHaveTextContent('(abbreviated)');
+      expect(screen.queryByTestId('terminal')).toBeNull();
+      expect(screen.getByTestId('session-readonly')).toHaveTextContent('read-only');
+      expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+      await user.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+      expect(mocks.fetchNextPage).toHaveBeenCalled();
+    });
+
+    it('shows a running hand-started session read-only, with why it counts as running', () => {
+      mocks.sessions = [HAND_BUSY];
+      renderAt();
+      expect(screen.getByTestId('session-readonly')).toHaveTextContent('still running');
+      expect(screen.getByTestId('session-running-reason')).toHaveTextContent(
+        'codex process 42 has the transcript open',
+      );
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.queryByRole('button', { name: /continue/i })).toBeNull();
+    });
   });
 });

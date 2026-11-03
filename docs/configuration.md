@@ -44,7 +44,11 @@ fields are also mutable via the dashboard Settings page and persist back to
 |---|---|---|---|---|
 | `kind` | string | yes | — | Tracker backend: `linear`, `github` or `local` (one Markdown file per issue in `.itervox/issues/`; no `api_key`; `project_slug` is the optional identifier prefix, default `ITX`) |
 | `api_key` | string | yes | — | API key. Use `$ENV_VAR` for env var substitution |
-| `project_slug` | string | github: yes | `""` | GitHub: `owner/repo`. Linear: optional project slug filter |
+| `project_slug` | string | github: yes | `""` | GitHub: `owner/repo`. Linear: optional project slug filter (empty: every project), ANDed with `assignee` and `labels` |
+| `assignee` | string | no | `""` | Linear only (#182): only issues assigned to this user — `me` (the API key's user), a user id or an email. Alone it reads the user's issues across every project and team the key can read; with `project_slug`, the intersection. Resolved once per load (off the event loop) and cached. An issue that leaves the scope mid-run (reassigned, label removed, moved out of the project) finishes its run, gets no new one and shows "out of scope"; Itervox's writes never set an assignee. `itervox doctor` checks the user resolves and its issues are readable |
+| `team` | string | no | `""` | Linear only, with `assignee` (#182): only this team's issues, by key or id |
+| `labels` | []string | no | `[]` | Linear only (#182): only issues carrying ANY of these labels, ANDed with project and assignee. Projects, assignee and labels are switchable at runtime from Settings → Tracker Scope (persisted to these keys) |
+| `filter` | list of groups | no | none | Linear and GitHub (#198): groups of conditions (`projects`, `teams`, `assignee`, `labels_any`, `labels_all`, `labels_none`, `priority`, `states`, `cycle`, `milestone`); every condition in a group must match, any group matching reads the issue. Replaces `project_slug` (Linear) / `assignee` / `team` / `labels`, which are one implicit group otherwise; both set is a validation error. GitHub supports `assignee`, the label conditions, `states` and `milestone` (one issue search per group, one per label for several `labels_any`, unioned and de-duplicated); others are a validation error. `states` narrows `active_states` (the working state always stays in). Every read path uses the same filter; a change rebaselines automation polls. Edited from Settings → Tracker Scope (written as one flow-style line, the legacy keys commented out, no reload). `itervox doctor` validates it and prints the match count. Full reference: site configuration page, "Tracker filter" |
 | `endpoint` | string | no | Linear: `https://api.linear.app/graphql`; GitHub: provider default | Override the API endpoint |
 | `active_states` | []string | no | `["Todo","In Progress"]` | Issue states considered ready to work |
 | `terminal_states` | []string | no | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | States treated as permanently done |
@@ -53,7 +57,9 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `completion_state` | string | no | `""` | State assigned on successful completion. When set, the issue leaves `active_states` so it is not re-dispatched |
 | `failed_state` | string | no | `""` | State assigned when max retries are exhausted. When empty, failed issues are paused instead |
 | `outbox` | bool | no | `true` | Enables the write-ahead outbox for tracker state transitions and comments: writes are persisted durably (`.itervox/outbox.json`) and flushed by an independent worker instead of being made synchronously from the orchestrator's completion/failed-state paths. Set `false` as a kill switch to restore the old synchronous behavior. Load-time only (no runtime setter). Pending/degraded entries are visible in the dashboard's Outbox panel and LiveOps tile, with per-entry Retry/Discard controls; an entry enqueued with no observed from-state baseline (currently only the issue-discard path) is exempt from supersede-reconciliation, so Discard is the operator remedy for a stuck entry. Comments carry an idempotency key, so a retry checks whether the earlier attempt landed before posting again (never a duplicate; an unanswerable lookup defers). A write rejected by a tracker rate limit waits for the published reset, shows a "rate limited until HH:MM" chip, and does not count toward the degraded badge. With `outbox: false`, input-required questions and replies are posted with a single direct attempt instead of being queued, so they are not durable and not ordered, and replies are matched to the most recent question by position. Operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`) also go through the outbox when it is enabled; with `outbox: false` they are posted directly (`200`), and entries left from an earlier outbox-on run stay visible with Retry/Discard but are delivered only once the outbox is enabled again. If the outbox cannot store an input-required question (for example `.itervox/` is not writable), the question is posted directly once instead, without a key |
+| `push_interval_ms` | int | no | `10000` | Coalesced push (#115, needs `outbox: true`): a tracker write waits this long in its issue's batch; inside one batch only the issue's last state move is sent (GitHub state labels merge with it; Itervox writes no other labels) and comments keep their order. The write shows in the local tracker store at once (board, tick, automations), while reconciliation still compares against the tracker's own state. Batched writes are durable in `.itervox/outbox.json`, so a crash before the push loses nothing. Urgent writes are pushed at once with the issue's earlier queued writes: input-required questions and the replies sent back to the agent, the max-retries-exhausted failure comment, the move to `failed_state`, the rate-limit auto-switch "budget exhausted" comment, and operator comments posted from the dashboard (`POST /api/v1/issues/{id}/comment`). `0` disables batching; a negative value falls back to the default. Load-time only |
 | `comment_commands` | map | no | off | `/itervox run [profile]`, `/itervox stop`, `/itervox review` in GitHub issue comments, from users with write access or listed in `allow`. Keys: `enabled`, `allow`, `allow_token_user` (the token's own account, which agents also use; default `false`), `reply_to_unauthorized`. GitHub only; each comment is acted on once (recorded in `.itervox/comment_commands.json`). See docs/github-tracker.md "Comment commands" |
+| `sync` | map | no | off | `local` only (#118): two-way sync of the issue files with Linear or GitHub. Keys: `kind` (`linear` or `github`), `api_key`, `project_slug` (required for both: the Linear project new issues are created in, or `owner/repo`), optionally `assignee`, `team` and `labels` (Linear: they narrow the project pulled from, #182), `endpoint`, the remote's `active_states` / `terminal_states` / `backlog_states` / `completion_state` (same keys and defaults as above), `state_map` (local name → remote name), `pull_states` (remote states pulled into new files; default the active and backlog states and `completion_state`), `interval_ms` (default `60000`), `full_sync_interval_ms` (default `3600000`). Runtime state in `.itervox/sync_ledger.json` and `.itervox/sync_outbox.json` (gitignored). See the Local issues guide |
 
 ---
 
@@ -61,7 +67,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
+| `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds). The poll runs off the event loop (#187): one at a time, under a deadline of 3× the interval (at least 30 s, at most 2 minutes); a tick that finds the previous poll still running skips its own and logs a warning once the poll is past the interval plus half an interval. After three polls in a row hit a tracker timeout, network error or 5xx, tracker reads pause for two intervals (30 s to 5 minutes) and the poll shows as degraded on the dashboard, `HEARTBEAT.md` and `/api/v1/ready`. |
 | `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. Separately, when the tracker actually rate-limits a request (Linear: HTTP 400 `RATELIMITED`; GitHub: 429/403), the published reset is recorded once for every caller, writes are admitted ahead of reads when it lifts (Linear requests are classified by GraphQL operation), calls fail fast when the reset is more than 60s away, and a recorded window is capped at 2 hours. |
 | `automation_interval_ms` | int | `15000` | How often the automation event poll (`tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`) lists issues (#155). While the tracker reports less than 20% of its request budget left, the interval doubles after each poll, up to 8×, and returns to it once the budget recovers. The poll fetches only the states its rules need: their `filter.states` and `trigger.state`, the active states, and the backlog states only for `issue_moved_to_backlog`; never terminal states unless a rule names one. |
 
@@ -297,6 +303,7 @@ Supported triggers:
 - `pr_merged` — fires when a PR opened by an itervox-managed branch transitions to MERGED, either via the daemon-side `merge_pr` action or an externally-observed merge. Trigger context carries `pr_url`, `pr_number`, `merged_sha`, `base_ref`, `merged_at` (P1); in a prompt they bind as `trigger.pr_url`, `trigger.pr_base_branch` and `trigger.pr_branch` (the PR's head branch), which the `merge_pr` action fills from its `gh pr view` (CORE-108).
 - `rate_limited` — fires when a worker run hits a vendor usage limit. When the agent reports a structured limit (Claude's `rate_limit_event` with status `rejected` or a result with API status 429/402; a Codex "You've hit your usage limit" error), it fires on the **first** failure, without consuming a retry, also with `max_retries: 0`. Otherwise it fires when the run exhausts its retries and Itervox classifies the terminal failure text as rate-limit-driven. The per-issue switch cap limits or suppresses profile/backend switching; it is not the trigger condition. When no rule dispatches a fallback (cap reached, cooldown, no match), the issue is retried after the vendor's reset time (at most 6 hours).
 - `blockers_resolved` — fires when dependency audit observes a previously blocked issue becoming unblocked.
+- `pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed` (#173) — fire on GitHub activity on a PR an Itervox run recorded (the run's exit carried the PR URL its worker detected): a check run or commit status completing on the head SHA, a new push, a submitted review, `mergeable_state` moving (by default into or out of `dirty`). Unmanaged PRs never dispatch, and activity before the recording run started is ignored. Dedup per `(PR, head SHA, check, conclusion)`, `(PR, head SHA)`, review ID and `(PR, head SHA, mergeable transition)`, persisted with the managed PRs in `pr_events.json` (daemon log directory). Bindings: `trigger.pr_url`, `trigger.pr_number`, `trigger.pr_branch`, `trigger.head_sha`, `trigger.check_name`, `trigger.check_conclusion`, `trigger.mergeable_state`, `trigger.previous_mergeable_state`, `trigger.review_author`, `trigger.review_state`, `trigger.review_id`, `trigger.event_source`. Sources: see `pr_events` below.
 
 Tracker event triggers (`tracker_comment_added`, `issue_entered_state`, and
 `issue_moved_to_backlog`) are derived from the 15-second automation poll loop, not
@@ -326,10 +333,16 @@ continue draining until the queue falls below the low-water mark.
 | `filter.states` | []string | Issue-state filter. For cron automations, leave empty to use backlog and active states |
 | `filter.states_any` | []string | Alias for `filter.states`; recommended for `blockers_resolved` examples to make the source-state policy explicit |
 | `filter.labels_any` | []string | Match issues with at least one listed label |
+| `filter.groups` | list | The tracker-filter group syntax (#198): matches when any group matches (conditions ANDed inside a group); one more check combined by `match_mode`. `filter:` may also be the list of groups itself. `assignee: me` is not resolved in automations (use an id or login); `states` is plain membership |
 | `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42` |
-| `filter.limit` | int | Maximum issues to queue from one cron tick or event poll batch |
+| `filter.limit` | int | Maximum issues to queue from one cron tick or event poll batch; on `cron` rules the selection rotates between ticks from a persisted per-rule cursor |
 | `filter.input_context_regex` | string | Only for `input_required`; matched against the blocked-agent question text |
 | `filter.max_age_minutes` | int | Only for `input_required`; skips blocked entries older than this many minutes. `0`/absent means no age limit |
+| `filter.check_names` | string[] | Only for `pr_check_completed`: check run names or commit status contexts (case-insensitive). Empty = every check. |
+| `filter.conclusions` | string[] | Only for `pr_check_completed`: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale`, `error`. Empty = every conclusion. |
+| `filter.review_authors` | string[] | Only for `pr_review_submitted`: GitHub logins (case-insensitive), e.g. `greptile-apps[bot]`. |
+| `filter.review_states` | string[] | Only for `pr_review_submitted`: `approved`, `changes_requested`, `commented`, `dismissed`. |
+| `filter.mergeable_states` | string[] | Only for `pr_mergeable_changed`: fire on a move into these states. Empty = into or out of `dirty` (a conflict). |
 | `filter.body_contains` | []string | Only for `tracker_comment_added`. Case-insensitive substring list (OR-of-list). A comment body that contains none of the listed substrings short-circuits the dispatch before any agent runs. Empty = match all (P0-B) |
 | `filter.body_regex` | string | Only for `tracker_comment_added`. Regex pattern applied to the comment body. AND-combines with `body_contains` when both are set (P0-B) |
 | `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted as a compatibility alias for `policy.auto_switch` |
@@ -342,6 +355,22 @@ continue draining until the queue falls below the low-water mark.
 When `switch_to_backend` is set, the target profile command must be compatible
 with that backend. Prefer a dedicated Codex profile such as `command: codex` /
 `backend: codex`, or a backend-aware wrapper command.
+
+
+### `pr_events`
+
+How the PR-event triggers (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`) learn about GitHub activity on managed PRs. Read at load time.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `pr_events.webhook_secret` | string | empty | When set (`$VAR` resolves from the environment; at least 16 characters), serves `POST /api/v1/webhooks/pr-events` for signed GitHub `check_run`, `status`, `pull_request` and `pull_request_review` deliveries. The poll then only reads each managed PR (head SHA and `mergeable_state`). Empty: the poll on `polling.automation_interval_ms` also reads check runs, statuses and reviews. |
+
+```yaml
+pr_events:
+  webhook_secret: $ITERVOX_PR_WEBHOOK_SECRET
+```
+
+The poll needs a GitHub token that can read the PR's repository: `tracker.api_key` when the tracker is GitHub, else `GH_TOKEN` / `GITHUB_TOKEN` (`GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN` for an Enterprise host), else the `gh` CLI login. A Linear-tracked project with PRs on GitHub works after `gh auth login`, or with `GITHUB_TOKEN` in `.itervox/.env`. Managed PRs and the PR-event dedup ledger persist in `pr_events.json` in the daemon log directory, next to `automation_queue.json`.
 
 ### Dependency readiness and blockers
 
@@ -496,6 +525,48 @@ changes nothing.
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
 | `base_branch` | string | `"main"` | Branch worktrees are created from |
 
+**Open pull requests and shared branches.** A worker continues an open pull
+request linked from the issue (in its description or comments) only when the
+PR is the issue's own: its head branch is the issue's branch or names the
+identifier (`vlad/eng-12-fix` for `ENG-12`), or its title or body names the
+identifier on word boundaries (`Fixes ENG-12`, `Closes #12`) or links the
+tracker issue. A PR that is only linked — a blocker's, a related one — is
+ignored. Git checks a branch out in one worktree at a time: when the branch an
+issue needs is already checked out in another worktree (another issue's, or the
+repository's own checkout), the issue is not retried. It is held with the
+`branch_in_use` ineligible reason (the dashboard shows "Branch checked out
+elsewhere") and released on the first tick after that worktree is removed or
+switches branches. The hold is runtime state; after a restart the first
+dispatch finds the branch taken again and holds the issue without spending a
+retry. Itervox does not create a second branch from the PR branch instead: the
+agent's pushes would not reach the PR. Fetches into the shared clone are
+serialized, so parallel dispatches no longer fail with `cannot lock ref`.
+
+**The shared bare clone (`clone_url`).** With `worktree: true` and a
+`clone_url`, Itervox keeps one bare clone at `<root>/.bare` and adds each
+issue's worktree under `<root>/worktrees/<identifier>`. The clone fetches
+origin's branches into `refs/remotes/origin/*`
+(`+refs/heads/*:refs/remotes/origin/*`) before every new worktree; a fetch
+never writes a local branch, so an agent's unpushed commits are never
+overwritten and a branch checked out in a worktree cannot make the fetch fail.
+A new worktree's branch starts from `origin/<base_branch>` (or from its
+blocker's branch when stacked PRs apply) and is created with `--no-track`: its
+only upstream is its own name on origin, set when origin already has it, so
+`git push` and `gh pr view` never act on another issue's branch. A branch only
+origin has (an open PR's branch) is created from `origin/<branch>`; an existing
+local copy is fast-forwarded to it, never rewound, and never while another
+worktree has it checked out. The clone's local `<base_branch>` is
+fast-forwarded after each fetch the same way. A failing fetch is recorded once
+in recent failures (`workspace_fetch`) until a fetch succeeds, and
+`itervox doctor` prints the clone's last successful fetch: a failing fetch is
+an `ERROR` (exit 1), a fetch older than 24 hours or a clone still on the
+pre-#195 refspec `+refs/heads/*:refs/heads/*` a `WARNING`. Such a clone is
+migrated automatically the first time it is used: the refspec is rewritten,
+one fetch populates `refs/remotes/origin/*`, and branch upstreams that point
+at a different branch are repointed at the branch's own name on origin (or
+unset when origin lacks it). Nothing is deleted. The last fetch outcome is
+kept in `<root>/.bare/itervox-fetch-status.json`.
+
 ### Agent handoff (`.itervox/handoff/`)
 
 Each worker run can leave a Markdown deliverable at `.itervox/handoff/<ISO8601-timestamp>_<profile-name>.md` on the issue's worktree branch. Before dispatching the next worker for the same issue, the orchestrator reads every `.md` file in that directory in chronological order (the ISO8601 filename prefix sorts lexicographically), applies a token budget (default 30 KB — oldest dropped first with a `[earlier handoffs truncated]` marker), and inlines the result into the agent's prompt as a `## Prior Agent Handoffs` block. A `## Run Context` block follows with two values the agent uses to write its own deliverable:
@@ -548,6 +619,31 @@ hooks:
     git clone git@github.com:org/repo.git .
   before_run: |
     git fetch origin && git reset --hard origin/main
+```
+
+---
+
+## `sessions`
+
+Which Claude Code and Codex sessions **started by hand** on the daemon's host
+the [Sessions panel](https://itervox.dev/guides/sessions/#sessions-started-by-hand)
+lists (read-only, with their transcript and whether their CLI is still
+running), and whether the panel may control sessions running in tmux. Read at
+startup.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `external` | bool | `true` | Discover hand-started sessions from `~/.claude/projects/**/<id>.jsonl` and `~/.codex/sessions/**/rollout-*.jsonl` (`$CLAUDE_CONFIG_DIR` / `$CODEX_HOME` respected). `false` lists only itervox's own sessions. |
+| `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
+| `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
+| `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
+
+```yaml
+sessions:
+  external_window_hours: 12
+  external_roots:
+    - ~/src/app-docs
 ```
 
 ---
@@ -718,10 +814,10 @@ then shows the "config invalid" banner and waits for a fix.
 ### Log format
 
 `--log-format text|json` (or `ITERVOX_LOG_FORMAT`; the flag wins) selects
-the format of the rotating log file **and**, when no terminal is attached
-(systemd, containers, CI), of stderr — one JSON object per log record, for
-platforms that collect stdout/stderr. With a terminal, stderr stays
-human-readable text (and once the TUI starts, logs go to the file only). Both
+the format of the rotating log file **and**, unless the terminal UI runs
+(it starts only with `--tui` since v0.2.4), of stderr — one JSON object per
+log record, for platforms that collect stdout/stderr. With `--tui` on a
+terminal, logs go to the file only. Both
 sinks go through the same secret redaction (`Bearer` tokens, `lin_api_…`,
 `ghp_…`, `sk-ant-…` are written as `***`). Lines printed before logging
 starts or outside it (usage text, fatal start-up errors, the TUI's own
@@ -773,6 +869,32 @@ Linear workflows skip the check.
 including no input at all, creates nothing. Pass `--yes` (or `-y`) to skip the
 prompt in CI. The token needs write access to the repository.
 
+### Tracker sync status in `itervox doctor`
+
+When a live daemon owns this project's `.itervox/HEARTBEAT.md`, `itervox
+doctor` prints its tracker sync status (#117) from the heartbeat's `## Sync`
+section — no API token needed:
+
+```text
+sync: store · last pull 2026-10-14T10:00:00Z (42s ago) · warns after 5m0s · pending writes 3 (urgent 1, batched 2, retrying 0, degraded 0, rate limited 0) · next push 2026-10-14T10:00:08Z
+```
+
+The lag is computed at doctor's own clock. Past the threshold it prints
+`WARNING: tracker sync lag 12m0s is past 5m0s — the board and dispatch are
+working from tracker data that old; last sync error: network at …: tracker
+unreachable (network error)`. It warns, too, when the daemon has never pulled
+and its pulls are failing. The threshold is three pull intervals and at least
+five minutes: 5 minutes at the default `tracker.store.sync_interval_ms`
+(60 s), 30 minutes with `tracker.webhooks` (10-minute safety net), and
+`polling.interval_ms` × 3 (at least 5 minutes) without the tracker store. It
+is not configurable. A lagging sync is a warning only: it does not change the
+exit code. The error is classified (`rate_limited`, `auth`, `not_found`,
+`api_status`, `graphql`, `timeout`, `network`, `canceled`, `unknown`) with a
+fixed summary, never the tracker's response. The heartbeat is rewritten when
+the sync status changes (a pull, a queued or delivered write), so its last
+pull time is at most one heartbeat interval (15 s) behind. The same status is
+on the dashboard's LiveOps strip and in `GET /api/v1/state` as `syncStatus`.
+
 ### Deployment preflight: `itervox doctor --deploy`
 
 `itervox doctor --deploy [--workflow PATH]` runs the normal doctor checks
@@ -822,6 +944,9 @@ runtime queue files, or other generated daemon state.
 
 When a daemon starts, it writes `.itervox/HEARTBEAT.md` atomically with the
 current workflow path, schema version, dashboard URL, tracker/project,
-capacity, automation queue pressure, dependency audit summary, input-required
-count, retry count, and last notable error. Agents can read it when they need
+tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next
+push, last sync error), the tracker poll (`- Poll:` under `## Tracker`, #187:
+`ok, last took 840ms`, `running for 12s`, `slow, running for 47s`, or
+`degraded (3 consecutive transport failures; tracker reads paused until …)`), capacity, automation queue pressure, dependency audit
+summary, input-required count, retry count, and last notable error. Agents can read it when they need
 current daemon state; it is generated runtime state, not prompt text.

@@ -287,6 +287,7 @@ func (s *depsAnalyzerService) run(ctx context.Context, profile string) (*depsana
 		OnProgress:    func(agent.TurnResult) { s.jobs.MarkProgress(s.currentJobID(), -1) },
 		ReadTimeoutMs: s.cfg.Agent.ReadTimeoutMs,
 		TurnTimeoutMs: s.cfg.Agent.TurnTimeoutMs,
+		RulesBlock:    analyzerRulesBlock(s.cfg, profile, prof, s.logger), // #157
 	}, plan.ToAnalyze, trackerEdges, chunkSize, onChunkDone)
 	if err != nil {
 		return nil, err

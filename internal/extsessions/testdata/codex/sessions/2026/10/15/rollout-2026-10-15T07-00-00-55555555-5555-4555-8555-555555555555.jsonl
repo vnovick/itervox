@@ -1,0 +1,4 @@
+{"id": "55555555-5555-4555-8555-555555555555", "timestamp": "2026-10-15T07:00:00Z", "instructions": null}
+{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "legacy hello"}]}
+{"record_type": "state"}
+{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "legacy reply"}]}

@@ -16,8 +16,10 @@ import {
   IssueStatusChangeSchema,
   OutboxEntryRowSchema,
   StateSnapshotSchema,
+  SyncStatusRowSchema,
   TrackerErrorRowSchema,
   TrackerIssueSchema,
+  TrackerPollRowSchema,
   TotalsSchema,
 } from '../schemas';
 
@@ -60,6 +62,12 @@ const schemas: Record<string, SchemaLike> = {
   'IssueStatusChangeRow.json': IssueStatusChangeSchema,
   'OutboxEntryRow.json': OutboxEntryRowSchema,
   'TrackerErrorRow.json': TrackerErrorRowSchema,
+  // #117 (Go-emitted)
+  'SyncStatusRow.json': SyncStatusRowSchema,
+  'SyncStatusRowDirect.json': SyncStatusRowSchema,
+  // #187 (Go-emitted)
+  'TrackerPollRow.json': TrackerPollRowSchema,
+  'TrackerPollRowIdle.json': TrackerPollRowSchema,
   // CORE-091 / CORE-175 (Go-emitted, M6-G4)
   'Totals.json': TotalsSchema,
   'TotalsCostUnknown.json': TotalsSchema,
@@ -310,5 +318,35 @@ describe('StateSnapshot backend health parity (CORE-055)', () => {
       autoSwitch: { identifier: 'ENG-1', source: 'automation', toBackend: 'codex' },
     });
     expect(parsed.autoSwitch?.toBackend).toBe('codex');
+  });
+});
+
+// #117 — syncStatus rides the top-level StateSnapshot DTO (fixture-backed row
+// above). Optional: absent on daemons predating it.
+describe('StateSnapshot syncStatus parity (#117)', () => {
+  const minimalSnapshot = {
+    generatedAt: '2026-10-14T10:00:00Z',
+    counts: { running: 0, retrying: 0, paused: 0 },
+    running: [],
+    retrying: [],
+    paused: [],
+    maxConcurrentAgents: 3,
+    maxRetries: 5,
+    maxSwitchesPerIssuePerWindow: 2,
+    switchWindowHours: 6,
+    rateLimits: null,
+  };
+  const raw: string = readFileSync(join(fixturesDir, 'SyncStatusRow.json'), 'utf-8');
+  const fixture = JSON.parse(raw) as unknown;
+
+  it('parses the Go-emitted sync status on the snapshot', () => {
+    const parsed = StateSnapshotSchema.parse({ ...minimalSnapshot, syncStatus: fixture });
+    expect(parsed.syncStatus?.mode).toBe('store');
+    expect(parsed.syncStatus?.pendingWrites).toBe(3);
+    expect(parsed.syncStatus?.lastError?.kind).toBe('network');
+  });
+
+  it('parses snapshots that omit it (older daemon)', () => {
+    expect(StateSnapshotSchema.parse(minimalSnapshot).syncStatus).toBeUndefined();
   });
 });

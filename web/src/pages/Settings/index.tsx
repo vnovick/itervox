@@ -4,12 +4,14 @@ import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
 import { DependenciesCard } from './DependenciesCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
+import { TrackerFilterCard } from './trackerFilter/TrackerFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
 import { SkillsCard } from './SkillsCard';
 import { RetriesCard } from './RetriesCard';
 import { CapacityCard } from './CapacityCard';
 import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
 import { BrowserNotificationsCard } from './BrowserNotificationsCard';
+import { SchemaSettingsCard } from './schema/SchemaSettingsCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
 import { useSettingsPageData } from './useSettingsPageData';
@@ -25,6 +27,7 @@ export default function Settings() {
     inlineInput,
     trackerKind,
     activeProjectFilter,
+    filterSupported,
     maxRetries,
     failedState,
     maxSwitchesPerIssuePerWindow,
@@ -34,6 +37,7 @@ export default function Settings() {
     setAutoClearWorkspace,
     setDepsAnalysisMode,
     setProjectFilter,
+    setTrackerFilter,
     setInlineInput,
     setMaxRetries,
     setFailedState,
@@ -91,11 +95,15 @@ export default function Settings() {
               initialCompletionState={completionState}
               onSave={updateTrackerStates}
             />
-            {trackerKind === 'linear' && (
-              <ProjectFilterCard
-                activeFilter={activeProjectFilter}
-                onSetFilter={setProjectFilter}
-              />
+            {filterSupported ? (
+              <TrackerFilterCard onSave={setTrackerFilter} />
+            ) : (
+              trackerKind === 'linear' && (
+                <ProjectFilterCard
+                  activeFilter={activeProjectFilter}
+                  onSetFilter={setProjectFilter}
+                />
+              )
             )}
           </div>
         </section>
@@ -181,6 +189,22 @@ export default function Settings() {
             Skills Inventory
           </h2>
           <SkillsCard />
+        </section>
+
+        {/* #158 — every layered setting, rendered from the settings schema. */}
+        <section aria-labelledby="section-all-settings">
+          <h2
+            id="section-all-settings"
+            className="mb-1 text-xs font-semibold tracking-widest uppercase"
+          >
+            All settings
+          </h2>
+          <p className="text-theme-muted mb-3 text-xs">
+            Every agent, polling, server and workspace setting, from the settings schema. Pick the
+            layer a save writes: your user file, the project file (committed) or the project-local
+            file (gitignored). WORKFLOW.md still wins over all three.
+          </p>
+          <SchemaSettingsCard />
         </section>
 
         <section aria-labelledby="section-logs">

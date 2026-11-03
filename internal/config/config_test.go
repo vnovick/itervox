@@ -346,6 +346,28 @@ func TestAutomationPollIntervalConfigRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTrackerPushIntervalConfigRoundTrip pins tracker.push_interval_ms
+// (#115): 10s when absent, the configured value when set, an explicit 0
+// kept (batching off), and the default again for a negative value.
+func TestTrackerPushIntervalConfigRoundTrip(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, 10000, cfg.Tracker.PushIntervalMs)
+	assert.Equal(t, config.DefaultTrackerPushIntervalMs, cfg.Tracker.PushIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  push_interval_ms: 30000\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 30000, cfg.Tracker.PushIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  push_interval_ms: 0\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.Tracker.PushIntervalMs, "an explicit 0 turns batching off")
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  push_interval_ms: -5\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 10000, cfg.Tracker.PushIntervalMs, "a negative value falls back to the default")
+}
+
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
 	content := minimal("agent:\n  max_concurrent_agents_by_state:\n    Todo: 3\n    IN PROGRESS: 2\n")
 	path := workflowWithContent(t, content)

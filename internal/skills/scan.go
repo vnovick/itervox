@@ -99,6 +99,15 @@ func Scan(projectDir, homeDir string, opts ScanOptions) (*Inventory, error) {
 			inv.Hooks = append(inv.Hooks, codexHooks...)
 			inv.Instructions = append(inv.Instructions, codexInstructions...)
 		}
+		prompts, promptsDir, err := scanCodexPrompts(effectiveHome)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			inv.Prompts = prompts
+		}
+		if promptsDir != "" {
+			inv.WatchDirs = append(inv.WatchDirs, promptsDir)
+		}
 	}
 
 	if len(errs) > 0 {

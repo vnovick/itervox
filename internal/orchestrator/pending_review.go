@@ -171,7 +171,9 @@ func (o *Orchestrator) resumePendingReviews(ctx context.Context, state *State, n
 		if _, claimed := state.Claimed[pr.IssueID]; claimed {
 			continue
 		}
-		issue, err := o.tracker.FetchIssueDetail(ctx, pr.IssueID)
+		rctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+		issue, err := o.tracker.FetchIssueDetail(rctx, pr.IssueID)
+		cancel()
 		if errors.Is(err, tracker.ErrNotFound) { // CORE-174: deleted meanwhile
 			slog.Warn("orchestrator: pending review dropped, issue no longer exists", "identifier", id)
 			o.clearPendingReview(state, id)

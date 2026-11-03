@@ -4,7 +4,7 @@ import "sync/atomic"
 
 // resetForTest clears every counter. Tests only.
 func resetForTest() {
-	for _, c := range []*counterVec{workerExits, trackerRequests, clientErrors} {
+	for _, c := range []*counterVec{workerExits, trackerRequests, clientErrors, tmuxSends} {
 		c.mu.Lock()
 		c.vals = map[string]*atomic.Uint64{}
 		c.mu.Unlock()

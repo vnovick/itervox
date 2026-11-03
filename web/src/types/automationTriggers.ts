@@ -7,11 +7,27 @@ export const AUTOMATION_TRIGGER_TYPES = [
   'run_failed',
   'pr_opened',
   'pr_merged',
+  'pr_check_completed',
+  'pr_synchronized',
+  'pr_review_submitted',
+  'pr_mergeable_changed',
   'rate_limited',
   'blockers_resolved',
 ] as const;
 
 export type AutomationTriggerType = (typeof AUTOMATION_TRIGGER_TYPES)[number];
+
+/** The #173 PR-event triggers: they fire only for pull requests an Itervox run recorded. */
+export const PR_EVENT_TRIGGER_TYPES = [
+  'pr_check_completed',
+  'pr_synchronized',
+  'pr_review_submitted',
+  'pr_mergeable_changed',
+] as const satisfies readonly AutomationTriggerType[];
+
+export function isPREventTrigger(type: AutomationTriggerType): boolean {
+  return (PR_EVENT_TRIGGER_TYPES as readonly string[]).includes(type);
+}
 
 export type AutomationTriggerMeta = {
   label: string;
@@ -50,6 +66,25 @@ export const AUTOMATION_TRIGGER_META = {
   pr_merged: {
     label: 'PR Merged',
     description: 'Fires when a tracked pull request opened by an itervox-managed branch merges.',
+  },
+  pr_check_completed: {
+    label: 'PR Check Completed',
+    description:
+      'Fires when a check run or commit status completes on the head of a pull request Itervox opened.',
+  },
+  pr_synchronized: {
+    label: 'PR Synchronized',
+    description: 'Fires when a new commit is pushed to a pull request Itervox opened.',
+  },
+  pr_review_submitted: {
+    label: 'PR Review Submitted',
+    description:
+      'Fires when a review (human or bot) is submitted on a pull request Itervox opened.',
+  },
+  pr_mergeable_changed: {
+    label: 'PR Mergeable Changed',
+    description:
+      'Fires when a pull request Itervox opened gains or loses a merge conflict (mergeable_state).',
   },
   rate_limited: {
     label: 'Rate Limited',

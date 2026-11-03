@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,12 +21,56 @@ type fakeSessions struct {
 	sendErr error
 	sentID  string
 	sentMsg string
+	// #178 step 3
+	page     server.TranscriptResponse
+	pageErr  error
+	pageArgs []any
+	// #178 tmux
+	sentSubmit bool
+	tmux       server.TmuxStatusRow
+	opts       server.NewSessionOptions
+	screen     server.ScreenResponse
+	tmuxErr    error
+	keyArgs    []string
+	startReq   *server.NewSessionRequest
+	killed     string
+}
+
+func (f *fakeSessions) TmuxStatus() server.TmuxStatusRow            { return f.tmux }
+func (f *fakeSessions) NewSessionOptions() server.NewSessionOptions { return f.opts }
+func (f *fakeSessions) SessionScreen(id string, lines int) (server.ScreenResponse, error) {
+	f.keyArgs = []string{id, strconv.Itoa(lines)}
+	return f.screen, f.tmuxErr
+}
+
+func (f *fakeSessions) SendSessionKey(id, key string) error {
+	f.keyArgs = []string{id, key}
+	return f.tmuxErr
+}
+
+func (f *fakeSessions) StartSession(req server.NewSessionRequest) (server.SessionRow, error) {
+	f.startReq = &req
+	if f.tmuxErr != nil {
+		return server.SessionRow{}, f.tmuxErr
+	}
+	return server.SessionRow{ID: "itervox-abc123", Owner: "itervox", Kind: "tmux", Status: "running", Cwd: req.Cwd,
+		Controllable: true, AttachCommand: "tmux attach -t itervox-abc123"}, nil
+}
+
+func (f *fakeSessions) KillSession(id string) error {
+	f.killed = id
+	return f.tmuxErr
+}
+
+func (f *fakeSessions) SessionTranscript(id string, before int64, limit int) (server.TranscriptResponse, error) {
+	f.pageArgs = []any{id, before, limit}
+	return f.page, f.pageErr
 }
 
 func (f *fakeSessions) ListSessions() []server.SessionRow { return f.rows }
 
-func (f *fakeSessions) SendSessionMessage(id, text string) (server.SessionMessageRow, error) {
-	f.sentID, f.sentMsg = id, text
+func (f *fakeSessions) SendSessionMessage(id, text string, submit bool) (server.SessionMessageRow, error) {
+	f.sentID, f.sentMsg, f.sentSubmit = id, text, submit
 	if f.sendErr != nil {
 		return server.SessionMessageRow{}, f.sendErr
 	}

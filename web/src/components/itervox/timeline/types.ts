@@ -1,4 +1,10 @@
-import type { HistoryRow, IssueLogEntry, RunningRow } from '../../../types/schemas';
+import type {
+  HistoryRow,
+  IssueLogEntry,
+  PromptParts,
+  RunningRow,
+  RunSteer,
+} from '../../../types/schemas';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +27,13 @@ export interface NormalisedSession {
   // filters on the presence of automationId for its automation chip.
   automationId?: string;
   triggerType?: string;
+  // #186 — run provenance, history rows only.
+  runId?: string;
+  profileName?: string;
+  promptDigest?: string;
+  promptParts?: PromptParts;
+  steers?: RunSteer[];
+  steersDropped?: number;
 }
 
 export function fromRunning(r: RunningRow): NormalisedSession {
@@ -50,6 +63,12 @@ export function fromHistory(h: HistoryRow): NormalisedSession {
     sessionId: h.sessionId,
     automationId: h.automationId,
     triggerType: h.triggerType,
+    runId: h.runId,
+    profileName: h.profileName,
+    promptDigest: h.promptDigest,
+    promptParts: h.promptParts,
+    steers: h.steers,
+    steersDropped: h.steersDropped,
   };
 }
 

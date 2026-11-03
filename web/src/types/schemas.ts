@@ -134,6 +134,28 @@ export const RunningRowSchema = z.object({
   triggerType: z.string().optional(),
   // Reviewer/comment-count surface (T-6). Absent when zero.
   commentCount: z.number().optional(),
+  // #182 — the issue left the tracker scope mid-run (reassigned away, moved
+  // out of the project): the run finishes, no new run is dispatched.
+  outOfScope: z.boolean().optional(),
+  // #157 — the rule set the run was given; absent when no rule applied.
+  rulesHash: z.string().optional(),
+  ruleIds: z.array(z.string()).optional(),
+});
+
+// #186 — per-component digests of a run's prompt version (hashes only).
+export const PromptPartsSchema = z.object({
+  soul: z.string().optional(),
+  instructions: z.string().optional(),
+  rules: z.string().optional(),
+  template: z.string().optional(),
+});
+
+// #186 — one operator message delivered to a run. Unknown delivery values
+// fall back to 'resume' (the path every backend supports).
+export const RunSteerSchema = z.object({
+  text: z.string(),
+  at: z.string(),
+  delivery: tolerantEnum('history.steers.delivery', ['live', 'resume'], 'resume'),
 });
 
 export const HistoryRowSchema = z.object({
@@ -161,6 +183,19 @@ export const HistoryRowSchema = z.object({
   automationId: z.string().optional(),
   triggerType: z.string().optional(),
   commentCount: z.number().optional(),
+  // #157 — the rule set the run used; absent when no rule applied.
+  rulesHash: z.string().optional(),
+  ruleIds: z.array(z.string()).optional(),
+  // #186 — run provenance; all absent on rows recorded before it existed.
+  profileName: z.string().optional(),
+  runId: z.string().optional(),
+  // Prompt version: 64-hex SHA-256 of SOUL.md + INSTRUCTIONS.md + rules +
+  // template. Opaque; the dashboard shows the first 12 characters.
+  promptDigest: z.string().optional(),
+  promptParts: PromptPartsSchema.optional(),
+  // Operator messages delivered to the run (redacted, bounded).
+  steers: z.array(RunSteerSchema).optional(),
+  steersDropped: z.number().optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -274,10 +309,29 @@ export const AutomationTriggerSchema = z.object({
   state: z.string().optional(),
 });
 
+// #198 — one group of a tracker filter: its conditions AND; the groups of a
+// filter OR. Keys are the WORKFLOW.md condition names (snake_case), the same
+// on the wire, so tracker.filter and automation filter groups read alike.
+export const FilterGroupSchema = z.object({
+  projects: z.array(z.string()).optional(),
+  teams: z.array(z.string()).optional(),
+  assignee: z.string().optional(),
+  labels_any: z.array(z.string()).optional(),
+  labels_all: z.array(z.string()).optional(),
+  labels_none: z.array(z.string()).optional(),
+  priority: z.array(z.number()).optional(),
+  states: z.array(z.string()).optional(),
+  cycle: z.string().optional(),
+  milestone: z.string().optional(),
+});
+export type FilterGroup = z.infer<typeof FilterGroupSchema>;
+
 export const AutomationFilterSchema = z.object({
   matchMode: tolerantEnum('automations.filter.matchMode', ['all', 'any'], 'all').optional(),
   states: z.array(z.string()).optional(),
   labelsAny: z.array(z.string()).optional(),
+  // #198 — tracker-filter groups (any group matching), kept on save.
+  groups: z.array(FilterGroupSchema).optional(),
   identifierRegex: z.string().optional(),
   limit: z.number().optional(),
   inputContextRegex: z.string().optional(),
@@ -285,6 +339,12 @@ export const AutomationFilterSchema = z.object({
   // rejects it on other types. Skip stale entries (queued > N minutes ago)
   // and drive the dashboard's stale badge.
   maxAgeMinutes: z.number().optional(),
+  // #173 PR-event filters; the server validator rejects each on other triggers.
+  checkNames: z.array(z.string()).optional(),
+  conclusions: z.array(z.string()).optional(),
+  reviewStates: z.array(z.string()).optional(),
+  reviewAuthors: z.array(z.string()).optional(),
+  mergeableStates: z.array(z.string()).optional(),
 });
 
 export const AutomationPolicySchema = z.object({
@@ -621,6 +681,63 @@ export const TrackerErrorRowSchema = z.object({
   consecutiveFailures: optionalSafeInt,
 });
 
+// SyncStatusRowSchema mirrors server.SyncStatusRow (#117): the tracker sync
+// status. mode is "store" (local tracker store pulling in the background),
+// "direct" (each poll reads the tracker) or "local_sync" (local issue files
+// synced with Linear or GitHub, #118), kept a plain string so a future
+// mode never fails the snapshot parse. lastPullAt is absent until a pull
+// succeeds; lagMs is the lag at snapshot time (the dashboard recomputes it
+// from lastPullAt on its own clock). lastError.kind is a tracker error class
+// (rate_limited, auth, not_found, api_status, graphql, timeout, network,
+// canceled, unknown), also a plain string. The pending* counts describe the
+// write-ahead outbox and overlap (an urgent write can also be retrying).
+const syncCount = z.number().int().nonnegative();
+export const SyncStatusRowSchema = z.object({
+  mode: z.string(),
+  lastPullAt: optionalTimeString,
+  lagMs: optionalSafeInt,
+  lagWarnAfterMs: syncCount,
+  stale: z.boolean(),
+  syncIntervalMs: syncCount,
+  cursorAt: optionalTimeString,
+  consecutiveFailures: optionalSafeInt,
+  lastError: z
+    .object({
+      at: z.string(),
+      kind: z.string(),
+      message: z.string(),
+    })
+    .optional(),
+  pendingWrites: syncCount,
+  pendingUrgent: syncCount,
+  pendingBatched: syncCount,
+  pendingRetrying: syncCount,
+  pendingDegraded: syncCount,
+  pendingRateLimited: syncCount,
+  oldestPendingAt: optionalTimeString,
+  nextPushAt: optionalTimeString,
+  pushIntervalMs: syncCount,
+});
+export type SyncStatusRow = z.infer<typeof SyncStatusRowSchema>;
+
+// TrackerPollRowSchema mirrors server.TrackerPollRow (#187): the off-loop
+// tracker poll — whether one is in flight and for how long, whether it (or
+// the last one) passed the slow threshold, and whether the tracker breaker
+// has the poll degraded after consecutive transport failures.
+export const TrackerPollRowSchema = z.object({
+  inFlight: z.boolean(),
+  startedAt: optionalTimeString,
+  runningForMs: optionalSafeInt,
+  lastFinishedAt: optionalTimeString,
+  lastDurationMs: syncCount,
+  slowAfterMs: syncCount,
+  slow: z.boolean(),
+  degraded: z.boolean(),
+  breakerOpenUntil: optionalTimeString,
+  consecutiveTransportFailures: optionalSafeInt,
+});
+export type TrackerPollRow = z.infer<typeof TrackerPollRowSchema>;
+
 // FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
 // daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
 // tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
@@ -715,6 +832,18 @@ export const StateSnapshotSchema = z.object({
   trackerKind: z.string().optional(),
   demoMode: z.boolean().optional(),
   activeProjectFilter: z.array(z.string()).optional(),
+  // #182 — the tracker's combined read scope (projects AND assignee AND
+  // any-of labels): its header label ("ENG · assigned to me · label:
+  // agent"), the assignee spec and who it resolved to, and the labels.
+  // Absent for trackers without a combinable scope.
+  trackerScope: z.string().optional(),
+  scopeAssignee: z.string().optional(),
+  scopeAssigneeName: z.string().optional(),
+  scopeLabels: z.array(z.string()).optional(),
+  // #198 — the tracker filter conditions the tracker supports; present
+  // when the tracker reads through a filter (Settings shows the group
+  // builder).
+  filterConditions: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),
@@ -795,6 +924,12 @@ export const StateSnapshotSchema = z.object({
   // failed failed-state move). Absent when none is recorded and on snapshots
   // from daemons predating the field.
   lastTrackerError: TrackerErrorRowSchema.optional(),
+  // #117 — tracker sync status (pull lag, pending writes, last sync error).
+  // Absent on daemons predating it; the LiveOps sync chip then hides.
+  syncStatus: SyncStatusRowSchema.optional(),
+  // #187 — the off-loop tracker poll (in flight, slow, degraded). Absent on
+  // daemons predating it; the LiveOps tracker poll chip then hides.
+  trackerPoll: TrackerPollRowSchema.optional(),
   // CORE-046 — bounded ring of recent failures, oldest recorded first.
   // Always an array on a current daemon; absent on older daemons.
   recentFailures: z.array(FailureRowSchema).optional(),
@@ -944,6 +1079,8 @@ export type SSHHostInfo = z.infer<typeof SSHHostInfoSchema>;
 export type CommentRow = z.infer<typeof CommentRowSchema>;
 export type RunningRow = z.infer<typeof RunningRowSchema>;
 export type HistoryRow = z.infer<typeof HistoryRowSchema>;
+export type RunSteer = z.infer<typeof RunSteerSchema>;
+export type PromptParts = z.infer<typeof PromptPartsSchema>;
 export type RetryRow = z.infer<typeof RetryRowSchema>;
 export type Counts = z.infer<typeof CountsSchema>;
 export type RateLimitInfo = z.infer<typeof RateLimitInfoSchema>;
@@ -997,6 +1134,16 @@ export const SubagentSchema = z.object({
   Description: z.string().optional(),
   Tools: z.array(z.string()).nullable().optional(),
   Model: z.string().optional(),
+  Provider: z.string(),
+  Source: z.string(),
+  FilePath: z.string().optional(),
+  ApproxTokens: z.number(),
+});
+
+// Codex custom prompt from ~/.codex/prompts/*.md, run as /prompts:<name> (#123).
+export const PromptSchema = z.object({
+  Name: z.string(),
+  Description: z.string().optional(),
   Provider: z.string(),
   Source: z.string(),
   FilePath: z.string().optional(),
@@ -1082,6 +1229,7 @@ export const InventorySchema = z.object({
   Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
   Subagents: z.array(SubagentSchema).nullable().optional(),
+  Prompts: z.array(PromptSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
   Hooks: z.array(HookEntrySchema).nullable().optional(),
@@ -1091,6 +1239,36 @@ export const InventorySchema = z.object({
   // Phase-2/Phase-3 features land in the frontend.
 });
 
+// POST /api/v1/skills/check-refs (#123): the #86 reference validator run
+// over one draft prompt. Mirrors internal/server/skills_refs.go
+// promptRefCheckResponse / promptRefRow. from/to are UTF-16 offsets.
+export const PromptRefRowSchema = z.object({
+  kind: z.string(),
+  name: z.string(),
+  from: z.number(),
+  to: z.number(),
+  status: z.string(), // "ok" | "missing" | "outside_repo"; unknown values are treated as ok
+  severity: z.string().optional(),
+  issueId: z.string().optional(),
+  message: z.string().optional(),
+});
+
+export const PromptRefCheckSchema = z.object({
+  backend: z.string(),
+  sshHosts: z.array(z.string()).nullable().optional(),
+  refs: z.array(PromptRefRowSchema).nullable().optional(),
+});
+
+// GET /api/v1/skills/profile-backends (#123).
+export const ProfileBackendsSchema = z.object({
+  default: z.string(),
+  profiles: z.record(z.string(), z.string()),
+});
+
+export type PromptRefRow = z.infer<typeof PromptRefRowSchema>;
+export type PromptRefCheck = z.infer<typeof PromptRefCheckSchema>;
+export type ProfileBackends = z.infer<typeof ProfileBackendsSchema>;
+export type CodexPrompt = z.infer<typeof PromptSchema>;
 export type Skill = z.infer<typeof SkillSchema>;
 export type Subagent = z.infer<typeof SubagentSchema>;
 export type InstructionDocEntry = z.infer<typeof InstructionDocSchema>;
@@ -1155,7 +1333,8 @@ export const SessionMessageRowSchema = z.object({
   id: z.string(),
   text: z.string(),
   status: z.enum(['queued', 'delivered', 'dropped']),
-  delivery: z.enum(['live', 'resume']).optional(),
+  // "tmux": pasted into the session's tmux pane (#178 tmux control).
+  delivery: z.enum(['live', 'resume', 'tmux']).optional(),
   reason: z.string().optional(),
   queuedAt: z.string(),
   deliveredAt: z.string().optional(),
@@ -1164,8 +1343,8 @@ export const SessionMessageRowSchema = z.object({
 export const SessionRowSchema = z.object({
   id: z.string(),
   runId: z.string().optional(),
-  // "itervox": this daemon started it and may write to it. Anything else is
-  // read-only (sessions started by hand, a later step).
+  // "itervox": this daemon started it and may write to it. "external":
+  // started by hand, read-only.
   owner: z.string(),
   identifier: z.string(),
   title: z.string().optional(),
@@ -1173,7 +1352,9 @@ export const SessionRowSchema = z.object({
   backend: z.string().optional(),
   workerHost: z.string().optional(),
   kind: z.string().optional(),
-  status: z.string(), // "running" | "input_required" | "pending_input_resume"
+  // "running" | "input_required" | "pending_input_resume"; "exited" for a
+  // hand-started session whose CLI has exited.
+  status: z.string(),
   startedAt: z.string().optional(),
   queuedAt: z.string().optional(),
   turnCount: z.number().optional(),
@@ -1181,12 +1362,277 @@ export const SessionRowSchema = z.object({
   inputContext: z.string().optional(),
   steering: z.enum(['live', 'resume']).optional(),
   messages: z.array(SessionMessageRowSchema).optional(),
+  // #178 step 3 — hand-started sessions (no identifier).
+  cwd: z.string().optional(),
+  updatedAt: z.string().optional(),
+  // Why a hand-started session counts as still running.
+  inUseReason: z.string().optional(),
+  // #178 tmux — the pane the session runs in (null: none); whether the
+  // panel may show its screen and type into it; for a session itervox
+  // started in tmux ("New session", kind "tmux"), how to attach to it.
+  tmuxPane: z.object({ id: z.string(), label: z.string() }).nullable().optional(),
+  controllable: z.boolean().optional(),
+  attachCommand: z.string().optional(),
+});
+
+// Top-level "tmux" of GET /api/v1/sessions: re-detected every discovery
+// pass, so installing tmux lifts the warning without a restart.
+export const TmuxStatusSchema = z.object({
+  available: z.boolean(),
+  version: z.string().optional(),
+  installHint: z.string(),
+  // sessions.tmux_control: hand-started sessions in tmux may be controlled.
+  control: z.boolean(),
+});
+
+export const NewSessionOptionsSchema = z.object({
+  projectRoot: z.string(),
+  folders: z.array(z.string()),
+  profiles: z.array(z.string()),
+  max: z.number(),
 });
 
 export const SessionsResponseSchema = z.object({
   generatedAt: z.string(),
   sessions: z.array(SessionRowSchema),
+  // Absent from daemons before tmux control.
+  tmux: TmuxStatusSchema.optional(),
+  newSession: NewSessionOptionsSchema.optional(),
 });
 
+// GET /api/v1/sessions/{id}/screen — internal/server/sessions_tmux.go.
+export const SessionScreenSchema = z.object({
+  id: z.string(),
+  pane: z.string(),
+  label: z.string(),
+  text: z.string(),
+  lines: z.number(),
+  capturedAt: z.string(),
+});
+
+// GET /api/v1/sessions/{id}/transcript — internal/server/sessions_external.go.
+export const TranscriptEntrySchema = z.object({
+  role: z.string(), // "user" | "assistant"
+  kind: z.string(), // "text" | "tool" | "tool_result"
+  text: z.string(),
+  at: z.string().optional(),
+  truncated: z.boolean().optional(),
+});
+
+export const SessionTranscriptSchema = z.object({
+  id: z.string(),
+  backend: z.string().optional(),
+  entries: z.array(TranscriptEntrySchema),
+  // Cursor of the next older page; present only when hasMore.
+  before: z.number().optional(),
+  hasMore: z.boolean(),
+  size: z.number(),
+});
+
+export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
+export type SessionTranscript = z.infer<typeof SessionTranscriptSchema>;
 export type SessionMessageRow = z.infer<typeof SessionMessageRowSchema>;
+export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
+export type NewSessionOptions = z.infer<typeof NewSessionOptionsSchema>;
+export type SessionScreen = z.infer<typeof SessionScreenSchema>;
+export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
 export type SessionRow = z.infer<typeof SessionRowSchema>;
+// ─── Rules (#157) ────────────────────────────────────────────────────────────
+// Mirrors internal/rules (Go) and the published JSON Schema
+// site/public/schema/rules.schema.json; a test keeps the three in step.
+
+export const RULE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const nonBlank = z.string().regex(/\S/, 'must not be empty');
+
+export const RuleScopeSchema = z
+  .object({
+    projects: z.array(nonBlank).optional(),
+    profiles: z.array(nonBlank).optional(),
+    backends: z.array(nonBlank).optional(),
+  })
+  .strict();
+
+export const RuleSchema = z
+  .object({
+    id: z.string().regex(RULE_ID_PATTERN, 'letters, digits, ".", "_" and "-" (64 at most)'),
+    severity: z.enum(['must', 'should']),
+    text: nonBlank,
+    description: z.string().optional(),
+    scope: RuleScopeSchema.optional(),
+  })
+  .strict();
+
+/** A whole rules file, as the JSON view validates it before saving. */
+export const RulesFileSchema = z
+  .object({
+    $schema: z.string().optional(),
+    rules: z.array(RuleSchema).optional(),
+  })
+  .strict()
+  .superRefine((file, ctx) => {
+    const seen = new Map<string, number>();
+    (file.rules ?? []).forEach((rule, i) => {
+      const key = rule.id.toLowerCase();
+      const prev = seen.get(key);
+      if (prev !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules', i, 'id'],
+          message: `"${rule.id}" is already used by rules[${String(prev)}]`,
+        });
+      }
+      seen.set(key, i);
+    });
+  });
+
+export const RULES_LAYER_NAMES = ['user', 'project', 'local'] as const;
+
+export const RulesLayerSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  writable: z.boolean(),
+  exists: z.boolean(),
+  raw: z.string(),
+  version: z.string(),
+  rules: z
+    .array(RuleSchema)
+    .nullable()
+    .transform((v) => v ?? []),
+  error: z.string().optional(),
+});
+
+export const RulesViewSchema = z.object({
+  schemaUrl: z.string(),
+  layers: z.array(RulesLayerSchema),
+});
+
+export const EffectiveRuleSchema = RuleSchema.extend({
+  layer: z.string(),
+  overrides: z.string().optional(),
+});
+
+export const RulesPreviewSchema = z.object({
+  profile: z.string(),
+  backend: z.string(),
+  identifier: z.string().optional(),
+  projects: z.array(z.string()),
+  rules: z.array(EffectiveRuleSchema),
+  conflicts: z.array(
+    z.object({ id: z.string(), layer: z.string(), keptLayer: z.string(), message: z.string() }),
+  ),
+  errors: z.array(z.object({ layer: z.string(), path: z.string(), message: z.string() })),
+  block: z.string(),
+  hash: z.string(),
+  ids: z.array(z.string()).nullable(),
+  templatePlacesRules: z.boolean(),
+});
+
+export type Rule = z.infer<typeof RuleSchema>;
+export type RulesLayer = z.infer<typeof RulesLayerSchema>;
+export type RulesView = z.infer<typeof RulesViewSchema>;
+export type RulesPreview = z.infer<typeof RulesPreviewSchema>;
+export type RulesLayerName = (typeof RULES_LAYER_NAMES)[number];
+
+// ─── Settings layers and schema (#158) ───────────────────────────────────────
+// Mirrors internal/server/settings_layers.go and the JSON Schema published at
+// site/public/schema/settings.schema.json (generated from the Go config
+// registry). The Settings page renders its fields from that schema.
+
+export const SETTINGS_LAYER_NAMES = ['user', 'project', 'local'] as const;
+export type SettingsLayerName = (typeof SETTINGS_LAYER_NAMES)[number];
+
+const stringList = z
+  .array(z.string())
+  .nullable()
+  .transform((v) => v ?? []);
+
+export const SettingsLayerSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  writable: z.boolean(),
+  exists: z.boolean(),
+  raw: z.string(),
+  version: z.string(),
+  values: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .transform((v) => v ?? {}),
+  unknown: stringList,
+  error: z.string().optional(),
+});
+
+export const SettingsEffectiveSchema = z.object({
+  key: z.string(),
+  value: z.unknown(),
+  layer: z.string(),
+  path: z.string().optional(),
+});
+
+export const SettingsLayersViewSchema = z.object({
+  schemaUrl: z.string(),
+  layers: z.array(SettingsLayerSchema),
+  effective: z
+    .array(SettingsEffectiveSchema)
+    .nullable()
+    .transform((v) => v ?? []),
+});
+
+export const SettingsSaveResultSchema = SettingsLayersViewSchema.extend({
+  layer: z.string(),
+  applied: stringList,
+  restartRequired: stringList,
+  shadowed: z
+    .record(z.string(), z.string())
+    .nullable()
+    .transform((v) => v ?? {}),
+});
+
+/** One node of the settings JSON Schema: a section, a nested object or a field. */
+export interface SettingsSchemaNode {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: string[];
+  minimum?: number;
+  items?: { type?: string };
+  additionalProperties?: boolean | { type?: string };
+  properties?: Record<string, SettingsSchemaNode>;
+  deprecated?: boolean;
+  'x-itervox-group'?: string;
+  'x-itervox-live'?: boolean;
+  'x-itervox-editor'?: string;
+  'x-itervox-replaced-by'?: string;
+}
+
+export const SettingsSchemaNodeSchema: z.ZodType<SettingsSchemaNode> = z.lazy(() =>
+  z.object({
+    type: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    default: z.unknown().optional(),
+    enum: z.array(z.string()).optional(),
+    minimum: z.number().optional(),
+    items: z.object({ type: z.string().optional() }).optional(),
+    additionalProperties: z
+      .union([z.boolean(), z.object({ type: z.string().optional() })])
+      .optional(),
+    properties: z.record(z.string(), SettingsSchemaNodeSchema).optional(),
+    deprecated: z.boolean().optional(),
+    'x-itervox-group': z.string().optional(),
+    'x-itervox-live': z.boolean().optional(),
+    'x-itervox-editor': z.string().optional(),
+    'x-itervox-replaced-by': z.string().optional(),
+  }),
+);
+
+export const SettingsSchemaDocSchema = z.object({
+  $id: z.string(),
+  properties: z.record(z.string(), SettingsSchemaNodeSchema),
+});
+
+export type SettingsLayer = z.infer<typeof SettingsLayerSchema>;
+export type SettingsEffective = z.infer<typeof SettingsEffectiveSchema>;
+export type SettingsLayersView = z.infer<typeof SettingsLayersViewSchema>;
+export type SettingsSaveResult = z.infer<typeof SettingsSaveResultSchema>;
+export type SettingsSchemaDoc = z.infer<typeof SettingsSchemaDocSchema>;

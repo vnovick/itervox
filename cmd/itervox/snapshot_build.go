@@ -31,6 +31,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
 	// file has changed since the last successful load. v0.2.0 todolist6.
 	depsSidecar := depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
+	syncSrc := newSyncStatusSource(cfg, tr, ob, orch) // #117
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
@@ -80,6 +81,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:     r.StartedAt,
 				SubagentCount: subCount,
+				OutOfScope:    isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
+				RulesHash:     r.RulesHash,
+				RuleIDs:       r.RuleIDs,
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -110,6 +114,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
 			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
 		}
+		scopeView := trackerScopeView(tr) // #182
 		profiles := orch.ProfilesCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
 		depsAnalysisMode := orch.DepsAnalysisModeCfg()
@@ -153,6 +158,15 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				AutomationID: r.AutomationID,
 				TriggerType:  r.TriggerType,
 				CommentCount: r.CommentCount,
+				RulesHash:    r.RulesHash,
+				RuleIDs:      r.RuleIDs,
+				ProfileName:  r.ProfileName,
+				// #186: prompt version, run ID and steering history.
+				RunID:         r.RunID,
+				PromptDigest:  r.PromptDigest,
+				PromptParts:   historyPromptParts(r.PromptParts),
+				Steers:        historySteers(r.Steers),
+				SteersDropped: r.SteersDropped,
 			})
 		}
 
@@ -204,6 +218,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DemoMode:                     demoSession != nil,
 			ProjectName:                  projectName,
 			ActiveProjectFilter:          activeProjectFilter,
+			TrackerScope:                 scopeView.label,
+			ScopeAssignee:                scopeView.assignee,
+			ScopeAssigneeName:            scopeView.assigneeName,
+			ScopeLabels:                  scopeView.labels,
+			FilterConditions:             scopeView.conditions, // #198
 			AvailableProfiles:            availableProfiles,
 			ProfileDefs:                  profileDefs,
 			ActiveStates:                 activeStates,
@@ -257,6 +276,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			OutboxSyncing: outboxSyncingRows(s.OutboxSyncing),
 			// CORE-044 — most recent tracker failure (poll or failed-state move).
 			LastTrackerError: trackerErrorRow(s),
+			// #117 — pull lag and pending writes, from the store's and the
+			// outbox's own accessors (never orchestrator.State).
+			SyncStatus: syncSrc.row(now),
+			// #187 — the off-loop tracker poll: in flight, slow, degraded.
+			TrackerPoll: trackerPollRow(s, now),
 			// CORE-046 — the RecentFailures ring (always an array).
 			RecentFailures: recentFailureRows(s),
 			// CORE-175 — operator acks of worker failures + the capability
@@ -279,4 +303,32 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		snap.ConfigInvalid = loadConfigInvalid()
 		return snap
 	}
+}
+
+// isOutOfScope reports whether identifier is in the orchestrator's
+// out-of-scope set (#182).
+func isOutOfScope(set map[string]struct{}, identifier string) bool {
+	_, ok := set[identifier]
+	return ok
+}
+
+// historyPromptParts maps a run's per-component prompt digests (#186); nil
+// when none were recorded.
+func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
+	if p == (orchestrator.PromptParts{}) {
+		return nil
+	}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Template: p.Template}
+}
+
+// historySteers maps a run's delivered operator messages (#186).
+func historySteers(steers []orchestrator.RunSteer) []server.HistorySteer {
+	if len(steers) == 0 {
+		return nil
+	}
+	out := make([]server.HistorySteer, len(steers))
+	for i, s := range steers {
+		out[i] = server.HistorySteer{Text: s.Text, At: s.At, Delivery: s.Delivery}
+	}
+	return out
 }

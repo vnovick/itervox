@@ -7,6 +7,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/profiles"
+	"github.com/vnovick/itervox/internal/templates/scaffold"
 )
 
 // scaffoldWorkflow writes a fresh schema-2 workflow at output for the given
@@ -16,8 +17,8 @@ import (
 // `itervox init` and `itervox quickstart` (#74), which is why it reports
 // errors instead of exiting.
 //
-// preset is "" or presetCrossReview (#79).
-func scaffoldWorkflow(output, dir, trackerKind, runner, preset string, out io.Writer) error {
+// opts picks the starter template (#121) and the preset (#79).
+func scaffoldWorkflow(output, dir, trackerKind, runner string, opts initOptions, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "itervox init: scanning %s...\n", dir)
 	info := scanRepo(dir)
 
@@ -44,25 +45,19 @@ func scaffoldWorkflow(output, dir, trackerKind, runner, preset string, out io.Wr
 	info.CodexModels = listCodexModels()
 	_, _ = fmt.Fprintf(out, "  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
 
-	content := generateWorkflow(trackerKind, runner, info, output)
-	if preset == presetCrossReview {
-		var err error
-		if content, err = applyCrossReviewPreset(content, runner); err != nil {
-			return err
-		}
-	}
+	content := generateWorkflowWith(trackerKind, runner, info, output, opts)
 
 	if err := writeInitWorkflow(output, []byte(content)); err != nil {
 		return fmt.Errorf("itervox init: write %s: %w", output, err)
 	}
 	_, _ = fmt.Fprintf(out, "itervox init: wrote %s\n", output)
-	if err := writeInitAgentFiles(output, runner); err != nil {
+	if err := writeTemplateAgentFiles(output, runner, opts); err != nil {
 		return err
 	}
-	if preset == presetCrossReview {
-		if err := writeCrossReviewerFiles(output, runner); err != nil {
-			return err
-		}
+	if opts.Template != "" {
+		_, _ = fmt.Fprintf(out, "itervox init: starter template %s: %s\n", opts.Template, scaffold.Summary(opts.Template))
+	}
+	if opts.Preset == presetCrossReview {
 		_, _ = fmt.Fprintf(out, "itervox init: cross-review preset: %s writes, reviewed by %s and reviewer (any_block, auto_review)\n", runner, crossReviewerProfile(runner))
 	}
 	_, _ = fmt.Fprintf(out, "itervox init: wrote .itervox/agents profiles\n")
