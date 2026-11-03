@@ -48,6 +48,7 @@ func withLocalSync(cfg *config.Config, workflowPath string, tr tracker.Tracker) 
 	}
 	remoteCfg := &config.Config{Tracker: config.TrackerConfig{
 		Kind: sc.Kind, Endpoint: sc.Endpoint, APIKey: sc.APIKey, ProjectSlug: sc.ProjectSlug,
+		Assignee: sc.Assignee, Team: sc.Team, Labels: sc.Labels, // #182: narrow the project
 		ActiveStates: sc.ActiveStates, TerminalStates: sc.TerminalStates, BacklogStates: sc.BacklogStates,
 		CompletionState: sc.CompletionState,
 	}}

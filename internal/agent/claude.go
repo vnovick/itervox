@@ -186,6 +186,9 @@ func (c *ClaudeRunner) RunTurn(
 	var stdinFeed *remoteStdin // SSH only: the script, then held open (CORE-155)
 	var promptIn *os.File      // local only: the prompt, for the CLI's stdin (CORE-156)
 	defer func() { closePromptFile(promptIn) }()
+	var steer *Steering              // #178: local claude with live steering only
+	var live *liveInput              // its stream-json stdin
+	defer func() { live.finish() }() // no-op when nil; stops the writer on every return
 	if workerHost != "" {
 		// Remote execution: SSH to host and run command in a login shell.
 		// The workspace path is expected to exist on the remote host (e.g. NFS share).
@@ -218,7 +221,16 @@ func (c *ClaudeRunner) RunTurn(
 			return TurnResult{Failed: true}, err
 		}
 	} else {
-		if claudeReadsPrompt(sessionID, prompt) {
+		// #178: with live steering the prompt and any operator message
+		// reach the CLI through a stream-json pipe instead of the prompt
+		// file (see steer.go).
+		steer = liveSteeringFor(ctx, workerHost, sessionID, prompt)
+		if steer != nil {
+			var err error
+			if live, err = newLiveInput(); err != nil {
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
+		} else if claudeReadsPrompt(sessionID, prompt) {
 			var err error
 			if promptIn, err = promptFile(prompt); err != nil {
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
@@ -227,16 +239,28 @@ func (c *ClaudeRunner) RunTurn(
 		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
 			// Clean absolute path with no flags — run the binary directly,
 			// no shell needed; the prompt file is its stdin.
-			cmd = exec.CommandContext(turnCtx, command, buildDirectArgs(sessionID, prompt, permissionMode)...)
-			setPromptStdin(cmd, promptIn)
+			cmd = exec.CommandContext(turnCtx, command, buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+			if live != nil {
+				cmd.Stdin = live.r
+			} else {
+				setPromptStdin(cmd, promptIn)
+			}
 		} else {
 			// Bare name — wrap in login shell so PATH is resolved at
 			// runtime. The prompt file is fd 3, redirected to the CLI's
 			// stdin by the command itself, so a login profile that reads
 			// stdin cannot consume it.
+			redirect := localPromptRedirectFor(promptIn)
+			if live != nil {
+				redirect = localPromptRedirect
+			}
 			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				buildShellCmd(command, sessionID, prompt, localPromptRedirectFor(promptIn), permissionMode))
-			setPromptFD3(cmd, promptIn)
+				buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil))
+			if live != nil {
+				cmd.ExtraFiles = []*os.File{live.r}
+			} else {
+				setPromptFD3(cmd, promptIn)
+			}
 		}
 	}
 	setProcessGroup(cmd)
@@ -266,16 +290,21 @@ func (c *ClaudeRunner) RunTurn(
 	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {
+		live.abandon()
+		live = nil
 		return TurnResult{Failed: true}, fmt.Errorf("agent: start: %w", err)
 	}
 	stdinFeed.start()
+	if live != nil {
+		live.start(prompt, steer)
+	}
 	if workerHost == "" {
 		// CORE-042: record the local group in the orphan ledger until Wait
 		// has returned (the deferred call runs after cmd.Wait below).
 		defer procgroup.Track(ctx, cmd)()
 	}
 
-	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "claude", ParseLine)
+	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "claude", endOnResult(ParseLine, live))
 
 	if readErr != nil {
 		// The stream ended abnormally (idle read timeout or a read error such
@@ -292,6 +321,7 @@ func (c *ClaudeRunner) RunTurn(
 	// Wait regardless of readErr so we don't leave zombie processes.
 	waitErr := cmd.Wait()
 	stdinFeed.join() // Wait closed ssh's stdin pipe; the writer has returned
+	live.finish()    // #178: the CLI has exited; stop the live-input writer
 	if waitErr != nil && readErr == nil {
 		result.Failed = true
 	}
@@ -371,6 +401,18 @@ func buildDirectArgs(sessionID *string, prompt string, mode PermissionMode) []st
 	return args
 }
 
+// buildDirectArgsLive is buildDirectArgs; live adds the stream-json input
+// flags of a live-steered turn (#178, steer.go) after the shared flags.
+func buildDirectArgsLive(sessionID *string, prompt string, mode PermissionMode, live bool) []string {
+	args := buildDirectArgs(sessionID, prompt, mode)
+	if !live {
+		return args
+	}
+	n := len(sharedFlagsSliceFor(mode))
+	out := append(append(append([]string{}, args[:n]...), liveInputFlags...), args[n:]...)
+	return out
+}
+
 // buildShellCmd returns the full shell command string for bash/zsh -lc.
 // The prompt is never in it (CORE-156): when the turn takes a prompt, the
 // command ends in `-p` followed by promptRedirect, the redirection that
@@ -382,12 +424,21 @@ func buildDirectArgs(sessionID *string, prompt string, mode PermissionMode) []st
 // " --output-format ..." which bash interprets as `--output-format` being
 // the command name, surfacing as `--output-format: command not found`.
 func buildShellCmd(command string, sessionID *string, prompt, promptRedirect string, mode PermissionMode) string {
+	return buildShellCmdLive(command, sessionID, prompt, promptRedirect, mode, false)
+}
+
+// buildShellCmdLive is buildShellCmd; live adds the stream-json input flags
+// of a live-steered turn (#178, steer.go).
+func buildShellCmdLive(command string, sessionID *string, prompt, promptRedirect string, mode PermissionMode, live bool) string {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		slog.Warn("agent: empty command resolved at dispatch — falling back to 'claude'. Check WORKFLOW.md agent.command and any profile.command fields.")
 		command = "claude"
 	}
 	cmd := command + sharedFlagsStrFor(mode)
+	if live {
+		cmd += " " + strings.Join(liveInputFlags, " ")
+	}
 	if sessionID != nil && *sessionID != "" {
 		// Resume an existing session. When a prompt is also provided (e.g.,
 		// the user's reply to an input-required question), -p makes Claude

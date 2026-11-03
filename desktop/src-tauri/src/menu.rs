@@ -32,6 +32,8 @@ pub enum MenuAction {
     /// List the host's daemons again.
     Rediscover(String),
     RemoveRemote(String),
+    /// The Sessions window: every daemon's agent sessions (#178).
+    OpenSessions,
     RefreshNow,
     CheckForUpdates,
     InstallUpdate,
@@ -205,6 +207,15 @@ pub fn build_menu<'a>(
     }
 
     entries.push(MenuEntry::Separator);
+    entries.push(b.item(
+        if waiting > 0 {
+            format!("Sessions… ({waiting} waiting)")
+        } else {
+            "Sessions…".to_string()
+        },
+        true,
+        MenuAction::OpenSessions,
+    ));
     entries.push(b.item("Add Project…", true, MenuAction::AddProject));
     entries.push(b.item("Add Remote…", true, MenuAction::AddRemote));
     entries.push(b.item("Refresh Now", true, MenuAction::RefreshNow));
@@ -422,6 +433,43 @@ mod tests {
                 project: "/up".into(),
                 url: "http://127.0.0.1:8090/?issue=ENG-1".into()
             }
+        );
+    }
+
+    /// #178: the Sessions window is one item away, with the number of
+    /// sessions waiting for input across every daemon.
+    #[test]
+    fn sessions_item_opens_the_window_and_counts_waiting_sessions() {
+        let label_of = |spec: &MenuSpec| {
+            spec.entries
+                .iter()
+                .find_map(|e| match e {
+                    MenuEntry::Item { id, label, .. }
+                        if spec.actions.get(id) == Some(&MenuAction::OpenSessions) =>
+                    {
+                        Some(label.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            label_of(&build_menu(&[], &[], [].iter(), None)),
+            "Sessions…"
+        );
+        let mut v = view("/up", true);
+        v.health = Health::Ok(StateSummary {
+            input_required: vec![InputRequired {
+                identifier: "ENG-1".into(),
+                state: "input_required".into(),
+                queued_at: "t".into(),
+                context: String::new(),
+            }],
+            ..Default::default()
+        });
+        assert_eq!(
+            label_of(&build_menu(&[v], &[], [].iter(), None)),
+            "Sessions… (1 waiting)"
         );
     }
 

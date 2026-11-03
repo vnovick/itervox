@@ -216,10 +216,10 @@ booleans and one timestamp:
 | Field | Meaning |
 |---|---|
 | `ready` | `loop_fresh`, fewer than 3 consecutive failed tracker polls, and not `draining`. |
-| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event — for example a slow tracker call — it stays fresh for up to 10 minutes (the tick budget). Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
+| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event it stays fresh for up to 2 minutes (the tick budget): since #187 the poll's tracker reads run off the event loop and the tracker reads an iteration still makes share one 30 s deadline, so a healthy iteration takes milliseconds. Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
 | `last_poll_ok` | The most recent tick polled the tracker and the poll succeeded (`false` before the first poll and while polling is shed for budget). |
 | `config_invalid` | The last `WORKFLOW.md` reload failed validation; the daemon keeps running on its last valid config. |
-| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
+| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, an open tracker breaker (#187: three polls in a row hit a timeout, network error or 5xx), 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
 | `tracker_rate_limited_until` | RFC 3339 instant the tracker rate-limit gate lifts, `null` while it is closed. |
 | `draining` | The daemon is draining — after `SIGTERM`/`SIGINT`, or before applying an operator edit to `WORKFLOW.md` — and admits no new work while in-flight agent turns finish. A draining daemon answers `503` so a load balancer stops routing to it; `loop_fresh` stays `true`. |
 
@@ -356,6 +356,21 @@ Useful top-level fields include:
   `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
+- `trackerPoll` (#187) — the off-loop tracker poll, absent on older daemons:
+  `{ "inFlight", "startedAt"?, "runningForMs"?, "lastFinishedAt"?,
+  "lastDurationMs", "slowAfterMs", "slow", "degraded", "breakerOpenUntil"?,
+  "consecutiveTransportFailures"? }`. The poll tick reads the tracker
+  (running issues' states, the candidate list, input-required reply checks)
+  on its own goroutine, at most one poll at a time, under a deadline of
+  3 × `polling.interval_ms` (at least 30 s, at most 2 minutes); the event
+  loop keeps handling worker exits and operator actions meanwhile.
+  `inFlight`/`startedAt`/`runningForMs` describe the poll now running;
+  `slow` is set when it (or, when idle, the last one) took longer than
+  `slowAfterMs` (the interval plus half an interval, at least 1 s).
+  `degraded` is set once three polls in a row hit a transport failure: the
+  daemon then skips tracker reads until `breakerOpenUntil` (two poll
+  intervals, 30 s to 5 minutes), then one poll probes the tracker; a probe
+  that succeeds clears it.
 - `syncStatus` (#117) — the tracker sync status, absent on older daemons:
   `{ "mode": "store" | "direct" | "local_sync", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
   "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,
@@ -405,6 +420,9 @@ Useful top-level fields include:
   dispatch; the running session's backend stays on `running[].backend`.
   `/api/v1/issues` rows carry the same object as `autoSwitch`, and an issue
   held by an open breaker has `ineligibleReason: "backend_limited"`.
+- An issue whose worktree branch is checked out in another worktree (#193)
+  has `ineligibleReason: "branch_in_use"` until that worktree frees the
+  branch; no retry is scheduled for it.
 - `pauseReasons` — `{ "<identifier>": "<reason>" }` for currently paused
   issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted` or
   `transition_failed` (treat unknown values as opaque). An issue paused by an
@@ -445,6 +463,68 @@ with a lower- or mixed-case name (`password=`, `api_key=`, `"apiKey":`,
 user), and long random-looking tokens (also inside a path) appear as `***`.
 Vendor request ids (`req_…`, `msg_…`), SRI hashes, git SHAs, UUIDs and
 ordinary paths stay readable.
+
+---
+
+## Run history
+
+History rows (`history` in `GET /state`, and the endpoints below) describe
+finished runs, oldest first, from the same bounded ring (200 runs, persisted
+to the daemon's history file). Each row may carry, besides the fields above
+(#186):
+
+- `runId` — the run's ID (the same ID as running rows and logs).
+- `profileName` — the profile the run used.
+- `promptDigest` — the run's **prompt version**: 64 hex characters of
+  SHA-256 over a versioned, length-prefixed concatenation of the profile's
+  `SOUL.md`, its `INSTRUCTIONS.md`, the resolved rule set (sorted by id;
+  each rule's id, severity and text) and the prompt template (the
+  `WORKFLOW.md` body, or `agent.reviewer_prompt` for a reviewer run that has
+  one), computed when the run is dispatched. Two runs with the same digest
+  were given the same prompt inputs. Treat it as an opaque identifier; the
+  dashboard shows its first 12 characters.
+- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "template"? }`:
+  16-hex-character digests of each component (absent when the run had none),
+  so two versions can be compared part by part. History stores only these
+  hashes, never prompt text.
+- `steers` — operator messages delivered to the run from the Sessions panel:
+  `[{ "text", "at", "delivery": "live" | "resume" }]`, in delivery order.
+  Text is redacted like the rest of run data and cut to 1 KiB; a run keeps
+  its newest 20, and `steersDropped` counts older ones that were let go.
+  Typing into a tmux pane is not recorded.
+
+All of these are omitted on rows recorded before they existed.
+
+### `GET /api/v1/history`
+
+The run history: `{ "history": [HistoryRow] }`. `?prompt=<digest prefix>`
+(1–64 hex characters, case-insensitive) keeps only runs whose
+`promptDigest` starts with it; rows without a digest never match. An
+invalid prefix is `400 invalid_prompt_digest` (`field: "prompt"`).
+
+### `GET /api/v1/history/prompt-versions`
+
+The history grouped by prompt version, most recently used version first:
+
+```json
+{
+  "versions": [
+    {
+      "promptDigest": "3f9a…",
+      "runs": 12,
+      "statuses": { "succeeded": 9, "failed": 3 },
+      "successRate": 0.75,
+      "firstSeenAt": "2026-10-01T09:00:00Z",
+      "lastSeenAt": "2026-10-18T17:30:00Z",
+      "profiles": ["implementer"]
+    }
+  ],
+  "unversionedRuns": 4
+}
+```
+
+`statuses` counts runs per history status, `successRate` is the share that
+succeeded (0–1), and `unversionedRuns` counts rows recorded without a digest.
 
 ---
 
@@ -576,6 +656,230 @@ outbox when it is enabled. To answer an input-required agent, use
 oversize body returns `400 bad_request` with `field: "body"`.
 
 ---
+
+## Sessions
+
+The Sessions panel (#178) — the dashboard's `/sessions` page and the Mac app's
+Sessions window. A session is an agent CLI session, identified by the CLI's
+own session ID; itervox writes only to sessions it started. Sessions started
+by hand on the daemon's host are listed read-only with `owner: "external"`.
+
+### `GET /api/v1/sessions`
+
+The daemon's agent sessions: every running itervox run, every session
+waiting for (or resuming from) a human reply, and the recent sessions started
+by hand on the daemon's host. Sessions waiting for input come first, then
+resuming ones, then running ones, oldest first within each; sessions started
+by hand come last, most recently written first.
+
+```json
+{
+  "generatedAt": "2026-10-15T09:00:00Z",
+  "sessions": [
+    {
+      "id": "6f1c…",
+      "owner": "itervox",
+      "identifier": "ENG-2",
+      "backend": "claude",
+      "status": "input_required",
+      "queuedAt": "2026-10-15T08:59:00Z",
+      "inputContext": "Which database should I use?"
+    },
+    {
+      "id": "0b9e…",
+      "runId": "run-2a78…",
+      "owner": "itervox",
+      "identifier": "ENG-1",
+      "title": "Fix the login redirect",
+      "profile": "coder",
+      "backend": "claude",
+      "workerHost": "gpu-1",
+      "status": "running",
+      "startedAt": "2026-10-15T08:40:00Z",
+      "turnCount": 2,
+      "lastEvent": "Running the test suite",
+      "steering": "resume",
+      "messages": [
+        {"id": "msg-…", "text": "Also update the docs.", "status": "delivered",
+         "delivery": "resume", "queuedAt": "…", "deliveredAt": "…"}
+      ]
+    },
+    {
+      "id": "c41d…",
+      "owner": "external",
+      "identifier": "",
+      "title": "Add a health check",
+      "backend": "claude",
+      "status": "running",
+      "cwd": "/work/app",
+      "startedAt": "2026-10-15T07:10:00Z",
+      "updatedAt": "2026-10-15T08:58:00Z",
+      "inUseReason": "a claude process (4242) is running in the session's directory; it may be this session"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | The agent CLI's session ID (Claude Code session, Codex thread). Empty in the first seconds of a run, until the CLI reports it; `runId` addresses the session meanwhile. |
+| `runId` | Itervox's run ID (running sessions only). |
+| `owner` | `itervox` for this daemon's runs — only those take replies and messages; `external` for a session started by hand (read-only, no `identifier`). |
+| `status` | `running`, `input_required` or `pending_input_resume`; for a session started by hand, `running` while its CLI may still be running (with `inUseReason`) and `exited` once it is not. |
+| `cwd` | The directory of a session started by hand. |
+| `updatedAt` | A session started by hand: its transcript's last write. |
+| `inUseReason` | A session started by hand with `status: "running"`: why it counts as still running. |
+| `kind` | `tmux` for a session itervox started in tmux (New session); `reviewer` for a reviewer run. |
+| `tmuxPane` | The tmux pane the session runs in, `{"id": "%3", "label": "work:0.0"}`; `null` when none. |
+| `controllable` | The panel may show its screen and type into it ([Sessions in tmux](#sessions-in-tmux)): a session itervox started in tmux, or a hand-started one in a matched pane with `sessions.tmux_control`, while tmux is installed. |
+| `attachCommand` | A session itervox started in tmux: the command that attaches a terminal to it. |
+| `startedAt` / `queuedAt` | When the run started / when it started waiting for input. |
+| `inputContext` | The agent's question while it waits. |
+| `steering` | Running sessions: `live` (a message is written into the running turn — local Claude with `agent.live_steering`) or `resume` (delivered as the prompt of the next turn, which resumes the session). |
+| `messages` | Operator messages sent to the issue's sessions, newest last (at most 20): `status` `queued`, `delivered` (with `delivery` `live` or `resume`) or `dropped` (with `reason`). |
+
+The response also carries `tmux` — `{"available": true, "version": "tmux 3.4",
+"installHint": "brew install tmux", "control": false}`, re-detected every
+discovery pass (`control` is `sessions.tmux_control`) — and `newSession` —
+`{"projectRoot": "…", "folders": ["…"], "profiles": ["…"], "max": 8}`, what
+New session offers (the project directory, then itervox's workspaces).
+
+`503 not_configured` when the daemon was built without the sessions client.
+Messages are runtime state: they do not survive a daemon restart. Which sessions started by hand are listed is set by
+[`sessions:`](configuration.md#sessions) (default: the last 24 hours, inside
+the project directory only).
+
+### `POST /api/v1/sessions/{id}/message`
+
+Queues an operator message for a running session. `{id}` is the session's
+`id`, or its `runId` before the CLI reported an ID. For a controllable
+session in tmux the text is pasted into its pane instead, then Enter is
+pressed unless `submit` is `false` (`{"text": "…", "submit": false}`;
+`message` and `text` are interchangeable), and the answer is `202` with
+`"status": "delivered", "delivery": "tmux"`.
+
+```json
+{"message": "Also update the docs."}
+```
+
+`202 {"message":{"id":"msg-…","text":"…","status":"queued","queuedAt":"…"}}` —
+the message is queued; its `status` in `GET /api/v1/sessions` moves to
+`delivered` or `dropped`. A session waiting for input takes a reply through
+`POST /issues/{identifier}/provide-input` instead.
+A delivered message is also kept, redacted, in the run's history entry
+(`steers`, see [Run history](#run-history)).
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Missing, empty or over-10 KiB `message` (`field: "message"`) |
+| `403` | `not_owned` | Itervox did not start that session and it is not controllable through tmux |
+| `404` | `not_found` | No running session with that ID |
+| `409` | `input_required` | The session is waiting for input: use `provide-input` |
+| `409` | `tmux_unavailable` / `pane_gone` | A tmux session: see [Sessions in tmux](#sessions-in-tmux) |
+| `503` | `orchestrator_busy` | Event queue full (`Retry-After: 1`) |
+
+### `GET /api/v1/sessions/{id}/transcript`
+
+A page of the transcript of a session started by hand, read from the CLI's
+own transcript file. Query: `limit` (1–500,
+default 100 entries) and `before` (the cursor from the previous page; omitted
+= the newest entries). Entries are oldest first; each text is redacted with
+the daemon's log redaction and abbreviated (`truncated: true`). Tool calls
+appear by name (`kind: "tool"`), tool results abbreviated
+(`kind: "tool_result"`); thinking, sub-agent sidechains and the CLI's own
+context messages are left out.
+
+```json
+{
+  "id": "c41d…",
+  "backend": "claude",
+  "entries": [
+    {"role": "user", "kind": "text", "text": "Add a health check", "at": "2026-10-15T07:10:02Z"},
+    {"role": "assistant", "kind": "tool", "text": "Edit", "at": "…"},
+    {"role": "assistant", "kind": "text", "text": "Done: GET /healthz returns 200.", "at": "…"}
+  ],
+  "before": 73400320,
+  "hasMore": true,
+  "size": 74066206
+}
+```
+
+`before` is present only when `hasMore`. `404 not_found` for a session that is
+not listed (only a listed session's transcript can be read — the path never
+comes from the client); `400 bad_request` for a bad `before` or `limit`.
+
+### Sessions in tmux
+
+Sessions running in a tmux pane (#178) — hand-started ones the daemon matched
+to a pane, and the ones it started with `POST /api/v1/sessions` — can be read
+and typed into through tmux. A hand-started session is controllable only with
+[`sessions.tmux_control: true`](configuration.md#sessions); every write needs `tmux` on the
+daemon's `PATH` and re-checks, at that moment, that the pane still exists and
+still runs the session's process. Writes are audited (`sessions: tmux send`
+with session, pane, kind and size — never the text) and counted in
+`itervox_tmux_sends_total{kind}`.
+
+Errors common to the tmux endpoints:
+
+| Status | Code | When |
+|---|---|---|
+| `403` | `not_controllable` | Not running in a pane itervox may control (keys, screen) |
+| `409` | `tmux_unavailable` | `tmux` is not installed on the daemon's host; `message` carries the install command |
+| `409` | `pane_gone` | The pane is gone, or no longer runs this session |
+
+#### `GET /api/v1/sessions/{id}/screen`
+
+The pane's text: `capture-pane` of the last `lines` (1–2000, default 200)
+lines of screen and scrollback, plain text without escape sequences.
+
+```json
+{"id": "itervox-3f9a1c", "pane": "%7", "label": "itervox-3f9a1c:0.0", "text": "╭─ Claude Code …", "lines": 200, "capturedAt": "2026-10-15T09:00:01Z"}
+```
+
+`404 not_found` for an unknown session; `400 bad_request` for a bad `lines`.
+
+#### `POST /api/v1/sessions/{id}/keys`
+
+Presses one key: `{"key": "Enter"}`. Only `Enter`, `Escape`, `Up`, `Down`,
+`Left`, `Right`, `Tab`, `C-c` and the digits `1`–`9` are accepted
+(`400 key_not_allowed` otherwise). `202 {"ok": true, "key": "Enter"}`.
+
+#### `POST /api/v1/sessions`
+
+Starts an interactive agent CLI in a new tmux session `itervox-<id>` (New
+session):
+
+```json
+{"backend": "claude", "cwd": "/work/app", "profile": "coder", "prompt": "Fix the flaky login test."}
+```
+
+`backend` is `claude` or `codex`. `cwd` (default: the `WORKFLOW.md`
+directory) must be the project directory, a directory inside it, or one of
+itervox's workspaces. The CLI is the profile's command (else `agent.command`)
+when its binary is that backend, else the backend's binary, run interactively
+(no `-p`) with the profile's `permission_mode` — by default the confining one:
+`--permission-mode acceptEdits` (Claude), `--sandbox workspace-write` (Codex) —
+and `prompt` as its first prompt. The session is owned by itervox (`owner:
+"itervox"`, `kind: "tmux"`), controllable whatever `sessions.tmux_control`
+says, and does not count toward `max_concurrent_agents`.
+
+`201 {"session":{…,"kind":"tmux","controllable":true,"attachCommand":"tmux attach -t itervox-3f9a1c"}}`.
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `bad_request` | Bad `backend`, a `cwd` outside the project and workspaces (`field: "cwd"`), an unknown `profile`, the CLI not on the daemon's `PATH` (`field: "backend"`), an over-10 KiB `prompt` |
+| `409` | `tmux_unavailable` | `tmux` is not installed |
+| `429` | `too_many_sessions` | 8 tmux sessions itervox started are running |
+
+These sessions are runtime state carried across `WORKFLOW.md` reloads; after
+a daemon restart they keep running in tmux but are listed as sessions started
+by hand.
+
+#### `DELETE /api/v1/sessions/{id}`
+
+Kills a tmux session itervox started (`tmux kill-session`). `200 {"ok": true}`;
+`403 not_owned` for any other session; `404 not_found` for an unknown id;
+`409 tmux_unavailable` without tmux.
 
 ## Logs
 
@@ -821,6 +1125,75 @@ Notes:
 - A save applies to the tracker immediately and never reloads `WORKFLOW.md`
   (CORE-160). A save that raced a reload is not written (the next
   generation keeps the file's value); re-send it.
+- A project filter save changes only the project part of the combined
+  scope below; the assignee and labels stay.
+
+### Combined tracker scope (#182, Linear only)
+
+The scope is the AND of the projects, an assignee and a label filter (any
+of the labels). `501 not_supported` for trackers without it.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/tracker/scope` | — | `{"scope":{"projects":["ENG"],"assignee":"me","labels":["agent"]}}` |
+| `PUT` | `/tracker/scope` | `{"projects":[...],"assignee":"me","labels":[...]}` | `{"scope":{...},"ok":true}` |
+| `GET` | `/tracker/labels` | — | `{"labels":["agent","bug"]}` |
+| `GET` | `/tracker/users` | — | `{"users":[{"id":"…","name":"Ada","email":"ada@example.com"}]}` |
+
+- Empty `projects` is every project, `""` `assignee` anyone (`me`, a user id
+  or an email otherwise), empty `labels` no label filter. Any combination is
+  allowed.
+- The assignee is resolved before anything is written: one that matches no
+  user the key can see answers `422 assignee_not_found` and nothing changes.
+  The reload fence answers `503 settings_reloading`, a failed resolve or
+  write `500 tracker_scope_not_saved`.
+- The save writes `project_slug` (commented out for every project),
+  `assignee` and `labels` in `WORKFLOW.md` (a cleared key is commented out),
+  applies the scope in memory without a reload, and makes the tracker store
+  pull again.
+- The snapshot carries `trackerScope` (the header label, e.g.
+  `ENG · assigned to me · label: agent`), `scopeAssignee`,
+  `scopeAssigneeName` and `scopeLabels`; a running row whose issue left the
+  scope mid-run has `outOfScope: true`.
+
+### Tracker filter (#198, Linear and GitHub)
+
+The tracker filter generalises the scope: a list of groups, conditions
+ANDed inside a group, groups ORed (see the configuration reference, "Tracker
+filter"). Keys are the `WORKFLOW.md` condition names: `projects`, `teams`,
+`assignee`, `labels_any`, `labels_all`, `labels_none`, `priority`, `states`,
+`cycle`, `milestone`. `501 not_supported` for trackers without one.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/tracker/scope` | — | `{"scope":{"projects":[],"assignee":"","labels":[],"filter":[{"labels_any":["agent"]}],"filterMode":true,"conditions":["assignee","labels_any",…]}}` |
+| `PUT` | `/tracker/scope` | `{"filter":[{"projects":["ENG"],"labels_none":["blocked"]},{"assignee":"me"}]}` | `{"scope":{...},"ok":true}` |
+| `POST` | `/tracker/filter/preview` | `{"filter":[...]}` | `{"count":12,"identifiers":["ENG-1","ENG-4",…]}` |
+| `GET` | `/tracker/teams` | — | `{"teams":[{"id":"…","key":"ENG","name":"Engineering"}]}` (`[]` on GitHub) |
+
+- `GET /tracker/scope` always returns `filter`: `tracker.filter`, or the
+  legacy keys as one implicit group (`filterMode: false`), `[]` for every
+  issue. `conditions` lists what the tracker supports (every condition on
+  Linear; `assignee`, the label conditions, `states` and `milestone` on
+  GitHub).
+- `PUT` with `filter` validates it with the `WORKFLOW.md` parser (an
+  unknown condition, an empty group, a bad priority or an unsupported
+  condition: `422 invalid_filter`), resolves its assignees (`422
+  assignee_not_found`), writes `tracker.filter` as one flow-style line,
+  comments the legacy keys out (`project_slug` only on Linear) and applies
+  the filter without a reload; the tracker store pulls again and the
+  automation poll rebaselines. `[]` reads every issue. The reload fence
+  answers `503 settings_reloading`. A legacy body (`projects` / `assignee` /
+  `labels`, Linear only) comments `tracker.filter` out.
+- `POST /tracker/filter/preview` is read-only: it counts the issues in the
+  active states the filter matches, through the same compiled query the poll
+  uses, and lists the first 10 identifiers. Nothing is saved.
+- While a filter is in effect, `PUT /projects/filter` answers `409
+  tracker_filter_in_effect` (project_slug and tracker.filter cannot both be
+  set) and the TUI picker does not save.
+- The snapshot's `trackerScope` is the filter's summary (e.g.
+  `ENG · agent|ai · ¬blocked  OR  me · urgent`) and `filterConditions` the
+  supported conditions (present when the tracker has a filter).
 
 ---
 

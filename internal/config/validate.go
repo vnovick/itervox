@@ -200,6 +200,11 @@ func ValidateDispatch(cfg *Config) error {
 	if cfg.Tracker.Kind == "github" && cfg.Tracker.ProjectSlug == "" {
 		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo)")
 	}
+	// Check 4b (#182): assignee, team and labels are Linear-only; any
+	// combination with project_slug is allowed (they AND).
+	if err := validateTrackerScope(cfg.Tracker); err != nil {
+		return err
+	}
 
 	// Check 5: agent.command present and non-empty
 	if cfg.Agent.Command == "" {
@@ -417,6 +422,17 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		}
 		if entry.Filter.MaxAgeMinutes > 0 && triggerType != AutomationTriggerInputRequired {
 			return fmt.Errorf("automation %q filter.max_age_minutes is only meaningful on input_required triggers", id)
+		}
+		if entry.Filter.GroupsError != "" {
+			return fmt.Errorf("automation %q %s", id, entry.Filter.GroupsError)
+		}
+		if err := entry.Filter.Groups.Validate("filter.groups"); err != nil {
+			return fmt.Errorf("automation %q %w", id, err)
+		}
+		for _, g := range entry.Filter.Groups {
+			if strings.EqualFold(g.Assignee, "me") {
+				return fmt.Errorf("automation %q filter.groups: assignee \"me\" is not resolved in automation filters; use the user id (Linear) or login (GitHub)", id)
+			}
 		}
 		if entry.Filter.IdentifierRegex != "" {
 			if _, err := regexp.Compile(entry.Filter.IdentifierRegex); err != nil {

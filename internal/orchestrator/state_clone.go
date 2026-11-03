@@ -48,6 +48,7 @@ func (s State) Clone() State {
 	c.BackendLimitedHolds = maps.Clone(s.BackendLimitedHolds)
 	c.ForceReanalyze = maps.Clone(s.ForceReanalyze)
 	c.PendingRestacks = maps.Clone(s.PendingRestacks)
+	c.OutOfScope = maps.Clone(s.OutOfScope)
 	c.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	c.PrevIssueStates = maps.Clone(s.PrevIssueStates)
 	c.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)
@@ -69,15 +70,21 @@ func (s State) Clone() State {
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
 	c.StackUnavailable = maps.Clone(s.StackUnavailable)
+	c.BranchInUseHolds = maps.Clone(s.BranchInUseHolds)     // value type, no reference fields
 	c.PendingReviews = maps.Clone(s.PendingReviews)         // value type, no reference fields
 	c.DeferredStateMoves = maps.Clone(s.DeferredStateMoves) // value type, no reference fields
 	c.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
 	c.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
 	c.OutboxSyncing = maps.Clone(s.OutboxSyncing)
+	c.ClaimChecks = maps.Clone(s.ClaimChecks) // value type, no reference fields
+	c.TrackerPoll.EndedDuringPoll = maps.Clone(s.TrackerPoll.EndedDuringPoll)
 	c.RecentFailures = cloneSlice(s.RecentFailures)
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)
 	c.FailureAcks = maps.Clone(s.FailureAcks)
+	c.SessionMessages = copySessionMessages(s.SessionMessages)
+	c.ExternalSessions = cloneSlice(s.ExternalSessions)
+	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
 	return c
 }
 
@@ -135,6 +142,19 @@ func copySwitchHistory(m map[string][]time.Time) map[string][]time.Time {
 		return nil
 	}
 	cp := make(map[string][]time.Time, len(m))
+	for k, v := range m {
+		cp[k] = cloneSlice(v)
+	}
+	return cp
+}
+
+// copySessionMessages deep-copies the per-issue operator messages (#178):
+// the slices are updated in place by applySessionDelivery.
+func copySessionMessages(m map[string][]SessionMessage) map[string][]SessionMessage {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string][]SessionMessage, len(m))
 	for k, v := range m {
 		cp[k] = cloneSlice(v)
 	}

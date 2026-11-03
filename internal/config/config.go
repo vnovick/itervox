@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
 )
@@ -187,10 +188,35 @@ const (
 
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
-	Kind           string
-	Endpoint       string
-	APIKey         string
-	ProjectSlug    string
+	Kind     string
+	Endpoint string
+	APIKey   string
+	// ProjectSlug is the project scope: a Linear project slug (optional;
+	// empty reads every project), a GitHub owner/repo, or the local
+	// tracker's identifier prefix.
+	ProjectSlug string
+	// Assignee narrows a Linear tracker to the issues assigned to one user
+	// (#182): "me" (the API key's own user), a user id, or an email. ANDed
+	// with ProjectSlug and Labels; alone it reads that user's issues in
+	// every project of every team the key can read. Resolved to a user id
+	// once per load, off the event loop. Load-time only: the dashboard's
+	// scope filter changes the tracker client's runtime scope, not this
+	// field.
+	Assignee string
+	// Team narrows an assignee scope to one Linear team, by key (ENG) or id
+	// (#182). Ignored without Assignee.
+	Team string
+	// Labels narrows a Linear tracker to the issues carrying ANY of these
+	// labels (#182), ANDed with the project and assignee. Empty: no label
+	// filter. Load-time only, like Assignee.
+	Labels []string
+	// Filter is tracker.filter (#198): groups of conditions, ANDed inside a
+	// group and ORed between groups. When set it replaces ProjectSlug (for
+	// Linear), Assignee, Team and Labels, which act as one implicit group
+	// otherwise; setting both is a validation error. Load-time config: the
+	// dashboard's scope save changes the tracker client's runtime filter
+	// (and WORKFLOW.md, reload-fenced), not this field.
+	Filter         issuefilter.Filter
 	ActiveStates   []string
 	TerminalStates []string
 	// WorkingState is the state name to transition an issue to when it is
@@ -581,6 +607,15 @@ type AgentConfig struct {
 	// operators answer in Linear/GitHub. Automation replies (agent-actions
 	// provide-input) are unaffected. Default: false.
 	InlineInput bool
+	// LiveSteering (#178) lets an operator message from the Sessions panel
+	// reach a running local Claude turn mid-turn: the turn runs with
+	// `--input-format stream-json` and the message is written into its
+	// stdin. Off (default), and always for Codex and SSH workers, a message
+	// waits for the current turn to end and is delivered as the prompt of
+	// the next turn, which resumes the same session. Opt-in because a
+	// wrapper script that reads its stdin to EOF before starting never sees
+	// EOF in streaming mode. Read-only after startup.
+	LiveSteering bool
 	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
 	// automation can swap an issue to a different profile / backend within
 	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
@@ -783,6 +818,9 @@ type Config struct {
 	Hooks        HooksConfig
 	Server       ServerConfig
 	Dependencies DependenciesConfig
+	// Sessions configures the Sessions panel's discovery of agent sessions
+	// started by hand (#178). Read-only after startup.
+	Sessions SessionsConfig
 	// PREvents is pr_events (#173): how the PR-event automation triggers
 	// (pr_check_completed, pr_synchronized, pr_review_submitted,
 	// pr_mergeable_changed) learn about GitHub activity. Read once at
@@ -865,6 +903,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Endpoint = conn.Endpoint
 	cfg.Tracker.APIKey = conn.APIKey
 	cfg.Tracker.ProjectSlug = conn.ProjectSlug
+	cfg.Tracker.Assignee = conn.Assignee // #182
+	cfg.Tracker.Team = conn.Team
+	cfg.Tracker.Labels = conn.Labels
+	// #198: tracker.filter. A malformed filter fails the load, so a typo
+	// never silently widens what Itervox reads.
+	filter, err := issuefilter.Parse(tracker["filter"], "tracker.filter")
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	cfg.Tracker.Filter = filter
+	if filter != nil {
+		noteSetting(tracker, "filter", tracker["filter"])
+	}
 	cfg.Tracker.ActiveStates = conn.ActiveStates
 	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
@@ -982,6 +1033,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.DepsAnalyzerChunkSize = positiveIntField(agent, "deps_analyzer_chunk_size", DefaultDepsAnalyzerChunkSize)
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
+	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")
 	cfg.Agent.Budget = BudgetConfig{
@@ -1079,6 +1131,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
 	}
+
+	// Sessions (#178)
+	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

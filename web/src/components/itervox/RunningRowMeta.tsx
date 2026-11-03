@@ -37,6 +37,15 @@ export function RunningRowMeta({
           <span title="Profile">{profile}</span>
         </>
       )}
+      {row.outOfScope && (
+        <span
+          data-testid={`running-row-out-of-scope-${row.identifier}`}
+          title="Left the tracker scope (reassigned or moved): this run finishes, no new run is dispatched"
+          className="text-theme-warning-text font-sans font-semibold"
+        >
+          out of scope
+        </span>
+      )}
     </span>
   );
 }

@@ -56,8 +56,32 @@ func normalizeIssue(raw map[string]any) *domain.Issue {
 	if u, ok := raw["url"].(string); ok && u != "" {
 		issue.URL = &u
 	}
+	normalizeFilterFields(raw, issue)
 
 	return issue
+}
+
+// normalizeFilterFields copies the fields a tracker filter reads (#198):
+// project, team, assignee, cycle and project milestone.
+func normalizeFilterFields(raw map[string]any, issue *domain.Issue) {
+	if p, ok := raw["project"].(map[string]any); ok {
+		issue.ProjectSlug = stringValue(p["slugId"])
+	}
+	if t, ok := raw["team"].(map[string]any); ok {
+		issue.TeamID, issue.TeamKey = stringValue(t["id"]), stringValue(t["key"])
+	}
+	if a, ok := raw["assignee"].(map[string]any); ok {
+		if id := stringValue(a["id"]); id != "" {
+			issue.Assignees = []string{id}
+		}
+	}
+	if cy, ok := raw["cycle"].(map[string]any); ok {
+		issue.CycleID = stringValue(cy["id"])
+		issue.CycleActive, _ = cy["isActive"].(bool)
+	}
+	if m, ok := raw["projectMilestone"].(map[string]any); ok {
+		issue.Milestone = stringValue(m["name"])
+	}
 }
 
 func stateName(raw map[string]any) string {

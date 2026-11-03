@@ -1,6 +1,7 @@
 import type { AutomationDef } from '../../../types/schemas';
 import { automationTriggerSummary } from '../../../types/automationTriggers';
 import { unknownValueLabel } from '../../../types/configRoundTrip';
+import { filterLabel } from '../../../utils/filterGroups';
 
 function filterSummary(automation: AutomationDef): string {
   const parts: string[] = [];
@@ -11,6 +12,8 @@ function filterSummary(automation: AutomationDef): string {
     parts.push(`states: ${automation.filter.states.join(', ')}`);
   if (automation.filter?.labelsAny?.length)
     parts.push(`labels: ${automation.filter.labelsAny.join(', ')}`);
+  if (automation.filter?.groups?.length)
+    parts.push(`groups: ${filterLabel(automation.filter.groups)}`);
   if (automation.filter?.identifierRegex) parts.push(`regex: ${automation.filter.identifierRegex}`);
   if (automation.filter?.inputContextRegex)
     parts.push(`input: ${automation.filter.inputContextRegex}`);

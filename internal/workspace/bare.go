@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/vnovick/itervox/internal/gitexec"
 )
@@ -31,6 +33,9 @@ func dirExists(path string) bool {
 // Returns the absolute path to the bare clone.
 func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error) {
 	barePath := BarePath(root)
+	// Two first dispatches must not clone into the same directory at once.
+	unlock := lockRepo(barePath)
+	defer unlock()
 
 	// Already exists — reuse, but ONLY if it is the repository we were asked
 	// for.
@@ -76,11 +81,14 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 	}
 
 	// git clone --bare does not set a fetch refspec by default, so
-	// "git fetch" would be a no-op. Configure one that maps remote branches
-	// directly to refs/heads/* (not refs/remotes/origin/*). This keeps HEAD
-	// valid since HEAD points to refs/heads/<default_branch>.
+	// "git fetch" would be a no-op. Origin's branches go to
+	// refs/remotes/origin/* (#195): mapping them onto refs/heads/* made every
+	// fetch fail once a worktree had one of them checked out, and made new
+	// branches track whatever local branch they started from. HEAD stays
+	// valid: the clone's own refs/heads/<default> is kept and fast-forwarded
+	// from origin after each fetch (see syncLocalBase).
 	refspecCmd := gitexec.Command(ctx, ".", "-C", barePath,
-		"config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
+		"config", "remote.origin.fetch", BareFetchRefspec)
 	refspecCmd.Env = append(refspecCmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := refspecCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("bare: set fetch refspec: %w: %s", err, strings.TrimSpace(string(out)))
@@ -89,13 +97,45 @@ func EnsureBareClone(ctx context.Context, root, cloneURL string) (string, error)
 	return barePath, nil
 }
 
-// FetchBare runs git fetch --all --prune in the bare clone to update all remote refs.
+// repoLocks serializes git operations that write one shared repository's
+// refs (#193): parallel dispatches each fetched into the shared bare clone at
+// once, and git's ref locking made all but one fail with "cannot lock ref
+// ... is at <sha> but expected <sha>". Keyed by the repository's canonical
+// path; entries are never removed (one per repository the daemon uses). The
+// lock is taken on worker goroutines, never on the orchestrator event loop.
+var repoLocks sync.Map // canonical path → *sync.Mutex
+
+// lockRepo locks the repository at path and returns its unlock function.
+func lockRepo(path string) func() {
+	mu, _ := repoLocks.LoadOrStore(canonicalPath(path), &sync.Mutex{})
+	m := mu.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
+}
+
+// FetchBare runs git fetch --all --prune in the bare clone to update all
+// remote-tracking refs. Concurrent calls for one bare clone run one at a time.
+//
+// A clone made before #195 is migrated first (its legacy refspec rewritten),
+// and the first successful fetch after that repairs branch upstreams that
+// point at another branch. The outcome is recorded in BareFetchStatusFile
+// for `itervox doctor`.
 func FetchBare(ctx context.Context, barePath string) error {
+	unlock := lockRepo(barePath)
+	defer unlock()
+	if err := migrateBareRefspec(ctx, barePath); err != nil {
+		writeBareFetchStatus(barePath, err, time.Now())
+		return err
+	}
 	cmd := gitexec.Command(ctx, ".", "-C", barePath, "fetch", "--all", "--prune")
 	cmd.Env = append(cmd.Env, "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("bare: fetch: %w: %s", err, strings.TrimSpace(string(out)))
+		ferr := fmt.Errorf("bare: fetch: %w: %s", err, strings.TrimSpace(string(out)))
+		writeBareFetchStatus(barePath, ferr, time.Now())
+		return ferr
 	}
+	writeBareFetchStatus(barePath, nil, time.Now())
+	repairUpstreamsIfPending(ctx, barePath)
 	return nil
 }
 

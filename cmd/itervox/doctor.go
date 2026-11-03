@@ -165,6 +165,12 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
+	// Assignee is the Linear assignee-scope check (#182). Zero value when
+	// the tracker has no assignee scope.
+	Assignee AssigneeCheck
+	// Filter is the tracker.filter check (#198): validated with the
+	// workflow, then its match count. Zero value without tracker.filter.
+	Filter FilterCheck
 	// LabelFixError is why `doctor --fix` did not finish repairing the
 	// labels (a failed create or re-check). Non-empty means exit 1.
 	LabelFixError string
@@ -190,6 +196,9 @@ type DoctorReport struct {
 	// CLI is fatal.
 	AgentCLIs        []string
 	MissingAgentCLIs []string
+	// BareFetch is the shared bare clone's fetch check (#195): a failing
+	// fetch fails doctor; a stale one or the pre-#195 refspec warns.
+	BareFetch BareFetchCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -373,6 +382,29 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Shared bare clone fetch (#195): local git only, no network.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		report.BareFetch = checkBareFetch(ctx, cfg, time.Now())
+		cancel()
+	}
+
+	// Linear assignee scope (#182): the user resolves, and its issues are
+	// readable. An unresolvable user or unknown team fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), assigneeCheckTimeout)
+		report.Assignee = checkLinearAssignee(ctx, cfg)
+		cancel()
+	}
+
+	// tracker.filter (#198): its assignees resolve, and how many issues it
+	// matches. An unresolvable assignee fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), filterCheckTimeout)
+		report.Filter = checkTrackerFilter(ctx, cfg, report.SchemaPassed)
+		cancel()
+	}
+
 	return report, cfg
 }
 
@@ -405,6 +437,15 @@ func doctorExitCode(report DoctorReport) int {
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
 	case report.LabelFixError != "":
+		exitCode = 1
+	case report.BareFetch.Failing:
+		// #195: every new worktree starts from a base that no longer moves.
+		exitCode = 1
+	case assigneeCheckFailed(report.Assignee):
+		// #182: the daemon's polls fail until the assignee resolves.
+		exitCode = 1
+	case filterCheckFailed(report.Filter):
+		// #198: likewise for a tracker.filter assignee.
 		exitCode = 1
 	}
 	return exitCode
@@ -485,7 +526,10 @@ func renderDoctorReport(r DoctorReport) string {
 		}
 	}
 	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
+	renderBareFetchCheck(&b, r.BareFetch)
 	renderLabelCheck(&b, r.Labels)
+	renderAssigneeCheck(&b, r.Assignee)
+	renderFilterCheck(&b, r.Filter)
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}

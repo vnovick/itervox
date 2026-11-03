@@ -187,6 +187,7 @@ type Orchestrator struct {
 	failureEventsDropped atomic.Int64
 	seedFailures         []FailureRecord
 	seedFailureAcks      map[string]time.Time // M6-close V3 (CORE-175 acks across reload)
+	seedTmux             []TmuxSession        // #178: SeedTmuxSessions, applied at the top of Run
 
 	// CORE-043: readiness signals, written only by the event loop and read
 	// lock-free by the /ready probe (see readiness.go).
@@ -380,6 +381,13 @@ type Orchestrator struct {
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup
 
+	// #178 step 3: discovery of sessions started by hand
+	// (sessions_external.go). Set before Run; the discovery goroutine is
+	// joined through extSessionsWg.
+	extSessions         ExternalSessionSource
+	extSessionsInterval time.Duration
+	extSessionsWg       sync.WaitGroup
+
 	// workersWg joins every runWorker goroutine before Run returns, bounded
 	// by workerJoinGrace (CORE-026, worker_join.go). Added on the event loop
 	// at each `go o.runWorker` site; Done is runWorker's outermost defer.
@@ -402,6 +410,23 @@ type Orchestrator struct {
 	// (those fields are only read under historyMu from the event-loop goroutine,
 	// and loadHistoryFromDisk has already consumed them by the time Run returns).
 	started atomic.Bool
+
+	// trackerReadBudgetOverride replaces trackerReadBudget's derived bound
+	// when non-zero (#187). Tests only; set before Run.
+	trackerReadBudgetOverride time.Duration
+	// trackerBreakerCooldownOverride replaces trackerBreakerCooldown's
+	// derived bound when non-zero (#187). Tests only; set before Run.
+	trackerBreakerCooldownOverride time.Duration
+	// trackerReadsWg joins the off-loop tracker poll and claim-read
+	// goroutines (#187) before Run returns. Their reads use Run's ctx, so
+	// shutdown cancels them.
+	trackerReadsWg sync.WaitGroup
+	// pollDegraded mirrors State.TrackerBreaker.Degraded() for /ready
+	// (#187). Written only by the event loop.
+	pollDegraded atomic.Bool
+	// pollStartedNano is when the in-flight off-loop poll started (unix
+	// nanos), 0 when none is (#187). Written only by the event loop.
+	pollStartedNano atomic.Int64
 }
 
 // New constructs an Orchestrator ready to Run. wm may be nil (workspace ops skipped).

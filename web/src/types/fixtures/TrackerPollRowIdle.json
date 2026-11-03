@@ -1,0 +1,7 @@
+{
+  "inFlight": false,
+  "lastDurationMs": 0,
+  "slowAfterMs": 45000,
+  "slow": false,
+  "degraded": false
+}

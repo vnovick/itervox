@@ -745,6 +745,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		tr = demoSession.tracker
 		runner = demoSession.runner
 	}
+	resolveTrackerAssignee(ctx, cfg, tr) // #182: off the event loop, before the store reads through it
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
@@ -803,6 +804,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	sessTmux := wireSessions(orch, cfg, workflowPath, demoSession != nil) // #178
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	// unified-dependency-graph Task 6 — operator deps-override dismissals live
 	// under the project's .itervox/ dir (not logDir) so they persist alongside
@@ -852,8 +854,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
-	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
-		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
+	if name := cfg.Tracker.ScopeName(); cfg.Tracker.Kind != "" && name != "" {
+		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + name)
 	}
 
 	appSessionID := newAppSessionID()
@@ -1130,6 +1132,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Client:           adapter,
 			FetchIssue:       fetchIssue,
 			ProjectManager:   pm,
+			ScopeManager:     newScopeManager(tr, workflowPath, settingsGen), // #182
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
@@ -1157,6 +1160,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			ReportClientError: clientErrorReporter(orch),
 			Webhooks:          webhooks,        // #131: signed tracker deliveries
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
+			// #178: the Sessions panel API.
+			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)
@@ -1188,8 +1193,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
 	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
-	// #118: the local issue files' sync with Linear or GitHub (tracker.sync).
-	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                // #118: local issue files <-> tracker.sync
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1235,7 +1239,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	<-commentCommandsDone
 	<-localSyncDone
 	final := orch.Snapshot()
-	failureCarry.store(final.RecentFailures, final.FailureAcks)
+	carryRunState(final) // RecentFailures + acks (CORE-046), tmux sessions (#178)
 	return runErr
 }
 
@@ -1281,9 +1285,7 @@ func buildTUIConfig(
 			}
 			return items, nil
 		}
-		tuiCfg.SetProjectFilter = func(slugs []string) {
-			_ = saveProjectFilter(tpm, workflowPath, settingsGen, slugs, "tui") // logged inside
-		}
+		tuiCfg.SetProjectFilter = tuiProjectFilterSaver(tpm, cfg, workflowPath, settingsGen) // #182
 	}
 	tuiCfg.AdjustWorkers = func(delta int) {
 		// V4: same serialized write-then-apply as the dashboard's
@@ -1658,6 +1660,11 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 		return linear.NewClient(linear.ClientConfig{
 			APIKey:         cfg.Tracker.APIKey,
 			ProjectSlug:    cfg.Tracker.ProjectSlug,
+			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee), // #182: project AND assignee AND labels
+			Team:           strings.TrimSpace(cfg.Tracker.Team),
+			Labels:         cfg.Tracker.Labels,
+			Filter:         cfg.Tracker.Filter, // #198
+			WorkingState:   cfg.Tracker.WorkingState,
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			Endpoint:       cfg.Tracker.Endpoint,
@@ -1673,6 +1680,8 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			// reload.
 			CompletionState: cfg.Tracker.CompletionState,
 			Endpoint:        cfg.Tracker.Endpoint,
+			Filter:          cfg.Tracker.Filter, // #198
+			WorkingState:    cfg.Tracker.WorkingState,
 		}), nil
 	case "local":
 		// #85: one Markdown file per issue under .itervox/issues/; the

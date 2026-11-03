@@ -597,6 +597,31 @@ func trackerErrorRow(s orchestrator.State) *server.TrackerErrorRow {
 	}
 }
 
+// trackerPollRow converts State.TrackerPoll and State.TrackerBreaker into
+// their wire row (#187).
+func trackerPollRow(s orchestrator.State, now time.Time) *server.TrackerPollRow {
+	threshold := orchestrator.SlowPollThreshold(time.Duration(s.PollIntervalMs) * time.Millisecond)
+	p, b := s.TrackerPoll, s.TrackerBreaker
+	row := &server.TrackerPollRow{
+		InFlight:                     p.InFlight,
+		LastFinishedAt:               nilIfZero(p.LastFinishedAt),
+		LastDurationMs:               p.LastDuration.Milliseconds(),
+		SlowAfterMs:                  threshold.Milliseconds(),
+		Degraded:                     b.Degraded(),
+		BreakerOpenUntil:             nilIfZero(b.OpenUntil),
+		ConsecutiveTransportFailures: b.ConsecutiveTransportFailures,
+	}
+	if p.InFlight && !p.StartedAt.IsZero() {
+		row.StartedAt = nilIfZero(p.StartedAt)
+		running := max(now.Sub(p.StartedAt), 0)
+		row.RunningForMs = running.Milliseconds()
+		row.Slow = running > threshold
+	} else {
+		row.Slow = p.LastDuration > threshold
+	}
+	return row
+}
+
 // reviewRow is the issue's latest review for issue detail (#135), nil when
 // it has none.
 func reviewRow(snap orchestrator.State, identifier string) *server.IssueReviewRow {

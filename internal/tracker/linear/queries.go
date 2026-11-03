@@ -19,6 +19,11 @@ query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: 
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -49,6 +54,11 @@ query ItervoxIssueDetail($id: String!) {
     url
     trashed
     labels { nodes { name } }
+    project { slugId }
+    team { id key }
+    assignee { id }
+    cycle { id isActive }
+    projectMilestone { name }
     inverseRelations(first: 50) {
       nodes {
         type
@@ -126,6 +136,11 @@ query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -158,6 +173,11 @@ query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relatio
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -212,6 +232,11 @@ query ItervoxLinearIssueDetailsById($ids: [ID!]!, $first: Int!, $relationFirst: 
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -251,6 +276,11 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
       url
       trashed
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -266,8 +296,9 @@ query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) 
   }
 }`
 
-// QueryIssuesInScopeByIDs reads issues by ID with their project, so a
-// webhook-named issue can be checked against the project filter (#131).
+// QueryIssuesInScopeByIDs reads issues by ID with their project, assignee
+// and team, so a webhook-named issue can be checked against the project
+// filter (#131) or the assignee scope (#182).
 const QueryIssuesInScopeByIDs = `
 query ItervoxLinearIssuesInScope($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
   issues(filter: {id: {in: $ids}}, first: $first) {
@@ -281,8 +312,12 @@ query ItervoxLinearIssuesInScope($ids: [ID!]!, $first: Int!, $relationFirst: Int
       branchName
       url
       trashed
-      project { slugId }
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -309,3 +344,35 @@ mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
     success
   }
 }`
+
+// candidateNodeFields is the issue selection every candidate poll reads.
+const candidateNodeFields = `
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      trashed
+      labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier url branchName state { name } }
+        }
+      }
+      children(first: $relationFirst) {
+        nodes { id identifier url branchName state { name } }
+      }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }`

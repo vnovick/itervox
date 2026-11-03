@@ -172,6 +172,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// a provider that cannot stack, or a blocker branch that does not
 		// exist here, falls back to workspace.base_branch unchanged.
 		ws, err := o.ensureWorkspaceMaybeStacked(ctx, issue, branchName)
+		if errors.Is(err, workspace.ErrBranchInUse) {
+			// #193: deterministic — git refuses the branch until the other
+			// worktree frees it. The event loop holds the issue with
+			// branch_in_use instead of scheduling a retry.
+			slog.Warn("worker: worktree branch is checked out in another worktree; not retrying",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "branch", branchName, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
+					fmt.Sprintf("worker: workspace setup held (branch_in_use): %v", err), runLogID))
+			}
+			o.sendExit(ctx, issue, attempt, TerminalBranchInUse, err)
+			return
+		}
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -183,6 +196,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		if ws.BareFetchFailure != "" {
+			// #195: a failing shared-clone fetch used to be a WARN line only,
+			// so a base that stopped moving went unnoticed. The workspace
+			// reports each distinct failure once until a fetch succeeds.
+			o.RecordFailure(FailureRecord{
+				Kind:       FailureKindWorkspaceFetch,
+				Identifier: issue.Identifier,
+				Source:     "bare_fetch",
+				Message:    ws.BareFetchFailure,
+			})
+		}
 		// #73 follow-up: an issue whose only blocker is in review is admitted
 		// so it can start stacked on that blocker's branch. If its worktree
 		// is not stacked on it (the branch is not here, or a reused worktree
@@ -450,7 +474,27 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
 	// self-assessment alone).
 	var lastAfterRunErr error
+	// #178: operator messages from the Sessions panel. A live turn takes
+	// them itself (steerCtx); the rest wait for the next resumed turn.
+	steer := o.runSteering(ctx, issue.Identifier, backend, workerHost)
+	steerCtx := agent.WithSteering(ctx, steer)
+	var steerQueue []agent.SteerMessage
+	steerTurns := 0
 	turn := 1
+	// steerMore reports whether queued operator messages keep the run going
+	// for one more turn that resumes the session with them as its prompt.
+	steerMore := func() bool {
+		if steer == nil || claudeSessionID == nil || *claudeSessionID == "" || steerTurns >= maxSteeringTurns {
+			return false
+		}
+		steerQueue = append(steerQueue, steer.Drain()...)
+		if len(steerQueue) == 0 {
+			return false
+		}
+		steerTurns++
+		effectiveMaxTurns = max(effectiveMaxTurns, turn+1)
+		return true
+	}
 	for ; turn <= effectiveMaxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
 		if turn == 1 {
@@ -541,54 +585,22 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			renderedPrompt += "\n\n" + buildReviewVerdictBlock(verdictPath)
 		}
 
-		// #157: the rules block, ahead of SOUL.md and INSTRUCTIONS.md, unless
-		// one of the run's templates places the rules itself.
-		ruleTemplates := []string{promptTemplate}
-		if p, ok := profilesSnap[profileName]; ok && profileName != "" {
-			ruleTemplates = append(ruleTemplates, p.Soul, p.Instructions, p.Prompt)
-		}
-		if automation != nil {
-			ruleTemplates = append(ruleTemplates, automation.Instructions)
-		}
-		if block := rulesPromptBlock(ruleSet, ruleTemplates...); block != "" {
-			renderedPrompt += "\n\n" + block
-		}
-
-		// Append the active profile's prompt (role context) whenever a named
-		// profile is selected. The pre-removal `agent_mode == "teams"` gate
-		// has been deleted (agent_mode is gone — see CHANGELOG); the
-		// subagent roster context below also injects unconditionally so
-		// multi-profile setups always tell the agent who its peers are.
-		if profileName != "" {
-			if profile, ok := profilesSnap[profileName]; ok {
-				for _, block := range renderProfilePromptBlocks(profile, issue, attemptPtr, runVars) {
-					if block != "" {
-						renderedPrompt += "\n\n" + block
-					}
-				}
-			}
-		}
-		if automation != nil && automation.Instructions != "" {
-			bindings := automationTriggerBindings(automation)
-			maps.Copy(bindings, runVars)
-			renderedPrompt += "\n\n" + prompt.RenderPromptOverlay(
-				automation.Instructions,
-				issue,
-				attemptPtr,
-				bindings,
-			)
-		}
-		if actionContext != "" {
-			renderedPrompt += "\n\n" + actionContext
-		}
-		// Append sub-agent roster context whenever the inventory has more than
-		// one profile — gives the active backend the names + descriptions of
-		// peer agents it can spawn via its delegation tool. `buildSubAgentContext`
-		// returns "" when there's nothing to say, so single-profile setups
-		// see no change.
-		if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
-			renderedPrompt += "\n\n" + subCtx
-		}
+		// #157 rules, the profile's SOUL/INSTRUCTIONS, the automation's
+		// instructions, the daemon action notice and the sub-agent roster.
+		// Shared with ComposeEvalPrompt (#189) so a live eval renders exactly
+		// the profile sections a dispatched worker sees.
+		renderedPrompt += profilePromptTail(profileTailInput{
+			Rules:         ruleSet,
+			Template:      promptTemplate,
+			ProfileName:   profileName,
+			Profiles:      profilesSnap,
+			Automation:    automation,
+			Issue:         issue,
+			Attempt:       attemptPtr,
+			RunVars:       runVars,
+			ActionContext: actionContext,
+			Backend:       backend,
+		})
 
 		// On the first turn, inject open PR context if detected.
 		if turn == 1 {
@@ -619,6 +631,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				b.WriteString(resume.UserMessage)
 				renderedPrompt = b.String()
 			}
+		}
+
+		// #178: queued operator messages are this turn's prompt; the turn
+		// resumes the session, so the agent reads them in context.
+		if turn > 1 && steer != nil {
+			steerQueue = append(steerQueue, steer.Drain()...)
+		}
+		if len(steerQueue) > 0 && claudeSessionID != nil && *claudeSessionID != "" {
+			renderedPrompt = steeringPrompt(steerQueue)
+			o.reportSessionDelivery(ctx, issue.Identifier, steerQueue, SteeringResume)
+			steerQueue = nil
 		}
 
 		// Run agent turn — pass a logger pre-seeded with the issue identifier so
@@ -656,6 +679,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					OutputTokens: cumulativeOutput + partial.OutputTokens,
 					SessionID:    runLogID,
 					LastMessage:  partial.LastText,
+					// #178: the CLI's session ID as soon as it reports one,
+					// so the Sessions panel can address a first turn.
+					AgentSessionID: partial.SessionID,
 				},
 				Limit: limit,
 			}:
@@ -685,7 +711,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if o.agentLogDir != "" {
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
-		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
+		result, runErr := o.runner.RunTurn(steerCtx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
 			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.
@@ -812,6 +838,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if runErr == nil && result.FailureText == "" && result.InputTokens == 0 && result.OutputTokens == 0 {
 				slog.Info("worker: empty result error on 0-token turn — treating as clean session end",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+				if steerMore() {
+					continue
+				}
 				break
 			}
 			// CORE-167: FailureText embeds agent stderr, which can carry
@@ -851,6 +880,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if result.InputTokens == 0 && result.OutputTokens == 0 {
 			slog.Info("worker: 0-token turn — session concluded, exiting loop",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			if steerMore() {
+				continue
+			}
 			break
 		}
 
@@ -884,6 +916,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// something must enter the input_required state instead of being
 		// treated as an ordinary successful single-turn completion.
 		if backend == "codex" && !result.Failed {
+			// #178: Codex `exec` takes no input mid-run; a message queued
+			// during the turn is delivered by resuming the session now.
+			if steerMore() {
+				continue
+			}
 			slog.Info("worker: codex turn completed — exiting loop (single-turn backend)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
 			break
@@ -896,6 +933,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if result.ResultText != "" && result.ResultText == prevResultText {
 			slog.Info("worker: duplicate result text detected — session concluded, exiting loop",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			if steerMore() {
+				continue
+			}
 			break
 		}
 		prevResultText = result.ResultText
@@ -967,6 +1007,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// End the turn loop exactly as the landed move would have.
 		if runStateMoveDeferred(ctx) {
 			break
+		}
+		if turn == effectiveMaxTurns {
+			steerMore() // #178: the last turn; messages that came in extend the run
 		}
 	}
 

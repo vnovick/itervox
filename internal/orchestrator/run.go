@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/rules"
 )
 
@@ -45,6 +46,10 @@ type runHandle struct {
 	// carries it, so the event loop settles a run's final usage even when
 	// the turn failed or its last progress update was dropped.
 	usage atomic.Pointer[runUsage]
+	// steer carries operator messages from the event loop to the worker
+	// (#178). The loop only sends (non-blocking); the worker, or its runner
+	// during a live turn, receives.
+	steer chan agent.SteerMessage
 	// stateMoveDeferred is set by the event loop when it deferred a move of
 	// this run's issue until the run exits (#177); the worker's turn loop
 	// then ends as it would on a landed move.
@@ -128,12 +133,14 @@ func (r RunRecord) IsReviewer() bool { return r.Kind == "reviewer" }
 // issue's latest run, and returns the worker context that carries it. Event
 // loop only.
 func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEntry) context.Context {
-	h := &runHandle{id: generateRunID(), kind: entry.Kind}
+	h := &runHandle{id: generateRunID(), kind: entry.Kind, steer: make(chan agent.SteerMessage, steerInboxSize)}
 	// #157: the rules files are read again for every run, so an edit applies
 	// to the next dispatch without a restart.
 	h.rules = o.resolveRunRules(entry.ProfileName, entry.Backend)
 	used := h.rules.Record()
 	entry.RulesHash, entry.RuleIDs = used.Hash, used.IDs
+	// #186: the prompt version this run is dispatched with.
+	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules).digest()
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}
