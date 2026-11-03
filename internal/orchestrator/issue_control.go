@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/vnovick/itervox/internal/domain"
@@ -279,14 +280,32 @@ func (o *Orchestrator) cancelRunningWorker(identifier string, cleanupFn func()) 
 // be waiting for input is a no-op there.
 // Safe to call from any goroutine.
 func (o *Orchestrator) ProvideInput(identifier, message string) error {
+	return o.ProvideInputVia(identifier, message, "")
+}
+
+// InputViaSlack is the one non-dashboard human reply channel ProvideInputVia
+// accepts (#230): the hub's Slack app answering for an allow-listed user.
+const InputViaSlack = "slack"
+
+// ProvideInputVia is ProvideInput for a human reply that arrived through
+// another channel than the dashboard (#230): via ("" for the dashboard, or
+// InputViaSlack) is recorded on the input_answered, guardrail_approved and
+// guardrail_blocked feed events. It is a human reply: it may answer a
+// guardrail approval. Same error contract as ProvideInput. Safe to call
+// from any goroutine.
+func (o *Orchestrator) ProvideInputVia(identifier, message, via string) error {
 	if o.isDraining() { // CORE-057: the resume would start a worker
 		return ErrDraining
+	}
+	if via != "" && via != InputViaSlack {
+		return fmt.Errorf("orchestrator: unknown reply channel %q", via)
 	}
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:       EventProvideInput,
 		Identifier: identifier,
 		Message:    message,
+		Via:        via,
 	}:
 		return nil
 	default:

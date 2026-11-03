@@ -13,6 +13,7 @@ import { AuthGate } from './auth/AuthGate';
 import { UnauthorizedError } from './auth/UnauthorizedError';
 import { StateSnapshotSchema } from './types/schemas';
 import { installGlobalErrorReporting } from './lib/clientErrorReporter';
+import { installHubWebApp } from './lib/pwa';
 
 declare global {
   interface Window {
@@ -28,6 +29,10 @@ window.__ITERVOX_VALIDATE_STATE__ = (snapshot) => {
 // CORE-048: uncaught errors, unhandled rejections and snapshot enum
 // fallbacks are reported to the daemon (deduped and throttled).
 installGlobalErrorReporting();
+
+// #231: on the hub's pages, the installable web app (manifest + the
+// push-only service worker). A daemon's own dashboard is left as it was.
+void installHubWebApp();
 
 const queryClient = new QueryClient({
   defaultOptions: {

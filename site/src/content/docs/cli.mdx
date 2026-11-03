@@ -278,13 +278,15 @@ Not reported: notes with nothing to change in a config (1–4, 7, 8, 16, 18, 21,
 ## `itervox secret` — Set .env values without showing them
 
 ```bash
-itervox secret set KEY [--workflow WORKFLOW.md] [--replace]
-itervox secret list [--workflow WORKFLOW.md]
+itervox secret set KEY [--workflow WORKFLOW.md | --hub] [--replace]
+itervox secret list [--workflow WORKFLOW.md | --hub]
 ```
 
 `set` writes `KEY` to the `.itervox/.env` next to the workflow. On a terminal it asks for the value with echo off; otherwise it reads the first line of stdin (`openssl rand -hex 32 | itervox secret set ITERVOX_API_TOKEN --replace`). The value never appears on the command line, in shell history or in output: it prints `saved KEY to … (value not shown)`. The value is written in the first form (single-quoted, double-quoted with escapes, or bare) that the daemon's `.env` loader reads back exactly, `$`, `#`, quotes and backslashes included; a value no form can carry is refused and nothing is written. If `.env` is a symlink, its target is written; an existing file keeps its owner. The file is written atomically with mode `0600`. A placeholder (a value of only `x` characters after an optional prefix, such as the ones `itervox init` writes) or an empty value is replaced; a real value is kept unless `--replace` is given. The check uses the value the daemon would load, so a later duplicate `KEY=` line counts, and a rotation removes every older copy. A file the daemon cannot load is refused without quoting it (the loader's own errors quote secret values), and so is a change that would alter any other variable, such as a `KEY=` line inside another variable's multi-line value. The daemon reads `.env` when it starts, so restart it after a change.
 
 `list` prints each variable the daemon would load, in file order, as `set`, `placeholder` or `empty`, never its value; names come from the parsed file, so the lines of a multi-line value are never shown. The [deploy skill](/guides/deployment/#guided-deployment-with-the-deploy-skill) uses both.
+
+`--hub` (#230) works on the hub's own secrets file, `~/.itervox/hub/.env` (directory `0700`), instead of a project's: the [Slack](/guides/slack/) tokens `ITERVOX_SLACK_APP_TOKEN` and `ITERVOX_SLACK_BOT_TOKEN` live there. The daemon that serves the hub reads it when the hub starts.
 
 ---
 
@@ -415,9 +417,13 @@ Without an issue, `pause` and `resume` act on the whole daemon (#213): running a
 
 ```bash
 itervox hub [--json]
+itervox hub slack setup [--json] [--manifest-only]
+itervox hub slack status [--json]
 ```
 
 Prints the URL of the machine's [hub](/guides/hub/) (#228) — the first daemon started on the machine, serving one dashboard, a scoped API proxy and a merged event feed for every project — and its member projects with the names the hub gives them (`/hub/p/<name>/`). It reads `~/.itervox/daemons/hub.lock` and the daemon registry directly, so it needs no token and prints none. `--json` prints `{"hub": <the hub.lock record, or null when no hub runs>, "members": [{"name","workflow","url","pid","version"}]}`. Exit code `0`, or `2` on a usage error. Open the hub with a hub token: `itervox token create --hub --name NAME --scope viewer|operator|admin`.
+
+`itervox hub slack setup` (#230) prints the [Slack](/guides/slack/) app manifest (YAML, or JSON with `--json`; `--manifest-only` prints nothing else) and the steps to create the app, then reads the app-level token (`xapp-…`) and the bot token (`xoxb-…`) with echo off (or one line each from stdin) into `~/.itervox/hub/.env` (`0600`, the `itervox secret` code path; values never shown), and asks for the Slack user IDs that may act, a default channel and a channel per hub project, written as `hub.slack.*` to `~/.itervox/settings.jsonc`. A token of the wrong kind or an ID that is not a Slack ID is refused. `itervox hub slack status` prints whether each token is `set` or `missing` (never its value), the user layer's `hub.slack` settings, the hub URL and the channel each member project posts to; `--json` prints `{"appToken","botToken","settingsFile","enabled","allowedUsers","defaultChannel","channels","hubUrl","projects"}`.
 
 ## `itervox mcp` — A local MCP server for the board and memory
 

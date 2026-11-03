@@ -190,3 +190,23 @@ func TestDeployCommandRejectedByTrackerReply(t *testing.T) {
 		return false
 	}, 5*time.Second, 20*time.Millisecond)
 }
+
+// TestGuardrailApprovalViaSlackRecordsVia (#230): an approval relayed by
+// the hub's Slack app is a human approval (the command runs once) and the
+// guardrail_approved feed event records via "slack".
+func TestGuardrailApprovalViaSlackRecordsVia(t *testing.T) {
+	r := newDeployRig(t)
+	r.waitForApproval()
+	require.NoError(t, r.orch.ProvideInputVia("ENG-1", "approve", orchestrator.InputViaSlack))
+	out := r.agentOutput()
+	assert.Contains(t, out, "exit=0", out)
+	assert.Equal(t, []string{"--prod"}, r.runs())
+	require.Eventually(t, func() bool {
+		for _, ev := range r.orch.Snapshot().Feed {
+			if ev.Kind == orchestrator.FeedGuardrailApproved && ev.Identifier == "ENG-1" {
+				return ev.Payload.Via == "slack"
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "the approval is recorded via slack")
+}

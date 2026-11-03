@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 )
 
@@ -31,7 +32,31 @@ type HubConfig struct {
 	// Every hub route except the health probe needs a hub token, so
 	// exposing it (0.0.0.0, a Tailscale address) is safe with tokens only.
 	Bind string
+	// Slack is hub.slack (#230): the hub's Slack channel through the
+	// user's own Slack app over Socket Mode.
+	Slack HubSlackConfig
 }
+
+// HubSlackConfig is hub.slack (#230). The tokens are not settings: they
+// live in ~/.itervox/hub/.env (`itervox hub slack setup`). Read at startup.
+type HubSlackConfig struct {
+	// Enabled (hub.slack.enabled, default false) registers the Slack
+	// channel when this daemon serves the hub (it also needs both tokens).
+	Enabled bool
+	// AllowedUsers (hub.slack.allowed_users) are the Slack user IDs that
+	// may reply, approve, reject and steer from Slack. Empty: nobody (fail
+	// closed); messages are alerts only.
+	AllowedUsers []string
+	// Channels (hub.slack.channels) maps a hub project name to the Slack
+	// channel ID (or user ID, for a DM from the app) its messages go to.
+	Channels map[string]string
+	// DefaultChannel (hub.slack.default_channel) serves every project
+	// without its own channel. Empty: such projects are not posted.
+	DefaultChannel string
+}
+
+// slackIDRe is a Slack channel, group, DM or user ID.
+var slackIDRe = regexp.MustCompile(`^[CGDUW][A-Z0-9]{2,30}$`)
 
 // parseHubConfig reads the hub section.
 func parseHubConfig(m map[string]any) (HubConfig, error) {
@@ -46,5 +71,33 @@ func parseHubConfig(m map[string]any) (HubConfig, error) {
 	if h.Bind != "localhost" && net.ParseIP(h.Bind) == nil {
 		return h, fmt.Errorf("config: hub.bind must be an IP address or localhost (got %q)", h.Bind)
 	}
-	return h, nil
+	var err error
+	h.Slack, err = parseHubSlackConfig(nestedMap(m, "slack"))
+	return h, err
+}
+
+// parseHubSlackConfig reads hub.slack; every ID must look like a Slack ID.
+func parseHubSlackConfig(m map[string]any) (HubSlackConfig, error) {
+	s := HubSlackConfig{
+		Enabled:        boolField(m, "enabled", false),
+		AllowedUsers:   strSliceField(m, "allowed_users", nil),
+		Channels:       stringMapField(m, "channels", nil),
+		DefaultChannel: strings.TrimSpace(strField(m, "default_channel", "")),
+	}
+	for i, u := range s.AllowedUsers {
+		u = strings.TrimSpace(u)
+		s.AllowedUsers[i] = u
+		if !slackIDRe.MatchString(u) || (u[0] != 'U' && u[0] != 'W') {
+			return s, fmt.Errorf("config: hub.slack.allowed_users: %q is not a Slack user ID (U…)", u)
+		}
+	}
+	for project, ch := range s.Channels {
+		if !slackIDRe.MatchString(ch) {
+			return s, fmt.Errorf("config: hub.slack.channels.%s: %q is not a Slack channel or user ID", project, ch)
+		}
+	}
+	if s.DefaultChannel != "" && !slackIDRe.MatchString(s.DefaultChannel) {
+		return s, fmt.Errorf("config: hub.slack.default_channel: %q is not a Slack channel or user ID", s.DefaultChannel)
+	}
+	return s, nil
 }

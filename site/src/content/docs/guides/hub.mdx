@@ -198,8 +198,10 @@ and restart the hub.
 There is no budget kind yet: an issue paused by its budget emits no feed
 event.
 
-**Channels.** `push` (Web Push, #231), `slack` (#230) and `desktop` (the Mac
-app). A channel that is not set up yet shows as unavailable and receives
+**Channels.** `push` (Web Push to your phones, #231: see
+[Your phone](/guides/phone/)), `slack` (your own Slack app, #230:
+see [Slack](/guides/slack/)) and `desktop` (the Mac app). `push` and
+`desktop` are built in. A channel that is not set up yet shows as unavailable and receives
 nothing; `channels.<name>.enabled: false` switches one off for every project.
 
 **Routing.** For each project and kind the matrix picks the channels; a
@@ -242,10 +244,40 @@ notification; clicking one opens the hub dashboard at that issue. The hub
 has already applied the routes, snoozes and digests, so the app routes
 nothing itself, and while the stream is up it stops raising its own
 per-daemon alerts for local projects. Without a hub it falls back to them.
+The app's **Notification Settings…** menu item opens this view in the hub
+window.
 
 Quiet hours, escalation and role-based routing are not part of the hub.
 
+## The Mac app
+
+The [Mac app](/guides/mac-app/#with-a-hub-v029) uses the hub when one runs
+on the Mac (v0.2.9, #232):
+
+- it holds **one** `GET /hub/api/v1/events` stream for every local project
+  (viewer token `itervox-desktop`) and reads all members with one
+  `GET /hub/api/v1/projects` per refresh, woken by the stream's `projects`
+  events, instead of polling each member daemon; daemons that are not
+  members (`--no-hub`, older releases) are polled as before;
+- its menu shows the hub's status and member count, with **Open Hub
+  Dashboard**, **Phone…** (the [Phones](/guides/phone/) view with the
+  pairing QR code) and **Notification Settings…** — the hub page opened at
+  `/hub/?view=phones` and `/hub/?view=notifications`, with an admin hub
+  token the app creates on first use (`itervox-desktop-admin`);
+- when the hub stops it polls every daemon again until a new hub takes over;
+- a remote machine whose daemons form a hub is reached through **one SSH or
+  IAP tunnel to that hub**: the app finds it with `itervox hub --json` on the
+  host, creates an operator hub token there (`itervox token create --hub
+  --name itervox-desktop --scope operator`) and reads and opens every member
+  through `/hub/p/{project}/`.
+
+The hub page opens on a given view with `?view=projects`, `?view=notifications`
+or `?view=phones`.
+
 ## Reaching the hub from another device
+
+For a phone — the installable web app, QR pairing and push notifications —
+follow [Your phone](/guides/phone/). For anything else:
 
 The hub binds to loopback by default. Every route needs a hub token, so
 exposing it is safe with tokens only:
@@ -271,5 +303,7 @@ project's HTTP API, exactly like every other member.
 ## Reference
 
 - `itervox hub [--json]`, `itervox --no-hub`, `itervox token --hub`: [CLI](/cli/#itervox-hub--the-machines-hub-and-its-members)
-- `hub.enabled`, `hub.port`, `hub.bind`: [Configuration](/configuration/#hub)
+- `hub.enabled`, `hub.port`, `hub.bind`, `hub.slack.*`: [Configuration](/configuration/#hub)
+- Slack alerts, replies, approvals and steering: [Slack](/guides/slack/)
+- The phone web app, pairing and Web Push: [Your phone](/guides/phone/)
 - `/hub/api/v1/*`, `/hub/p/{project}/api/v1/*`, `GET /api/v1/route-scopes`: [API reference](/api-reference/#hub)

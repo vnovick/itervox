@@ -49,6 +49,10 @@ type Notification struct {
 	Body       string `json:"body,omitempty"`
 	// URL is the hub-relative dashboard link (/hub/p/{project}/?issue=ID).
 	URL string `json:"url,omitempty"`
+	// RunID is the run the event names (the feed payload's runId; an id,
+	// never text), so an interactive channel (#230) can bind an answer to
+	// the run that asked.
+	RunID string `json:"runId,omitempty"`
 	// Seq is the event's hub seq (0 for a digest or a test).
 	Seq int64 `json:"seq,omitempty"`
 	// Items are a digest's events.
@@ -182,7 +186,7 @@ func eventNotification(channel, kind string, ev Event) Notification {
 	n := Notification{
 		Channel: channel, Kind: kind, Urgent: IsUrgentKind(kind), Project: ev.Project,
 		Identifier: ev.Identifier, Body: ev.Project, URL: projectLink(ev.Project, ev.Identifier),
-		Seq: ev.Seq, TS: ev.TS,
+		RunID: payloadWord(ev.Payload, "runId"), Seq: ev.Seq, TS: ev.TS,
 	}
 	switch kind {
 	case KindInputRequired:

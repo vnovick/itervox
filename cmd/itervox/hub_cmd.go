@@ -16,6 +16,7 @@ import (
 // token and prints none.
 //
 //	itervox hub [--json]
+//	itervox hub slack setup|status   (#230, hub_slack.go)
 
 // hubStatus is the `itervox hub --json` shape.
 type hubStatus struct {
@@ -33,6 +34,9 @@ type hubStatusMember struct {
 }
 
 func runHub(args []string) {
+	if len(args) > 0 && args[0] == "slack" { // #230
+		fatalExit(hubSlackCmd(args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	fatalExit(hubCmd(args, os.Stdout, os.Stderr))
 }
 
@@ -42,7 +46,7 @@ func hubCmd(args []string, out, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	asJSON := fs.Bool("json", false, "print JSON: {\"hub\": <hub.lock record or null>, \"members\": [...]}")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(errOut, "usage: itervox hub [--json]\n\nPrints the machine's itervox hub URL and its member projects.\nHub tokens: itervox token create --hub --name NAME --scope viewer|operator|admin")
+		_, _ = fmt.Fprintln(errOut, "usage: itervox hub [--json]\n       itervox hub slack setup|status\n\nPrints the machine's itervox hub URL and its member projects.\nHub tokens: itervox token create --hub --name NAME --scope viewer|operator|admin")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
