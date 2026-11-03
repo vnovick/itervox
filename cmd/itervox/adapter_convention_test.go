@@ -184,6 +184,10 @@ func isPersistCall(sel string) bool {
 		return true
 	case sel == "persistTrackerStates":
 		return true
+	// #129: layered settings persist to .itervox/settings.jsonc and move the
+	// key out of WORKFLOW.md in the same step.
+	case sel == "persistSettings", sel == "persistMaxWorkers", sel == "persistSSHHosts":
+		return true
 	case sel == "persistReviewerConfig":
 		return true
 	case sel == "persistMaxRetries":
@@ -193,6 +197,10 @@ func isPersistCall(sel string) bool {
 	case sel == "persistMaxSwitchesPerIssuePerWindow":
 		return true
 	case sel == "persistSwitchWindowHours":
+		return true
+	// #158: the generic writers — WORKFLOW.md keys outside the layered
+	// sections, and any settings layer file.
+	case sel == "workflow.SetFrontMatterKeys", sel == "persistDepsAnalysisMode", sel == "persistLayer":
 		return true
 	}
 	return false

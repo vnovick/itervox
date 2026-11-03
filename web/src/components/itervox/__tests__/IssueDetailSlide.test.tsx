@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
@@ -825,5 +825,52 @@ describe('IssueDetailSlide', () => {
     });
     await user.click(screen.getByRole('button', { name: '▶ Resume' }));
     expect(setSelectedIdentifier).toHaveBeenCalledWith(null);
+  });
+});
+
+// #135 — the issue's review renders from the issue row, and "Re-run review"
+// dispatches the configured reviewers through the existing ai-review mutation.
+describe('IssueDetailSlide review', () => {
+  const review = {
+    verdicts: [
+      {
+        profile: 'reviewer',
+        verdict: 'block',
+        reasons: ['no tests'],
+        recordedAt: '2026-10-11T10:00:00Z',
+      },
+    ],
+    outcome: { blocked: true, approvals: 0, blocks: 1, quorum: 'any_block' },
+  };
+
+  it('renders the verdicts and re-runs the review', () => {
+    setupDefaultMocks('ENG-10', { orchestratorState: 'idle' as never, review } as never, {
+      reviewerProfile: 'reviewer',
+    });
+    const mutate = vi.fn();
+    mockUseTriggerAIReview.mockReturnValue(
+      castMock({ mutate, mutateAsync: vi.fn(), isPending: false }),
+    );
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+
+    const section = screen.getByRole('region', { name: 'Review' });
+    expect(within(section).getByText('no tests')).toBeInTheDocument();
+    expect(within(section).getByText(/Blocked — 0 approve \/ 1 block/)).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole('button', { name: 'Re-run review' }));
+    expect(mutate).toHaveBeenCalledWith('ENG-10');
+  });
+
+  it('offers no re-run while the issue is running or without a reviewer profile', () => {
+    setupDefaultMocks('ENG-10', { review } as never, { reviewerProfile: 'reviewer' });
+    const { unmount } = render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByRole('region', { name: 'Review' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Re-run review' })).not.toBeInTheDocument();
+    unmount();
+
+    setupDefaultMocks('ENG-10', { orchestratorState: 'idle' as never, review } as never, {
+      reviewerProfile: '',
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.queryByRole('button', { name: 'Re-run review' })).not.toBeInTheDocument();
   });
 });

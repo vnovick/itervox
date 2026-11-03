@@ -40,6 +40,7 @@ import (
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
+	"github.com/vnovick/itervox/internal/tracker/local"
 	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -56,84 +57,6 @@ func newAppSessionID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func printUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: itervox [command] [flags]
-
-Commands:
-  init    Scan a repository and generate a WORKFLOW.md starter file,
-          or migrate an existing one with --update.
-             --tracker  linear|github  (required for new workflows)
-             --runner   claude|codex    (default: claude)
-             --output   output file path (default: WORKFLOW.md)
-             --dir      directory to scan (default: .)
-             --force    overwrite existing output file
-             --update   migrate an existing WORKFLOW.md to the latest
-                        schema (writes WORKFLOW.md.bak, extracts inline
-                        profile prompts to .itervox/agents/<name>/
-                        INSTRUCTIONS.md, seeds SOUL.md, stamps
-                        itervox_schema_version)
-             --workflow path to the WORKFLOW.md to migrate when using
-                        --update (default: WORKFLOW.md)
-
-  clear   Remove workspace directories created by itervox
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             [identifier ...]  specific issues to clear; omit for all
-
-  stop    Stop all daemons serving the current project (uses PID file +
-          process scan as fallback, so pre-upgrade daemons are caught)
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --grace    SIGTERM → SIGKILL grace period (default: 30s)
-             --force    skip the grace period and SIGKILL immediately
-
-  status  List running itervox daemons for the current project
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --all      also list daemons from other projects
-
-  --version  Print version information
-
-Run mode (default when no command given):
-`)
-	flag.PrintDefaults()
-}
-
-// defaultLogsDir returns a per-project logs directory under ~/.itervox/logs/
-// derived from the tracker kind and project slug in the WORKFLOW.md at path.
-// Falls back to ~/.itervox/logs if the config can't be read or has no slug.
-func defaultLogsDir(workflowPath string) string {
-	base := filepath.Join("~", ".itervox", "logs")
-	if home, err := os.UserHomeDir(); err == nil {
-		base = filepath.Join(home, ".itervox", "logs")
-	}
-	cfg, err := config.Load(workflowPath)
-	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ProjectSlug == "" {
-		// No slug to namespace by — fall back to a directory derived from the
-		// workflow's own path rather than the shared base.
-		//
-		// The shared base was a cross-project state collision: this directory
-		// holds automation_queue.json, which carries the DEPENDENCY AUDIT, so
-		// every project without a project_slug read and wrote one another's
-		// audit rows. Observed live — a Linear project inherited ten
-		// `demo-id-*` rows written by an unrelated `kind: memory` run, then
-		// asked Linear about issues that had never existed there on every
-		// refresh cycle.
-		return filepath.Join(base, "workflow", config.WorkspaceProjectKey(workflowPath))
-	}
-	// Encode the slug so it is safe as a directory name component, and append
-	// the workflow key.
-	//
-	// The slug ALONE is not a project identity: two checkouts of one repo (a
-	// git worktree dev setup), or several repos driven by one Linear project,
-	// share a slug and would share this directory — which holds
-	// automation_queue.json and therefore the dependency audit, plus
-	// history.json, paused.json and input_required.json. The PID guard does
-	// not stop it: it keys on the workflow's directory, so both checkouts pass.
-	//
-	// The slug stays in the path so the directory remains recognisable to a
-	// human browsing ~/.itervox/logs.
-	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
-	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+config.WorkspaceProjectKey(workflowPath))
 }
 
 func configuredBackend(command, explicit string) string {
@@ -332,7 +255,8 @@ func main() {
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
 	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !statusui.TerminalAvailable())))
-	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
+	loadDotEnv()             // must run before config.LoadConfig / os.Getenv calls
+	installSupervisorToken() // #119: before anything reads ITERVOX_API_TOKEN
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
 	// a .env could carry): itervox may be started from a git hook, and every
 	// subprocess it spawns — git, gh, hooks, agent CLIs — must act on the
@@ -368,11 +292,40 @@ func main() {
 		case "doctor":
 			runDoctor(os.Args[2:])
 			return
+		case "quickstart":
+			runQuickstart(os.Args[2:])
+			return
+		case "demo":
+			runArgs, ok, err := prepareDemo(os.Args[2:], os.Stdout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "itervox demo: %v\n", err)
+				fatalExit(2)
+			}
+			if !ok {
+				return
+			}
+			// Continue into run mode against the scratch workflow.
+			os.Args = runArgs
 		case "models":
 			runModels(os.Args[2:])
 			return
 		case "deps":
 			runDeps(os.Args[2:])
+			return
+		case "secret":
+			runSecret(os.Args[2:])
+			return
+		case "config":
+			runConfig(os.Args[2:])
+			return
+		case "import":
+			runImport(os.Args[2:])
+			return
+		case "export":
+			runExport(os.Args[2:])
+			return
+		case "report":
+			runReport(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
@@ -507,6 +460,7 @@ func main() {
 		slog.Warn("crash: crash output not armed", "error", err)
 	}
 	bootCrash = report
+	logPATHResolution(applyLoginShellPATH(*workflowPath)) // #119: before any agent CLI lookup
 
 	// Top-level context: cancelled on first SIGINT/SIGTERM to begin graceful drain.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -546,6 +500,7 @@ func main() {
 		defer removePIDFile(*workflowPath)
 		defer removeDashboardURLFile(*workflowPath)
 		defer removeHeartbeatFile(*workflowPath)
+		defer removeDaemonRegistryEntry() // runs first: never outlive daemon.pid
 		// os.Exit skips the defers above, so every fatalExit path — a failed
 		// rebind, an invalid config on the first iteration — used to leave
 		// these files behind and make doctor report a daemon that had died.
@@ -554,6 +509,7 @@ func main() {
 			removePIDFile(*workflowPath)
 			removeDashboardURLFile(*workflowPath)
 			removeHeartbeatFile(*workflowPath)
+			removeDaemonRegistryEntry()
 		}
 	}
 
@@ -778,6 +734,14 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		},
 	)
 	runner = commandResolverRunner{inner: runner}
+	if demoSession != nil {
+		// `itervox demo` (#76): the session's memory tracker and scripted
+		// runner; no agent CLI is needed, so none is validated below.
+		tr = demoSession.tracker
+		runner = demoSession.runner
+	}
+	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
+	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -787,12 +751,14 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// A missing default binary is a hard error — fail before entering the
 	// dispatch loop so the user sees it immediately rather than at dispatch time.
 	validatedBackends := make(map[string]struct{})
-	if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
-		return fmt.Errorf("agent startup: %w", err)
-	}
-	for name, profile := range cfg.Agent.Profiles {
-		if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
-			slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
+	if demoSession == nil {
+		if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
+			return fmt.Errorf("agent startup: %w", err)
+		}
+		for name, profile := range cfg.Agent.Profiles {
+			if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
+				slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
+			}
 		}
 	}
 	wm := workspace.NewManager(cfg)
@@ -824,6 +790,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		logBuf.SetLogDir(filepath.Join(filepath.Dir(logFile), "issues"))
 	}
 	orch := orchestrator.New(cfg, tr, runner, wm)
+	if demoSession != nil {
+		demoSession.attach(orch)
+	}
 	if os.Getenv("ITERVOX_DRY_RUN") == "1" {
 		orch.DryRun = true
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
@@ -855,6 +824,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	if cfg.Tracker.Outbox {
 		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
 		orch.SetOutbox(ob)
+		wireCoalescedPush(cfg, ob, tr) // #115
 	}
 
 	var agentSessionsDir string
@@ -870,7 +840,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath) // M4-close BH-M4-2
+		orch.SetPendingReviewsFile(pendingReviewsPath)                                     // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                       // #136
+		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                      // #173
+		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json")) // #177
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
@@ -963,8 +936,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				NoPrintFlag: noPrintToken,
 				PrintEnv:    os.Getenv(printTokenEnv),
 				StderrIsTTY: term.IsTerminal(os.Stderr.Fd()),
+				Supervised:  supervisorTokenActive,
 			})
 		}
+		writeDaemonRegistryEntry(newDaemonRecord(workflowPath, actualAddr, filepath.Dir(logFile), os.Getenv("ITERVOX_API_TOKEN"), tokenGenerated, supervisorTokenActive))
 	}
 	if actualAddr != "" {
 		actionTokenStore = agentactions.NewStore()
@@ -1019,7 +994,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler(), statusui.TerminalAvailable())))
 	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath, quitApp)
 	if actualAddr != "" {
-		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
+		if tok := dashboardURLToken(); tok != "" {
 			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/?token=%s", actualAddr, tok)
 		} else {
 			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
@@ -1047,6 +1022,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		DashboardURL:  heartbeatDashboardURL,
 		LastCrash:     bootCrash,
 	}, snap, heartbeatMinInterval)
+	heartbeat.syncProbe = newSyncStatusSource(cfg, tr, ob, orch).fingerprint // #117
 	if err := heartbeat.WriteNow(time.Now().UTC()); err != nil {
 		slog.Warn("heartbeat: startup write failed", "path", heartbeat.path, "error", err)
 	}
@@ -1058,6 +1034,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	// Start serving on the already-bound listener.
 	//
+	// #173: the PR-event watcher (poll of the open managed PRs, plus the
+	// webhook receiver when pr_events.webhook_secret is set).
+	prEventWebhooks := startPREvents(ctx, cfg, tr, orch)
 	// #52 deferral — startDepsAutoAnalyze (below) is wired inside this
 	// `srvListener != nil` block purely because that's where depsSvc,
 	// adapter, and the other server-only wiring already live, not because
@@ -1082,6 +1061,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			snap := orch.Snapshot()
 			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
+			ti.Review = reviewRow(snap, issue.Identifier) // #135
 			return &ti, nil
 		}
 
@@ -1147,6 +1127,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
+			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157
+			SettingsLayers:   adapter,                             // #158
 			DepsAnalyzer:     depsSvc,
 			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
 			// is passed by value rather than via cfgMu-guarded accessors.
@@ -1167,6 +1149,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// CORE-048 — web client error reports feed the RecentFailures
 			// ring through the non-blocking RecordFailure (CORE-046).
 			ReportClientError: clientErrorReporter(orch),
+			Webhooks:          webhooks,        // #131: signed tracker deliveries
+			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)
@@ -1195,6 +1179,11 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	startAutomations(ctx, cfg, tr, orch)
+	// #133: a local issue file edit polls at once.
+	startLocalIssueWatch(ctx, tr, orch.Refresh)
+	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
+	// #118: the local issue files' sync with Linear or GitHub (tracker.sync).
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1237,6 +1226,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
+	<-commentCommandsDone
+	<-localSyncDone
 	final := orch.Snapshot()
 	failureCarry.store(final.RecentFailures, final.FailureAcks)
 	return runErr
@@ -1264,7 +1255,7 @@ func buildTUIConfig(
 		QuitApp:       quitApp,
 	}
 	if cfg.Server.Port != nil {
-		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
+		if tok := dashboardURLToken(); tok != "" {
 			tuiCfg.DashboardURL = dashboardBaseURL(cfg.Server.Host, *cfg.Server.Port) + "?token=" + tok
 		} else {
 			tuiCfg.DashboardURL = dashboardBaseURL(cfg.Server.Host, *cfg.Server.Port)
@@ -1299,8 +1290,8 @@ func buildTUIConfig(
 		}
 		defer unlock()
 		next := max(1, min(orch.MaxWorkers()+delta, 50))
-		if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", next); err != nil {
-			slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md; worker count unchanged", "error", err)
+		if err := persistMaxWorkers(workflowPath, next); err != nil {
+			slog.Warn("failed to persist agent.max_concurrent_agents; worker count unchanged", "error", err)
 			return
 		}
 		orch.SetMaxWorkers(next)
@@ -1672,13 +1663,25 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			BacklogStates:  cfg.Tracker.BacklogStates,
-			Endpoint:       cfg.Tracker.Endpoint,
+			// Read once at startup; the client is rebuilt on a WORKFLOW.md
+			// reload.
+			CompletionState: cfg.Tracker.CompletionState,
+			Endpoint:        cfg.Tracker.Endpoint,
+		}), nil
+	case "local":
+		// #85: one Markdown file per issue under .itervox/issues/; the
+		// project_slug, when set, is the identifier prefix (default ITX).
+		return local.New(local.Config{
+			Dir:            config.LocalIssuesDir(cfg),
+			Prefix:         cfg.Tracker.ProjectSlug,
+			ActiveStates:   cfg.Tracker.ActiveStates,
+			TerminalStates: cfg.Tracker.TerminalStates,
 		}), nil
 	case "memory":
 		issues := tracker.GenerateDemoIssues(10)
 		return tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates), nil
 	default:
-		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, memory)", cfg.Tracker.Kind)
+		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, local, memory)", cfg.Tracker.Kind)
 	}
 }
 

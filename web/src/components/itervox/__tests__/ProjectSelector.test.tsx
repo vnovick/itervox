@@ -43,6 +43,15 @@ describe('ProjectSelector', () => {
     expect(screen.getByTestId('project-selector')).toBeInTheDocument();
   });
 
+  it('labels the local file tracker as local files, not GitHub (#85)', () => {
+    mockStore.mockImplementation((selector: (s: unknown) => unknown) =>
+      selector({ snapshot: { trackerKind: 'local', activeProjectFilter: [] } }),
+    );
+    render(<ProjectSelector />);
+    expect(screen.getByTestId('tracker-badge')).toHaveTextContent('Local files');
+    expect(screen.queryByText(/GitHub/)).not.toBeInTheDocument();
+  });
+
   it('displays the tracker source label', () => {
     mockStore.mockImplementation((selector: (s: unknown) => unknown) =>
       selector({ snapshot: { trackerKind: 'linear', activeProjectFilter: [] } }),

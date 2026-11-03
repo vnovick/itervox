@@ -55,6 +55,15 @@ func Scan(projectDir, homeDir string, opts ScanOptions) (*Inventory, error) {
 		}
 	}
 
+	// Subagents (#86): project + user .claude/agents, then plugin agents.
+	agents, agentDirs, err := scanClaudeAgents(projectDir, effectiveHome)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	inv.WatchDirs = append(inv.WatchDirs, agentDirs...)
+	inv.Subagents = append(inv.Subagents, agents...)
+	inv.Subagents = append(inv.Subagents, subagentsFromPlugins(inv.Plugins)...)
+
 	// MCP servers.
 	mcpServers, err := scanMCPServers(projectDir, effectiveHome)
 	if err != nil {
@@ -89,6 +98,15 @@ func Scan(projectDir, homeDir string, opts ScanOptions) (*Inventory, error) {
 			inv.Plugins = append(inv.Plugins, codexPlugins...)
 			inv.Hooks = append(inv.Hooks, codexHooks...)
 			inv.Instructions = append(inv.Instructions, codexInstructions...)
+		}
+		prompts, promptsDir, err := scanCodexPrompts(effectiveHome)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			inv.Prompts = prompts
+		}
+		if promptsDir != "" {
+			inv.WatchDirs = append(inv.WatchDirs, promptsDir)
 		}
 	}
 

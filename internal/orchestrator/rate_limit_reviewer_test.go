@@ -2,10 +2,9 @@ package orchestrator
 
 // CORE-031 — a rate-limited REVIEWER run must not be "recovered" as an
 // implementer worker on the rate_limited switch profile. The reviewer's
-// Kind is lost on the retry (fireRetries → dispatch() builds a Kind-less
-// RunEntry), so the exhaustion branch must recover reviewer identity from
-// reviewerInjectedProfiles (read under issueProfilesMu), the same durable
-// source the TerminalSucceeded path uses (#58).
+// retry is a reviewer run too (the retry carries the reviewer's profile, and
+// its Running entry and run record say reviewer, #127), so the exhaustion
+// branch recognises it as one.
 
 import (
 	"context"
@@ -69,6 +68,7 @@ func nextWorkerExit(t *testing.T, ctx context.Context, o *Orchestrator, state St
 func failOnceThenExhaust(t *testing.T, ctx context.Context, o *Orchestrator, state State, start func(*State)) State {
 	t.Helper()
 	start(&state)
+	firstKind := state.Running["id1"].Kind
 	state, ev := nextWorkerExit(t, ctx, o, state)
 	state = o.handleEvent(ctx, state, ev)
 	require.Contains(t, state.RetryAttempts, "id1", "first rate-limited failure must schedule a retry")
@@ -76,7 +76,7 @@ func failOnceThenExhaust(t *testing.T, ctx context.Context, o *Orchestrator, sta
 	state = o.fireRetries(ctx, state, time.Now().Add(time.Hour))
 	retry := state.Running["id1"]
 	require.NotNil(t, retry, "fireRetries must dispatch the retry")
-	require.Empty(t, retry.Kind, "the retry RunEntry built by dispatch() carries no Kind — the defect's precondition")
+	require.Equal(t, firstKind, retry.Kind, "the retry is the same kind of run as the one it retries (#127)")
 
 	state, ev = nextWorkerExit(t, ctx, o, state)
 	return o.handleEvent(ctx, state, ev)

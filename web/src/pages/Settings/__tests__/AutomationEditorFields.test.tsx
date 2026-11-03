@@ -1,6 +1,13 @@
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { makeTestQueryClient } from '../../../test/queryClient';
+import { render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AutomationEditorFields } from '../automations/AutomationEditorFields';
+
+// The prompt editor's autocomplete reads the skills inventory (#87).
+const render = (ui: ReactElement) =>
+  rtlRender(<QueryClientProvider client={makeTestQueryClient()}>{ui}</QueryClientProvider>);
 
 describe('AutomationEditorFields', () => {
   it('shows automation-specific variable and filter guidance', () => {
@@ -27,6 +34,11 @@ describe('AutomationEditorFields', () => {
           switchToBackend: '',
           cooldownMinutes: '',
           moveToState: '',
+          checkNames: [],
+          conclusions: [],
+          reviewStates: [],
+          reviewAuthors: [],
+          mergeableStates: [],
         }}
         availableProfiles={['input-responder']}
         availableStates={['Backlog', 'Todo', 'Ready for QA']}
@@ -97,6 +109,11 @@ describe('AutomationEditorFields', () => {
           switchToBackend: '',
           cooldownMinutes: '',
           moveToState: '',
+          checkNames: [],
+          conclusions: [],
+          reviewStates: [],
+          reviewAuthors: [],
+          mergeableStates: [],
         }}
         availableProfiles={['qa']}
         availableStates={['Backlog', 'Ready for QA']}
@@ -151,6 +168,11 @@ describe('AutomationEditorFields', () => {
           switchToBackend: '',
           cooldownMinutes: '',
           moveToState: 'Todo',
+          checkNames: [],
+          conclusions: [],
+          reviewStates: [],
+          reviewAuthors: [],
+          mergeableStates: [],
         }}
         availableProfiles={['pm']}
         availableStates={['Backlog', 'Todo', 'Ready for QA']}

@@ -353,6 +353,9 @@ func (a *orchestratorAdapter) PostOperatorComment(ctx context.Context, identifie
 			IssueID:    issue.ID,
 			Identifier: issue.Identifier,
 			Body:       body,
+			// #115: the operator who wrote it is watching for it, so it
+			// skips the push interval.
+			Urgent: true,
 		})
 	}
 	_, err = a.tr.CreateComment(ctx, issue.ID, body)
@@ -380,6 +383,16 @@ func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, 
 	}
 	if issue == nil {
 		return fmt.Errorf("issue %s not found", identifier)
+	}
+	// #177: an agent's move of its own issue waits for the issue's running
+	// worker to exit, so reconciliation does not stop that worker before it
+	// has finished its post-run work. The orchestrator applies it (and
+	// records the status change) after the exit. A person's move (the
+	// dashboard) is never deferred: it stops the worker, as it always did.
+	if server.IssueStatusSource(ctx) == server.IssueStatusSourceAgent && a.orch.DeferAgentStateMove(ctx, orchestrator.DeferredStateMove{
+		IssueID: issue.ID, Identifier: identifier, TargetState: stateName, FromState: issue.State,
+	}) {
+		return nil
 	}
 	if err := a.tr.UpdateIssueState(ctx, issue.ID, stateName); err != nil {
 		return err

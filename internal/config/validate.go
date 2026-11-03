@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,10 +17,27 @@ import (
 // (templates.Quickstart) — which replaces the former --demo flag — passes
 // ValidateDispatch. The memory tracker is otherwise a real, internal-only
 // codepath; allowing it in config simply removes the artificial gate.
+// "local" is the file-based tracker (#85).
 var supportedTrackerKinds = map[string]bool{
 	"linear": true,
 	"github": true,
+	"local":  true,
 	"memory": true,
+}
+
+// localPrefixRe is a valid local tracker identifier prefix.
+var localPrefixRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// TrackerNeedsAPIKey reports whether tracker kind talks to a remote service
+// and so needs tracker.api_key. The local and memory trackers do not.
+func TrackerNeedsAPIKey(kind string) bool {
+	return kind == "linear" || kind == "github"
+}
+
+// LocalIssuesDir is where the local tracker (#85) keeps its issue files:
+// .itervox/issues/ next to WORKFLOW.md.
+func LocalIssuesDir(cfg *Config) string {
+	return filepath.Join(filepath.Dir(cfg.WorkflowPath), ".itervox", "issues")
 }
 
 // ErrAutoClearAutoReviewConflict reports that workspace cleanup and automatic
@@ -156,17 +174,26 @@ func ValidateDispatch(cfg *Config) error {
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
-		return fmt.Errorf("missing tracker.kind: must be one of: linear, github")
+		return fmt.Errorf("missing tracker.kind: must be one of: linear, github, local")
 	}
 	if !supportedTrackerKinds[cfg.Tracker.Kind] {
-		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear or github)", cfg.Tracker.Kind)
+		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear, github or local)", cfg.Tracker.Kind)
 	}
 
 	// Check 3: tracker.api_key present after $VAR resolution.
-	// The memory tracker is internal-only and needs no credentials, so this
-	// gate only applies to remote trackers (linear, github).
-	if cfg.Tracker.Kind != "memory" && cfg.Tracker.APIKey == "" {
+	// The local and memory trackers need no credentials, so this gate only
+	// applies to remote trackers (linear, github).
+	if TrackerNeedsAPIKey(cfg.Tracker.Kind) && cfg.Tracker.APIKey == "" {
 		return fmt.Errorf("missing tracker.api_key: must be set or resolved from $VAR")
+	}
+
+	if cfg.Tracker.CommentCommands.Enabled && cfg.Tracker.Kind != "github" {
+		return fmt.Errorf("tracker.comment_commands is only supported with tracker.kind: github")
+	}
+
+	// The local tracker uses project_slug as the issue identifier prefix.
+	if cfg.Tracker.Kind == "local" && cfg.Tracker.ProjectSlug != "" && !localPrefixRe.MatchString(cfg.Tracker.ProjectSlug) {
+		return fmt.Errorf("tracker.project_slug %q is not a valid issue prefix for tracker.kind: local (letters, digits and _, starting with a letter, like ITX)", cfg.Tracker.ProjectSlug)
 	}
 
 	// Check 4: tracker.project_slug present (required for GitHub; optional for Linear)
@@ -248,6 +275,11 @@ func ValidateAgentProfiles(profiles map[string]AgentProfile) error {
 		if slices.Contains(actions, AgentActionCreateIssue) && strings.TrimSpace(profile.CreateIssueState) == "" {
 			return fmt.Errorf("invalid profile %q: create_issue_state is required when create_issue is enabled", name)
 		}
+		for _, check := range profile.RequireEvidence {
+			if !evidenceCheckNameRe.MatchString(check) {
+				return fmt.Errorf("invalid profile %q: require_evidence entry %q must be a short name of lower-case letters, digits, '-' or '_' (e.g. test, lint, ci)", name, check)
+			}
+		}
 	}
 	return nil
 }
@@ -311,6 +343,8 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		case AutomationTriggerIssueMovedBacklog:
 		case AutomationTriggerRunFailed:
 		case AutomationTriggerPROpened, AutomationTriggerPRMerged:
+		case AutomationTriggerPRCheckCompleted, AutomationTriggerPRSynchronized,
+			AutomationTriggerPRReviewSubmitted, AutomationTriggerPRMergeableChanged:
 		case AutomationTriggerBlockersResolved:
 			moveToState := strings.TrimSpace(entry.Policy.MoveToState)
 			if moveToState != "" {
@@ -406,6 +440,49 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		if (len(entry.Filter.BodyContains) > 0 || entry.Filter.BodyRegex != "") &&
 			triggerType != AutomationTriggerTrackerComment {
 			return fmt.Errorf("automation %q: filter.body_contains and filter.body_regex are only meaningful on tracker_comment_added triggers", id)
+		}
+		if err := validatePREventFilter(id, triggerType, entry.Filter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePREventFilter checks the #173 PR-event filters: each is only
+// meaningful on its own trigger, and the enumerated ones only take values
+// GitHub reports.
+func validatePREventFilter(id, triggerType string, f AutomationFilterConfig) error {
+	only := func(field, trigger string) error {
+		return fmt.Errorf("automation %q: filter.%s is only meaningful on %s triggers", id, field, trigger)
+	}
+	if (len(f.CheckNames) > 0 || len(f.Conclusions) > 0) && triggerType != AutomationTriggerPRCheckCompleted {
+		if len(f.CheckNames) > 0 {
+			return only("check_names", AutomationTriggerPRCheckCompleted)
+		}
+		return only("conclusions", AutomationTriggerPRCheckCompleted)
+	}
+	if (len(f.ReviewStates) > 0 || len(f.ReviewAuthors) > 0) && triggerType != AutomationTriggerPRReviewSubmitted {
+		if len(f.ReviewStates) > 0 {
+			return only("review_states", AutomationTriggerPRReviewSubmitted)
+		}
+		return only("review_authors", AutomationTriggerPRReviewSubmitted)
+	}
+	if len(f.MergeableStates) > 0 && triggerType != AutomationTriggerPRMergeableChanged {
+		return only("mergeable_states", AutomationTriggerPRMergeableChanged)
+	}
+	for _, set := range []struct {
+		field   string
+		values  []string
+		allowed []string
+	}{
+		{"conclusions", f.Conclusions, PRCheckConclusions},
+		{"review_states", f.ReviewStates, PRReviewStates},
+		{"mergeable_states", f.MergeableStates, PRMergeableStates},
+	} {
+		for _, v := range set.values {
+			if !slices.Contains(set.allowed, strings.ToLower(strings.TrimSpace(v))) {
+				return fmt.Errorf("automation %q: filter.%s value %q is not one of %s", id, set.field, v, strings.Join(set.allowed, ", "))
+			}
 		}
 	}
 	return nil

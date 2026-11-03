@@ -1,4 +1,5 @@
 import { MarkdownPromptEditor } from '../profiles/MarkdownPromptEditor';
+import { PROFILE_VARIABLES, TRIGGER_VARIABLES } from '../profiles/promptCompletions';
 import { checkboxCls, fieldLabelCls, helperTextCls, selectCls } from '../formStyles';
 import type { AutomationFormValues } from './automationForm';
 import {
@@ -11,6 +12,11 @@ import { AutomationInstructionsPanel } from './AutomationInstructionsPanel';
 import { CronScheduleFields } from './CronScheduleFields';
 import { RateLimitedFieldsBlock } from './RateLimitedFieldsBlock';
 import { BlockersResolvedFieldsBlock } from './BlockersResolvedFieldsBlock';
+import { PREventFilterFields } from './PREventFilterFields';
+import type { PREventFilterField } from './prEventFilters';
+import { isPREventTrigger } from '../../../types/automationTriggers';
+
+const AUTOMATION_VARIABLES = [...PROFILE_VARIABLES, ...TRIGGER_VARIABLES];
 
 // Composes extracted automation editor sections while the parent owns form state.
 export function AutomationEditorFields({
@@ -37,6 +43,7 @@ export function AutomationEditorFields({
   onSwitchToBackendChange,
   onCooldownMinutesChange,
   onMoveToStateChange,
+  onPREventFilterChange,
 }: {
   values: AutomationFormValues;
   availableProfiles: string[];
@@ -61,6 +68,7 @@ export function AutomationEditorFields({
   onSwitchToBackendChange: (value: '' | 'claude' | 'codex') => void;
   onCooldownMinutesChange: (value: string) => void;
   onMoveToStateChange: (value: string) => void;
+  onPREventFilterChange: (field: PREventFilterField, value: string[]) => void;
 }) {
   // CORE-047 round 2: an unknown trigger (newer daemon) is read-only — none
   // of the known trigger-specific sections apply to it.
@@ -70,6 +78,7 @@ export function AutomationEditorFields({
   const isIssueEnteredState = known && values.triggerType === 'issue_entered_state';
   const isRateLimited = known && values.triggerType === 'rate_limited';
   const isBlockersResolved = known && values.triggerType === 'blockers_resolved';
+  const isPREvent = known && isPREventTrigger(values.triggerType);
   const supportsBatchLimit =
     isCron ||
     values.triggerType === 'tracker_comment_added' ||
@@ -220,6 +229,8 @@ export function AutomationEditorFields({
         />
       )}
 
+      {isPREvent && <PREventFilterFields values={values} onChange={onPREventFilterChange} />}
+
       <AutomationInstructionsPanel
         triggerType={values.triggerType}
         onInstructionsChange={onInstructionsChange}
@@ -229,6 +240,7 @@ export function AutomationEditorFields({
         value={values.instructions}
         onChange={onInstructionsChange}
         label="Instructions"
+        variables={AUTOMATION_VARIABLES}
         placeholder="Write small automation-specific instructions in Markdown. These are layered on top of the selected profile."
         helperText={
           <>

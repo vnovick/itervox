@@ -28,6 +28,9 @@ func (s State) Clone() State {
 	c.TerminalStates = cloneSlice(s.TerminalStates)
 	c.PauseDispatchWhenAnyInState = cloneSlice(s.PauseDispatchWhenAnyInState)
 	c.Running = copyRunningMap(s.Running)
+	c.LatestRun = maps.Clone(s.LatestRun)
+	c.Spend = s.Spend.clone()
+	c.BudgetStops = maps.Clone(s.BudgetStops)
 	c.Claimed = maps.Clone(s.Claimed)
 	c.RetryAttempts = copyRetryMap(s.RetryAttempts)
 	c.PausedIdentifiers = maps.Clone(s.PausedIdentifiers)
@@ -44,6 +47,7 @@ func (s State) Clone() State {
 	c.BackendHealth = maps.Clone(s.BackendHealth)
 	c.BackendLimitedHolds = maps.Clone(s.BackendLimitedHolds)
 	c.ForceReanalyze = maps.Clone(s.ForceReanalyze)
+	c.PendingRestacks = maps.Clone(s.PendingRestacks)
 	c.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	c.PrevIssueStates = maps.Clone(s.PrevIssueStates)
 	c.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)
@@ -58,9 +62,15 @@ func (s State) Clone() State {
 	c.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
 	c.PROpenedDispatched = maps.Clone(s.PROpenedDispatched)
 	c.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
+	c.ManagedPRs = maps.Clone(s.ManagedPRs) // value type, no reference fields
+	c.PREventDispatched = maps.Clone(s.PREventDispatched)
+	c.PREventBaselines = maps.Clone(s.PREventBaselines)
+	c.CronCursors = maps.Clone(s.CronCursors)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
-	c.PendingReviews = maps.Clone(s.PendingReviews) // value type, no reference fields
+	c.StackUnavailable = maps.Clone(s.StackUnavailable)
+	c.PendingReviews = maps.Clone(s.PendingReviews)         // value type, no reference fields
+	c.DeferredStateMoves = maps.Clone(s.DeferredStateMoves) // value type, no reference fields
 	c.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
 	c.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
@@ -111,6 +121,7 @@ func copyReviewVerdictsMap(m map[string][]ReviewVerdict) map[string][]ReviewVerd
 		for i, rv := range v {
 			vs[i] = rv
 			vs[i].Reasons = cloneSlice(rv.Reasons)
+			vs[i].Comments = cloneSlice(rv.Comments)
 		}
 		cp[k] = vs
 	}

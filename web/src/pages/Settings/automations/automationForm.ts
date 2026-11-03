@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { AutomationDef } from '../../../types/schemas';
 import { AUTOMATION_TRIGGER_TYPES } from '../../../types/automationTriggers';
+import {
+  PR_EVENT_FILTER_FIELDS,
+  prEventFilterFromValues,
+  type PREventFilterValues,
+} from './prEventFilters';
 import type { SuggestedAutomation } from './suggestedAutomations';
 import type { AutomationUnknownFields } from '../../../types/configRoundTrip';
 
@@ -47,6 +52,12 @@ export const automationFormSchema = z
       message: 'Cooldown must be a non-negative integer (in minutes).',
     }),
     moveToState: z.string(),
+    // #173 PR-event filters, persisted only on the trigger they belong to.
+    checkNames: z.array(z.string().min(1)),
+    conclusions: z.array(z.string().min(1)),
+    reviewStates: z.array(z.string().min(1)),
+    reviewAuthors: z.array(z.string().min(1)),
+    mergeableStates: z.array(z.string().min(1)),
     // CORE-047 round 2: raw values from a newer daemon, read-only in the form
     // and restored on save (automationDefToWire).
     unknownFields: z.custom<AutomationUnknownFields>().optional(),
@@ -140,6 +151,7 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
         ? String(automation.policy.cooldownMinutes)
         : '',
     moveToState: automation.policy?.moveToState ?? '',
+    ...prEventFilterValues(automation.filter),
     unknownFields: automation.unknownFields,
   };
 }
@@ -162,6 +174,7 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
     const parsedAge = trimmedAge === '' ? Number.NaN : Number.parseInt(trimmedAge, 10);
     if (!Number.isNaN(parsedAge) && parsedAge > 0) filter.maxAgeMinutes = parsedAge;
   }
+  Object.assign(filter, prEventFilterFromValues(values.triggerType, values));
 
   return {
     id: values.id.trim(),
@@ -238,7 +251,14 @@ export function emptyAutomationValues(
     switchToBackend: '',
     cooldownMinutes: '',
     moveToState: '',
+    ...prEventFilterValues(undefined),
   };
+}
+
+function prEventFilterValues(filter: AutomationDef['filter']): PREventFilterValues {
+  const out = {} as PREventFilterValues;
+  for (const field of PR_EVENT_FILTER_FIELDS) out[field] = filter?.[field] ?? [];
+  return out;
 }
 
 export function automationValuesFromSuggestion(
@@ -265,5 +285,6 @@ export function automationValuesFromSuggestion(
     switchToBackend: '',
     cooldownMinutes: '',
     moveToState: suggestion.moveToState ?? '',
+    ...prEventFilterValues(undefined),
   };
 }

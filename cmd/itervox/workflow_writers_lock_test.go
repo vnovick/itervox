@@ -66,7 +66,7 @@ func TestCmdWorkflowWritersSerializeWithLockedPatchers(t *testing.T) {
 				}
 				go func() { // locked partner: read, park, then write
 					partnerDone <- workflow.ApplyAndWriteFrontMatter(f, park,
-						workflow.MutateIntField("max_concurrent_agents", 7))
+						workflow.MutateSetKey("agent.max_concurrent_agents", 7))
 				}()
 				<-holding
 

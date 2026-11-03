@@ -202,6 +202,10 @@ extracts inline `agent.profiles.<name>.prompt` content into per-profile
 `INSTRUCTIONS.md` files, generates starter `SOUL.md` files, writes a
 `WORKFLOW.md.bak`, patches the root `.gitignore` so `.itervox/agents/**` is
 committable, and stamps `itervox_schema_version: 2` on the migrated file.
+The rewrite edits the YAML node tree (`yaml.v3` `Node`) rather than
+re-marshalling a map, so comments, key order, scalar styles and the file's
+indent width are preserved; `itervox_schema_version: 2` is inserted as the
+first key and only the migrated keys change (#71).
 
 ### Built-in profile registry
 
@@ -232,11 +236,18 @@ Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
    order, budget-truncated. See **Agent handoff** below.
 3. **`## Run Context`** block — `run.timestamp` and `run.handoff_path` for
    this dispatch. The agent uses these to write its own deliverable.
-4. **SOUL.md** — compact identity ("who you are"), appended via
+4. **`## Rules`** block (#157) — the layered rules in scope for the run's
+   project, profile and backend, must rules first. `internal/rules` reads
+   `~/.itervox/rules.json`, `.itervox/rules.json` and
+   `.itervox/rules.local.json` again at every dispatch (`startRun`), so an
+   edit applies to the next run; the run records the set's hash and ids.
+   Omitted when a template prints `{{ rules }}` (or a field of it) itself.
+   The dependency analyzer gets the same block at the top of its prompt.
+5. **SOUL.md** — compact identity ("who you are"), appended via
    `renderProfilePromptBlocks`.
-5. **INSTRUCTIONS.md** — operational rules, checklists, including the
+6. **INSTRUCTIONS.md** — operational rules, checklists, including the
    "Handoff Protocol" section that points at `run.handoff_path`.
-6. Optional appends: automation instructions, action context, sub-agent
+7. Optional appends: automation instructions, action context, sub-agent
    roster, first-turn PR context.
 
 The concatenated result is passed to the agent subprocess. Inline `prompt:`
@@ -303,6 +314,13 @@ identifier is absent from the candidate set AND whose most-recent change is
 older than `issueStatusHistoryRetention` (default 7 days). Live issues are
 preserved regardless of age. Janitor runs at the tail of every `onTick`.
 
+The latest finished review shown in issue detail (`ReviewVerdicts` and
+`ReviewOutcomes`, #135) shares this retention: `pruneReviewLedgers` keeps an
+untracked issue's verdicts and outcome while it still has a status-history
+entry, and drops them with it. `ReviewChainIndex`, the in-flight marker, is
+not retained that way, so an abandoned chain's marker is still pruned as soon
+as the issue is untracked and no review is mid-chain.
+
 The ledger is session-local in v0.2.0. Cross-restart persistence is gated on
 the queue-persistence v2 envelope described in the next section.
 
@@ -339,6 +357,37 @@ dedup ledger on `State.PRMergedDispatched`; `AutomationDispatchesPRMergedTotal`
 and `AutomationDroppedPRMergedDedupTotal` counters surface dispatch
 telemetry.
 
+### PR-event triggers (#173)
+
+`pr_check_completed`, `pr_synchronized`, `pr_review_submitted` and
+`pr_mergeable_changed` fire on GitHub activity on a **managed** PR: one whose
+URL a run's exit carried (`RunEntry.PRURL`, plus `RunEntry.HeadSHA`, the
+remote-tracking head the run left). The event loop records it in
+`State.ManagedPRs` (`recordManagedPR`, on `EventWorkerExited`).
+
+```
+ GitHub webhook (POST /api/v1/webhooks/pr-events)   poll of open managed PRs
+        │ prwatch.Handler (HMAC check)                 │ prwatch.Watcher.Poll (ETag/304)
+        └───────────────► prwatch.Event ◄──────────────┘
+                              │ cmd/itervox prEventSink: issue by identifier
+                              ▼
+        Orchestrator.DispatchPREventAutomations (off-loop: rule + PR filters)
+                              │ EventDispatchAutomation (one per matching rule)
+                              ▼
+        event loop: dispatchOrQueueAutomation → claimPREventDedup
+          managed for this issue? predates the recording run? head/mergeable
+          changed for this rule (State.PREventBaselines)? key already in
+          State.PREventDispatched? → start / queue / drop
+```
+
+`internal/prwatch` imports only stdlib, `metrics` and `tracker` (for the
+rate-limit snapshot type); it never decides dispatch. `ManagedPRs`,
+`PREventDispatched` and `PREventBaselines` are event-loop state, persisted
+together to `pr_events.json` by the ledger writer from `storeSnap`, and pruned
+by `pruneTerminalRuntimeLedgers` when the issue turns terminal. The watcher
+reads the managed PRs from the last snapshot (`Orchestrator.ManagedPRs`), never
+from live state.
+
 ### `itervox doctor` (P0-D / P0-G)
 
 A preflight subcommand that runs WORKFLOW.md schema validation + dispatch
@@ -348,6 +397,13 @@ between the running daemon's binary (`os.Executable()`) and whatever
 shipped built-in profile names (`profiles.Names()`) and surfaces any
 existing `.itervox/STARTUP_ERROR.md`. Exits non-zero on schema failure,
 binary drift, version mismatch, or a present startup-error marker.
+
+On a GitHub tracker it also lists the repository's labels through the
+tracker client and reports every configured state label that is missing
+(`cmd/itervox/doctor_labels.go`, #75), because a state whose label does not
+exist matches no issue and fails silently. Missing labels exit `1`; an API
+error is reported and never fails doctor. `itervox doctor --fix` creates the
+missing labels after a `[y/N]` prompt (`--yes` for non-interactive runs).
 
 On startup config-load failure the daemon writes
 `.itervox/STARTUP_ERROR.md` (timestamp, workflow path, YAML/schema diagnostic,
@@ -363,6 +419,9 @@ state changes at a bounded interval (default 15 s) via
 
 - active workflow path and `itervox_schema_version`
 - dashboard URL and tracker/project
+- tracker sync status (`## Sync`, #117): mode, last pull, lag and its warn
+  threshold, pending writes, next push, last sync error. Also rewritten when
+  the sync status changes, so `itervox doctor` reads a current last pull
 - agent capacity (running / max)
 - automation queue pressure (length / max, paused producers, recent rejects)
 - dependency audit summary (blocked / unknown / unblocked counts)
@@ -407,13 +466,14 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/workflow` | WORKFLOW.md loader and content-hash file watcher |
 | `internal/workspace` | Workspace provisioning, path safety, git worktree / bare-clone helpers, PR branches, lifecycle hooks |
 | `internal/prompt` | Liquid template rendering for agent prompts |
+| `internal/rules` | Layered JSONC rules (#157): read, merge (user `must` rules locked), scope filter, `## Rules` block and `{{ rules }}` binding, comment-preserving saves for the Rules editor |
 | `internal/logbuffer` | Per-issue ring buffer for live log streaming |
 | `internal/prdetector` | Detects PR URLs in agent output |
 | `internal/app` | Cross-cutting business logic (e.g. `EnrichIssue`) |
 | `internal/server` | chi-based HTTP API, SSE broadcaster, embedded web assets |
 | `internal/statusui` | Bubbletea terminal UI; reads `Orchestrator.Snapshot()` |
 | `internal/templates` | WORKFLOW.md scaffolding and human-input template |
-| `internal/templates/scaffold` | Registry of `--template` presets for `itervox init` (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) |
+| `internal/templates/scaffold` | Registry of `itervox init --template` starter templates (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) and their one-line summaries; `cmd/itervox/init_templates.go` renders each template's profiles, review settings, backend fallback and automations |
 | `internal/logging` | slog setup and shared logging helpers |
 | `internal/profiles` | Built-in profile registry: `embed.FS` of `builtin/<name>/{SOUL,INSTRUCTIONS}.md` plus per-profile `Default{Command,Backend,Actions}` |
 | `internal/depsanalysis` | Dependency analyzer sidecar — async job that runs an analyzer profile over the snapshot graph and caches results |

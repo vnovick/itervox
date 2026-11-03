@@ -1,4 +1,4 @@
-.PHONY: all build verify release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden settings-schema size-budget no-os-exit no-bare-go deadcode dco-test e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -32,7 +32,7 @@ build: web-deps web-build
 # internal/server/web/dist (gitignored), so on a fresh checkout every Go
 # compile step fails with "pattern web/dist: no matching files found" until
 # the frontend is built. Order is load-bearing — verify runs serially.
-verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test
+verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test dco-test
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
@@ -60,6 +60,11 @@ release-hooks-clean:
 # Guard against new os.Exit() outside cmd/itervox/exit.go — see CLAUDE.md.
 no-os-exit:
 	@bash scripts/check-no-os-exit.sh
+
+# dco-test exercises scripts/check-dco.sh (the DCO sign-off check run by
+# .github/workflows/dco.yml) against throwaway git repos. Needs bash + git.
+dco-test:
+	@bash scripts/check-dco_test.sh
 
 # no-bare-go (CORE-008) fails on any production `go` statement that neither
 # defers orchestrator.RecoverGoroutine / failFastOnPanic nor appears on the
@@ -120,6 +125,14 @@ GO_TEST_TAGS ?= sshmatrix
 test:
 	go test -race -timeout $(GO_TEST_TIMEOUT) -tags $(GO_TEST_TAGS) $(GO_PACKAGES) -count=1
 
+# chaos runs the orchestrator and tracker tests over and over while busy
+# loops saturate every CPU (#126); the ordering races this catches only show
+# up under load. Settings: CHAOS_PACKAGES, CHAOS_RUN, CHAOS_COUNT, CHAOS_CPU,
+# CHAOS_HOGS, CHAOS_TIMEOUT, CHAOS_OUT (see scripts/chaos.sh). Not part of
+# verify: it takes tens of minutes. CI runs it nightly (.github/workflows/chaos.yml).
+chaos:
+	@bash scripts/chaos.sh
+
 # Run tests with coverage and generate an HTML report (coverage.html).
 coverage:
 	go test -timeout $(GO_TEST_TIMEOUT) -coverprofile=coverage.out $(GO_PACKAGES)
@@ -131,6 +144,12 @@ coverage:
 clean:
 	rm -f itervox coverage.out coverage.html
 	go clean $(GO_PACKAGES)
+
+# Regenerate the published settings JSON Schema (#158) from the config
+# registry (internal/config/settings_fields.go). TestSettingsSchemaPublishedFileIsCurrent
+# fails when the published file is stale.
+settings-schema:
+	go generate ./cmd/itervox/
 
 # Regenerate catwalk golden files after intentional TUI render changes.
 tui-golden:
@@ -216,6 +235,8 @@ deploy-test:
 	bash deploy/monitoring/heartbeat-metrics_test.sh
 	bash deploy/monitoring/itervox-watchdog_test.sh
 	bash deploy/monitoring/rules_names_test.sh
+	bash deploy/acceptance/self-hosted-run_test.sh
+	bash deploy/acceptance/gcp-deploy-smoke_test.sh
 
 # Deploy lint (CORE-105). Same targets as .github/workflows/deploy-lint.yml;
 # each tool runs from a pinned image, so only docker is needed.
@@ -284,3 +305,42 @@ qa-daemon: e2e
 .PHONY: qa-current
 qa-current: verify qa-current-ui qa-daemon
 	@echo "qa-current: full existing-functionality baseline passed"
+
+# ── Mac app (#128) ───────────────────────────────────────────────────────
+# A Tauri v2 menu-bar shell in desktop/ that bundles the daemon as a sidecar
+# (see site/src/content/docs/mac-app.mdx). Needs a Rust toolchain; `make
+# desktop` additionally needs macOS (Xcode Command Line Tools) and the Tauri
+# CLI, installed on first use at TAURI_CLI_VERSION. Not part of `make verify`,
+# which stays Rust-free; CI runs `desktop-test` and the unsigned bundle on a
+# macOS runner (.github/workflows/desktop.yml).
+DESKTOP_DIR := desktop/src-tauri
+TAURI_CLI_VERSION := 2.12.2
+HOST_TRIPLE = $(shell rustc -vV | sed -n 's/^host: //p')
+
+.PHONY: desktop desktop-sidecar desktop-sidecar-host desktop-test desktop-tauri-cli
+
+# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one on a Mac).
+desktop-sidecar: web-deps web-build
+	bash desktop/scripts/build-sidecar.sh
+
+# The sidecar for this machine only (tests, Linux development).
+desktop-sidecar-host: web-deps web-build
+	bash desktop/scripts/build-sidecar.sh --host
+
+# Rust gates plus the end-to-end tests against the real daemon.
+desktop-test: desktop-sidecar-host
+	cd $(DESKTOP_DIR) && cargo fmt --check
+	cd $(DESKTOP_DIR) && cargo clippy --all-targets -- -D warnings
+	cd $(DESKTOP_DIR) && ITERVOX_E2E_REQUIRE=1 \
+	  ITERVOX_E2E_DAEMON=$(CURDIR)/$(DESKTOP_DIR)/binaries/itervox-$(HOST_TRIPLE) cargo test
+
+desktop-tauri-cli:
+	@cargo tauri --version 2>/dev/null | grep -qx 'tauri-cli $(TAURI_CLI_VERSION)' \
+	  || cargo install tauri-cli --version $(TAURI_CLI_VERSION) --locked
+
+# The unsigned app bundle for this Mac's architecture:
+# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg).
+# Releases are signed and notarized by .github/workflows/desktop-release.yml
+# (#130, docs/release-mac.md).
+desktop: desktop-sidecar desktop-tauri-cli
+	cd $(DESKTOP_DIR) && cargo tauri build

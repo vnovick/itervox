@@ -22,6 +22,8 @@ type Inventory struct {
 	Profiles     map[string]ProfileCapabilities // reserved daemon-managed profile graph
 	Capabilities []Capability                   // reserved normalized graph nodes
 	Skills       []Skill                        // Claude + Codex + shared
+	Subagents    []Subagent                     // Claude Code subagents: .claude/agents (project, user) + plugin agents
+	Prompts      []Prompt                       // Codex custom prompts: ~/.codex/prompts/*.md (#123)
 	Plugins      []Plugin
 	MCPServers   []MCPServer
 	Hooks        []HookEntry
@@ -31,6 +33,12 @@ type Inventory struct {
 	Runtime      *RuntimeEvidenceSnapshot
 	Analytics    *AnalyticsSnapshot
 	Issues       []InventoryIssue
+	// WatchDirs are directories whose mtime gates the cache's staleness check
+	// (every directory the subagent scanner walked, plus the agents roots it
+	// looked for), so an agent file added to an existing — even empty —
+	// directory, or a root that appears later, marks the inventory stale.
+	// Not part of the API payload.
+	WatchDirs []string `json:"-"`
 }
 
 // Skill describes a single SKILL.md (or equivalent) entry discovered under
@@ -44,6 +52,33 @@ type Skill struct {
 	ApproxTokens    int
 	TriggerPatterns []string
 	bodyText        string
+}
+
+// Subagent is a Claude Code subagent definition: a Markdown file with YAML
+// frontmatter under `.claude/agents/` (project or user) or one declared by a
+// plugin manifest (#86). Codex has no subagent concept.
+type Subagent struct {
+	Name         string
+	Description  string
+	Tools        []string // from the `tools` frontmatter; empty means "inherits all tools"
+	Model        string   // from the `model` frontmatter; empty means "inherit"
+	Provider     string   // always "claude"
+	Source       string   // "project" | "user" | "plugin:{name}"
+	FilePath     string
+	ApproxTokens int
+}
+
+// Prompt is a Codex custom prompt: a Markdown file directly under
+// ~/.codex/prompts/ that Codex runs as the slash command
+// `/prompts:<name>` (#123). Claude Code has no equivalent, so Provider is
+// always "codex". The optional YAML frontmatter supplies a description.
+type Prompt struct {
+	Name         string
+	Description  string
+	Provider     string // always "codex"
+	Source       string // "user-codex"
+	FilePath     string
+	ApproxTokens int
 }
 
 // Capability is the reserved normalized graph node for a later phase. v0.2.0

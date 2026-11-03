@@ -69,7 +69,7 @@ func runInitDepsAnalysis(workflowPath, requestedMode string) (issueCount, analyz
 	if !config.ProfileEnabled(profile) {
 		return 0, 0, 0, "", false, fmt.Errorf("profile %q is disabled", profileName)
 	}
-	if cfg.Tracker.Kind != "memory" && strings.TrimSpace(cfg.Tracker.APIKey) == "" {
+	if config.TrackerNeedsAPIKey(cfg.Tracker.Kind) && strings.TrimSpace(cfg.Tracker.APIKey) == "" {
 		return 0, 0, 0, "", false, errors.New("tracker.api_key is empty — fill in .itervox/.env then run \"Analyze dependencies\" from the dashboard")
 	}
 
@@ -144,6 +144,7 @@ func runInitDepsAnalysis(workflowPath, requestedMode string) (issueCount, analyz
 		Logger:        slog.Default(),
 		ReadTimeoutMs: cfg.Agent.ReadTimeoutMs,
 		TurnTimeoutMs: cfg.Agent.TurnTimeoutMs,
+		RulesBlock:    analyzerRulesBlock(cfg, profileName, profile, slog.Default()), // #157
 	}, plan.ToAnalyze, trackerEdges, chunkSize, nil)
 	if err != nil {
 		return 0, 0, 0, "", false, fmt.Errorf("agent pass: %w", err)

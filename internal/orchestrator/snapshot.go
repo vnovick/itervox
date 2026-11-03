@@ -273,6 +273,7 @@ type inputRequiredDisk struct {
 	Command            string `json:"command"`
 	WorkerHost         string `json:"worker_host,omitempty"`
 	ProfileName        string `json:"profile_name,omitempty"`
+	Reviewer           bool   `json:"reviewer,omitempty"`
 	QuestionCommentKey string `json:"question_comment_key,omitempty"`
 	QuestionCommentID  string `json:"question_comment_id,omitempty"`
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
@@ -299,6 +300,7 @@ type pendingInputResumeDisk struct {
 	Command            string `json:"command"`
 	WorkerHost         string `json:"worker_host,omitempty"`
 	ProfileName        string `json:"profile_name,omitempty"`
+	Reviewer           bool   `json:"reviewer,omitempty"`
 	QuestionCommentKey string `json:"question_comment_key,omitempty"`
 	QuestionCommentID  string `json:"question_comment_id,omitempty"`
 	QuestionAuthorID   string `json:"question_author_id,omitempty"`
@@ -325,6 +327,10 @@ type automationQueueStateDisk struct {
 	// payload bytes were written, so old and new payload shapes each verify.
 	DependencyAudit         map[string]*DependencyAuditEntry `json:"dependency_audit,omitempty"`
 	DependencyTransitionSeq int64                            `json:"dependency_transition_seq,omitempty"`
+	// CronCursors (#176) is the cron filter.limit rotation cursor per
+	// automation ID. Additive and omitempty like the AUTO-4 fields above: an
+	// older file loads with no cursors (the rotation starts from the top).
+	CronCursors map[string]string `json:"cron_cursors,omitempty"`
 }
 
 // saveInputRequiredToDisk writes InputRequiredIssues and PendingInputResumes to disk.
@@ -347,6 +353,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			Reviewer:           v.Reviewer,
 			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
@@ -368,6 +375,7 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			Reviewer:           v.Reviewer,
 			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
@@ -437,6 +445,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			Reviewer:           v.Reviewer,
 			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
@@ -458,6 +467,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			Command:            v.Command,
 			WorkerHost:         v.WorkerHost,
 			ProfileName:        v.ProfileName,
+			Reviewer:           v.Reviewer,
 			QuestionCommentKey: v.QuestionCommentKey,
 			QuestionCommentID:  v.QuestionCommentID,
 			QuestionAuthorID:   v.QuestionAuthorID,
@@ -502,7 +512,7 @@ func (o *Orchestrator) SetAutomationQueueFile(path string) {
 	o.automationQueueMu.Unlock()
 }
 
-func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQueueEntry, order []string, backpressure AutomationQueueBackpressure, dependencyAudit map[string]*DependencyAuditEntry, dependencyTransitionSeq int64) {
+func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQueueEntry, order []string, backpressure AutomationQueueBackpressure, dependencyAudit map[string]*DependencyAuditEntry, dependencyTransitionSeq int64, cronCursors map[string]string) {
 	o.automationQueueMu.RLock()
 	path := o.automationQueueFile
 	o.automationQueueMu.RUnlock()
@@ -515,6 +525,7 @@ func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQ
 		Backpressure:            backpressure,
 		DependencyAudit:         copyDependencyAuditMap(dependencyAudit),
 		DependencyTransitionSeq: dependencyTransitionSeq,
+		CronCursors:             maps.Clone(cronCursors),
 	}
 	payload, err := json.Marshal(disk)
 	if err != nil {
@@ -638,6 +649,8 @@ func (o *Orchestrator) loadAutomationQueueFromDisk(state State) State {
 	if len(state.DependencyAudit) > 0 {
 		state.LastBlockersResolvedAuditSeq = state.DependencyTransitionSeq - 1
 	}
+	// #176 — resume each cron rule's filter.limit rotation where it stopped.
+	state.CronCursors = restoreCronCursors(disk.CronCursors)
 
 	slog.Info("orchestrator: loaded automation queue", "path", path, "entries", len(state.AutomationQueue), "dependency_audit", len(state.DependencyAudit))
 	return state
@@ -657,6 +670,7 @@ func copyRunningMap(m map[string]*RunEntry) map[string]*RunEntry {
 		}
 		e := *v              // copy struct value
 		e.WorkerCancel = nil // not safe to share across goroutines
+		e.run = nil          // the worker's handle stays with the live entry
 		e.Issue = copyDomainIssue(v.Issue)
 		cp[k] = &e
 	}
@@ -1192,7 +1206,8 @@ func (o *Orchestrator) storeSnap(s State) {
 	// #42-F. Persisting here covers every pause site by construction.
 	o.savePauseReasonsToDisk(snap.PauseReasons)
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
-	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq)
+	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq, snap.CronCursors)
+	o.savePREventsToDisk(snap) // #173
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}

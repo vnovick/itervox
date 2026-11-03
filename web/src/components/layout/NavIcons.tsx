@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Logs,
   type LucideProps,
+  ScrollText,
   Settings,
   TimerReset,
   Workflow,
@@ -37,4 +38,8 @@ export function AutomationsIcon({ className }: { className?: string }) {
 
 export function SettingsIcon({ className }: { className?: string }) {
   return <Settings {...iconProps(className)} />;
+}
+
+export function RulesIcon({ className }: { className?: string }) {
+  return <ScrollText {...iconProps(className)} />;
 }

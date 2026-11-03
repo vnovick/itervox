@@ -47,26 +47,6 @@ var initAgentProfileNames = []string{"implementer", "reviewer", "input-responder
 // wired to this name in the generated WORKFLOW.md front matter.
 const initDepsAnalyzerProfileName = "deps-analyzer"
 
-func writeInitAgentFiles(workflowPath, runner string) error {
-	baseDir := filepath.Dir(workflowPath)
-	if baseDir == "" {
-		baseDir = "."
-	}
-	for _, profile := range initAgentProfileNames {
-		profileDir := filepath.Join(baseDir, ".itervox", "agents", profile)
-		if err := os.MkdirAll(profileDir, 0o755); err != nil {
-			return fmt.Errorf("itervox init: create %s: %w", profileDir, err)
-		}
-		if err := writeFileIfMissing(filepath.Join(profileDir, "SOUL.md"), initSoulContent(profile)); err != nil {
-			return err
-		}
-		if err := writeFileIfMissing(filepath.Join(profileDir, "INSTRUCTIONS.md"), initInstructionsContent(profile, runner)); err != nil {
-			return err
-		}
-	}
-	return ensureItervoxGitignore(filepath.Join(baseDir, ".itervox"))
-}
-
 func writeFileIfMissing(path string, content string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
@@ -103,7 +83,11 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	path := filepath.Join(itervoxDir, ".gitignore")
 	// run/ holds transient per-daemon runtime state such as the CORE-042
 	// orphan process-group ledger, run/agent-pgids.json (agentPGIDLedgerRel).
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "bin/", "*.db"}
+	// #157: rules.json is the committed project rules layer, carved out of
+	// the runtime /*.json ignore (the negation must follow it);
+	// rules.local.json is the operator's private layer and stays ignored, as
+	// does the project-local settings layer (#158).
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)
@@ -178,7 +162,14 @@ func detectMigrationRunner(profiles map[string]any) string {
 }
 
 func initSoulContent(profile string) string {
+	if strings.HasPrefix(profile, "reviewer-") {
+		profile = "reviewer" // preset reviewers (#79) share the read-only reviewer files
+	}
 	switch profile {
+	case prReviewerProfileName:
+		return prReviewerSoul
+	case qaProfileName:
+		return qaSoul
 	case initDepsAnalyzerProfileName:
 		return `# deps-analyzer SOUL
 
@@ -212,7 +203,8 @@ You are the code review engineer for this repository.
 Find correctness, safety, test coverage, and integration risks before changes merge.
 
 ## Boundaries
-Do not rewrite unrelated implementation. Do not commit secrets.
+You are read-only: never edit files, commit, push or move the issue. Your
+output is a verdict; the implementer makes the fixes you ask for.
 
 ## Collaboration Style
 Be direct, evidence-driven, and specific about required fixes.
@@ -265,7 +257,14 @@ const handoffProtocolSection = `## Handoff Protocol
 `
 
 func initInstructionsContent(profile string, runner string) string {
+	if strings.HasPrefix(profile, "reviewer-") {
+		profile = "reviewer" // preset reviewers (#79) share the read-only reviewer files
+	}
 	switch profile {
+	case prReviewerProfileName:
+		return prReviewerInstructions
+	case qaProfileName:
+		return qaInstructions
 	case initDepsAnalyzerProfileName:
 		return `# deps-analyzer INSTRUCTIONS
 
@@ -310,13 +309,14 @@ the dashboard miss an inferred relation over showing a false one.
 - Read project agent instructions such as AGENTS.md, CLAUDE.md, and README.md before reviewing.
 
 ## Workflow
-- Inspect the diff and related tests.
+- Read the "## Changes to Review" block (the diff against the base branch) and the latest handoff in your prompt; open files in the workspace for context.
 - Prioritize real bugs, regressions, race conditions, missing tests, and security issues.
-- Fix only narrow review findings when the tracker issue or workflow asks you to do so.
+- Do not edit files, commit, push or move the issue. Itervox flags a reviewer that changes the branch and counts its verdict as a block.
+- Record your verdict at the path the "## Review Verdict (required)" block names: approve, or block with reasons and line comments the implementer must address. Itervox posts it on the issue.
 
 ## Done Criteria
-- Findings are specific and actionable.
-- Verification commands are named with their results.
+- The verdict file is written; every block reason is specific and actionable.
+- Line comments name the file and line they refer to.
 
 ` + handoffProtocolSection
 	case "input-responder":

@@ -5,9 +5,11 @@ import IssueDetailHeader from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { IssueStatusChanges } from './IssueStatusChanges';
+import { IssueReviews } from './IssueReviews';
 import { InputRequiredPanel } from './InputRequiredPanel';
 import { IssueCommentComposer } from './IssueCommentComposer';
 import { IssueBackendControl } from './IssueBackendControl';
+import { IssueProfilePicker } from './IssueProfilePicker';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import { ConfirmButton } from '../ui/button/ConfirmButton';
@@ -17,14 +19,12 @@ import {
   useCancelIssue,
   useResumeIssue,
   useTerminateIssue,
-  useSetIssueProfile,
   useProvideInput,
   useDismissInput,
   useTriggerAIReview,
   ISSUES_KEY,
   ISSUE_KEY,
 } from '../../queries/issues';
-import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
 import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants';
 
 // CORE-070 — tracker.working_state default (internal/config/config.go), used
@@ -34,7 +34,6 @@ export const DEFAULT_WORKING_STATE = 'In Progress';
 export default function IssueDetailSlide() {
   const selectedIdentifier = useItervoxStore((s) => s.selectedIdentifier);
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
-  const availableProfiles = useItervoxStore((s) => s.snapshot?.availableProfiles ?? EMPTY_PROFILES);
   const queryClient = useQueryClient();
 
   const { data: issuesList = [] } = useIssues();
@@ -47,7 +46,6 @@ export default function IssueDetailSlide() {
   const cancelRetryMutation = useCancelIssue({ verb: 'Cancel retry' });
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
-  const setIssueProfileMutation = useSetIssueProfile();
   const provideInputMutation = useProvideInput();
   const dismissInputMutation = useDismissInput();
   const triggerAIReviewMutation = useTriggerAIReview();
@@ -143,6 +141,18 @@ export default function IssueDetailSlide() {
 
         <IssueStatusChanges changes={issue.statusChanges} />
 
+        <IssueReviews
+          review={issue.review}
+          rerunPending={triggerAIReviewMutation.isPending}
+          onRerun={
+            reviewerProfile && issue.orchestratorState !== 'running'
+              ? () => {
+                  triggerAIReviewMutation.mutate(issue.identifier);
+                }
+              : undefined
+          }
+        />
+
         {/* Priority + Labels */}
         {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
           <div className="flex flex-wrap items-center gap-2">
@@ -162,48 +172,8 @@ export default function IssueDetailSlide() {
           </div>
         )}
 
-        {/* Agent Profile */}
-        {availableProfiles.length > 0 && (
-          <div>
-            <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Agent Profile</h4>
-            {isProfileLocked ? (
-              <div className="flex items-center gap-2">
-                <span className="text-theme-text-secondary text-xs">
-                  {issue.agentProfile ?? EMPTY_PROFILE_LABEL}
-                </span>
-                <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px]">
-                  locked while {issue.orchestratorState === 'running' ? 'running' : issue.state}
-                </span>
-              </div>
-            ) : (
-              <select
-                aria-label="Agent profile"
-                value={issue.agentProfile ?? ''}
-                onChange={(e) => {
-                  setIssueProfileMutation.mutate({
-                    identifier: issue.identifier,
-                    profile: e.target.value,
-                  });
-                }}
-                className="focus:border-theme-accent rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
-                style={{
-                  borderColor: 'var(--line)',
-                  background: 'var(--panel-strong)',
-                  color: 'var(--text)',
-                  cursor: 'pointer',
-                  minWidth: '160px',
-                }}
-              >
-                <option value="">{EMPTY_PROFILE_LABEL}</option>
-                {availableProfiles.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        )}
+        {/* Agent Profile (backend-aware, #123) */}
+        <IssueProfilePicker issue={issue} locked={isProfileLocked} />
 
         {/* Agent Backend (CORE-056) */}
         <IssueBackendControl

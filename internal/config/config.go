@@ -212,7 +212,87 @@ type TrackerConfig struct {
 	// the orchestrator's completion/failed-state paths. Default true; set
 	// false as a kill switch to restore the old synchronous behavior.
 	Outbox bool
+	// PushIntervalMs is tracker.push_interval_ms (#115): how long a
+	// non-urgent outbox write waits for its issue's batch before it is
+	// pushed. Inside one batch only an issue's last state move is sent;
+	// comments keep their order. Urgent writes (input-required questions and
+	// replies, failure notices, operator comments) skip it. 0 pushes every
+	// write as soon as the flusher sees it; a negative value falls back to
+	// the default. Only used with Outbox on. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	PushIntervalMs int
+	// CommentCommands (#84) lets repository maintainers drive Itervox from
+	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
+	// GitHub only. Read once at startup.
+	CommentCommands CommentCommandsConfig
+	// Store (#113) keeps a local copy of the tracked issues under .itervox/
+	// and serves the orchestrator's and dashboard's list reads from it; a
+	// background sync refreshes it from the tracker. Linear and GitHub only.
+	// Read once at startup.
+	Store TrackerStoreConfig
+	// Webhooks is tracker.webhooks (#131): signed Linear/GitHub deliveries
+	// refresh the store by issue, and the store's periodic pull slows to the
+	// safety-net interval.
+	Webhooks TrackerWebhooksConfig
+	// Sync is tracker.sync (#118): two-way sync of the local issue files
+	// with a Linear project or GitHub repository. kind: local only. Read
+	// once at startup.
+	Sync TrackerSyncConfig
 }
+
+// DefaultTrackerPushIntervalMs is tracker.push_interval_ms when unset (#115):
+// long enough to fold a run's closing moves (completion state, review state)
+// into one write, short enough that the tracker trails the board by seconds.
+const DefaultTrackerPushIntervalMs = 10000
+
+// TrackerStoreConfig configures the local tracker store (#113).
+type TrackerStoreConfig struct {
+	// Enabled turns the store on (Linear and GitHub only). Default true
+	// (#132): the claim check (#116) re-reads each issue by ID before an
+	// agent starts, so a change a person made since the last sync is seen.
+	// `enabled: false` restores direct polling.
+	Enabled bool
+	// SyncIntervalMs is how often the store re-pulls from the tracker
+	// (default 60000). Reads between syncs cost no tracker requests. On
+	// Linear and GitHub a pull asks only for what changed since the last one
+	// (#114).
+	SyncIntervalMs int
+	// FullSyncIntervalMs is how often a pull is a full one even so (#114,
+	// default 3600000): it catches what a changes listing cannot show, such
+	// as an issue moved to another project or repository, or deleted on
+	// GitHub.
+	FullSyncIntervalMs int
+}
+
+// TrackerWebhooksConfig is tracker.webhooks (#131).
+type TrackerWebhooksConfig struct {
+	// Enabled serves POST /api/v1/webhooks/<kind> and slows the store's
+	// periodic pull to SafetyNetIntervalMs. Needs tracker.store.enabled and
+	// a Secret.
+	Enabled bool
+	// Secret signs deliveries ($VAR resolves from the environment); an
+	// unsigned or wrongly signed delivery is dropped.
+	Secret string
+	// SafetyNetIntervalMs is the store's pull interval while webhooks are on
+	// (default 600000): it repairs missed deliveries.
+	SafetyNetIntervalMs int
+}
+
+// DefaultTrackerWebhookSafetyNetMs is tracker.webhooks.safety_net_interval_ms
+// when unset.
+const DefaultTrackerWebhookSafetyNetMs = 600000
+
+// BudgetConfig is agent.budget (#136). Zero (the default) means no limit.
+type BudgetConfig struct {
+	// Tokens is the most input plus output tokens one issue may use.
+	Tokens int
+	// CostUSD is the most estimated cost one issue may run up (Claude runs
+	// only: Codex reports no cost).
+	CostUSD float64
+}
+
+// Enabled reports whether any limit is set.
+func (b BudgetConfig) Enabled() bool { return b.Tokens > 0 || b.CostUSD > 0 }
 
 // PollingConfig holds polling settings.
 type PollingConfig struct {
@@ -227,7 +307,17 @@ type PollingConfig struct {
 	// An explicit 0 disables shedding entirely. Values >= 100 would shed
 	// permanently and are clamped to the default.
 	RateLimitReservePercent int
+	// AutomationIntervalMs is how often the automation event poll
+	// (tracker_comment_added, issue_entered_state, issue_moved_to_backlog)
+	// lists issues from the tracker (#155). The poll stretches it while the
+	// tracker's remaining request budget is low. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	AutomationIntervalMs int
 }
+
+// DefaultAutomationPollIntervalMs is polling.automation_interval_ms when
+// unset: the automation event poll's historical fixed 15s cadence.
+const DefaultAutomationPollIntervalMs = 15000
 
 // WorkspaceConfig holds workspace settings.
 type WorkspaceConfig struct {
@@ -249,22 +339,33 @@ type WorkspaceConfig struct {
 	BaseBranch string
 }
 
+// DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
+// unset.
+const DefaultTrackerStoreSyncIntervalMs = 60000
+
+// DefaultTrackerStoreFullSyncIntervalMs is tracker.store.full_sync_interval_ms
+// when unset or not positive (#114).
+const DefaultTrackerStoreFullSyncIntervalMs = 3600000
+
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
-const DefaultReviewerPrompt = `You are an AI code reviewer for issue {{ issue.identifier }}.
+//
+// Reviewers are read-only (#79): they judge the change and record a verdict;
+// they never commit, push or move the issue. Requested fixes go back to the
+// worker through the verdict's reasons and line comments, which Itervox posts
+// on the issue.
+const DefaultReviewerPrompt = `You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.
+
+You are a read-only reviewer. Do not edit files, commit, push or move the issue:
+Itervox flags a reviewer that changes the branch and counts its verdict as a block.
 
 Your job:
-1. Run: gh pr diff to read the PR changes on branch {{ issue.branch_name }}
-2. Review for: correctness, test coverage, edge cases, security issues, code style
-3. If you find problems:
-   - Fix them directly in the workspace
-   - Push the fixes: git add -A && git commit -m "fix: reviewer corrections" && git push
-   - Post a comment on the issue summarising what you fixed
-   - Move issue {{ issue.identifier }} to state "Rework"
-4. If the PR is clean:
-   - Post an approval comment: "AI review passed ✓ — no issues found"
-   - Move issue {{ issue.identifier }} to state "Merging"
+1. Read the "## Changes to Review" block below (the diff against the base branch)
+   and the latest handoff. Open files in the workspace for context as needed.
+2. Review for: correctness, test coverage, edge cases, security issues.
+3. Record your verdict as the "## Review Verdict (required)" block describes:
+   approve, or block with the reasons and line comments the worker must address.
 
-Be concise in your review comments. Focus on real problems, not style nits.`
+Be concise. Focus on real problems, not style nits.`
 
 // AgentProfile holds settings for a named agent profile.
 type AgentProfile struct {
@@ -301,6 +402,13 @@ type AgentProfile struct {
 	// that can pause for approval hangs the turn until the timeout kills it.
 	// See internal/agent/permission.go (issue #66).
 	PermissionMode string
+	// RequireEvidence lists the checks a run of this profile must prove
+	// before Itervox moves its issue to completion_state (#80). Each name
+	// but "ci" must appear as a passing entry in the run's evidence file
+	// (run.evidence_path), recorded on the worktree's current commit; "ci"
+	// requires the run's pull request to have only passing checks. Empty
+	// (the default) turns the gate off. YAML key: require_evidence.
+	RequireEvidence []string
 }
 
 // AgentConfig holds agent runner settings.
@@ -511,11 +619,18 @@ type AgentConfig struct {
 	// moved to the failed state. 0 means unlimited retries (legacy behavior).
 	// Default: 5.
 	MaxRetries int
+	// Budget is agent.budget (#136): the most one issue may spend, across
+	// all its runs and retries, before it is paused with budget_exceeded.
+	Budget BudgetConfig
 	// BaseBranch is the remote branch used as the base for git diffs when
 	// enriching PR context (e.g. "origin/main", "origin/develop", "origin/master").
 	// When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
+	// PRFooter appends a one-line "Shipped with Itervox" footer to each pull
+	// request an agent run produces, once per PR (#81). Off by default.
+	// YAML key: agent.pr_footer.
+	PRFooter bool
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -660,16 +775,32 @@ type Config struct {
 	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	Dependencies DependenciesConfig
+	// PREvents is pr_events (#173): how the PR-event automation triggers
+	// (pr_check_completed, pr_synchronized, pr_review_submitted,
+	// pr_mergeable_changed) learn about GitHub activity. Read once at
+	// startup.
+	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+}
+
+// PREventsConfig is pr_events (#173).
+type PREventsConfig struct {
+	// WebhookSecret, when set, serves POST /api/v1/webhooks/pr-events for
+	// signed GitHub check_run, status, pull_request and pull_request_review
+	// deliveries ($VAR resolves from the environment). Checks and reviews
+	// then arrive by webhook and the poll only reads each managed PR (head
+	// SHA and mergeable_state, which GitHub sends no event for). Empty: the
+	// poll also reads check runs, commit statuses and reviews.
+	WebhookSecret string
 }
 
 // Load reads a WORKFLOW.md file, parses front matter, applies defaults, and resolves env vars.
@@ -680,6 +811,14 @@ func Load(path string) (*Config, error) {
 	wf, err := workflow.Load(path)
 	if err != nil {
 		return nil, err
+	}
+	// #129: the user and project settings files sit under the front matter.
+	layers, err := readSettingsLayers(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(layers) > 0 {
+		wf.Config, _ = mergeLayers(wf.Config, layers)
 	}
 	// Reject removed fields loudly so operators see a clear migration error
 	// instead of silently-changed behavior. (`agent_mode` + `enable_agent_teams`
@@ -717,28 +856,60 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Tracker
 	tracker := nestedMap(raw, "tracker")
-	cfg.Tracker.Kind = strField(tracker, "kind", "")
-	// Apply the Linear default endpoint only when tracker.kind is "linear" so
-	// that GitHub users who omit endpoint: get an empty string, triggering the
-	// GitHub client's own default (https://api.github.com).
-	defaultEndpoint := ""
-	if cfg.Tracker.Kind == "linear" {
-		defaultEndpoint = "https://api.linear.app/graphql"
-	}
-	cfg.Tracker.Endpoint = strField(tracker, "endpoint", defaultEndpoint)
-	cfg.Tracker.APIKey = resolveSecret(strField(tracker, "api_key", ""))
-	cfg.Tracker.ProjectSlug = strField(tracker, "project_slug", "")
-	cfg.Tracker.ActiveStates = strSliceField(tracker, "active_states", []string{"Todo", "In Progress"})
-	cfg.Tracker.TerminalStates = strSliceField(tracker, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
+	// The connection keys (kind, endpoint, api_key, project_slug and the
+	// state lists) are parsed by the helper tracker.sync shares (#118). The
+	// Linear default endpoint applies only to kind linear, so GitHub users
+	// who omit endpoint: get the GitHub client's own default.
+	conn := parseTrackerConnection(tracker)
+	cfg.Tracker.Kind = conn.Kind
+	cfg.Tracker.Endpoint = conn.Endpoint
+	cfg.Tracker.APIKey = conn.APIKey
+	cfg.Tracker.ProjectSlug = conn.ProjectSlug
+	cfg.Tracker.ActiveStates = conn.ActiveStates
+	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
-	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
-	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" {
-		defaultBacklog = []string{"Backlog"}
-	}
-	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
+	cfg.Tracker.CompletionState = conn.CompletionState
+	cfg.Tracker.BacklogStates = conn.BacklogStates
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	// #115: intField, not positiveIntField — an explicit 0 (no batching) is
+	// meaningful; only a negative value falls back to the default.
+	cfg.Tracker.PushIntervalMs = intField(tracker, "push_interval_ms", DefaultTrackerPushIntervalMs)
+	if cfg.Tracker.PushIntervalMs < 0 {
+		cfg.Tracker.PushIntervalMs = DefaultTrackerPushIntervalMs
+	}
+	store := nestedMap(tracker, "store")
+	cfg.Tracker.Store = TrackerStoreConfig{
+		Enabled:            boolField(store, "enabled", true), // #132: on by default
+		SyncIntervalMs:     positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+		FullSyncIntervalMs: positiveIntField(store, "full_sync_interval_ms", DefaultTrackerStoreFullSyncIntervalMs),
+	}
+	wh := nestedMap(tracker, "webhooks")
+	cfg.Tracker.Webhooks = TrackerWebhooksConfig{
+		Enabled:             boolField(wh, "enabled", false),
+		Secret:              resolveSecret(strField(wh, "secret", "")),
+		SafetyNetIntervalMs: positiveIntField(wh, "safety_net_interval_ms", DefaultTrackerWebhookSafetyNetMs),
+	}
+	if err := validateTrackerWebhooks(cfg.Tracker); err != nil {
+		return nil, err
+	}
+	cfg.Tracker.Sync = parseTrackerSync(tracker) // #118
+	if err := validateTrackerSync(cfg.Tracker); err != nil {
+		return nil, err
+	}
+	cfg.PREvents = PREventsConfig{
+		WebhookSecret: resolveSecret(strField(nestedMap(raw, "pr_events"), "webhook_secret", "")),
+	}
+	if s := cfg.PREvents.WebhookSecret; s != "" && len(s) < MinWebhookSecretLength {
+		return nil, fmt.Errorf("config: pr_events.webhook_secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
+	}
+	cc := nestedMap(tracker, "comment_commands")
+	cfg.Tracker.CommentCommands = CommentCommandsConfig{
+		Enabled:             boolField(cc, "enabled", false),
+		Allow:               strSliceField(cc, "allow", nil),
+		AllowTokenUser:      boolField(cc, "allow_token_user", false),
+		ReplyToUnauthorized: boolField(cc, "reply_to_unauthorized", false),
+	}
 
 	// Polling
 	polling := nestedMap(raw, "polling")
@@ -746,6 +917,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	// intField, not positiveIntField: an explicit 0 is meaningful here (shed
 	// nothing) and must survive, exactly like escalate_blocked_after_hours.
 	cfg.Polling.RateLimitReservePercent = intField(polling, "rate_limit_reserve_percent", DefaultRateLimitReservePercent)
+	// #155: the automation event poll's cadence. Not under automations:,
+	// which is a list; a zero or negative value falls back to the default.
+	cfg.Polling.AutomationIntervalMs = positiveIntField(polling, "automation_interval_ms", DefaultAutomationPollIntervalMs)
 
 	// Workspace
 	ws := nestedMap(raw, "workspace")
@@ -809,6 +983,11 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
+	budget := nestedMap(agent, "budget")
+	cfg.Agent.Budget = BudgetConfig{
+		Tokens:  max(0, intField(budget, "tokens", 0)),
+		CostUSD: max(0, floatField(budget, "cost_usd", 0)),
+	}
 	// Gap E — per-issue switch cap defaults: 2 switches per 6h window.
 	cfg.Agent.MaxSwitchesPerIssuePerWindow = intField(agent, "max_switches_per_issue_per_window", 2)
 	// Gap §6.2 — operator-configurable TTL for auto-switched overrides.
@@ -828,6 +1007,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	}
 	cfg.Agent.BackendFallback = backendFallback
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
+	cfg.Agent.PRFooter = boolField(agent, "pr_footer", false)
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err
@@ -1194,6 +1374,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if len(allowed) == 0 && builtin != nil {
 				allowed = NormalizeAllowedActions(builtin.DefaultActions)
 			}
+			requireEvidence, err := evidenceChecksField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:          cmd,
 				SoulFile:         soulFile,
@@ -1205,12 +1389,17 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				AllowedActions:   allowed,
 				CreateIssueState: strField(m, "create_issue_state", ""),
 				PermissionMode:   strField(m, "permission_mode", ""),
+				RequireEvidence:  requireEvidence,
 			}
 			continue
 		}
 		cmd := strField(m, "command", "")
 		if cmd == "" {
 			continue
+		}
+		requireEvidence, err := evidenceChecksField(m, name)
+		if err != nil {
+			return nil, err
 		}
 		profiles[name] = AgentProfile{
 			Command:          cmd,
@@ -1220,6 +1409,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState: strField(m, "create_issue_state", ""),
 			PermissionMode:   strField(m, "permission_mode", ""),
+			RequireEvidence:  requireEvidence,
 		}
 	}
 	if len(profiles) == 0 {
@@ -1300,9 +1490,39 @@ func parseAvailableModels(raw map[string]any) map[string][]ModelOption {
 	return result
 }
 
+// validateTrackerWebhooks refuses webhooks that could not work or would
+// accept unsigned deliveries.
+func validateTrackerWebhooks(t TrackerConfig) error {
+	if !t.Webhooks.Enabled {
+		return nil
+	}
+	switch {
+	case t.Kind != "linear" && t.Kind != "github":
+		return fmt.Errorf("config: tracker.webhooks is for linear and github trackers, not %q", t.Kind)
+	case !t.Store.Enabled:
+		return errors.New("config: tracker.webhooks needs tracker.store.enabled: true (webhooks refresh the store)")
+	case t.Webhooks.Secret == "":
+		return errors.New("config: tracker.webhooks.secret is empty (set it, e.g. secret: $ITERVOX_WEBHOOK_SECRET, and use the same value in the tracker's webhook settings)")
+	case len(t.Webhooks.Secret) < MinWebhookSecretLength:
+		return fmt.Errorf("config: tracker.webhooks.secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
+	}
+	return nil
+}
+
+// MinWebhookSecretLength is the shortest tracker.webhooks.secret accepted: a
+// guessable secret would let anyone trigger refreshes, and log redaction
+// skips very short values.
+const MinWebhookSecretLength = 16
+
 // --- helpers ---
 
 func nestedMap(m map[string]any, key string) map[string]any {
+	child := nestedMapValue(m, key)
+	noteSection(m, key, child)
+	return child
+}
+
+func nestedMapValue(m map[string]any, key string) map[string]any {
 	if m == nil {
 		return map[string]any{}
 	}
@@ -1324,10 +1544,18 @@ func nestedMap(m map[string]any, key string) map[string]any {
 }
 
 func mapField(m map[string]any, key string) map[string]any {
-	return nestedMap(m, key)
+	child := nestedMap(m, key)
+	noteSetting(m, key, child)
+	return child
 }
 
 func stringMapField(m map[string]any, key string, defaultVal map[string]string) map[string]string {
+	v := stringMapFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func stringMapFieldValue(m map[string]any, key string, defaultVal map[string]string) map[string]string {
 	if m == nil {
 		return defaultVal
 	}
@@ -1351,6 +1579,12 @@ func stringMapField(m map[string]any, key string, defaultVal map[string]string) 
 }
 
 func strField(m map[string]any, key, defaultVal string) string {
+	v := strFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func strFieldValue(m map[string]any, key, defaultVal string) string {
 	if m == nil {
 		return defaultVal
 	}
@@ -1366,6 +1600,12 @@ func strField(m map[string]any, key, defaultVal string) string {
 }
 
 func intField(m map[string]any, key string, defaultVal int) int {
+	v := intFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func intFieldValue(m map[string]any, key string, defaultVal int) int {
 	if m == nil {
 		return defaultVal
 	}
@@ -1381,6 +1621,12 @@ func intField(m map[string]any, key string, defaultVal int) int {
 }
 
 func floatField(m map[string]any, key string, defaultVal float64) float64 {
+	v := floatFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func floatFieldValue(m map[string]any, key string, defaultVal float64) float64 {
 	if m == nil {
 		return defaultVal
 	}
@@ -1396,6 +1642,12 @@ func floatField(m map[string]any, key string, defaultVal float64) float64 {
 }
 
 func boolField(m map[string]any, key string, defaultVal bool) bool {
+	v := boolFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func boolFieldValue(m map[string]any, key string, defaultVal bool) bool {
 	if m == nil {
 		return defaultVal
 	}
@@ -1411,7 +1663,13 @@ func boolField(m map[string]any, key string, defaultVal bool) bool {
 }
 
 func positiveIntField(m map[string]any, key string, defaultVal int) int {
-	n := intField(m, key, 0)
+	v := positiveIntFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func positiveIntFieldValue(m map[string]any, key string, defaultVal int) int {
+	n := intFieldValue(m, key, 0)
 	if n <= 0 {
 		return defaultVal
 	}
@@ -1419,6 +1677,12 @@ func positiveIntField(m map[string]any, key string, defaultVal int) int {
 }
 
 func strSliceField(m map[string]any, key string, defaultVal []string) []string {
+	v := strSliceFieldValue(m, key, defaultVal)
+	noteSetting(m, key, v)
+	return v
+}
+
+func strSliceFieldValue(m map[string]any, key string, defaultVal []string) []string {
 	if m == nil {
 		return defaultVal
 	}
@@ -1472,23 +1736,19 @@ func toFloat(v any) (float64, bool) {
 }
 
 // normalizeReviewerProfiles makes a reviewer_profiles-only configuration
-// usable and predictable while reviewer fan-out is disabled for the v0.2.1
-// release (see orchestrator.ReviewerProfileChain for the three reproduced
-// failures that gate it).
-//
-// Two problems it solves:
+// usable. Every listed reviewer runs (sequentially, see
+// orchestrator.ReviewerProfileChain); this only keeps the singular field in
+// step with the list:
 //
 //   - ValidateReviewerAutoReview checks the SINGULAR reviewer_profile, so
-//     `auto_review: true` with only reviewer_profiles set hard-failed at
-//     startup — the very shape the fan-out feature's own tests use.
+//     `auto_review: true` with only reviewer_profiles set would hard-fail at
+//     startup.
 //   - Several dispatch decisions read cfg.Agent.ReviewerProfile directly, so
-//     even if such a config booted, no review would ever run: the daemon
-//     would silently do nothing rather than review with the listed profile.
+//     without a value there no review would ever start.
 //
-// Promoting the first entry into reviewer_profile collapses both onto the
-// long-standing, working single-reviewer path. The warning is deliberately
-// loud: an operator who listed several reviewers must know only the first
-// one runs, rather than discovering it from a quiet dashboard.
+// Promoting the first entry into reviewer_profile when it is unset satisfies
+// both. It does not change which reviewers run: the chain is built from the
+// full list.
 func normalizeReviewerProfiles(agent *AgentConfig) {
 	trimmed := make([]string, 0, len(agent.ReviewerProfiles))
 	for _, p := range agent.ReviewerProfiles {
@@ -1502,11 +1762,7 @@ func normalizeReviewerProfiles(agent *AgentConfig) {
 	}
 	if agent.ReviewerProfile == "" {
 		agent.ReviewerProfile = trimmed[0]
-		slog.Warn("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry",
-			"reviewer_profile", trimmed[0])
-	}
-	if len(trimmed) > 1 {
-		slog.Warn("config: multi-reviewer fan-out is disabled in this release; only the first agent.reviewer_profiles entry runs",
-			"running", agent.ReviewerProfile, "ignored", trimmed[1:])
+		slog.Info("config: agent.reviewer_profile was unset; using the first agent.reviewer_profiles entry as the primary reviewer",
+			"reviewer_profile", trimmed[0], "reviewer_profiles", trimmed)
 	}
 }

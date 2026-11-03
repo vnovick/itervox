@@ -20,7 +20,7 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 ---
 
-Itervox is a long-running Go daemon that polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
+Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
 ## Spec conformance
 
@@ -79,7 +79,7 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
 - **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
-- **Automations** — trigger helper runs from ten event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
+- **Automations** — trigger helper runs from fourteen event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, the GitHub PR events on Itervox-managed PRs (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`), `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
 - **Built-in `merge-bot` profile** — ships embedded in the binary; reference it from `WORKFLOW.md` with `agent.profiles.merge-bot: {}` and the daemon resolves SOUL/INSTRUCTIONS from the embedded registry. The new `merge_pr` agent action runs `gh pr view` / `gh pr checks --required` / `gh pr merge` with required-check + block-label guards.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
@@ -169,6 +169,10 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
     <td align="center"><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/settings-code-review-agent.png" width="440" alt="Code review agent profile" /><br/><sub>Code review agent</sub></td>
   </tr>
 </table>
+
+### Mac menu-bar app
+
+A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
 
 ### View from your phone, anywhere
 
@@ -341,21 +345,17 @@ hooks:
 # 1. Install
 brew tap vnovick/tap && brew install itervox
 
-# 2. Scaffold a WORKFLOW.md from your repo metadata
+# Optional: see it work first — fake issues, scripted agent, no keys needed
+itervox demo
+
+# 2. From your repository to a running board
 cd path/to/your/project
-itervox init --tracker linear      # or: --tracker github
-
-# 3. Store credentials (auto-loaded, gitignored)
-mkdir -p .itervox
-cat > .itervox/.env <<'EOF'
-LINEAR_API_KEY=lin_api_...
-# GITHUB_TOKEN=ghp_...
-EOF
-
-# 4. Run it
-itervox
-open http://127.0.0.1:8090
+itervox quickstart
 ```
+
+`itervox quickstart` detects the tracker (Linear when `LINEAR_API_KEY` is set, otherwise GitHub from the `origin` remote) and the agent CLI (`claude`, else `codex`), writes a schema-2 `WORKFLOW.md`, offers your `gh` token and creates missing GitHub state labels (it asks first), runs `itervox doctor`, then starts the daemon in the background and prints the dashboard URL and where the API token is stored. Re-running it is safe. For Linear, put `LINEAR_API_KEY=lin_api_...` in `.itervox/.env` first.
+
+Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the key in `.itervox/.env`, run `itervox`, and read the dashboard URL from `.itervox/dashboard_url` (the scaffold uses an OS-assigned port).
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/cli-init-output.png" width="720" alt="itervox init terminal output" />
@@ -365,12 +365,14 @@ open http://127.0.0.1:8090
 
 | Command | Description |
 |---|---|
+| `itervox demo` | Try Itervox in about a minute: a throwaway board with fake issues and a scripted agent, no tracker, keys or agent CLI; everything stays in a temporary directory |
+| `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
-| `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
+| `itervox init --template <name>` | Starter template: `minimal` (one implementer), `full` (four profiles, auto-review chain, common automations), `rate-limit-fallback` (backend fallback plus a `rate_limited` switch), `pr-review` (PR reviewer automations), `daily-qa` (daily cron QA). Without it, the standard four-profile scaffold. See the [CLI reference](site/src/content/docs/cli.mdx#starter-templates) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
-| `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md` |
-| `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |
+| `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md`, and on a GitHub tracker list missing state labels (`--fix` creates them) |
+| `itervox status [--all] [--json]` | List running daemons for this project (`--all`: every daemon on the host); `--json` prints path, pid, URL, version, start time and token posture per daemon for supervisors such as the macOS app |
 | `itervox stop` | Gracefully stop a running daemon (signals only a daemon holding the project's pid lock; `--legacy` for pre-v0.2.1 daemons) |
 | `itervox action <subcommand>` | Daemon-backed agent actions: `comment`, `comment-pr`, `merge-pr`, `create-issue`, `move-state`, `provide-input` |
 | `itervox clear [IDENTIFIER…]` | Remove workspace directories (all, or specific issues) |
@@ -494,7 +496,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Every commit must be signed off (`git commit -s`), and first-time external contributors sign the [CLA](CLA.md) by commenting on their pull request; see [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco). Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
 
 Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 
@@ -509,3 +511,5 @@ If Itervox saves you time, please consider sponsoring development: **[github.com
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+Contributions are accepted under the [Developer Certificate of Origin](DCO) (sign off every commit with `git commit -s`) and, for external contributors, the [Contributor License Agreement](CLA.md) ([corporate version](CLA-CORPORATE.md)). The CLA is a license grant, not a copyright assignment: you keep your copyright, and the project owner may also distribute contributions under licenses other than Apache 2.0.
