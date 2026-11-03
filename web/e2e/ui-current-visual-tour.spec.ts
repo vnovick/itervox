@@ -326,11 +326,41 @@ const overlays: Stop[] = [
     name: 'command-palette',
     viewportOnly: true,
     route: '/',
-    scenario: activeRunScenario,
+    scenario: pausable,
+    beforeNavigate: installTourData,
     ready: heading('Autonomous agentic harness'),
     open: async (p) => {
       await p.keyboard.press('ControlOrMeta+k');
       await expect(p.getByRole('combobox', { name: 'Search commands and issues' })).toBeVisible();
+      await expect(p.getByRole('option', { name: /New task/ })).toBeVisible();
+    },
+  },
+  {
+    // The ranked search across sources: actions, pages, issues, rules,
+    // memory and settings fields under their group headers.
+    name: 'command-palette-search',
+    viewportOnly: true,
+    route: '/',
+    scenario: pausable,
+    beforeNavigate: installTourData,
+    ready: heading('Autonomous agentic harness'),
+    open: async (p) => {
+      await p.keyboard.press('ControlOrMeta+k');
+      await p.getByRole('combobox', { name: 'Search commands and issues' }).fill('pa');
+      await expect(p.getByRole('option', { name: 'Pause dispatch', exact: true })).toBeVisible();
+    },
+  },
+  {
+    name: 'command-palette-help',
+    viewportOnly: true,
+    route: '/',
+    scenario: pausable,
+    beforeNavigate: installTourData,
+    ready: heading('Autonomous agentic harness'),
+    open: async (p) => {
+      await p.keyboard.press('ControlOrMeta+k');
+      await p.getByRole('combobox', { name: 'Search commands and issues' }).fill('?');
+      await expect(p.getByRole('option', { name: /Agents and profiles/ })).toBeVisible();
     },
   },
   {

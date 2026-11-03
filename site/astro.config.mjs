@@ -58,6 +58,7 @@ export default defineConfig({
             { label: 'Working from the terminal', slug: 'guides/terminal' },
             { label: 'Pause dispatch & event feed', slug: 'guides/pause-and-feed' },
             { label: 'Now & Changes', slug: 'guides/now-and-changes' },
+            { label: 'Command palette', slug: 'guides/command-palette' },
             { label: 'Review changes', slug: 'guides/change-review' },
             { label: 'System visibility', slug: 'guides/system-visibility' },
             { label: 'MCP server (Claude Code, Codex)', slug: 'guides/mcp' },
