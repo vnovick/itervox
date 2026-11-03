@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.2] — 2026-11-03
+
 ### Added
 
 - **Local tracker store** (#113). With `tracker.store.enabled: true`, Itervox keeps the tracked Linear or GitHub issues in `.itervox/tracker_store.json` and serves the orchestrator's and dashboard's list reads from it; ticks no longer call the tracker's list endpoints, and the board keeps working through a tracker outage. A background sync re-pulls every `tracker.store.sync_interval_ms` (default 60s). A restart serves from the file; a cold start pulls exactly once. Off by default until the dispatch claim check (#116) lands.
@@ -33,6 +37,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Security
 
 - **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
+- **Go toolchain bumped to 1.26.10.** `govulncheck` flagged GO-2026-6809 (`crypto/x509` now distrusts a set of compromised intermediate certificates), reachable from the GitHub tracker's HTTPS calls. The release binaries and the Docker image are built with go1.26.10.
 
 ### Fixed
 
