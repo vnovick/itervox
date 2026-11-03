@@ -146,7 +146,11 @@ func reviewerSettings(profile string, autoReview bool) []setting {
 // stops an in-flight turn. tracker.* is not a layered section, so it stays in
 // WORKFLOW.md.
 func persistTrackerStates(path string, active, terminal []string, completion string) error {
-	return workflow.ApplyAndWriteFrontMatter(path, workflow.MutateTrackerStates(active, terminal, completion))
+	return workflow.SetFrontMatterKeys(path,
+		workflow.KeyValue{Key: "tracker.active_states", Value: active},
+		workflow.KeyValue{Key: "tracker.terminal_states", Value: terminal},
+		workflow.KeyValue{Key: "tracker.completion_state", Value: completion},
+	)
 }
 
 // persistMaxWorkers saves agent.max_concurrent_agents (dashboard SetWorkers,
@@ -176,9 +180,24 @@ func persistMaxRetries(path string, n int) error {
 	return persistSettings(path, []setting{{Key: "agent.max_retries", Value: n}})
 }
 
-// persistFailedState writes WORKFLOW.md: tracker.* is not layered.
+// persistFailedState writes WORKFLOW.md: tracker.* is not layered. An empty
+// name ("pause, do not move") removes the key.
 func persistFailedState(path, stateName string) error {
-	return workflow.PatchTrackerFailedState(path, stateName)
+	return workflow.SetFrontMatterKeys(path, workflow.KeyValue{Key: "tracker.failed_state", Value: nonEmpty(stateName)})
+}
+
+// persistDepsAnalysisMode writes dependencies.analysis_mode to WORKFLOW.md
+// (dependencies.* is not layered); "" removes it.
+func persistDepsAnalysisMode(path, mode string) error {
+	return workflow.SetFrontMatterKeys(path, workflow.KeyValue{Key: "dependencies.analysis_mode", Value: nonEmpty(mode)})
+}
+
+// nonEmpty is s, or nil (remove the key) when s is empty.
+func nonEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func persistMaxSwitchesPerIssuePerWindow(path string, n int) error {

@@ -190,7 +190,7 @@ Use this for:
 
 ### `pr_opened`
 
-Fires when Itervox detects a pull request URL on a running or completed issue.
+Fires when a worker run that opened a pull request completes successfully: the worker detects the PR, posts its PR link on the issue, writes its handoff, applies `completion_state`, and the rule is dispatched after the run's exit. A `move_state` the agent makes during that run (for example straight after `gh pr create`) does not cut the run short — see [Moving the issue while its worker is still running](#moving-the-issue-while-its-worker-is-still-running).
 
 Use this for:
 
@@ -214,6 +214,36 @@ Important behavior:
 - in v0.2.0 the trigger fires only from the daemon-side `merge_pr` action's success path; a poller that detects PRs merged externally (a human clicking **Merge** on GitHub) is planned but not shipped
 
 Available prompt variables: `{{ trigger.pr_url }}`, `{{ trigger.pr_branch }}`, `{{ trigger.pr_base_branch }}`.
+
+### PR events on managed pull requests
+
+Four triggers fire on GitHub activity on a pull request an Itervox run opened or continued (a **managed** PR: the worker detected it and the run's exit recorded its URL). A PR no Itervox run recorded never fires them, and nothing fires for activity that predates the run that recorded the PR.
+
+| Trigger | Fires when | Filters |
+|---|---|---|
+| `pr_check_completed` | a check run or commit status on the PR's head SHA completes | `check_names`, `conclusions` |
+| `pr_synchronized` | the PR's head SHA moves (a new push), including pushes by later Itervox runs on the same PR | — |
+| `pr_review_submitted` | a review (human or bot, such as Greptile) is submitted | `review_authors`, `review_states` |
+| `pr_mergeable_changed` | `mergeable_state` changes; by default only into or out of `dirty` (a merge conflict appearing or clearing) | `mergeable_states` |
+
+`pr_opened` still fires once per PR; `pr_synchronized` is the trigger for every later push.
+
+**Sources.** Itervox polls the open managed PRs on `polling.automation_interval_ms` (the automation event poll's interval, stretched while GitHub's request budget is low), with conditional requests: GitHub does not count a `304 Not Modified` against the rate limit, so an unchanged PR costs nothing. The poll reads only what a configured rule needs, and nothing at all while no PR-event rule exists. With `pr_events.webhook_secret` set, GitHub webhooks deliver checks, statuses and reviews instead, and the poll only reads each PR (GitHub sends no event for `mergeable_state`):
+
+```yaml
+pr_events:
+  webhook_secret: $ITERVOX_PR_WEBHOOK_SECRET   # openssl rand -hex 32
+```
+
+In the repository's **Settings → Webhooks**, add `https://<your daemon>/api/v1/webhooks/pr-events` with content type `application/json`, the same secret, and the events **Check runs**, **Statuses**, **Pull requests** and **Pull request reviews**. Deliveries need no API token; each must carry a valid `X-Hub-Signature-256`.
+
+**GitHub token.** The poll needs a token that can read the PR's repository. It uses, in order: `tracker.api_key` when the tracker is GitHub; `GH_TOKEN` or `GITHUB_TOKEN` (`GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN` for a GitHub Enterprise host); the `gh` CLI login (`gh auth token`), which the worker's `gh` calls use anyway. So a Linear-tracked project whose PRs are on GitHub works once `gh auth login` was run, or with `GITHUB_TOKEN` in `.itervox/.env`. The token is never logged.
+
+**Dedup.** Each rule dispatches at most once per check `(PR, head SHA, check name, conclusion)`, per push `(PR, head SHA)`, per review ID, and per mergeable transition `(PR, head SHA, from, to)`. The managed PRs and this ledger persist in `pr_events.json` in the daemon log directory (next to `automation_queue.json`), so a restart, a re-delivered webhook or a repeated poll never dispatches twice. They are dropped when the issue reaches a terminal state.
+
+**Loops.** A run that a `pr_synchronized` rule dispatched does not fire that rule again with its own push. A fix agent on `pr_check_completed` fires again only if a check fails on its new head, which is the fix loop working; cap it with the profile's own instructions (for example "stop after three attempts, then comment").
+
+Prompt variables: `trigger.pr_url`, `trigger.pr_number`, `trigger.pr_branch`, `trigger.head_sha`, `trigger.mergeable_state`, plus `trigger.check_name` / `trigger.check_conclusion` (checks), `trigger.review_author` / `trigger.review_state` / `trigger.review_id` (reviews), `trigger.previous_mergeable_state` (mergeable changes) and `trigger.event_source` (`webhook` or `poll`). See [example 8](#8-pr-fix-loop-greptile-findings-red-checks-conflicts).
 
 ### `rate_limited`
 
@@ -351,6 +381,16 @@ automations:
       body_regex: "AI review passed"
 ```
 
+### PR-event filters
+
+Each only on its own trigger (validation rejects it elsewhere):
+
+- `check_names` (`pr_check_completed`): check run names or commit status contexts, case-insensitive. Empty = every check.
+- `conclusions` (`pr_check_completed`): any of `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale`, `error`.
+- `review_authors` (`pr_review_submitted`): GitHub logins, case-insensitive, for example `greptile-apps[bot]`.
+- `review_states` (`pr_review_submitted`): any of `approved`, `changes_requested`, `commented`, `dismissed`.
+- `mergeable_states` (`pr_mergeable_changed`): fire on a move into these states (`clean`, `dirty`, `blocked`, `behind`, `unstable`, `has_hooks`, `draft`). Empty = into or out of `dirty`.
+
 ### `max_age_minutes`
 
 Only meaningful for `input_required`.
@@ -369,6 +409,13 @@ Used for batch-style triggers such as:
 - `issue_moved_to_backlog`
 
 If one poll or cron tick finds many matching issues, `limit` caps how many are queued from that batch.
+
+On a `cron` rule, `limit` rotates through the matching issues instead of picking the same ones every tick. Each rule keeps a cursor: the last issue it served. The next tick starts with the first matching issue after the cursor (issues are ordered by identifier), wraps around to the top, and stops after `limit` issues. With 7 matching issues and `limit: 3`, the ticks serve `1–3`, `4–6`, then `7, 1, 2`, so every issue is reached and none is served twice before all have been served once.
+
+- An issue that already has a run, or a queued dispatch, from this rule is skipped and does not use up a slot; the next issue in the rotation takes it.
+- An issue that no longer matches the filter simply drops out of the rotation. The cursor is a position, so the rotation continues even when the issue it points at has left.
+- The cursor is saved in `automation_queue.json` in the daemon log directory, with the automation queue, so a restart resumes the rotation where it stopped.
+- A cron rule without `limit` dispatches every matching issue each tick, as before. On the event-polled triggers `limit` still caps each poll batch without rotating.
 
 ## Instructions
 
@@ -470,6 +517,17 @@ PR opened / PR merged:
 - `{{ trigger.pr_branch }}`
 - `{{ trigger.pr_base_branch }}`
 
+PR events (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`):
+- `{{ trigger.pr_url }}`
+- `{{ trigger.pr_number }}`
+- `{{ trigger.pr_branch }}`
+- `{{ trigger.head_sha }}`
+- `{{ trigger.mergeable_state }}`
+- `{{ trigger.check_name }}`, `{{ trigger.check_conclusion }}`, `{{ trigger.check_completed_at }}`
+- `{{ trigger.review_author }}`, `{{ trigger.review_state }}`, `{{ trigger.review_id }}`, `{{ trigger.review_submitted_at }}`
+- `{{ trigger.previous_mergeable_state }}`
+- `{{ trigger.event_source }}`
+
 Rate limited:
 - `{{ trigger.failed_profile }}`
 - `{{ trigger.failed_backend }}`
@@ -509,6 +567,20 @@ That keeps the security model simple:
 
 - the automation decides **when** to run
 - the profile decides **what the agent is allowed to do**
+
+### Moving the issue while its worker is still running
+
+A `move_state` call never stops the run it comes from. The usual case: the agent opens its pull request and moves its issue to `tracker.completion_state` (or any state outside `tracker.active_states`) before its turn ends. If the move landed in the tracker at once, the next reconciliation tick would see the issue terminal and stop the worker as if a person had closed it, and the worker would lose its post-PR tracker comment, its handoff file and the `pr_opened` dispatch.
+
+So a `move_state` on an issue whose worker is still running, to a state that would stop that worker, is **deferred until the worker exits**:
+
+- the worker ends its turn loop as it would after a landed move, then finishes normally: PR comment, handoff, session comment, its own `completion_state` move, and the `pr_opened` dispatch after its exit;
+- the deferred move is applied right after the run's exit, through the same write path as Itervox's other tracker writes, and only while the tracker still shows the state the agent moved the issue from (a move by anyone else in the meantime wins);
+- when the worker applied `tracker.completion_state` itself on a successful run, that move is the last word and the deferred one is dropped, exactly as when the agent's move had landed first;
+- until the move is applied, the issue is not dispatched or retried again (`state_move_pending`);
+- the move is persisted to `deferred_state_moves.json` in the daemon log directory, so a restart while the worker is running does not lose it: the next daemon applies it on its first tick.
+
+A person moving the issue — on the dashboard or in Linear/GitHub — is never deferred. Moving a running issue to a terminal state still stops its worker, and a move the agent had deferred is then dropped. Moves to another active state are never deferred (they do not stop the worker), and neither are moves made by automation or reviewer runs that reconciliation would not stop anyway.
 
 Under the hood, those permissions map to short-lived daemon-action bearer
 grants for `/api/v1/agent-actions/*` routes. The main dashboard/API token is
@@ -812,6 +884,51 @@ automations:
   switch to the sweep only after you trust your reviewer profile's judgment
   and your CI gate quality.
 
+### 8. PR fix loop (Greptile findings, red checks, conflicts)
+
+The loop the PR-event triggers exist for: Greptile reviews a PR 10 to 25 minutes after it opens and again after every push, required checks go red, and the base branch moves under the PR. One fixer profile handles all three, woken only when there is something to fix — no cron sweep per In Review issue.
+
+```yaml
+pr_events:
+  webhook_secret: $ITERVOX_PR_WEBHOOK_SECRET   # optional: without it the open managed PRs are polled
+
+automations:
+  - id: greptile-findings
+    profile: pr-fixer
+    trigger:
+      type: pr_review_submitted
+    filter:
+      review_authors: ["greptile-apps[bot]"]
+    instructions: |
+      Greptile reviewed {{ trigger.pr_url }} (head {{ trigger.head_sha }}).
+      Read that review's comments, fix the valid findings on {{ trigger.pr_branch }}, push,
+      and reply to each finding you decline. If there is nothing to fix, say so on the PR and stop.
+
+  - id: red-checks
+    profile: pr-fixer
+    trigger:
+      type: pr_check_completed
+    filter:
+      check_names: ["CI", "Chromatic"]
+      conclusions: [failure, timed_out]
+    instructions: |
+      {{ trigger.check_name }} finished {{ trigger.check_conclusion }} on {{ trigger.pr_url }}
+      at {{ trigger.head_sha }}. Read the check's log (`gh pr checks {{ trigger.pr_number }}`),
+      fix the cause on {{ trigger.pr_branch }} and push. Do not disable or skip the check.
+
+  - id: merge-conflict
+    profile: pr-fixer
+    trigger:
+      type: pr_mergeable_changed
+    filter:
+      mergeable_states: [dirty]
+    instructions: |
+      {{ trigger.pr_url }} now conflicts with its base. Rebase {{ trigger.pr_branch }} onto the
+      base branch, resolve the conflicts, run the tests and push.
+```
+
+The fixer's push starts new checks and a new Greptile review on the new head, which fire the rules again only if there is something new to fix: each (check, head, conclusion) and each review ID dispatches once. When a fixer is still running, the next event queues behind it instead of starting a second run on the same issue.
+
 ## Additional automation designs
 
 The Automations page includes starter templates for these v0.2.0-safe patterns. They are deliberately comment-first and single-profile; none of them adds a hidden workflow engine.
@@ -885,7 +1002,8 @@ Current limitations include:
 
 - no visual graph editor (planned for a future release)
 - no arbitrary branching/action graphs
-- no webhook-driven tracker event ingestion
+- tracker webhooks refresh the tracker store (`tracker.webhooks`), but tracker events still reach automations through the poll; GitHub PR events are the exception (`pr_events`)
+- PR-event triggers watch only pull requests an Itervox run recorded, on GitHub; reviews submitted and checks completed before that run started are ignored
 - no editable blocker-state predicate; `blockers_resolved` is deterministic but intentionally narrow and source-state-filtered
 - `tracker_comment_added` is poll-derived and latest-comment-only between polls
 - label suggestions are best-effort, not authoritative

@@ -273,6 +273,7 @@ func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]st
 	// re-opened issue starts with a fresh dispatch budget.
 	pruneMap(state.PROpenedDispatched, identOfPROpened, keep)
 	pruneMap(state.PRMergedDispatched, identOfPROpened, keep)
+	pruneManagedPRs(state, keep)                          // #173
 	pruneMap(state.BackendLimitedHolds, identOfKey, keep) // CORE-053
 	counts := LedgerJanitorCounts{
 		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keep),

@@ -21,7 +21,8 @@ import (
 type Setting struct {
 	Key   string `json:"key"`
 	Value any    `json:"value"`
-	// Layer is LayerDefault, LayerUser, LayerProject or LayerWorkflow.
+	// Layer is LayerDefault, LayerUser, LayerProject, LayerLocal or
+	// LayerWorkflow.
 	Layer string `json:"layer"`
 	// Path is the settings file for the user and project layers, and the
 	// variable for the environment layer.
@@ -262,17 +263,7 @@ func sourceFor(sources map[string]settingsSource, key string) (settingsSource, b
 	return best, found
 }
 
-func layerRank(layer string) int {
-	switch layer {
-	case LayerUser:
-		return 1
-	case LayerProject:
-		return 2
-	case LayerWorkflow:
-		return 3
-	}
-	return 0
-}
+func layerRank(layer string) int { return SettingsLayerRank(layer) }
 
 func lookupPath(m map[string]any, key string) any {
 	var cur any = m

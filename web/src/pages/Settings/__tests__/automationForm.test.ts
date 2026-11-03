@@ -30,6 +30,11 @@ const baseValues: AutomationFormValues = {
   switchToBackend: '',
   cooldownMinutes: '',
   moveToState: '',
+  checkNames: [],
+  conclusions: [],
+  reviewStates: [],
+  reviewAuthors: [],
+  mergeableStates: [],
 };
 
 describe('automationFormSchema', () => {
@@ -55,6 +60,11 @@ describe('automationFormSchema', () => {
       switchToBackend: '',
       cooldownMinutes: '',
       moveToState: '',
+      checkNames: [],
+      conclusions: [],
+      reviewStates: [],
+      reviewAuthors: [],
+      mergeableStates: [],
     });
 
     expect(result.success).toBe(false);
@@ -86,6 +96,11 @@ describe('automationFormSchema', () => {
       switchToBackend: '',
       cooldownMinutes: '',
       moveToState: '',
+      checkNames: [],
+      conclusions: [],
+      reviewStates: [],
+      reviewAuthors: [],
+      mergeableStates: [],
     });
 
     expect(result.success).toBe(false);
@@ -117,6 +132,11 @@ describe('automationFormSchema', () => {
       switchToBackend: '' as const,
       cooldownMinutes: '',
       moveToState: '',
+      checkNames: [],
+      conclusions: [],
+      reviewStates: [],
+      reviewAuthors: [],
+      mergeableStates: [],
     };
     for (const bad of ['-1', '1.5', 'soon']) {
       const result = automationFormSchema.safeParse({ ...base, maxAgeMinutes: bad });

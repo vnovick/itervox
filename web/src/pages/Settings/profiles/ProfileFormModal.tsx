@@ -75,6 +75,7 @@ export function ProfileFormModal({
   // shape of ProfileFormValues (non-partial, because useForm.defaultValues
   // above is fully populated).
   const [
+    name,
     enabled,
     backend,
     model,
@@ -89,6 +90,7 @@ export function ProfileFormModal({
   ] = useWatch({
     control,
     name: [
+      'name',
       'enabled',
       'backend',
       'model',
@@ -250,6 +252,7 @@ export function ProfileFormModal({
               setValue('createIssueState', value, { shouldValidate: true });
             }}
             dynamicModels={availableModels}
+            profileName={name}
           />
 
           {errors.command && (

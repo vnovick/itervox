@@ -21,6 +21,12 @@ type Filter struct {
 	// MaxAgeMinutes skips stale input_required entries. Only meaningful on
 	// input_required triggers; config validation rejects it on other types.
 	MaxAgeMinutes int `json:"maxAgeMinutes,omitempty"`
+	// The #173 PR-event filters; each is only meaningful on its own trigger.
+	CheckNames      []string `json:"checkNames,omitempty"`
+	Conclusions     []string `json:"conclusions,omitempty"`
+	ReviewStates    []string `json:"reviewStates,omitempty"`
+	ReviewAuthors   []string `json:"reviewAuthors,omitempty"`
+	MergeableStates []string `json:"mergeableStates,omitempty"`
 }
 
 // Policy is the serializable automation policy definition used by the API and

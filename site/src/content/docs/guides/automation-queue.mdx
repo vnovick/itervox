@@ -26,6 +26,7 @@ Cron triggers coalesce by automation ID and issue. A cron rule firing every minu
 One-shot triggers preserve their payload while waiting:
 
 - `pr_opened` keeps the PR URL
+- the PR-event triggers (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`) keep one row per event (PR, head SHA and the check, review or mergeable transition), so a second failing check waits beside the first instead of replacing it
 - `input_required` keeps the question/comment key
 - `run_failed` keeps the retry attempt
 - `rate_limited` keeps the failed profile/backend

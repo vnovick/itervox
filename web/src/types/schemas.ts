@@ -134,6 +134,9 @@ export const RunningRowSchema = z.object({
   triggerType: z.string().optional(),
   // Reviewer/comment-count surface (T-6). Absent when zero.
   commentCount: z.number().optional(),
+  // #157 — the rule set the run was given; absent when no rule applied.
+  rulesHash: z.string().optional(),
+  ruleIds: z.array(z.string()).optional(),
 });
 
 export const HistoryRowSchema = z.object({
@@ -161,6 +164,9 @@ export const HistoryRowSchema = z.object({
   automationId: z.string().optional(),
   triggerType: z.string().optional(),
   commentCount: z.number().optional(),
+  // #157 — the rule set the run used; absent when no rule applied.
+  rulesHash: z.string().optional(),
+  ruleIds: z.array(z.string()).optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -285,6 +291,12 @@ export const AutomationFilterSchema = z.object({
   // rejects it on other types. Skip stale entries (queued > N minutes ago)
   // and drive the dashboard's stale badge.
   maxAgeMinutes: z.number().optional(),
+  // #173 PR-event filters; the server validator rejects each on other triggers.
+  checkNames: z.array(z.string()).optional(),
+  conclusions: z.array(z.string()).optional(),
+  reviewStates: z.array(z.string()).optional(),
+  reviewAuthors: z.array(z.string()).optional(),
+  mergeableStates: z.array(z.string()).optional(),
 });
 
 export const AutomationPolicySchema = z.object({
@@ -621,6 +633,45 @@ export const TrackerErrorRowSchema = z.object({
   consecutiveFailures: optionalSafeInt,
 });
 
+// SyncStatusRowSchema mirrors server.SyncStatusRow (#117): the tracker sync
+// status. mode is "store" (local tracker store pulling in the background),
+// "direct" (each poll reads the tracker) or "local_sync" (local issue files
+// synced with Linear or GitHub, #118), kept a plain string so a future
+// mode never fails the snapshot parse. lastPullAt is absent until a pull
+// succeeds; lagMs is the lag at snapshot time (the dashboard recomputes it
+// from lastPullAt on its own clock). lastError.kind is a tracker error class
+// (rate_limited, auth, not_found, api_status, graphql, timeout, network,
+// canceled, unknown), also a plain string. The pending* counts describe the
+// write-ahead outbox and overlap (an urgent write can also be retrying).
+const syncCount = z.number().int().nonnegative();
+export const SyncStatusRowSchema = z.object({
+  mode: z.string(),
+  lastPullAt: optionalTimeString,
+  lagMs: optionalSafeInt,
+  lagWarnAfterMs: syncCount,
+  stale: z.boolean(),
+  syncIntervalMs: syncCount,
+  cursorAt: optionalTimeString,
+  consecutiveFailures: optionalSafeInt,
+  lastError: z
+    .object({
+      at: z.string(),
+      kind: z.string(),
+      message: z.string(),
+    })
+    .optional(),
+  pendingWrites: syncCount,
+  pendingUrgent: syncCount,
+  pendingBatched: syncCount,
+  pendingRetrying: syncCount,
+  pendingDegraded: syncCount,
+  pendingRateLimited: syncCount,
+  oldestPendingAt: optionalTimeString,
+  nextPushAt: optionalTimeString,
+  pushIntervalMs: syncCount,
+});
+export type SyncStatusRow = z.infer<typeof SyncStatusRowSchema>;
+
 // FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
 // daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
 // tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
@@ -795,6 +846,9 @@ export const StateSnapshotSchema = z.object({
   // failed failed-state move). Absent when none is recorded and on snapshots
   // from daemons predating the field.
   lastTrackerError: TrackerErrorRowSchema.optional(),
+  // #117 — tracker sync status (pull lag, pending writes, last sync error).
+  // Absent on daemons predating it; the LiveOps sync chip then hides.
+  syncStatus: SyncStatusRowSchema.optional(),
   // CORE-046 — bounded ring of recent failures, oldest recorded first.
   // Always an array on a current daemon; absent on older daemons.
   recentFailures: z.array(FailureRowSchema).optional(),
@@ -1003,6 +1057,16 @@ export const SubagentSchema = z.object({
   ApproxTokens: z.number(),
 });
 
+// Codex custom prompt from ~/.codex/prompts/*.md, run as /prompts:<name> (#123).
+export const PromptSchema = z.object({
+  Name: z.string(),
+  Description: z.string().optional(),
+  Provider: z.string(),
+  Source: z.string(),
+  FilePath: z.string().optional(),
+  ApproxTokens: z.number(),
+});
+
 export const InstructionDocSchema = z.object({
   Name: z.string(),
   Provider: z.string(),
@@ -1082,6 +1146,7 @@ export const InventorySchema = z.object({
   Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
   Subagents: z.array(SubagentSchema).nullable().optional(),
+  Prompts: z.array(PromptSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
   Hooks: z.array(HookEntrySchema).nullable().optional(),
@@ -1091,6 +1156,36 @@ export const InventorySchema = z.object({
   // Phase-2/Phase-3 features land in the frontend.
 });
 
+// POST /api/v1/skills/check-refs (#123): the #86 reference validator run
+// over one draft prompt. Mirrors internal/server/skills_refs.go
+// promptRefCheckResponse / promptRefRow. from/to are UTF-16 offsets.
+export const PromptRefRowSchema = z.object({
+  kind: z.string(),
+  name: z.string(),
+  from: z.number(),
+  to: z.number(),
+  status: z.string(), // "ok" | "missing" | "outside_repo"; unknown values are treated as ok
+  severity: z.string().optional(),
+  issueId: z.string().optional(),
+  message: z.string().optional(),
+});
+
+export const PromptRefCheckSchema = z.object({
+  backend: z.string(),
+  sshHosts: z.array(z.string()).nullable().optional(),
+  refs: z.array(PromptRefRowSchema).nullable().optional(),
+});
+
+// GET /api/v1/skills/profile-backends (#123).
+export const ProfileBackendsSchema = z.object({
+  default: z.string(),
+  profiles: z.record(z.string(), z.string()),
+});
+
+export type PromptRefRow = z.infer<typeof PromptRefRowSchema>;
+export type PromptRefCheck = z.infer<typeof PromptRefCheckSchema>;
+export type ProfileBackends = z.infer<typeof ProfileBackendsSchema>;
+export type CodexPrompt = z.infer<typeof PromptSchema>;
 export type Skill = z.infer<typeof SkillSchema>;
 export type Subagent = z.infer<typeof SubagentSchema>;
 export type InstructionDocEntry = z.infer<typeof InstructionDocSchema>;
@@ -1145,3 +1240,203 @@ export type CapabilityStat = z.infer<typeof CapabilityStatSchema>;
 export type ProfileCost = z.infer<typeof ProfileCostSchema>;
 export type Recommendation = z.infer<typeof RecommendationSchema>;
 export type AnalyticsSnapshotData = z.infer<typeof AnalyticsSnapshotSchema>;
+
+// ─── Rules (#157) ────────────────────────────────────────────────────────────
+// Mirrors internal/rules (Go) and the published JSON Schema
+// site/public/schema/rules.schema.json; a test keeps the three in step.
+
+export const RULE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const nonBlank = z.string().regex(/\S/, 'must not be empty');
+
+export const RuleScopeSchema = z
+  .object({
+    projects: z.array(nonBlank).optional(),
+    profiles: z.array(nonBlank).optional(),
+    backends: z.array(nonBlank).optional(),
+  })
+  .strict();
+
+export const RuleSchema = z
+  .object({
+    id: z.string().regex(RULE_ID_PATTERN, 'letters, digits, ".", "_" and "-" (64 at most)'),
+    severity: z.enum(['must', 'should']),
+    text: nonBlank,
+    description: z.string().optional(),
+    scope: RuleScopeSchema.optional(),
+  })
+  .strict();
+
+/** A whole rules file, as the JSON view validates it before saving. */
+export const RulesFileSchema = z
+  .object({
+    $schema: z.string().optional(),
+    rules: z.array(RuleSchema).optional(),
+  })
+  .strict()
+  .superRefine((file, ctx) => {
+    const seen = new Map<string, number>();
+    (file.rules ?? []).forEach((rule, i) => {
+      const key = rule.id.toLowerCase();
+      const prev = seen.get(key);
+      if (prev !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules', i, 'id'],
+          message: `"${rule.id}" is already used by rules[${String(prev)}]`,
+        });
+      }
+      seen.set(key, i);
+    });
+  });
+
+export const RULES_LAYER_NAMES = ['user', 'project', 'local'] as const;
+
+export const RulesLayerSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  writable: z.boolean(),
+  exists: z.boolean(),
+  raw: z.string(),
+  version: z.string(),
+  rules: z
+    .array(RuleSchema)
+    .nullable()
+    .transform((v) => v ?? []),
+  error: z.string().optional(),
+});
+
+export const RulesViewSchema = z.object({
+  schemaUrl: z.string(),
+  layers: z.array(RulesLayerSchema),
+});
+
+export const EffectiveRuleSchema = RuleSchema.extend({
+  layer: z.string(),
+  overrides: z.string().optional(),
+});
+
+export const RulesPreviewSchema = z.object({
+  profile: z.string(),
+  backend: z.string(),
+  identifier: z.string().optional(),
+  projects: z.array(z.string()),
+  rules: z.array(EffectiveRuleSchema),
+  conflicts: z.array(
+    z.object({ id: z.string(), layer: z.string(), keptLayer: z.string(), message: z.string() }),
+  ),
+  errors: z.array(z.object({ layer: z.string(), path: z.string(), message: z.string() })),
+  block: z.string(),
+  hash: z.string(),
+  ids: z.array(z.string()).nullable(),
+  templatePlacesRules: z.boolean(),
+});
+
+export type Rule = z.infer<typeof RuleSchema>;
+export type RulesLayer = z.infer<typeof RulesLayerSchema>;
+export type RulesView = z.infer<typeof RulesViewSchema>;
+export type RulesPreview = z.infer<typeof RulesPreviewSchema>;
+export type RulesLayerName = (typeof RULES_LAYER_NAMES)[number];
+
+// ─── Settings layers and schema (#158) ───────────────────────────────────────
+// Mirrors internal/server/settings_layers.go and the JSON Schema published at
+// site/public/schema/settings.schema.json (generated from the Go config
+// registry). The Settings page renders its fields from that schema.
+
+export const SETTINGS_LAYER_NAMES = ['user', 'project', 'local'] as const;
+export type SettingsLayerName = (typeof SETTINGS_LAYER_NAMES)[number];
+
+const stringList = z
+  .array(z.string())
+  .nullable()
+  .transform((v) => v ?? []);
+
+export const SettingsLayerSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  writable: z.boolean(),
+  exists: z.boolean(),
+  raw: z.string(),
+  version: z.string(),
+  values: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .transform((v) => v ?? {}),
+  unknown: stringList,
+  error: z.string().optional(),
+});
+
+export const SettingsEffectiveSchema = z.object({
+  key: z.string(),
+  value: z.unknown(),
+  layer: z.string(),
+  path: z.string().optional(),
+});
+
+export const SettingsLayersViewSchema = z.object({
+  schemaUrl: z.string(),
+  layers: z.array(SettingsLayerSchema),
+  effective: z
+    .array(SettingsEffectiveSchema)
+    .nullable()
+    .transform((v) => v ?? []),
+});
+
+export const SettingsSaveResultSchema = SettingsLayersViewSchema.extend({
+  layer: z.string(),
+  applied: stringList,
+  restartRequired: stringList,
+  shadowed: z
+    .record(z.string(), z.string())
+    .nullable()
+    .transform((v) => v ?? {}),
+});
+
+/** One node of the settings JSON Schema: a section, a nested object or a field. */
+export interface SettingsSchemaNode {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: string[];
+  minimum?: number;
+  items?: { type?: string };
+  additionalProperties?: boolean | { type?: string };
+  properties?: Record<string, SettingsSchemaNode>;
+  deprecated?: boolean;
+  'x-itervox-group'?: string;
+  'x-itervox-live'?: boolean;
+  'x-itervox-editor'?: string;
+  'x-itervox-replaced-by'?: string;
+}
+
+export const SettingsSchemaNodeSchema: z.ZodType<SettingsSchemaNode> = z.lazy(() =>
+  z.object({
+    type: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    default: z.unknown().optional(),
+    enum: z.array(z.string()).optional(),
+    minimum: z.number().optional(),
+    items: z.object({ type: z.string().optional() }).optional(),
+    additionalProperties: z
+      .union([z.boolean(), z.object({ type: z.string().optional() })])
+      .optional(),
+    properties: z.record(z.string(), SettingsSchemaNodeSchema).optional(),
+    deprecated: z.boolean().optional(),
+    'x-itervox-group': z.string().optional(),
+    'x-itervox-live': z.boolean().optional(),
+    'x-itervox-editor': z.string().optional(),
+    'x-itervox-replaced-by': z.string().optional(),
+  }),
+);
+
+export const SettingsSchemaDocSchema = z.object({
+  $id: z.string(),
+  properties: z.record(z.string(), SettingsSchemaNodeSchema),
+});
+
+export type SettingsLayer = z.infer<typeof SettingsLayerSchema>;
+export type SettingsEffective = z.infer<typeof SettingsEffectiveSchema>;
+export type SettingsLayersView = z.infer<typeof SettingsLayersViewSchema>;
+export type SettingsSaveResult = z.infer<typeof SettingsSaveResultSchema>;
+export type SettingsSchemaDoc = z.infer<typeof SettingsSchemaDocSchema>;

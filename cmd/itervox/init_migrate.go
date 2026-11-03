@@ -511,6 +511,14 @@ func firstYouAreSentence(text string) string {
 // LockFilePath had no production caller).
 var workflowLockGitignoreEntry = filepath.Base(workflow.LockFilePath("WORKFLOW.md"))
 
+// rulesLocalGitignoreEntry is the root .gitignore line that keeps the
+// project-local rules layer (#157) out of git.
+const rulesLocalGitignoreEntry = ".itervox/rules.local.json"
+
+// settingsLocalGitignoreEntry is the root .gitignore line that keeps the
+// project-local settings layer (#158) out of git.
+const settingsLocalGitignoreEntry = ".itervox/settings.local.jsonc"
+
 func patchRootGitignoreForAgents(projectDir string) error {
 	if projectDir == "" {
 		projectDir = "."
@@ -538,12 +546,22 @@ func patchRootGitignoreForAgents(projectDir string) error {
 			// private.
 			"!.itervox/issues/",
 			"!.itervox/issues/**",
+			// #157: the project rules layer is committed with the code.
+			"!.itervox/rules.json",
 		}
 		for _, line := range needed {
 			if !containsLine(lines, line) {
 				lines = append(lines, line)
 				changed = true
 			}
+		}
+	}
+	// #157 — the project-local rules layer is the operator's own and is
+	// never committed (idempotent). After any carve-out above, so it wins.
+	for _, entry := range []string{rulesLocalGitignoreEntry, settingsLocalGitignoreEntry} {
+		if !containsLine(lines, entry) {
+			lines = append(lines, entry)
+			changed = true
 		}
 	}
 	// gaps_11 G-19 — migration backups written by `itervox init --update`

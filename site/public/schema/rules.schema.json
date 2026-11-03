@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://itervox.dev/schema/rules.schema.json",
+  "title": "Itervox rules file",
+  "description": "Layered rules injected into every Itervox agent run: ~/.itervox/rules.json (user), .itervox/rules.json (project, committed) and .itervox/rules.local.json (project local, gitignored). The files are JSONC: comments and trailing commas are allowed.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The schema URL, for editor support."
+    },
+    "rules": {
+      "type": "array",
+      "description": "The rules this layer sets. A rule replaces a lower layer's rule with the same id, except a must rule from the user layer, which no later layer can override.",
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "text"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique within the file (case-insensitive). A later layer's rule with the same id replaces this one.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["must", "should"],
+          "description": "must: a requirement. should: a strong default the agent may depart from with a stated reason. Must rules are listed first."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "The instruction the agent is given."
+        },
+        "description": {
+          "type": "string",
+          "description": "Why the rule exists. Shown in the editor; not sent to the agent."
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Narrows the runs the rule applies to. An empty or missing list matches every run; entries match case-insensitively and may use * and ? globs. All lists must match.",
+          "properties": {
+            "projects": {
+              "$ref": "#/$defs/names",
+              "description": "The project: the name of the directory that holds WORKFLOW.md, or a tracker.project_slug entry."
+            },
+            "profiles": {
+              "$ref": "#/$defs/names",
+              "description": "Agent profile names. A run without a named profile is \"default\"."
+            },
+            "backends": {
+              "$ref": "#/$defs/names",
+              "description": "Agent backends, e.g. \"claude\" or \"codex\"."
+            }
+          }
+        }
+      }
+    },
+    "names": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+    }
+  }
+}
