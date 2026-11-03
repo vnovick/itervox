@@ -236,7 +236,119 @@ pub struct Connection {
     pub itervox_command: String,
     #[serde(default)]
     pub daemons: Vec<RemoteDaemon>,
+    /// The host's hub (#232), when it has one the app holds a token for:
+    /// ONE tunnel to it reaches every member daemon through the hub's
+    /// proxy, instead of a tunnel per daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<RemoteHub>,
 }
+
+/// A remote machine's hub (#232), from `itervox hub --json` on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteHub {
+    /// The address the hub listens on, as seen on the host.
+    #[serde(default)]
+    pub remote_host: String,
+    pub remote_port: u16,
+    /// The local port its tunnel last used.
+    #[serde(default)]
+    pub local_port: u16,
+    /// The connection's daemons the hub serves, with their
+    /// `/hub/p/{name}` segment.
+    #[serde(default)]
+    pub members: Vec<RemoteHubMember>,
+}
+
+/// One daemon reached through a remote hub.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteHubMember {
+    pub name: String,
+    pub workflow: String,
+}
+
+impl RemoteHub {
+    pub fn member(&self, workflow: &str) -> Option<&RemoteHubMember> {
+        self.members.iter().find(|m| m.workflow == workflow)
+    }
+
+    /// The host the hub tunnel forwards to (as for a daemon).
+    pub fn forward_host(&self) -> String {
+        RemoteDaemon {
+            workflow: String::new(),
+            remote_host: self.remote_host.clone(),
+            remote_port: self.remote_port,
+            token_required: true,
+            token_source: String::new(),
+            token_file: String::new(),
+            local_port: 0,
+        }
+        .forward_host()
+    }
+}
+
+/// `itervox hub --json` on the host (cmd/itervox `hubStatus`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct HubListing {
+    #[serde(default)]
+    pub hub: Option<HubListingLock>,
+    #[serde(default)]
+    pub members: Vec<HubListingMember>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct HubListingLock {
+    pub pid: i32,
+    pub host: String,
+    pub port: u16,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct HubListingMember {
+    pub name: String,
+    pub workflow: String,
+}
+
+impl HubListing {
+    /// The hub for `daemons` (the connection's chosen ones): `None` when no
+    /// hub serves on the host or none of them is a member it can proxy. A
+    /// daemon whose API is open (`server.allow_unauthenticated`) is never
+    /// proxied by the hub, so it keeps its own tunnel.
+    pub fn hub_for(&self, daemons: &[RemoteDaemon]) -> Option<RemoteHub> {
+        let lock = self.hub.as_ref().filter(|l| l.port != 0)?;
+        let members: Vec<RemoteHubMember> = self
+            .members
+            .iter()
+            .filter(|m| {
+                !m.name.is_empty()
+                    && daemons
+                        .iter()
+                        .any(|d| d.workflow == m.workflow && d.token_required)
+            })
+            .map(|m| RemoteHubMember {
+                name: m.name.clone(),
+                workflow: m.workflow.clone(),
+            })
+            .collect();
+        (!members.is_empty()).then(|| RemoteHub {
+            remote_host: lock.host.clone(),
+            remote_port: lock.port,
+            local_port: 0,
+            members,
+        })
+    }
+}
+
+/// The key of a connection's hub: its tunnel id and its token's Keychain
+/// account. No daemon key equals it (a daemon's ends in an absolute path).
+pub fn hub_key(connection_id: &str) -> String {
+    format!("{REMOTE_KEY_PREFIX}{connection_id}/hub")
+}
+
+/// The name of the hub token the app creates on a remote host.
+pub const REMOTE_HUB_TOKEN_NAME: &str = "itervox-desktop";
 
 fn default_itervox_command() -> String {
     "itervox".into()
@@ -250,6 +362,7 @@ impl Connection {
             transport,
             itervox_command: default_itervox_command(),
             daemons: Vec::new(),
+            hub: None,
         }
     }
 
@@ -400,10 +513,16 @@ impl Remotes {
         })
     }
 
-    /// Records the local port a daemon's tunnel uses; true when it changed.
+    /// Records the local port a daemon's (or a hub's) tunnel uses; true
+    /// when it changed.
     pub fn set_local_port(&mut self, key: &str, port: u16) -> bool {
         for c in &mut self.connections {
             let id = c.id.clone();
+            if let Some(h) = c.hub.as_mut().filter(|_| hub_key(&id) == key) {
+                let changed = h.local_port != port;
+                h.local_port = port;
+                return changed;
+            }
             for d in &mut c.daemons {
                 if token_key(&id, &d.workflow) == key && d.local_port != port {
                     d.local_port = port;
@@ -606,6 +725,38 @@ pub fn discover(conn: &Connection, tools: &Tools) -> Result<Vec<DaemonRecord>, S
         )
     })?;
     parse_status(&out).map_err(|e| e.to_string())
+}
+
+/// Lists the host's hub with `itervox hub --json` (#232). `None` when the
+/// host runs an itervox older than the hub, or the listing fails: the
+/// connection then keeps a tunnel per daemon.
+pub fn discover_hub(conn: &Connection, tools: &Tools) -> Option<HubListing> {
+    let cmd = format!("{} hub --json", conn.itervox_command.trim());
+    let (prog, args) = exec_argv(&conn.transport, &cmd, tools).ok()?;
+    let out = run_bounded(&prog, &args, tools, REMOTE_EXEC_TIMEOUT).ok()?;
+    serde_json::from_slice(&out).ok()
+}
+
+/// Creates the app's hub token on the host (`itervox token create --hub
+/// --scope operator`), returned, never logged. Operator, so the member
+/// dashboards opened through the hub can act on issues; the hub never
+/// proxies a member's admin routes.
+pub fn create_remote_hub_token(conn: &Connection, tools: &Tools) -> Result<String, String> {
+    let cmd = format!(
+        "{} token create --hub --name {REMOTE_HUB_TOKEN_NAME} --scope operator",
+        conn.itervox_command.trim()
+    );
+    let (prog, args) = exec_argv(&conn.transport, &cmd, tools)?;
+    let out = run_bounded(&prog, &args, tools, REMOTE_EXEC_TIMEOUT).map_err(|e| {
+        format!(
+            "creating a hub token on {} failed: {e}",
+            conn.transport.label()
+        )
+    })?;
+    let tok = crate::hub_notify::parse_created_token(&out)
+        .ok_or_else(|| "the hub token could not be read".to_string())?;
+    validate_api_token(&tok)?;
+    Ok(tok)
 }
 
 /// Reads a remote daemon's auto-generated token from its `token_file` over

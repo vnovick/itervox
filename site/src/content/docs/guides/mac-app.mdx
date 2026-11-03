@@ -59,6 +59,23 @@ Each project shows its state and running agents, for example `running · 2 agent
 
 To do as little as possible while idle, the app reads the daemon registry (`~/.itervox/daemons/`) itself instead of running `itervox status --all --json` on every refresh. It still runs that command at start, when you open the menu (at most every 30 seconds) or choose **Refresh Now**, and whenever the registry holds a format it does not know, so daemons started by an itervox older than the registry still show. Each daemon is read over one kept-alive connection: a small `GET /api/v1/summary` with the last `ETag`, and the full state only when the daemon answers that something changed ([`GET /summary`](/api-reference/#get-summary)).
 
+### With a hub (v0.2.9)
+
+When an [itervox hub](/guides/hub/) runs on your Mac (it publishes its address in `~/.itervox/daemons/hub.lock`), the app uses it instead of reading each project on its own:
+
+- **One connection.** The app holds one `GET /hub/api/v1/events` stream to the hub for every local project, with a viewer hub token it creates for itself on first use (`itervox-desktop`, kept in the Keychain). The same stream carries the member count, the merged feed's head and the hub's [desktop notifications](#notifications).
+- **One read for every member.** Each refresh reads `GET /hub/api/v1/projects` once — every member's summary is in it — and the app stops polling the hub's members itself. When the hub reports a change in its member set or a member's summary, the stream wakes the refresh at once; projects the hub covers no longer count toward the 3-second busy interval, so with only hub members the app refreshes on those events and every 15 seconds. The hub reads its members' summaries every 10 seconds, so a project's counts in the menu can lag that much; the notifications themselves arrive at once.
+- **Everyone else as before.** A daemon started with `--no-hub` (or `hub.enabled: false`), a daemon from an itervox older than the hub, and a member the hub cannot read right now are polled exactly as above.
+- **Fallback.** If the hub stops — its stream ends or its projects list does not answer — the app polls every daemon again at once and raises its own alerts, until the next daemon takes over the hub (about a second later) and the app reconnects. A notification asked during the switch can show twice: once from the hub, once from the app's own alerts.
+
+The menu shows the hub under its header: `Hub · 3 projects` while the app is connected, `Hub: connecting…`, `Hub unreachable — polling each project`, or `Hub: not running — each project polled`. Below it:
+
+- **Open Hub Dashboard** opens the hub's page (`/hub/`) in a window: every project on this Mac, each opening its own dashboard through the hub.
+- **Phone…** opens the hub's **Phones** view with the [pairing QR code](/guides/phone/): scan it with your phone to pair it.
+- **Notification Settings…** opens the hub's [notification settings](/guides/hub/#notifications) — the per-project routes, snoozes and digests that decide which native notifications this app shows.
+
+The Phones and Notifications views are admin views of the hub, so the hub window opens with a second hub token the app creates the first time you choose one of these items (`itervox token create --hub --name itervox-desktop-admin --scope admin`, kept in the Keychain as `itervox-hub-admin`; revoke it with `itervox token revoke <id> --hub` and the app makes a new one when you next open the window). The long-lived events stream keeps the viewer token. All three items are disabled while the app is not connected to a hub.
+
 For a daemon the app started, the app reads the state with that daemon's token. For a daemon started from a terminal, it uses the auto-generated token in the daemon's `token_file` when there is one (same user, mode `0600`). A daemon with a pinned `ITERVOX_API_TOKEN` shows **token required**: the app cannot read its state, and its dashboard asks for the token.
 
 ## Start, stop, restart
@@ -165,6 +182,12 @@ and for the remote:
 - **Reconnect** restarts its tunnels now.
 - **Refresh Daemon List** runs `itervox status --all --json` on the host again: new daemons are added, gone ones removed.
 - **Remove Remote** stops its tunnels and deletes its tokens from the Keychain.
+
+### A remote machine with a hub
+
+When the daemons on the host form a [hub](/guides/hub/) of their own, one tunnel covers all of that machine's projects. **Add Remote…** and **Refresh Daemon List** also run `itervox hub --json` on the host; when a hub serves there and some of the chosen daemons are its members, the app creates a hub token on the host over the same transport (`itervox token create --hub --name itervox-desktop --scope operator`, stored in the Keychain under the remote's `…/hub` account) and runs **one tunnel to the hub** instead of one per member. Every member is then read through the hub's proxy (`/hub/p/<project>/api/v1/...`), and **Open Dashboard**, **Repo Analysis**, **Memory** and notification links open the member's dashboard on the hub (`http://127.0.0.1:<local>/hub/p/<project>/`) with the hub token. The hub token is an operator token, so you can answer questions and act on issues there; project administration (settings, tokens) is not reachable through a hub — open that daemon from the host. The remote's submenu shows `hub · 3 projects through one tunnel`, and each member's line says `via hub`. The hub's tunnel is health-checked on `GET /hub/api/v1/health`.
+
+Daemons that are not members (`--no-hub`, older releases, or a daemon running with `server.allow_unauthenticated`, which a hub never proxies) keep their own tunnels. Each member's own token is still read and stored when the remote is added: if the hub's tunnel stops answering (the hub stopped and none took over on its port), every member gets its own tunnel again, until the hub answers. An older itervox on the host, or a host where the hub token cannot be created, keeps a tunnel per daemon.
 
 Notifications work for remote daemons too: a question or a failed run on a connected remote daemon raises one, and clicking it opens the issue through the tunnel. Remote daemons cannot be started or stopped from the app; that stays with the host's service manager. Quitting the app closes its tunnels (the remote daemons keep running).
 

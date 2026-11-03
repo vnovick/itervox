@@ -50,6 +50,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   configureApiContext('/');
+  window.history.replaceState(null, '', '/');
   vi.restoreAllMocks();
 });
 
@@ -110,5 +111,35 @@ describe('HubPage', () => {
     expect(screen.queryByRole('list', { name: 'Projects' })).toBeNull();
     expect((await screen.findByRole('alert')).textContent).toContain('admin hub token');
     expect(fetchMock.mock.calls.some(([url]) => url === '/hub/api/v1/notifications')).toBe(true);
+  });
+
+  // #232 — the Mac app's tray items open a view by URL.
+  it('opens the view named in ?view= (the tray: Phone…, Notification Settings…)', async () => {
+    global.fetch = vi.fn((url: string) =>
+      Promise.resolve(
+        url.endsWith('/projects')
+          ? new Response(JSON.stringify(PROJECTS), { status: 200 })
+          : new Response(JSON.stringify({ error: { code: 'x', message: 'x' } }), { status: 403 }),
+      ),
+    ) as unknown as typeof fetch;
+    window.history.replaceState(null, '', '/hub/?view=notifications');
+    const { unmount } = renderPage();
+    expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.queryByRole('list', { name: 'Projects' })).toBeNull();
+    unmount();
+
+    window.history.replaceState(null, '', '/hub/?view=phones');
+    const phones = renderPage();
+    expect(screen.getByRole('tab', { name: 'Phones' }).getAttribute('aria-selected')).toBe('true');
+    phones.unmount();
+
+    window.history.replaceState(null, '', '/hub/?view=bogus');
+    renderPage();
+    expect(screen.getByRole('tab', { name: 'Projects' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    await screen.findByRole('list', { name: 'Projects' });
   });
 });
