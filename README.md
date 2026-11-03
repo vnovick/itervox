@@ -170,6 +170,10 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
   </tr>
 </table>
 
+### Mac menu-bar app
+
+A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
+
 ### View from your phone, anywhere
 
 The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
@@ -492,7 +496,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Every commit must be signed off (`git commit -s`), and first-time external contributors sign the [CLA](CLA.md) by commenting on their pull request; see [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco). Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
 
 Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 
@@ -507,3 +511,5 @@ If Itervox saves you time, please consider sponsoring development: **[github.com
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+Contributions are accepted under the [Developer Certificate of Origin](DCO) (sign off every commit with `git commit -s`) and, for external contributors, the [Contributor License Agreement](CLA.md) ([corporate version](CLA-CORPORATE.md)). The CLA is a license grant, not a copyright assignment: you keep your copyright, and the project owner may also distribute contributions under licenses other than Apache 2.0.
