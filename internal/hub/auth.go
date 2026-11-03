@@ -52,6 +52,18 @@ var hubRouteScopes = map[string]string{
 	"PUT /hub/api/v1/notifications":       string(apitokens.ScopeAdmin),
 	"POST /hub/api/v1/notifications/test": string(apitokens.ScopeOperator),
 	"* /hub/p/{project}/api/*":            hubMemberRoute,
+	// #231 phones: the VAPID public key is viewer; subscribing and managing
+	// push devices is operator (a paired phone's token); pairing codes and
+	// paired devices are admin. The exchange is the one public write: the
+	// one-time code is its credential.
+	"GET /hub/api/v1/push/vapid-public-key": string(apitokens.ScopeViewer),
+	"POST /hub/api/v1/push/subscribe":       string(apitokens.ScopeOperator),
+	"GET /hub/api/v1/push/devices":          string(apitokens.ScopeOperator),
+	"DELETE /hub/api/v1/push/devices/{id}":  string(apitokens.ScopeOperator),
+	"POST /hub/api/v1/pairing":              string(apitokens.ScopeAdmin),
+	"POST /hub/api/v1/pairing/exchange":     hubPublic,
+	"GET /hub/api/v1/devices":               string(apitokens.ScopeAdmin),
+	"DELETE /hub/api/v1/devices/{id}":       string(apitokens.ScopeAdmin),
 }
 
 // Principal is an authenticated hub caller.

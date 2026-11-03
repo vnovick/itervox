@@ -187,6 +187,7 @@ var effectiveValues = map[string]func(*Config) any{
 	},
 	"server.allow_unauthenticated":              func(c *Config) any { return c.Server.AllowUnauthenticatedLAN },
 	"server.allowed_hosts":                      func(c *Config) any { return c.Server.AllowedHosts },
+	"server.allowed_origins":                    func(c *Config) any { return c.Server.AllowedOrigins },
 	"dependencies.confidence_threshold":         func(c *Config) any { return c.Dependencies.ConfidenceThreshold },
 	"dependencies.ordering":                     func(c *Config) any { return c.Dependencies.Ordering },
 	"dependencies.escalate_blocked_after_hours": func(c *Config) any { return c.Dependencies.EscalateBlockedAfterHours },

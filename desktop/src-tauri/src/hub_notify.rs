@@ -8,9 +8,9 @@
 //! (`~/.itervox/hub/notifications.json`) send to the desktop channel —
 //! per project, kind and snooze, with low-priority kinds already batched
 //! into digests. The app only shows what arrives; it re-implements no
-//! routing. The full "the app uses the hub" (projects, tray, fallback) is
-//! #232; this module is the notification path and the hub detection it
-//! needs.
+//! routing. #232 makes the same stream the app's one connection to the hub
+//! ([`run_loop`], [`HubEvent`]): its `projects` frames wake the refresh,
+//! which reads the members through the hub (`hub_source`).
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -202,14 +202,40 @@ fn stream_agent() -> ureq::Agent {
         .into()
 }
 
-/// Reads frames from `reader` and shows every desktop notification, moving
-/// `since` past each. Returns when the stream ends or `stop` is set.
-pub fn read_notifications(
+/// One frame of the hub's events stream the app acts on (#232). The same
+/// connection carries the member count, the merged feed's head and the
+/// desktop notifications, so the app holds ONE stream for every member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HubEvent {
+    /// `event: projects`: the member set or a member's summary changed;
+    /// `count` members now.
+    Projects(usize),
+    /// `event: feed`: the merged feed's head moved.
+    Feed(i64),
+    /// `event: notification` routed to the desktop channel.
+    Notification(NativeNote),
+}
+
+#[derive(Deserialize)]
+struct CountFrame {
+    count: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FeedFrame {
+    head_seq: i64,
+}
+
+/// Reads frames from `reader` and hands every hub event to `on`, moving
+/// `since` past each notification. Returns when the stream ends or `stop`
+/// is set.
+pub fn read_events(
     reader: impl Read,
     origin: &str,
     since: &mut Option<i64>,
     stop: &AtomicBool,
-    show: &mut dyn FnMut(NativeNote),
+    on: &mut dyn FnMut(HubEvent),
 ) -> StreamEnd {
     let mut lines = BufReader::new(reader);
     let mut parser = SseParser::default();
@@ -235,30 +261,58 @@ pub fn read_notifications(
         let Some(frame) = parser.push_line(line) else {
             continue;
         };
-        if frame.event != "notification" {
-            continue;
-        }
-        let Ok(n) = serde_json::from_str::<HubNotification>(&frame.data) else {
-            continue;
-        };
-        if since.is_some_and(|s| n.id <= s) {
-            continue; // already shown (a replay after a reconnect)
-        }
-        *since = Some(n.id);
-        if let Some(note) = native_note(origin, &n) {
-            show(note);
+        match frame.event.as_str() {
+            "projects" => {
+                if let Ok(f) = serde_json::from_str::<CountFrame>(&frame.data) {
+                    on(HubEvent::Projects(f.count));
+                }
+            }
+            "feed" => {
+                if let Ok(f) = serde_json::from_str::<FeedFrame>(&frame.data) {
+                    on(HubEvent::Feed(f.head_seq));
+                }
+            }
+            "notification" => {
+                let Ok(n) = serde_json::from_str::<HubNotification>(&frame.data) else {
+                    continue;
+                };
+                if since.is_some_and(|s| n.id <= s) {
+                    continue; // already shown (a replay after a reconnect)
+                }
+                *since = Some(n.id);
+                if let Some(note) = native_note(origin, &n) {
+                    on(HubEvent::Notification(note));
+                }
+            }
+            _ => {}
         }
     }
 }
 
-/// Opens the hub's events stream once with `token` and shows its desktop
-/// notifications until it ends (see [`read_notifications`]).
-pub fn stream_notifications(
+/// Reads frames from `reader` and shows every desktop notification, moving
+/// `since` past each (the #229 view of [`read_events`]).
+pub fn read_notifications(
+    reader: impl Read,
+    origin: &str,
+    since: &mut Option<i64>,
+    stop: &AtomicBool,
+    show: &mut dyn FnMut(NativeNote),
+) -> StreamEnd {
+    read_events(reader, origin, since, stop, &mut |ev| {
+        if let HubEvent::Notification(n) = ev {
+            show(n);
+        }
+    })
+}
+
+/// Opens the hub's events stream once with `token` and hands every event
+/// to `on` until it ends (see [`read_events`]).
+pub fn stream_events(
     origin: &str,
     token: &str,
     since: &mut Option<i64>,
     stop: &AtomicBool,
-    show: &mut dyn FnMut(NativeNote),
+    on: &mut dyn FnMut(HubEvent),
 ) -> StreamEnd {
     let resp = stream_agent()
         .get(&events_url(origin, *since))
@@ -274,7 +328,142 @@ pub fn stream_notifications(
         401 => return StreamEnd::Unauthorized,
         other => return StreamEnd::Disconnected(format!("status {other}")),
     }
-    read_notifications(resp.into_body().into_reader(), origin, since, stop, show)
+    read_events(resp.into_body().into_reader(), origin, since, stop, on)
+}
+
+/// Opens the hub's events stream once with `token` and shows its desktop
+/// notifications until it ends (see [`read_notifications`]).
+pub fn stream_notifications(
+    origin: &str,
+    token: &str,
+    since: &mut Option<i64>,
+    stop: &AtomicBool,
+    show: &mut dyn FnMut(NativeNote),
+) -> StreamEnd {
+    stream_events(origin, token, since, stop, &mut |ev| {
+        if let HubEvent::Notification(n) = ev {
+            show(n);
+        }
+    })
+}
+
+/// The app's connection to the local hub, shared by the stream thread, the
+/// refresh loop and the tray.
+#[derive(Default)]
+pub struct HubNotify {
+    /// True while the events stream is connected (its first frame arrived):
+    /// local hub members are then read through the hub, and their
+    /// per-daemon alerts left to it.
+    pub active: AtomicBool,
+    /// The hub's origin and the app's viewer token of the live (or last)
+    /// stream, for reading `/hub/api/v1/projects` and opening links.
+    pub session: std::sync::Mutex<Option<(String, String)>>,
+}
+
+impl HubNotify {
+    /// The origin and token while the stream is connected.
+    pub fn live_session(&self) -> Option<(String, String)> {
+        if !self.active.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// What the stream loop needs from the app; tests inject fakes.
+pub struct LoopDeps<'a> {
+    /// The running hub (`hub.lock`), if any.
+    pub lock: &'a dyn Fn() -> Option<HubLock>,
+    /// The app's hub viewer token, created on first use.
+    pub token: &'a dyn Fn() -> Option<String>,
+    /// Forgets a token the hub refused.
+    pub forget_token: &'a dyn Fn(),
+    /// Waits (the app sleeps; tests return at once).
+    pub sleep: &'a dyn Fn(Duration),
+    /// The stream went up or down: the refresh loop switches between the
+    /// hub and per-daemon polling at once.
+    pub changed: &'a dyn Fn(bool),
+}
+
+/// Longest wait between reconnects to a hub that keeps refusing.
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Holds ONE events stream to whichever hub serves, for the app's life (or
+/// until `stop`): reconnects with a backoff, follows a new hub after a
+/// takeover (resuming its notifications from the start of its ring, since
+/// its ids begin again), replaces a refused token, and marks `hub` active
+/// only while frames arrive.
+pub fn run_loop(
+    hub: &HubNotify,
+    deps: &LoopDeps<'_>,
+    stop: &AtomicBool,
+    on: &mut dyn FnMut(HubEvent),
+) {
+    let mut since = None;
+    let mut backoff = Duration::from_secs(2);
+    let mut refused = 0u32;
+    let mut last: Option<(i32, String)> = None;
+    let set_active = |up: bool| {
+        if hub.active.swap(up, Ordering::Relaxed) != up {
+            (deps.changed)(up);
+        }
+    };
+    while !stop.load(Ordering::Relaxed) {
+        let lock = (deps.lock)();
+        let token = lock.as_ref().and_then(|_| (deps.token)());
+        let (Some(lock), Some(token)) = (lock, token) else {
+            set_active(false);
+            (deps.sleep)(Duration::from_secs(10));
+            continue;
+        };
+        let origin = lock.origin();
+        let ident = (lock.pid, origin.clone());
+        if last.as_ref().is_some_and(|l| *l != ident) {
+            // A new hub took over: its notification ids start again.
+            since = since.map(|_| 0);
+            backoff = Duration::from_secs(2);
+        }
+        last = Some(ident);
+        *hub.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((origin.clone(), token.clone()));
+        let mut connected = false;
+        let end = stream_events(&origin, &token, &mut since, stop, &mut |ev| {
+            connected = true;
+            set_active(true);
+            on(ev);
+        });
+        set_active(false);
+        match end {
+            StreamEnd::Stopped => return,
+            StreamEnd::Unauthorized => {
+                // Revoked or rotated: drop it and create a new one, but not
+                // in a loop when every new one is refused.
+                (deps.forget_token)();
+                since = None;
+                refused += 1;
+                if refused >= 3 {
+                    refused = 0;
+                    (deps.sleep)(Duration::from_secs(600));
+                }
+            }
+            StreamEnd::Disconnected(_) => {
+                if connected {
+                    backoff = Duration::from_secs(2);
+                }
+                refused = 0;
+            }
+        }
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        (deps.sleep)(backoff);
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
 }
 
 /// Drops the per-daemon alerts the hub covers while its stream is up: those
@@ -298,19 +487,30 @@ pub const HUB_TOKEN_NAME: &str = "itervox-desktop";
 /// `itervox token create --hub --name itervox-desktop --scope viewer`: a
 /// hub viewer token for the events stream (stdout is the secret alone).
 pub fn hub_token_command(sidecar: &Path) -> std::process::Command {
+    token_create_command(sidecar, HUB_TOKEN_NAME, "viewer")
+}
+
+/// The keychain entry of the app's admin hub token (#232): the token the
+/// hub page windows (dashboard, Phones, Notifications) open with. The hub's
+/// pairing and notification settings are admin routes; the long-lived
+/// events stream keeps the viewer token.
+pub const HUB_ADMIN_TOKEN_KEY: &str = "itervox-hub-admin";
+
+/// The name of the admin hub token the app creates for its hub windows.
+pub const HUB_ADMIN_TOKEN_NAME: &str = "itervox-desktop-admin";
+
+/// `itervox token create --hub --name itervox-desktop-admin --scope admin`,
+/// run the first time the user opens a hub page from the tray.
+pub fn hub_admin_token_command(sidecar: &Path) -> std::process::Command {
+    token_create_command(sidecar, HUB_ADMIN_TOKEN_NAME, "admin")
+}
+
+fn token_create_command(sidecar: &Path, name: &str, scope: &str) -> std::process::Command {
     let mut c = std::process::Command::new(sidecar);
-    c.args([
-        "token",
-        "create",
-        "--hub",
-        "--name",
-        HUB_TOKEN_NAME,
-        "--scope",
-        "viewer",
-    ])
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
+    c.args(["token", "create", "--hub", "--name", name, "--scope", scope])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     c
 }
 
@@ -430,6 +630,170 @@ mod tests {
             &mut |_| panic!("nothing to show"),
         );
         assert_eq!(end, StreamEnd::Unauthorized);
+    }
+
+    /// A fake hub serving `body` on every events connection; returns its
+    /// origin and the request lines it received.
+    fn counting_hub(body: String) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let ln = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", ln.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        std::thread::spawn(move || {
+            for s in ln.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut req = Vec::new();
+                let mut byte = [0u8; 1];
+                while !req.ends_with(b"\r\n\r\n") {
+                    if s.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    req.push(byte[0]);
+                }
+                let text = String::from_utf8_lossy(&req).into_owned();
+                seen2
+                    .lock()
+                    .unwrap()
+                    .push(text.lines().next().unwrap_or("").to_string());
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                );
+            }
+        });
+        (origin, seen)
+    }
+
+    fn lock_for(origin: &str, pid: i32) -> HubLock {
+        let (host, port) = origin
+            .trim_start_matches("http://")
+            .rsplit_once(':')
+            .unwrap();
+        HubLock {
+            pid,
+            url: format!("{origin}/hub/"),
+            host: host.into(),
+            port: port.parse().unwrap(),
+            version: "v0.2.9".into(),
+        }
+    }
+
+    /// #232 — the app holds ONE events stream for the whole hub, however
+    /// many members it has: the member count, the merged feed's head and
+    /// the desktop notifications of all three projects arrive on the same
+    /// connection; the stream marks the hub active while frames arrive (the
+    /// refresh then reads the members through the hub) and inactive when it
+    /// ends (per-daemon polling until a hub serves again).
+    #[test]
+    fn one_sse_connection_for_all_members() {
+        let note = |id: i64, project: &str| {
+            format!(
+                "event: notification\nid: {id}\ndata: {{\"id\":{id},\"channel\":\"desktop\",\"kind\":\"input_required\",\"project\":\"{project}\",\"identifier\":\"ENG-{id}\",\"title\":\"ENG-{id} needs input\",\"url\":\"/hub/p/{project}/?issue=ENG-{id}\"}}\n\n"
+            )
+        };
+        let body = [
+            "event: projects\ndata: {\"count\":3}\n\n".to_string(),
+            "event: feed\ndata: {\"headSeq\":7}\n\n".to_string(),
+            note(1, "alpha"),
+            note(2, "beta"),
+            note(3, "gamma"),
+            "event: feed\ndata: {\"headSeq\":9}\n\n".to_string(),
+        ]
+        .concat();
+        let (origin, seen) = counting_hub(body);
+        let hub = HubNotify::default();
+        let stop = AtomicBool::new(false);
+        let changes = std::sync::Mutex::new(Vec::new());
+        let token = ["hub", "viewer", "fixture"].join("-");
+        let me = std::process::id() as i32;
+        // A loop that reconnected would ask again: allow one reconnect (so
+        // a second connection shows in `requests`), then stop.
+        let lock_calls = std::sync::atomic::AtomicUsize::new(0);
+        let deps = LoopDeps {
+            lock: &|| {
+                if lock_calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                    Some(lock_for(&origin, me))
+                } else {
+                    stop.store(true, Ordering::Relaxed);
+                    None
+                }
+            },
+            token: &|| Some(token.clone()),
+            forget_token: &|| panic!("the token was accepted"),
+            sleep: &|_| {},
+            changed: &|up| changes.lock().unwrap().push(up),
+        };
+        let mut events = Vec::new();
+        let mut active_during = Vec::new();
+        run_loop(&hub, &deps, &stop, &mut |ev| {
+            active_during.push(hub.live_session().is_some());
+            if ev == HubEvent::Feed(9) {
+                stop.store(true, Ordering::Relaxed);
+            }
+            events.push(ev);
+        });
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(
+            requests,
+            ["GET /hub/api/v1/events HTTP/1.1"],
+            "one events connection carries every member"
+        );
+        let projects: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                HubEvent::Notification(n) => Some(n.project.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(projects, ["alpha", "beta", "gamma"]);
+        assert_eq!(events[0], HubEvent::Projects(3));
+        assert_eq!(events[1], HubEvent::Feed(7));
+        assert!(
+            active_during.iter().all(|a| *a),
+            "active while frames arrive"
+        );
+        assert_eq!(*changes.lock().unwrap(), [true, false]);
+        assert!(!hub.active.load(Ordering::Relaxed));
+        assert_eq!(hub.live_session(), None, "no live session once it ends");
+    }
+
+    /// After a takeover (another pid holds hub.lock) the loop reconnects to
+    /// the new hub and reads its notifications from the start of its ring:
+    /// the new hub's ids begin again.
+    #[test]
+    fn follows_a_new_hub_after_takeover() {
+        let body = "event: notification\nid: 5\ndata: {\"id\":5,\"channel\":\"desktop\",\"kind\":\"test\",\"title\":\"t\"}\n\n".to_string();
+        let (origin, seen) = counting_hub(body);
+        let hub = HubNotify::default();
+        let stop = AtomicBool::new(false);
+        let calls = std::sync::atomic::AtomicI32::new(0);
+        let me = std::process::id() as i32;
+        let deps = LoopDeps {
+            // The first hub, then a new one (another pid) after it stops.
+            lock: &|| {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                Some(lock_for(&origin, if n == 0 { me } else { me + 1 }))
+            },
+            token: &|| Some("t".into()),
+            forget_token: &|| {},
+            sleep: &|_| {},
+            changed: &|_| {},
+        };
+        let mut shown = 0;
+        run_loop(&hub, &deps, &stop, &mut |_| {
+            shown += 1;
+            if shown == 2 {
+                stop.store(true, Ordering::Relaxed);
+            }
+        });
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(
+            requests,
+            [
+                "GET /hub/api/v1/events HTTP/1.1",
+                "GET /hub/api/v1/events?notify_since=0 HTTP/1.1"
+            ]
+        );
     }
 
     #[test]
