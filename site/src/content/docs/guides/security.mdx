@@ -134,6 +134,18 @@ merges, input requests, guardrail approvals) with a short-lived per-run
 grant that only that run holds. Those routes never accept dashboard tokens
 and dashboard tokens never reach agents; scopes do not change them.
 
+## Agent processes
+
+Tokens control who may call the daemon. What an agent *process* may touch on
+the machine is a separate question: by default it has the daemon user's full
+filesystem access. A profile with `isolation: process` runs its agent inside
+an operating-system sandbox that hides `~/.ssh`, `~/.aws`, `~/.config/gh`,
+the project's `.itervox/.env` and token files, the hub and dashboard token
+files and every other workspace, and lets it write only to its own workspace
+(plus its git directories, the temp directory and the CLI's own state). A run
+whose sandbox is unavailable does not start. Hooks are not sandboxed. See
+[Process isolation](/guides/isolation/).
+
 ## API scope table
 
 Every route declares its scope in `internal/server/route_scopes.go`, the one

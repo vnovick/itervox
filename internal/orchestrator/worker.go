@@ -400,6 +400,24 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
+	// #258: process isolation, resolved once per run before anything runs
+	// in the workspace (hooks are not sandboxed, but must not run for a run
+	// that cannot start). No sandbox available means no run.
+	iso, isoErr := o.prepareRunIsolation(profilesSnap[profileName], workerHost, wsPath)
+	if isoErr != nil {
+		slog.Warn("worker: isolation unavailable; run not started",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName, "error", isoErr)
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR", fmt.Sprintf("worker: run not started: %v", isoErr), runLogID))
+		}
+		o.sendExit(ctx, issue, attempt, TerminalFailed, isoErr)
+		return
+	}
+	if iso != nil {
+		ctx = agent.WithIsolation(ctx, iso)
+		o.reportRunIsolation(ctx, issue, runLogID, iso)
+	}
+
 	// --- Multi-turn loop ---
 	// before_run hook runs once per worker invocation (not per turn), so that
 	// hooks like "git reset --hard origin/main" set up a clean workspace for the

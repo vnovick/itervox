@@ -428,6 +428,16 @@ type AgentProfile struct {
 	// that can pause for approval hangs the turn until the timeout kills it.
 	// See internal/agent/permission.go (issue #66).
 	PermissionMode string
+	// Isolation runs this profile's agent inside an operating-system
+	// sandbox (#258): "process", or "none" for no sandbox. Empty inherits
+	// agent.isolation. See internal/agent/isolation.go.
+	Isolation string
+	// IsolationExtraWrite are absolute paths (or ~/...) added to the
+	// sandbox's writable list. Used only with isolation "process".
+	IsolationExtraWrite []string
+	// IsolationExtraDeny are absolute paths (or ~/...) added to the
+	// sandbox's unreadable list. Used only with isolation "process".
+	IsolationExtraDeny []string
 	// RequireEvidence lists the checks a run of this profile must prove
 	// before Itervox moves its issue to completion_state (#80). Each name
 	// but "ci" must appear as a passing entry in the run's evidence file
@@ -666,6 +676,10 @@ type AgentConfig struct {
 	// request an agent run produces, once per PR (#81). Off by default.
 	// YAML key: agent.pr_footer.
 	PRFooter bool
+	// Isolation is the default isolation for profiles that do not set
+	// their own (#258): "none" (the default, no sandbox) or "process" (the
+	// agent subprocess runs inside an OS sandbox). Read-only after startup.
+	Isolation string
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -1094,11 +1108,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.BackendFallback = backendFallback
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	cfg.Agent.PRFooter = boolField(agent, "pr_footer", false)
+	cfg.Agent.Isolation = strings.TrimSpace(strField(agent, "isolation", IsolationNone))
+	if err := ValidateIsolationMode("agent.isolation", cfg.Agent.Isolation, false); err != nil {
+		return nil, err
+	}
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Agent.Profiles = profiles
+	// #258: process isolation is local only for now.
+	if err := ValidateIsolationHosts(cfg.Agent); err != nil {
+		return nil, err
+	}
 	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
 
 	// Hooks
@@ -1481,6 +1503,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			iso, err := profileIsolationFields(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:          cmd,
 				SoulFile:         soulFile,
@@ -1493,6 +1519,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				CreateIssueState: strField(m, "create_issue_state", ""),
 				PermissionMode:   strField(m, "permission_mode", ""),
 				RequireEvidence:  requireEvidence,
+
+				Isolation:           iso.Isolation,
+				IsolationExtraWrite: iso.IsolationExtraWrite,
+				IsolationExtraDeny:  iso.IsolationExtraDeny,
 			}
 			continue
 		}
@@ -1501,6 +1531,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			continue
 		}
 		requireEvidence, err := evidenceChecksField(m, name)
+		if err != nil {
+			return nil, err
+		}
+		iso, err := profileIsolationFields(m, name)
 		if err != nil {
 			return nil, err
 		}
@@ -1513,6 +1547,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			CreateIssueState: strField(m, "create_issue_state", ""),
 			PermissionMode:   strField(m, "permission_mode", ""),
 			RequireEvidence:  requireEvidence,
+
+			Isolation:           iso.Isolation,
+			IsolationExtraWrite: iso.IsolationExtraWrite,
+			IsolationExtraDeny:  iso.IsolationExtraDeny,
 		}
 	}
 	if len(profiles) == 0 {

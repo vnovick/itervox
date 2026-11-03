@@ -145,6 +145,9 @@ export const RunningRowSchema = z.object({
   title: z.string().optional(),
   profile: z.string().optional(),
   costUsdEstimated: z.number().optional(),
+  // #258 — the sandbox the run's agent runs in ("bubblewrap", "landlock",
+  // "sandbox-exec"); absent when it runs unsandboxed.
+  isolation: z.string().optional(),
 });
 
 // #186 — per-component digests of a run's prompt version (hashes only).

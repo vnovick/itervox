@@ -248,6 +248,19 @@ repo readiness:
 
 The section summarises; it does not change the exit code on its own (the checks above it that already fail doctor, such as a schema error or a failing bare-clone fetch, still do). The tracker probe is bounded to 8 seconds.
 
+After it, an `Isolation` section (#258) lists each sandbox mechanism this machine has (bubblewrap and Landlock on Linux, sandbox-exec on macOS) with why it is unavailable when it is, the profiles that ask for `isolation: process`, the mechanism their runs would use and the writable and unreadable lists. A profile asking for process isolation on a machine where no mechanism works is an `ERROR:` and exits `1`: every run of that profile would be refused. See [Process isolation](/guides/isolation/).
+
+```
+Isolation
+  bubblewrap: unavailable — bwrap is not installed
+  landlock: available
+  profiles with isolation: process: coder
+  sandbox: landlock
+  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache (+ isolation_extra_write)
+  unreadable: ~/.ssh, ~/.aws, …, every other workspace under /Users/me/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
+  network: allowed; hooks: not sandboxed
+```
+
 | Flag | Description |
 |---|---|
 | `--workflow` | Path to `WORKFLOW.md` (default `WORKFLOW.md`) |

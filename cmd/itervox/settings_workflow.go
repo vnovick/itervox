@@ -32,6 +32,10 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			CreateIssueState: strings.TrimSpace(profile.CreateIssueState),
 			PermissionMode:   strings.TrimSpace(profile.PermissionMode),
 			RequireEvidence:  config.NormalizeEvidenceChecks(profile.RequireEvidence),
+
+			Isolation:           strings.TrimSpace(profile.Isolation),
+			IsolationExtraWrite: profile.IsolationExtraWrite,
+			IsolationExtraDeny:  profile.IsolationExtraDeny,
 		}
 	}
 	return out

@@ -157,6 +157,17 @@
           "x-itervox-group": "Core",
           "x-itervox-live": true
         },
+        "isolation": {
+          "default": "none",
+          "description": "Default for profiles that do not set isolation: none, or process (the agent runs in an OS sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS; the run does not start when none works). Read at load time.",
+          "enum": [
+            "none",
+            "process"
+          ],
+          "title": "Isolation",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
         "live_steering": {
           "default": false,
           "description": "Lets a Sessions-panel message reach a running local Claude turn mid-turn (stream-json stdin). Off, and always for Codex and SSH workers, a message is delivered as the next turn's prompt. Keep off when agent.command is a wrapper script that reads stdin to EOF. Read at startup.",

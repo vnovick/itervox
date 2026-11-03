@@ -42,6 +42,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/agent"
 	"go.uber.org/goleak"
 )
 
@@ -98,6 +99,11 @@ var fakeSSHDBin string
 // binary takes about a second to start on macOS, and every fake ssh
 // connection starts one), then runs the tests.
 func TestMain(m *testing.M) {
+	// #258: this test binary is also the Landlock launcher for the
+	// real-process isolation tests (it re-executes itself, as itervox does).
+	if code, ok := agent.RunIsolationHelper(os.Args); ok {
+		os.Exit(code)
+	}
 	if runtime.GOOS == "windows" {
 		// fakesshd is a Unix fixture (Setsid, SIGPIPE); the SSH tests that
 		// use it do not build on Windows.

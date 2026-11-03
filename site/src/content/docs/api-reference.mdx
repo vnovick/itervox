@@ -365,7 +365,8 @@ Useful top-level fields include:
 - `running[]` rows carry `title` (the issue's title), `profile` (the run's
   resolved profile, omitted for the default) and `costUsdEstimated` (the run's
   estimated cost as its backend reports it; omitted until reported, always for
-  Codex) (#240). `lastEvent` is redacted like every log surface.
+  Codex) (#240), and `isolation` (the sandbox the run's agent runs in:
+  `bubblewrap`, `landlock` or `sandbox-exec`; omitted when unsandboxed, #258). `lastEvent` is redacted like every log surface.
 - `inputRequired[]` rows carry `guardrailApproval: true` for a
   [guardrail approval](/guides/guardrails/) request (#240): `approve` (or
   `itervox approve <issue>`) runs the held command once, any other reply

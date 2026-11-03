@@ -39,6 +39,10 @@ type Orchestrator struct {
 	tracker   tracker.Tracker
 	runner    agent.Runner
 	workspace workspace.Provider // nil is safe — workspace ops skipped (useful in tests)
+	// isolationDetect resolves the sandbox mechanism for runs with
+	// isolation "process" (#258); nil means agent.DetectIsolation. Tests
+	// inject availability here. Set before Run; read-only afterwards.
+	isolationDetect func() (agent.IsolationMechanism, error)
 	// sink is the write path for completion/failed-state transitions and
 	// worker-exit outcome comments (see write_sink.go's WriteSink doc
 	// comment for the full call-site list). New() defaults it to a
