@@ -39,6 +39,8 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 	interval := fs.Duration("interval", 2*time.Second, "watch: refresh interval")
 	once := fs.Bool("once", false, "watch: print the view once and exit")
 	follow := fs.Bool("f", false, "logs: keep following new lines")
+	reason := fs.String("reason", "", "pause (all dispatch): why, shown on the dashboard")
+	pauseFor := fs.Duration("for", 0, "pause (all dispatch): resume by itself after this long, e.g. 2h")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
@@ -73,8 +75,11 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 	issuePath := func() string { return "/issues/" + url.PathEscape(pos[0]) }
 	switch name {
 	case "pause", "resume":
-		if len(pos) != 1 {
-			return usage("usage: itervox " + name + " <issue>")
+		if len(pos) == 0 { // #213: all dispatch
+			return dispatchPauseCommand(rctx, c, name, *reason, *pauseFor, out, fail, usage)
+		}
+		if len(pos) != 1 || *reason != "" || *pauseFor != 0 {
+			return usage("usage: itervox " + name + " <issue> | itervox pause [--reason r] [--for 2h] | itervox resume")
 		}
 		endpoint, done := "/cancel", "Paused %s; its agent was stopped.\n"
 		if name == "resume" {
@@ -186,6 +191,10 @@ type watchState struct {
 	DispatchPressure struct {
 		EligibleWaiting int `json:"eligibleWaiting"`
 	} `json:"dispatchPressure"`
+	// DispatchPaused is the daemon-wide dispatch pause (#213), nil when none.
+	DispatchPaused *struct {
+		Reason string `json:"reason"`
+	} `json:"dispatchPaused"`
 }
 
 // renderWatch is the watch view of s at now, in plain text. Without live,
@@ -196,6 +205,13 @@ func renderWatch(s watchState, now time.Time, live bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "itervox · %d/%d agents · %d waiting for a slot · %d retrying · %d waiting for input · %d queued automations · %d paused\n",
 		len(s.Running), s.MaxConcurrentAgents, s.DispatchPressure.EligibleWaiting, len(s.Retrying), len(s.InputRequired), len(s.AutomationQueue), len(s.Paused))
+	if p := s.DispatchPaused; p != nil { // #213
+		b.WriteString("ALL DISPATCH PAUSED — running agents continue, nothing new starts")
+		if p.Reason != "" {
+			b.WriteString(": " + p.Reason)
+		}
+		b.WriteString(" (itervox resume)\n")
+	}
 	section := func(title string, n int) bool {
 		if n == 0 {
 			return false

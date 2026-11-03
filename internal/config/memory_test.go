@@ -42,6 +42,7 @@ func defaultLessons() config.LessonsConfig {
 	return config.LessonsConfig{
 		Enabled: true, Scope: "private", MaxPerIssue: 3, RateWindowHours: 24,
 		DraftTokenBudget: 6000, DraftTimeoutMs: 60000, StaleAfterRuns: 20,
+		EnforceThreshold: 3, RecipeMinFailedRuns: 2, RecipeMinTurns: 40,
 	}
 }
 
@@ -61,8 +62,17 @@ func TestMemoryLessonsConfigRoundTrip(t *testing.T) {
 			"    max_per_issue: 5\n    rate_window_hours: 2\n    draft_token_budget: 900\n    draft_timeout_ms: 5000\n    stale_after_runs: 7\n",
 			func(l *config.LessonsConfig) {
 				*l = config.LessonsConfig{Enabled: false, Profile: "template", Scope: "project", AutoApprovePrivate: true, AutoApproveProject: true,
-					MaxPerIssue: 5, RateWindowHours: 2, DraftTokenBudget: 900, DraftTimeoutMs: 5000, StaleAfterRuns: 7}
+					MaxPerIssue: 5, RateWindowHours: 2, DraftTokenBudget: 900, DraftTimeoutMs: 5000, StaleAfterRuns: 7,
+					EnforceThreshold: 3, RecipeMinFailedRuns: 2, RecipeMinTurns: 40}
 			}},
+		// #217: the enforcement and recipe keys.
+		{"round 2 keys", "memory:\n  lessons:\n    enforce_threshold: 5\n    enforce_issue_state: Backlog\n" +
+			"    recipe_min_failed_runs: 3\n    recipe_min_turns: 25\n",
+			func(l *config.LessonsConfig) {
+				l.EnforceThreshold, l.EnforceIssueState, l.RecipeMinFailedRuns, l.RecipeMinTurns = 5, "Backlog", 3, 25
+			}},
+		{"round 2 bad values fall back", "memory:\n  lessons:\n    enforce_threshold: 0\n    recipe_min_turns: -1\n",
+			func(*config.LessonsConfig) {}},
 		{"per-scope auto_approve", "memory:\n  lessons:\n    auto_approve:\n      project: true\n",
 			func(l *config.LessonsConfig) { l.AutoApproveProject = true }},
 		{"bad values fall back", "memory:\n  lessons:\n    scope: team\n    max_per_issue: 0\n    draft_token_budget: -5\n",

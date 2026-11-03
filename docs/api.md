@@ -80,6 +80,208 @@ requires it as the bearer token exactly as it would a pinned
   and an error that does not quote the value. `openssl rand -hex 32` is a
   good source.
 
+### Token scopes (#214)
+
+Every authenticated route requires a **scope**. Scopes are ordered — each
+includes everything below it:
+
+| Scope | Allows |
+|---|---|
+| `viewer` | `GET` routes and the SSE streams only. Secret values are redacted: profile and agent commands have inline env-assignment values, URL credentials and known key shapes masked (`snapshot.profileDefs`, `GET /settings/profiles`), and `GET /settings/layers` withholds each layer's raw file text (`raw: ""`, `redacted: true`). |
+| `operator` | adds dispatch and issue control (cancel, resume, terminate, state, profile/backend overrides), steering messages, input replies, approvals, `POST /dispatch/pause` and `/resume`, memory edits, log clearing, outbox retries. Redaction as for viewer. |
+| `admin` | adds settings, token management, tmux control (start, keys, kill), workspace deletion, the automations configuration and the rules editor. Sees secrets as written. |
+
+Where a token comes from decides its scope:
+
+- The **bootstrap token** — `ITERVOX_API_TOKEN`, the auto-generated
+  ephemeral token, or `ITERVOX_SUPERVISOR_TOKEN` (the Mac app) — is always
+  `admin`. Nothing about it changed.
+- **Stored tokens** live in `.itervox/tokens.json` next to `WORKFLOW.md`
+  (gitignored, mode 0600) as SHA-256 hashes only, each with an `id`,
+  `name`, `scope`, `created`, `lastUsed` and optional `expires`. Their
+  secrets start with `itx_`. Manage them with `itervox token
+  create|list|revoke|rotate` (works with or without a running daemon) or
+  Settings → Access. A running daemon notices a change made by the CLI
+  within one second (it checks the file's identity and mtime at most every
+  200 ms) and one made through the API at once — no restart. Expired tokens
+  are refused. An unreadable or invalid `tokens.json` makes the daemon
+  refuse every stored token (the bootstrap token keeps working) and is never
+  overwritten.
+- With `server.allow_unauthenticated: true` (and no supervisor token) every
+  caller is `admin`, as before; stored tokens are not consulted and the
+  token-management routes answer `503 tokens_unavailable`. The startup
+  warning says so.
+
+A request below the route's scope gets `403` with the scope it needed in
+both the body and the `X-Itervox-Required-Scope` header:
+
+```json
+{"error":{"code":"insufficient_scope","message":"this action needs the admin scope; your token has operator","required_scope":"admin","scope":"operator"}}
+```
+
+The route table below is the one declaration the middleware enforces
+(`internal/server/route_scopes.go`); a route missing from it is refused
+(`403 route_scope_undeclared`), and `TestEveryRouteDeclaresAScope` walks the
+router so a new route without a declaration fails CI. Every token create,
+revoke and rotate is logged (`apitokens: token created|revoked|rotated`,
+with id, name, scope and actor — never the secret).
+
+#### `GET /api/v1/whoami` (viewer)
+
+The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…","name":"ci"}`.
+`source` is `bootstrap`, `token` or `unauthenticated`. `GET /state` and every
+`/events` frame also carry it as `callerScope`.
+
+#### Token management (admin)
+
+| Route | Body / answer |
+|---|---|
+| `GET /api/v1/tokens` | `{"tokens":[{"id","name","scope","created","lastUsed?","expires?","expired?"}]}` — never a hash or secret |
+| `POST /api/v1/tokens` | body `{"name":"ci","scope":"viewer","expires":"90d"}` (`expires`: empty for never, `90d`, `12h`, `2027-01-31` or RFC 3339) → `201 {"token":{…},"secret":"itx_…"}`, `Cache-Control: no-store`. The secret is shown once. |
+| `DELETE /api/v1/tokens/{id}` | `{"revoked":{…}}`; `404` for an unknown id |
+| `POST /api/v1/tokens/{id}/rotate` | `{"token":{…},"secret":"itx_…"}` — same id, name, scope and expiry; the old secret stops working at once |
+
+#### Route scopes
+
+| Method | Route | Scope |
+|---|---|---|
+| `GET` | `/api/v1/deps/analyze/{jobId}` | viewer |
+| `GET` | `/api/v1/events` | viewer |
+| `GET` | `/api/v1/feed` | viewer |
+| `GET` | `/api/v1/history` | viewer |
+| `GET` | `/api/v1/history/prompt-versions` | viewer |
+| `GET` | `/api/v1/issues` | viewer |
+| `GET` | `/api/v1/issues/{identifier}` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
+| `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
+| `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/logs` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/sublog-stream` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/sublogs` | viewer |
+| `GET` | `/api/v1/logs` | viewer |
+| `GET` | `/api/v1/logs/identifiers` | viewer |
+| `GET` | `/api/v1/memory` | viewer |
+| `GET` | `/api/v1/memory/recall` | viewer |
+| `GET` | `/api/v1/playbooks` | viewer (#218) |
+| `GET` | `/api/v1/projects` | viewer |
+| `GET` | `/api/v1/projects/filter` | viewer |
+| `GET` | `/api/v1/repo/evals` | viewer |
+| `GET` | `/api/v1/repo/hotspots` | viewer |
+| `GET` | `/api/v1/repo/readiness` | viewer |
+| `GET` | `/api/v1/rules` | viewer |
+| `GET` | `/api/v1/rules/preview` | viewer |
+| `GET` | `/api/v1/sessions` | viewer |
+| `GET` | `/api/v1/sessions/{id}/transcript` | viewer |
+| `GET` | `/api/v1/settings/layers` | viewer (raw files and secrets redacted below admin) |
+| `GET` | `/api/v1/settings/models` | viewer |
+| `GET` | `/api/v1/settings/profiles` | viewer (commands redacted below admin) |
+| `GET` | `/api/v1/settings/reviewer` | viewer |
+| `GET` | `/api/v1/settings/schema` | viewer |
+| `GET` | `/api/v1/skills/analytics` | viewer |
+| `GET` | `/api/v1/skills/analytics/recommendations` | viewer |
+| `GET` | `/api/v1/skills/inventory` | viewer |
+| `GET` | `/api/v1/skills/issues` | viewer |
+| `GET` | `/api/v1/skills/profile-backends` | viewer (Operator: run the fleet.) |
+| `GET` | `/api/v1/state` | viewer |
+| `GET` | `/api/v1/steering/phrases` | viewer (#218) |
+| `GET` | `/api/v1/summary` | viewer |
+| `GET` | `/api/v1/tracker/labels` | viewer |
+| `GET` | `/api/v1/tracker/scope` | viewer |
+| `GET` | `/api/v1/tracker/teams` | viewer |
+| `GET` | `/api/v1/tracker/users` | viewer |
+| `GET` | `/api/v1/whoami` | viewer |
+| `GET` | `/metrics` | viewer |
+| `POST` | `/api/v1/backend-health/clear` | operator |
+| `POST` | `/api/v1/client-errors` | operator |
+| `POST` | `/api/v1/deps/analyze` | operator |
+| `DELETE` | `/api/v1/deps/analyze/{jobId}` | operator |
+| `POST` | `/api/v1/dispatch/pause` | operator |
+| `POST` | `/api/v1/dispatch/resume` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}` | operator |
+| `POST` | `/api/v1/issues/{identifier}/ai-review` | operator |
+| `POST` | `/api/v1/issues/{identifier}/backend` | operator |
+| `POST` | `/api/v1/issues/{identifier}/cancel` | operator |
+| `POST` | `/api/v1/issues/{identifier}/comment` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/deps-override` | operator |
+| `POST` | `/api/v1/issues/{identifier}/deps-override` | operator |
+| `POST` | `/api/v1/issues/{identifier}/dismiss-input` | operator |
+| `POST` | `/api/v1/issues/{identifier}/failures/ack` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/logs` | operator |
+| `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
+| `POST` | `/api/v1/issues/{identifier}/profile` | operator |
+| `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
+| `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
+| `POST` | `/api/v1/issues/{identifier}/resume` | operator |
+| `PATCH` | `/api/v1/issues/{identifier}/state` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/sublogs` | operator |
+| `DELETE` | `/api/v1/issues/{identifier}/sublogs/{sessionId}` | operator |
+| `POST` | `/api/v1/issues/{identifier}/terminate` | operator |
+| `DELETE` | `/api/v1/logs` | operator |
+| `POST` | `/api/v1/memory` | operator |
+| `DELETE` | `/api/v1/memory/{id}` | operator |
+| `PUT` | `/api/v1/memory/{id}` | operator |
+| `POST` | `/api/v1/memory/{id}/approve` | operator |
+| `POST` | `/api/v1/memory/{id}/pin` | operator |
+| `POST` | `/api/v1/memory/{id}/promote` | operator |
+| `POST` | `/api/v1/memory/{id}/reject` | operator |
+| `POST` | `/api/v1/memory/{id}/enforcement/accept` | operator (creates an Enforce: issue, #217) |
+| `POST` | `/api/v1/memory/{id}/enforcement/dismiss` | operator |
+| `DELETE` | `/api/v1/outbox/{id}` | operator |
+| `POST` | `/api/v1/outbox/{id}/retry` | operator |
+| `POST` | `/api/v1/refresh` | operator |
+| `POST` | `/api/v1/repo/readiness/verify-skill-issue` | operator (creates a tracker issue, #218) |
+| `POST` | `/api/v1/sessions/{id}/message` | operator (steering) |
+| `GET` | `/api/v1/sessions/{id}/screen` | operator (a live terminal pane) |
+| `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/skills/scan` | operator |
+| `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/automations/{id}/test` | admin |
+| `PUT` | `/api/v1/projects/filter` | admin |
+| `POST` | `/api/v1/memory/{id}/promote-to-rule` | admin (writes a rules layer, #217) |
+| `PUT` | `/api/v1/rules/{layer}` | admin |
+| `POST` | `/api/v1/sessions` | admin (starts a tmux session) |
+| `DELETE` | `/api/v1/sessions/{id}` | admin |
+| `POST` | `/api/v1/sessions/{id}/keys` | admin |
+| `PUT` | `/api/v1/settings/agent/max-retries` | admin |
+| `PUT` | `/api/v1/settings/agent/max-switches-per-issue-per-window` | admin |
+| `PUT` | `/api/v1/settings/agent/switch-window-hours` | admin |
+| `PUT` | `/api/v1/settings/automations` | admin |
+| `POST` | `/api/v1/settings/deps-analysis-mode` | admin |
+| `PUT` | `/api/v1/settings/dispatch-strategy` | admin |
+| `POST` | `/api/v1/settings/inline-input` | admin |
+| `PUT` | `/api/v1/settings/layers/{layer}` | admin |
+| `POST` | `/api/v1/settings/models/refresh` | admin |
+| `DELETE` | `/api/v1/settings/profiles/{name}` | admin |
+| `PUT` | `/api/v1/settings/profiles/{name}` | admin |
+| `PUT` | `/api/v1/settings/reviewer` | admin |
+| `POST` | `/api/v1/settings/ssh-hosts` | admin |
+| `DELETE` | `/api/v1/settings/ssh-hosts/{host}` | admin |
+| `PUT` | `/api/v1/settings/tracker/failed-state` | admin |
+| `PUT` | `/api/v1/settings/tracker/states` | admin |
+| `POST` | `/api/v1/settings/workers` | admin |
+| `POST` | `/api/v1/settings/workspace/auto-clear` | admin |
+| `POST` | `/api/v1/skills/fix` | admin (writes skill files) |
+| `GET` | `/api/v1/tokens` | admin |
+| `POST` | `/api/v1/tokens` | admin |
+| `DELETE` | `/api/v1/tokens/{id}` | admin |
+| `POST` | `/api/v1/tokens/{id}/rotate` | admin |
+| `PUT` | `/api/v1/tracker/scope` | admin |
+| `DELETE` | `/api/v1/workspaces` | admin |
+| `*` | `/*` | none (public) (the embedded SPA shell and its assets) |
+| `GET` | `/api/v1/health` | none (public) |
+| `GET` | `/api/v1/ready` | none (public) |
+| `POST` | `/api/v1/webhooks/{tracker}` | none (public) |
+| `POST` | `/api/v1/agent-actions/{identifier}/comment` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/comment_pr` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/create-issue` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/guardrail/approvals` | per-run agent grant |
+| `GET` | `/api/v1/agent-actions/{identifier}/guardrail/approvals/{id}` | per-run agent grant (Viewer: reads and streams.) |
+| `POST` | `/api/v1/agent-actions/{identifier}/guardrail/events` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/merge_pr` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/move-state` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/provide-input` | per-run agent grant |
+
 ### Agent-action bearer auth
 
 The daemon-backed agent-action routes use a **separate** bearer token model.
@@ -310,6 +512,11 @@ Full `StateSnapshot` SSE stream.
   client of one change receives the same encoded snapshot.
 - Named keepalive event `event: keepalive` with `data: {}` after 25 seconds
   of stream inactivity.
+- Named event `event: feed` with `data: {"seq":N}` (#213) on connect and
+  after every snapshot whose `feedSeq` is new: the newest
+  [event feed](#event-feed) seq. A client that keeps a cursor reads
+  `GET /api/v1/feed?since=<cursor>` when it moves. It rides the same
+  coalesced delivery as the snapshot.
 
 ### `GET /issues/{identifier}/log-stream`
 
@@ -457,7 +664,11 @@ Useful top-level fields include:
   identifier: the operator's acknowledgements of worker failures (see
   `POST /issues/{identifier}/failures/ack`). Omitted when empty.
 - `capabilities` — optional daemon features the dashboard may use; currently
-  `["failure_ack"]`. Treat unknown entries as opaque.
+  `["failure_ack", "dispatch_pause"]`. Treat unknown entries as opaque.
+- `dispatchPaused` (#213) — `null` while dispatch runs; while all dispatch is
+  paused, `{ "reason"?, "until"?, "pausedAt" }` (see
+  [Dispatch pause](#dispatch-pause)).
+- `feedSeq` (#213) — the newest [event feed](#event-feed) seq.
 - `totals` (CORE-091) — daemon-session cumulative, reset on restart:
   `{ "inputTokens", "outputTokens", "costUsdEstimated", "costCoverage":
   { "claudeRuns", "codexRuns" } }`. `costUsdEstimated` is the sum of Claude's
@@ -512,7 +723,9 @@ token like `/state`, and built from the same snapshot.
     "pendingInputResume": 0,
     "recentFailures": 3
   },
-  "paused": false,
+  "paused": true,
+  "pauseReason": "deploy freeze",
+  "pausedUntil": "2026-10-22T12:00:00Z",
   "generatedAt": "2026-10-22T10:00:00Z"
 }
 ```
@@ -521,8 +734,10 @@ token like `/state`, and built from the same snapshot.
   `GET /state` (`paused` counts paused issues); `counts.inputRequired` and
   `counts.pendingInputResume` split `inputRequired[]` by `state`;
   `counts.recentFailures` is the length of `recentFailures[]`.
-- `paused` is a daemon-wide dispatch pause; it is `false` until the daemon
-  can be paused (#213).
+- `paused` is the daemon-wide [dispatch pause](#dispatch-pause) (#213):
+  `true` while nothing new starts. `pauseReason` and `pausedUntil` describe
+  it and are omitted when unset; the pause, its reason and its until are
+  part of the ETag digest.
 - `version` is the daemon's build version (`dev` for a local build).
 - The `ETag` header is `"<etag>"`. The tag is a digest of every field except
   `generatedAt`, plus each input-required entry (identifier, session, state,
@@ -536,6 +751,106 @@ header and no body. The Mac app reads `GET /state` only after a `200` from
 this endpoint, or every time from a daemon older than it (`404`).
 
 ---
+
+## Event feed
+
+### `GET /api/v1/feed`
+
+A bounded, append-only feed of notable events with a cursor (#213), for a
+client that was away — a closed Mac app window, a phone, a relay — to find
+out what happened. The path is `/feed` so it does not clash with the
+`/events` SSE stream; a document that says `/api/v1/events?since=` means this
+endpoint.
+
+**Query:** `since` (default `0`): return the events after this seq.
+`limit` (1–1000, default 200). Anything else is `400`.
+
+**Response** `200` (`Cache-Control: no-store`):
+
+```json
+{
+  "events": [
+    {"seq": 41, "ts": "2026-10-22T10:00:00Z", "kind": "run_started", "identifier": "ENG-12",
+     "payload": {"runId": "r-8f2c", "runKind": "worker", "profile": "coder", "backend": "claude"}},
+    {"seq": 42, "ts": "2026-10-22T10:07:13Z", "kind": "run_finished", "identifier": "ENG-12",
+     "payload": {"runId": "r-8f2c", "runKind": "worker", "profile": "coder", "backend": "claude", "outcome": "succeeded"}},
+    {"seq": 43, "ts": "2026-10-22T10:07:14Z", "kind": "pr_opened", "identifier": "ENG-12",
+     "payload": {"prUrl": "https://github.com/acme/web/pull/88", "runId": "r-8f2c"}}
+  ],
+  "nextSeq": 43,
+  "headSeq": 43,
+  "oldestSeq": 1,
+  "truncated": false,
+  "hasMore": false
+}
+```
+
+- `seq` increases by one per event and never repeats, also across restarts.
+  Only the daemon's event loop assigns it.
+- `nextSeq` is the cursor for the next read: the last event returned, or
+  your `since` when nothing was newer. `hasMore` means `limit` cut the page.
+- `truncated: true` means events after your cursor have left the window
+  (or your cursor is ahead of `headSeq`, e.g. the feed file was removed):
+  resynchronize from `GET /state`, then continue from `headSeq`.
+- The window is the newest 5000 events, none older than 7 days. It persists
+  to `feed.jsonl` in the daemon log directory, so a restart keeps it.
+
+| `kind` | When | Payload |
+|---|---|---|
+| `run_started` | A worker, reviewer or automation run starts | `runId`, `runKind`, `profile`, `backend` |
+| `run_finished` | A run succeeded, was cancelled (`outcome: "cancelled"`) or stopped by reconciliation | run fields, `outcome` |
+| `run_failed` | A run failed, stalled, was rate limited, … | run fields, `outcome` (the terminal reason) |
+| `input_required` | An agent asked a question, or a guardrail approval waits (`kind: "guardrail_approval"`) | run fields |
+| `input_answered` | A question was answered (`via`: `dashboard`, `tracker`, `agent`) or dismissed (`via: "dismiss"`) | `via`, `outcome` |
+| `review_verdict` | A reviewer finished | `profile`, `verdict`, `outcome` (`passed` / `blocked`, once the review is complete) |
+| `pr_opened` | A run recorded a PR itervox did not manage yet | `prUrl`, `runId` |
+| `pr_merged` | The `merge_pr` action merged a PR | `prUrl` |
+| `guardrail_blocked` | A shim or hook refused an operation, or an approval was rejected | `kind`, `via` |
+| `guardrail_approved` | A guardrail approval was granted | `via` |
+| `lesson_proposed` | A lesson was proposed (or auto-approved) | `outcome`, `memoryId` |
+| `dispatch_paused` | All dispatch was paused | `reason`, `until` |
+| `dispatch_resumed` | Dispatch resumed (`via`: `operator` or `expired`) | `via` |
+
+Payloads are small and structured. They never contain agent output, prompt
+text, a question or reply, failure text or a guardrail command line; the
+pause reason is redacted before it is stored.
+
+---
+
+## Dispatch pause
+
+### `POST /api/v1/dispatch/pause`
+
+Pauses ALL dispatch (#213). Running agents continue; nothing new starts:
+tick dispatch, retries, reviewers, automations and pending-input resumes
+are held — never dropped — until the pause ends. Retries stay due without
+spending an attempt, reviews wait as pending reviews, automations queue
+with reason `dispatch_paused`, answered questions wait to resume. Idle
+issues show the ineligible reason `dispatch_paused`.
+
+**Body** (optional): `{"reason": "deploy freeze", "until": "2026-10-22T12:00:00Z"}`.
+`reason` is at most 500 bytes; `until` is RFC 3339 and must be in the
+future (`400` otherwise). Without `until` the pause lasts until resumed. A
+second pause while paused updates the reason and until.
+
+**Response** `200`: the pause the event loop applied —
+`{"dispatchPaused": {"reason": "deploy freeze", "until": "2026-10-22T12:00:00Z", "pausedAt": "2026-10-22T10:00:00Z"}}`.
+`503` when the event loop did not answer.
+
+The pause persists to `dispatch_paused.json` in the daemon log directory,
+so a restart or a `WORKFLOW.md` reload stays paused; a pause whose `until`
+passed while the daemon was down ends on its first tick. `GET /state`
+shows it as `dispatchPaused` (`null` while dispatch runs) and advertises
+the `dispatch_pause` capability.
+
+### `POST /api/v1/dispatch/resume`
+
+Ends the pause (a no-op when none is active). **Response** `200`:
+`{"dispatchPaused": null}`. Held automations start at once, and the next
+tick dispatches the rest as slots allow.
+
+---
+
 
 ## Run history
 
@@ -626,7 +941,7 @@ is reported as `fail` when it does not answer in time.
   "generatedAt": "2026-10-21T10:00:00Z",
   "checks": [
     { "id": "schema_version", "title": "WORKFLOW.md schema 2 marker", "status": "pass", "detail": "itervox_schema_version: 2" },
-    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable", "status": "warn",
+    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff, .itervox/playbooks and .itervox/memory.json committable", "status": "warn",
       "detail": "the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/** …",
       "fix": "run `itervox init --update --workflow /srv/app/WORKFLOW.md` (adds the carve-outs), or add the lines yourself" }
   ]
@@ -639,8 +954,9 @@ anything that is not a pass. Check IDs, in order:
 | ID | Checks | Not a pass when |
 |---|---|---|
 | `schema_version` | `itervox_schema_version: 2` in WORKFLOW.md, and the workflow loads | `fail`: missing, older or unloadable |
-| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**` and `.itervox/handoff/**` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**` |
+| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**`, `.itervox/handoff/**`, `.itervox/playbooks/**` and `.itervox/memory.json` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**`, `!.itervox/playbooks/`, `!.itervox/playbooks/**`, `!.itervox/memory.json` |
 | `instruction_docs` | `CLAUDE.md` (Claude profiles) and `AGENTS.md` (Codex profiles) at the repository root | `warn`: a backend in use has no instruction file |
+| `verify_skill` | a project verification skill or script (#218): `.claude/skills/<…verif…>/SKILL.md`, `scripts/verify*`, a `verify` Makefile target or a `verify` script in `package.json` | `warn`: none of them; `POST /api/v1/repo/readiness/verify-skill-issue` creates an issue to write one |
 | `bare_fetch_refspec` | the shared bare clone's fetch (#195) | `fail`: the last fetch failed; `warn`: still on the pre-#195 refspec, or stale |
 | `profile_refs` | skill and subagent references in profile SOUL.md / INSTRUCTIONS.md (#86) | `warn`: a reference does not resolve |
 | `tracker_reachable` | one read of the tracker API (Linear `{ viewer }`, GitHub repository access) | `fail`: the read failed or timed out; `warn`: GitHub token without push access |
@@ -823,6 +1139,121 @@ apply).
 | `GET` | `/issues` | `TrackerIssue[]` |
 | `GET` | `/issues/{identifier}` | `TrackerIssue` |
 
+### Run context and changes (#215)
+
+What an issue's agent is doing right now, and what it has changed. Both
+routes are `viewer` reads; a file's hunks need `operator` (see below).
+The daemon advertises them with `"run_context"` in `capabilities` on the
+snapshot.
+
+#### `GET /issues/{identifier}/context`
+
+The context of the issue's running run (`live: true`), or of its most
+recent finished run while the daemon still keeps it (the 32 newest finished
+runs, this session only), plus the worktree's changed files and handoffs.
+
+```json
+{
+  "identifier": "ENG-12",
+  "run": {
+    "runId": "r-8f2c", "live": true, "kind": "worker", "profile": "coder", "backend": "claude",
+    "startedAt": "2026-10-22T10:00:00Z", "updatedAt": "2026-10-22T10:04:31Z", "baseBranch": "main",
+    "currentStep": "Wiring the diff endpoint into the router.",
+    "lastToolCall": {"name": "Edit", "target": "internal/server/server.go", "at": "2026-10-22T10:04:31Z"},
+    "toolCalls": 41, "turnCount": 2, "inputTokens": 120400, "outputTokens": 8200, "totalTokens": 128600,
+    "pendingInput": "", "queuedSteers": 0,
+    "steers": [{"text": "use gitexec", "at": "2026-10-22T10:02:00Z", "delivery": "live"}],
+    "guardrailBlocks": 1, "lastGuardrailKind": "push_protected"
+  },
+  "changedFiles": [{"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0}],
+  "handoffs": [{"title": "Plan the endpoints", "path": ".itervox/handoff/2026-10-22T09-58-00Z_planner.md"}]
+}
+```
+
+- `currentStep` is the run's last assistant message, redacted (the log
+  redaction: known key shapes, bearer tokens, `NAME_TOKEN=…` assignments,
+  URL credentials), whitespace-collapsed and cut to 500 bytes.
+- `lastToolCall` is the latest tool call — started or finished — by name
+  and target (a file path, a command, a pattern, a URL), redacted and cut to
+  300 bytes. **Tool output is never included**: the target is computed from
+  the call's input with every output-bearing field (`output`, `stdout`,
+  `stderr`, `result`, `content`, …) removed, and tool results are not read.
+  `toolCalls` counts finished calls.
+- `turnCount` and the token counts are the run's so far; `pendingInput` is
+  the question the issue waits on (`pendingApproval: true` for a guardrail
+  approval); `steers` are the newest delivered steering messages and
+  `queuedSteers` those not yet delivered; `guardrailBlocks` counts the
+  operations a guardrail refused in this run.
+- `changedFiles` is the file list of the diff below (omitted with
+  `changedFilesError` — `no_worktree`, `base_not_found`, `diff_timeout`,
+  `diff_failed` — when it cannot be computed); `handoffs` lists the
+  `.itervox/handoff/` files, oldest first, titled by their first heading.
+- `run` is `null` when the issue has a worktree but no kept run. `404
+  no_run_context` when it has neither.
+
+The run context is updated by each worker at most once a second (plus once
+at the end of every turn) through the event loop, and is not part of the
+`/state` snapshot or the SSE frames: read it here.
+
+#### `GET /issues/{identifier}/diff`
+
+The worktree against the **merge base** of its `HEAD` with the base branch:
+committed changes, uncommitted edits and untracked files. Works while the
+issue runs and after it finished, as long as its worktree exists.
+
+**Query:** `base` (optional): the branch to diff against (`main`,
+`origin/develop`); a name only — no options, ranges or revision
+expressions (`400 invalid_base`). Default: the run's pull-request base (the
+blocker branch of a stacked worktree),
+then `workspace.base_branch`, `agent.base_branch`, `origin/HEAD`,
+`origin/main` and `main`, each tried as `origin/<name>` first. `file`
+(optional): return that file's hunks instead of the list.
+
+Without `file`:
+
+```json
+{
+  "identifier": "ENG-12", "base": "origin/main", "mergeBase": "3f9c2e1d…",
+  "files": [
+    {"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0},
+    {"path": "web/public/logo.png", "status": "modified", "additions": 0, "deletions": 0, "binary": true}
+  ],
+  "truncated": false,
+  "hunksAllowed": true
+}
+```
+
+`status` is `added`, `modified`, `deleted`, `typechange`, `unmerged` or
+`untracked`; renames show as a deletion and an addition. At most 2000 files
+(`truncated: true` beyond). `hunksAllowed` tells the client whether its
+token may ask for `?file=`.
+
+With `file=<path>` (**operator**; a viewer gets `403 insufficient_scope`):
+
+```json
+{
+  "identifier": "ENG-12", "base": "origin/main",
+  "file": {"path": "internal/server/changes.go", "status": "added", "additions": 120, "deletions": 0},
+  "patch": "diff --git a/internal/server/changes.go b/internal/server/changes.go\n…",
+  "truncated": false, "bytes": 4810, "maxBytes": 262144
+}
+```
+
+- `file` must be one of the listed paths (`404 file_not_changed`
+  otherwise); no other path reaches git.
+- The unified diff is cut at 256 KiB on a line boundary (`truncated: true`,
+  `bytes` is the full size). A binary file has `binary: true` and an empty
+  `patch`.
+- Below `admin` the patch passes through the log redaction (whitespace and
+  lines are kept); an admin sees it as written. An agent can commit a
+  secret, which is why hunks are not a viewer read.
+
+Errors: `404 no_worktree` (never dispatched, or the worktree was cleared),
+`404 base_not_found`, `400 invalid_base`, `504 diff_timeout`, `503
+not_supported` (a daemon built without the endpoint). Every git call runs
+through `internal/gitexec` on the request's goroutine — never on the
+orchestrator's event loop — under a 15-second timeout.
+
 ### Lifecycle and control
 
 | Method | Path | Request body | Success response | Notes |
@@ -858,13 +1289,73 @@ bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
 
+### Playbooks, decisions and steering (#218)
+
+Fetched on demand; none of these are on the `/state` snapshot or the SSE
+frames. See the [Playbooks guide](/guides/playbooks/).
+
+#### `GET /api/v1/playbooks`
+
+The playbooks in `agent.playbooks.dir` (viewer):
+
+```json
+{"enabled": true, "playbooks": [
+  {"name": "bug-fix", "description": "Reproduce first, fix the root cause, prove the fix with a test.",
+   "keywords": ["bug", "crash"], "requireEvidence": ["test"]}
+]}
+```
+
+#### `POST /api/v1/issues/{identifier}/playbook`
+
+Sets the issue's playbook (operator): `{"playbook":"bug-fix"}`, `{"playbook":"none"}`
+(no playbook), or `{"playbook":""}` (automatic: label, then keyword
+classifier). `202 {"identifier":"ENG-1","playbook":"bug-fix"}`; `400
+unknown_playbook` for a name not on disk; `503` when the event queue is full.
+The choice is event-loop state, kept across restarts in
+`.itervox/playbook_overrides.json`, and applies from the issue's next run.
+`GET /api/v1/issues` and `GET /api/v1/issues/{identifier}` report it as
+`playbookOverride`, with `playbook` and `playbookSource` (`override`,
+`label`, `keyword`) naming the playbook the next (or current) run gets.
+
+#### `GET /api/v1/issues/{identifier}/decisions`
+
+Every run's decision log (`.itervox/handoff/<timestamp>_<profile>.decisions.tsv`
+in the issue's worktree), oldest run first (viewer). Fields are redacted and
+cut to 500 bytes; at most 200 rows per run and 50 runs; a file over 64 KiB is
+read up to that and flagged `truncated`; `skipped` counts lines without a
+decision.
+
+```json
+{"identifier": "ENG-1", "runs": [
+  {"path": ".itervox/handoff/2026-05-02T10-00-00.000Z_implementer.decisions.tsv",
+   "runTimestamp": "2026-05-02T10-00-00.000Z", "role": "implementer",
+   "decisions": [{"time": "2026-05-02T10:01:00Z", "at": "2026-05-02T10:01:00Z",
+     "decision": "Diff against the merge base", "why": "main moves on", "alternative": "main's tip"}]}
+]}
+```
+
+#### `GET /api/v1/steering/phrases`
+
+The steering chips (`sessions.steering_phrases`, viewer):
+`{"phrases":[{"label":"Prove it works","message":"Prove it works: …"}]}`.
+A chip is sent like any message, with `POST /api/v1/sessions/{id}/message`.
+
+#### `POST /api/v1/repo/readiness/verify-skill-issue`
+
+**Generate verify skill** (operator): creates a tracker issue asking an agent
+to write the project's verification skill, through `tracker.CreateIssue` in
+the enforcement issue state (as an accepted enforcement suggestion, #217).
+`201 {"identifier":"ENG-42","url":"…"}`; `502 issue_create_failed` (redacted
+message) when the tracker refuses.
+
 ### Per-issue overrides and human-input flow
 
 | Method | Path | Request body | Success response |
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
+| `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
-| `POST` | `/issues/{identifier}/provide-input` | `{"message":"..."}` | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
 | `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
@@ -893,6 +1384,13 @@ when `agent.inline_input: true` — the tracker is the only reply channel in tha
 mode. The `409` is checked first: in inline mode the route refuses regardless
 of the request body or the issue's state. The agent-action `provide-input` route
 (`POST /agent-actions/{identifier}/provide-input`) is unaffected.
+
+`fromAgent: true` (#216) marks a reply relayed for an agent — `itervox mcp`
+sends it for its `reply_input` tool. Such a reply takes the agent-action path:
+it answers an ordinary input request but never a guardrail approval (the
+event loop ignores it for an approval entry, so the refusal holds even when
+an approval appears after the caller's check), and the feed records it with
+`via: "agent"`. Guardrail approvals stay human-only.
 
 Operator comments are plain comments (no managed marker): they can fire
 `tracker_comment_added` automations and are delivered through the write-ahead
@@ -1193,7 +1691,7 @@ items of 512 bytes) is refused.
 
 | Method | Path | Request body | Success response | Errors |
 |---|---|---|---|---|
-| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected"}}` | — |
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected","enforceThreshold"}}` | — |
 | `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
 | `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
 | `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
@@ -1201,20 +1699,37 @@ items of 512 bytes) is refused.
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
 | `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
 | `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
+| `POST` | `/memory/{id}/promote-to-rule` | `{"layer":"user"\|"project","severity"?:"must"\|"should","text"?}` (admin, #217; `severity` defaults to `should`, `text` to the lesson's) | `{"entry":Entry,"layer","path","rule":{"id":"lesson-<entry id>","severity","text","description","scope"?}}`; the lesson is now `archived` with `lesson.rule` pointing at the rule | `400 rules_invalid` (bad severity, empty text, or the layer file does not parse), `404 memory_not_found`, `404 unknown_layer` (not `user` or `project`, or the layer is off), `409 memory_conflict` (not an approved lesson, or a different rule already has that id), `409 rules_stale` |
+| `POST` | `/memory/{id}/enforcement/accept` | — | `{"entry":Entry,"issue":{"identifier","title","url"?}}`: the `Enforce: <lesson>` issue created in the tracker (in `memory.lessons.enforce_issue_state`), carrying the suggestion's draft and the lesson's evidence; `lesson.enforcement.status` is now `accepted` (#217) | `404 memory_not_found`, `409 memory_conflict` (no pending suggestion), `502 enforcement_issue_failed` (the tracker refused) |
+| `POST` | `/memory/{id}/enforcement/dismiss` | — | the entry, `lesson.enforcement.status: "dismissed"` (never suggested again for it) | `404 memory_not_found`, `409 memory_conflict` (no pending suggestion) |
+| `GET` | `/memory/recall?q=&profile=&budget=` | — | `{"enabled","profile","budget","tokens","dropped","entries":[{"id","type","text","scope","tags"?,"pinned"?}],"overBudget"?,"unreadableFiles"?}` | `400 bad_request` (`q` missing or over 2000 bytes, `budget` outside 1–8000) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
 `source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?,
-`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?}`)
+`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?,"verification"?,"rule"?:{"layer","id","at"},"enforcement"?:{"kind":"lint"|"type"|"test"|"docs"|"rule","status":"suggested"|"accepted"|"dismissed","title"?,"draft","draftedBy"?,"suggestedAt","decidedAt"?,"issue"?,"issueUrl"?}}`)
 plus `path` (the file that holds it), `runs` (the newest runs in history whose prompt
 carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20) and, for an approved
 lesson that is not helping (#203), `notHelping`: `"unused"` (none of the last
-`memory.lessons.stale_after_runs` runs used it) or `"failing"` (most runs that used it failed)
-with `notHelpingReason`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
+`memory.lessons.stale_after_runs` runs used it), `"failing"` (most runs that used it failed)
+or `"enforced"` (its enforcement suggestion was accepted, #217) with `notHelpingReason`, and for every
+lesson `analytics`: `{"applied","runs","succeeded","failed"}` (how many runs had it in their prompt,
+and the runs in history that used it by outcome; #217). `lessons` also carries `enforceThreshold`.
+`lesson.trigger` is `input_reply`, `steering`, `failed_then_succeeded`, or since #217
+`reviewer_ask`, `reverted_pr` or `recipe`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
 approve and reject change the snapshot's `proposedLessons`, which is pushed at once. A promote's `diff`
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
 reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.
+
+`recall` (#216, viewer) is memory search for `itervox mcp`, ranked exactly like
+run-time retrieval: it runs the dispatch selection (`memory.Resolve`) for a run of
+`profile` (default `default`) on an issue titled `q` — the active entries in that
+profile's scope, pinned first, then by lexical overlap (ties: more used, more
+recently updated, id), added while they fit in `budget` tokens (default the
+run-time memory budget before rules, `min(token_budget, prompt_share_tokens)`).
+`dropped` counts the in-scope entries the budget left out; proposed and archived
+entries are never returned. Text is redacted again on the way out.
 
 ---
 

@@ -316,6 +316,12 @@ func main() {
 		case "secret":
 			runSecret(os.Args[2:])
 			return
+		case "token": // #214
+			runToken(os.Args[2:])
+			return
+		case "mcp": // #216
+			runMCP(os.Args[2:])
+			return
 		case "config":
 			runConfig(os.Args[2:])
 			return
@@ -805,12 +811,14 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	orch.RevertScan = lessonRevertScan(cfg, workflowPath)                 // #217: reverted-PR lessons
 	sessTmux := wireSessions(orch, cfg, workflowPath, demoSession != nil) // #178
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	// unified-dependency-graph Task 6 — operator deps-override dismissals live
 	// under the project's .itervox/ dir (not logDir) so they persist alongside
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
+	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -852,6 +860,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                       // #136
 		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                      // #173
 		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json")) // #177
+		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                              // #213
+		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))           // #213
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
@@ -922,7 +932,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				"host", cfg.Server.Host,
 				"hint", "set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated: true to opt out")
 		} else if cfg.Server.AllowUnauthenticatedLAN && os.Getenv("ITERVOX_API_TOKEN") == "" {
-			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access",
+			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access as admin; stored viewer/operator tokens (.itervox/tokens.json) are not consulted",
 				"host", cfg.Server.Host)
 		}
 		// When a token is set (user-provided OR auto-generated above), tell the
@@ -1070,7 +1080,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			snap := orch.Snapshot()
 			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
-			ti.Review = reviewRow(snap, issue.Identifier) // #135
+			ti.Review = reviewRow(snap, issue.Identifier)                // #135
+			app.ApplyPlaybook(&ti, *issue, snap, orch.PlaybookChooser()) // #218
 			return &ti, nil
 		}
 
@@ -1135,6 +1146,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			ProjectManager:   pm,
 			ScopeManager:     newScopeManager(tr, workflowPath, settingsGen), // #182
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
+			Tokens:           openTokenStore(ctx, workflowPath), // #214: viewer/operator/admin tokens
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
 			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157
@@ -1165,11 +1177,15 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Webhooks:          webhooks,        // #131: signed tracker deliveries
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
-			Sessions:      sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
-			RepoReadiness: repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
-			RepoEvals:     repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
-			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
-			Version:       version,                                       // #212: GET /api/v1/summary
+			Sessions:        sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			RepoReadiness:   repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
+			RepoEvals:       repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
+			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
+			Version:         version,                                       // #212: GET /api/v1/summary
+			Dispatch:        dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
+			Changes:         changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
+			Playbooks:       playbooksAdapter{orch: orch},                  // #218: playbooks, decision logs, verify-skill issue
+			SteeringPhrases: cfg.Sessions.SteeringPhrases,                  // #218
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

@@ -103,6 +103,17 @@ impl ProjectView {
         }
     }
 
+    /// Whether the daemon is running and its state was read (#213: only
+    /// those can be paused or resumed from the tray).
+    pub fn reachable(&self) -> bool {
+        self.running() && matches!(self.health, Health::Ok(_))
+    }
+
+    /// All dispatch is paused on this daemon (#213).
+    pub fn dispatch_paused(&self) -> bool {
+        matches!(&self.health, Health::Ok(s) if s.dispatch_paused)
+    }
+
     /// One-line status, e.g. "running · 2 agents · 1 needs input".
     pub fn status_line(&self) -> String {
         if let Some(op) = self.pending {
@@ -132,6 +143,9 @@ impl ProjectView {
                 }
                 if st.retrying > 0 {
                     parts.push(format!("{} retrying", st.retrying));
+                }
+                if st.dispatch_paused {
+                    parts.push("dispatch paused".to_string());
                 }
                 parts.join(" · ")
             }

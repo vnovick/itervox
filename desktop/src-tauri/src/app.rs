@@ -472,6 +472,8 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
             wake(shared);
         }
         MenuAction::OpenSessions => open_sessions(app, shared),
+        MenuAction::PauseAll => set_dispatch_all(app, shared, true),
+        MenuAction::ResumeAll => set_dispatch_all(app, shared, false),
         MenuAction::RefreshNow => {
             shared
                 .sweep
@@ -567,6 +569,42 @@ fn add_project(app: &AppHandle, shared: &Arc<Shared>) {
                 error_dialog(&app2, &format!("Could not save the project list: {e}"));
             }
             update_menu(&app2, &shared2);
+            wake(&shared2);
+        });
+}
+
+/// Pauses (or resumes) all dispatch on every running local daemon (#213),
+/// off the main thread; a failure shows in a dialog, and the next refresh
+/// shows the new state in the menu.
+fn set_dispatch_all(app: &AppHandle, shared: &Arc<Shared>, paused: bool) {
+    let jobs = {
+        let core = lock(&shared.core);
+        core.fetch_jobs(
+            core.last_records(),
+            shared.tokens.as_ref(),
+            &read_token_file,
+        )
+    };
+    let app2 = app.clone();
+    let shared2 = Arc::clone(shared);
+    let _ = std::thread::Builder::new()
+        .name("itervox-dispatch".into())
+        .spawn(move || {
+            let failed: Vec<String> = jobs
+                .iter()
+                .filter_map(|j| {
+                    client::set_dispatch_paused(&j.url, j.token.as_deref(), paused)
+                        .err()
+                        .map(|e| format!("{}: {e}", j.key))
+                })
+                .collect();
+            if !failed.is_empty() {
+                let verb = if paused { "pause" } else { "resume" };
+                error_dialog(
+                    &app2,
+                    &format!("Could not {verb} dispatch on:\n{}", failed.join("\n")),
+                );
+            }
             wake(&shared2);
         });
 }

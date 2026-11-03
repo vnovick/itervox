@@ -16,6 +16,12 @@ import (
 // TestStateCloneDeepCopiesAllReferenceFields. Same pattern as
 // cfg_mu_audit_test.go::AllowedMutableCfgFields.
 var cloneAllowlist = map[string]string{
+	// #213: the feed ring is append-only and trimmed only by re-slicing from
+	// the front (appendFeed / trimFeed), so the loop never writes an index a
+	// shared header can read; copying 5000 events on every storeSnap would
+	// undo #210. Evidence: grep -rnE 'Feed\[[^]]*\] *=|Feed = .*\[:0\]' internal/orchestrator → 0 hits;
+	// TestFeedCloneSharesNoWritableIndex.
+	"State.Feed": "append-only ring, trimmed by re-slicing only (never written through)",
 	// Cancel handles are process-local capabilities, not state: Clone
 	// clears them so a snapshot reader can never cancel a live worker.
 	"RunEntry.WorkerCancel": "cleared to nil by Clone (snapshot readers must not cancel workers)",

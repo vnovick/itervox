@@ -12,6 +12,7 @@ import {
   type MemoryScope,
 } from '../../types/schemas';
 import { fieldLabelCls, selectCls, textareaCls } from '../Settings/formStyles';
+import { EnforcementCard } from './EnforcementCard';
 import { LessonEvidence } from './LessonEvidence';
 import { SCOPE_INFO, byteLength } from './memoryModel';
 
@@ -65,6 +66,7 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
         {entry.source?.issue ? ` · from ${entry.source.issue}` : ''}
       </p>
       <LessonEvidence entry={entry} />
+      <EnforcementCard entry={entry} />
       <div className="mt-3 flex flex-wrap items-end gap-2">
         <div>
           <label className={fieldLabelCls} htmlFor={`${uid}-scope`}>
