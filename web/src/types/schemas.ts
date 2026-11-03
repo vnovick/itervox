@@ -142,6 +142,22 @@ export const RunningRowSchema = z.object({
   ruleIds: z.array(z.string()).optional(),
 });
 
+// #186 — per-component digests of a run's prompt version (hashes only).
+export const PromptPartsSchema = z.object({
+  soul: z.string().optional(),
+  instructions: z.string().optional(),
+  rules: z.string().optional(),
+  template: z.string().optional(),
+});
+
+// #186 — one operator message delivered to a run. Unknown delivery values
+// fall back to 'resume' (the path every backend supports).
+export const RunSteerSchema = z.object({
+  text: z.string(),
+  at: z.string(),
+  delivery: tolerantEnum('history.steers.delivery', ['live', 'resume'], 'resume'),
+});
+
 export const HistoryRowSchema = z.object({
   identifier: z.string(),
   title: z.string().optional(),
@@ -170,6 +186,16 @@ export const HistoryRowSchema = z.object({
   // #157 — the rule set the run used; absent when no rule applied.
   rulesHash: z.string().optional(),
   ruleIds: z.array(z.string()).optional(),
+  // #186 — run provenance; all absent on rows recorded before it existed.
+  profileName: z.string().optional(),
+  runId: z.string().optional(),
+  // Prompt version: 64-hex SHA-256 of SOUL.md + INSTRUCTIONS.md + rules +
+  // template. Opaque; the dashboard shows the first 12 characters.
+  promptDigest: z.string().optional(),
+  promptParts: PromptPartsSchema.optional(),
+  // Operator messages delivered to the run (redacted, bounded).
+  steers: z.array(RunSteerSchema).optional(),
+  steersDropped: z.number().optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -283,10 +309,29 @@ export const AutomationTriggerSchema = z.object({
   state: z.string().optional(),
 });
 
+// #198 — one group of a tracker filter: its conditions AND; the groups of a
+// filter OR. Keys are the WORKFLOW.md condition names (snake_case), the same
+// on the wire, so tracker.filter and automation filter groups read alike.
+export const FilterGroupSchema = z.object({
+  projects: z.array(z.string()).optional(),
+  teams: z.array(z.string()).optional(),
+  assignee: z.string().optional(),
+  labels_any: z.array(z.string()).optional(),
+  labels_all: z.array(z.string()).optional(),
+  labels_none: z.array(z.string()).optional(),
+  priority: z.array(z.number()).optional(),
+  states: z.array(z.string()).optional(),
+  cycle: z.string().optional(),
+  milestone: z.string().optional(),
+});
+export type FilterGroup = z.infer<typeof FilterGroupSchema>;
+
 export const AutomationFilterSchema = z.object({
   matchMode: tolerantEnum('automations.filter.matchMode', ['all', 'any'], 'all').optional(),
   states: z.array(z.string()).optional(),
   labelsAny: z.array(z.string()).optional(),
+  // #198 — tracker-filter groups (any group matching), kept on save.
+  groups: z.array(FilterGroupSchema).optional(),
   identifierRegex: z.string().optional(),
   limit: z.number().optional(),
   inputContextRegex: z.string().optional(),
@@ -675,6 +720,24 @@ export const SyncStatusRowSchema = z.object({
 });
 export type SyncStatusRow = z.infer<typeof SyncStatusRowSchema>;
 
+// TrackerPollRowSchema mirrors server.TrackerPollRow (#187): the off-loop
+// tracker poll — whether one is in flight and for how long, whether it (or
+// the last one) passed the slow threshold, and whether the tracker breaker
+// has the poll degraded after consecutive transport failures.
+export const TrackerPollRowSchema = z.object({
+  inFlight: z.boolean(),
+  startedAt: optionalTimeString,
+  runningForMs: optionalSafeInt,
+  lastFinishedAt: optionalTimeString,
+  lastDurationMs: syncCount,
+  slowAfterMs: syncCount,
+  slow: z.boolean(),
+  degraded: z.boolean(),
+  breakerOpenUntil: optionalTimeString,
+  consecutiveTransportFailures: optionalSafeInt,
+});
+export type TrackerPollRow = z.infer<typeof TrackerPollRowSchema>;
+
 // FailureRowSchema mirrors server.FailureRow (CORE-046): one entry of the
 // daemon's RecentFailures ring. kind is worker_failed | worker_stalled |
 // tracker_poll | tracker_write | persist | outbox | panic | client, kept as a
@@ -777,6 +840,10 @@ export const StateSnapshotSchema = z.object({
   scopeAssignee: z.string().optional(),
   scopeAssigneeName: z.string().optional(),
   scopeLabels: z.array(z.string()).optional(),
+  // #198 — the tracker filter conditions the tracker supports; present
+  // when the tracker reads through a filter (Settings shows the group
+  // builder).
+  filterConditions: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),
@@ -860,6 +927,9 @@ export const StateSnapshotSchema = z.object({
   // #117 — tracker sync status (pull lag, pending writes, last sync error).
   // Absent on daemons predating it; the LiveOps sync chip then hides.
   syncStatus: SyncStatusRowSchema.optional(),
+  // #187 — the off-loop tracker poll (in flight, slow, degraded). Absent on
+  // daemons predating it; the LiveOps tracker poll chip then hides.
+  trackerPoll: TrackerPollRowSchema.optional(),
   // CORE-046 — bounded ring of recent failures, oldest recorded first.
   // Always an array on a current daemon; absent on older daemons.
   recentFailures: z.array(FailureRowSchema).optional(),
@@ -1009,6 +1079,8 @@ export type SSHHostInfo = z.infer<typeof SSHHostInfoSchema>;
 export type CommentRow = z.infer<typeof CommentRowSchema>;
 export type RunningRow = z.infer<typeof RunningRowSchema>;
 export type HistoryRow = z.infer<typeof HistoryRowSchema>;
+export type RunSteer = z.infer<typeof RunSteerSchema>;
+export type PromptParts = z.infer<typeof PromptPartsSchema>;
 export type RetryRow = z.infer<typeof RetryRowSchema>;
 export type Counts = z.infer<typeof CountsSchema>;
 export type RateLimitInfo = z.infer<typeof RateLimitInfoSchema>;

@@ -48,6 +48,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `assignee` | string | no | `""` | Linear only (#182): only issues assigned to this user — `me` (the API key's user), a user id or an email. Alone it reads the user's issues across every project and team the key can read; with `project_slug`, the intersection. Resolved once per load (off the event loop) and cached. An issue that leaves the scope mid-run (reassigned, label removed, moved out of the project) finishes its run, gets no new one and shows "out of scope"; Itervox's writes never set an assignee. `itervox doctor` checks the user resolves and its issues are readable |
 | `team` | string | no | `""` | Linear only, with `assignee` (#182): only this team's issues, by key or id |
 | `labels` | []string | no | `[]` | Linear only (#182): only issues carrying ANY of these labels, ANDed with project and assignee. Projects, assignee and labels are switchable at runtime from Settings → Tracker Scope (persisted to these keys) |
+| `filter` | list of groups | no | none | Linear and GitHub (#198): groups of conditions (`projects`, `teams`, `assignee`, `labels_any`, `labels_all`, `labels_none`, `priority`, `states`, `cycle`, `milestone`); every condition in a group must match, any group matching reads the issue. Replaces `project_slug` (Linear) / `assignee` / `team` / `labels`, which are one implicit group otherwise; both set is a validation error. GitHub supports `assignee`, the label conditions, `states` and `milestone` (one issue search per group, one per label for several `labels_any`, unioned and de-duplicated); others are a validation error. `states` narrows `active_states` (the working state always stays in). Every read path uses the same filter; a change rebaselines automation polls. Edited from Settings → Tracker Scope (written as one flow-style line, the legacy keys commented out, no reload). `itervox doctor` validates it and prints the match count. Full reference: site configuration page, "Tracker filter" |
 | `endpoint` | string | no | Linear: `https://api.linear.app/graphql`; GitHub: provider default | Override the API endpoint |
 | `active_states` | []string | no | `["Todo","In Progress"]` | Issue states considered ready to work |
 | `terminal_states` | []string | no | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | States treated as permanently done |
@@ -66,7 +67,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds) |
+| `interval_ms` | int | `30000` | How often to poll the tracker for new issues (milliseconds). The poll runs off the event loop (#187): one at a time, under a deadline of 3× the interval (at least 30 s, at most 2 minutes); a tick that finds the previous poll still running skips its own and logs a warning once the poll is past the interval plus half an interval. After three polls in a row hit a tracker timeout, network error or 5xx, tracker reads pause for two intervals (30 s to 5 minutes) and the poll shows as degraded on the dashboard, `HEARTBEAT.md` and `/api/v1/ready`. |
 | `rate_limit_reserve_percent` | int | `10` | Share of the tracker's request budget held back for **writes**. When the remaining budget falls below it, Itervox stops spending requests on polling reads so state transitions, comments and the input-resume path can still land. Set `0` to disable shedding entirely. Separately, when the tracker actually rate-limits a request (Linear: HTTP 400 `RATELIMITED`; GitHub: 429/403), the published reset is recorded once for every caller, writes are admitted ahead of reads when it lifts (Linear requests are classified by GraphQL operation), calls fail fast when the reset is more than 60s away, and a recorded window is capped at 2 hours. |
 | `automation_interval_ms` | int | `15000` | How often the automation event poll (`tracker_comment_added`, `issue_entered_state`, `issue_moved_to_backlog`) lists issues (#155). While the tracker reports less than 20% of its request budget left, the interval doubles after each poll, up to 8×, and returns to it once the budget recovers. The poll fetches only the states its rules need: their `filter.states` and `trigger.state`, the active states, and the backlog states only for `issue_moved_to_backlog`; never terminal states unless a rule names one. |
 
@@ -332,6 +333,7 @@ continue draining until the queue falls below the low-water mark.
 | `filter.states` | []string | Issue-state filter. For cron automations, leave empty to use backlog and active states |
 | `filter.states_any` | []string | Alias for `filter.states`; recommended for `blockers_resolved` examples to make the source-state policy explicit |
 | `filter.labels_any` | []string | Match issues with at least one listed label |
+| `filter.groups` | list | The tracker-filter group syntax (#198): matches when any group matches (conditions ANDed inside a group); one more check combined by `match_mode`. `filter:` may also be the list of groups itself. `assignee: me` is not resolved in automations (use an id or login); `states` is plain membership |
 | `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42` |
 | `filter.limit` | int | Maximum issues to queue from one cron tick or event poll batch; on `cron` rules the selection rotates between ticks from a persisted per-rule cursor |
 | `filter.input_context_regex` | string | Only for `input_required`; matched against the blocked-agent question text |
@@ -522,6 +524,48 @@ changes nothing.
 | `worktree` | bool | `false` | Enable git-worktree mode: per-issue worktrees inside `root` instead of plain directories. Requires a git repo at `root` |
 | `clone_url` | string | `""` | Remote URL used to initialise the bare clone when `worktree: true` and `root` is empty |
 | `base_branch` | string | `"main"` | Branch worktrees are created from |
+
+**Open pull requests and shared branches.** A worker continues an open pull
+request linked from the issue (in its description or comments) only when the
+PR is the issue's own: its head branch is the issue's branch or names the
+identifier (`vlad/eng-12-fix` for `ENG-12`), or its title or body names the
+identifier on word boundaries (`Fixes ENG-12`, `Closes #12`) or links the
+tracker issue. A PR that is only linked — a blocker's, a related one — is
+ignored. Git checks a branch out in one worktree at a time: when the branch an
+issue needs is already checked out in another worktree (another issue's, or the
+repository's own checkout), the issue is not retried. It is held with the
+`branch_in_use` ineligible reason (the dashboard shows "Branch checked out
+elsewhere") and released on the first tick after that worktree is removed or
+switches branches. The hold is runtime state; after a restart the first
+dispatch finds the branch taken again and holds the issue without spending a
+retry. Itervox does not create a second branch from the PR branch instead: the
+agent's pushes would not reach the PR. Fetches into the shared clone are
+serialized, so parallel dispatches no longer fail with `cannot lock ref`.
+
+**The shared bare clone (`clone_url`).** With `worktree: true` and a
+`clone_url`, Itervox keeps one bare clone at `<root>/.bare` and adds each
+issue's worktree under `<root>/worktrees/<identifier>`. The clone fetches
+origin's branches into `refs/remotes/origin/*`
+(`+refs/heads/*:refs/remotes/origin/*`) before every new worktree; a fetch
+never writes a local branch, so an agent's unpushed commits are never
+overwritten and a branch checked out in a worktree cannot make the fetch fail.
+A new worktree's branch starts from `origin/<base_branch>` (or from its
+blocker's branch when stacked PRs apply) and is created with `--no-track`: its
+only upstream is its own name on origin, set when origin already has it, so
+`git push` and `gh pr view` never act on another issue's branch. A branch only
+origin has (an open PR's branch) is created from `origin/<branch>`; an existing
+local copy is fast-forwarded to it, never rewound, and never while another
+worktree has it checked out. The clone's local `<base_branch>` is
+fast-forwarded after each fetch the same way. A failing fetch is recorded once
+in recent failures (`workspace_fetch`) until a fetch succeeds, and
+`itervox doctor` prints the clone's last successful fetch: a failing fetch is
+an `ERROR` (exit 1), a fetch older than 24 hours or a clone still on the
+pre-#195 refspec `+refs/heads/*:refs/heads/*` a `WARNING`. Such a clone is
+migrated automatically the first time it is used: the refspec is rewritten,
+one fetch populates `refs/remotes/origin/*`, and branch upstreams that point
+at a different branch are repointed at the branch's own name on origin (or
+unset when origin lacks it). Nothing is deleted. The last fetch outcome is
+kept in `<root>/.bare/itervox-fetch-status.json`.
 
 ### Agent handoff (`.itervox/handoff/`)
 
@@ -901,6 +945,8 @@ runtime queue files, or other generated daemon state.
 When a daemon starts, it writes `.itervox/HEARTBEAT.md` atomically with the
 current workflow path, schema version, dashboard URL, tracker/project,
 tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next
-push, last sync error), capacity, automation queue pressure, dependency audit
+push, last sync error), the tracker poll (`- Poll:` under `## Tracker`, #187:
+`ok, last took 840ms`, `running for 12s`, `slow, running for 47s`, or
+`degraded (3 consecutive transport failures; tracker reads paused until …)`), capacity, automation queue pressure, dependency audit
 summary, input-required count, retry count, and last notable error. Agents can read it when they need
 current daemon state; it is generated runtime state, not prompt text.

@@ -1,6 +1,7 @@
 import { AgentLogPanel } from '../../../components/itervox/timeline/AgentLogPanel';
 import { TimeAxis } from '../../../components/itervox/timeline/TimeAxis';
 import { IssueRunsView } from '../../../components/itervox/timeline/IssueRunsView';
+import { RunProvenance } from '../../../components/itervox/timeline/RunProvenance';
 import type {
   IssueGroup,
   NormalisedSession,
@@ -163,6 +164,10 @@ export function TimelineDetailPanel({
                 )}
               </div>
             </div>
+
+            {selectedSession && selectedSession.status !== 'live' && (
+              <RunProvenance run={selectedSession} />
+            )}
 
             <div className="flex-1 overflow-hidden">
               {expandedRunAt == null ? (

@@ -61,13 +61,18 @@ func TestReadinessPublishesTickPhase(t *testing.T) {
 	}
 	mid := o.Readiness()
 	assert.True(t, mid.LoopStarted)
-	assert.False(t, mid.TickStarted.IsZero(), "inside onTick the tick start is published")
+	// #187: the poll runs off the loop. Its start is published, and the loop
+	// itself goes idle (free for events) while the poll is in flight.
+	assert.False(t, mid.PollStarted.IsZero(), "while the poll is in flight its start is published")
+	require.Eventually(t, func() bool {
+		return o.Readiness().TickStarted.IsZero()
+	}, 5*time.Second, 10*time.Millisecond, "the loop is idle while the poll is in flight")
 
 	close(tr.release)
 	require.Eventually(t, func() bool {
 		r := o.Readiness()
-		return r.TickStarted.IsZero() && r.LastPollOK
-	}, 5*time.Second, 10*time.Millisecond, "after the tick the loop is idle and the poll ok")
+		return r.TickStarted.IsZero() && r.PollStarted.IsZero() && r.LastPollOK
+	}, 5*time.Second, 10*time.Millisecond, "after the poll the loop is idle and the poll ok")
 	assert.WithinDuration(t, time.Now(), o.Readiness().LastLoopIdle, 5*time.Second)
 }
 

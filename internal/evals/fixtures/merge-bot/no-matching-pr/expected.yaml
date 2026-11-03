@@ -3,5 +3,8 @@ required_action_calls:
 forbidden_actions:
   - merge_pr
   - move_state
+  - gh_pr_merge
 marker_phrases:
   - "no open PR"
+forbidden_phrases:
+  - "merge-bot: merged"

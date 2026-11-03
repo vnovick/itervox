@@ -91,6 +91,16 @@ const (
 	// EventDeferredStateMoveSettled carries the outcome of one deferred-move
 	// apply (#177) from its tracker-write goroutine.
 	EventDeferredStateMoveSettled EventType = "DeferredStateMoveSettled"
+	// EventTrackerPolled carries the result of one off-loop tracker poll
+	// (#187): the running issues' states, the candidate list and the
+	// input-required reply reads. The poll goroutine does tracker I/O only;
+	// the loop applies the result with the state it has when the event
+	// arrives.
+	EventTrackerPolled EventType = "TrackerPolled"
+	// EventClaimChecked carries the off-loop #116 claim reads of one batch of
+	// dispatch picks (#187). The loop re-checks eligibility and starts the
+	// issues the tracker still admits.
+	EventClaimChecked EventType = "ClaimChecked"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -113,6 +123,8 @@ type OrchestratorEvent struct { //nolint:revive
 	CronBatch          *CronAutomationBatch     // used by EventDispatchCronBatch
 	StatusChange       *IssueStatusChange       // used by EventIssueStatusChanged
 	DependencyRefresh  *DependencyRefreshResult // used by EventDependencyAuditRefreshed
+	TrackerPoll        *trackerPollResult       // used by EventTrackerPolled (#187)
+	ClaimBatch         *claimBatchResult        // used by EventClaimChecked (#187)
 	Enabled            bool                     // true = set override, false = clear; used by EventSetDepsOverride
 	Failure            *FailureRecord           // used by EventFailureRecorded
 	// Limit is the vendor limit signal of a failed turn (CORE-050/051):
@@ -179,6 +191,12 @@ const (
 	// agent ran; the event loop records the miss in State.StackUnavailable
 	// so the issue waits for the blocker like any other.
 	TerminalStackUnavailable TerminalReason = "stack_unavailable"
+	// TerminalBranchInUse is used when the issue's worktree could not be
+	// created because its branch is checked out in another worktree (#193).
+	// Deterministic: no agent ran and a retry would fail the same way, so the
+	// event loop records State.BranchInUseHolds (ineligible reason
+	// branch_in_use) instead of scheduling a retry.
+	TerminalBranchInUse TerminalReason = "branch_in_use"
 )
 
 // Pause reasons recorded in State.PauseReasons (issue #42-F).
@@ -361,6 +379,19 @@ type RunEntry struct {
 	// applied. RuleIDs is shared with snapshot copies: it is immutable.
 	RulesHash string
 	RuleIDs   []string
+	// PromptDigest / PromptParts identify the prompt version the run was
+	// dispatched with (#186): SHA-256 over SOUL.md, INSTRUCTIONS.md, the
+	// resolved rules and the prompt template (see run_provenance.go). Set
+	// once at dispatch (startRun) and never mutated. Hashes only.
+	PromptDigest string
+	PromptParts  PromptParts
+	// Steers are the operator messages delivered to this run (#186), redacted
+	// and bounded (maxRunSteers, maxRunSteerBytes); SteersDropped counts the
+	// older ones the bound let go. Appended by the event loop on
+	// EventSessionMessageDelivered (replacing the slice); snapshots deep-copy
+	// it (copyRunningMap).
+	Steers        []RunSteer
+	SteersDropped int
 	// totalsInput/totalsOutput/totalsCounted record what this run has
 	// already contributed to State.Totals (CORE-091). Unexported: event-loop
 	// bookkeeping, not part of the snapshot.
@@ -403,6 +434,19 @@ type CompletedRun struct {
 	// no rule applied.
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIDs,omitempty"`
+	// RunID is the run's ID (#125, #186); empty for entries written before
+	// it was recorded.
+	RunID string `json:"runID,omitempty"`
+	// PromptDigest identifies the prompt version the run was dispatched with
+	// (#186): 64 hex chars of SHA-256 over SOUL.md + INSTRUCTIONS.md + the
+	// resolved rules + the prompt template. PromptParts are the per-component
+	// digests. Hashes only: history never stores prompt text.
+	PromptDigest string      `json:"promptDigest,omitempty"`
+	PromptParts  PromptParts `json:"promptParts,omitzero"`
+	// Steers are the operator messages delivered to the run (#186), redacted
+	// and bounded; SteersDropped counts older ones the bound let go.
+	Steers        []RunSteer `json:"steers,omitempty"`
+	SteersDropped int        `json:"steersDropped,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -617,6 +661,23 @@ type State struct {
 	// agent.max_concurrent_agents would actually buy throughput. Session-
 	// scoped and not persisted; see dispatch_pressure.go.
 	DispatchPressure DispatchPressure
+	// TrackerPoll is the off-loop tracker poll's single-flight latch and
+	// timing (#187): whether a poll is in flight, since when, and how long
+	// the last one took. Event-loop state (tracker_poll.go); session-scoped,
+	// not persisted.
+	TrackerPoll TrackerPollState
+	// TrackerBreaker is the tracker transport circuit breaker (#187): after
+	// TrackerBreakerThreshold consecutive polls with a transport failure
+	// (timeout, network error, 5xx) the loop skips tracker reads until
+	// OpenUntil and reports the poll degraded. Event-loop state
+	// (tracker_breaker.go); session-scoped, not persisted.
+	TrackerBreaker TrackerBreakerState
+	// ClaimChecks are dispatch picks whose #116 claim read runs off the loop
+	// (#187), keyed by issue ID. Each holds a dispatch slot (AvailableSlots)
+	// and makes its issue ineligible until EventClaimChecked settles it or
+	// the watchdog releases it. Event-loop state; session-scoped, not
+	// persisted.
+	ClaimChecks map[string]ClaimCheckPending
 	// LastTrackerError is the most recent tracker failure (CORE-044): a
 	// failed poll (op "poll", set in onTick) or a failed failed-state move
 	// (op "update_state", reported back on EventDiscardComplete). Written
@@ -761,6 +822,13 @@ type State struct {
 	// unchanged the dependent waits for it as before; a new blocker or state
 	// gives stacking another try. Event-loop state, not persisted.
 	StackUnavailable map[string]string
+	// BranchInUseHolds holds issues whose worktree branch is checked out in
+	// another worktree (#193), keyed by identifier: the branch_in_use
+	// ineligible reason. Set from a TerminalBranchInUse exit and released by
+	// releaseBranchInUseHolds once that worktree frees the branch. Event-loop
+	// state, not persisted: after a restart the first dispatch finds the
+	// branch still taken and holds the issue again without spending a retry.
+	BranchInUseHolds map[string]BranchInUseHold
 
 	// PendingReviews holds reviewer dispatches refused while draining
 	// (M4-close BH-M4-2), keyed by issue identifier. Persisted to
@@ -897,9 +965,11 @@ func NewState(cfg *config.Config) State {
 		DepsOverrides:      make(map[string]time.Time),
 		StackOnReviewState: stackOnReviewState(cfg),
 		StackUnavailable:   make(map[string]string),
+		BranchInUseHolds:   make(map[string]BranchInUseHold),
 		PendingReviews:     make(map[string]PendingReview),
 		DeferredStateMoves: make(map[string]DeferredStateMove),
 		OutboxSyncing:      make(map[string]struct{}),
+		ClaimChecks:        make(map[string]ClaimCheckPending),
 		SessionMessages:    make(map[string][]SessionMessage),
 		TmuxSessions:       make(map[string]*TmuxSession),
 	}

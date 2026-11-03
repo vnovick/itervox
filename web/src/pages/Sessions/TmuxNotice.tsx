@@ -1,5 +1,5 @@
-import { useState } from 'react';
 import { Banner } from '../../components/ui/Banner';
+import { CopyButton } from '../../components/ui/CopyButton';
 import type { TmuxStatus } from '../../types/schemas';
 
 // #178 tmux: what the panel says when tmux is not installed on the daemon's
@@ -8,28 +8,6 @@ import type { TmuxStatus } from '../../types/schemas';
 
 /** The message both notices lead with (also the New session button's reason). */
 export const TMUX_MISSING = 'tmux not found — install it to control sessions from here.';
-
-/** A copy-to-clipboard button for a short command. */
-export function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      className="border-theme-line hover:bg-theme-bg-soft rounded border px-2 py-0.5 text-xs"
-      onClick={() => {
-        void navigator.clipboard
-          .writeText(text)
-          .then(() => {
-            setCopied(true);
-          })
-          .catch(() => {});
-      }}
-    >
-      {copied ? 'Copied' : 'Copy'}
-    </button>
-  );
-}
 
 function InstallHint({ tmux }: { tmux: TmuxStatus }) {
   const hint = tmux.installHint;

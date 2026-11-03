@@ -147,7 +147,9 @@ only the event loop mutates them.
   explicitly adds restart durability.
 - `RecentFailures` (CORE-046) is a bounded (100) event-loop ring. Off-loop
   producers (ledger writer, outbox flusher, recovered panics, the
-  `/api/v1/client-errors` handler) call `Orchestrator.RecordFailure`, a
+  `/api/v1/client-errors` handler, a worker whose shared bare-clone fetch
+  failed — #195, deduplicated in `internal/workspace` until a fetch
+  succeeds) call `Orchestrator.RecordFailure`, a
   NON-blocking send of `EventFailureRecorded`; a dropped failure is counted,
   never re-sent. Messages come from classified errors only (never agent
   output or prompt text) and are redacted before truncation. Not persisted;
@@ -246,6 +248,28 @@ only the event loop mutates them.
   `EventDispatchAutomation`, and `claimPREventDedup` in the event loop decides
   managed-ness, staleness and the once-per-event dedup. Persisted to
   `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
+- Run provenance (#186) on `RunEntry` / `CompletedRun`: `PromptDigest` and
+  `PromptParts` are computed once in `startRun` (SHA-256 of SOUL.md +
+  INSTRUCTIONS.md + the resolved rules + the prompt template; hashes only,
+  never prompt text), and delivered steering messages are appended to the
+  running entry's `Steers` by the `EventSessionMessageDelivered` handler
+  (redacted, ≤ 20 × 1 KiB; snapshots deep-copy the slice). Both reach
+  `CompletedRun` (with `RunID`) only through `recordHistory` in the event
+  loop; the stall exit built by `ReconcileStalls` copies them.
+- `TrackerPoll`, `TrackerBreaker` and `ClaimChecks` (#187) are event-loop
+  state for the off-loop tracker poll. A tick's tracker reads (running-state
+  reconcile, candidate list, input-required reply checks) run on ONE
+  goroutine at a time (`TrackerPoll.InFlight` latch, generation-checked,
+  watchdog past deadline + 30 s) and come back as `EventTrackerPolled`;
+  dispatch picks' #116 claim reads run off-loop too, each pick holding a slot
+  in `ClaimChecks` until `EventClaimChecked`. The loop applies results with
+  the state it has at apply time: reconcile acts only on runs whose `RunID`
+  is unchanged since the read started, and an issue whose run ended during
+  the poll (`TrackerPoll.EndedDuringPoll`) is not dispatched from that list.
+  Reads still on the loop go through `loopReadCtx` (one 30 s deadline per
+  iteration). `TrackerBreaker` opens after 3 polls in a row with a transport
+  failure and skips tracker reads for a cooldown. Session-scoped, not
+  persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is

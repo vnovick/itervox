@@ -216,10 +216,10 @@ booleans and one timestamp:
 | Field | Meaning |
 |---|---|
 | `ready` | `loop_fresh`, fewer than 3 consecutive failed tracker polls, and not `draining`. |
-| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event — for example a slow tracker call — it stays fresh for up to 10 minutes (the tick budget). Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
+| `loop_fresh` | The event loop is alive. Idle, it must have finished an iteration within 3× `polling.interval_ms` (at least 30 s). Inside a tick or event it stays fresh for up to 2 minutes (the tick budget): since #187 the poll's tracker reads run off the event loop and the tracker reads an iteration still makes share one 30 s deadline, so a healthy iteration takes milliseconds. Within one poll interval of startup (at least 30 s) it is fresh before the first tick. |
 | `last_poll_ok` | The most recent tick polled the tracker and the poll succeeded (`false` before the first poll and while polling is shed for budget). |
 | `config_invalid` | The last `WORKFLOW.md` reload failed validation; the daemon keeps running on its last valid config. |
-| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
+| `degraded` | A rate-limited poll, an open tracker rate-limit gate, a tick that skipped its poll to keep the tracker budget for writes, an open tracker breaker (#187: three polls in a row hit a timeout, network error or 5xx), 1–2 consecutive failed polls, or `config_invalid`. Degraded is still ready. |
 | `tracker_rate_limited_until` | RFC 3339 instant the tracker rate-limit gate lifts, `null` while it is closed. |
 | `draining` | The daemon is draining — after `SIGTERM`/`SIGINT`, or before applying an operator edit to `WORKFLOW.md` — and admits no new work while in-flight agent turns finish. A draining daemon answers `503` so a load balancer stops routing to it; `loop_fresh` stays `true`. |
 
@@ -356,6 +356,21 @@ Useful top-level fields include:
   `{ "at", "op": "poll" | "update_state", "kind": "outage" | "rate_limited",
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
+- `trackerPoll` (#187) — the off-loop tracker poll, absent on older daemons:
+  `{ "inFlight", "startedAt"?, "runningForMs"?, "lastFinishedAt"?,
+  "lastDurationMs", "slowAfterMs", "slow", "degraded", "breakerOpenUntil"?,
+  "consecutiveTransportFailures"? }`. The poll tick reads the tracker
+  (running issues' states, the candidate list, input-required reply checks)
+  on its own goroutine, at most one poll at a time, under a deadline of
+  3 × `polling.interval_ms` (at least 30 s, at most 2 minutes); the event
+  loop keeps handling worker exits and operator actions meanwhile.
+  `inFlight`/`startedAt`/`runningForMs` describe the poll now running;
+  `slow` is set when it (or, when idle, the last one) took longer than
+  `slowAfterMs` (the interval plus half an interval, at least 1 s).
+  `degraded` is set once three polls in a row hit a transport failure: the
+  daemon then skips tracker reads until `breakerOpenUntil` (two poll
+  intervals, 30 s to 5 minutes), then one poll probes the tracker; a probe
+  that succeeds clears it.
 - `syncStatus` (#117) — the tracker sync status, absent on older daemons:
   `{ "mode": "store" | "direct" | "local_sync", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
   "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,
@@ -405,6 +420,9 @@ Useful top-level fields include:
   dispatch; the running session's backend stays on `running[].backend`.
   `/api/v1/issues` rows carry the same object as `autoSwitch`, and an issue
   held by an open breaker has `ineligibleReason: "backend_limited"`.
+- An issue whose worktree branch is checked out in another worktree (#193)
+  has `ineligibleReason: "branch_in_use"` until that worktree frees the
+  branch; no retry is scheduled for it.
 - `pauseReasons` — `{ "<identifier>": "<reason>" }` for currently paused
   issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted` or
   `transition_failed` (treat unknown values as opaque). An issue paused by an
@@ -445,6 +463,68 @@ with a lower- or mixed-case name (`password=`, `api_key=`, `"apiKey":`,
 user), and long random-looking tokens (also inside a path) appear as `***`.
 Vendor request ids (`req_…`, `msg_…`), SRI hashes, git SHAs, UUIDs and
 ordinary paths stay readable.
+
+---
+
+## Run history
+
+History rows (`history` in `GET /state`, and the endpoints below) describe
+finished runs, oldest first, from the same bounded ring (200 runs, persisted
+to the daemon's history file). Each row may carry, besides the fields above
+(#186):
+
+- `runId` — the run's ID (the same ID as running rows and logs).
+- `profileName` — the profile the run used.
+- `promptDigest` — the run's **prompt version**: 64 hex characters of
+  SHA-256 over a versioned, length-prefixed concatenation of the profile's
+  `SOUL.md`, its `INSTRUCTIONS.md`, the resolved rule set (sorted by id;
+  each rule's id, severity and text) and the prompt template (the
+  `WORKFLOW.md` body, or `agent.reviewer_prompt` for a reviewer run that has
+  one), computed when the run is dispatched. Two runs with the same digest
+  were given the same prompt inputs. Treat it as an opaque identifier; the
+  dashboard shows its first 12 characters.
+- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "template"? }`:
+  16-hex-character digests of each component (absent when the run had none),
+  so two versions can be compared part by part. History stores only these
+  hashes, never prompt text.
+- `steers` — operator messages delivered to the run from the Sessions panel:
+  `[{ "text", "at", "delivery": "live" | "resume" }]`, in delivery order.
+  Text is redacted like the rest of run data and cut to 1 KiB; a run keeps
+  its newest 20, and `steersDropped` counts older ones that were let go.
+  Typing into a tmux pane is not recorded.
+
+All of these are omitted on rows recorded before they existed.
+
+### `GET /api/v1/history`
+
+The run history: `{ "history": [HistoryRow] }`. `?prompt=<digest prefix>`
+(1–64 hex characters, case-insensitive) keeps only runs whose
+`promptDigest` starts with it; rows without a digest never match. An
+invalid prefix is `400 invalid_prompt_digest` (`field: "prompt"`).
+
+### `GET /api/v1/history/prompt-versions`
+
+The history grouped by prompt version, most recently used version first:
+
+```json
+{
+  "versions": [
+    {
+      "promptDigest": "3f9a…",
+      "runs": 12,
+      "statuses": { "succeeded": 9, "failed": 3 },
+      "successRate": 0.75,
+      "firstSeenAt": "2026-10-01T09:00:00Z",
+      "lastSeenAt": "2026-10-18T17:30:00Z",
+      "profiles": ["implementer"]
+    }
+  ],
+  "unversionedRuns": 4
+}
+```
+
+`statuses` counts runs per history status, `successRate` is the share that
+succeeded (0–1), and `unversionedRuns` counts rows recorded without a digest.
 
 ---
 
@@ -686,6 +766,8 @@ pressed unless `submit` is `false` (`{"text": "…", "submit": false}`;
 the message is queued; its `status` in `GET /api/v1/sessions` moves to
 `delivered` or `dropped`. A session waiting for input takes a reply through
 `POST /issues/{identifier}/provide-input` instead.
+A delivered message is also kept, redacted, in the run's history entry
+(`steers`, see [Run history](#run-history)).
 
 | Status | Code | When |
 |---|---|---|
@@ -1073,6 +1155,45 @@ of the labels). `501 not_supported` for trackers without it.
   `ENG · assigned to me · label: agent`), `scopeAssignee`,
   `scopeAssigneeName` and `scopeLabels`; a running row whose issue left the
   scope mid-run has `outOfScope: true`.
+
+### Tracker filter (#198, Linear and GitHub)
+
+The tracker filter generalises the scope: a list of groups, conditions
+ANDed inside a group, groups ORed (see the configuration reference, "Tracker
+filter"). Keys are the `WORKFLOW.md` condition names: `projects`, `teams`,
+`assignee`, `labels_any`, `labels_all`, `labels_none`, `priority`, `states`,
+`cycle`, `milestone`. `501 not_supported` for trackers without one.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/tracker/scope` | — | `{"scope":{"projects":[],"assignee":"","labels":[],"filter":[{"labels_any":["agent"]}],"filterMode":true,"conditions":["assignee","labels_any",…]}}` |
+| `PUT` | `/tracker/scope` | `{"filter":[{"projects":["ENG"],"labels_none":["blocked"]},{"assignee":"me"}]}` | `{"scope":{...},"ok":true}` |
+| `POST` | `/tracker/filter/preview` | `{"filter":[...]}` | `{"count":12,"identifiers":["ENG-1","ENG-4",…]}` |
+| `GET` | `/tracker/teams` | — | `{"teams":[{"id":"…","key":"ENG","name":"Engineering"}]}` (`[]` on GitHub) |
+
+- `GET /tracker/scope` always returns `filter`: `tracker.filter`, or the
+  legacy keys as one implicit group (`filterMode: false`), `[]` for every
+  issue. `conditions` lists what the tracker supports (every condition on
+  Linear; `assignee`, the label conditions, `states` and `milestone` on
+  GitHub).
+- `PUT` with `filter` validates it with the `WORKFLOW.md` parser (an
+  unknown condition, an empty group, a bad priority or an unsupported
+  condition: `422 invalid_filter`), resolves its assignees (`422
+  assignee_not_found`), writes `tracker.filter` as one flow-style line,
+  comments the legacy keys out (`project_slug` only on Linear) and applies
+  the filter without a reload; the tracker store pulls again and the
+  automation poll rebaselines. `[]` reads every issue. The reload fence
+  answers `503 settings_reloading`. A legacy body (`projects` / `assignee` /
+  `labels`, Linear only) comments `tracker.filter` out.
+- `POST /tracker/filter/preview` is read-only: it counts the issues in the
+  active states the filter matches, through the same compiled query the poll
+  uses, and lists the first 10 identifiers. Nothing is saved.
+- While a filter is in effect, `PUT /projects/filter` answers `409
+  tracker_filter_in_effect` (project_slug and tracker.filter cannot both be
+  set) and the TUI picker does not save.
+- The snapshot's `trackerScope` is the filter's summary (e.g.
+  `ENG · agent|ai · ¬blocked  OR  me · urgent`) and `filterConditions` the
+  supported conditions (present when the tracker has a filter).
 
 ---
 

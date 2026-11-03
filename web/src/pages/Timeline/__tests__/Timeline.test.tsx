@@ -294,3 +294,58 @@ describe('Timeline automation chip (T-5)', () => {
     });
   });
 });
+
+describe('Timeline prompt-version filter (#186)', () => {
+  const A = 'a'.repeat(64);
+  const B = 'b'.repeat(64);
+  const hist = (identifier: string, promptDigest: string | undefined, status: string) => ({
+    identifier,
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+    finishedAt: new Date().toISOString(),
+    elapsedMs: 60_000,
+    turnCount: 1,
+    tokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    status,
+    sessionId: `sess-${identifier}`,
+    ...(promptDigest ? { promptDigest } : {}),
+  });
+
+  it('lists versions with run counts and success rate and filters runs to one', () => {
+    setupStore({
+      history: [
+        hist('ENG-A1', A, 'succeeded'),
+        hist('ENG-A2', A, 'failed'),
+        hist('ENG-B1', B, 'succeeded'),
+        hist('ENG-OLD', undefined, 'succeeded'),
+      ],
+    });
+    render(<Timeline />, { wrapper });
+    const select = screen.getByTestId('timeline-prompt-version');
+    expect(select).not.toBeDisabled();
+    expect(
+      screen.getByRole('option', { name: /aaaaaaaaaaaa · 2 runs · 50% succeeded/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: /bbbbbbbbbbbb · 1 run · 100% succeeded/ }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByTestId('timeline-row')).toHaveLength(4);
+
+    fireEvent.change(select, { target: { value: A } });
+    const rows = screen.getAllByTestId('timeline-row').map((r) => r.textContent);
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining(['ENG-A1', 'ENG-A2']));
+    expect(screen.queryByText('ENG-B1')).not.toBeInTheDocument();
+    expect(screen.queryByText('ENG-OLD')).not.toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: '' } });
+    expect(screen.getAllByTestId('timeline-row')).toHaveLength(4);
+  });
+
+  it('is disabled when no run recorded a prompt version', () => {
+    setupStore({ history: [hist('ENG-OLD', undefined, 'succeeded')] });
+    render(<Timeline />, { wrapper });
+    expect(screen.getByTestId('timeline-prompt-version')).toBeDisabled();
+  });
+});

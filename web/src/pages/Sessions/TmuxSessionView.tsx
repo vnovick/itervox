@@ -9,7 +9,7 @@ import {
   type SessionKey,
 } from '../../queries/sessionsTmux';
 import type { SessionRow } from '../../types/schemas';
-import { CopyButton } from './TmuxNotice';
+import { CopyButton } from '../../components/ui/CopyButton';
 
 // #178 tmux control: the live screen of a session running in a tmux pane,
 // a composer that pastes text (and presses Enter), a row of keys, and — for

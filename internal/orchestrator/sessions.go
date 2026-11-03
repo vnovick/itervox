@@ -109,7 +109,11 @@ type SessionMessage struct {
 type SessionDelivery struct {
 	Identifier string
 	IDs        []string
-	Delivery   string
+	// Texts are the delivered messages' texts, parallel to IDs; the event
+	// loop keeps them, redacted and bounded, as the run's steering history
+	// (#186).
+	Texts    []string
+	Delivery string
 }
 
 // AgentSession is one row of the Sessions panel.

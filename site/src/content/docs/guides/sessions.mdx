@@ -30,6 +30,8 @@ What the composer does depends on the session:
 
   Each message shows where it is: **queued**, **delivered live**, **delivered on resume**, or **not delivered** with the reason — the run ended (finished, failed, or stopped to wait for input) before it could be delivered.
 
+  Delivered messages are also kept with the run once it finishes: the run's detail on the **Timeline** lists them with their time and delivery path (redacted, at most the newest 20, each cut to 1 KiB), next to the run's prompt version. Text typed into a tmux pane is not recorded.
+
 The composer says which delivery applies to the selected session.
 
 ### Live steering
