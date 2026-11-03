@@ -1,3 +1,4 @@
+import type { AgentBackend } from '../../../lib/backends';
 import type { ReactNode } from 'react';
 import { MarkdownPromptEditor } from '../profiles/MarkdownPromptEditor';
 import { PROFILE_VARIABLES, TRIGGER_VARIABLES } from '../profiles/promptCompletions';
@@ -69,7 +70,7 @@ export function AutomationEditorFields({
   onMaxAgeMinutesChange: (value: string) => void;
   onAutoResumeChange: (value: boolean) => void;
   onSwitchToProfileChange: (value: string) => void;
-  onSwitchToBackendChange: (value: '' | 'claude' | 'codex') => void;
+  onSwitchToBackendChange: (value: '' | AgentBackend) => void;
   onCooldownMinutesChange: (value: string) => void;
   onMoveToStateChange: (value: string) => void;
   onPREventFilterChange: (field: PREventFilterField, value: string[]) => void;

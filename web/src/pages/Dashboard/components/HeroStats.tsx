@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { useUIStore } from '../../../store/uiStore';
 import { EMPTY_HISTORY } from '../../../utils/constants';
-import { automationsFiredToday } from './dashboardMetrics';
+import { automationsFiredToday, costCoverageNote } from './dashboardMetrics';
 import { STATUS_META, toneTextClass, type StatusKey } from '../../../lib/statusModel';
 import { useStatusSummary } from '../../../hooks/useStatusSummary';
 import { fmtTokens } from '../../../utils/format';
@@ -123,14 +123,13 @@ export function HeroStats() {
  */
 function CostTile({ totals }: { totals: Totals }) {
   const tokens = totals.inputTokens + totals.outputTokens;
-  const codexRuns = totals.costCoverage?.codexRuns ?? 0;
   const cost = totals.costUsdEstimated;
   return (
     <StatTile
       testId="hero-stat-cost"
       label="Est. cost"
       value={cost === null ? '—' : `$${cost.toFixed(2)}`}
-      sub={`${fmtTokens(tokens)} tokens · ${codexRuns > 0 ? 'estimated, Claude runs only' : 'estimated'}`}
+      sub={`${fmtTokens(tokens)} tokens · ${costCoverageNote(totals)}`}
     />
   );
 }

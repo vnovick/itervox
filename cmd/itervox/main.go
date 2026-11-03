@@ -125,6 +125,31 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		} else {
 			slog.Info("codex CLI validated successfully")
 		}
+	case config.BackendOpenCode, config.BackendCursor, config.BackendCustom:
+		resolvedCmd := cfg.Agent.Command
+		if profileName != "" {
+			if p, ok := cfg.Agent.Profiles[profileName]; ok && p.Command != "" {
+				resolvedCmd = p.Command
+			}
+		}
+		// A custom backend is one command per profile, so it is
+		// validated per command; the others once per backend.
+		key := backend
+		if backend == config.BackendCustom {
+			key = backend + ":" + resolvedCmd
+		}
+		if _, ok := validatedBackends[key]; ok {
+			return nil
+		}
+		validatedBackends[key] = struct{}{}
+		if err := validateExtraBackendCLI(backend, resolvedCmd); err != nil {
+			if profileName != "" {
+				slog.Warn(backend+" CLI validation failed for profile", "profile", profileName, "error", err)
+				return nil // profile failures are non-fatal
+			}
+			return fmt.Errorf("%s CLI not found or not executable: %w", backend, err)
+		}
+		slog.Info(backend+" CLI validated successfully", "profile", profileName)
 	default:
 		if profileName != "" {
 			slog.Warn("unsupported backend in profile, will fall back to default runner", "profile", profileName, "backend", backend)
@@ -133,6 +158,19 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		}
 	}
 	return nil
+}
+
+// validateExtraBackendCLI checks the CLI of an OpenCode, Cursor or custom
+// backend. A var so tests can stub the checks.
+var validateExtraBackendCLI = func(backend, command string) error {
+	switch backend {
+	case config.BackendOpenCode:
+		return agent.ValidateOpenCodeCLICommand(command)
+	case config.BackendCursor:
+		return agent.ValidateCursorCLICommand(command)
+	default:
+		return agent.ValidateCustomCommand(command, exec.LookPath)
+	}
 }
 
 // generateAPIToken returns a cryptographically random 32-byte hex token
@@ -740,12 +778,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		return fmt.Errorf("build tracker: %w", err)
 	}
 
-	var runner agent.Runner = agent.NewMultiRunner(
-		agent.NewClaudeRunner(),
-		map[string]agent.Runner{
-			"codex": agent.NewCodexRunner(),
-		},
-	)
+	var runner agent.Runner = agent.NewBackendMultiRunner()
 	runner = commandResolverRunner{inner: runner}
 	if demoSession != nil {
 		// `itervox demo` (#76): the session's memory tracker and scripted
@@ -896,7 +929,10 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// `srvListener != nil` block below — so it stays called from there.
 	depsSvc, bindDepsNotify := wireDepsAnalyzerService(ctx, orch, cfg, tr, runner, workflowPath, agentSessionsDir)
 
-	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob)
+	// System visibility: the run monitor (sysmon_wire.go).
+	runMon, removeRunMon := startRunMonitor(ctx, cfg, workflowPath, orch)
+	defer removeRunMon()
+	snap := withSystemSnapshot(buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob), runMon.mon)
 
 	// HTTP server setup. The listener was bound by main's reload loop —
 	// which owns the socket across reloads — before the TUI starts, so the
@@ -1114,7 +1150,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		// CORE-045 — opt-in Prometheus endpoint, behind the bearer token.
 		var metricsHandler http.Handler
 		if cfg.Server.Metrics.Enabled {
-			metricsHandler = newMetricsHandler(orch, ob, cfg.Tracker.Kind)
+			metricsHandler = newMetricsHandler(orch, ob, cfg.Tracker.Kind, runMon.mon)
 		}
 		srv := server.New(server.Config{
 			Snapshot:         snap,
@@ -1164,7 +1200,8 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath),                                // #201: background job, off the event loop
 			Version:         version,                                                                      // #212: GET /api/v1/summary
 			Dispatch:        dispatchAdapter{orch: orch},                                                  // #213: the feed and the dispatch pause
-			Changes:         changesAdapter{orch: orch},                                                   // #215: run context and worktree diff, off the event loop
+			Changes:         changesAdapter{orch: orch, mon: runMon.mon},                                  // #215: run context and worktree diff, off the event loop
+			Activity:        runMon.mon,                                                                   // system visibility: the activity audit
 			ChangeReview:    changeReviewAdapter{orch: orch, tr: tr, moveState: adapter.UpdateIssueState}, // #238: line comments, PR reviews, the diff's PR source
 			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
 			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
@@ -1180,6 +1217,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			srv.Notify()
 			heartbeat.Request()
 		}
+		runMon.bindNotify(srv.Notify)
 		srvDone = serveOnListener(ctx, srvListener, actualAddr, srv, srv.Shutdown)
 	}
 

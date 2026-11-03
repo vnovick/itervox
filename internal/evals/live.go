@@ -141,7 +141,7 @@ func RunLive(ctx context.Context, opts LiveOptions) (LiveResult, error) {
 		return LiveResult{}, fmt.Errorf("evals: no scenarios match profile=%q scenario=%q under %s", opts.Profile, opts.Scenario, opts.FixturesRoot)
 	}
 	if opts.Runner == nil {
-		opts.Runner = agent.NewMultiRunner(agent.NewClaudeRunner(), map[string]agent.Runner{"codex": agent.NewCodexRunner()})
+		opts.Runner = agent.NewBackendMultiRunner()
 	}
 	if opts.Log == nil {
 		opts.Log = io.Discard

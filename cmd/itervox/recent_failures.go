@@ -113,7 +113,10 @@ func totalsRow(s orchestrator.State) *server.TotalsRow {
 		InputTokens:      t.InputTokens,
 		OutputTokens:     t.OutputTokens,
 		CostUSDEstimated: t.CostUSDEstimated,
-		CostCoverage:     server.TotalsCoverageRow{ClaudeRuns: t.ClaudeRuns, CodexRuns: t.CodexRuns},
+		CostCoverage: server.TotalsCoverageRow{
+			ClaudeRuns: t.ClaudeRuns, CodexRuns: t.CodexRuns,
+			RunsByBackend: t.RunsByBackend, CostBackends: t.CostBackends,
+		},
 	}
 }
 

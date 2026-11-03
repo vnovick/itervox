@@ -7,9 +7,11 @@ import { bootApp } from './fixtures/commands';
 import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
 import {
+  SYSTEM_STATUS,
   installChangesData,
   installDiffData,
   installRunContextData,
+  installSystemVisibilityData,
   installTourData,
 } from './fixtures/tourData';
 import { makeIssue } from '../src/test/fixtures/issues';
@@ -199,6 +201,14 @@ const focusScenario: Scenario = {
   ...pausable,
   snapshot: { ...pausable.snapshot, projectName: 'web-app' },
 };
+const systemScenario: Scenario = {
+  ...focusScenario,
+  snapshot: {
+    ...focusScenario.snapshot,
+    capabilities: [...(focusScenario.snapshot.capabilities ?? []), 'system_visibility'],
+    system: SYSTEM_STATUS(3.2),
+  },
+};
 const runAndDiff = (api: MockApiHandle) => {
   installRunContextData(api);
   installDiffData(api);
@@ -219,6 +229,30 @@ const issueView: Stop[] = [
     beforeNavigate: runAndDiff,
     ready: (p) => expect(p.getByTestId('focus-last-tool')).toBeVisible(),
     open: openFirstFile,
+  },
+  {
+    // System visibility: the run's resources and its Activity audit open.
+    name: 'focus-system',
+    route: '/focus/DEMO-RUN-1',
+    scenario: systemScenario,
+    beforeNavigate: installSystemVisibilityData,
+    ready: (p) => expect(p.getByRole('list', { name: 'Resource use' })).toBeVisible(),
+    open: async (p) => {
+      await p
+        .getByTestId('focus-now')
+        .getByRole('button', { name: /Activity/ })
+        .click();
+      await expect(p.getByTestId('activity-mode')).toHaveText('sampled');
+    },
+  },
+  {
+    // System visibility: the workspace disk below the warning threshold.
+    name: 'dashboard-disk-low',
+    route: '/',
+    viewportOnly: true,
+    scenario: systemScenario,
+    beforeNavigate: installRunContextData,
+    ready: (p) => expect(p.getByTestId('system-health-disk')).toBeVisible(),
   },
   {
     name: 'embedded-focus',

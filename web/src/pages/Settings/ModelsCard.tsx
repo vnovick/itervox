@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { refreshModels, type ModelsBackend } from '../../queries/models';
+import { isRefreshable, refreshModels, type ModelsBackend } from '../../queries/models';
 import { Button } from '../../components/ui/button';
 
 interface ModelsCardProps {
@@ -60,7 +60,7 @@ export function ModelsCard({
       </div>
       <p className="text-theme-text-secondary text-[13px]">
         Populated from WORKFLOW.md. Refresh to discover new releases via the Anthropic / OpenAI
-        model APIs.
+        model APIs and, when installed, <code>opencode models</code>.
       </p>
 
       {backends.length === 0 ? (
@@ -76,16 +76,18 @@ export function ModelsCard({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-theme-text font-mono font-semibold">{backend}</span>
                   <span className="text-theme-muted text-xs">{models.length} model(s)</span>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => refresh(backend as Backend)}
-                    disabled={refreshing !== null}
-                    className="text-theme-accent-text ml-auto"
-                    data-testid={`models-refresh-${backend}`}
-                  >
-                    {refreshing === backend ? 'Refreshing…' : 'Refresh'}
-                  </Button>
+                  {isRefreshable(backend) && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => refresh(backend)}
+                      disabled={refreshing !== null}
+                      className="text-theme-accent-text ml-auto"
+                      data-testid={`models-refresh-${backend}`}
+                    >
+                      {refreshing === backend ? 'Refreshing…' : 'Refresh'}
+                    </Button>
+                  )}
                 </div>
                 <ul className="text-theme-text-secondary mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
                   {models.map((m) => (

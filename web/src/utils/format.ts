@@ -109,3 +109,22 @@ export function fmtAge(iso: string | null | undefined, now: number): string | nu
   if (s < 3600) return `${String(Math.floor(s / 60))}m`;
   return `${String(Math.floor(s / 3600))}h`;
 }
+
+/** Compact byte size in binary units: 512 B, 3.4 KB, 1.2 GB. */
+export function fmtBytes(n: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = Math.max(0, n);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  if (i === 0) return `${String(Math.round(v))} B`;
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i] ?? ''}`;
+}
+
+/** CPU use as percent of one core: "42%", "180%", "0.4%". */
+export function fmtCpu(pct: number): string {
+  if (pct > 0 && pct < 1) return `${pct.toFixed(1)}%`;
+  return `${String(Math.round(pct))}%`;
+}

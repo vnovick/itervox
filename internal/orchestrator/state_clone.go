@@ -84,6 +84,8 @@ func (s State) Clone() State {
 	c.TrackerPoll.EndedDuringPoll = maps.Clone(s.TrackerPoll.EndedDuringPoll)
 	c.RecentFailures = cloneSlice(s.RecentFailures)
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)
+	c.Totals.RunsByBackend = maps.Clone(s.Totals.RunsByBackend)
+	c.Totals.CostBackends = maps.Clone(s.Totals.CostBackends)
 	c.FailureAcks = maps.Clone(s.FailureAcks)
 	c.SessionMessages = copySessionMessages(s.SessionMessages)
 	c.ExternalSessions = cloneSlice(s.ExternalSessions)

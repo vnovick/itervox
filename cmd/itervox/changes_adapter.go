@@ -6,6 +6,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/sysmon"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -15,6 +16,8 @@ import (
 // the event loop.
 type changesAdapter struct {
 	orch *orchestrator.Orchestrator
+	// mon is the run monitor (system visibility); nil without it.
+	mon *sysmon.Monitor
 }
 
 func (c changesAdapter) RunContext(identifier string) (server.RunContextRow, bool) {
@@ -22,7 +25,9 @@ func (c changesAdapter) RunContext(identifier string) (server.RunContextRow, boo
 	if !ok {
 		return server.RunContextRow{}, false
 	}
-	return runContextRow(v), true
+	row := runContextRow(v)
+	row.Resources = runUsageFor(c.mon, identifier, v.RunID)
+	return row, true
 }
 
 func runContextRow(v orchestrator.RunContextView) server.RunContextRow {

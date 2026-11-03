@@ -7,7 +7,14 @@ import { ApiError, apiRequest } from '../auth/apiRequest';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
 import { useToastStore } from '../store/toastStore';
 
-export type ModelsBackend = 'all' | 'claude' | 'codex';
+/** Backends the daemon can discover models for (`itervox models refresh`). */
+export const REFRESHABLE_BACKENDS = ['claude', 'codex', 'opencode'] as const;
+
+export type ModelsBackend = 'all' | (typeof REFRESHABLE_BACKENDS)[number];
+
+export function isRefreshable(backend: string): backend is ModelsBackend {
+  return (REFRESHABLE_BACKENDS as readonly string[]).includes(backend);
+}
 
 export async function refreshModels(backend: ModelsBackend): Promise<void> {
   try {

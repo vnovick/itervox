@@ -237,18 +237,9 @@ func (a *orchestratorAdapter) DispatchReviewer(identifier string) error {
 // `itervox models refresh`, so CLI and HTTP share one code path.
 func (a *orchestratorAdapter) RefreshAvailableModels(ctx context.Context, backend string) (map[string][]server.ModelOption, error) {
 	if !IsAcceptedModelBackend(backend) {
-		return nil, fmt.Errorf("invalid backend %q (claude|codex|all)", backend)
+		return nil, fmt.Errorf("invalid backend %q (%s)", backend, strings.Join(modelBackendsAccepted(), "|"))
 	}
-	discovered := map[string][]agent.ModelOption{}
-	switch backend {
-	case "claude":
-		discovered["claude"] = agent.ListClaudeModels()
-	case "codex":
-		discovered["codex"] = agent.ListCodexModels()
-	default: // "all"
-		discovered["claude"] = agent.ListClaudeModels()
-		discovered["codex"] = agent.ListCodexModels()
-	}
+	discovered := discoverModels(backend)
 	// CORE-160: fenced like every settings save, persisted as a self-write,
 	// then applied in memory — no reload, so no in-flight turn is touched.
 	unlock, lockErr := a.beginSettingsSave()

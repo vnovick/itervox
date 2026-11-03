@@ -93,8 +93,7 @@ func defaultIssueRunDeps() issueRunDeps {
 	return issueRunDeps{
 		tracker: buildTracker,
 		runner: func(*config.Config) agent.Runner {
-			return commandResolverRunner{inner: agent.NewMultiRunner(agent.NewClaudeRunner(),
-				map[string]agent.Runner{"codex": agent.NewCodexRunner()})}
+			return commandResolverRunner{inner: agent.NewBackendMultiRunner()}
 		},
 		validateAgent: true,
 		prCreate:      ghCreatePR,

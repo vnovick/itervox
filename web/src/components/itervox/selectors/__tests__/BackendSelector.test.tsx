@@ -25,10 +25,27 @@ describe('BackendSelector', () => {
     expect(screen.getByRole('combobox')).toBeInTheDocument();
   });
 
-  it('offers Claude and Codex options', () => {
+  it('offers every backend the daemon accepts', () => {
     render(<BackendSelector value="claude" onChange={vi.fn()} />);
-    expect(screen.getByText('Claude')).toBeInTheDocument();
-    expect(screen.getByText('Codex')).toBeInTheDocument();
+    const options = screen
+      .getAllByRole('option')
+      .map((o) => [o.getAttribute('value'), o.textContent]);
+    expect(options).toEqual([
+      ['claude', 'Claude'],
+      ['codex', 'Codex'],
+      ['opencode', 'OpenCode'],
+      ['cursor', 'Cursor'],
+      ['custom', 'Custom'],
+    ]);
+  });
+
+  it('selects a new backend', () => {
+    const onChange = vi.fn();
+    render(<BackendSelector value="claude" onChange={onChange} defaultOptionLabel="Default" />);
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'opencode' } });
+    expect(onChange).toHaveBeenCalledWith('opencode');
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'custom' } });
+    expect(onChange).toHaveBeenCalledWith('custom');
   });
 
   it('fires onChange when selection changes', () => {

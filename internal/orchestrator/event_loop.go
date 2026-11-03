@@ -1529,12 +1529,7 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 // resumed by the runner for resolved (CORE-033). Only an exact match on a
 // backend MultiRunner routes explicitly counts.
 func resumeBackendMatches(stored, resolved string) bool {
-	switch stored {
-	case "claude", "codex":
-		return stored == resolved
-	default:
-		return false
-	}
+	return config.IsSupportedBackend(stored) && stored == resolved
 }
 
 func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
@@ -3121,6 +3116,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.StartedAt = finishedAt
 	}
 	run.BranchName = historyBranch(liveEntry, issue) // #201
+	run.Resources = o.endRunMonitor(issue.Identifier)
 	o.addCompletedRun(run)
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.

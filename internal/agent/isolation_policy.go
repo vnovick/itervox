@@ -21,7 +21,8 @@ import (
 var (
 	// IsolationHomeWrite is the agent CLIs' own state, relative to $HOME:
 	// sessions, settings, credentials refresh, caches.
-	IsolationHomeWrite = []string{".claude", ".claude.json", ".codex", ".cache"}
+	IsolationHomeWrite = []string{".claude", ".claude.json", ".codex", ".cache",
+		".local/share/opencode", ".local/state/opencode", ".config/opencode", ".cursor", ".config/cursor"}
 
 	// IsolationHomeDeny is never readable, relative to $HOME: credentials
 	// and the daemon's own per-user token stores and dashboard tokens.

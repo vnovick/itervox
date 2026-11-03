@@ -1,0 +1,27 @@
+{
+  "runId": "run-1",
+  "identifier": "ENG-1",
+  "live": true,
+  "cpuPercent": 82.5,
+  "cpuSeconds": 41.2,
+  "rssBytes": 734003200,
+  "peakRssBytes": 912261120,
+  "processes": 6,
+  "peakProcesses": 9,
+  "diskReadBytes": 1048576,
+  "diskWriteBytes": 3145728,
+  "diskIoKnown": true,
+  "netConnections": 2,
+  "topCommands": [
+    {
+      "pid": 4242,
+      "name": "node",
+      "args": "cli.js --print",
+      "cpuPercent": 61.2,
+      "rssBytes": 536870912
+    }
+  ],
+  "samples": 30,
+  "startedAt": "2026-05-25T12:00:00Z",
+  "sampledAt": "2026-05-25T12:00:00Z"
+}
