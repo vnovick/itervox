@@ -40,8 +40,17 @@ const (
 // races the watcher's reads.
 func startCountingWatch(t *testing.T, path string) *atomic.Int32 {
 	t.Helper()
+	return startCountingWatchDebounce(t, path, swDebounce)
+}
+
+// startCountingWatchDebounce is startCountingWatch with its own quiet period,
+// for a test whose writes must land inside one debounce window even on a
+// slow runner (each daemon save reads, parses and atomically renames the
+// file, which takes well over 150ms under -race on Windows).
+func startCountingWatchDebounce(t *testing.T, path string, debounce time.Duration) *atomic.Int32 {
+	t.Helper()
 	prevPoll := workflow.SetPollInterval(swPoll)
-	prevDebounce := workflow.SetDebounceInterval(swDebounce)
+	prevDebounce := workflow.SetDebounceInterval(debounce)
 	ctx, cancel := context.WithCancel(context.Background())
 	var reloads atomic.Int32
 	done := make(chan struct{})
@@ -221,7 +230,11 @@ func TestWatchStillFiresOnWriteAndReload(t *testing.T) {
 // non-connecting links would suppress this; it must reload.
 func TestWatchStillFiresWhenOperatorRevertsBetweenSelfWrites(t *testing.T) {
 	path := newSelfWriteFixture(t)
-	reloads := startCountingWatch(t, path)
+	// The four writes below must fall in one debounce window for "exactly
+	// one reload" to hold; with the shared 150ms window a slow runner
+	// reloaded after the first two writes and again after the last two.
+	const debounce = 1500 * time.Millisecond
+	reloads := startCountingWatchDebounce(t, path, debounce)
 
 	require.NoError(t, os.WriteFile(path, []byte(selfWriteFixture+"operator edit\n"), 0o644))
 	require.NoError(t, workflow.PatchIntField(path, "max_concurrent_agents", 5))
@@ -229,9 +242,9 @@ func TestWatchStillFiresWhenOperatorRevertsBetweenSelfWrites(t *testing.T) {
 	require.NoError(t, workflow.PatchAgentBoolField(path, "inline_input", true))
 
 	require.Eventually(t, func() bool { return reloads.Load() == 1 },
-		3*time.Second, 10*time.Millisecond,
+		debounce+3*time.Second, 10*time.Millisecond,
 		"an operator revert between two daemon saves was swallowed")
-	time.Sleep(swSettle)
+	time.Sleep(debounce + swSettle)
 	require.Equal(t, int32(1), reloads.Load())
 }
 
